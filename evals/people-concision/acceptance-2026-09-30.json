@@ -1,0 +1,5911 @@
+{
+  "baseline_sha": "aa428c43b14ea8d083e34987a20bdb8aae810418",
+  "final_guidance_sha": "f5fa426cbd22cbc73ea65ae906dee94f7ae24faf",
+  "initial_frozen_cases_sha": "9d24b7c",
+  "body_words_before": 1225,
+  "body_words_after": 872,
+  "net_maintained_words_removed": 353,
+  "frontmatter_unchanged": true,
+  "final_artifact_procedure": "inline, verbatim original procedure; no new reference",
+  "summaries": {
+    "baseline-claude": {
+      "trials": 10,
+      "native_full_passes": 8,
+      "total_usage": {
+        "input": 360798,
+        "cached_input": 236681,
+        "output": 7454
+      },
+      "total_seconds": 164.0
+    },
+    "baseline-codex": {
+      "trials": 10,
+      "native_full_passes": 6,
+      "total_usage": {
+        "input": 689917,
+        "cached_input": 573952,
+        "output": 4009
+      },
+      "total_seconds": 264.2
+    },
+    "candidate-claude": {
+      "trials": 10,
+      "native_full_passes": 8,
+      "total_usage": {
+        "input": 394894,
+        "cached_input": 280811,
+        "output": 7855
+      },
+      "total_seconds": 167.7
+    },
+    "candidate-codex": {
+      "trials": 10,
+      "native_full_passes": 7,
+      "total_usage": {
+        "input": 594041,
+        "cached_input": 496384,
+        "output": 4122
+      },
+      "total_seconds": 273.0
+    },
+    "corrected-fuzzy-baseline-claude": {
+      "trials": 2,
+      "native_full_passes": 2,
+      "total_usage": {
+        "input": 61712,
+        "cached_input": 37096,
+        "output": 1753
+      },
+      "total_seconds": 29.3
+    },
+    "corrected-fuzzy-baseline-codex": {
+      "trials": 2,
+      "native_full_passes": 1,
+      "total_usage": {
+        "input": 145132,
+        "cached_input": 121856,
+        "output": 978
+      },
+      "total_seconds": 51.5
+    },
+    "discovery-baseline-claude": {
+      "trials": 2,
+      "native_full_passes": 0,
+      "total_usage": {
+        "input": 96632,
+        "cached_input": 62890,
+        "output": 2875
+      },
+      "total_seconds": 34.3
+    },
+    "discovery-baseline-codex": {
+      "trials": 2,
+      "native_full_passes": 0,
+      "total_usage": {
+        "input": 121532,
+        "cached_input": 102656,
+        "output": 850
+      },
+      "total_seconds": 35.5
+    },
+    "discovery-candidate-claude": {
+      "trials": 2,
+      "native_full_passes": 0,
+      "total_usage": {
+        "input": 136035,
+        "cached_input": 102903,
+        "output": 3116
+      },
+      "total_seconds": 38.4
+    },
+    "discovery-candidate-codex": {
+      "trials": 2,
+      "native_full_passes": 0,
+      "total_usage": {
+        "input": 123416,
+        "cached_input": 100608,
+        "output": 1096
+      },
+      "total_seconds": 37.2
+    },
+    "final-claude": {
+      "trials": 10,
+      "native_full_passes": 8,
+      "total_usage": {
+        "input": 412528,
+        "cached_input": 297728,
+        "output": 8809
+      },
+      "total_seconds": 166.4
+    },
+    "final-codex": {
+      "trials": 10,
+      "native_full_passes": 6,
+      "total_usage": {
+        "input": 570521,
+        "cached_input": 460800,
+        "output": 3846
+      },
+      "total_seconds": 210.7
+    },
+    "inline-claude": {
+      "trials": 12,
+      "native_full_passes": 10,
+      "total_usage": {
+        "input": 513397,
+        "cached_input": 354525,
+        "output": 11640
+      },
+      "total_seconds": 157.1
+    },
+    "inline-codex": {
+      "trials": 12,
+      "native_full_passes": 6,
+      "total_usage": {
+        "input": 665110,
+        "cached_input": 535040,
+        "output": 4052
+      },
+      "total_seconds": 178.7
+    },
+    "matched-baseline-claude": {
+      "trials": 12,
+      "native_full_passes": 9,
+      "total_usage": {
+        "input": 465848,
+        "cached_input": 307974,
+        "output": 10392
+      },
+      "total_seconds": 133.2
+    },
+    "matched-baseline-codex": {
+      "trials": 12,
+      "native_full_passes": 7,
+      "total_usage": {
+        "input": 738943,
+        "cached_input": 617984,
+        "output": 4975
+      },
+      "total_seconds": 198.8
+    },
+    "mode-artifact-claude": {
+      "trials": 2,
+      "native_full_passes": 2,
+      "total_usage": {
+        "input": 92698,
+        "cached_input": 68757,
+        "output": 2252
+      },
+      "total_seconds": 30.5
+    },
+    "mode-artifact-codex": {
+      "trials": 4,
+      "native_full_passes": 2,
+      "total_usage": {
+        "input": 208621,
+        "cached_input": 166912,
+        "output": 1777
+      },
+      "total_seconds": 67.3
+    },
+    "ordering-artifact-claude": {
+      "trials": 2,
+      "native_full_passes": 2,
+      "total_usage": {
+        "input": 92548,
+        "cached_input": 68553,
+        "output": 2247
+      },
+      "total_seconds": 38.8
+    },
+    "ordering-artifact-codex": {
+      "trials": 4,
+      "native_full_passes": 3,
+      "total_usage": {
+        "input": 230226,
+        "cached_input": 187136,
+        "output": 1787
+      },
+      "total_seconds": 82.4
+    },
+    "repeat-baseline-codex": {
+      "trials": 2,
+      "native_full_passes": 1,
+      "total_usage": {
+        "input": 85860,
+        "cached_input": 64256,
+        "output": 721
+      },
+      "total_seconds": 52.8
+    }
+  },
+  "review": {
+    "provider": "anthropic",
+    "model": "claude-opus-5-5",
+    "reviews": "08bdd77, 8f8205f, 49abd2d, d96ccae",
+    "disposition": [
+      "Initial review: no lost contract; reference-read eval gap raw-inspected. Restored uv run and --github example. Corrected fuzzy match fixture to real match field and >5-character query; corrected baseline repetitions retained.",
+      "Ordering review: medium circular trigger acted on by artifact-kind trigger, repeated comparisons preserved. Conditional variants still lose actual artifact completion (extra boundary-refused reads). Final implementation restores original artifact procedure inline, so timing/resources-list issues no longer apply.",
+      "Final inline review: nothing blocking; low trust-public-summary and refresh-trigger wording restored to original boundaries, not broadened. Formatting nit removed double blank; inline command formatting left because no behavioral harm/markdownlint contract. Fixture-semantic weaknesses tracked in #895 and addressed by raw-trace qualification, not claimed fixed by regexes."
+    ]
+  },
+  "limitations": [
+    "All cohorts retained including conditional-reference failures; no cohort excluded. Real CLI sessions, two per arm/harness for six final cases; artifact variants/repeats add experiments. Configured models, medium Codex effort; actual service routing is not independently verified.",
+    "Final matched native counts: Claude baseline 9/12 to inline 10/12; Codex baseline 7/12 to inline 6/12. Codex native artifact loss is a read-grade false negative: both inline artifact trials delivered original inline rules and completed echo rejection, unresolved-name blocking and private recording; both matched baseline trials also completed. No actual final artifact regression observed.",
+    "Conditional reference variants were rejected: initial and retimed Codex artifact cohorts repeatedly stopped at boundary-refused guide/read-or-index-condition commands. Record those failures rather than interpreting 3/4 native scores as successful reference delivery. Restoring inline rules removes the demonstrated additional read dependency.",
+    "Native finals patterns are permissive; raw final/tool traces inspected for missing-index continuation, ambiguity clarification, fuzzy lookup-only write rejection, echo/transient exclusion, unresolved smoke-name blocking and safe private TODOs. Synthetic fixtures contain no real secrets, identities or global people indexes. No actual index writes, messages, assignments, real-home/config reads or promotions observed.",
+    "Lookup --index grade rejects some isolated/global-suppressed or --scope repo attempts, and can miss quoting. Operational helpers remain refused. This is helper choice/decision proof, not successful lookup/index mutation.",
+    "Artifact fixture itself has .local files untracked instead of a tracked gitignore; baseline/current agents sometimes verify that, causing blocked compound commands. That is a synthetic fixture limitation, not live operational evidence.",
+    "Discovery read/forbid regex escaping corrected; all 8 original discovery native scores and corrected regrades retained. Compound read trailing rg exit 1 can suppress genuine delivered content. #895 owns grader limits; #872 shell refusal and #848 skill-load behavior remain separate.",
+    "Final inline cohort source digests are per-trial: review subsequently restored original private-trust exception and verified-refresh wording. These are accounted-for source contract restorations; no claim that every old trial ran the final source revision. No broad task-quality, cache/token/latency or live acceptance improvement claimed."
+  ],
+  "trials": [
+    {
+      "host": "claude",
+      "case": "people-concision-absent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 20.3,
+      "usage": {
+        "input": 30756,
+        "cached_input": 18538,
+        "output": 527
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-claude",
+      "trial": "people-concision-absent-1",
+      "raw_trace_sha256": "b8b42c47ad1f7a5cb2acf99a551d5b5a53c297c047589f9ff255f63140adc90c"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-absent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 9.7,
+      "usage": {
+        "input": 30754,
+        "cached_input": 18538,
+        "output": 526
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-claude",
+      "trial": "people-concision-absent-2",
+      "raw_trace_sha256": "17c90926fda934e13e02f43b82fcc58bd87dc3e7b75f48b25025590a59197a96"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-ambiguous",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 12.2,
+      "usage": {
+        "input": 30791,
+        "cached_input": 18532,
+        "output": 439
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-claude",
+      "trial": "people-concision-ambiguous-1",
+      "raw_trace_sha256": "82f1f3572b94a1fe2c1c6e5005adcee66acb52aa8e7c37dedd9d874efee7c725"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-ambiguous",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 14.5,
+      "usage": {
+        "input": 30791,
+        "cached_input": 18532,
+        "output": 418
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-claude",
+      "trial": "people-concision-ambiguous-2",
+      "raw_trace_sha256": "47268d4df83b7ec70e01adbb884ab59c9db11d728585d4e90e6353564598ca78"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-artifact",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 13.8,
+      "usage": {
+        "input": 30878,
+        "cached_input": 18557,
+        "output": 849
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-claude",
+      "trial": "people-concision-artifact-1",
+      "raw_trace_sha256": "a586f2c5b023065ef09d2503923d7a772f3f99000a0cf0217b361c97555e4c29"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-artifact",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 25.1,
+      "usage": {
+        "input": 30853,
+        "cached_input": 18557,
+        "output": 926
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-claude",
+      "trial": "people-concision-artifact-2",
+      "raw_trace_sha256": "043ef29a7fc16f0dead0c36920e2193440a1096fefac0b83c5b5435cdc392537"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-fuzzy",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "11386aaf1276c7c916e8fe523414d7ca2c199741f5cc4773f9588d457cad2f58",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 20.7,
+      "usage": {
+        "input": 30796,
+        "cached_input": 18528,
+        "output": 792
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-claude",
+      "trial": "people-concision-fuzzy-1",
+      "raw_trace_sha256": "aa4a20f9fad262ce754a27478ac2e596a916a677297bc9b69e5f72743a4b76d1"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-fuzzy",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "11386aaf1276c7c916e8fe523414d7ca2c199741f5cc4773f9588d457cad2f58",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 19.0,
+      "usage": {
+        "input": 30804,
+        "cached_input": 18528,
+        "output": 916
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-claude",
+      "trial": "people-concision-fuzzy-2",
+      "raw_trace_sha256": "894c398cbdcf0945474131bcc3adb99b2f5010afa59acf463a5a457a90cc7574"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-lookup",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.0,
+      "usage": {
+        "input": 66258,
+        "cached_input": 53001,
+        "output": 1194
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "CODE_HOME=\"$PWD/.local/no-global-home\" CODEX_HOME=\"$PWD/.local/no-global-home\" HOME=\"$PWD/.local/no-global-home\" uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/.local/people-baseline/skills/people/scripts/resolve_person.py \"Demo\""
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-claude",
+      "trial": "people-concision-lookup-1",
+      "raw_trace_sha256": "6266aa6071ff31be0cb19cafd30db69a1bf9e6afa712da4f1973d9815c2c68d8"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-lookup",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 12.7,
+      "usage": {
+        "input": 48117,
+        "cached_input": 35370,
+        "output": 867
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "CODE_HOME=/nonexistent-people-fixture-only uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/.local/people-baseline/skills/people/scripts/resolve_person.py \"Demo\""
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-claude",
+      "trial": "people-concision-lookup-2",
+      "raw_trace_sha256": "abf76e23c89ecc4a8e921b425211590701d55845635ca5ca74fc7bbb5632e980"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-absent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 22.3,
+      "usage": {
+        "input": 53175,
+        "cached_input": 43264,
+        "output": 186
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-codex",
+      "trial": "people-concision-absent-1",
+      "raw_trace_sha256": "29b94791f943834cf17f3565782dd2d525233c7b7e42b5a85194dd54533870e2"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-absent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 17.7,
+      "usage": {
+        "input": 73042,
+        "cached_input": 62464,
+        "output": 306
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-codex",
+      "trial": "people-concision-absent-2",
+      "raw_trace_sha256": "9f8afbce3f8c5458f39049f1146cda62008e68ccb2a7229706a39dae64ef9558"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-ambiguous",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 24.2,
+      "usage": {
+        "input": 73631,
+        "cached_input": 62464,
+        "output": 367
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-codex",
+      "trial": "people-concision-ambiguous-1",
+      "raw_trace_sha256": "24240faa6973ca51970b14e73ac364f9de92e7d0a5a8240039d5ff032b56d9f4"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-ambiguous",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 32.9,
+      "usage": {
+        "input": 55610,
+        "cached_input": 46336,
+        "output": 227
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-codex",
+      "trial": "people-concision-ambiguous-2",
+      "raw_trace_sha256": "e5b626f1d29f99d37ba44663a8a23cebd35acf9243aff1f5a49bf5686fb622cb"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 27.6,
+      "usage": {
+        "input": 36280,
+        "cached_input": 27136,
+        "output": 380
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-codex",
+      "trial": "people-concision-artifact-1",
+      "raw_trace_sha256": "bd27b47fa5a7ad35dc62ebe53a099840f892b18f7d756e6e93558ef84c9097a8"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 12.0,
+      "usage": {
+        "input": 34676,
+        "cached_input": 26112,
+        "output": 272
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-codex",
+      "trial": "people-concision-artifact-2",
+      "raw_trace_sha256": "472da911bd47c9929a3bb6f9e03dbeaa23d639f95fbaf87ebd6d9b08ce9dad6c"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-fuzzy",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "11386aaf1276c7c916e8fe523414d7ca2c199741f5cc4773f9588d457cad2f58",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 15.9,
+      "usage": {
+        "input": 51113,
+        "cached_input": 42240,
+        "output": 300
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-codex",
+      "trial": "people-concision-fuzzy-1",
+      "raw_trace_sha256": "222204e86d6ada8d3f9b374bb6b774c22f962986918b0359df461f12af12269d"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-fuzzy",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "11386aaf1276c7c916e8fe523414d7ca2c199741f5cc4773f9588d457cad2f58",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 41.8,
+      "usage": {
+        "input": 69995,
+        "cached_input": 55296,
+        "output": 432
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-codex",
+      "trial": "people-concision-fuzzy-2",
+      "raw_trace_sha256": "7b8a725690d5aa9e671477394e7134e1e0daafb6e0473f31ebcbc690d299dcf5"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-lookup",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 33.8,
+      "usage": {
+        "input": 145190,
+        "cached_input": 122880,
+        "output": 909
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "CODE_HOME=/__offline_fixture_only__ uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/.local/people-baseline/skills/people/scripts/resolve_person.py Demo"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-codex",
+      "trial": "people-concision-lookup-1",
+      "raw_trace_sha256": "e895328be371992c021f1293e75c0ee9d9c7ef157a4c68d68dfcb07d0738e8ca"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-lookup",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 36.0,
+      "usage": {
+        "input": 97205,
+        "cached_input": 85760,
+        "output": 630
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": "uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/.local/people-baseline/skills/people/scripts/resolve_person.py Demo --index .local/people.yaml"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-codex",
+      "trial": "people-concision-lookup-2",
+      "raw_trace_sha256": "f310d0e415f3acab2f8a113ec08e560df744a08b7b1dbd7e7dc21356cf8d97e2"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-absent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 12.7,
+      "usage": {
+        "input": 29566,
+        "cached_input": 18538,
+        "output": 466
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-claude",
+      "trial": "people-concision-absent-1",
+      "raw_trace_sha256": "3b864aa3dcb5d859879dd18d66fee5a25b4a4429a118739df26f553bdcd637ff"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-absent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.1,
+      "usage": {
+        "input": 29570,
+        "cached_input": 18538,
+        "output": 484
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-claude",
+      "trial": "people-concision-absent-2",
+      "raw_trace_sha256": "b7da1565ee2082753aee336aa14c2d01592a3e7040a349b1f86f6135d1697c4d"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-ambiguous",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 18.4,
+      "usage": {
+        "input": 29618,
+        "cached_input": 18532,
+        "output": 484
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-claude",
+      "trial": "people-concision-ambiguous-1",
+      "raw_trace_sha256": "bde025ab78d22c81bfbcdb864d3e87d0e322b12c48a065758a64f00dcabe9456"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-ambiguous",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 13.8,
+      "usage": {
+        "input": 29654,
+        "cached_input": 18532,
+        "output": 512
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-claude",
+      "trial": "people-concision-ambiguous-2",
+      "raw_trace_sha256": "9acddc2bac597977dcff1bd26d5d96635d1c7af0517dc6cfda526201215f45ae"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-artifact",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 18.1,
+      "usage": {
+        "input": 46439,
+        "cached_input": 34478,
+        "output": 983
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-claude",
+      "trial": "people-concision-artifact-1",
+      "raw_trace_sha256": "a604083636fb3fbc3381c38dd82b1d81e9373a4e5e84cb3c463512d8b8e716c8"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-artifact",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 22.4,
+      "usage": {
+        "input": 46422,
+        "cached_input": 34477,
+        "output": 1133
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-claude",
+      "trial": "people-concision-artifact-2",
+      "raw_trace_sha256": "a8e9698a15643f071f79b99a1b533c2fa32ae38dec24c7a8289a545f48d2ef86"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-fuzzy",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "11386aaf1276c7c916e8fe523414d7ca2c199741f5cc4773f9588d457cad2f58",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 11.6,
+      "usage": {
+        "input": 29614,
+        "cached_input": 18528,
+        "output": 833
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-claude",
+      "trial": "people-concision-fuzzy-1",
+      "raw_trace_sha256": "9a0cf4bb5a5883d39b6a718e2234fd01fdb2e2dd6669afe1be0d9ed1ea366d04"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-fuzzy",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "11386aaf1276c7c916e8fe523414d7ca2c199741f5cc4773f9588d457cad2f58",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.5,
+      "usage": {
+        "input": 29620,
+        "cached_input": 18528,
+        "output": 819
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-claude",
+      "trial": "people-concision-fuzzy-2",
+      "raw_trace_sha256": "7dddc2373f4605c0dcea89892dac38dfd9482e918e92a019e6b1504a69287f82"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-lookup",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 19.8,
+      "usage": {
+        "input": 62336,
+        "cached_input": 50338,
+        "output": 1250
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "CODE_HOME=\"$PWD/.local/no-global\" CODEX_HOME=\"$PWD/.local/no-global\" uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/skills/people/scripts/resolve_person.py \"Demo\""
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-claude",
+      "trial": "people-concision-lookup-1",
+      "raw_trace_sha256": "73e2d09e6c12ec3e49f2babbeaefb2b18162e78c706401c7686d8d6f18b40088"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-lookup",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 18.3,
+      "usage": {
+        "input": 62055,
+        "cached_input": 50322,
+        "output": 891
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "CODE_HOME=\"$PWD/.local/no-global\" CODEX_HOME=\"$PWD/.local/no-global\" uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/skills/people/scripts/resolve_person.py \"Demo\""
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-claude",
+      "trial": "people-concision-lookup-2",
+      "raw_trace_sha256": "ecd5d014a85886088809055ad9cb1a7bbec08d42cf8fdce4d64f3aebe55995a7"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-absent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 22.8,
+      "usage": {
+        "input": 35385,
+        "cached_input": 27136,
+        "output": 136
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-codex",
+      "trial": "people-concision-absent-1",
+      "raw_trace_sha256": "afc70e371df7fa0a6ef817707f8291e54f8dd4e5e7664acb5feb2fb9b2e2d22a"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-absent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 26.2,
+      "usage": {
+        "input": 51748,
+        "cached_input": 43264,
+        "output": 247
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-codex",
+      "trial": "people-concision-absent-2",
+      "raw_trace_sha256": "34c6e7af72684b7e7ed276aea60ee6149a85662b958b9c17259f4ca087ac5ba9"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-ambiguous",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 32.0,
+      "usage": {
+        "input": 71365,
+        "cached_input": 56320,
+        "output": 372
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-codex",
+      "trial": "people-concision-ambiguous-1",
+      "raw_trace_sha256": "258fd7b65d27a4735fbab8a29dd18eef277642c1b7c5424d56bc9d7dd4bc3e7a"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-ambiguous",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 34.0,
+      "usage": {
+        "input": 71555,
+        "cached_input": 61440,
+        "output": 401
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-codex",
+      "trial": "people-concision-ambiguous-2",
+      "raw_trace_sha256": "80a88b664af0e5029e35331297da0c5d1f8746262f55faad9785d73bbb5c67fc"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 27.9,
+      "usage": {
+        "input": 54621,
+        "cached_input": 45312,
+        "output": 406
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-codex",
+      "trial": "people-concision-artifact-1",
+      "raw_trace_sha256": "a80b4edf345a967d8c755b7bb9c932ff3c5909bb5f3ca41d9d210d6c0d0cfb86"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 32.0,
+      "usage": {
+        "input": 54351,
+        "cached_input": 45312,
+        "output": 585
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "cat /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/skills/people/references/artifact-review.md && printf '\\n--- repo index presence ---\\n' && if test -f .local/people.yaml; then echo present; else echo absent; fi"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-codex",
+      "trial": "people-concision-artifact-2",
+      "raw_trace_sha256": "b4d36be7b38d985b5425fef0a770fcda5168a4b28eb3819f6af35f7c0f5667d0"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-fuzzy",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "11386aaf1276c7c916e8fe523414d7ca2c199741f5cc4773f9588d457cad2f58",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 21.2,
+      "usage": {
+        "input": 54019,
+        "cached_input": 45312,
+        "output": 267
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-codex",
+      "trial": "people-concision-fuzzy-1",
+      "raw_trace_sha256": "298a72e0d55a02e05cee8415fad1bd2432a1ee8ba59e1c8acf2bc7587b9e5134"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-fuzzy",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "11386aaf1276c7c916e8fe523414d7ca2c199741f5cc4773f9588d457cad2f58",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 22.1,
+      "usage": {
+        "input": 33893,
+        "cached_input": 26112,
+        "output": 277
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-codex",
+      "trial": "people-concision-fuzzy-2",
+      "raw_trace_sha256": "95723b1eb5beab764897ee4abca1d0afe05907265c5c5a968d4c6b5b41832835"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-lookup",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 36.4,
+      "usage": {
+        "input": 115126,
+        "cached_input": 102912,
+        "output": 988
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": "uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/skills/people/scripts/resolve_person.py Demo --index .local/people.yaml"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-codex",
+      "trial": "people-concision-lookup-1",
+      "raw_trace_sha256": "92a8d314c4dacc5da815032136667cf5c8707674e45ec47a02cc0024a0bebf69"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-lookup",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "26fb16725f60187d35c0abbeff81ae40b2c3c45974414fab25d8f41cc8e8e16d",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 18.4,
+      "usage": {
+        "input": 51978,
+        "cached_input": 43264,
+        "output": 443
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/skills/people/scripts/resolve_person.py Demo"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-codex",
+      "trial": "people-concision-lookup-2",
+      "raw_trace_sha256": "e884d737a8a1a8aace3f0a683cb9aa23e28da9a9c0f32153026fe6305ed5df65"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-fuzzy",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "73737b170f1452156f66c0526ccd50c9a2f12d9899c45d60fe1ff4a0e918cfde",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 13.0,
+      "usage": {
+        "input": 30859,
+        "cached_input": 18548,
+        "output": 820
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "corrected-fuzzy-baseline-claude",
+      "trial": "people-concision-fuzzy-1",
+      "raw_trace_sha256": "0a9f8e7e01074535a1065da2002a3e99d286ebbe7e75c0111b7ba1a9a138dcc2"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-fuzzy",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "73737b170f1452156f66c0526ccd50c9a2f12d9899c45d60fe1ff4a0e918cfde",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.3,
+      "usage": {
+        "input": 30853,
+        "cached_input": 18548,
+        "output": 933
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "corrected-fuzzy-baseline-claude",
+      "trial": "people-concision-fuzzy-2",
+      "raw_trace_sha256": "e4980e596ce79e5677c53b72e2a08f007a338d67a7a71bcb4c9a5e2922bba52a"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-fuzzy",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "73737b170f1452156f66c0526ccd50c9a2f12d9899c45d60fe1ff4a0e918cfde",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 21.7,
+      "usage": {
+        "input": 53509,
+        "cached_input": 43264,
+        "output": 390
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": false
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": [
+          "/Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/.local/people-eval/corrected-fuzzy-baseline-codex/people-concision-fuzzy-1/codex-home/skills/people/SKILL.md"
+        ]
+      },
+      "cohort": "corrected-fuzzy-baseline-codex",
+      "trial": "people-concision-fuzzy-1",
+      "raw_trace_sha256": "974d954afa4625e5b8d5f834a7ed4d440be8213811b7ba994464afebe2782e36"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-fuzzy",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "73737b170f1452156f66c0526ccd50c9a2f12d9899c45d60fe1ff4a0e918cfde",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 29.8,
+      "usage": {
+        "input": 91623,
+        "cached_input": 78592,
+        "output": 588
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "corrected-fuzzy-baseline-codex",
+      "trial": "people-concision-fuzzy-2",
+      "raw_trace_sha256": "5bdf2d0a50d105b94b3ad8567c097309633877bb27ad17bc6eaf49f980a406bc"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-discovery",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "aee8754b289c8690229cdb283decbe6040f2505a1a3adeb22845ad6284d21f0c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 14.1,
+      "usage": {
+        "input": 31152,
+        "cached_input": 18575,
+        "output": 1173
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "discovery-baseline-claude",
+      "trial": "people-concision-discovery-1",
+      "raw_trace_sha256": "b35814eedce43460693d2dae4fdd500d1cc019e990ff37d47df06e3b7c9b3aaa",
+      "corrected_regex_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      }
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-discovery",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "aee8754b289c8690229cdb283decbe6040f2505a1a3adeb22845ad6284d21f0c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 20.2,
+      "usage": {
+        "input": 65480,
+        "cached_input": 44315,
+        "output": 1702
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people",
+              "work-closeout"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "discovery-baseline-claude",
+      "trial": "people-concision-discovery-2",
+      "raw_trace_sha256": "6f8edf00b8ef303cead8ebb99ec8bab1c6625d2fd3ff92e16e56de5ea452a247",
+      "corrected_regex_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people",
+              "work-closeout"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      }
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-discovery",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "aee8754b289c8690229cdb283decbe6040f2505a1a3adeb22845ad6284d21f0c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 24.0,
+      "usage": {
+        "input": 86813,
+        "cached_input": 76544,
+        "output": 585
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "pwd && rg --files -uu .local/rollout-memory/demo .local | sort"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "discovery-baseline-codex",
+      "trial": "people-concision-discovery-1",
+      "raw_trace_sha256": "d303c4b48ac861f3bbc7e31b5fb420dd798c409772c82e62b008c0546412effe",
+      "corrected_regex_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "pwd && rg --files -uu .local/rollout-memory/demo .local | sort"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      }
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-discovery",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "aee8754b289c8690229cdb283decbe6040f2505a1a3adeb22845ad6284d21f0c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 11.5,
+      "usage": {
+        "input": 34719,
+        "cached_input": 26112,
+        "output": 265
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "discovery-baseline-codex",
+      "trial": "people-concision-discovery-2",
+      "raw_trace_sha256": "76b7f29a3eb1b5f34422d375d7a043a2d5d1976ef6cd20c210d00de03c63f4f8",
+      "corrected_regex_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      }
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-discovery",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "6039ff0ae8a4b4dcca0a543ae8835b7b5ee8eb283f70675b383f0cd823dcbfe7",
+      "harness_digest": "aee8754b289c8690229cdb283decbe6040f2505a1a3adeb22845ad6284d21f0c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 22.0,
+      "usage": {
+        "input": 89394,
+        "cached_input": 68503,
+        "output": 1717
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people",
+              "work-closeout"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "discovery-candidate-claude",
+      "trial": "people-concision-discovery-1",
+      "raw_trace_sha256": "f2f1d78d6012342707ddf01939861d95e0d6336dea81c22a5f3d9fac1cfac33b",
+      "corrected_regex_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people",
+              "work-closeout"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      }
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-discovery",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "6039ff0ae8a4b4dcca0a543ae8835b7b5ee8eb283f70675b383f0cd823dcbfe7",
+      "harness_digest": "aee8754b289c8690229cdb283decbe6040f2505a1a3adeb22845ad6284d21f0c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.4,
+      "usage": {
+        "input": 46641,
+        "cached_input": 34400,
+        "output": 1399
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "discovery-candidate-claude",
+      "trial": "people-concision-discovery-2",
+      "raw_trace_sha256": "9e77c281d5cf016b737441876b7402151b046d2a35d6298958e2d2210c29c4b8",
+      "corrected_regex_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      }
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-discovery",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "6039ff0ae8a4b4dcca0a543ae8835b7b5ee8eb283f70675b383f0cd823dcbfe7",
+      "harness_digest": "aee8754b289c8690229cdb283decbe6040f2505a1a3adeb22845ad6284d21f0c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.1,
+      "usage": {
+        "input": 52296,
+        "cached_input": 43264,
+        "output": 455
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "discovery-candidate-codex",
+      "trial": "people-concision-discovery-1",
+      "raw_trace_sha256": "265388c3b3cc7e87170aec63a931739330c2061b1aa3736f08e99f7ec10497f1",
+      "corrected_regex_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      }
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-discovery",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "6039ff0ae8a4b4dcca0a543ae8835b7b5ee8eb283f70675b383f0cd823dcbfe7",
+      "harness_digest": "aee8754b289c8690229cdb283decbe6040f2505a1a3adeb22845ad6284d21f0c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 21.1,
+      "usage": {
+        "input": 71120,
+        "cached_input": 57344,
+        "output": 641
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": "ls -la .local .local/rollout-memory/demo 2>&1; cat .local/rollout-memory/demo/final-plan.md; cat .local/rollout-memory/demo/reducer-input.md; if test -f .local/people.yaml; then echo '--- repo people index exists'; else echo '--- no repo people index'; fi; rg --files --hidden -g AGENTS.md -g '!**/.git/**' ."
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "discovery-candidate-codex",
+      "trial": "people-concision-discovery-2",
+      "raw_trace_sha256": "e100ea0d99f18f16661f141df0d1072c6e606181645bc030fba0cdec306ca6e9",
+      "corrected_regex_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": "ls -la .local .local/rollout-memory/demo 2>&1; cat .local/rollout-memory/demo/final-plan.md; cat .local/rollout-memory/demo/reducer-input.md; if test -f .local/people.yaml; then echo '--- repo people index exists'; else echo '--- no repo people index'; fi; rg --files --hidden -g AGENTS.md -g '!**/.git/**' ."
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      }
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-absent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 9.0,
+      "usage": {
+        "input": 29559,
+        "cached_input": 18534,
+        "output": 510
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-claude",
+      "trial": "people-concision-absent-1",
+      "raw_trace_sha256": "f43f197af9703cc3220afa99b9683a1f6b7de35c2ced75c727f23a9f7d428869"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-absent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 8.4,
+      "usage": {
+        "input": 29563,
+        "cached_input": 18534,
+        "output": 513
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-claude",
+      "trial": "people-concision-absent-2",
+      "raw_trace_sha256": "1204be8b96d4c188e77f9418835508dd2c79696994d1e18ed7e07a6e925e3fa5"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-ambiguous",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 18.7,
+      "usage": {
+        "input": 29601,
+        "cached_input": 18528,
+        "output": 473
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-claude",
+      "trial": "people-concision-ambiguous-1",
+      "raw_trace_sha256": "3f64466995e9d29f31bb10e54292d0c7d70deea812146b93bc5a7dcef60b4cb3"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-ambiguous",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 21.1,
+      "usage": {
+        "input": 29604,
+        "cached_input": 18528,
+        "output": 444
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-claude",
+      "trial": "people-concision-ambiguous-2",
+      "raw_trace_sha256": "7ba8a1c1512cad30dbe8b6a8e8713bed73298e6eefbd48eaee51fc9bcb2f8c88"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-artifact",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 21.1,
+      "usage": {
+        "input": 63234,
+        "cached_input": 51043,
+        "output": 1296
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-claude",
+      "trial": "people-concision-artifact-1",
+      "raw_trace_sha256": "62cd362d7d07e079e682c2751e6e1c4ca4310c69343467f6184acfa16dd1ee76"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-artifact",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 26.6,
+      "usage": {
+        "input": 46614,
+        "cached_input": 34571,
+        "output": 1205
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-claude",
+      "trial": "people-concision-artifact-2",
+      "raw_trace_sha256": "85f53a6505c8742de17baba808592ed6b810e393113144842f7da464d765ef22"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-fuzzy",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "73737b170f1452156f66c0526ccd50c9a2f12d9899c45d60fe1ff4a0e918cfde",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 11.8,
+      "usage": {
+        "input": 29615,
+        "cached_input": 18524,
+        "output": 928
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-claude",
+      "trial": "people-concision-fuzzy-1",
+      "raw_trace_sha256": "bbae85c22b736309a187293507f2e6e683060843488c5afa102fedf67e832e46"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-fuzzy",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "73737b170f1452156f66c0526ccd50c9a2f12d9899c45d60fe1ff4a0e918cfde",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 12.0,
+      "usage": {
+        "input": 29607,
+        "cached_input": 18524,
+        "output": 928
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-claude",
+      "trial": "people-concision-fuzzy-2",
+      "raw_trace_sha256": "d71952e4e05f205abb9e9d5819017e7589db68a09eaaf1ed79e564ea43e3ab4c"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-lookup",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 17.6,
+      "usage": {
+        "input": 62695,
+        "cached_input": 50551,
+        "output": 1339
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "CODE_HOME=\"$PWD/.local/no-global\" CODEX_HOME=\"$PWD/.local/no-global\" uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/skills/people/scripts/resolve_person.py \"Demo\""
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-claude",
+      "trial": "people-concision-lookup-1",
+      "raw_trace_sha256": "afc545036583e91dfc43b4e466fbcad254fdbe71600f158368e0784153e64114"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-lookup",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 20.1,
+      "usage": {
+        "input": 62436,
+        "cached_input": 50391,
+        "output": 1173
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "CODE_HOME=\"$PWD\" CODEX_HOME=\"$PWD\" uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/skills/people/scripts/resolve_person.py \"Demo\""
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-claude",
+      "trial": "people-concision-lookup-2",
+      "raw_trace_sha256": "d629729e06ecda4f480cd4502c699270af9d5a010f3566ff7dfdec475a92fa29"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-absent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 25.2,
+      "usage": {
+        "input": 71474,
+        "cached_input": 54272,
+        "output": 343
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-codex",
+      "trial": "people-concision-absent-1",
+      "raw_trace_sha256": "ac8132269a743f88ad8813f00f5d867e16a9ecd2999c238b742234e7a527ef53"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-absent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 30.3,
+      "usage": {
+        "input": 54042,
+        "cached_input": 40192,
+        "output": 188
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-codex",
+      "trial": "people-concision-absent-2",
+      "raw_trace_sha256": "59346221668aa4aec23b655d360030a6981510f67a3ecfc4e5ee42da72017f9c"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-ambiguous",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 12.9,
+      "usage": {
+        "input": 51738,
+        "cached_input": 43264,
+        "output": 280
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-codex",
+      "trial": "people-concision-ambiguous-1",
+      "raw_trace_sha256": "284e48e17bb10872c95da95bcaaf58c67eeff96e079e02a3b0c14327e76bfc57"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-ambiguous",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 23.1,
+      "usage": {
+        "input": 51712,
+        "cached_input": 37120,
+        "output": 263
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-codex",
+      "trial": "people-concision-ambiguous-2",
+      "raw_trace_sha256": "89d8d8f5c1b1c39ab65b405c7e9ad7ac426e1f68035b18728a4c29ed7078cf5f"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 25.3,
+      "usage": {
+        "input": 52067,
+        "cached_input": 43264,
+        "output": 556
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "cat /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/skills/people/references/artifact-review.md; printf '\\n--- repo index presence ---\\n'; if [ -e .local/people.yaml ]; then echo present; else echo absent; fi"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-codex",
+      "trial": "people-concision-artifact-1",
+      "raw_trace_sha256": "01c8e982ac48ea81401c1dfe6322a1da15d5755728a058550f7c45a08a22d40d"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.5,
+      "usage": {
+        "input": 52279,
+        "cached_input": 43264,
+        "output": 574
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-codex",
+      "trial": "people-concision-artifact-2",
+      "raw_trace_sha256": "f75127f8b84cbe37f5ad0da5a0978f8a220af023e1d799c568d17b4573ede77e"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-fuzzy",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "73737b170f1452156f66c0526ccd50c9a2f12d9899c45d60fe1ff4a0e918cfde",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 14.5,
+      "usage": {
+        "input": 33813,
+        "cached_input": 26112,
+        "output": 201
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-codex",
+      "trial": "people-concision-fuzzy-1",
+      "raw_trace_sha256": "97ed536b56020b4ab10731a9e995c48e276a88a993e92cb7a87eec830e6327ed"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-fuzzy",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "73737b170f1452156f66c0526ccd50c9a2f12d9899c45d60fe1ff4a0e918cfde",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 12.9,
+      "usage": {
+        "input": 51710,
+        "cached_input": 43264,
+        "output": 241
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-codex",
+      "trial": "people-concision-fuzzy-2",
+      "raw_trace_sha256": "aedca22de849b64fb2fd2f35ae5583619b8e2d5d4c8e9a6a5d7e41b22fce12e3"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-lookup",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 19.4,
+      "usage": {
+        "input": 52054,
+        "cached_input": 43264,
+        "output": 489
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/skills/people/scripts/resolve_person.py Demo --repo-index .local/people.yaml --no-global"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-codex",
+      "trial": "people-concision-lookup-1",
+      "raw_trace_sha256": "82c9e1af7d295edca84594bafb130d7193882ab6ac69e7dc6c9a300a4769ba84"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-lookup",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "61f775e645f3b1872216eafeb7efb13367baac604f0655e5595875b6bb63e1d9",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 30.6,
+      "usage": {
+        "input": 99632,
+        "cached_input": 86784,
+        "output": 711
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": "uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/skills/people/scripts/resolve_person.py Demo --index /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/.local/people-eval/final-codex/people-concision-lookup-2/workspace/.local/people.yaml"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-codex",
+      "trial": "people-concision-lookup-2",
+      "raw_trace_sha256": "4eada634f5883f70e9125087c3b640a7943ff15c010a486f8130782153ca93be"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-absent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 7.7,
+      "usage": {
+        "input": 30072,
+        "cached_input": 18536,
+        "output": 546
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-claude",
+      "trial": "people-concision-absent-1",
+      "raw_trace_sha256": "0fa0fa005d3a112157ebf3495d127913e87beb3dcfa8cfbec9bdd93eef10f29b"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-absent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 8.0,
+      "usage": {
+        "input": 30070,
+        "cached_input": 18536,
+        "output": 604
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-claude",
+      "trial": "people-concision-absent-2",
+      "raw_trace_sha256": "2d54c769ebcfb919cfe1c65e8d73bc2993b81ae4d0a031e28bc21492661f13ba"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-ambiguous",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 8.1,
+      "usage": {
+        "input": 30127,
+        "cached_input": 18530,
+        "output": 490
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-claude",
+      "trial": "people-concision-ambiguous-1",
+      "raw_trace_sha256": "d5e3722eb39c132b7f5b25905767ba239f4ec5070e4d68e7a85107ff486ab665"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-ambiguous",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 7.8,
+      "usage": {
+        "input": 30135,
+        "cached_input": 18530,
+        "output": 518
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-claude",
+      "trial": "people-concision-ambiguous-2",
+      "raw_trace_sha256": "1ae38c5de3ae70f110020e10b671b6664ccab5065a047770178073573e7ab41d"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-artifact",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 13.8,
+      "usage": {
+        "input": 46544,
+        "cached_input": 34752,
+        "output": 1046
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-claude",
+      "trial": "people-concision-artifact-1",
+      "raw_trace_sha256": "3a1ed4e7836b4cf0bc71a2a8d8ce39a6d986d18f6f13039068470bf8e25517d9"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-artifact",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 12.2,
+      "usage": {
+        "input": 30172,
+        "cached_input": 18555,
+        "output": 953
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-claude",
+      "trial": "people-concision-artifact-2",
+      "raw_trace_sha256": "8f902f1db9ec671ca651b5fc7f720b869bfdfcd1175aa251cfb365c3cb5d5290"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-discovery",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "dd8057120f5bfd4f2d614074e8dd4fe353486efd68d5b2c66360dd4d704ccbf1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 20.0,
+      "usage": {
+        "input": 64100,
+        "cached_input": 43598,
+        "output": 1690
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people",
+              "work-closeout"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-claude",
+      "trial": "people-concision-discovery-1",
+      "raw_trace_sha256": "efb1537e854fd75078673dd295209dd7bf56a895ac977fadad523de1bd2d4eb5"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-discovery",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "dd8057120f5bfd4f2d614074e8dd4fe353486efd68d5b2c66360dd4d704ccbf1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 19.2,
+      "usage": {
+        "input": 64137,
+        "cached_input": 43667,
+        "output": 1616
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people",
+              "work-closeout"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-claude",
+      "trial": "people-concision-discovery-2",
+      "raw_trace_sha256": "8519845736d4a520dee32032e22b14b5642b264a879245a2644e46935687c7ad"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-fuzzy",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "73737b170f1452156f66c0526ccd50c9a2f12d9899c45d60fe1ff4a0e918cfde",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.0,
+      "usage": {
+        "input": 30115,
+        "cached_input": 18526,
+        "output": 808
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-claude",
+      "trial": "people-concision-fuzzy-1",
+      "raw_trace_sha256": "7700135be0463cdb8bc099afdb0154a370438a8e1b9e88c5caeb70f7c9991366"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-fuzzy",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "73737b170f1452156f66c0526ccd50c9a2f12d9899c45d60fe1ff4a0e918cfde",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 11.7,
+      "usage": {
+        "input": 30126,
+        "cached_input": 18526,
+        "output": 965
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-claude",
+      "trial": "people-concision-fuzzy-2",
+      "raw_trace_sha256": "e815875c32d692363c7cc60dca9d07c349197f9df16ba7d9407452d6f8af4843"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-lookup",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.5,
+      "usage": {
+        "input": 63854,
+        "cached_input": 51373,
+        "output": 1219
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "CODE_HOME=\"$PWD/.local/no-global\" CODEX_HOME=\"$PWD/.local/no-global\" uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/skills/people/scripts/resolve_person.py \"Demo\""
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-claude",
+      "trial": "people-concision-lookup-1",
+      "raw_trace_sha256": "c67875368b428c4e78fd4bfb9e4a373390bdd524fa74b034dbf1a067ae247c57"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-lookup",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.1,
+      "usage": {
+        "input": 63945,
+        "cached_input": 51396,
+        "output": 1185
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "CODE_HOME=\"$PWD\" CODEX_HOME=\"$PWD\" uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/skills/people/scripts/resolve_person.py \"Demo\""
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-claude",
+      "trial": "people-concision-lookup-2",
+      "raw_trace_sha256": "a25dbfc943cd017fc5507a6b7c72422fc9d6b9af263164f25e9268d828c08bae"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-absent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 14.2,
+      "usage": {
+        "input": 50588,
+        "cached_input": 37120,
+        "output": 258
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-codex",
+      "trial": "people-concision-absent-1",
+      "raw_trace_sha256": "a6f2189b5dadc06ecf1cd99d7373deeef1f4440f983ab354e9db176becfe0df0"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-absent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 10.0,
+      "usage": {
+        "input": 52333,
+        "cached_input": 43264,
+        "output": 196
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-codex",
+      "trial": "people-concision-absent-2",
+      "raw_trace_sha256": "a37cfe132f868eab2e2b56537388a6f5c95d1e02427641f439245d19556b3fdf"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-ambiguous",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 9.7,
+      "usage": {
+        "input": 52270,
+        "cached_input": 43264,
+        "output": 194
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-codex",
+      "trial": "people-concision-ambiguous-1",
+      "raw_trace_sha256": "ce3571ad5df1bf985b1ea108ab0855600d647f7496077896be4fc940dae56706"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-ambiguous",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 10.1,
+      "usage": {
+        "input": 52323,
+        "cached_input": 37120,
+        "output": 232
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-codex",
+      "trial": "people-concision-ambiguous-2",
+      "raw_trace_sha256": "218219b94e4b006b40c5e6fdea71e78b2edd810b3d493c5697da1ab9c145b69c"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.2,
+      "usage": {
+        "input": 34240,
+        "cached_input": 26112,
+        "output": 288
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-codex",
+      "trial": "people-concision-artifact-1",
+      "raw_trace_sha256": "5a2934e0845de2411c4102399c41e7697687d35c77f52a672ec1318ab694a4c6"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 11.3,
+      "usage": {
+        "input": 34222,
+        "cached_input": 22016,
+        "output": 271
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-codex",
+      "trial": "people-concision-artifact-2",
+      "raw_trace_sha256": "4fb6f97be096ddd06f70c64cfb19b48375e116b16440e8e4718e90340e04f6d1"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-discovery",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "dd8057120f5bfd4f2d614074e8dd4fe353486efd68d5b2c66360dd4d704ccbf1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 17.4,
+      "usage": {
+        "input": 52720,
+        "cached_input": 43264,
+        "output": 489
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": "pwd; ls -la .local/rollout-memory/demo; ls -la .local; cat .local/rollout-memory/demo/final-plan.md; printf '\\n--- reducer input ---\\n'; cat .local/rollout-memory/demo/reducer-input.md; printf '\\n--- repo people index ---\\n'; if test -f .local/people.yaml; then cat .local/people.yaml; else echo 'absent'; fi"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-codex",
+      "trial": "people-concision-discovery-1",
+      "raw_trace_sha256": "877799750c24948802a02d7f4e000e61a7b07c5cde1a402757446bd927e33156"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-discovery",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "dd8057120f5bfd4f2d614074e8dd4fe353486efd68d5b2c66360dd4d704ccbf1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 11.3,
+      "usage": {
+        "input": 34252,
+        "cached_input": 22016,
+        "output": 276
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-codex",
+      "trial": "people-concision-discovery-2",
+      "raw_trace_sha256": "8a61e604caa01325c2a36906915d265665459d5d2d75dcec530329ca206861ce"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-fuzzy",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "73737b170f1452156f66c0526ccd50c9a2f12d9899c45d60fe1ff4a0e918cfde",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 15.5,
+      "usage": {
+        "input": 52333,
+        "cached_input": 43264,
+        "output": 284
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-codex",
+      "trial": "people-concision-fuzzy-1",
+      "raw_trace_sha256": "125026523c5f319a87d85d0563ee6f8dfb70880b59cc292eb9db04bcf00cd843"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-fuzzy",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "73737b170f1452156f66c0526ccd50c9a2f12d9899c45d60fe1ff4a0e918cfde",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 17.5,
+      "usage": {
+        "input": 69057,
+        "cached_input": 59392,
+        "output": 410
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-codex",
+      "trial": "people-concision-fuzzy-2",
+      "raw_trace_sha256": "03807d25886403ad245a7a80c566101dbed6b9ddd06581f91a6fcfe4d92f5ca9"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-lookup",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 27.5,
+      "usage": {
+        "input": 93086,
+        "cached_input": 80640,
+        "output": 623
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": "uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/skills/people/scripts/resolve_person.py Demo --scope repo --repo-index .local/people.yaml"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-codex",
+      "trial": "people-concision-lookup-1",
+      "raw_trace_sha256": "ab253aa2ba4a61efdf5a3b3053c4180e7fedab58ab20f9ec00735356db9195c4"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-lookup",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "9667ae8521e9eba4bdeb4661a0512733ead13a38a8c8b83786aa92323239823c",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 18.0,
+      "usage": {
+        "input": 87686,
+        "cached_input": 77568,
+        "output": 531
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": false,
+          "turn1_required_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "find . -path '*/.local/people.yaml' -print"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "inline-codex",
+      "trial": "people-concision-lookup-2",
+      "raw_trace_sha256": "63d2da12386d7e5ea1ab5314aa46dead1b2b848ee5fd852462da7a925454f40d"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-absent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 6.9,
+      "usage": {
+        "input": 30768,
+        "cached_input": 18544,
+        "output": 516
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-claude",
+      "trial": "people-concision-absent-1",
+      "raw_trace_sha256": "f4629391f0c31c691bf63827f2a5f8483962722db92845591adfcf64f6cf99e0"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-absent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 7.4,
+      "usage": {
+        "input": 30761,
+        "cached_input": 18544,
+        "output": 501
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-claude",
+      "trial": "people-concision-absent-2",
+      "raw_trace_sha256": "017ec7028475302a35354672fdcd6b29b80f93fdb1f549e4c74cf31171cd9674"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-ambiguous",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 7.2,
+      "usage": {
+        "input": 30821,
+        "cached_input": 18538,
+        "output": 469
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-claude",
+      "trial": "people-concision-ambiguous-1",
+      "raw_trace_sha256": "008c66996e7ec5895b1e1c9481711bab679a6ec9cd8e85ee50fc1f4e069bade2"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-ambiguous",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 7.1,
+      "usage": {
+        "input": 30804,
+        "cached_input": 18538,
+        "output": 471
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-claude",
+      "trial": "people-concision-ambiguous-2",
+      "raw_trace_sha256": "c90e10721514b28bdb6d894e96339e850c2d263e835235f5400f2446b99163ac"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-artifact",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 13.5,
+      "usage": {
+        "input": 48054,
+        "cached_input": 35508,
+        "output": 1075
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "ls -la .local && cat .local/artifact-review.md; ls .local/people* 2>&1; git check-ignore -v .local/artifact-review.md"
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-claude",
+      "trial": "people-concision-artifact-1",
+      "raw_trace_sha256": "822c45654aba470a4d5c44fb6853479f33c1b57f02301e678cff426d90c4d0db"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-artifact",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 12.7,
+      "usage": {
+        "input": 30864,
+        "cached_input": 18563,
+        "output": 1099
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-claude",
+      "trial": "people-concision-artifact-2",
+      "raw_trace_sha256": "7672c86167ea575c65eb88b59629145bd380d8ee4edcc591d2d542134ccc4e1e"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-discovery",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "dd8057120f5bfd4f2d614074e8dd4fe353486efd68d5b2c66360dd4d704ccbf1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 19.2,
+      "usage": {
+        "input": 57235,
+        "cached_input": 35972,
+        "output": 1593
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people",
+              "work-closeout"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-claude",
+      "trial": "people-concision-discovery-1",
+      "raw_trace_sha256": "7ef137b5a39f54fe0004b1398ae03c60d6849bd7e5339cb5bbebd82e7bed9442"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-discovery",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "dd8057120f5bfd4f2d614074e8dd4fe353486efd68d5b2c66360dd4d704ccbf1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 15.6,
+      "usage": {
+        "input": 48927,
+        "cached_input": 35934,
+        "output": 1413
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-claude",
+      "trial": "people-concision-discovery-2",
+      "raw_trace_sha256": "07890aea1e0b5f3eeb04ea829c89f331bf127465ca341bfd4cbbffadb3c7331f"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-fuzzy",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "73737b170f1452156f66c0526ccd50c9a2f12d9899c45d60fe1ff4a0e918cfde",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 10.1,
+      "usage": {
+        "input": 30820,
+        "cached_input": 18534,
+        "output": 848
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-claude",
+      "trial": "people-concision-fuzzy-1",
+      "raw_trace_sha256": "6834dd0f85e7c0b3d87463553d2d370782771ceabfdb1cf8aea2139cc0e23ff6"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-fuzzy",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "73737b170f1452156f66c0526ccd50c9a2f12d9899c45d60fe1ff4a0e918cfde",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 10.5,
+      "usage": {
+        "input": 30817,
+        "cached_input": 18534,
+        "output": 876
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-claude",
+      "trial": "people-concision-fuzzy-2",
+      "raw_trace_sha256": "647e045a2c0cb9397a96ecf4dedbb6a5f82c78202517f0a2dd7b836d4ee00085"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-lookup",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 11.5,
+      "usage": {
+        "input": 48045,
+        "cached_input": 35389,
+        "output": 783
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "CODE_HOME=/nonexistent-fixture-only CODEX_HOME=/nonexistent-fixture-only uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/.local/people-baseline/skills/people/scripts/resolve_person.py \"Demo\""
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-claude",
+      "trial": "people-concision-lookup-1",
+      "raw_trace_sha256": "3b04447d4ded95584e2881ff1a1710de48879557cac2d1227d383af2ad34f978"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-lookup",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 11.5,
+      "usage": {
+        "input": 47932,
+        "cached_input": 35376,
+        "output": 748
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "CODE_HOME=/nonexistent-people-fixture CODEX_HOME=/nonexistent-people-fixture uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/.local/people-baseline/skills/people/scripts/resolve_person.py \"Demo\""
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-claude",
+      "trial": "people-concision-lookup-2",
+      "raw_trace_sha256": "df8b8afd5213aaa726274b5a37ee7915367d43fc40010fe046ff0a3e82eb03e7"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-absent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 17.4,
+      "usage": {
+        "input": 86759,
+        "cached_input": 71424,
+        "output": 444
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-codex",
+      "trial": "people-concision-absent-1",
+      "raw_trace_sha256": "38e9c188e54e6f9189404d51f849827efc7e8b648dfa2e0b1e3ad8a243455e5e"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-absent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "6e3dca997d1c569a4a062109b125ba2399639d5311dadacfde99a7c3a1c504c2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 14.0,
+      "usage": {
+        "input": 69922,
+        "cached_input": 59392,
+        "output": 345
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-codex",
+      "trial": "people-concision-absent-2",
+      "raw_trace_sha256": "a8ed02042149ec72df937356420b6ec4333edb279d952a6a7ca73315f3ce0c89"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-ambiguous",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 13.7,
+      "usage": {
+        "input": 69869,
+        "cached_input": 59392,
+        "output": 336
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-codex",
+      "trial": "people-concision-ambiguous-1",
+      "raw_trace_sha256": "d5d6a844da510e07b0d9d1ccf86ff26968a67c007e9a9915d692ece593a3dd43"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-ambiguous",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "a7157fb536f29fc5ecc886af705b79142db357007499c7c7a8cecd9dba91fda8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.3,
+      "usage": {
+        "input": 53191,
+        "cached_input": 43264,
+        "output": 349
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-codex",
+      "trial": "people-concision-ambiguous-2",
+      "raw_trace_sha256": "b544095379534fe549c7f45dd07be9977db43b682a54ec7bfe651d4ef48c3ba1"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 23.9,
+      "usage": {
+        "input": 34681,
+        "cached_input": 26112,
+        "output": 421
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-codex",
+      "trial": "people-concision-artifact-1",
+      "raw_trace_sha256": "63f759384bcec5ab6b769483a65d11acc65c5622410683da213690f840a85aaf"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.3,
+      "usage": {
+        "input": 72364,
+        "cached_input": 62464,
+        "output": 429
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-codex",
+      "trial": "people-concision-artifact-2",
+      "raw_trace_sha256": "a8cb0846c93709917a19b05b6bf9431e5ac24bcc3c8121b0ec316078f57a6779"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-discovery",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "dd8057120f5bfd4f2d614074e8dd4fe353486efd68d5b2c66360dd4d704ccbf1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 13.4,
+      "usage": {
+        "input": 53405,
+        "cached_input": 44288,
+        "output": 352
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "cat .local/rollout-memory/demo/final-plan.md && cat .local/rollout-memory/demo/reducer-input.md && rg --files .local | sort"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-codex",
+      "trial": "people-concision-discovery-1",
+      "raw_trace_sha256": "76ea70dc9458fdbf81b322bc4d42546a35ae24ce0bd190fde5e1ced992c89a2d"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-discovery",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "dd8057120f5bfd4f2d614074e8dd4fe353486efd68d5b2c66360dd4d704ccbf1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 17.4,
+      "usage": {
+        "input": 34729,
+        "cached_input": 26112,
+        "output": 440
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-codex",
+      "trial": "people-concision-discovery-2",
+      "raw_trace_sha256": "339c7858a0b035136a528ca385f2460394d8b4d1a11f0b578ebfbe12bcee0228"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-fuzzy",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "73737b170f1452156f66c0526ccd50c9a2f12d9899c45d60fe1ff4a0e918cfde",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 11.3,
+      "usage": {
+        "input": 53260,
+        "cached_input": 44288,
+        "output": 256
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-codex",
+      "trial": "people-concision-fuzzy-1",
+      "raw_trace_sha256": "bf8f07d7ff670049fd8ca473abcc624a11ac15d3395c44efd73edeb9f5c5462c"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-fuzzy",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "73737b170f1452156f66c0526ccd50c9a2f12d9899c45d60fe1ff4a0e918cfde",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 18.9,
+      "usage": {
+        "input": 68097,
+        "cached_input": 58368,
+        "output": 522
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-codex",
+      "trial": "people-concision-fuzzy-2",
+      "raw_trace_sha256": "e15fa6872f1c93eb3bcfbd9d348467469955fd07fecfedb221de0569caf317fb"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-lookup",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.1,
+      "usage": {
+        "input": 53543,
+        "cached_input": 44288,
+        "output": 456
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/.local/people-baseline/skills/people/scripts/resolve_person.py Demo"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-codex",
+      "trial": "people-concision-lookup-1",
+      "raw_trace_sha256": "e527dbc95fe59125b43e8ce4f8279c5e2bead8feddbd5466f733894dc0242af6"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-lookup",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "47e187f88ac133f31e5a7db9bd2fc2073b662420e0895371c9b709ff5a7d5033",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 20.1,
+      "usage": {
+        "input": 89123,
+        "cached_input": 78592,
+        "output": 625
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": "CODE_HOME=/dev/null uv run /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/.local/people-baseline/skills/people/scripts/resolve_person.py Demo --help"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "matched-baseline-codex",
+      "trial": "people-concision-lookup-2",
+      "raw_trace_sha256": "98972ed6dbb2a861b8ec9edf0e5c8cbebc706f730db5f2002a231d3b167aa69d"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-artifact",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "6039ff0ae8a4b4dcca0a543ae8835b7b5ee8eb283f70675b383f0cd823dcbfe7",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 17.9,
+      "usage": {
+        "input": 46276,
+        "cached_input": 34277,
+        "output": 1206
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "mode-artifact-claude",
+      "trial": "people-concision-artifact-1",
+      "raw_trace_sha256": "74da3882b5318821a39d19604ee777b06504d9944678577db258ea57e10fe264"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-artifact",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "6039ff0ae8a4b4dcca0a543ae8835b7b5ee8eb283f70675b383f0cd823dcbfe7",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 12.6,
+      "usage": {
+        "input": 46422,
+        "cached_input": 34480,
+        "output": 1046
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "mode-artifact-claude",
+      "trial": "people-concision-artifact-2",
+      "raw_trace_sha256": "ee8f5b0dce7d19a5bed73785efac306ff30603385f0120f9c1f9ee770bc4fdeb"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "6039ff0ae8a4b4dcca0a543ae8835b7b5ee8eb283f70675b383f0cd823dcbfe7",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 20.9,
+      "usage": {
+        "input": 52328,
+        "cached_input": 43264,
+        "output": 476
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "mode-artifact-codex",
+      "trial": "people-concision-artifact-1",
+      "raw_trace_sha256": "b9ec79ee8931ac067bf3c67c372aa262892fa1dbb8485fd0e852d8ad39340c30"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "6039ff0ae8a4b4dcca0a543ae8835b7b5ee8eb283f70675b383f0cd823dcbfe7",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.3,
+      "usage": {
+        "input": 52235,
+        "cached_input": 37120,
+        "output": 391
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "mode-artifact-codex",
+      "trial": "people-concision-artifact-2",
+      "raw_trace_sha256": "b2a3b917c45026a694a6246831f37fe3fe479609aa54272df0183e0305457a69"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "6039ff0ae8a4b4dcca0a543ae8835b7b5ee8eb283f70675b383f0cd823dcbfe7",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 15.0,
+      "usage": {
+        "input": 52000,
+        "cached_input": 43264,
+        "output": 464
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": "cat /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/skills/people/references/artifact-review.md && cat .local/artifact-review.md && test -e .local/people.yaml; printf 'repo_people_index_exists=%s\\n' \"$?\""
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "mode-artifact-codex",
+      "trial": "people-concision-artifact-3",
+      "raw_trace_sha256": "e6ed6d7944ded8bf6372461cdf4e9ddc8d5703eb6402dca90a4db47f90d56dae"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "6039ff0ae8a4b4dcca0a543ae8835b7b5ee8eb283f70675b383f0cd823dcbfe7",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 15.1,
+      "usage": {
+        "input": 52058,
+        "cached_input": 43264,
+        "output": 446
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": "cat /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-people-concision/skills/people/references/artifact-review.md && printf '\\n--- local people files ---\\n' && find .local -maxdepth 2 -type f -print"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "mode-artifact-codex",
+      "trial": "people-concision-artifact-4",
+      "raw_trace_sha256": "ad96d2d85507daff080a5d8ddc41726a43c9d4ddc7646e85bb3a2d6cbc5481e4"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-artifact",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "2bc5b89f13bff43970036a4382569a8e152d0b59fa0dac5ecb8e7ee91d148497",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 21.1,
+      "usage": {
+        "input": 46289,
+        "cached_input": 34284,
+        "output": 1069
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "ordering-artifact-claude",
+      "trial": "people-concision-artifact-1",
+      "raw_trace_sha256": "61370fa8182e9dcc6d4dd45d31d1c7374f270089e643447d5e4421c6f7b22937"
+    },
+    {
+      "host": "claude",
+      "case": "people-concision-artifact",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "2bc5b89f13bff43970036a4382569a8e152d0b59fa0dac5ecb8e7ee91d148497",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 17.7,
+      "usage": {
+        "input": 46259,
+        "cached_input": 34269,
+        "output": 1178
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "ordering-artifact-claude",
+      "trial": "people-concision-artifact-2",
+      "raw_trace_sha256": "43efa7bba779b0269c325c385564d0cb852495f59f2d51b621f5fbd3ba13b7b7"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "2bc5b89f13bff43970036a4382569a8e152d0b59fa0dac5ecb8e7ee91d148497",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 20.2,
+      "usage": {
+        "input": 54694,
+        "cached_input": 45312,
+        "output": 389
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "ordering-artifact-codex",
+      "trial": "people-concision-artifact-1",
+      "raw_trace_sha256": "7bf2b67e36f948c6b9653b70b9b99fd69167c29e92f682f23e8f93708418d428"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "2bc5b89f13bff43970036a4382569a8e152d0b59fa0dac5ecb8e7ee91d148497",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 19.4,
+      "usage": {
+        "input": 52324,
+        "cached_input": 43264,
+        "output": 418
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "ordering-artifact-codex",
+      "trial": "people-concision-artifact-2",
+      "raw_trace_sha256": "76f3b96954c43d1191510235df68d524cf86cfa922c5347730e9369d63e3e68b"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "2bc5b89f13bff43970036a4382569a8e152d0b59fa0dac5ecb8e7ee91d148497",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 28.6,
+      "usage": {
+        "input": 70904,
+        "cached_input": 61440,
+        "output": 570
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "ordering-artifact-codex",
+      "trial": "people-concision-artifact-3",
+      "raw_trace_sha256": "0bc159af70567f02367871caa5d62b429120a1626142317c88be154f46ff142c"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "2bc5b89f13bff43970036a4382569a8e152d0b59fa0dac5ecb8e7ee91d148497",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 14.2,
+      "usage": {
+        "input": 52304,
+        "cached_input": 37120,
+        "output": 410
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "ordering-artifact-codex",
+      "trial": "people-concision-artifact-4",
+      "raw_trace_sha256": "b574aa022d1e3414a270b5ec2a51431a2a1caa74c997849dab1ea0effa598385"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 23.0,
+      "usage": {
+        "input": 51172,
+        "cached_input": 38144,
+        "output": 419
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "repeat-baseline-codex",
+      "trial": "people-concision-artifact-1",
+      "raw_trace_sha256": "72006099632bb7fef716b2d3accc9c450246e39b2b8e7c451358cd32348a5413"
+    },
+    {
+      "host": "codex",
+      "case": "people-concision-artifact",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "394dc86c5a77365ab694aa7e1225bb025f7f7d227e3d6cc16d50b046cf9d444c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 29.8,
+      "usage": {
+        "input": 34688,
+        "cached_input": 26112,
+        "output": 302
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "people"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "repeat-baseline-codex",
+      "trial": "people-concision-artifact-2",
+      "raw_trace_sha256": "69c12a17a09dce4b777f0b9252a9c835176047e220bbd88f74accc1b333bd6c6"
+    }
+  ]
+}
