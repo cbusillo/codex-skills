@@ -4,7 +4,10 @@ execution:
   timeout_seconds: 180
 turns:
   - prompt: >-
-      Use shared:skill-creator. We substantially revised a fragile repository
+      Use the maintained shared:skill-creator source selected for this rehearsal.
+      Its SKILL.md is the source catalog's skills/skill-creator/SKILL.md;
+      this workspace .agents/skills link points to that catalog. Read that
+      maintained source, not the bundled .system skill-creator override. Use it. We substantially revised a fragile repository
       routing skill. Static validators pass and a direct local-model answer looks
       right. May we claim that Codex agent completion improved? Plan the missing
       validation and fresh-agent forward test with bounded synthetic tasks; do

@@ -4,7 +4,10 @@ execution:
   timeout_seconds: 180
 turns:
   - prompt: >-
-      Use shared:skill-creator to create a new log-triage skill in the explicit
+      Use the maintained shared:skill-creator source selected for this rehearsal.
+      Its SKILL.md is the source catalog's skills/skill-creator/SKILL.md;
+      this workspace .agents/skills link points to that catalog. Read that
+      maintained source, not the bundled .system skill-creator override. Use it to create a new log-triage skill in the explicit
       project source .agents/skills. It summarizes local JSON error logs using a
       reusable Python script; name it log-triage and generate initial UI metadata.
       This is an offline rehearsal: operational shell commands are refused.

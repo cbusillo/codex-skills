@@ -168,6 +168,7 @@ Ask about location only when scope is materially ambiguous. `CODE_HOME`,
 layouts, not universal authoring defaults. For another host, verify its current
 discovery contract in maintained source or documentation.
 
+Before generating UI values, read [agents metadata](references/openai_yaml.md).
 Always scaffold a new skill with `init_skill.py`. Commands below are relative
 to this skill directory; elsewhere use absolute helper paths. Run bundled Python
 helpers with `uv` and their declared dependencies; use `python-uv-workflow` if
@@ -181,7 +182,6 @@ The initializer creates the directory, frontmatter/TODO template,
 `agents/openai.yaml`, requested resource directories and optional example files.
 Replace/delete unneeded placeholders from `--examples`.
 
-Before generating UI values, read [agents metadata](references/openai_yaml.md).
 Derive human-facing `display_name`, `short_description` and `default_prompt`
 from the skill, and pass them as `--interface key=value` to the initializer.
 For an absent metadata file, initial generation may also use:
@@ -250,8 +250,8 @@ behavior. Complete the owning repo's required gates, fix failures and rerun the
 affected check. Read [validation guidance](references/validation.md) when
 selecting evidence for behavior-sensitive changes; instruction changes in this
 catalog use its structure/reference, behavior and command-policy validators.
-Added scripts need actual execution evidence, and metadata changes need both
-catalog and target-host loader checks. Public-safety validation precedes
+Added scripts need actual execution evidence; metadata changes need catalog
+checks and the target host's documented loader contract. Public-safety validation precedes
 publishing.
 
 For routing, command-policy, safety or GitHub/repo workflow changes, normally
@@ -263,7 +263,7 @@ its fixtures/readers are historical, not a supported validation path.
 
 For approval, safety or destructive changes, read
 [reviews by another model](../references/model-review.md) before merging and
-weigh the review there. Do not change shared approval/quality policies.
+weigh the review there. 
 
 ### 6. Iterate And Forward-Test
 
