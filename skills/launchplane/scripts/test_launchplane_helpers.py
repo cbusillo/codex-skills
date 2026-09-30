@@ -2568,6 +2568,438 @@ def test_testing_hold_read_sends_lane_query_and_projects_hold() -> None:
     assert "result" not in json.loads(output.getvalue()) or not json.loads(output.getvalue())["result"]
 
 
+def _product_environment_response() -> dict[str, object]:
+    identity = {
+        "schema_version": 1,
+        "product": "example-product",
+        "context": "example",
+        "instance": "testing",
+        "environment_kind": "stable",
+        "deployment_record_id": "deployment-example-testing-1",
+        "artifact_id": "artifact-example-abc123",
+        "source_git_ref": "abc123",
+        "image_reference": "ghcr.io/example/site@sha256:" + "d" * 64,
+        "release_tuple_id": "",
+        "preview_id": "",
+        "preview_generation_id": "",
+        "deployed_at": "2026-09-30T12:00:00Z",
+    }
+    return {
+        "status": "ok",
+        "trace_id": "launchplane_req_product_environment",
+        "environment": {
+            "schema_version": 1,
+            "product": "example-product",
+            "display_name": "Example Product",
+            "repository": "example/site",
+            "driver_id": "odoo",
+            "base_driver_id": "",
+            "environment": "testing",
+            "context": "example",
+            "base_url": "https://testing.example.invalid",
+            "health_url": "https://testing.example.invalid/health",
+            "driver_extensions": {"odoo": {"upstream_source": "private-upstream"}},
+            "target": {
+                "provider": "dokploy",
+                "target_type": "compose",
+                "target_name": "private-target-name",
+                "provider_target_type": "compose",
+                "target_id_recorded": True,
+                "artifact_manifest": {
+                    "schema_version": 2,
+                    "artifact_id": "artifact-example-abc123",
+                    "source_commit": "abc123",
+                    "enterprise_base_digest": "sha256:" + "e" * 64,
+                    "build_flags": {"values": {"PRIVATE_FLAG": "private"}},
+                    "image": {
+                        "repository": "ghcr.io/example/site",
+                        "digest": "sha256:" + "d" * 64,
+                        "tags": ["private-tag"],
+                    },
+                    "source_build": {
+                        "repository": "example/site",
+                        "repository_id": "1001",
+                        "workflow_path": ".github/workflows/build.yml",
+                        "event": "push",
+                        "purpose": "testing",
+                        "pull_request_number": None,
+                        "run_id": 42,
+                        "run_attempt": 1,
+                        "github_artifact_id": 7,
+                        "manifest_artifact_id": "manifest-1",
+                    },
+                },
+                "expected_runtime_identity": identity,
+                "observed_runtime_identity": identity,
+                "runtime_identity_status": "match",
+                "runtime_identity_detail": "Runtime identity matches the expected deployment record.",
+                "trust_state": "recorded",
+            },
+            "topology": {"private": "topology"},
+            "health_monitoring": {
+                "monitoring_intent": "prelaunch",
+                "public_incident_eligible": False,
+                "checks": [
+                    {
+                        "name": "public",
+                        "kind": "http",
+                        "enabled": True,
+                        "probe_effective": True,
+                        "incident_eligible": False,
+                        "private_endpoint_configured": True,
+                        "status": "pass",
+                        "failure_code": "",
+                        "observed_at": "2026-09-30T12:05:00Z",
+                        "record_id": "observation-1",
+                        "summary": "ok",
+                        "incident_status": "",
+                        "trust_state": "recorded",
+                    }
+                ],
+                "trust_state": "recorded",
+                "provenance": {"source_kind": "record", "freshness_status": "recorded"},
+            },
+            "public_ingress": {"status": "pass", "failure_code": "", "trust_state": "recorded"},
+            "runtime_settings": [
+                {"scope": "instance", "env_keys": ["PRIVATE_KEY_NAME"], "env_value_count": 1}
+            ],
+            "managed_secrets": [{"binding_id": "binding-1", "secret_id": "secret-1"}],
+            "available_actions": [{"action_id": "deploy", "route_path": "/v1/private"}],
+            "warnings": ["private warning"],
+            "trust_state": "recorded",
+            "provenance": {
+                "source_kind": "record",
+                "source_record_id": "deployment-example-testing-1",
+                "recorded_at": "2026-09-30T12:00:00Z",
+                "refreshed_at": "",
+                "freshness_status": "recorded",
+                "stale_after": "",
+                "detail": "private detail",
+            },
+        },
+    }
+
+
+def _run_product_read(
+    argv: list[str], response: object
+) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
+    calls: list[dict[str, Any]] = []
+
+    def fake_read(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+    settings = {"service_url": "https://launchplane.example.invalid", "token": "t"}
+    output = io.StringIO()
+    with (
+        temporary_attribute(write_action, "prepare_operator_settings", lambda **_kwargs: settings),
+        temporary_attribute(write_action, "request_launchplane_read", fake_read),
+        redirect_stdout(output),
+    ):
+        status = write_action.main(argv)
+    return status, json.loads(output.getvalue()), calls
+
+
+def test_product_environment_read_uses_path_route_and_projects_deploy_identity() -> None:
+    argv = ["product-environment-read", "--product", "example-product", "--environment", "testing"]
+    status, payload, calls = _run_product_read(argv, _product_environment_response())
+    assert status == 0
+    assert contract.LOCAL_EXTENSION_ROUTES["product-environment-read"]["method"] == "GET"
+    assert calls[0]["path"] == "/v1/products/example-product/environments/testing"
+    assert calls[0]["query"] == {}
+    assert payload["operation"] == "product-environment-read"
+    assert payload["request"] == {
+        "product": "example-product",
+        "environment": "testing",
+        "payload_source": "operator_argument",
+    }
+    result = payload["result"]
+    assert result["target"]["artifact"] == {
+        "artifact_id": "artifact-example-abc123",
+        "source_commit": "abc123",
+        "image_repository": "ghcr.io/example/site",
+        "image_digest": "sha256:" + "d" * 64,
+        "source_build": {
+            "repository": "example/site",
+            "event": "push",
+            "purpose": "testing",
+            "run_id": 42,
+            "pull_request_number": None,
+        },
+    }
+    assert result["target"]["expected_runtime_identity"]["deployment_record_id"] == (
+        "deployment-example-testing-1"
+    )
+    assert result["target"]["runtime_identity_status"] == "match"
+    assert result["health_monitoring"]["checks"][0]["status"] == "pass"
+    assert payload["summary"]["trace_id"] == "launchplane_req_product_environment"
+    rendered = json.dumps(payload)
+    for dropped in (
+        "private-target-name",
+        "PRIVATE_KEY_NAME",
+        "PRIVATE_FLAG",
+        "private-tag",
+        "binding-1",
+        "secret-1",
+        "private-upstream",
+        "private warning",
+        "private detail",
+        "testing.example.invalid",
+        "/v1/private",
+        "topology",
+    ):
+        assert dropped not in rendered, dropped
+
+
+def test_product_environment_read_refuses_bad_segments_and_unsafe_values() -> None:
+    for argv, code in (
+        (["product-environment-read", "--product", "../admin", "--environment", "testing"], "invalid_product"),
+        (["product-environment-read", "--product", "example", "--environment", "a/b"], "invalid_environment"),
+        (["product-activity-read", "--product", "example?x=1"], "invalid_product"),
+    ):
+        status, payload, calls = _run_product_read(argv, _product_environment_response())
+        assert status == 2
+        assert calls == []
+        assert payload["warnings"][0]["code"] == code
+
+    argv = ["product-environment-read", "--product", "example-product", "--environment", "testing"]
+    for mutate in (
+        lambda body: body.update(extra="x"),
+        lambda body: body["environment"]["target"]["expected_runtime_identity"].update(
+            artifact_id="Bearer abcdefghijklmnop"
+        ),
+        lambda body: body["environment"].update(product=None),
+    ):
+        mutated = _product_environment_response()
+        mutate(mutated)
+        status, payload, _calls = _run_product_read(argv, mutated)
+        assert status == 1
+        assert payload["status"] == "invalid"
+        assert not payload["result"]
+
+
+def _product_activity_event(index: int) -> dict[str, object]:
+    return {
+        "event_id": f"deployment:deployment-example-testing-{index}",
+        "event_type": "deployment",
+        "product": "example-product",
+        "context": "example",
+        "environment": "testing",
+        "driver_id": "odoo",
+        "action_id": "testing_deploy",
+        "status": "pass",
+        "occurred_at": "2026-09-30T12:00:00Z",
+        "title": "Example Product testing deployment",
+        "summary": "Deployment pass for example/testing.",
+        "records": [
+            {"record_type": "deployment", "record_id": f"deployment-example-testing-{link}"}
+            for link in range(12)
+        ],
+        "trust_state": "recorded",
+        "private_extra": "private-event-field",
+    }
+
+
+def test_product_activity_read_bounds_events_and_record_links() -> None:
+    response = {
+        "status": "ok",
+        "trace_id": "launchplane_req_product_activity",
+        "activity": {
+            "schema_version": 1,
+            "product": "example-product",
+            "display_name": "Example Product",
+            "repository": "example/site",
+            "driver_id": "odoo",
+            "events": [_product_activity_event(index) for index in range(60)],
+        },
+    }
+    status, payload, calls = _run_product_read(
+        ["product-activity-read", "--product", "example-product"], response
+    )
+    assert status == 0
+    assert contract.LOCAL_EXTENSION_ROUTES["product-activity-read"]["method"] == "GET"
+    assert calls[0]["path"] == "/v1/products/example-product/activity"
+    result = payload["result"]
+    assert len(result["events"]) == write_action.PRODUCT_ACTIVITY_MAX_EVENTS
+    assert result["events_truncated"] is True
+    first = result["events"][0]
+    assert len(first["records"]) == write_action.PRODUCT_ACTIVITY_MAX_RECORD_LINKS
+    assert first["records"][0] == {
+        "record_type": "deployment",
+        "record_id": "deployment-example-testing-0",
+    }
+    assert first["status"] == "pass"
+    assert "private-event-field" not in json.dumps(payload)
+
+
+def test_product_activity_read_keeps_real_events_and_drops_odd_fields() -> None:
+    # Shaped like the live refusal: authz events carry dotted action ids and joined summaries.
+    authz_event = {
+        **_product_activity_event(0),
+        "event_id": "authz_policy:authz-policy-7",
+        "event_type": "authz_policy",
+        "context": "launchplane",
+        "environment": "",
+        "driver_id": "launchplane",
+        "action_id": "authz_policy.grant",
+        "status": "active",
+        "title": "Example Product authorization granted",
+        "summary": "service:authz · managed authorization grant · terminal-agent-credential-rule",
+        "records": [{"record_type": "authz_policy", "record_id": "authz-policy-7"}],
+    }
+    odd_status_event = {**_product_activity_event(1), "status": "needs review"}
+    unusable_event = {**_product_activity_event(2), "event_id": "has spaces in id"}
+    response = {
+        "status": "ok",
+        "trace_id": "launchplane_req_product_activity",
+        "activity": {
+            "product": "example-product",
+            "repository": "example/site",
+            "driver_id": "odoo",
+            "events": [authz_event, odd_status_event, unusable_event, _product_activity_event(3)],
+        },
+    }
+    status, payload, _calls = _run_product_read(
+        ["product-activity-read", "--product", "example-product"], response
+    )
+    assert status == 0
+    result = payload["result"]
+    assert [event["event_id"] for event in result["events"]] == [
+        "authz_policy:authz-policy-7",
+        "deployment:deployment-example-testing-1",
+        "deployment:deployment-example-testing-3",
+    ]
+    authz = result["events"][0]
+    assert authz["action_id"] == "authz_policy.grant"
+    assert authz["status"] == "active"
+    assert authz["summary"] == ""
+    assert authz["records"] == [{"record_type": "authz_policy", "record_id": "authz-policy-7"}]
+    assert result["events"][1]["status"] == ""
+    assert result["events"][2]["records_truncated"] is True
+    assert result["omitted_event_count"] == 1
+    assert result["dropped_field_count"] == 3
+    assert result["dropped_field_paths"] == [
+        "events[].event_id",
+        "events[].status",
+        "events[].summary",
+    ]
+
+    secret_event = {**_product_activity_event(4), "summary": "rotated ghp_abcdefghijklmnop"}
+    response["activity"] = {**cast(dict[str, object], response["activity"]), "events": [secret_event]}
+    status, payload, _calls = _run_product_read(
+        ["product-activity-read", "--product", "example-product"], response
+    )
+    assert status == 1
+    assert payload["status"] == "invalid"
+    assert not payload["result"]
+
+
+def _preview_history_response() -> dict[str, object]:
+    return {
+        "status": "ok",
+        "trace_id": "launchplane_req_preview_history",
+        "preview": {
+            "preview_id": "preview-example-site-pr-7",
+            "context": "example",
+            "anchor_repo": "site",
+            "anchor_pr_number": 7,
+            "anchor_pr_url": "https://github.com/example/site/pull/7",
+            "canonical_url": "https://pr-7.example.invalid",
+            "state": "active",
+            "created_at": "2026-09-30T18:00:00Z",
+            "updated_at": "2026-09-30T18:05:00Z",
+            "serving_generation_id": "preview-example-site-pr-7-generation-0002",
+            "private_note": "private-preview-field",
+        },
+        "generations": [
+            {
+                "generation_id": "preview-example-site-pr-7-generation-0001",
+                "sequence": 1,
+                "state": "superseded",
+            },
+            {
+                "generation_id": "preview-example-site-pr-7-generation-0002",
+                "sequence": 2,
+                "state": "ready",
+                "requested_reason": "external_preview_refresh",
+                "artifact_id": "artifact-example-abc123",
+                "anchor_summary": {"head_sha": "a" * 40, "private": "private-anchor-field"},
+                "deploy_status": "pass",
+                "runtime_identity": {
+                    "deployment_record_id": "deployment-example-preview-7",
+                    "artifact_id": "artifact-example-abc123",
+                    "source_git_ref": "a" * 40,
+                    "image_reference": "ghcr.io/example/site@sha256:" + "d" * 64,
+                    "deployed_at": "2026-09-30T18:05:00Z",
+                },
+                "env": {"PRIVATE_KEY_NAME": "private-env-value"},
+            },
+        ],
+    }
+
+
+def test_preview_history_read_derives_launchplanes_preview_id() -> None:
+    # Values computed with Launchplane's generate_preview_id.
+    assert write_action.preview_id_for(
+        context="cm_website", repository="cbusillo/odoo-tenant-cm-website", pr_number=111
+    ) == "preview-cm-website-odoo-tenant-cm-website-pr-111"
+    assert write_action.preview_id_for(
+        context="Example_Ctx", repository="owner/Site.Repo", pr_number=7
+    ) == "preview-example-ctx-site-repo-pr-7"
+
+
+def test_preview_history_read_projects_newest_generation_first() -> None:
+    argv = ["preview-history-read", "--context", "example", "--repository", "example/site", "--pr", "7"]
+    status, payload, calls = _run_product_read(argv, _preview_history_response())
+    assert status == 0
+    assert calls[0]["path"] == "/v1/previews/preview-example-site-pr-7/history"
+    result = payload["result"]
+    assert result["preview"]["state"] == "active"
+    assert result["preview"]["serving_generation_id"] == "preview-example-site-pr-7-generation-0002"
+    newest = result["generations"][0]
+    assert newest["sequence"] == 2
+    assert newest["anchor_head_sha"] == "a" * 40
+    assert newest["runtime_identity"]["image_digest"] == "sha256:" + "d" * 64
+    assert result["generations"][1]["state"] == "superseded"
+    rendered = json.dumps(payload)
+    for dropped in ("private-preview-field", "private-anchor-field", "PRIVATE_KEY_NAME", "private-env-value"):
+        assert dropped not in rendered, dropped
+
+
+def test_preview_history_read_needs_exactly_one_selector() -> None:
+    for argv in (
+        ["preview-history-read"],
+        ["preview-history-read", "--preview-id", "preview-x-pr-1", "--pr", "1"],
+        ["preview-history-read", "--context", "example", "--pr", "7"],
+    ):
+        status, payload, calls = _run_product_read(argv, _preview_history_response())
+        assert status != 0, argv
+        assert calls == [], argv
+
+
+def test_product_activity_read_reports_http_denial_as_read_error() -> None:
+    denial = urllib.error.HTTPError(
+        "https://launchplane.example.invalid/v1/products/example-product/activity",
+        403,
+        "Forbidden",
+        hdrs=Message(),
+        fp=io.BytesIO(
+            json.dumps(
+                {"trace_id": "launchplane_req_denied", "error": {"code": "authorization_denied"}}
+            ).encode()
+        ),
+    )
+    status, payload, _calls = _run_product_read(
+        ["product-activity-read", "--product", "example-product"], denial
+    )
+    assert status == 1
+    assert payload["status"] == "denied"
+    assert payload["summary"]["error_code"] == "authorization_denied"
+    assert "read was rejected" in payload["warnings"][0]["message"]
+
+
 def _testing_hold_args(**overrides: object) -> argparse.Namespace:
     values: dict[str, object] = {
         "product": "example-product",
@@ -3905,6 +4337,14 @@ def main() -> int:
         test_integration_allowances_payload_rejects_unknown_fields_and_unreviewed_apply,
         test_testing_hold_plan_projection_is_bounded_and_fail_closed,
         test_testing_hold_read_sends_lane_query_and_projects_hold,
+        test_product_environment_read_uses_path_route_and_projects_deploy_identity,
+        test_product_environment_read_refuses_bad_segments_and_unsafe_values,
+        test_product_activity_read_bounds_events_and_record_links,
+        test_product_activity_read_keeps_real_events_and_drops_odd_fields,
+        test_product_activity_read_reports_http_denial_as_read_error,
+        test_preview_history_read_derives_launchplanes_preview_id,
+        test_preview_history_read_projects_newest_generation_first,
+        test_preview_history_read_needs_exactly_one_selector,
         test_testing_hold_body_binds_apply_to_saved_dry_run,
         test_testing_hold_cli_dispatches_local_extension_route,
         test_product_repository_identity_projection_is_bounded_and_fail_closed,
