@@ -1,18 +1,33 @@
 # ui-browser Helper
 
-Read this reference only when the installed `ui-browser` CLI is the selected
-interface. Check its help before relying on the command shapes below; do not
-install or restore Every Code to obtain a browser controller.
+Read only when the installed, working `ui-browser` CLI is the selected
+interface. Check its help before relying on these command shapes; do not
+install or restore Every Code to obtain a controller. Apply the entry point's
+browser-selection, visible-signoff, QA and substitute-evidence rules.
 
-## Session ownership
+## Session and interaction loop
 
-Use an installed, working `ui-browser` helper only when it is the selected browser interface. It is independent of the retired Every Code agent.
+For multi-step tasks, prefer one Bash block with a named session variable and
+pass `--session "$session"` to every command. Do not rely on the shared default
+session when other agents or background tasks may use the helper. Start or
+reuse a session with `open`, keep its identity stable, and close only the
+named session created for this task when complete; preserve user-owned sessions.
 
-- For multi-step tasks, prefer one Bash block with a named session variable such as `session="browser-$RANDOM"`, then pass `--session "$session"` to every `ui-browser` command in that block.
-- Start or reuse a session with `ui-browser open <url>`.
-- Keep the same session alive while you inspect and interact.
-- Close only the named session created for this task with `ui-browser close`; preserve user-owned sessions.
-- Do not rely on the shared default session when parallel agents or background tasks may also be using the browser helper.
+```bash
+session="browser-$RANDOM"
+ui-browser open "https://example.com" --session "$session"
+ui-browser wait-for "text=Ready" --session "$session"
+ui-browser snapshot --session "$session"
+ui-browser click "role=button[name='Continue']" --session "$session"
+ui-browser snapshot --session "$session"
+```
+
+Wait for app readiness with `wait-for`, then snapshot before the first
+interaction. Snapshot again after navigation/routes, opening or closing
+modals, menus, popovers, tabs, drawers or accordions, form submission,
+filter/sort/search changes, mode/settings toggles, or a stale selector failure.
+Recover stale selectors from the fresh visible state instead of forcing them
+through `eval`.
 
 ## Common commands
 
@@ -31,61 +46,17 @@ Use an installed, working `ui-browser` helper only when it is the selected brows
 - `ui-browser exists <selector>`
 - `ui-browser eval <expression>`
 - `ui-browser screenshot <output-path>`
+- `ui-browser close`
 
-## Default workflow
+## Selectors and evidence
 
-1. Open the requested page with `ui-browser open <url>`.
-2. Wait for app-specific readiness with `ui-browser wait-for ...` instead of guessing from source code.
-3. Run `ui-browser snapshot` before the first interaction so selectors and visible state are grounded in the browser, not guessed from source.
-4. Interact with the page using `click`, `fill`, `type`, `press`, `select`, `scroll`, or `eval` as needed.
-5. Re-run `ui-browser snapshot` after navigation, modal/menu open or close, tab changes, or any click that substantially changes the UI.
-6. Capture a screenshot only when it adds evidence or the user asked for an artifact.
-7. Close the named session created for this task when the task is complete.
+Prefer stable user-facing Playwright selectors: roles, labels, placeholders or
+visible text. Use specific CSS when that target is ambiguous or for layout-only
+checks. Use `exists` to confirm conditional UI before branching; inspect a
+click's changed result with `snapshot` or `text` before continuing.
 
-For release, runtime, browser-specific, or device-specific blockers, prefer
-evidence from the affected browser/device when it is available. If you must
-validate with a substitute environment, record the substitute and the remaining
-gap in the browser QA evidence handed to `repo-readiness` or the owning PR,
-issue, or plan instead of presenting it as equivalent proof.
-
-## Interaction loop
-
-Use a snapshot-driven loop for multi-step work:
-
-```bash
-session="browser-$RANDOM"
-ui-browser open "https://example.com" --session "$session"
-ui-browser wait-for "text=Ready" --session "$session"
-ui-browser snapshot --session "$session"
-ui-browser click "role=button[name='Continue']" --session "$session"
-ui-browser snapshot --session "$session"
-```
-
-Snapshot again after:
-
-- page navigation or route changes
-- opening or closing modals, menus, popovers, tabs, drawers, or accordions
-- submitting forms
-- filtering/sorting/searching data
-- toggling modes or settings
-- any command that fails because the selector or element reference appears stale
-
-Treat stale selectors as normal browser state drift. Recover by taking a fresh
-snapshot and choosing the next selector from the new visible state instead of
-forcing the previous selector through `eval`.
-
-## Selector guidance
-
-- Prefer stable Playwright selectors such as `text=`, `role=`, labels, placeholders, or specific CSS selectors.
-- If a click changes the page, inspect the result with `ui-browser snapshot` or `ui-browser text ...` before continuing.
-- Use `ui-browser exists <selector>` to confirm conditional UI before branching.
-- Prefer user-facing selectors (`role=`, label text, placeholder text, visible
-  text) for signoff interactions. Use CSS selectors when the user-facing target
-  is ambiguous or when checking layout-only details.
-- Avoid `ui-browser eval` for normal user-flow signoff. Use it for diagnostics,
-  measuring layout, or inspecting state that is not otherwise visible.
-
-
-`ui-browser screenshot` validates PNG output and retries once if capture is
-blank or background-only. The separate `ui-capture` helper is only for pure
-one-shot capture tasks when that helper is available.
+Use `eval` only for diagnostics, layout measurements or state not otherwise
+visible, not normal user-flow signoff. Capture screenshots when they add
+evidence or were requested. `screenshot` validates PNG output and retries once
+if capture is blank or background-only. The separate `ui-capture` helper is
+only for pure one-shot capture tasks when available.

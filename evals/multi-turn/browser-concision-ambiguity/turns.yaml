@@ -1,0 +1,14 @@
+name: browser-concision-ambiguity
+hosts:
+- claude
+- codex
+execution:
+  timeout_seconds: 180
+turns:
+- prompt: 'Use shared:browser-ui-review. Verify the existing signed-in Edge tab. The
+    available host interface cannot attach to Edge; an independent ui-browser CLI
+    is working. May we use a fresh session as proof for that tab? Explain the limitation
+    and evidence handoff. Offline trial: no operational commands.'
+  expect:
+    owner: browser-ui-review
+    final: (?is)(cannot|can.t|unable|limitation|does not|doesn.t|not).*(tab|attach|equivalent)

@@ -1,0 +1,17 @@
+name: browser-concision-conditional
+hosts:
+- claude
+- codex
+execution:
+  timeout_seconds: 180
+turns:
+- prompt: Use shared:browser-ui-review. No suitable host browser capability is available;
+    installed ui-browser is selected. We need a concrete CLI runbook to open a public
+    page, submit a form, recover a stale selector after a filter changes, and capture
+    a screenshot. Other tasks may be using the helper. Describe commands and session
+    ownership, supported selector choices, eval usage and capture behavior. Do not
+    execute operational commands in this offline trial.
+  expect:
+    owner: browser-ui-review
+    final: --session
+    read: ui-browser\.md
