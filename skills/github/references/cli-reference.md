@@ -374,11 +374,26 @@ retrying until planning stalls.
   context signals only. A closed milestone does not hide an otherwise open,
   unblocked plan. Project read failures degrade to explicit notes rather than
   making dependency state look safe. Project item truncation is also explicit.
-- `--scan-limit` bounds the number of plans whose relationships are read, and
+- `--scan-limit` independently bounds both plan and inbound-gate scans, and
   each relationship collection has its own fixed safety limit. Truncated or
-  otherwise unavailable dependency reads fail closed as `unknown_dependencies`
+  otherwise unavailable plan relationship reads fail closed as `unknown_dependencies`
   and are summarized in top-level dependency context. `--limit` bounds the
   ranked candidate list while preserving evaluated exclusion evidence.
+
+`blocking_work_elsewhere` separately names open native cross-repository blocker
+pairs, including waiting or unmilestoned issues and non-plan blockers. These
+entries provide visibility; review recorded waits and ownership before starting
+work. They do not override candidate exclusions.
+`blocking_work_elsewhere_context` reports the independent inventory and scan
+budget, truncation indicators, errors, and unread gates when the scan runs. If
+inventory cannot be read, it reports only `complete: false` and `error`.
+The report scans repository-wide even with `--milestone`, subject to its
+reported truncation. Each open issue with a nonzero or unknown blocking count
+consumes an inbound scan slot, including issues blocking only same-repository
+work. Permission-denied, not-found, and unclassified response errors degrade
+inbound coverage; other classified API failures, including quota,
+authentication, provider/network, and timeout failures, stop the command under
+the existing plan relationship policy.
 
 For `<owner>/direction`, `next` automatically selects global direction scope;
 no flag is needed. The target repository's merged `DIRECTION.md` is required,
@@ -393,7 +408,7 @@ Global candidates have `repo`, `number`, overall `milestone`, `issue_milestone`,
 `reasons`, and a `via` path. Shared prerequisites appear once under the earliest
 milestone that reaches them. A blocker can itself have blockers; the command
 continues to actionable leaves instead of selecting an intermediate blocked
-issue. Product-repository `next` behavior and output are unchanged.
+issue. Product-repository candidate ranking remains independent of this global walk.
 
 `waiting` contains explicit Current Status reports, with `waiting_for`,
 `reported_by`, and `reported_at`. A wait naming another issue or PR identifies

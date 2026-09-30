@@ -1,0 +1,15 @@
+name: design-concision-adjacent
+hosts:
+- claude
+- codex
+execution:
+  timeout_seconds: 180
+turns:
+- prompt: Use shared:design-collaboration. We accepted a dashboard design in an existing
+    canonical GitHub issue and now explicitly ask you to start implementation. Returned
+    design omits the empty/error states and requires an impossible backend API change.
+    Explain your next actions and durable evidence before signoff; offline trial,
+    no coding or operational commands.
+  expect:
+    owner: design-collaboration
+    final: (?is)(implement|coding|work).*(browser|validation|QA)

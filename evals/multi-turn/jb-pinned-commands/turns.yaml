@@ -1,0 +1,19 @@
+{
+  "name": "jb-pinned-commands",
+  "hosts": [
+    "codex"
+  ],
+  "execution": {
+    "timeout_seconds": 180
+  },
+  "turns": [
+    {
+      "prompt": "The Codex fixture links the tested catalog at .agents/skills. Read .agents/skills/jetbrains-inspection/SKILL.md directly in bounded chunks; do not search for another catalog. Use shared:jetbrains-inspection from the tested maintained catalog. Read its complete entry point using bounded chunks if needed. This offline task asks for command documentation only; the workspace is not the inspection target, and there is no reason to inspect its configuration or locate a separate rehearsal catalog. Give the supported command shapes to list visible projects, observe an exact route without opening, retrieve current error findings, and run strict outcome qualification with a requested sample of 25. Explain how these differ from readiness assessment and where qualification inputs come from. Do not invoke the helper or execute operational commands.",
+      "expect": {
+        "owner": "jetbrains-inspection",
+        "final": "--sample-size 25",
+        "forbid": "curl|wget"
+      }
+    }
+  ]
+}
