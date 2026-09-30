@@ -350,6 +350,12 @@ or Project focus state.
   pages native `blocked_by` dependencies and sub-issues; `--reason completed`
   rejects open entries with compact references and `write_outcome=not_started`.
   Issues blocked by the plan do not prevent closure. `--reason not_planned`
+  requires owner approval for work in a milestone listed in merged `DIRECTION.md`: an
+  owner comment after the last issue-body edit, or an owner `+1` reaction after
+  that edit on an unedited comment starting with the exact first line
+  `Owner decision: Close #<number> as not planned.` Other accounts, comment
+  types, actions, and edited decisions do not qualify; unreadable identity,
+  reaction time, or edit history fails closed. Then it
   retains and reports remaining relationships, closes with the distinct
   `not_planned` state reason, and does not present superseded work as completed.
   Optional Project `Done`/Focus synchronization remains before issue closure so
