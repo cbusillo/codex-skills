@@ -14,7 +14,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
+
+import review_with_model
 
 SCRIPT = Path(__file__).with_name("review_with_model.py")
 
@@ -196,6 +199,20 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertEqual((code, result["denied_commands"]), (1, [command]))
         self.assertNotIn("recovery", result)
         self.assertIn("hint", result)
+
+    def test_google_retry_timeout_preserves_refusal_without_echoing_the_prompt(self) -> None:
+        command = "cat /repo/large.py"
+        conversation = self.saved_command(command)
+        denial = json.dumps({"conversation_id": conversation, "denied_actions": [{"action": "command"}]})
+        calls = [subprocess.CompletedProcess([], 0, denial, ""),
+                 subprocess.TimeoutExpired(["agy", "-p", "private review prompt"], 31)]
+        with patch.object(review_with_model, "AGY_SETTINGS", self.home / ".gemini/antigravity-cli/settings.json"), \
+             patch.object(review_with_model, "run_cli", side_effect=calls), \
+             patch.object(review_with_model.shutil, "which", return_value="agy"):
+            result = review_with_model.review("google", "private review prompt", self.repo, None, 1)
+        self.assertFalse(result["ok"])
+        self.assertIn(command, result["error"])
+        self.assertNotIn("private review prompt", result["error"])
 
     def test_google_missing_corrupt_or_invalid_conversation_keeps_denial_visible(self) -> None:
         self.install("agy", FAKE_AGY)

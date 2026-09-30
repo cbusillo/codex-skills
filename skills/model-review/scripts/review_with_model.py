@@ -343,7 +343,9 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                 )
                 try:
                     result = review_google(preamble + reminder + prompt, repo, model, timeout, Path(scratch))
-                except (subprocess.TimeoutExpired, OSError) as exc:
+                except subprocess.TimeoutExpired:
+                    result = failed(provider, f"file-tool retry returned no answer within {timeout} seconds")
+                except OSError as exc:
                     result = failed(provider, f"file-tool retry failed: {exc}")
                 result["recovery"] = {"attempts": 2, "denied_commands": refusal["denied_commands"],
                                       "conversation_id": refusal.get("conversation_id")}
