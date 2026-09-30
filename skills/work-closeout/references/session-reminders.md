@@ -47,6 +47,12 @@ For a linked worktree, use `--repo /original/repository` to select its existing
 private repository configuration. Configuration selects a destination; it does
 not grant permission to create, change, or delete reminders.
 
+Omit `--verify-list` to prepare fields for visible manual verification on unsupported
+platforms or when native access is unavailable; output then says `manual_required`.
+If a verification attempt fails for access or platform support, rerun the same
+command without that flag. Missing or ambiguous target lists still need correction
+before any save; omitting the flag does not establish a valid destination.
+
 `--verify-list` uses a read-only EventKit lookup on macOS 14 or later with Swift and existing
 Reminders access. Zero or multiple exact names fail; there is no default-list
 fallback. A renamed list must be corrected in private configuration or chosen

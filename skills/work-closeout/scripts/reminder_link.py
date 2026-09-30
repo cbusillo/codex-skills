@@ -25,8 +25,8 @@ def target_list(repo: Path, override: str | None, env: dict[str, str], home: Pat
         if not override.strip():
             raise ValueError("Target list must be non-empty")
         return override
-    candidates = [repo / ".local/skill-data/work-closeout.toml"]
-    candidates.extend(Path(env[key]) / "skill-data/work-closeout.toml"
+    candidates = [repo.expanduser() / ".local/skill-data/work-closeout.toml"]
+    candidates.extend(Path(env[key]).expanduser() / "skill-data/work-closeout.toml"
                       for key in ("CODE_HOME", "CODEX_HOME") if env.get(key))
     candidates.append(home / ".code/skill-data/work-closeout.toml")
     for candidate in dict.fromkeys(candidates):

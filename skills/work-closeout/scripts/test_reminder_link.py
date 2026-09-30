@@ -107,6 +107,17 @@ class ReminderLinkTests(unittest.TestCase):
                 require_unique_list("target", titles)
         require_unique_list("target", ["another", "target"])
 
+    def test_quoted_home_paths_keep_configured_destination(self):
+        home = self.root / "home"
+        repo = home / "repo"
+        self.config(repo / ".local", "repository-list")
+        self.config(home / "code", "user-list")
+        self.config(home / ".code", "fallback-list")
+        with patch.dict(reminder_link.os.environ, {"HOME": str(home)}):
+            self.assertEqual(target_list(Path("~/repo"), None, {}, home), "repository-list")
+            self.assertEqual(target_list(self.directory, None, {"CODE_HOME": "~/code"}, home), "user-list")
+            self.assertEqual(target_list(self.directory, None, {"CODEX_HOME": "~/code"}, home), "user-list")
+
     def test_native_lookup_failure_is_not_success(self):
         with patch.object(reminder_link.sys, "platform", "darwin"), patch.object(reminder_link.subprocess, "run") as run:
             run.return_value = subprocess.CompletedProcess([], 1, "", "access unavailable")
