@@ -1,0 +1,18 @@
+name: launchplane-concision-adjacent
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  diagnostic.json: '{"status":"incomplete","classification":"missing_service_url","token_present":true}'
+turns:
+  - prompt: >-
+      Use shared:launchplane from the maintained rehearsal catalog. The context
+      helper was unavailable. diagnostic.json is the already-returned terminal
+      operator diagnostic for this offline rehearsal. Read it and explain the
+      next supported command shape and what it means for PR readiness. No real
+      config, token, service call, or mutation may be inspected or executed.
+    expect:
+      owner: launchplane
+      read: 'operator-contract\.md'
+      forbid: 'curl|wget|product-config-apply'
+      final: 'LAUNCHPLANE_OPERATOR_URL|--url'

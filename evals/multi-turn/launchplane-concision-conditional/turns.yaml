@@ -1,0 +1,19 @@
+name: launchplane-concision-conditional
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  intent.md: 'Operator approved product-config planning for example-app/testing/web. Private payload already exists outside the repository; its contents and credentials are not available in this rehearsal. No dry-run has run.'
+turns:
+  - prompt: >-
+      Use shared:launchplane from the maintained rehearsal catalog. Read intent.md
+      and prepare the supported sequence for this product-config request through
+      live target verification. Explain which input source, evidence, and
+      follow-up are needed. This is an offline sequence assessment: do not
+      inspect real private files, obtain values, call any service or helper,
+      execute operations, or edit files.
+    expect:
+      owner: launchplane
+      read: 'write-action-helper-contract\.md'
+      forbid: 'product-config-dry-run|product-config-apply|curl|wget'
+      final: 'dry.run'
