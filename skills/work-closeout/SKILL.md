@@ -1,13 +1,27 @@
 ---
 name: work-closeout
-description: Use when the user asks to wrap up, clean up, close out, pause, park, hand off, determine what remains before stopping, preserve plan direction for the next session, update or remove stale plans/handoffs, reconcile issue graph state, remove transient artifacts, or asks whether they can exit. Coordinates GitHub plan cleanup, safe git/worktree hygiene, artifact cleanup, and final state summaries. Safe-to-exit and closeout final answers must include a Love Gate section with explicit `Love:` and `Do not love:` entries before the safe-to-exit verdict.
+description: Use when the user requests a native reminder to return to an exact Codex or Claude Code session or start a repository check-in, or asks to wrap up, clean up, close out, pause, park, hand off, determine what remains before stopping, preserve plan direction for the next session, update or remove stale plans/handoffs, reconcile issue graph state, remove transient artifacts, or asks whether they can exit. Coordinates GitHub plan cleanup, safe git/worktree hygiene, artifact cleanup, and final state summaries. Safe-to-exit and closeout final answers must include a Love Gate section with explicit `Love:` and `Do not love:` entries before the safe-to-exit verdict.
 metadata:
   short-description: Close out workstreams cleanly
 resources:
   - path: scripts/repo_cleanup.py
     kind: script
     description: Read-only cleanup inventory, fork dispositions, private snapshot revalidation, and post-action verification.
+  - path: scripts/reminder_link.py
+    kind: script
+    description: Prepares a native terminal URL and manual fallback for an exact or fresh session without writing reminders.
+  - path: scripts/reminder_list.swift
+    kind: script
+    description: Performs read-only exact Reminders-list lookup with existing macOS access.
+  - path: references/session-reminders.md
+    kind: reference
+    description: Read when the owner requests a native reminder to return to a session or repository.
 commands:
+  - name: session-reminder-link
+    source: skill
+    resource_path: scripts/reminder_link.py
+    example_argv: ["uv", "run", "scripts/reminder_link.py", "--harness", "codex", "--directory", "/absolute/repository", "--session-id", "<uuid>", "--verify-list"]
+    purpose: Prepares a URL and verifies a unique private destination list without creating or changing reminders.
   - name: repo-cleanup-inventory
     source: skill
     resource_path: scripts/repo_cleanup.py
@@ -41,6 +55,14 @@ the final safe-to-exit answer, and that final answer must include both
 `Love Gate` and `Safe to exit`. Do not reduce Love Gate to `passed`, `ready`,
 or a generic approval sentence; write the two entries explicitly as `Love:` and
 `Do not love:`.
+
+## Requested session reminders
+
+When the owner requests a native reminder to resume an exact session or start a
+fresh check-in in a repository, read [native session reminders](references/session-reminders.md).
+This skill owns that workflow for Codex and Claude Code. Prepare the link and
+verify the exact private target list; save only within existing reminder-write
+authority, and preserve the terminal confirmation dialog.
 
 ## Outcome
 
