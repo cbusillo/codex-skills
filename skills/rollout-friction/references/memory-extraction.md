@@ -1,21 +1,11 @@
 # Rollout Memory Extraction And Model Matrices
 
-Read this reference before explicit durable-memory extraction or rollout/model
-matrix evaluation. Ordinary friction audits use the entry point's episode and
-cluster workflow. These procedures prepare review artifacts; they do not apply
-memory updates or expand approval.
+Read before explicitly requested durable-memory extraction or rollout/model matrix evaluation.
 
 - [Memory extraction](#memory-extraction-workflow)
 - [Long-context prompt path](#long-context-prompt-path)
 
 ## Memory Extraction Workflow
-
-Use this only after explicit approval to inspect rollout/session traces for
-durable memory candidates. This legacy broad-extraction workflow prepares review
-artifacts; it does not apply memory updates by itself. Prefer the episode and
-cluster workflow above for ordinary rollout-friction audits; use broad memory
-extraction only when the user explicitly asks to mine rollout traces for durable
-memory/profile/local-config candidates.
 
 1. Run `extract_rollout_memory.py` with explicit time/file bounds and an ignored
    `.local/rollout-memory/<run-id>/` output directory. Use `--trusted-originals`
