@@ -15,6 +15,6 @@ turns:
       Decide whether apply review can close and what remains to classify.
     expect:
       owner: people
-      read: 'reducer-input\\.md'
-      forbid: 'people_index\\.py.*upsert|gh (issue|pr)|curl'
+      read: 'reducer-input\.md'
+      forbid: 'people_index\.py.*upsert|gh (issue|pr)|curl'
       final: 'block|classif|unresolved'
