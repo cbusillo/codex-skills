@@ -124,8 +124,8 @@ local extensions until the vendored artifact is refreshed.
   `GET /v1/product-profiles/{product}/reconcile-requests`. It returns up to 50
   targets, each with state, times, counts, delivery id, last error and the
   plan fields the reconciler is known to write: action, reason, hold, commits,
-  artifact ids, digests, operation and plan ids, the preview URL without a query
-  or fragment, and the names of omitted integration keys (as
+  artifact ids, digests, operation and plan ids, the preview URL's scheme and
+  host only, and the names of omitted integration keys (as
   `omitted_integration_keys`). Any other plan field is dropped and counted under
   `requests[].last_plan.<unlisted field>`; the same drop and omit rules apply.
 - Path segments must be plain identifiers; anything else is refused before a

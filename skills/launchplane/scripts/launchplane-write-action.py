@@ -2610,11 +2610,13 @@ def _project_product_activity(value: object) -> dict[str, object]:
 
 
 def _public_origin_url(value: object) -> str:
-    """A public https URL without a query or fragment, which could carry a credential."""
-    url = public_url(value)
-    if urllib.parse.urlsplit(url).query or "#" in url:
-        raise LaunchplaneSafetyError("invalid_response")
-    return url
+    """Only the scheme and host of a public https URL; a path or query could carry a
+    credential."""
+    try:
+        parts = urllib.parse.urlsplit(public_url(value))
+    except ValueError as error:
+        raise LaunchplaneSafetyError("invalid_response") from error
+    return f"{parts.scheme}://{parts.netloc}"
 
 
 def _reconcile_plan_validators() -> dict[str, Any]:

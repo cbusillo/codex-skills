@@ -3076,13 +3076,18 @@ def test_reconcile_requests_read_keeps_the_decision_and_drops_the_rest() -> None
     odd = _reconcile_requests_response()
     first = cast(list[dict[str, Any]], odd["requests"])[0]
     first["last_error"] = {"code": "build_failed"}
-    first["last_plan"]["preview_url"] = "https://pr-7.example.invalid/?access_key=private-value"
+    first["last_plan"]["preview_url"] = "https://pr-7.example.invalid/access/private-value?k=v"
     status, payload, _calls = _run_product_read(argv, odd)
     assert status == 0
     (request,) = payload["result"]["requests"]
     assert request["last_error"] == ""
-    assert request["last_plan"]["preview_url"] == ""
+    assert request["last_plan"]["preview_url"] == "https://pr-7.example.invalid"
     assert "private-value" not in json.dumps(payload)
+
+    first["last_plan"]["preview_url"] = "https://[broken"
+    status, payload, _calls = _run_product_read(argv, odd)
+    assert status == 0
+    assert payload["result"]["requests"][0]["last_plan"]["preview_url"] == ""
 
     secret = _reconcile_requests_response()
     cast(list[dict[str, object]], secret["requests"])[0]["last_error"] = "token ghp_abcdefghijklmnop"
