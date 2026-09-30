@@ -235,12 +235,14 @@ Command model:
   checks establish disposition, dry-run SDK retirement through every discovered
   live IDE. With `--no-dry-run`, unregister only SDKs proved helper-owned, then
   remove the clean, unlocked linked worktree with non-force Git removal. Close
-  its IDE project and reconcile its leases first. Primary and locked checkouts,
+  its IDE project and reconcile its leases first. Primary checkouts, locked apply attempts,
   dirty worktrees, missing plugin support, session drift and refused SDK cleanup
   retain the worktree. This command preserves its branch.
 - `cleanup-helper-sdks`: dry-run the plugin's helper-owned removed-worktree SDK
-  inventory. Review the listed entries before `--no-dry-run`; apply is limited
-  to the worktrees enumerated in that invocation's preview. Start each IDE that
+  inventory. Review the listed entries, then use `--no-dry-run` with repeated
+  `--worktree-path /reviewed/orphan` flags. Apply is limited to those paths
+  still present in the current preview. A locked worktree can be previewed;
+  release its lock only for removal apply and restore it if removal fails. Start each IDE that
   prepared the removed worktrees before cleanup; discovery covers running IDEs,
   not offline SDK tables. Legacy SDK names or paths are never ownership proof.
 

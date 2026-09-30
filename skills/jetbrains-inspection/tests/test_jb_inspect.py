@@ -42,10 +42,12 @@ def write_json(path: Path, payload: dict) -> None:
 
 
 class SdkRetirementTests(unittest.TestCase):
-    def identity(self):
+    @staticmethod
+    def identity():
         return {"port": 63342, "session_id": "session", "helper_sdk_lifecycle_version": 1}
 
-    def response(self, root, dry_run):
+    @staticmethod
+    def response(root, dry_run):
         return jb_inspect.HttpResult(200, {"status": "ok", "session_id": "session",
             "sdk_lifecycle_version": 1, "dry_run": dry_run, "sdks": [{
                 "status": "would_remove" if dry_run else "removed", "reason": "helper_owned",
@@ -60,7 +62,7 @@ class SdkRetirementTests(unittest.TestCase):
                             "commit", "-q", "--allow-empty", "-m", "fixture"], check=True)
             subprocess.run(["git", "-C", str(primary), "worktree", "add", "-q", "-b", "task", str(root)], check=True)
             events = []
-            def post(port, endpoint, params):
+            def post(_port, endpoint, params):
                 self.assertTrue(root.is_dir())
                 self.assertEqual(endpoint, "lifecycle/unregister-python-sdk")
                 self.assertEqual(params["worktree_path"], str(root.resolve()))
@@ -109,7 +111,7 @@ class SdkRetirementTests(unittest.TestCase):
             root = Path(tmp) / "removed"
             args = Namespace(command="cleanup-helper-sdks", dry_run=False, lifecycle_lock_timeout_ms=1000,
                              worktree_path=[str(root)])
-            def post(port, endpoint, params):
+            def post(_port, _endpoint, params):
                 if params["dry_run"] == "true":
                     self.assertEqual(params["orphans"], "true")
                     self.assertNotIn("worktree_path", params)
@@ -134,7 +136,7 @@ class SdkRetirementTests(unittest.TestCase):
         root = Path("/fixture/task")
         args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
         second = self.identity() | {"port": 63343, "session_id": "second"}
-        def post(port, endpoint, params):
+        def post(port, _endpoint, params):
             response = self.response(root, params["dry_run"] == "true")
             response.body["session_id"] = params["session_id"]
             if port == second["port"] and params["dry_run"] == "false":
