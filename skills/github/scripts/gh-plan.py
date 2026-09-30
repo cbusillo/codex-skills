@@ -2176,6 +2176,48 @@ def read_next_issue_relationships(
     return actor, relationships, truncated
 
 
+def read_next_inbound_blockers(repo: str, *, scan_limit: int) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    """Separate bounded visibility scan; never consumes ranked plan slots."""
+    actor, inventory = collect_paged_rest_items(
+        f"/repos/{repo}/issues", query={"state": "open", "sort": "created", "direction": "asc"},
+        bucket="rest_core", step_prefix="next_inbound_inventory",
+        limit=NEXT_PLAN_INVENTORY_LIMIT + 1, issue_only=True,
+    )
+    inventory_truncated = len(inventory) > NEXT_PLAN_INVENTORY_LIMIT
+    gates = [issue for issue in inventory[:NEXT_PLAN_INVENTORY_LIMIT]
+             if (issue.get("issue_dependencies_summary") or {}).get("blocking") != 0]
+    report: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for issue in gates[:scan_limit]:
+        try:
+            relation_actor, blocking = collect_paged_rest_items(
+                f"/repos/{repo}/issues/{issue['number']}/dependencies/blocking",
+                query={}, bucket="rest_core", step_prefix="next_inbound_blocking",
+                limit=NEXT_RELATIONSHIP_LIMIT + 1,
+            )
+            actor = relation_actor or actor
+            if len(blocking) > NEXT_RELATIONSHIP_LIMIT:
+                errors.append({"number": issue["number"], "error": "blocking_relationships_truncated"})
+            targets = [compact_relationship_issue(item, "blocking") for item in blocking[:NEXT_RELATIONSHIP_LIMIT]]
+        except PlanError as exc:
+            errors.append({"number": issue["number"], "error": next_source_error(exc)})
+            continue
+        source_repo = issue_repository_name(issue) or repo
+        downstream = [item for item in targets if item["state"] == "open" and item["repo"].casefold() != source_repo.casefold()]
+        if downstream:
+            report.append({**compact_list_issue(repo, issue), "blocking": downstream,
+                           "selection": "visibility_only_review_recorded_waits_and_ownership_before_starting"})
+    return actor, report, {
+        "complete": not (inventory_truncated or len(gates) > scan_limit or errors),
+        "inventory_count": min(len(inventory), NEXT_PLAN_INVENTORY_LIMIT),
+        "inventory_truncated": inventory_truncated,
+        "gate_count": len(gates), "evaluated": min(len(gates), scan_limit),
+        "scan_limit": scan_limit, "errors": errors,
+        "scope": "repository_open_cross_repository_dependencies",
+        "unevaluated": [{"number": issue["number"]} for issue in gates[scan_limit:]],
+    }
+
+
 def cmd_next(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     if github_direction_next.is_direction_repository(repo):
@@ -2297,6 +2339,12 @@ def cmd_next(args: argparse.Namespace) -> None:
                 and milestone.get("title") not in listed
             ):
                 candidate.setdefault("notes", []).append("milestone_unlisted_from_direction")
+    try:
+        inbound_actor, blocking_work_elsewhere, inbound_context = read_next_inbound_blockers(repo, scan_limit=args.scan_limit)
+        actor = inbound_actor or actor
+    except PlanError as exc:
+        blocking_work_elsewhere = []
+        inbound_context = {"complete": False, "error": next_source_error(exc)}
     notes = [
         "native_blocked_by_relationships_are_authoritative",
         "milestones_are_the_execution_order",
@@ -2334,6 +2382,9 @@ def cmd_next(args: argparse.Namespace) -> None:
             "degraded_count": dependency_degraded_count,
             "relationship_limit": NEXT_RELATIONSHIP_LIMIT,
         },
+        "blocking_work_elsewhere": blocking_work_elsewhere,
+        "blocking_work_elsewhere_count": len(blocking_work_elsewhere),
+        "blocking_work_elsewhere_context": inbound_context,
         "evaluated": len(issues),
         "truncated": inventory_truncated or scan_truncated,
         "inventory_count": inventory_count,
