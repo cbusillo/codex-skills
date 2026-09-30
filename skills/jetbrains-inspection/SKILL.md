@@ -107,13 +107,14 @@ clean, or stash operations that can absorb machine-local or unrelated IDE state.
 Do not stage untracked, non-ignored IDE configuration automatically; check
 repository policy and ask when the sharing decision remains unclear.
 
+Set `HELPER=<skill-dir>/scripts/jb-inspect.py`; `<skill-dir>` holds this `SKILL.md`.
+
 ## Before The First Inspection
 
 If `.github/github.json` sets `qualityGate.inspection.prepare`, run that exact
 repository command in the exact linked worktree through the lifecycle helper,
-which performs preparation before opening it. Set
-`HELPER=<skill-dir>/scripts/jb-inspect.py`; `<skill-dir>` holds this `SKILL.md`.
-The preferred public command for preparing and opening that worktree is:
+which performs preparation before opening it. The preferred public command for
+preparing and opening that worktree is:
 
 ```bash
 uv run "$HELPER" open-worktree --repo "$PWD"
@@ -189,16 +190,16 @@ Command model:
   writing process. Missing native or snapshot evidence remains `not_run` or
   `unknown`; it is never presented as clean, fresh, or unchanged.
 - `list-projects` (no arguments): discover plugin-visible projects only.
-- `resolve-route --repo "$PWD"`: probe for an already-open exact route; it does not open or
-  inspect.
+- `resolve-route --repo "$PWD"`: probe an already-open exact route without
+  opening or inspecting.
 - `open-worktree`: preferred public command; run configured repository
   preparation, then open and claim the exact worktree; it does not inspect.
 - `prepare-worktree` and `prepare`: backward-compatible aliases for
   `open-worktree`.
-- `inspect --repo "$PWD" --scope changed_files`: open if needed, inspect, fetch problems, and clean up
-  helper-opened projects.
-- `inspect-closeout --repo "$PWD" --scope changed_files`: readiness/hand-off inspection; use before saying a change
-  is ready, safe to push, safe to merge, safe to hand off, or safe to exit.
+- `inspect --repo "$PWD" --scope changed_files`: open if needed, inspect, fetch
+  problems, and clean up helper-opened projects.
+- `inspect-closeout --repo "$PWD" --scope changed_files`: readiness/hand-off
+  inspection; use before saying a change is ready, safe to push, safe to merge, safe to hand off, or safe to exit.
 - `get-status --repo "$PWD"` and `get-problems --repo "$PWD" --severity error`:
   route-pinned diagnostics for already-routable projects.
 - `get-problems` reads the stored inspection run; it does not start a new one.
