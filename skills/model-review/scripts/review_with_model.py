@@ -340,7 +340,10 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                     + ". Complete this review using only read_file (view_file) and list_dir. "
                     "Do not call run_command at all. No permission changes are available.\n\n"
                 )
-                result = review_google(preamble + reminder + prompt, repo, model, timeout, Path(scratch))
+                try:
+                    result = review_google(preamble + reminder + prompt, repo, model, timeout, Path(scratch))
+                except (subprocess.TimeoutExpired, OSError) as exc:
+                    result = failed(provider, f"file-tool retry failed: {exc}")
                 result["recovery"] = {"attempts": 2, "denied_commands": refusal["denied_commands"],
                                       "conversation_id": refusal.get("conversation_id")}
     except subprocess.TimeoutExpired:
@@ -348,7 +351,10 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
     except (OSError, RuntimeError) as exc:
         return failed(provider, str(exc))
     if result["ok"] and not result["response"].strip():
-        return failed(provider, "the reviewer returned nothing", model=result.get("model"))
+        result = {**result, "ok": False, "error": "the reviewer returned nothing"}
+        result.pop("response")
+    if not result["ok"] and result.get("recovery") and not result.get("denied_commands"):
+        result["error"] += "; previous refused command: " + "; ".join(result["recovery"]["denied_commands"])
     return result
 
 

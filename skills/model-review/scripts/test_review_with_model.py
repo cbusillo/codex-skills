@@ -177,6 +177,11 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertEqual((code, result["response"]), (0, "none"))
         self.assertEqual(result["recovery"]["denied_commands"], [command])
         self.assertEqual(db.read_bytes(), original, "diagnosis never changes the saved conversation")
+        count.unlink()
+        code, result = self.review("google", **{**env, "FAKE_AGY_RETRY_JSON": json.dumps({"response": ""})})
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertIn(command, result["error"], "an empty retry must preserve the original named refusal")
+        self.assertEqual(result["recovery"]["denied_commands"], [command])
 
     def test_google_pending_command_is_named_but_read_denial_is_not_retried(self) -> None:
         self.install("agy", FAKE_AGY)
