@@ -1,0 +1,1612 @@
+{
+  "date": "2026-09-30",
+  "issue": 889,
+  "parent": 816,
+  "baseline_source": "0e11ad7c3deee0b35760a7cc027b03fd6557cd77",
+  "frozen_cases_commit": "b73e95858bd5580b55fd95e06bfc027f8e11b3e3",
+  "candidate_source": "2469385b0590ea7cf4a7c1f8abb893ae9b3f7b62",
+  "word_counts": {
+    "body_before": 1767,
+    "body_after": 917,
+    "new_reference": 294,
+    "frontmatter_identical": true,
+    "net_reduction": 556
+  },
+  "limitations": [
+    "Offline boundary refuses mutations and some ordinary reads; scores establish routing/attempted commands rather than live successful operations.",
+    "Four cases frozen before prose; supplementary configuration case added after review with matched baseline/candidate prompts.",
+    "Attention grammar corrected after reviewer demonstrated quote/URL false negatives and awareness false positive; both arms regraded from unchanged raw prompts/traces.",
+    "Initial candidate runs retained separately; final skill-source runs are the primary comparison.",
+    "Models are configured selections; CLI model source is not independently certified for each eval run."
+  ],
+  "runs": [
+    {
+      "arm": "baseline-claude",
+      "run": "rollup-attention-1",
+      "case": "rollup-attention",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 23.2,
+      "usage": {
+        "input": 50930,
+        "cached_input": 36961,
+        "output": 935
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "189c343f24016c39ff4f569b393b973c415511b92a6a26a58bd59f7a035b5b6d",
+      "configuration_reference_delivered": false,
+      "attention_regraded": true
+    },
+    {
+      "arm": "baseline-claude",
+      "run": "rollup-attention-2",
+      "case": "rollup-attention",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 16.4,
+      "usage": {
+        "input": 50993,
+        "cached_input": 36992,
+        "output": 893
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "189c343f24016c39ff4f569b393b973c415511b92a6a26a58bd59f7a035b5b6d",
+      "configuration_reference_delivered": false,
+      "attention_regraded": true
+    },
+    {
+      "arm": "baseline-claude",
+      "run": "rollup-collection-1",
+      "case": "rollup-collection",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 11.7,
+      "usage": {
+        "input": 51205,
+        "cached_input": 37055,
+        "output": 726
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "2afe6b3784da6e622a2c272902638152de2c3372c40b535b1ad7034ac4f9f015",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "baseline-claude",
+      "run": "rollup-collection-2",
+      "case": "rollup-collection",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 15.4,
+      "usage": {
+        "input": 72686,
+        "cached_input": 56983,
+        "output": 896
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "2afe6b3784da6e622a2c272902638152de2c3372c40b535b1ad7034ac4f9f015",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "baseline-claude",
+      "run": "rollup-synthesis-1",
+      "case": "rollup-synthesis",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 19.6,
+      "usage": {
+        "input": 70694,
+        "cached_input": 55999,
+        "output": 1383
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": false,
+        "turn1_required_operation": false,
+        "turn1_no_forbidden_operation": true,
+        "turn1_read_before_operation": false,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": false,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "0ad66d0eb3c74712607d5eecc4f2c60e0fda9b2a83d28a6f6f1da4f8c5dc6ae2",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "baseline-claude",
+      "run": "rollup-synthesis-2",
+      "case": "rollup-synthesis",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 19.7,
+      "usage": {
+        "input": 70480,
+        "cached_input": 55926,
+        "output": 1348
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": false,
+        "turn1_required_operation": false,
+        "turn1_no_forbidden_operation": true,
+        "turn1_read_before_operation": false,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": false,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "0ad66d0eb3c74712607d5eecc4f2c60e0fda9b2a83d28a6f6f1da4f8c5dc6ae2",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "baseline-claude",
+      "run": "rollup-write-handoff-1",
+      "case": "rollup-write-handoff",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 15.8,
+      "usage": {
+        "input": 61033,
+        "cached_input": 41884,
+        "output": 1156
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "2e5ce0dddf66d5c3458eed20f7c985f49d938e5719265411d8851ae7e975fce0",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "baseline-claude",
+      "run": "rollup-write-handoff-2",
+      "case": "rollup-write-handoff",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 15.3,
+      "usage": {
+        "input": 60974,
+        "cached_input": 41866,
+        "output": 1121
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "2e5ce0dddf66d5c3458eed20f7c985f49d938e5719265411d8851ae7e975fce0",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "baseline-codex",
+      "run": "rollup-attention-1",
+      "case": "rollup-attention",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 16.9,
+      "usage": {
+        "input": 48914,
+        "cached_input": 42240,
+        "output": 521
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": false,
+        "turn1_first_operation_matches": false,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": false,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "189c343f24016c39ff4f569b393b973c415511b92a6a26a58bd59f7a035b5b6d",
+      "configuration_reference_delivered": false,
+      "attention_regraded": true
+    },
+    {
+      "arm": "baseline-codex",
+      "run": "rollup-attention-2",
+      "case": "rollup-attention",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 25.4,
+      "usage": {
+        "input": 55609,
+        "cached_input": 37120,
+        "output": 432
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "189c343f24016c39ff4f569b393b973c415511b92a6a26a58bd59f7a035b5b6d",
+      "configuration_reference_delivered": false,
+      "attention_regraded": true
+    },
+    {
+      "arm": "baseline-codex",
+      "run": "rollup-collection-1",
+      "case": "rollup-collection",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 13.9,
+      "usage": {
+        "input": 55586,
+        "cached_input": 45312,
+        "output": 352
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "2afe6b3784da6e622a2c272902638152de2c3372c40b535b1ad7034ac4f9f015",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "baseline-codex",
+      "run": "rollup-collection-2",
+      "case": "rollup-collection",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 16.1,
+      "usage": {
+        "input": 55617,
+        "cached_input": 41216,
+        "output": 431
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "2afe6b3784da6e622a2c272902638152de2c3372c40b535b1ad7034ac4f9f015",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "baseline-codex",
+      "run": "rollup-synthesis-1",
+      "case": "rollup-synthesis",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 20.4,
+      "usage": {
+        "input": 79108,
+        "cached_input": 66560,
+        "output": 696
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_read_before_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "0ad66d0eb3c74712607d5eecc4f2c60e0fda9b2a83d28a6f6f1da4f8c5dc6ae2",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "baseline-codex",
+      "run": "rollup-synthesis-2",
+      "case": "rollup-synthesis",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 33.0,
+      "usage": {
+        "input": 100394,
+        "cached_input": 79616,
+        "output": 881
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_read_before_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "0ad66d0eb3c74712607d5eecc4f2c60e0fda9b2a83d28a6f6f1da4f8c5dc6ae2",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "baseline-codex",
+      "run": "rollup-write-handoff-1",
+      "case": "rollup-write-handoff",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 30.2,
+      "usage": {
+        "input": 127447,
+        "cached_input": 110080,
+        "output": 913
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": false,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": false,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "2e5ce0dddf66d5c3458eed20f7c985f49d938e5719265411d8851ae7e975fce0",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "baseline-codex",
+      "run": "rollup-write-handoff-2",
+      "case": "rollup-write-handoff",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 26.3,
+      "usage": {
+        "input": 85449,
+        "cached_input": 69632,
+        "output": 770
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": false,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": false,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "2e5ce0dddf66d5c3458eed20f7c985f49d938e5719265411d8851ae7e975fce0",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "candidate-claude",
+      "run": "rollup-attention-1",
+      "case": "rollup-attention",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 15.0,
+      "usage": {
+        "input": 47147,
+        "cached_input": 35071,
+        "output": 969
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "45e8525c3ce271d1e442ec26180876707359ed917273adf01002773a620214c7",
+      "harness_digest": "189c343f24016c39ff4f569b393b973c415511b92a6a26a58bd59f7a035b5b6d",
+      "configuration_reference_delivered": false,
+      "attention_regraded": true
+    },
+    {
+      "arm": "candidate-claude",
+      "run": "rollup-attention-2",
+      "case": "rollup-attention",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 14.0,
+      "usage": {
+        "input": 47165,
+        "cached_input": 35080,
+        "output": 961
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "45e8525c3ce271d1e442ec26180876707359ed917273adf01002773a620214c7",
+      "harness_digest": "189c343f24016c39ff4f569b393b973c415511b92a6a26a58bd59f7a035b5b6d",
+      "configuration_reference_delivered": false,
+      "attention_regraded": true
+    },
+    {
+      "arm": "candidate-claude",
+      "run": "rollup-collection-1",
+      "case": "rollup-collection",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 14.6,
+      "usage": {
+        "input": 47097,
+        "cached_input": 34982,
+        "output": 736
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "45e8525c3ce271d1e442ec26180876707359ed917273adf01002773a620214c7",
+      "harness_digest": "2afe6b3784da6e622a2c272902638152de2c3372c40b535b1ad7034ac4f9f015",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "candidate-claude",
+      "run": "rollup-collection-2",
+      "case": "rollup-collection",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 16.1,
+      "usage": {
+        "input": 67571,
+        "cached_input": 53563,
+        "output": 1124
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "45e8525c3ce271d1e442ec26180876707359ed917273adf01002773a620214c7",
+      "harness_digest": "2afe6b3784da6e622a2c272902638152de2c3372c40b535b1ad7034ac4f9f015",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "candidate-claude",
+      "run": "rollup-synthesis-1",
+      "case": "rollup-synthesis",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 18.5,
+      "usage": {
+        "input": 70320,
+        "cached_input": 54827,
+        "output": 1459
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_read_before_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "45e8525c3ce271d1e442ec26180876707359ed917273adf01002773a620214c7",
+      "harness_digest": "0ad66d0eb3c74712607d5eecc4f2c60e0fda9b2a83d28a6f6f1da4f8c5dc6ae2",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "candidate-claude",
+      "run": "rollup-synthesis-2",
+      "case": "rollup-synthesis",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 18.3,
+      "usage": {
+        "input": 70202,
+        "cached_input": 54762,
+        "output": 1291
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_read_before_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "45e8525c3ce271d1e442ec26180876707359ed917273adf01002773a620214c7",
+      "harness_digest": "0ad66d0eb3c74712607d5eecc4f2c60e0fda9b2a83d28a6f6f1da4f8c5dc6ae2",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "candidate-claude",
+      "run": "rollup-write-handoff-1",
+      "case": "rollup-write-handoff",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 17.4,
+      "usage": {
+        "input": 57290,
+        "cached_input": 40024,
+        "output": 1317
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "45e8525c3ce271d1e442ec26180876707359ed917273adf01002773a620214c7",
+      "harness_digest": "2e5ce0dddf66d5c3458eed20f7c985f49d938e5719265411d8851ae7e975fce0",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "candidate-claude",
+      "run": "rollup-write-handoff-2",
+      "case": "rollup-write-handoff",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 15.5,
+      "usage": {
+        "input": 57101,
+        "cached_input": 39973,
+        "output": 1145
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "45e8525c3ce271d1e442ec26180876707359ed917273adf01002773a620214c7",
+      "harness_digest": "2e5ce0dddf66d5c3458eed20f7c985f49d938e5719265411d8851ae7e975fce0",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "candidate-codex",
+      "run": "rollup-attention-1",
+      "case": "rollup-attention",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 15.1,
+      "usage": {
+        "input": 52968,
+        "cached_input": 44288,
+        "output": 343
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "45e8525c3ce271d1e442ec26180876707359ed917273adf01002773a620214c7",
+      "harness_digest": "189c343f24016c39ff4f569b393b973c415511b92a6a26a58bd59f7a035b5b6d",
+      "configuration_reference_delivered": false,
+      "attention_regraded": true
+    },
+    {
+      "arm": "candidate-codex",
+      "run": "rollup-attention-2",
+      "case": "rollup-attention",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 22.5,
+      "usage": {
+        "input": 91518,
+        "cached_input": 80640,
+        "output": 643
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "45e8525c3ce271d1e442ec26180876707359ed917273adf01002773a620214c7",
+      "harness_digest": "189c343f24016c39ff4f569b393b973c415511b92a6a26a58bd59f7a035b5b6d",
+      "configuration_reference_delivered": false,
+      "attention_regraded": true
+    },
+    {
+      "arm": "candidate-codex",
+      "run": "rollup-collection-1",
+      "case": "rollup-collection",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 13.8,
+      "usage": {
+        "input": 52976,
+        "cached_input": 44288,
+        "output": 367
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "45e8525c3ce271d1e442ec26180876707359ed917273adf01002773a620214c7",
+      "harness_digest": "2afe6b3784da6e622a2c272902638152de2c3372c40b535b1ad7034ac4f9f015",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "candidate-codex",
+      "run": "rollup-collection-2",
+      "case": "rollup-collection",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 26.9,
+      "usage": {
+        "input": 90074,
+        "cached_input": 71680,
+        "output": 406
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "45e8525c3ce271d1e442ec26180876707359ed917273adf01002773a620214c7",
+      "harness_digest": "2afe6b3784da6e622a2c272902638152de2c3372c40b535b1ad7034ac4f9f015",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "candidate-codex",
+      "run": "rollup-synthesis-1",
+      "case": "rollup-synthesis",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 28.3,
+      "usage": {
+        "input": 79760,
+        "cached_input": 66560,
+        "output": 781
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_read_before_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "45e8525c3ce271d1e442ec26180876707359ed917273adf01002773a620214c7",
+      "harness_digest": "0ad66d0eb3c74712607d5eecc4f2c60e0fda9b2a83d28a6f6f1da4f8c5dc6ae2",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "candidate-codex",
+      "run": "rollup-synthesis-2",
+      "case": "rollup-synthesis",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 36.2,
+      "usage": {
+        "input": 96203,
+        "cached_input": 81664,
+        "output": 727
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_read_before_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "45e8525c3ce271d1e442ec26180876707359ed917273adf01002773a620214c7",
+      "harness_digest": "0ad66d0eb3c74712607d5eecc4f2c60e0fda9b2a83d28a6f6f1da4f8c5dc6ae2",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "candidate-codex",
+      "run": "rollup-write-handoff-1",
+      "case": "rollup-write-handoff",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 26.4,
+      "usage": {
+        "input": 81616,
+        "cached_input": 59392,
+        "output": 978
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "45e8525c3ce271d1e442ec26180876707359ed917273adf01002773a620214c7",
+      "harness_digest": "2e5ce0dddf66d5c3458eed20f7c985f49d938e5719265411d8851ae7e975fce0",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "candidate-codex",
+      "run": "rollup-write-handoff-2",
+      "case": "rollup-write-handoff",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 35.4,
+      "usage": {
+        "input": 72276,
+        "cached_input": 62464,
+        "output": 610
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": false,
+        "turn1_first_operation_matches": false,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": false,
+      "catalog_digest": "45e8525c3ce271d1e442ec26180876707359ed917273adf01002773a620214c7",
+      "harness_digest": "2e5ce0dddf66d5c3458eed20f7c985f49d938e5719265411d8851ae7e975fce0",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "final-claude",
+      "run": "rollup-attention-1",
+      "case": "rollup-attention",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 15.3,
+      "usage": {
+        "input": 47167,
+        "cached_input": 35080,
+        "output": 977
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "3db274ee1db3b624eec94e84532040e4f86e1fb8ba279a6bb169e667219169e4",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "final-claude",
+      "run": "rollup-attention-2",
+      "case": "rollup-attention",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 15.2,
+      "usage": {
+        "input": 47093,
+        "cached_input": 35043,
+        "output": 991
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "3db274ee1db3b624eec94e84532040e4f86e1fb8ba279a6bb169e667219169e4",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "final-claude",
+      "run": "rollup-collection-1",
+      "case": "rollup-collection",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 12.3,
+      "usage": {
+        "input": 47125,
+        "cached_input": 34995,
+        "output": 768
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "2afe6b3784da6e622a2c272902638152de2c3372c40b535b1ad7034ac4f9f015",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "final-claude",
+      "run": "rollup-collection-2",
+      "case": "rollup-collection",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 23.3,
+      "usage": {
+        "input": 67035,
+        "cached_input": 53224,
+        "output": 904
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "2afe6b3784da6e622a2c272902638152de2c3372c40b535b1ad7034ac4f9f015",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "final-claude",
+      "run": "rollup-synthesis-1",
+      "case": "rollup-synthesis",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 19.6,
+      "usage": {
+        "input": 70753,
+        "cached_input": 55209,
+        "output": 1463
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_read_before_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "0ad66d0eb3c74712607d5eecc4f2c60e0fda9b2a83d28a6f6f1da4f8c5dc6ae2",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "final-claude",
+      "run": "rollup-synthesis-2",
+      "case": "rollup-synthesis",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 20.8,
+      "usage": {
+        "input": 93499,
+        "cached_input": 76384,
+        "output": 1471
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_read_before_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "0ad66d0eb3c74712607d5eecc4f2c60e0fda9b2a83d28a6f6f1da4f8c5dc6ae2",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "final-claude",
+      "run": "rollup-write-handoff-1",
+      "case": "rollup-write-handoff",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 17.0,
+      "usage": {
+        "input": 57222,
+        "cached_input": 40027,
+        "output": 1225
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "2e5ce0dddf66d5c3458eed20f7c985f49d938e5719265411d8851ae7e975fce0",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "final-claude",
+      "run": "rollup-write-handoff-2",
+      "case": "rollup-write-handoff",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 15.3,
+      "usage": {
+        "input": 56851,
+        "cached_input": 39869,
+        "output": 1043
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "2e5ce0dddf66d5c3458eed20f7c985f49d938e5719265411d8851ae7e975fce0",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "final-codex",
+      "run": "rollup-attention-1",
+      "case": "rollup-attention",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 13.9,
+      "usage": {
+        "input": 53031,
+        "cached_input": 44288,
+        "output": 419
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "3db274ee1db3b624eec94e84532040e4f86e1fb8ba279a6bb169e667219169e4",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "final-codex",
+      "run": "rollup-attention-2",
+      "case": "rollup-attention",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 20.4,
+      "usage": {
+        "input": 70778,
+        "cached_input": 60416,
+        "output": 500
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "3db274ee1db3b624eec94e84532040e4f86e1fb8ba279a6bb169e667219169e4",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "final-codex",
+      "run": "rollup-collection-1",
+      "case": "rollup-collection",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 13.3,
+      "usage": {
+        "input": 52970,
+        "cached_input": 44288,
+        "output": 382
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "2afe6b3784da6e622a2c272902638152de2c3372c40b535b1ad7034ac4f9f015",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "final-codex",
+      "run": "rollup-collection-2",
+      "case": "rollup-collection",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 13.9,
+      "usage": {
+        "input": 52962,
+        "cached_input": 44288,
+        "output": 333
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "2afe6b3784da6e622a2c272902638152de2c3372c40b535b1ad7034ac4f9f015",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "final-codex",
+      "run": "rollup-synthesis-1",
+      "case": "rollup-synthesis",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 26.0,
+      "usage": {
+        "input": 85067,
+        "cached_input": 68608,
+        "output": 638
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_read_before_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "0ad66d0eb3c74712607d5eecc4f2c60e0fda9b2a83d28a6f6f1da4f8c5dc6ae2",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "final-codex",
+      "run": "rollup-synthesis-2",
+      "case": "rollup-synthesis",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 20.6,
+      "usage": {
+        "input": 75071,
+        "cached_input": 59392,
+        "output": 652
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_read_before_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "0ad66d0eb3c74712607d5eecc4f2c60e0fda9b2a83d28a6f6f1da4f8c5dc6ae2",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "final-codex",
+      "run": "rollup-write-handoff-1",
+      "case": "rollup-write-handoff",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 25.5,
+      "usage": {
+        "input": 128720,
+        "cached_input": 113152,
+        "output": 795
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": false,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": false,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "2e5ce0dddf66d5c3458eed20f7c985f49d938e5719265411d8851ae7e975fce0",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "final-codex",
+      "run": "rollup-write-handoff-2",
+      "case": "rollup-write-handoff",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 34.4,
+      "usage": {
+        "input": 81476,
+        "cached_input": 66560,
+        "output": 772
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": false,
+        "turn1_first_operation_matches": true,
+        "turn1_no_forbidden_operation": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": false,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "2e5ce0dddf66d5c3458eed20f7c985f49d938e5719265411d8851ae7e975fce0",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "config-baseline-claude",
+      "run": "rollup-config-limits-1",
+      "case": "rollup-config-limits",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 18.0,
+      "usage": {
+        "input": 51466,
+        "cached_input": 37193,
+        "output": 1364
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": false,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": false,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "b20af5510f4b40be2a8b02e97b8dcfadad6171b83cf97faa1c530f32d98ad277",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "config-baseline-claude",
+      "run": "rollup-config-limits-2",
+      "case": "rollup-config-limits",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 14.3,
+      "usage": {
+        "input": 51274,
+        "cached_input": 37102,
+        "output": 1057
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": false,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": false,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "b20af5510f4b40be2a8b02e97b8dcfadad6171b83cf97faa1c530f32d98ad277",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "config-baseline-codex",
+      "run": "rollup-config-limits-1",
+      "case": "rollup-config-limits",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 54.4,
+      "usage": {
+        "input": 99089,
+        "cached_input": 85760,
+        "output": 964
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "b20af5510f4b40be2a8b02e97b8dcfadad6171b83cf97faa1c530f32d98ad277",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "config-baseline-codex",
+      "run": "rollup-config-limits-2",
+      "case": "rollup-config-limits",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 27.0,
+      "usage": {
+        "input": 77185,
+        "cached_input": 65536,
+        "output": 797
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": false,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": false,
+      "catalog_digest": "c1a76f4ad7a549ba116dbf94e57834e06ce2adc620987a71ecca7f8e256f9075",
+      "harness_digest": "b20af5510f4b40be2a8b02e97b8dcfadad6171b83cf97faa1c530f32d98ad277",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "config-final-claude",
+      "run": "rollup-config-limits-1",
+      "case": "rollup-config-limits",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 16.6,
+      "usage": {
+        "input": 47293,
+        "cached_input": 35182,
+        "output": 1020
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": false,
+        "turn1_required_operation": false,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": false,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "b20af5510f4b40be2a8b02e97b8dcfadad6171b83cf97faa1c530f32d98ad277",
+      "configuration_reference_delivered": false,
+      "attention_regraded": false
+    },
+    {
+      "arm": "config-final-claude",
+      "run": "rollup-config-limits-2",
+      "case": "rollup-config-limits",
+      "host": "claude",
+      "configured_model": "claude-opus-5-5",
+      "elapsed_seconds": 17.0,
+      "usage": {
+        "input": 66043,
+        "cached_input": 52803,
+        "output": 1160
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": false,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": false,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "b20af5510f4b40be2a8b02e97b8dcfadad6171b83cf97faa1c530f32d98ad277",
+      "configuration_reference_delivered": true,
+      "attention_regraded": false
+    },
+    {
+      "arm": "config-final-codex",
+      "run": "rollup-config-limits-1",
+      "case": "rollup-config-limits",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 39.5,
+      "usage": {
+        "input": 79451,
+        "cached_input": 65536,
+        "output": 786
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "b20af5510f4b40be2a8b02e97b8dcfadad6171b83cf97faa1c530f32d98ad277",
+      "configuration_reference_delivered": true,
+      "attention_regraded": false
+    },
+    {
+      "arm": "config-final-codex",
+      "run": "rollup-config-limits-2",
+      "case": "rollup-config-limits",
+      "host": "codex",
+      "configured_model": "gpt-6-luna",
+      "elapsed_seconds": 26.8,
+      "usage": {
+        "input": 96489,
+        "cached_input": 74496,
+        "output": 979
+      },
+      "exit_code": 0,
+      "score": {
+        "all_turns_ran": true,
+        "turn1_owner_before_first_operation": true,
+        "turn1_first_operation_matches": true,
+        "turn1_required_operation": true,
+        "turn1_no_forbidden_operation": true,
+        "turn1_final_matches": true,
+        "single_protocol_delivery": true,
+        "tested_catalog_only": true
+      },
+      "passed": true,
+      "catalog_digest": "0fbb20006475993de9509841fc2e543a9896303e1f48573b7d7b8acfa0aaa6e2",
+      "harness_digest": "b20af5510f4b40be2a8b02e97b8dcfadad6171b83cf97faa1c530f32d98ad277",
+      "configuration_reference_delivered": true,
+      "attention_regraded": false
+    }
+  ]
+}
