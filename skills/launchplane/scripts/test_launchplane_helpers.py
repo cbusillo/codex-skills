@@ -2434,6 +2434,371 @@ def test_integration_allowances_payload_rejects_unknown_fields_and_unreviewed_ap
             raise AssertionError("apply without saved dry-run evidence was accepted")
 
 
+def _expect_error(call: Any, code: str) -> None:
+    try:
+        call()
+    except (ValueError, write_action.LaunchplaneSafetyError) as exc:
+        assert getattr(exc, "code", str(exc)) == code, (code, exc)
+    else:
+        raise AssertionError(f"expected {code}")
+
+
+def _testing_hold_plan(**overrides: object) -> dict[str, object]:
+    plan: dict[str, object] = {
+        "status": "ok",
+        "mode": "dry-run",
+        "product": "example-product",
+        "context": "example",
+        "instance": "testing",
+        "action": "set",
+        "changed": True,
+        "applied": False,
+        "before": None,
+        "after": {
+            "reason": "Staff are testing the checkout flow.",
+            "recorded_by": "operator-example",
+            "recorded_at": "2026-09-30T12:00:00Z",
+        },
+        "read_back": None,
+        "read_back_matches": None,
+        "reconcile_requested": False,
+        "reason": "Staff are testing the checkout flow.",
+        "source_label": "service:testing-hold",
+        "record_sha256_before": "a" * 64,
+        "record_sha256_after": "",
+        "plan_sha256": "b" * 64,
+    }
+    plan.update(overrides)
+    return plan
+
+
+def _testing_hold_response(plan: dict[str, object]) -> dict[str, object]:
+    return {
+        "status": "accepted",
+        "trace_id": "launchplane_req_testing_hold",
+        "records": {"product_profile": "example-product", "context": "example", "instance": "testing"},
+        "result": plan,
+    }
+
+
+def _saved_dry_run_output(operation: str, response: dict[str, object]) -> dict[str, object]:
+    # The apply's evidence is the helper's own saved dry-run output, not the raw service reply.
+    return write_action.summarize_success(
+        operation=operation, request={"mode": "dry-run"}, provider_payload=response
+    )
+
+
+def test_testing_hold_plan_projection_is_bounded_and_fail_closed() -> None:
+    result = _saved_dry_run_output(
+        "testing-hold-dry-run", _testing_hold_response(_testing_hold_plan())
+    )
+    assert result["summary"]["plan_sha256"] == "b" * 64
+    assert result["result"]["before"] is None
+    assert result["result"]["after"]["recorded_by"] == "operator-example"
+    assert "read_back_matches" not in result["result"]
+
+    for plan, code in (
+        (_testing_hold_plan(extra="x"), "unsafe_response_shape"),
+        (_testing_hold_plan(action="delete"), "invalid_response"),
+        (_testing_hold_plan(mode="plan"), "invalid_response"),
+        (_testing_hold_plan(plan_sha256="not-a-digest"), "invalid_response"),
+        (
+            _testing_hold_plan(after={"reason": "Testing.", "token": "x"}),
+            "unsafe_response_shape",
+        ),
+        (_testing_hold_plan(reason="Bearer abcdefghijklmnop"), "invalid_response"),
+    ):
+        _expect_error(lambda plan=plan: write_action._project_testing_hold_plan(plan), code)
+    _expect_error(
+        lambda: write_action._project_success_output(
+            "testing-hold-dry-run",
+            {**_testing_hold_response(_testing_hold_plan()), "records": {"secret": "x"}},
+        ),
+        "unsafe_response_shape",
+    )
+
+
+def test_testing_hold_read_sends_lane_query_and_projects_hold() -> None:
+    calls: list[dict[str, Any]] = []
+    response = {
+        "status": "accepted",
+        "trace_id": "launchplane_req_testing_hold_read",
+        "records": {"product_profile": "example-product", "context": "example", "instance": "testing"},
+        "result": {
+            "status": "ok",
+            "product": "example-product",
+            "context": "example",
+            "instance": "testing",
+            "hold": {"reason": "Staff are testing.", "recorded_by": "", "recorded_at": ""},
+            "record_sha256": "c" * 64,
+        },
+    }
+
+    def fake_read(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return response
+
+    settings = {"service_url": "https://launchplane.example.invalid", "token": "t"}
+    output = io.StringIO()
+    with (
+        patch.object(write_action, "prepare_operator_settings", return_value=settings),
+        patch.object(write_action, "request_launchplane_read", side_effect=fake_read),
+        redirect_stdout(output),
+    ):
+        status = write_action.main(
+            ["testing-hold-read", "--product", "example-product", "--context", "example", "--instance", "testing"]
+        )
+    assert status == 0
+    assert calls[0]["path"] == contract.LOCAL_EXTENSION_ROUTES["testing-hold-read"]["path"]
+    assert calls[0]["query"] == {"product": "example-product", "context": "example", "instance": "testing"}
+    payload = json.loads(output.getvalue())
+    assert payload["result"]["hold"] == {"reason": "Staff are testing."}
+
+    response["result"] = {**cast(dict[str, object], response["result"]), "hold": {"reason": "x", "value": "y"}}
+    output = io.StringIO()
+    with (
+        patch.object(write_action, "prepare_operator_settings", return_value=settings),
+        patch.object(write_action, "request_launchplane_read", side_effect=fake_read),
+        redirect_stdout(output),
+    ):
+        status = write_action.main(
+            ["testing-hold-read", "--product", "example-product", "--context", "example", "--instance", "testing"]
+        )
+    assert status == 1
+    assert "result" not in json.loads(output.getvalue()) or not json.loads(output.getvalue())["result"]
+
+
+def _testing_hold_args(**overrides: object) -> argparse.Namespace:
+    values: dict[str, object] = {
+        "product": "example-product",
+        "context": "Example",
+        "instance": "testing",
+        "hold": True,
+        "reason": "Staff are testing the checkout flow.",
+        "idempotency_key": "",
+    }
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def test_testing_hold_body_binds_apply_to_saved_dry_run() -> None:
+    dry_run = write_action.testing_hold_body(_testing_hold_args(), mode="dry-run")
+    assert dry_run["mode"] == "dry-run"
+    assert dry_run["hold"] is True
+    assert dry_run["context"] == "example"
+    assert "reviewed_plan_sha256" not in dry_run
+    assert write_action.testing_hold_body(_testing_hold_args(hold=False), mode="dry-run")["hold"] is False
+    _expect_error(
+        lambda: write_action.testing_hold_body(_testing_hold_args(reason=" "), mode="dry-run"),
+        "reason_required",
+    )
+
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        evidence_path = Path(directory) / "testing-hold-dry-run.json"
+        evidence_path.write_text(
+            json.dumps(
+                _saved_dry_run_output(
+                    "testing-hold-dry-run", _testing_hold_response(_testing_hold_plan())
+                )
+            ),
+            encoding="utf-8",
+        )
+        apply_args = _testing_hold_args(
+            idempotency_key="testing-hold-1",
+            reviewed_dry_run=True,
+            expected_plan_digest="B" * 64,
+            dry_run_evidence_file=str(evidence_path),
+        )
+        body = write_action.testing_hold_body(apply_args, mode="apply")
+        assert body["mode"] == "apply"
+        assert body["reviewed_plan_sha256"] == "b" * 64
+
+        for overrides, code in (
+            ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
+            ({"idempotency_key": ""}, "idempotency_key_required"),
+            ({"expected_plan_digest": "short"}, "invalid_expected_plan_digest"),
+            ({"expected_plan_digest": "d" * 64}, "reviewed_dry_run_not_apply_eligible"),
+            ({"dry_run_evidence_file": ""}, "reviewed_dry_run_not_apply_eligible"),
+            ({"hold": False}, "reviewed_dry_run_not_apply_eligible"),
+            ({"context": "other"}, "reviewed_dry_run_not_apply_eligible"),
+        ):
+            args = argparse.Namespace(**{**vars(apply_args), **overrides})
+            _expect_error(lambda args=args: write_action.testing_hold_body(args, mode="apply"), code)
+
+
+def test_testing_hold_cli_dispatches_local_extension_route() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        evidence_path = Path(directory) / "testing-hold-dry-run.json"
+        lift_plan = _testing_hold_plan(action="clear", before=_testing_hold_plan()["after"], after=None)
+        evidence_path.write_text(
+            json.dumps(_saved_dry_run_output("testing-hold-dry-run", _testing_hold_response(lift_plan))),
+            encoding="utf-8",
+        )
+        calls: list[dict[str, Any]] = []
+        lane = ["--product", "example-product", "--context", "example", "--instance", "testing"]
+        with temporary_attribute(write_action, "execute_post", lambda **kwargs: calls.append(kwargs) or 0):
+            assert write_action.main(["testing-hold-dry-run", *lane, "--lift", "--reason", "Testing done."]) == 0
+            assert (
+                write_action.main(
+                    [
+                        "testing-hold-apply",
+                        *lane,
+                        "--lift",
+                        "--reason",
+                        "Testing done.",
+                        "--idempotency-key",
+                        "testing-hold-lift-1",
+                        "--reviewed-dry-run",
+                        "--expected-plan-digest",
+                        "b" * 64,
+                        "--dry-run-evidence-file",
+                        str(evidence_path),
+                    ]
+                )
+                == 0
+            )
+    route = contract.LOCAL_EXTENSION_ROUTES["testing-hold-apply"]["path"]
+    assert [call["path"] for call in calls] == [route, route]
+    assert [call["body"]["mode"] for call in calls] == ["dry-run", "apply"]
+    assert all(call["body"]["hold"] is False for call in calls)
+    assert "Testing done." not in json.dumps([call["request"] for call in calls])
+
+
+def _repository_identity_plan(**overrides: object) -> dict[str, object]:
+    plan: dict[str, object] = {
+        "status": "ok",
+        "mode": "dry-run",
+        "product": "example-product",
+        "repository": "example-owner/example-repo",
+        "operation": "record",
+        "identity_before": {"repository_id": "", "repository_owner_id": ""},
+        "identity_after": {"repository_id": "123456", "repository_owner_id": "7890"},
+        "inventory_record_id": "repository-inventory-123456-1",
+        "inventory_revision": 1,
+        "inventory_digest": "e" * 64,
+        "changed": True,
+        "applied": False,
+        "reason": "Route GitHub events by repository id.",
+        "source_label": "service:product-repository-identity",
+        "profile_record_sha256_before": "f" * 64,
+        "profile_updated_at_before": "2026-09-29T12:00:00Z",
+        "profile_updated_at_after": "",
+        "plan_sha256": "b" * 64,
+    }
+    plan.update(overrides)
+    return plan
+
+
+def _repository_identity_response(plan: dict[str, object]) -> dict[str, object]:
+    return {
+        "status": "accepted",
+        "trace_id": "launchplane_req_repository_identity",
+        "records": {"product_profile": "example-product", "repository_inventory": "repository-inventory-123456-1"},
+        "result": plan,
+    }
+
+
+def test_product_repository_identity_projection_is_bounded_and_fail_closed() -> None:
+    result = _saved_dry_run_output(
+        "product-repository-identity-dry-run", _repository_identity_response(_repository_identity_plan())
+    )
+    assert result["summary"]["plan_sha256"] == "b" * 64
+    assert result["result"]["identity_after"] == {"repository_id": "123456", "repository_owner_id": "7890"}
+    assert "read_back" not in result["result"]
+    applied = write_action._project_product_repository_identity_plan(
+        _repository_identity_plan(
+            mode="apply",
+            applied=True,
+            read_back={"repository_id": "123456", "repository_owner_id": "7890"},
+            read_back_matches=True,
+        )
+    )
+    assert applied["read_back_matches"] is True
+
+    for plan, code in (
+        (_repository_identity_plan(extra="x"), "unsafe_response_shape"),
+        (_repository_identity_plan(operation="overwrite"), "invalid_response"),
+        (_repository_identity_plan(inventory_revision=True), "invalid_response"),
+        (
+            _repository_identity_plan(identity_after={"repository_id": "abc", "repository_owner_id": "1"}),
+            "invalid_response",
+        ),
+        (
+            _repository_identity_plan(identity_after={"repository_id": "1", "owner_token": "x"}),
+            "unsafe_response_shape",
+        ),
+        (_repository_identity_plan(inventory_digest="not-a-digest"), "invalid_response"),
+    ):
+        _expect_error(
+            lambda plan=plan: write_action._project_product_repository_identity_plan(plan), code
+        )
+
+
+def test_product_repository_identity_apply_requires_saved_dry_run() -> None:
+    base = argparse.Namespace(product="example-product", reason="Route GitHub events.", idempotency_key="")
+    dry_run = write_action.product_repository_identity_body(base, mode="dry-run")
+    assert dry_run == {
+        "schema_version": 1,
+        "product": "example-product",
+        "mode": "dry-run",
+        "reason": "Route GitHub events.",
+    }
+
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        evidence_path = Path(directory) / "repository-identity-dry-run.json"
+        evidence_path.write_text(
+            json.dumps(
+                _saved_dry_run_output(
+                    "product-repository-identity-dry-run",
+                    _repository_identity_response(_repository_identity_plan()),
+                )
+            ),
+            encoding="utf-8",
+        )
+        hold_evidence_path = Path(directory) / "testing-hold-dry-run.json"
+        hold_evidence_path.write_text(
+            json.dumps(
+                _saved_dry_run_output("testing-hold-dry-run", _testing_hold_response(_testing_hold_plan()))
+            ),
+            encoding="utf-8",
+        )
+        apply_args = argparse.Namespace(
+            product="example-product",
+            reason="Route GitHub events.",
+            idempotency_key="repository-identity-1",
+            reviewed_dry_run=True,
+            expected_plan_digest="b" * 64,
+            dry_run_evidence_file=str(evidence_path),
+        )
+        assert write_action.product_repository_identity_body(apply_args, mode="apply")[
+            "reviewed_plan_sha256"
+        ] == "b" * 64
+        for overrides, code in (
+            ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
+            ({"idempotency_key": " "}, "idempotency_key_required"),
+            ({"expected_plan_digest": "d" * 64}, "reviewed_dry_run_not_apply_eligible"),
+            ({"product": "other-product"}, "reviewed_dry_run_not_apply_eligible"),
+            # Another operation's evidence with the same digest is not this plan's review.
+            ({"dry_run_evidence_file": str(hold_evidence_path)}, "reviewed_dry_run_not_apply_eligible"),
+        ):
+            args = argparse.Namespace(**{**vars(apply_args), **overrides})
+            _expect_error(
+                lambda args=args: write_action.product_repository_identity_body(args, mode="apply"), code
+            )
+
+        calls: list[dict[str, Any]] = []
+        with temporary_attribute(write_action, "execute_post", lambda **kwargs: calls.append(kwargs) or 0):
+            assert (
+                write_action.main(
+                    ["product-repository-identity-dry-run", "--product", "example-product", "--reason", "Route GitHub events."]
+                )
+                == 0
+            )
+    route = contract.LOCAL_EXTENSION_ROUTES["product-repository-identity-apply"]["path"]
+    assert calls[0]["path"] == route
+    assert calls[0]["body"]["mode"] == "dry-run"
+
+
 def test_product_config_projection_accepts_context_scoped_runtime_environment() -> None:
     result = write_action.summarize_success(
         operation="product-config-dry-run",
@@ -3525,6 +3890,18 @@ def main() -> int:
         test_odoo_addon_settings_projection_redacts_secret_settings,
         test_odoo_addon_settings_body_refuses_plaintext_and_binds_digest,
         test_odoo_addon_settings_cli_dispatches_local_extension_route,
+        test_integration_allowances_plan_projection_keeps_diff_and_digest,
+        test_integration_allowances_projection_refuses_unknown_fields,
+        test_integration_allowances_read_summary_projects_allowances,
+        test_integration_allowances_payload_rejects_unknown_fields_and_unreviewed_apply,
+        test_testing_hold_plan_projection_is_bounded_and_fail_closed,
+        test_testing_hold_read_sends_lane_query_and_projects_hold,
+        test_testing_hold_body_binds_apply_to_saved_dry_run,
+        test_testing_hold_cli_dispatches_local_extension_route,
+        test_product_repository_identity_projection_is_bounded_and_fail_closed,
+        test_product_repository_identity_apply_requires_saved_dry_run,
+        test_product_config_secret_results_keep_declared_secret_class,
+        test_product_config_projection_keeps_declared_secret_class_end_to_end,
         test_repository_inventory_review_evidence_binds_exact_private_payload,
         test_repository_inventory_projection_is_bounded_and_fail_closed,
         test_agent_operator_contract_cli_is_public_safe_and_hermetic,
