@@ -1,0 +1,18 @@
+name: docs-concision-primary
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  package.json: '{"dependencies":{"example-sdk":"2.4.0"}}'
+  official-v2.md: 'Official example-sdk 2.x reference fixture: connect accepts retryLimit (integer); retryCount belongs only to version 3. Source: https://docs.example.invalid/sdk/v2/connect'
+turns:
+  - prompt: >-
+      Use shared:docs-lookup. Our example-sdk connection needs a retry option.
+      Determine the installed version from the manifest and use official-v2.md
+      as the frozen official documentation supplied for this offline rehearsal.
+      Name the correct option and cite the fixture source. Do not edit or upgrade.
+    expect:
+      owner: docs-lookup
+      read: 'official-v2\.md'
+      forbid: 'npm|pnpm|pip|curl|wget'
+      final: 'retryLimit'
