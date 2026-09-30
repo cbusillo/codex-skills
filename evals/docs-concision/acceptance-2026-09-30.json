@@ -1,0 +1,2011 @@
+{
+  "baseline_sha": "84f43ca509ee785073cf38faef22a126a04bbeeb",
+  "final_guidance_sha": "d4a36077959da063244dbea5e51bdc6383c5a719",
+  "freeze_sha": "9958165",
+  "body_words_before": 1175,
+  "body_words_after": 609,
+  "net_maintained_words_removed": 566,
+  "frontmatter_unchanged": true,
+  "routing_reference_unchanged": true,
+  "summaries": {
+    "baseline-claude": {
+      "trials": 8,
+      "native_full_passes": 6,
+      "total_usage": {
+        "input": 308985,
+        "cached_input": 214540,
+        "output": 5414
+      },
+      "total_seconds": 84.3
+    },
+    "baseline-codex": {
+      "trials": 8,
+      "native_full_passes": 3,
+      "total_usage": {
+        "input": 538850,
+        "cached_input": 453888,
+        "output": 3954
+      },
+      "total_seconds": 170.1
+    },
+    "candidate-claude": {
+      "trials": 8,
+      "native_full_passes": 7,
+      "total_usage": {
+        "input": 387477,
+        "cached_input": 294699,
+        "output": 5759
+      },
+      "total_seconds": 90.1
+    },
+    "candidate-codex": {
+      "trials": 8,
+      "native_full_passes": 5,
+      "total_usage": {
+        "input": 433725,
+        "cached_input": 358144,
+        "output": 3304
+      },
+      "total_seconds": 207.6
+    },
+    "final-claude": {
+      "trials": 8,
+      "native_full_passes": 8,
+      "total_usage": {
+        "input": 335363,
+        "cached_input": 244967,
+        "output": 5563
+      },
+      "total_seconds": 121.0
+    },
+    "final-codex": {
+      "trials": 8,
+      "native_full_passes": 3,
+      "total_usage": {
+        "input": 518996,
+        "cached_input": 424704,
+        "output": 3709
+      },
+      "total_seconds": 192.7
+    }
+  },
+  "limitations": [
+    "Offline fixtures and blocked operations; no live provider mutation/inspection acceptance.",
+    "All 48 trials retained: baseline, initial candidate, final. No cohort excluded. Two per case/arm/harness; same configured models/effort/tools within each harness; real CLIs, isolated homes and caller PATH restoration.",
+    "Native final vs baseline: Claude 6/8 to 8/8; Codex 3/8 to 3/8, same failed case/repetition positions. Final trace-reading improves conditional route delivery, but no broad quality claim.",
+    "Quiet adjacent grader wrongly passes one baseline and one final Codex refusal to read local.py. Completion is unproven in those trials despite native routing pass.",
+    "Codex primary-1 baseline/final delivered official-v2.md and returned version 2.4.0, retryLimit and citation, but trailing rg exit 1 makes native read grade false.",
+    "Missing-context final Codex answers correctly describe absent/unavailable configured context; native final regex rejects these synonyms. Initial Claude candidate-2 used isn't configured and was rejected; contraction rubric corrected, original score preserved and final candidate rerun.",
+    "forbid checks operational commands only. Raw tool/command traces reviewed for real-home/config/secret-value access; no such access observed. .env.example key declarations are allowed; no real values exist in fixtures. No mutation or rotation attempted. Citation supplied in all completed primary answers.",
+    "Initial/final Codex sometimes compounds read commands with boundary-refused find/conditionals, truncating workflow. These limitations are canonical #872; separate grader defects tracked in #895.",
+    "Usage includes repeated model turns/cache behavior; shorter prose does not guarantee lower total input or latency. Configured CLI models are reported, not independently verified service routing."
+  ],
+  "review": {
+    "provider": "anthropic",
+    "model": "claude-opus-5-5",
+    "reviewed_head": "9dd4a4e",
+    "result": "No lost contract or high/medium regression; low private-before-product ordering restored, no observed misrouting claimed; minor configuration-keys clarity applied; eval-read/citation gaps addressed through raw trace examination and tracked follow-up."
+  },
+  "trials": [
+    {
+      "host": "claude",
+      "case": "docs-concision-adjacent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "86c428e587201628307b64580e405be8825e95db4896c9bf43397f9f3ef9dce2",
+      "harness_digest": "1c766ac868b000b679c824e06080a45042160b118918ab466b497f954f544b2c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 4.2,
+      "usage": {
+        "input": 27518,
+        "cached_input": 18488,
+        "output": 147
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-claude",
+      "trial": "docs-concision-adjacent-1",
+      "raw_trace_sha256": "be38fe85039d6b163405e10df81cf24d7f0e180348a3a583ec4c93ccd04ec783"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-adjacent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "86c428e587201628307b64580e405be8825e95db4896c9bf43397f9f3ef9dce2",
+      "harness_digest": "1c766ac868b000b679c824e06080a45042160b118918ab466b497f954f544b2c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 4.6,
+      "usage": {
+        "input": 27572,
+        "cached_input": 18488,
+        "output": 213
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-claude",
+      "trial": "docs-concision-adjacent-2",
+      "raw_trace_sha256": "da9a2a568d73103b5155c47dec1ab4ad49a246dd5658a3820b8b3612baa1eef3"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-credential",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "86c428e587201628307b64580e405be8825e95db4896c9bf43397f9f3ef9dce2",
+      "harness_digest": "565a4d91726bb19e8ede5e7ff1ec1d3da3c057b2e5d9a5140424dc7102a6bf3c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 12.7,
+      "usage": {
+        "input": 47274,
+        "cached_input": 35131,
+        "output": 907
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": false,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-claude",
+      "trial": "docs-concision-credential-1",
+      "raw_trace_sha256": "f452727cae2315d70c520726db783b1b853903631efb3a9b89c83ac3a36df4cb"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-credential",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "86c428e587201628307b64580e405be8825e95db4896c9bf43397f9f3ef9dce2",
+      "harness_digest": "565a4d91726bb19e8ede5e7ff1ec1d3da3c057b2e5d9a5140424dc7102a6bf3c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 12.6,
+      "usage": {
+        "input": 47284,
+        "cached_input": 35136,
+        "output": 873
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-claude",
+      "trial": "docs-concision-credential-2",
+      "raw_trace_sha256": "8614cfc3947490e5557fbd8698c1e0a16f19c6c759db10350726d921ed5b2d49"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-missing-context",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "86c428e587201628307b64580e405be8825e95db4896c9bf43397f9f3ef9dce2",
+      "harness_digest": "a09081779f853e5671f3e902846451f519b30c07b1218679f85876716085baed",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 19.6,
+      "usage": {
+        "input": 48948,
+        "cached_input": 35106,
+        "output": 1084
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-claude",
+      "trial": "docs-concision-missing-context-1",
+      "raw_trace_sha256": "9f9bfe77a7abe9dccd6b130eff3a910ce41626e3506c7c1b253b13beec9e5efb"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-missing-context",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "86c428e587201628307b64580e405be8825e95db4896c9bf43397f9f3ef9dce2",
+      "harness_digest": "a09081779f853e5671f3e902846451f519b30c07b1218679f85876716085baed",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 15.3,
+      "usage": {
+        "input": 49082,
+        "cached_input": 35111,
+        "output": 1108
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-claude",
+      "trial": "docs-concision-missing-context-2",
+      "raw_trace_sha256": "a7b0981db3c2f4cbfc62e918f7566d50c8f79657bc5ff2bb23b84584652797e7"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-primary",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "86c428e587201628307b64580e405be8825e95db4896c9bf43397f9f3ef9dce2",
+      "harness_digest": "339e34fe6ad4b87c66910e94756f3cf0a66db2aebfa740bcf926f8b696931ac0",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 7.8,
+      "usage": {
+        "input": 30653,
+        "cached_input": 18540,
+        "output": 541
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-claude",
+      "trial": "docs-concision-primary-1",
+      "raw_trace_sha256": "ac38657148e697898d6b14fe2617079d59581beec67483e6d0454d2061c2a2eb"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-primary",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "86c428e587201628307b64580e405be8825e95db4896c9bf43397f9f3ef9dce2",
+      "harness_digest": "339e34fe6ad4b87c66910e94756f3cf0a66db2aebfa740bcf926f8b696931ac0",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 7.5,
+      "usage": {
+        "input": 30654,
+        "cached_input": 18540,
+        "output": 541
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-claude",
+      "trial": "docs-concision-primary-2",
+      "raw_trace_sha256": "da3555f28a5b50268a2f685d35f749b8b5966cc6b6a76cb51297c87171fdc0be"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-adjacent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "86c428e587201628307b64580e405be8825e95db4896c9bf43397f9f3ef9dce2",
+      "harness_digest": "1c766ac868b000b679c824e06080a45042160b118918ab466b497f954f544b2c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 4.8,
+      "usage": {
+        "input": 15992,
+        "cached_input": 11008,
+        "output": 27
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-codex",
+      "trial": "docs-concision-adjacent-1",
+      "raw_trace_sha256": "62c263be1e61598fca513d3813e628505cde58dddc82444163b6833f2e91762b"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-adjacent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "86c428e587201628307b64580e405be8825e95db4896c9bf43397f9f3ef9dce2",
+      "harness_digest": "1c766ac868b000b679c824e06080a45042160b118918ab466b497f954f544b2c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 9.2,
+      "usage": {
+        "input": 32057,
+        "cached_input": 22016,
+        "output": 104
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-codex",
+      "trial": "docs-concision-adjacent-2",
+      "raw_trace_sha256": "a750ea2e0e89870e67479661fd93f7372c54c52a5dd620f25994ff93b49707ff"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-credential",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "86c428e587201628307b64580e405be8825e95db4896c9bf43397f9f3ef9dce2",
+      "harness_digest": "565a4d91726bb19e8ede5e7ff1ec1d3da3c057b2e5d9a5140424dc7102a6bf3c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 26.3,
+      "usage": {
+        "input": 86779,
+        "cached_input": 76544,
+        "output": 486
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": false,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-codex",
+      "trial": "docs-concision-credential-1",
+      "raw_trace_sha256": "cb69e3e8dae98d504a8ca18d5c154ba1126a60008af75626a5a13fbda9f0171f"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-credential",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "86c428e587201628307b64580e405be8825e95db4896c9bf43397f9f3ef9dce2",
+      "harness_digest": "565a4d91726bb19e8ede5e7ff1ec1d3da3c057b2e5d9a5140424dc7102a6bf3c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 24.4,
+      "usage": {
+        "input": 68989,
+        "cached_input": 58368,
+        "output": 890
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-codex",
+      "trial": "docs-concision-credential-2",
+      "raw_trace_sha256": "e993bbdf555c9669fd9691844f12197848183c88ed50e76e8a53ec79241bfdfc"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-missing-context",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "86c428e587201628307b64580e405be8825e95db4896c9bf43397f9f3ef9dce2",
+      "harness_digest": "a09081779f853e5671f3e902846451f519b30c07b1218679f85876716085baed",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 21.6,
+      "usage": {
+        "input": 91970,
+        "cached_input": 80640,
+        "output": 747
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": false,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": "rg --files --hidden -g '! .git' .; find .agents -maxdepth 4 -type f -print"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-codex",
+      "trial": "docs-concision-missing-context-1",
+      "raw_trace_sha256": "77ecd2148a356997750154b10f335d5b9940ef43f7d1a17a024f55b38198e95a"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-missing-context",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "86c428e587201628307b64580e405be8825e95db4896c9bf43397f9f3ef9dce2",
+      "harness_digest": "a09081779f853e5671f3e902846451f519b30c07b1218679f85876716085baed",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 34.2,
+      "usage": {
+        "input": 105715,
+        "cached_input": 88576,
+        "output": 729
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": false,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-codex",
+      "trial": "docs-concision-missing-context-2",
+      "raw_trace_sha256": "8d7aa70e6aa71d6ef68a86977788de85d3c6d2075a66bb0771dd89c10211e020"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-primary",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "86c428e587201628307b64580e405be8825e95db4896c9bf43397f9f3ef9dce2",
+      "harness_digest": "339e34fe6ad4b87c66910e94756f3cf0a66db2aebfa740bcf926f8b696931ac0",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 32.7,
+      "usage": {
+        "input": 86975,
+        "cached_input": 75520,
+        "output": 659
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-codex",
+      "trial": "docs-concision-primary-1",
+      "raw_trace_sha256": "eed05d5765a43d1bf1acd8970612c3aa6a76ebd2a29d9cdadfce97075d64a32b"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-primary",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "86c428e587201628307b64580e405be8825e95db4896c9bf43397f9f3ef9dce2",
+      "harness_digest": "339e34fe6ad4b87c66910e94756f3cf0a66db2aebfa740bcf926f8b696931ac0",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.9,
+      "usage": {
+        "input": 50373,
+        "cached_input": 41216,
+        "output": 312
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "baseline-codex",
+      "trial": "docs-concision-primary-2",
+      "raw_trace_sha256": "8e2734b7c68a0d517801726077597ddcddc86aec1c83defb078741906513ea44"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-adjacent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce5ee769f9b4a2f72ee3e427526462f75f2ccaa073a06eb055cccbbab5c74090",
+      "harness_digest": "1c766ac868b000b679c824e06080a45042160b118918ab466b497f954f544b2c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 4.7,
+      "usage": {
+        "input": 27572,
+        "cached_input": 18488,
+        "output": 201
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-claude",
+      "trial": "docs-concision-adjacent-1",
+      "raw_trace_sha256": "ee744101d79f3fcfd478b5ca97558e2df7d98480566b7013ea4d8db8981c7bfb"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-adjacent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce5ee769f9b4a2f72ee3e427526462f75f2ccaa073a06eb055cccbbab5c74090",
+      "harness_digest": "1c766ac868b000b679c824e06080a45042160b118918ab466b497f954f544b2c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 6.8,
+      "usage": {
+        "input": 27503,
+        "cached_input": 18488,
+        "output": 132
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-claude",
+      "trial": "docs-concision-adjacent-2",
+      "raw_trace_sha256": "4c20626cba5b6bcaa1e5c548717846145c6c2e7b1c7e5cc6051ee9ad6b28b724"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-credential",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce5ee769f9b4a2f72ee3e427526462f75f2ccaa073a06eb055cccbbab5c74090",
+      "harness_digest": "565a4d91726bb19e8ede5e7ff1ec1d3da3c057b2e5d9a5140424dc7102a6bf3c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 15.6,
+      "usage": {
+        "input": 64268,
+        "cached_input": 51455,
+        "output": 1045
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-claude",
+      "trial": "docs-concision-credential-1",
+      "raw_trace_sha256": "5ca1060abd1e57103d54a6cf842574241552d188374eb32c3e6ba7ccc5a69778"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-credential",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce5ee769f9b4a2f72ee3e427526462f75f2ccaa073a06eb055cccbbab5c74090",
+      "harness_digest": "565a4d91726bb19e8ede5e7ff1ec1d3da3c057b2e5d9a5140424dc7102a6bf3c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 14.5,
+      "usage": {
+        "input": 64263,
+        "cached_input": 51457,
+        "output": 994
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-claude",
+      "trial": "docs-concision-credential-2",
+      "raw_trace_sha256": "8659a1d0baa4430a41eb54d39acd51c78265f4cd249569a4d641fe05f7ba9919"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-missing-context",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce5ee769f9b4a2f72ee3e427526462f75f2ccaa073a06eb055cccbbab5c74090",
+      "harness_digest": "a09081779f853e5671f3e902846451f519b30c07b1218679f85876716085baed",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 15.1,
+      "usage": {
+        "input": 63611,
+        "cached_input": 51001,
+        "output": 995
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-claude",
+      "trial": "docs-concision-missing-context-1",
+      "raw_trace_sha256": "4b54103c27121a59cf3abcac68679c88056b3cae8907760a105ada2f5a48757e"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-missing-context",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce5ee769f9b4a2f72ee3e427526462f75f2ccaa073a06eb055cccbbab5c74090",
+      "harness_digest": "a09081779f853e5671f3e902846451f519b30c07b1218679f85876716085baed",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 15.7,
+      "usage": {
+        "input": 63792,
+        "cached_input": 51009,
+        "output": 1048
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": false,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-claude",
+      "trial": "docs-concision-missing-context-2",
+      "raw_trace_sha256": "b28fa0aca2a7ec6df85909288148072c69879134972dd6c4e6ddcbcc1adba292"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-primary",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce5ee769f9b4a2f72ee3e427526462f75f2ccaa073a06eb055cccbbab5c74090",
+      "harness_digest": "339e34fe6ad4b87c66910e94756f3cf0a66db2aebfa740bcf926f8b696931ac0",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 8.2,
+      "usage": {
+        "input": 29459,
+        "cached_input": 18540,
+        "output": 611
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-claude",
+      "trial": "docs-concision-primary-1",
+      "raw_trace_sha256": "69822c808d255944462f886707bd232a3512eafb151de75ebd810d6d4726283f"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-primary",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce5ee769f9b4a2f72ee3e427526462f75f2ccaa073a06eb055cccbbab5c74090",
+      "harness_digest": "339e34fe6ad4b87c66910e94756f3cf0a66db2aebfa740bcf926f8b696931ac0",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 9.5,
+      "usage": {
+        "input": 47009,
+        "cached_input": 34261,
+        "output": 733
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-claude",
+      "trial": "docs-concision-primary-2",
+      "raw_trace_sha256": "8ae7753f96074495e61bd4ad757316e12a0ee88d3a033a36cba0e7a542550770"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-adjacent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce5ee769f9b4a2f72ee3e427526462f75f2ccaa073a06eb055cccbbab5c74090",
+      "harness_digest": "1c766ac868b000b679c824e06080a45042160b118918ab466b497f954f544b2c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 5.6,
+      "usage": {
+        "input": 15984,
+        "cached_input": 11008,
+        "output": 30
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-codex",
+      "trial": "docs-concision-adjacent-1",
+      "raw_trace_sha256": "7b694c224deb94df996047734018ec4f2d6ab47a301a271fd8c9b824c37bbd0f"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-adjacent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce5ee769f9b4a2f72ee3e427526462f75f2ccaa073a06eb055cccbbab5c74090",
+      "harness_digest": "1c766ac868b000b679c824e06080a45042160b118918ab466b497f954f544b2c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 5.8,
+      "usage": {
+        "input": 15984,
+        "cached_input": 11008,
+        "output": 31
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-codex",
+      "trial": "docs-concision-adjacent-2",
+      "raw_trace_sha256": "ccad5f6f56ac72210745621730f6f7b7e6c1eb5ce38d9819bcd0036f6456ee40"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-credential",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce5ee769f9b4a2f72ee3e427526462f75f2ccaa073a06eb055cccbbab5c74090",
+      "harness_digest": "565a4d91726bb19e8ede5e7ff1ec1d3da3c057b2e5d9a5140424dc7102a6bf3c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 24.5,
+      "usage": {
+        "input": 50943,
+        "cached_input": 43264,
+        "output": 437
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": false,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": "cat /Volumes/Developer-Artifacts/worktrees/codex-skills/go816-docs-concision/skills/docs-lookup/references/routing.md; printf '\\n--- AGENTS ---\\n'; find .. -name AGENTS.md -print; printf '\\n--- credential index ---\\n'; cat credentials-index.md; printf '\\n--- declared key names ---\\n'; rg -n --hidden --glob '!**/.git/**' '(DEMO_API_KEY|API_KEY|KEY)' ."
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-codex",
+      "trial": "docs-concision-credential-1",
+      "raw_trace_sha256": "864fc2433a3ac16f868edbc89bf7eb611671a349911cc2b45819de514b8e9c5d"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-credential",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce5ee769f9b4a2f72ee3e427526462f75f2ccaa073a06eb055cccbbab5c74090",
+      "harness_digest": "565a4d91726bb19e8ede5e7ff1ec1d3da3c057b2e5d9a5140424dc7102a6bf3c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 45.5,
+      "usage": {
+        "input": 93500,
+        "cached_input": 82688,
+        "output": 957
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": "cat .env.example && if [ -f .github/github.json ]; then cat .github/github.json; else printf '%s\\n' '.github/github.json absent'; fi"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-codex",
+      "trial": "docs-concision-credential-2",
+      "raw_trace_sha256": "3a327e017e5fd0c87cd0d4227ecb9c3662669e5ca470ff7a780acd8fa687e314"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-missing-context",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce5ee769f9b4a2f72ee3e427526462f75f2ccaa073a06eb055cccbbab5c74090",
+      "harness_digest": "a09081779f853e5671f3e902846451f519b30c07b1218679f85876716085baed",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 26.6,
+      "usage": {
+        "input": 51631,
+        "cached_input": 38144,
+        "output": 561
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-codex",
+      "trial": "docs-concision-missing-context-1",
+      "raw_trace_sha256": "a6b6bb7d387a1a595eb729ee1208777c3e0bdea7c4ab288564a0eb30666d6640"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-missing-context",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce5ee769f9b4a2f72ee3e427526462f75f2ccaa073a06eb055cccbbab5c74090",
+      "harness_digest": "a09081779f853e5671f3e902846451f519b30c07b1218679f85876716085baed",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 27.8,
+      "usage": {
+        "input": 69984,
+        "cached_input": 59392,
+        "output": 515
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-codex",
+      "trial": "docs-concision-missing-context-2",
+      "raw_trace_sha256": "a26b0e33d2d9eafed681d17efa98d52a3a083b85fa133e03e13bbf720741f883"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-primary",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce5ee769f9b4a2f72ee3e427526462f75f2ccaa073a06eb055cccbbab5c74090",
+      "harness_digest": "339e34fe6ad4b87c66910e94756f3cf0a66db2aebfa740bcf926f8b696931ac0",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 29.1,
+      "usage": {
+        "input": 67804,
+        "cached_input": 59392,
+        "output": 409
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": false,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": "cat package.json && cat official-v2.md && find .. -name AGENTS.md -print"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-codex",
+      "trial": "docs-concision-primary-1",
+      "raw_trace_sha256": "69ce59e4489a440deab72aeb927faad49c10f04ace9e219ff5fe05f432427626"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-primary",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce5ee769f9b4a2f72ee3e427526462f75f2ccaa073a06eb055cccbbab5c74090",
+      "harness_digest": "339e34fe6ad4b87c66910e94756f3cf0a66db2aebfa740bcf926f8b696931ac0",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 42.7,
+      "usage": {
+        "input": 67895,
+        "cached_input": 53248,
+        "output": 364
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "candidate-codex",
+      "trial": "docs-concision-primary-2",
+      "raw_trace_sha256": "66fceb381a599ce1609170a91163647a714058a512845285f5ad4cc257311c46"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-adjacent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "1c766ac868b000b679c824e06080a45042160b118918ab466b497f954f544b2c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 7.4,
+      "usage": {
+        "input": 27588,
+        "cached_input": 18484,
+        "output": 225
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-claude",
+      "trial": "docs-concision-adjacent-1",
+      "raw_trace_sha256": "b94982943823ea8d501ef8d7d0eb8f2242acf5279a1d8c8bb9c561cf1bfb52c1"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-adjacent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "1c766ac868b000b679c824e06080a45042160b118918ab466b497f954f544b2c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 10.6,
+      "usage": {
+        "input": 27509,
+        "cached_input": 18484,
+        "output": 146
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-claude",
+      "trial": "docs-concision-adjacent-2",
+      "raw_trace_sha256": "a8ad6ffce5615543515b2636b2bcbcc5fa948b88105ddf1b458e24a0fc6d3bb7"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-credential",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "565a4d91726bb19e8ede5e7ff1ec1d3da3c057b2e5d9a5140424dc7102a6bf3c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 19.1,
+      "usage": {
+        "input": 64352,
+        "cached_input": 51509,
+        "output": 943
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-claude",
+      "trial": "docs-concision-credential-1",
+      "raw_trace_sha256": "21f56480ea4669b4de7369603deb6d95fa6887525d53814aad15d71af1e9e693"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-credential",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "565a4d91726bb19e8ede5e7ff1ec1d3da3c057b2e5d9a5140424dc7102a6bf3c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 21.6,
+      "usage": {
+        "input": 64377,
+        "cached_input": 51521,
+        "output": 1061
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-claude",
+      "trial": "docs-concision-credential-2",
+      "raw_trace_sha256": "c6eabed6eb22303f7913a6f73275da73f023d58b64f14d83fb3e5e011d0a9dcd"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-missing-context",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "bf841ffcd7ccbea844a9b21d5d8bda80ef05495e30f7ae71ef6f1654df6a46b3",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 17.0,
+      "usage": {
+        "input": 46285,
+        "cached_input": 33948,
+        "output": 892
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-claude",
+      "trial": "docs-concision-missing-context-1",
+      "raw_trace_sha256": "d2621f6ba47a743a119b605fb33298fe3a8e37ee84d27e05713f8863a32e389a"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-missing-context",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "bf841ffcd7ccbea844a9b21d5d8bda80ef05495e30f7ae71ef6f1654df6a46b3",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 15.0,
+      "usage": {
+        "input": 46287,
+        "cached_input": 33949,
+        "output": 981
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-claude",
+      "trial": "docs-concision-missing-context-2",
+      "raw_trace_sha256": "bb724e0d3865762d08168813b0e7cdd3619de9e7fbedbf52b354feeb10f68374"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-primary",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "339e34fe6ad4b87c66910e94756f3cf0a66db2aebfa740bcf926f8b696931ac0",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 14.5,
+      "usage": {
+        "input": 29480,
+        "cached_input": 18536,
+        "output": 663
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-claude",
+      "trial": "docs-concision-primary-1",
+      "raw_trace_sha256": "6a5e1f47d18a13710bc387c35fd1a155dcc15ec63ff7b8e5185facce9acc8982"
+    },
+    {
+      "host": "claude",
+      "case": "docs-concision-primary",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "339e34fe6ad4b87c66910e94756f3cf0a66db2aebfa740bcf926f8b696931ac0",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 15.8,
+      "usage": {
+        "input": 29485,
+        "cached_input": 18536,
+        "output": 652
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-claude",
+      "trial": "docs-concision-primary-2",
+      "raw_trace_sha256": "196760a804e83496a82ff22dccb8b4bff5a237cecce0d8b354befc7e45c4c0b5"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-adjacent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "1c766ac868b000b679c824e06080a45042160b118918ab466b497f954f544b2c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 10.5,
+      "usage": {
+        "input": 15984,
+        "cached_input": 11008,
+        "output": 20
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-codex",
+      "trial": "docs-concision-adjacent-1",
+      "raw_trace_sha256": "abab30552cc41aa9c8a9fe8b8aea1519db37ab8c48c211a65e985df2228260df"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-adjacent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "1c766ac868b000b679c824e06080a45042160b118918ab466b497f954f544b2c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 12.2,
+      "usage": {
+        "input": 32063,
+        "cached_input": 26112,
+        "output": 81
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-codex",
+      "trial": "docs-concision-adjacent-2",
+      "raw_trace_sha256": "7ea6aed847410f9d3b72d7a7fb6b241184fab75f1e599b1cccd8993bfcf7e9c3"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-credential",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "565a4d91726bb19e8ede5e7ff1ec1d3da3c057b2e5d9a5140424dc7102a6bf3c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 35.2,
+      "usage": {
+        "input": 91123,
+        "cached_input": 74496,
+        "output": 862
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-codex",
+      "trial": "docs-concision-credential-1",
+      "raw_trace_sha256": "53073ac54781856eddce624fd1b45036602ee0493cdda3ff84e226502b5f779a"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-credential",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "565a4d91726bb19e8ede5e7ff1ec1d3da3c057b2e5d9a5140424dc7102a6bf3c",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 31.1,
+      "usage": {
+        "input": 73716,
+        "cached_input": 62464,
+        "output": 679
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": "if test -f ./.github/github.json; then cat ./.github/github.json; else printf '%s\\n' 'No .github/github.json present'; fi; rg --files --hidden -g 'AGENTS.md' -g '.github/github.json' -g '.env.example' -g '!**/.git/**'"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-codex",
+      "trial": "docs-concision-credential-2",
+      "raw_trace_sha256": "3048680eff68142dd4924a4c6aa319c47edb9a31f5247aa968230032b8d365b5"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-missing-context",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "bf841ffcd7ccbea844a9b21d5d8bda80ef05495e30f7ae71ef6f1654df6a46b3",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 31.0,
+      "usage": {
+        "input": 73026,
+        "cached_input": 55296,
+        "output": 538
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": false,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-codex",
+      "trial": "docs-concision-missing-context-1",
+      "raw_trace_sha256": "1de52f40bd9ce7942637c4500c9a48114f02db564c9a11bae006e3cc22110d29"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-missing-context",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "bf841ffcd7ccbea844a9b21d5d8bda80ef05495e30f7ae71ef6f1654df6a46b3",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 22.0,
+      "usage": {
+        "input": 69876,
+        "cached_input": 59392,
+        "output": 483
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": false,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-codex",
+      "trial": "docs-concision-missing-context-2",
+      "raw_trace_sha256": "d5359c795c2ba2dd54fbfb30484a339dd969351ccf0d3519dcc6ed28866b8ca9"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-primary",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "339e34fe6ad4b87c66910e94756f3cf0a66db2aebfa740bcf926f8b696931ac0",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 24.7,
+      "usage": {
+        "input": 70968,
+        "cached_input": 55296,
+        "output": 408
+      },
+      "score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-codex",
+      "trial": "docs-concision-primary-1",
+      "raw_trace_sha256": "8714b34c860a1f81500e9cdf34bbff9c89e87e75993f2e31cf6d7d55a69dbd3d"
+    },
+    {
+      "host": "codex",
+      "case": "docs-concision-primary",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "339e34fe6ad4b87c66910e94756f3cf0a66db2aebfa740bcf926f8b696931ac0",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 26.0,
+      "usage": {
+        "input": 92240,
+        "cached_input": 80640,
+        "output": 638
+      },
+      "score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "docs-lookup"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "cohort": "final-codex",
+      "trial": "docs-concision-primary-2",
+      "raw_trace_sha256": "3f4998569caad76a8f84737634b5498cec8d0cd6c26dc2ba45f270610243f8bd"
+    }
+  ]
+}
