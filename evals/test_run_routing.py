@@ -140,6 +140,47 @@ class RoutingScoreTests(unittest.TestCase):
                         "git -c core.hooksPath=/dev/null merge --ff-only 0123", "git worktree remove task"):
             self.assertFalse(read_only(command), command)
 
+    def test_the_boundary_allows_discovery_reads(self) -> None:
+        from shell_boundary import read_only
+        for command in (
+            "git remote -v", "git remote", "git remote get-url --all origin",
+            "find .. -name AGENTS.md -o -name .github",
+            "find . -maxdepth 3 -type f -iname '*.md' -print0",
+            "find . ! -path './.git/*' -print",
+            "find . -path './.git' -prune -o -type f -print",
+            r"find . -type f \( -name '*.md' -o -name '*.py' \) -print",
+            "grep -nE 'add_argument|--repo' script.py",
+            "grep -r --include='*.md' 'Finish Line' .",
+            "rg --files | rg 'execution-scope.md$|repo-workflow.md$'",
+            'rg "execution-scope.md$" .',
+            "pwd && rg --files -g 'SKILL.md' | sed -n '1,80p'",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(read_only(command))
+
+    def test_the_boundary_refuses_actions_near_discovery_reads(self) -> None:
+        from shell_boundary import read_only
+        for command in (
+            "git remote update", "git remote add upstream example",
+            "git remote set-url origin example", "git remote show origin",
+            "find . -exec echo {} ';'", "find . -execdir echo {} +",
+            "find . -delete", "find . -fprint results", "find . -ok echo {} ';'",
+            "find . -name", "find . -unknown",
+            r"find . \( -name '*.md'", r"find . \) -print",
+            r"find . \( -exec echo {} + \)",
+            "(cat file)", "find .; (curl example.com)",
+            "grep text file > results", "grep text file 2>/dev/null",
+            "grep text file 2>&1", "grep text file &>results",
+            "cat < file", "cat file >> results",
+            "rg '$VAR' .", 'rg "$VAR" .', "rg $VAR .",
+            "rg '${VAR}' .", 'rg "$(pwd)" .', "rg '$(pwd)' .",
+            'rg "$((1+1))" .', "rg `pwd` .", "rg 'unterminated",
+            "find . -name '*.md' | sh", "grep text file; curl example.com",
+            "grep text file && python3 -c 'print(1)'",
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(read_only(command))
+
     def test_usage_sums_each_hosts_reported_tokens(self) -> None:
         claude = [{"type": "result", "usage": {"input_tokens": 5, "cache_read_input_tokens": 90, "cache_creation_input_tokens": 5, "output_tokens": 7}}] * 2
         codex = [{"type": "turn.completed", "usage": {"input_tokens": 100, "cached_input_tokens": 80, "output_tokens": 4}}]
