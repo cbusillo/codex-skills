@@ -818,12 +818,12 @@ test_refs = ["github/scripts/validate-gh-plan.py", "github/scripts/validate-oper
 id = "github.direction.audit_issues"
 capabilities = ["issues_read"]
 permission_mode = "fixed"
-permission_note = "Audit issue collection uses the existing repository Issues read grant and safe issues probe; no default-profile expansion. Read failures abort the audit. Capped listings report incomplete coverage; an incomplete closed-audit listing preserves the prior marker."
+permission_note = "Audit issue collection uses the existing repository Issues read grant and safe issues probe; no default-profile expansion. Required issue-list read failures abort the audit. Bounded inbound dependency read failures and capped listings report incomplete coverage; an incomplete closed-audit listing preserves the prior marker."
 entrypoint = "direction/scripts/direction_audit.py --repo OWNER/REPO (issue collection)"
-intent = "Read open audit questions and recently closed labeled work alongside milestone admission evidence."
+intent = "Read open audit questions and recently closed labeled work alongside milestone admission evidence and waiting cross-repository blockers."
 current_transport = "rest_api"
 selected_transport = "rest_api"
-endpoint_or_command = "Paged GET /repos/{repo}/issues with state, milestone, labels=audit and since filters; GET /repos/{repo}/issues/{number}/events"
+endpoint_or_command = "Paged GET /repos/{repo}/issues with state, milestone, labels=audit and since filters; GET /repos/{repo}/issues/{number}/events; bounded GET /repos/{repo}/issues/{number}/dependencies/blocking for up to 50 waiting issues and 2 pages each"
 quota_bucket = "rest_core"
 actor_policy = "automation_required"
 mutation_class = "read"
@@ -831,8 +831,8 @@ idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "fresh_read"
 retained_graphql_rationale = "No GraphQL transport; issue lists and admission events are repository-scoped REST reads."
-source_refs = ["direction/scripts/direction_audit.py:fetch_audit_issues", "direction/scripts/direction_audit.py:enrich_admission_actors"]
-test_refs = ["direction/scripts/test_direction_audit.py:test_closed_audit_fetch_is_independent_of_milestones_and_deduplicates", "direction/scripts/test_direction_audit.py:test_main_preserves_closed_audit_cutoff_and_stamps_scan_start", "direction/scripts/test_direction_audit.py:test_open_audit_questions_beyond_the_general_issue_cap_are_still_reported"]
+source_refs = ["direction/scripts/direction_audit.py:enrich_waiting_inbound_blockers", "direction/scripts/direction_audit.py:fetch_audit_issues", "direction/scripts/direction_audit.py:enrich_admission_actors"]
+test_refs = ["direction/scripts/test_direction_audit.py:test_waiting_unmilestoned_cross_repository_blocker_is_a_named_finding", "direction/scripts/test_direction_audit.py:test_waiting_inbound_fetch_coverage_includes_caps_errors_and_ambiguous_targets", "direction/scripts/test_direction_audit.py:test_closed_audit_fetch_is_independent_of_milestones_and_deduplicates", "direction/scripts/test_direction_audit.py:test_main_preserves_closed_audit_cutoff_and_stamps_scan_start", "direction/scripts/test_direction_audit.py:test_open_audit_questions_beyond_the_general_issue_cap_are_still_reported"]
 
 [[operations]]
 id = "github.plan.direction_read"

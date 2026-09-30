@@ -376,7 +376,7 @@ retrying until planning stalls.
   making dependency state look safe. Project item truncation is also explicit.
 - `--scan-limit` independently bounds both plan and inbound-gate scans, and
   each relationship collection has its own fixed safety limit. Truncated or
-  otherwise unavailable dependency reads fail closed as `unknown_dependencies`
+  otherwise unavailable plan relationship reads fail closed as `unknown_dependencies`
   and are summarized in top-level dependency context. `--limit` bounds the
   ranked candidate list while preserving evaluated exclusion evidence.
 
@@ -386,7 +386,9 @@ entries provide visibility; review recorded waits and ownership before starting
 work. They do not override candidate exclusions.
 `blocking_work_elsewhere_context` records an independent repository inventory
 and scan budget, errors, caps, and unread gates. This report covers the whole
-repository even when candidate selection uses `--milestone`.
+repository even when candidate selection uses `--milestone`, subject to its
+reported caps. Permission-denied and not-found reads degrade inbound coverage;
+quota and authentication failures retain the existing command-stop policy.
 
 For `<owner>/direction`, `next` automatically selects global direction scope;
 no flag is needed. The target repository's merged `DIRECTION.md` is required,
