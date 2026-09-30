@@ -12,7 +12,7 @@ import sys
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SCRIPT = Path(__file__).with_name("gh-plan.py")
 sys.path.insert(0, str(SCRIPT.parent))
@@ -33,14 +33,20 @@ def issue(repo: str, number: int = 1) -> dict:
 
 
 class SearchTests(unittest.TestCase):
-    def search(self, query: str, results: list[dict], *options: str) -> tuple[str, dict]:
+    def search(self, query: str, results: list[dict], *options: str, current_repo: str | None = "owner/current") -> tuple[str, dict]:
         args = PLAN.build_parser().parse_args([*options, "search", query])
-        with (
-            patch.object(PLAN, "default_repo", return_value=args.repo or "owner/current"),
-            patch.object(PLAN, "collect_paged_rest_items", return_value=("automation-gh", results)) as read,
-            patch.object(PLAN, "emit") as emit,
-        ):
+        read = Mock(return_value=("automation-gh", results))
+        emit = Mock()
+        default_repo = Mock(return_value=current_repo)
+        with patch.dict(PLAN.__dict__, {
+            "default_repo": default_repo,
+            "repo_from_git": lambda: current_repo,
+            "collect_paged_rest_items": read,
+            "emit": emit,
+        }):
             PLAN.cmd_search(args)
+        if current_repo is None:
+            default_repo.assert_not_called()
         self.assertEqual(read.call_args.args, ("/search/issues",))
         self.assertEqual(read.call_args.kwargs["bucket"], "search")
         return read.call_args.kwargs["query"]["q"], emit.call_args.args[0]
@@ -80,6 +86,12 @@ class SearchTests(unittest.TestCase):
     def test_missing_repository_fails_instead_of_guessing(self) -> None:
         with self.assertRaisesRegex(PLAN.PlanError, "omitted the issue repository"):
             self.search("user:owner", [{"number": 1}])
+
+    def test_scoped_search_works_without_a_current_checkout(self) -> None:
+        q, output = self.search("repo:owner/other bug", [issue("owner/other")], current_repo=None)
+        self.assertEqual(q, "repo:owner/other bug is:issue")
+        self.assertIsNone(output["repo"])
+        self.assertEqual(output["issues"][0]["repo"], "owner/other")
 
 
 if __name__ == "__main__":

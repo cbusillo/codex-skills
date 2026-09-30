@@ -1790,10 +1790,10 @@ def cmd_index(args: argparse.Namespace) -> None:
 
 
 def cmd_search(args: argparse.Namespace) -> None:
-    repo = default_repo(args.repo)
     query = args.query.strip()
     unquoted_query = re.sub(r'"(?:\\.|[^"\\])*"', '""', query)
     has_scope = re.search(r"(?:^|[\s(])(?:repo|org|user):", unquoted_query, re.IGNORECASE)
+    repo = args.repo or (repo_from_git() if has_scope else default_repo())
     query_parts = [query]
     if args.repo or not has_scope:
         query_parts.append(f"repo:{repo}")

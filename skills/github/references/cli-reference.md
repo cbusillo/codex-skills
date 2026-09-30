@@ -318,7 +318,8 @@ or Project focus state.
   `is:issue` constraint. Add the current repository only when the query has no
   positive `repo:`, `org:`, or `user:` scope; an explicit global `--repo` always
   adds its repository constraint. Each result's `repo` identifies its own
-  repository, while the top-level `repo` records the caller's default context.
+  repository, while the top-level `repo` records the caller's default context
+  (null for a scoped search outside a checkout).
   Result milestones retain the search payload's title. `--state open|closed` adds the matching
   search qualifier, `--state all` omits it, and quota evidence uses the search
   bucket. Compact states remain normalized as uppercase `OPEN` or `CLOSED`
