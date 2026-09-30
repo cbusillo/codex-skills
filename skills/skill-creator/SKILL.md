@@ -263,7 +263,7 @@ its fixtures/readers are historical, not a supported validation path.
 
 For approval, safety or destructive changes, read
 [reviews by another model](../references/model-review.md) before merging and
-weigh the review there. 
+weigh the review there.
 
 ### 6. Iterate And Forward-Test
 
