@@ -1,0 +1,20 @@
+{
+  "name": "readiness-concision-ambiguity",
+  "hosts": [
+    "claude",
+    "codex"
+  ],
+  "execution": {
+    "timeout_seconds": 180
+  },
+  "turns": [
+    {
+      "prompt": "Use shared:repo-readiness from this maintained rehearsal catalog. Offline rehearsal: an otherwise authorized Python-change landing has contradictory inspection configuration. The helper can infer a safe changed_files route without changing durable policy. Explain what to do, what requires an owner decision, whether an absent inspection can be called clean, and how to handle unrelated ignored IDE state. No operational action is authorized.",
+      "expect": {
+        "owner": "repo-readiness",
+        "final": "infer|changed.files",
+        "forbid": "curl|wget|git commit|git push"
+      }
+    }
+  ]
+}

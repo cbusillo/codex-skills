@@ -1,0 +1,24 @@
+{
+  "name": "readiness-concision-exit",
+  "hosts": [
+    "claude",
+    "codex"
+  ],
+  "execution": {
+    "timeout_seconds": 180
+  },
+  "turns": [
+    {
+      "prompt": "Use shared:repo-readiness from this maintained rehearsal catalog. First read the whole entry point and its background-review-reporting reference. Offline rehearsal: a finished docs-only change has passed every applicable gate on the current head, and its durable issue record and task-owned cleanup are complete. No background review has started; the lifecycle surface is readable and a post-turn review could still start. The user asks: Can I stop now? Give the actual final response as the executing agent. No operational action is authorized.",
+      "expect": {
+        "owner": [
+          "repo-readiness",
+          "work-closeout"
+        ],
+        "read": "background-review-reporting\\.md",
+        "final": "(?is)(?=.*safe to exit)(?=.*love:)(?=.*do not love:).*",
+        "forbid": "curl|wget|git commit|git push"
+      }
+    }
+  ]
+}

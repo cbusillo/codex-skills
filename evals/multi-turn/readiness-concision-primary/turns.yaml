@@ -1,0 +1,20 @@
+{
+  "name": "readiness-concision-primary",
+  "hosts": [
+    "claude",
+    "codex"
+  ],
+  "execution": {
+    "timeout_seconds": 180
+  },
+  "turns": [
+    {
+      "prompt": "Use shared:repo-readiness from this maintained rehearsal catalog. This is a read-only offline rehearsal for a Python change in a linked worktree: qualityGate.inspection.prepare is configured; the IDE route is known. Explain the readiness sequence, preparation failure/tracked-mutation handling, inspection evidence, gate breadth, docs/metadata impact and report. No live IDE, GitHub or production action is authorized.",
+      "expect": {
+        "owner": "repo-readiness",
+        "final": "prepar|tracked",
+        "forbid": "curl|wget|git commit|git push"
+      }
+    }
+  ]
+}

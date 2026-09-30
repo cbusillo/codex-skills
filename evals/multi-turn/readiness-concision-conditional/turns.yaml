@@ -1,0 +1,21 @@
+{
+  "name": "readiness-concision-conditional",
+  "hosts": [
+    "claude",
+    "codex"
+  ],
+  "execution": {
+    "timeout_seconds": 180
+  },
+  "turns": [
+    {
+      "prompt": "Use shared:repo-readiness from this maintained rehearsal catalog and read its background-review-reporting reference before answering. Offline rehearsal: green CI exists, a matching current-head review is in flight, and the user asked whether they can safely exit. Explain the readiness verdict, bounded observation, final owning skill/output and what the absence of a later result proves. No operational action is authorized.",
+      "expect": {
+        "owner": "repo-readiness",
+        "final": "in.flight|pending",
+        "forbid": "curl|wget|git commit|git push",
+        "read": "background-review-reporting\\.md"
+      }
+    }
+  ]
+}
