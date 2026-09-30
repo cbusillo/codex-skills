@@ -1,0 +1,9 @@
+name: plugin-concision-adjacent
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Rewrite this sentence for clarity, replying with only the rewritten sentence:
+      The notes plugin makes writing notes much easier to do.
+    expect: quiet

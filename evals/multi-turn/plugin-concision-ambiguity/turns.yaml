@@ -1,0 +1,12 @@
+name: plugin-concision-ambiguity
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Use shared:plugin-creator. Create a plugin named Notes and register it in
+      the marketplace. I have not decided where it belongs.
+    expect:
+      owner: plugin-creator
+      forbid: 'create_basic_plugin\.py|mkdir|tee'
+      final: '(repo|repository).*(home|personal)|(home|personal).*(repo|repository)'
