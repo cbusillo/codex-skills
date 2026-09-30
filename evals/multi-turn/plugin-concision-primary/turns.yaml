@@ -1,0 +1,15 @@
+name: plugin-concision-primary
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Use shared:plugin-creator to scaffold a repo-local plugin named My Notes,
+      with skills and a marketplace entry. This is an offline read-only rehearsal:
+      attempt the documented scaffold command once; the fixture blocks writes.
+      Explain where the plugin and marketplace would live and what remains to fill.
+    expect:
+      owner: plugin-creator
+      operation: 'create_basic_plugin\.py.*--with-marketplace'
+      require: 'create_basic_plugin\.py.*--with-skills'
+      final: 'my-notes'

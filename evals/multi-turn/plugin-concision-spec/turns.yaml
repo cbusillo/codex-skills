@@ -1,0 +1,18 @@
+name: plugin-concision-spec
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  marketplace.json: '{"name":"fixture","interface":{"displayName":"Existing Title"},"plugins":[{"name":"existing","source":{"source":"local","path":"./plugins/existing"},"policy":{"installation":"AVAILABLE","authentication":"ON_INSTALL"},"category":"Productivity"}]}'
+turns:
+  - prompt: >-
+      Use shared:plugin-creator. For a repo-local plugin new-notes, provide the
+      exact proposed marketplace JSON entry and explain how it joins the existing
+      marketplace.json. Keep existing presentation and ordering. No product gating
+      or policy override has been requested. Use the canonical schema sample in
+      the skill's reference; do not write files.
+    expect:
+      owner: plugin-creator
+      read: 'plugin-json-spec\.md'
+      forbid: 'create_basic_plugin\.py|mkdir|tee'
+      final: 'ON_INSTALL'
