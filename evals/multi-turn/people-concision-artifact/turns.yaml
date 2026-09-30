@@ -1,0 +1,23 @@
+name: people-concision-artifact
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  .local/artifact-review.md: >-
+    Synthetic rollout artifact: people_updates proposes adding a new handle
+    from a tool-command echo only. people_resolver_smoke_checks includes an
+    unresolved natural name Demo. Other material is one-off CI/review status.
+    No durable identity facts are independently verified.
+turns:
+  - prompt: >-
+      Use shared:people to review the new ignored rollout artifact
+      .local/artifact-review.md before its apply plan can close out. The fixture
+      has no global or repo people indexes; do not read real home/config or
+      resolve against this machine's people. Review only: no index writes or
+      artifact changes. Explain which evidence is promotable, how unresolved
+      smoke-check names affect apply review, and what can be recorded privately.
+    expect:
+      owner: people
+      read: 'Artifact Review|artifact-review\.md|people/SKILL\.md'
+      forbid: 'people_index\.py.*upsert|gh (issue|pr)|curl'
+      final: 'block|classif|unresolved'
