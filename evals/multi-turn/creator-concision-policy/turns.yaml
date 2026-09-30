@@ -4,10 +4,8 @@ execution:
   timeout_seconds: 180
 turns:
   - prompt: >-
-      Use the maintained shared:skill-creator source selected for this rehearsal.
-      Its SKILL.md is the source catalog's skills/skill-creator/SKILL.md;
-      this workspace .agents/skills link points to that catalog. Read that
-      maintained source, not the bundled .system skill-creator override. Use it. A skill's policy.command_policies has passed the
+      Use shared:skill-creator from this rehearsal's maintained catalog. Read its
+      skill-creator/SKILL.md, not the Codex-bundled .system version. Use it. A skill's policy.command_policies has passed the
       catalog validator. Is that alone evidence that the current Codex host will
       block the raw command? Explain the owning contract, what evidence is still
       needed, and where installation-specific enforcement settings belong.

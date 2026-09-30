@@ -16,10 +16,8 @@ fixture_files:
           value: demo-server
 turns:
   - prompt: >-
-      Use the maintained shared:skill-creator source selected for this rehearsal.
-      Its SKILL.md is the source catalog's skills/skill-creator/SKILL.md;
-      this workspace .agents/skills link points to that catalog. Read that
-      maintained source, not the bundled .system skill-creator override. Use it. The existing agents/openai.yaml only needs its
+      Use shared:skill-creator from this rehearsal's maintained catalog. Read its
+      skill-creator/SKILL.md, not the Codex-bundled .system version. Use it. The existing agents/openai.yaml only needs its
       short_description changed to "Summarize fixture logs". Read it and explain
       the update approach and fields that must survive. This offline case asks
       for an assessment, no actual file edits or helper execution. No icon or

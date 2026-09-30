@@ -19,10 +19,8 @@ fixture_files:
       allow_implicit_invocation: true
 turns:
   - prompt: >-
-      Use the maintained shared:skill-creator source selected for this rehearsal.
-      Its SKILL.md is the source catalog's skills/skill-creator/SKILL.md;
-      this workspace .agents/skills link points to that catalog. Read that
-      maintained source, not the bundled .system skill-creator override. Use it. Our fixture demo skill is intended to require
+      Use shared:skill-creator from this rehearsal's maintained catalog. Read its
+      skill-creator/SKILL.md, not the Codex-bundled .system version. Use it. Our fixture demo skill is intended to require
       explicit invocation on both Codex and Claude Code. Read SKILL.md and
       agents/openai.yaml and explain whether the current files satisfy that.
       State the needed file/field change without editing files. Do not assume
