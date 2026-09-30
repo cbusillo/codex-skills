@@ -21,6 +21,7 @@ SCRIPT = Path(__file__).with_name("review_with_model.py")
 
 FAKE_CODEX = """#!/bin/sh
 # Writes the answer to the file given after -o, like `codex exec`.
+[ -n "$FAKE_CODEX_ARGV_FILE" ] && printf '%s\\n' "$@" > "$FAKE_CODEX_ARGV_FILE"
 while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done
 echo "model: gpt-test"
 printf '%s' "$FAKE_ANSWER" > "$out"
@@ -105,6 +106,22 @@ class ReviewWithModelTests(unittest.TestCase):
         # `--allowedTools` only extends a user's own allowlist; `--tools` is what removes the write tools.
         self.assertEqual(argv[argv.index("--tools") + 1], "Read,Grep,Glob")
         self.assertNotIn("--allowedTools", argv)
+        # `--tools` leaves configured MCP servers, which can write, unless the session ignores them.
+        self.assertIn("--strict-mcp-config", argv)
+        self.assertNotIn("--mcp-config", argv)
+        # Settings committed to the reviewed repository can run hooks before the review starts.
+        self.assertEqual(argv[argv.index("--setting-sources") + 1], "user")
+
+    def test_the_openai_reviewer_starts_without_mcp_servers_or_the_users_config(self) -> None:
+        self.install("codex", FAKE_CODEX)
+        argv_file = self.root / "codex-argv"
+        self.review("openai", FAKE_ANSWER="none", FAKE_CODEX_ARGV_FILE=str(argv_file))
+        argv = argv_file.read_text().split("\n")
+        # MCP servers run outside `-s read-only`; they come from the user's config, plugins, and apps.
+        self.assertIn("--ignore-user-config", argv)
+        disabled = {argv[i + 1] for i, arg in enumerate(argv) if arg == "--disable"}
+        self.assertLessEqual({"plugins", "apps"}, disabled)
+        self.assertEqual(argv[argv.index("-s") + 1], "read-only")
 
     def test_google_preamble_names_only_allowed_commands_and_read_file(self) -> None:
         self.install("agy", FAKE_AGY)

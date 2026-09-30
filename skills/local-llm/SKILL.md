@@ -211,6 +211,14 @@ manual recovery when the HTTP lifecycle path is unavailable. For non-local LM
 Studio instances, CLI commands must target the serving host explicitly, so API
 helpers are preferred for trusted LAN and remote-private endpoints.
 
+LM Studio loads only a model's selected variant (quantization). On the build
+tested in September 2026, variant-suffixed model keys, the REST API, a restart,
+a re-download, and `lms get --select` did not change it; moving the unwanted
+variant's folder out of the downloads root did. Before benchmarking a variant,
+confirm which one loaded from native runtime state or other evidence that
+names the quantization; `served_model` alone may name only the model. When no
+evidence names it, report the variant as unverified.
+
 Large reasoning models may return no assistant content when `max_tokens` is too low because the budget is consumed by reasoning. Increase `max_tokens` for deep models before declaring them unusable.
 
 If a configured local endpoint is unavailable, say so plainly and keep private

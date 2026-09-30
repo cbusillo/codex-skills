@@ -2170,6 +2170,71 @@ def test_scan_budget_failure_and_progress_are_separate() -> None:
         else:
             raise AssertionError("invalid budget accepted")
 
+
+FIXTURES = Path(__file__).with_name("fixtures")
+
+
+def outcome_counts(module: ModuleType, findings: Any) -> dict[str, Any]:
+    summary = module.outcome_summary(findings.events)
+    summary.pop("expected_nonzero_evidence")
+    return {**summary, "findings": {name: finding.count for name, finding in findings.items()}}
+
+
+def test_claude_code_transcript_matches_codex_outcome_counts() -> None:
+    module = load_module()
+    claude = outcome_counts(module, module.scan([FIXTURES / "claude-code-transcript.jsonl"], 100_000, 240))
+    codex = outcome_counts(module, module.scan([FIXTURES / "codex-rollout.jsonl"], 100_000, 240))
+    if claude != codex:
+        raise AssertionError(f"the same failures must count the same on both hosts: {claude} != {codex}")
+    if not (claude["failed_result_count"] and claude["nonzero_exit_count"] and claude["denied_result_count"]):
+        raise AssertionError(f"fixtures must exercise failures, nonzero exits, and denials: {claude}")
+    if claude["text_hint_failure_count"]:
+        raise AssertionError("Claude Code results carry a structured status; failures must not rely on text hints")
+
+
+def test_claude_code_error_flag_decides_the_outcome() -> None:
+    module = load_module()
+
+    def record(kind: str, block: dict[str, object]) -> dict[str, object]:
+        return {"type": kind, "sessionId": "session-synthetic", "message": {"role": kind, "content": [block]}}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(Path(tmp), [
+            record("assistant", {"type": "tool_use", "id": "toolu_read", "name": "Read", "input": {"file_path": "example.txt"}}),
+            record("user", {"type": "tool_result", "tool_use_id": "toolu_read", "is_error": True,
+                            "content": "<tool_use_error>File has not been read yet.</tool_use_error>"}),
+            record("assistant", {"type": "tool_use", "id": "toolu_cat", "name": "Bash", "input": {"command": "cat history.log"}}),
+            record("user", {"type": "tool_result", "tool_use_id": "toolu_cat",
+                            "content": [{"type": "text", "text": "error: historical failure\nCommand failed"}]}),
+        ])
+        findings = module.scan([trace], 100_000, 240)
+    summary = module.outcome_summary(findings.events)
+    if summary["failed_result_count"] != 1 or summary["text_hint_failure_count"]:
+        raise AssertionError(f"is_error decides Claude Code outcomes, not printed output: {summary}")
+    results = [event for event in findings.events if event.kind == "result"]
+    calls = [event for event in findings.events if event.kind == "call"]
+    if len(results) != 2 or {event.tool_id for event in results} != {event.tool_id for event in calls}:
+        raise AssertionError("tool results must pair with their calls through tool_use_id")
+
+
+def test_claude_code_injected_text_is_not_a_signal() -> None:
+    module = load_module()
+    phrase = "cached findings withheld: stale_results"
+
+    def record(**extra: object) -> dict[str, object]:
+        return {"type": "user", "sessionId": "session-synthetic",
+                "message": {"role": "user", "content": [{"type": "text", "text": phrase}]}, **extra}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        injected = module.scan([write_trace(Path(tmp), [record(isMeta=True)])], 100_000, 240)
+    with tempfile.TemporaryDirectory() as tmp:
+        typed = module.scan([write_trace(Path(tmp), [record()])], 100_000, 240)
+    if "stale_results" not in typed:
+        raise AssertionError("control: the phrase must match when a person or agent wrote it")
+    if injected:
+        raise AssertionError(f"harness-injected text such as a loaded skill is not session evidence: {list(injected)}")
+
+
 def main() -> int:
     tests = [
         candidate

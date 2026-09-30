@@ -29,11 +29,50 @@ formatting rules in every `SKILL.md`.
   owner explicitly lifts it; do not invent a deadline or treat silence as
   approval. Continue independent authorized work. "Don't land yet" holds
   merging, not preparation or validation.
+- When parallel research or several agents report during one turn, hold their
+  findings and questions and send one consolidated message after they finish
+  or need the owner. Before that, give only brief "still running" notes. When
+  that message carries many decisions, offer to take them one at a time; once
+  the owner agrees, ask one question per message and act on each answer before
+  asking the next. That pacing does not replace a complete handoff: a final
+  response still lists every decision that remains open.
+- Before asking the owner to approve an operator path (deploy, promotion,
+  recovery, onboarding, or a permission-gated workflow), walk the whole path
+  read-only: each step, the identity that runs it, the permission, environment,
+  or ruleset it needs, whether that identity holds it today, code-level
+  refusals, and earlier failures of the same step. Search existing issues too.
+  Report every blocker together, then ask once.
+- For a live test that needs the owner's hands (a device tap or a physical
+  switch), end the turn with one to three plain numbered actions and say how
+  long you will watch. Start watching after the owner replies, and check whether
+  a stale reading predates the request before calling the step failed.
 - In the final message, say plainly whether you are done, waiting on a named
   person for a named thing, or still working. Say "still working" only when
   work is actually running and you retain responsibility for its follow-through;
   an intention to resume later is not running work. When anything remains,
   state the next action and who takes it.
+
+## Claims And Evidence
+
+- Treat what the owner says, and your own earlier statements, as claims to
+  check against GitHub, logs, docs, or provider sources before building on
+  them. Say when a repeated claim was never verified.
+- Disagree plainly when the evidence contradicts the owner or a reviewer. Do
+  not agree just to agree.
+
+## Gaps And Defects
+
+- Handing the owner a script or console snippet to paste into an admin panel
+  is a missing-capability signal, not a routine path. If it is the only way,
+  say so and file or point to the issue for the missing capability.
+- When you hit a defect in a tool, helper, or skill from a repository the
+  owner controls, route it to that owning repository rather than only noting
+  it where it was hit: with posting authority for that repository, search for
+  an existing issue and add to it or file one; without that authority, put the
+  proposed issue in your report. Ask before filing in a repository the owner
+  does not control. A local workaround note is temporary: link the tracking
+  issue once one exists, re-check it at the start of later work, and remove
+  the note once the fix lands.
 
 ## Shape
 

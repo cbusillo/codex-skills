@@ -6,9 +6,15 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import os
 import pathlib
+import sys
 import tempfile
+import threading
+import time
 from typing import Any, Callable
 
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
@@ -947,6 +953,143 @@ def test_invalid_duplicate_target_does_not_post_comment() -> None:
     with_call_stub(callback, run)
 
 
+def _state_and_label_callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+    if path == "/user":
+        return success({"login": "fixture-automation"})
+    if "/comments" in path and method == "GET":
+        return success([])
+    if path.endswith("/comments"):
+        assert method == "POST", (method, path)
+        return success({"id": 1, "html_url": "https://github.com/owner/repo/issues/42#issuecomment-1", "body": body["body"]}, status=201)
+    if path.endswith("/labels") and method == "POST":
+        return success([{"name": label} for label in body["labels"]])
+    if "/labels/" in path:
+        assert method == "DELETE", (method, path)
+        return success([])
+    if method == "PATCH" and "state" in body:
+        return success(issue_body(state=body["state"], state_reason=body["state_reason"]))
+    if method == "PATCH":
+        return success(issue_body(body=body.get("body", "body")))
+    assert method == "GET", (method, path)
+    return success(issue_body())
+
+
+def _run_cli(argv: list[str], stdin: Any, *, timeout: float) -> tuple[int, dict[str, Any]]:
+    result: dict[str, Any] = {}
+    original_argv, original_stdin = sys.argv, sys.stdin
+
+    def target() -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result["exit_code"] = github_issue.main()
+        result["payload"] = json.loads(output.getvalue())
+
+    sys.argv, sys.stdin = ["github_issue.py", *argv], stdin
+    try:
+        worker = threading.Thread(target=target, daemon=True)
+        worker.start()
+        worker.join(timeout)
+    finally:
+        sys.argv, sys.stdin = original_argv, original_stdin
+    assert not worker.is_alive(), f"{argv[0]} did not return within {timeout}s"
+    return result["exit_code"], result["payload"]
+
+
+def test_state_and_edit_commands_return_with_open_idle_stdin() -> None:
+    commands = (
+        ["edit", "owner/repo#42", "--add-label", "plan:waiting", "--remove-label", "plan:active"],
+        ["close", "owner/repo#42", "--reason", "completed"],
+        ["reopen", "owner/repo#42"],
+    )
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        for argv in commands:
+            read_fd, write_fd = os.pipe()
+            idle_stdin = os.fdopen(read_fd, encoding="utf-8")
+            try:
+                exit_code, payload = _run_cli(
+                    argv,
+                    idle_stdin,
+                    timeout=github_issue.IMPLICIT_STDIN_WAIT_SECONDS + 5,
+                )
+            finally:
+                # Close the writer first so a helper stuck reading sees EOF
+                # and the test fails instead of deadlocking on close.
+                os.close(write_fd)
+                idle_stdin.close()
+            assert exit_code == 0, payload
+            assert payload["ok"] is True, payload
+        assert not [call for call in calls if "/comments" in call["path"]], calls
+        assert not [call for call in calls if call["method"] == "PATCH" and "body" in (call["body"] or {})], calls
+
+    with_call_stub(_state_and_label_callback, run)
+
+
+def test_explicit_comment_file_waits_for_slow_stdin_and_reads_paths() -> None:
+    def run(calls: list[dict[str, Any]]) -> None:
+        read_fd, write_fd = os.pipe()
+
+        def slow_writer() -> None:
+            time.sleep(github_issue.IMPLICIT_STDIN_WAIT_SECONDS + 0.5)
+            os.write(write_fd, b"Closing from a slow producer.")
+            os.close(write_fd)
+
+        writer = threading.Thread(target=slow_writer, daemon=True)
+        writer.start()
+        with os.fdopen(read_fd, encoding="utf-8") as slow_stdin:
+            exit_code, payload = _run_cli(
+                ["close", "owner/repo#42", "--comment-file", "-"],
+                slow_stdin,
+                timeout=github_issue.IMPLICIT_STDIN_WAIT_SECONDS + 10,
+            )
+        writer.join()
+        assert exit_code == 0, payload
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            comment_path = pathlib.Path(temp_dir) / "comment.md"
+            comment_path.write_text("Reopening from a file.", encoding="utf-8")
+            exit_code, payload = _run_cli(
+                ["reopen", "owner/repo#42", "--comment-file", str(comment_path)],
+                io.StringIO(""),
+                timeout=10,
+            )
+        assert exit_code == 0, payload
+
+        comments = [call["body"]["body"] for call in calls if call["method"] == "POST" and call["path"].endswith("/comments")]
+        assert len(comments) == 2, calls
+        assert comments[0].startswith("Closing from a slow producer."), comments
+        assert comments[1].startswith("Reopening from a file."), comments
+
+    with_call_stub(_state_and_label_callback, run)
+
+
+def test_edit_body_file_can_clear_the_body() -> None:
+    def run(calls: list[dict[str, Any]]) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            empty_body = pathlib.Path(temp_dir) / "empty.md"
+            empty_body.write_text("", encoding="utf-8")
+            exit_code, payload = _run_cli(
+                ["edit", "owner/repo#42", "--body-file", str(empty_body)],
+                io.StringIO(""),
+                timeout=10,
+            )
+        assert exit_code == 0, payload
+        patches = [call["body"] for call in calls if call["method"] == "PATCH"]
+        assert patches == [{"body": ""}], calls
+
+    with_call_stub(_state_and_label_callback, run)
+
+
+def test_close_rejects_comment_with_comment_file() -> None:
+    parser = github_issue.build_parser()
+    for command in ("close", "reopen"):
+        try:
+            parser.parse_args([command, "42", "--comment", "text", "--comment-file", "-"])
+        except github_api.ArgumentParsingError:
+            continue
+        raise AssertionError(f"{command} accepted both --comment and --comment-file")
+
+
 TESTS = [
     test_create_preserves_fields_and_emits_operation_marker,
     test_create_unknown_outcome_requires_reconciliation_before_retry,
@@ -970,6 +1113,10 @@ TESTS = [
     test_invalid_duplicate_target_does_not_post_comment,
     test_mutation_parsers_accept_self_contained_targets_without_repo_resolution,
     test_close_reason_and_duplicate_target_are_mutually_exclusive,
+    test_state_and_edit_commands_return_with_open_idle_stdin,
+    test_explicit_comment_file_waits_for_slow_stdin_and_reads_paths,
+    test_edit_body_file_can_clear_the_body,
+    test_close_rejects_comment_with_comment_file,
 ]
 
 
