@@ -319,7 +319,8 @@ broad extraction only when the user explicitly asks to mine rollout/session
 traces for durable memory/profile/local-config candidates and approves that
 inspection. It prepares review artifacts, not memory updates.
 
-Before extraction or rollout/model matrix evaluation, read
+Before extracting, reviewing, reducing or applying rollout-memory artifacts, or
+rollout/model matrix evaluation, read
 [memory extraction and model matrices](references/memory-extraction.md) for
 batch/coverage validation, destination and people review, provider confirmations,
 bounded one-shot transports, comparison variants and resumable failure handling.

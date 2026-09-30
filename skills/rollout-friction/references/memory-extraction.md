@@ -65,19 +65,12 @@ Read before explicitly requested durable-memory extraction or rollout/model matr
 
 ## Long-Context Prompt Path
 
-For rollout/model matrix evaluation, use the provided scripts and their bounded,
-provider-specific one-shot transports: `code-llm` variants use strict
-`code llm request --message-file`. Do not use `agent.create` `context_files`
-for rollout prompt payloads in matrix/model evaluation.
-
-`context_files` snapshots file contents directly into a spawned agent prompt.
-Use it only for deliberate agent-context snapshots, with an explicit large
-`context_budget_tokens` when a large file is intended.
-
-Trusted-local batch review instead uses `review_rollout_memory_batches.py` to
-send approved content directly in the local OpenAI-compatible request body.
-Bound it with `--max-input-chars`; do not substitute remote agents or
-`context_files` for this path.
+For rollout/model matrix evaluation, use the provided rollout-friction scripts
+and their script-owned one-shot transports. For `code-llm` variants, that means
+the strict `code llm request --message-file` path; other matrix providers must
+stay behind the matrix runner's bounded provider-specific transport. Do not use
+`agent.create` `context_files` to pass rollout prompt payloads to agents for
+matrix/model evaluation.
 
 For GPT-5.6 migration comparisons, add explicit Sol, Terra, or Luna variants
 with `--variant` alongside the existing GPT-5.4 comparison instead of replacing
@@ -85,4 +78,16 @@ the pinned baseline. Keep new family variants opt-in: every additional variant
 changes provider cost and runtime, and Sol should not become the default for
 every workload. Preserve fake `gpt-5.1-codex` harness models because they are
 deterministic protocol fixtures rather than production recommendations.
+
+`context_files` snapshots file contents directly into a spawned agent prompt.
+Use it only for deliberate agent-context snapshots, and require an explicit
+large `context_budget_tokens` when a large file is truly intended. For rollout
+evaluation, prefer `run_rollout_memory_long_context_matrix.py` so prompt content,
+budgets, validation, and output artifacts stay on the controlled one-shot path.
+
+The trusted-local batch review path is different: `review_rollout_memory_batches.py`
+may send approved prompt content directly in the local OpenAI-compatible request
+body to a trusted localhost or trusted-LAN model. Keep that local-review path
+bounded with `--max-input-chars` and do not substitute remote agents or
+`context_files` for it.
 
