@@ -65,14 +65,23 @@ Before editing a manifest or generating/editing marketplace entries, read
      --with-marketplace
    ```
 
-   Use `--force` only when intentionally overwriting files in an existing plugin
+   For an existing plugin, add `--register-only` to register it without writing
+   any plugin files. To replace its marketplace entry (for example, changing
+   `--auth-policy ON_USE`), use `--register-only --force`; this preserves its
+   manifest and companion config. Component scaffold flags cannot be combined
+   with registration-only mode.
+
+   Use `--force` in scaffold mode only when intentionally overwriting files in an existing plugin
    path or replacing the marketplace entry for the same plugin name.
 
 ## Marketplace decisions
 
 - Keep the marketplace at `<repo-root>/.agents/plugins/marketplace.json`; for a
   home-local plugin, treat home as the root. Keep `source.path` relative to that
-  root as `./plugins/<plugin-name>`.
+  root; the helper derives the path from the actual destination, including custom
+  `--path` parents. Defaults use the Git repository root even from a subdirectory,
+  or the current directory outside Git. An explicit marketplace path follows
+  the `<root>/.agents/plugins/marketplace.json` convention.
 - Append entries: `plugins[]` order is Codex render order. Reorder only when
   explicitly requested.
 - Preserve existing `interface.displayName`. This field belongs in the root
