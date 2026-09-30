@@ -259,7 +259,7 @@ def agy_denied_commands(conversation_id: Any) -> tuple[list[str], str | None]:
                 command = arguments.get("CommandLine")
                 if isinstance(command, str) and command:
                     return [command], None
-    except (sqlite3.Error, OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+    except (sqlite3.Error, OSError, ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
         return [], f"could not read agy refused command: {exc}"
     return [], "no refused command found in agy's saved conversation"
 

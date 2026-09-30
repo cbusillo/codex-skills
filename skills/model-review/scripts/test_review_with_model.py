@@ -236,7 +236,8 @@ class ReviewWithModelTests(unittest.TestCase):
         self.install("agy", FAKE_AGY)
         conversation = self.saved_command("cat /repo/large.py")
         db = self.home / f".gemini/antigravity-cli/conversations/{conversation}.db"
-        for blob in (b"\x2a\xff", b"\x2a\x05ab", b"\x2a\x01\x00"):
+        non_object_arguments = wire_bytes(5, wire_bytes(4, wire_bytes(2, b"run_command") + wire_bytes(3, b"[]")))
+        for blob in (b"\x2a\xff", b"\x2a\x05ab", b"\x2a\x01\x00", non_object_arguments):
             with sqlite3.connect(db) as connection:
                 connection.execute("UPDATE steps SET step_payload=? WHERE status=7", (blob,))
             denial = {"conversation_id": conversation, "denied_actions": [{"action": "command"}]}
