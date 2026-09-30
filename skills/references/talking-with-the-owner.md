@@ -65,13 +65,14 @@ formatting rules in every `SKILL.md`.
 - Handing the owner a script or console snippet to paste into an admin panel
   is a missing-capability signal, not a routine path. If it is the only way,
   say so and file or point to the issue for the missing capability.
-- When you hit a defect in a tool, helper, or skill from a repository the owner
-  controls, route it to that owning repository rather than only noting it where
-  it was hit: within existing posting authority, search for an existing issue
-  and add to it or file one; without that authority, put the proposed issue in
-  your report. Ask before filing in a repository the owner does not control. A local workaround note is
-  temporary: link the tracking issue, re-check it at the start of later work,
-  and remove the note once the fix lands.
+- When you hit a defect in a tool, helper, or skill from a repository the
+  owner controls, route it to that owning repository rather than only noting
+  it where it was hit: with posting authority for that repository, search for
+  an existing issue and add to it or file one; without that authority, put the
+  proposed issue in your report. Ask before filing in a repository the owner
+  does not control. A local workaround note is temporary: link the tracking
+  issue once one exists, re-check it at the start of later work, and remove
+  the note once the fix lands.
 
 ## Shape
 
