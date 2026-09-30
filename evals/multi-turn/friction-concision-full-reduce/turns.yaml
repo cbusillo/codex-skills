@@ -1,0 +1,25 @@
+{
+  "name": "friction-concision-full-reduce",
+  "hosts": [
+    "claude",
+    "codex"
+  ],
+  "execution": {
+    "timeout_seconds": 180
+  },
+  "setup": [
+    "ln -s \"$GO816_TEST_CATALOG\" catalog"
+  ],
+  "fixture_files": {
+    "batches.json": "{\"batches\":[{\"name\":\"first\",\"strict_json_valid\":true,\"candidate_coverage_complete\":true},{\"name\":\"second\",\"strict_json_valid\":true,\"candidate_coverage_complete\":false}],\"draft\":{\"people_updates\":[\"synthetic-alias\"],\"people_resolver_smoke_checks\":[\"synthetic-alias\"],\"curated_shortlist\":[\"profile-note\"]}}"
+  },
+  "turns": [
+    {
+      "prompt": "Complete-source trial: first read the full maintained entry point catalog/skills/rollout-friction/SKILL.md with a file tool, then use shared:rollout-friction for this task. I explicitly asked for an audit of existing rollout-memory review artifacts. No new extraction or model review is needed. Read batches.json. The existing reducer draft contains people_updates, people_resolver_smoke_checks and a curated_shortlist. Tell me what can happen next before any updates, including the incomplete second batch. No changes are approved. This is an offline rehearsal; do not run operational commands.",
+      "expect": {
+        "owner": "rollout-friction",
+        "final": "(?is)(approv|coverage|incomplete|dry.run)"
+      }
+    }
+  ]
+}

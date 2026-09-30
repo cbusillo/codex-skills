@@ -1,0 +1,23 @@
+{
+  "name": "friction-concision-full-matrix",
+  "hosts": [
+    "claude",
+    "codex"
+  ],
+  "execution": {
+    "timeout_seconds": 180
+  },
+  "setup": [
+    "ln -s \"$GO816_TEST_CATALOG\" catalog"
+  ],
+  "fixture_files": {},
+  "turns": [
+    {
+      "prompt": "Complete-source trial: first read the full maintained entry point catalog/skills/rollout-friction/SKILL.md with a file tool, then use shared:rollout-friction for this task. I explicitly ask for a rollout/model matrix evaluation plan. Existing synthetic prompts include private local material. Add Sol as a comparison alongside the pinned GPT-5.4 baseline, explain the supported transport and resume policy, and give the next safe command. I have approved preparing a plan only; no private cloud transfer or real run is approved. This is an offline rehearsal; do not execute operational commands.",
+      "expect": {
+        "owner": "rollout-friction",
+        "final": "(?is)(approv|coverage|incomplete|dry.run)"
+      }
+    }
+  ]
+}

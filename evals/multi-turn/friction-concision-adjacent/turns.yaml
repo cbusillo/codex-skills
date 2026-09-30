@@ -1,0 +1,20 @@
+{
+  "name": "friction-concision-adjacent",
+  "hosts": [
+    "claude",
+    "codex"
+  ],
+  "execution": {
+    "timeout_seconds": 180
+  },
+  "fixture_files": {},
+  "turns": [
+    {
+      "prompt": "This synthetic application log contains one timeout from an HTTP request. Explain what it means and suggest one debugging check. Do not audit agent sessions or rollouts and do not load a workflow for friction analysis. No commands or changes.",
+      "expect": {
+        "owner": [],
+        "final": "(?is)timeout"
+      }
+    }
+  ]
+}

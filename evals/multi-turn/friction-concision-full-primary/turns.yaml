@@ -1,0 +1,26 @@
+{
+  "name": "friction-concision-full-primary",
+  "hosts": [
+    "claude",
+    "codex"
+  ],
+  "execution": {
+    "timeout_seconds": 180
+  },
+  "fixture_files": {
+    "report.json": "{\"schema_version\": 2, \"count_semantics\": \"normalized_events_v2\", \"scan_limitations\": [{\"kind\": \"max_files\", \"message\": \"bounded to two files\"}], \"signals\": [{\"signal\": \"repeated_command_failure\", \"count\": 2, \"count_unit\": \"normalized_failed_results\"}, {\"signal\": \"rate_limit\", \"count\": 9, \"count_unit\": \"text_matches\"}], \"episode\": {\"tool_call_count\": 5, \"retry_count\": 1, \"failure_count\": 2, \"text_hint_failure_count\": 0}, \"observations\": [\"Two identical failed commands before a maintained helper succeeded.\", \"Nine mentions of a rate limit, not nine executed failures.\"]}"
+  },
+  "turns": [
+    {
+      "prompt": "Complete-source trial: first read the full maintained entry point catalog/skills/rollout-friction/SKILL.md with a file tool, then perform this task. Use shared:rollout-friction. Audit the synthetic report in report.json for repeated workflow friction. Give a compact redacted proposal and next steps. We authorized analysis only, no trace or config changes and no model scout. This offline rehearsal supplies analyzer output; do not run operational commands.",
+      "expect": {
+        "owner": "rollout-friction",
+        "read": "event-counts\\.md",
+        "final": "(?is)(limited|bounded|coverage).*"
+      }
+    }
+  ],
+  "setup": [
+    "ln -s \"$GO816_TEST_CATALOG\" catalog"
+  ]
+}
