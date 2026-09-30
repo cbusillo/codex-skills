@@ -1,0 +1,21 @@
+name: rollup-config-limits
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Use shared:github-work-rollup to collect a standup JSON report for
+      example/skill-routing-fixture over 24 hours. Configure a collection ceiling
+      of 12 PRs/issues per repo/state while showing at most 3 examples. Include
+      bounded derived repository context for later synthesis, enriching at most
+      2 repositories. No private config exists; use CLI overrides for this
+      one-off report, consulting the documented configuration before acting.
+      Explain whether trimming examples makes the total collected counts equal
+      to three, and how to report a reached collection ceiling. This is an
+      offline rehearsal: stop when the shell boundary refuses the operation.
+    expect:
+      owner: github-work-rollup
+      operation: 'github_work_rollup\.py'
+      require: '--collection-limit-items[ =]+12.*--limit-items[ =]+3|--limit-items[ =]+3.*--collection-limit-items[ =]+12'
+      forbid: 'gh (issue|pr) (create|edit|merge)'
+      final: 'incomplete|collection (ceiling|limit)'
