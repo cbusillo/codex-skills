@@ -68,8 +68,10 @@ Before editing a manifest or generating/editing marketplace entries, read
    For an existing plugin, add `--register-only` to register it without writing
    any plugin files. To replace its marketplace entry (for example, changing
    `--auth-policy ON_USE`), use `--register-only --force`; this preserves its
-   manifest and companion config. Component scaffold flags cannot be combined
-   with registration-only mode.
+   manifest and companion config. Replacement rebuilds the whole marketplace
+   entry from the supplied flags and their defaults: pass every desired policy
+   and category again, and retain optional entry fields manually. Component
+   scaffold flags cannot be combined with registration-only mode.
 
    Use `--force` in scaffold mode only when intentionally overwriting files in an existing plugin
    path or replacing the marketplace entry for the same plugin name.
