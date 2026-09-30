@@ -178,9 +178,12 @@ uv run <skill-dir>/scripts/direction_audit.py --repo OWNER/REPO
 It reads the merged `DIRECTION.md` from the default branch, never a checkout,
 and writes nothing. For each finding:
 
-- `coverage_incomplete`: a listing hit the page cap, so drift beyond it is
-  unreported. Say so in the audit; do not call the repository clean. The audit
-  marker stays unchanged only when the closed `audit` listing is incomplete.
+- `coverage_incomplete`: a bounded read was truncated or unavailable, or
+  actor classification was unavailable. Name the affected listings and the
+  reported cause when present; drift beyond verified coverage is unreported.
+  Do not call
+  the repository clean. The audit marker stays unchanged only when the closed
+  `audit` listing is incomplete.
 
 - `milestone_unlisted`: an open GitHub milestone not in the file. Either add
   the line by direction pull request or close the milestone. Never leave both.
@@ -208,6 +211,11 @@ and writes nothing. For each finding:
 - `escalation_open`: a `direction` issue, or a pull request that changes
   `DIRECTION.md`, waiting on the owner. Decide it in this session or say why
   not.
+- `waiting_blocks_other_repository`: a waiting local issue blocks open work
+  in another repository. Report both issues and the local wait; ask the owner
+  whether to lift it, with a recommendation based on the recorded reason.
+  Keep the wait and ownership intact until that decision; the finding does not
+  authorize implementation.
 - `audit_question`: an open `audit`-labeled issue. Answer it with evidence or
   explicitly defer it with a reason during this audit.
 - `audit_judge`: an `audit`-labeled issue closed since this repository's prior

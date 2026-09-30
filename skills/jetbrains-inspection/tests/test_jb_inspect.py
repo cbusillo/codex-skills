@@ -69,7 +69,7 @@ class SdkRetirementTests(unittest.TestCase):
             args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
             with patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", side_effect=post):
                 result = jb_inspect.command_retire_sdks(args)
-            self.assertEqual(events, ["true", "false"])
+            self.assertEqual(events, ["true", "false", "true"])
             self.assertTrue(result["worktree_removed"])
             self.assertFalse(root.exists())
             subprocess.run(["git", "-C", str(primary), "show-ref", "--verify", "--quiet", "refs/heads/task"], check=True)
@@ -104,20 +104,94 @@ class SdkRetirementTests(unittest.TestCase):
             with self.assertRaises(jb_inspect.InspectError):
                 jb_inspect.unregister_helper_sdks([self.identity()], Path("/fixture/task"), True)
 
-    def test_orphans_use_explicit_selector_and_preview_before_apply(self):
-        args = Namespace(command="cleanup-helper-sdks", dry_run=False, lifecycle_lock_timeout_ms=1000)
+    def test_orphans_use_reviewed_paths_before_apply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "removed"
+            args = Namespace(command="cleanup-helper-sdks", dry_run=False, lifecycle_lock_timeout_ms=1000,
+                             worktree_path=[str(root)])
+            def post(port, endpoint, params):
+                if params["dry_run"] == "true":
+                    self.assertEqual(params["orphans"], "true")
+                    self.assertNotIn("worktree_path", params)
+                else:
+                    self.assertEqual(params["worktree_path"], str(root.resolve()))
+                    self.assertNotIn("orphans", params)
+                return self.response(root, params["dry_run"] == "true")
+            with patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", side_effect=post) as request:
+                result = jb_inspect.command_retire_sdks(args)
+                self.assertEqual([call.args[2]["dry_run"] for call in request.call_args_list], ["true", "false"])
+                self.assertFalse(result["worktree_removed"])
+
+    def test_open_project_refuses_even_without_sdk_records(self):
+        root = Path("/fixture/task")
+        identity = self.identity() | {"open_projects": [{"base_path": str(root / "nested")}]}
+        with patch.object(jb_inspect, "http_post") as post:
+            with self.assertRaisesRegex(jb_inspect.InspectError, "Close every IDE project"):
+                jb_inspect.unregister_helper_sdks([identity], root, False)
+            post.assert_not_called()
+
+    def test_apply_refusal_preserves_worktree_and_completed_ide_results(self):
+        root = Path("/fixture/task")
+        args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
+        second = self.identity() | {"port": 63343, "session_id": "second"}
         def post(port, endpoint, params):
-            if params["dry_run"] == "true":
-                self.assertEqual(params["orphans"], "true")
-                self.assertNotIn("worktree_path", params)
-            else:
-                self.assertEqual(params["worktree_path"], "/fixture/removed")
-                self.assertNotIn("orphans", params)
-            return self.response(Path("/fixture/removed"), params["dry_run"] == "true")
-        with patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", side_effect=post) as request:
-            result = jb_inspect.command_retire_sdks(args)
-            self.assertEqual([call.args[2]["dry_run"] for call in request.call_args_list], ["true", "false"])
-            self.assertFalse(result["worktree_removed"])
+            response = self.response(root, params["dry_run"] == "true")
+            response.body["session_id"] = params["session_id"]
+            if port == second["port"] and params["dry_run"] == "false":
+                response.body["status"] = "refused"
+                response.body["sdks"][0].update(status="refused", reason="sdk_in_use")
+            return response
+        with patch.object(jb_inspect, "retirement_worktree", return_value=root), patch.object(jb_inspect, "discover_identities", return_value=[self.identity(), second]), patch.object(jb_inspect, "http_post", side_effect=post), patch.object(jb_inspect.subprocess, "run") as removal:
+            with self.assertRaises(jb_inspect.InspectError) as caught:
+                jb_inspect.command_retire_sdks(args)
+            self.assertEqual(len(caught.exception.payload["completed_sdk_cleanup"]), 1)
+            self.assertEqual(caught.exception.payload["sdk_cleanup"]["status"], "refused")
+            removal.assert_not_called()
+
+    def test_malformed_orphan_paths_refuse_before_apply(self):
+        for value in (None, "", "relative/path", 42):
+            response = self.response(Path("/fixture/task"), True)
+            response.body["sdks"][0]["worktree_path"] = value
+            with self.subTest(value=value), patch.object(jb_inspect, "http_post", return_value=response):
+                with self.assertRaises(jb_inspect.InspectError):
+                    jb_inspect.unregister_helper_sdks([self.identity()], None, True)
+
+    def test_orphan_apply_requires_reviewed_paths_and_accessible_parent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "unmounted" / "removed"
+            args = Namespace(command="cleanup-helper-sdks", dry_run=False, lifecycle_lock_timeout_ms=1000)
+            for selected in ([], [str(root)]):
+                args.worktree_path = selected
+                with self.subTest(selected=selected), patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", return_value=self.response(root, True)) as post:
+                    with self.assertRaises(jb_inspect.InspectError):
+                        jb_inspect.command_retire_sdks(args)
+                    self.assertEqual(post.call_count, 1)
+
+    def test_preflight_preserves_primary_locked_dirty_and_leased_worktrees(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            primary = Path(tmp) / "primary"
+            root = Path(tmp) / "task"
+            subprocess.run(["git", "init", "-q", str(primary)], check=True)
+            subprocess.run(["git", "-C", str(primary), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "fixture"], check=True)
+            subprocess.run(["git", "-C", str(primary), "worktree", "add", "-q", "-b", "task", str(root)], check=True)
+            with self.assertRaises(jb_inspect.InspectError):
+                jb_inspect.retirement_worktree(primary, True)
+            subprocess.run(["git", "-C", str(primary), "worktree", "lock", str(root)], check=True)
+            self.assertEqual(jb_inspect.retirement_worktree(root, True), root.resolve())
+            with self.assertRaises(jb_inspect.InspectError):
+                jb_inspect.retirement_worktree(root, False)
+            subprocess.run(["git", "-C", str(primary), "worktree", "unlock", str(root)], check=True)
+            (root / "valuable").write_text("keep")
+            with self.assertRaises(jb_inspect.InspectError):
+                jb_inspect.retirement_worktree(root, True)
+            (root / "valuable").unlink()
+            with patch.object(jb_inspect, "read_local_leases", return_value=[(Path("lease.json"), {"worktree_root": str(root)})]):
+                with self.assertRaises(jb_inspect.InspectError):
+                    jb_inspect.retirement_worktree(root, True)
+            with patch.object(jb_inspect, "git_common_worktree", return_value=None):
+                with self.assertRaisesRegex(jb_inspect.InspectError, "primary checkout"):
+                    jb_inspect.retirement_worktree(root, True)
+            self.assertTrue(root.is_dir())
 
 
 class GlobalConfigTests(unittest.TestCase):

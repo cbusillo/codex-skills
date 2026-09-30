@@ -732,6 +732,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
         command.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True)
         command.add_argument("--lifecycle-lock-timeout-ms", type=int, default=DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)
+    subparsers.choices["cleanup-helper-sdks"].add_argument("--worktree-path", action="append", help="Exact orphan path from the reviewed dry-run; repeat for each path to apply.")
     subparsers.choices["remove-worktree"].add_argument("--repo", required=True, help="Exact eligible linked worktree to remove; establish cleanup disposition first.")
 
     for name in ("wait-for-inspection", "agent-inspect", "inspect", "inspect-closeout"):
@@ -10653,7 +10654,7 @@ def paths_same(left: Any, right: Any) -> bool:
         return str(left) == str(right)
 
 
-def retirement_worktree(path: Path) -> Path:
+def retirement_worktree(path: Path, dry_run: bool = False) -> Path:
     root = path.expanduser().resolve()
     if git_root(root) != root:
         raise InspectError("Removal requires the exact linked worktree root.", 3)
@@ -10663,8 +10664,10 @@ def retirement_worktree(path: Path) -> Path:
     git_dir = Path(subprocess.check_output(
         ["git", "-C", str(root), "rev-parse", "--absolute-git-dir"], text=True,
     ).strip()).resolve()
-    if git_dir == common or (git_dir / "locked").exists():
+    if git_dir == common or (not dry_run and (git_dir / "locked").exists()):
         raise InspectError("Primary or locked worktrees cannot be removed; finish the cleanup ownership checks first.", 3)
+    if git_common_worktree(root) is None:
+        raise InspectError("Cannot resolve the primary checkout for worktree removal.", 3)
     if subprocess.check_output(["git", "-C", str(root), "status", "--porcelain"], text=True).strip():
         raise InspectError("Preserve uncommitted work before removing this worktree.", 3)
     if any(paths_same(lease.get("worktree_root"), root) for _, lease in read_local_leases()):
@@ -10679,6 +10682,12 @@ def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, 
     for identity in identities:
         if identity.get("helper_sdk_lifecycle_version") != 1 or not identity.get("session_id") or not identity.get("port"):
             raise InspectError("Install the plugin with helper-owned SDK lifecycle support in every discovered IDE before cleanup.", 3)
+    if root is not None:
+        for identity in identities:
+            for project in identity.get("open_projects") or []:
+                base = project.get("base_path")
+                if not base or Path(base).resolve().is_relative_to(root.resolve()):
+                    raise InspectError("Close every IDE project at or inside the worktree before removal.", 3)
     results = []
     seen: set[tuple[Any, Any]] = set()
     for identity in identities:
@@ -10696,45 +10705,70 @@ def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, 
             or not isinstance(entries, list) or any(
                 not isinstance(entry, dict) or entry.get("status") not in valid_statuses
                 or entry.get("reason") not in {"helper_owned", "already_absent"}
+                or not isinstance(entry.get("worktree_path"), str)
+                or not Path(entry.get("worktree_path") or "").is_absolute()
                 or (root is not None and not paths_same(entry.get("worktree_path"), root))
                 for entry in entries)):
             raise InspectError("SDK cleanup did not prove a successful helper-owned result; retain the worktree.", 3,
-                               {"sdk_cleanup": public_payload(body)})
+                               {"sdk_cleanup": public_payload(body), "completed_sdk_cleanup": results})
         results.append({"ide": public_identity_summary(identity), "result": public_payload(body)})
     return results
 
 
 def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
+    preview: list[dict[str, Any]] = []
+    applied: list[dict[str, Any]] = []
     with lifecycle_lock(args.lifecycle_lock_timeout_ms):
-        root = retirement_worktree(Path(args.repo)) if args.command == "remove-worktree" else None
-        identities = discover_identities(None)
-        preview = unregister_helper_sdks(identities, root, True)
-        applied = []
-        if not args.dry_run:
-            if root is not None:
-                applied = unregister_helper_sdks(identities, root, False)
-            else:
-                # Apply only the worktrees enumerated in this dry-run, never a fresh global orphan sweep.
-                for item in preview:
-                    identity = next(identity for identity in identities if
-                                    identity["session_id"] == item["ide"]["session_id"] and identity["port"] == item["ide"]["port"])
-                    roots = {entry["worktree_path"] for entry in item["result"]["sdks"]}
-                    for candidate in sorted(roots):
-                        applied.extend(unregister_helper_sdks([identity], Path(candidate), False))
-            if root is not None:
-                # Recheck local changes after the IDE requests and let Git enforce non-force removal.
-                retirement_worktree(root)
-                common = git_common_worktree(root)
-                if common is None:
-                    raise InspectError("Cannot resolve the primary checkout for worktree removal.", 3)
-                completed = subprocess.run(["git", "-C", str(common), "worktree", "remove", str(root)],
-                                           capture_output=True, text=True)
-                if completed.returncode or root.exists():
-                    raise InspectError("Git worktree removal failed; SDK cleanup may already have completed.", 3,
-                                       {"sdk_cleanup": applied, "git_error": completed.stderr})
-        return {"status": "ok", "dry_run": args.dry_run, "worktree_path": str(root) if root else None,
-                "sdk_preview": preview, "sdk_cleanup": applied,
-                "worktree_removed": root is not None and not args.dry_run}
+        try:
+            root = retirement_worktree(Path(args.repo), args.dry_run) if args.command == "remove-worktree" else None
+            identities = discover_identities(None)
+            preview = unregister_helper_sdks(identities, root, True)
+            if not args.dry_run:
+                if root is not None:
+                    applied = unregister_helper_sdks(identities, root, False)
+                else:
+                    # Explicit paths bind apply to the earlier reviewed dry-run.
+                    selected = {str(Path(path).expanduser().resolve()) for path in (getattr(args, "worktree_path", None) or [])}
+                    candidates = {str(Path(entry["worktree_path"]).resolve()) for item in preview for entry in item["result"]["sdks"]}
+                    if candidates and not selected:
+                        raise InspectError("Repeat each reviewed orphan path with --worktree-path before applying cleanup.", 3)
+                    if not selected.issubset(candidates):
+                        raise InspectError("Selected orphan paths are absent from the current helper-owned preview.", 3)
+                    for candidate in selected:
+                        path = Path(candidate)
+                        if path.exists() or not path.parent.is_dir() or path.is_symlink():
+                            raise InspectError("Orphan removal requires a missing worktree and accessible parent.", 3)
+                    for item in preview:
+                        identity = next(identity for identity in identities if
+                                        identity["session_id"] == item["ide"]["session_id"] and identity["port"] == item["ide"]["port"])
+                        roots = {str(Path(entry["worktree_path"]).resolve()) for entry in item["result"]["sdks"]} & selected
+                        for candidate in sorted(roots):
+                            path = Path(candidate)
+                            if path.exists() or not path.parent.is_dir() or path.is_symlink():
+                                raise InspectError("Orphan path changed before SDK removal.", 3)
+                            applied.extend(unregister_helper_sdks([identity], path, False))
+                if root is not None:
+                    # Recheck local state and live projects after SDK retirement.
+                    retirement_worktree(root)
+                    current = discover_identities(None)
+                    unregister_helper_sdks(current, root, True)
+                    common = git_common_worktree(root)
+                    if common is None:
+                        raise InspectError("Cannot resolve the primary checkout for worktree removal.", 3)
+                    completed = subprocess.run(["git", "-C", str(common), "worktree", "remove", str(root)],
+                                               capture_output=True, text=True)
+                    if completed.returncode or root.exists():
+                        raise InspectError("Git worktree removal failed; SDK cleanup may already have completed.", 3,
+                                           {"git_error": completed.stderr})
+            return {"status": "ok", "dry_run": args.dry_run, "worktree_path": str(root) if root else None,
+                    "sdk_preview": preview, "sdk_cleanup": applied,
+                    "worktree_removed": root is not None and not args.dry_run}
+        except (subprocess.CalledProcessError, OSError) as error:
+            raise InspectError("Worktree retirement failed; retain the worktree and inspect the Git/filesystem error.", 3,
+                               {"sdk_preview": preview, "sdk_cleanup": applied, "error": str(error)}) from error
+        except InspectError as error:
+            error.payload.update({"sdk_preview": preview, "completed_sdk_cleanup": applied + error.payload.get("completed_sdk_cleanup", [])})
+            raise
 
 
 def command_cleanup_leases(args: argparse.Namespace) -> dict[str, Any]:

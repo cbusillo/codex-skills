@@ -180,6 +180,13 @@ active issue labels and continuing background jobs do not lift a hold.
    implementation, then read back for competing activity. Keep that record
    current through handoff or completion.
 
+Also report each `blocking_work_elsewhere` pair from `gh-plan.py next`, naming
+the local blocker and the repository/issue it holds up. Read the blocker's
+recorded wait and current ownership before proposing action; visibility does
+not override candidate exclusions or authorize starting it. Report incomplete
+`blocking_work_elsewhere_context` separately from candidate/dependency coverage,
+including truncation, unread gates, and unavailable reads.
+
 Check beyond occupied results before saying no work is available.
 `candidate_count` greater than the returned list calls for a larger bounded
 `--limit`; truncated inventory or incomplete dependencies remain a partial

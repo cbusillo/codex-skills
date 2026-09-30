@@ -317,6 +317,32 @@ class RoutingScoreTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertTrue(read_only(command))
 
+    def test_the_boundary_allows_sed_line_selections(self) -> None:
+        from shell_boundary import read_only
+        for command in (
+            "sed -n '1,80p' file", "sed -n 10p file", "sed -n p file",
+            "sed -n '1p; 3,5p' file other",
+            "sed -n -e '1,80p' file", "sed -n '1,80p;' file",
+            "cat file | sed -n '1,5p'", "sed -n '1,5p' 'file with spaces'",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(read_only(command))
+
+    def test_the_boundary_refuses_sed_writes_execution_and_extra_scripts(self) -> None:
+        from shell_boundary import read_only
+        # Classify only: none of these programs is executed.
+        for command in (
+            "sed -n '1w out.txt' file", "sed -n '1e touch x' file",
+            "sed -n '1p; 2w out.txt' file", "sed -n 's/a/b/w out.txt' file",
+            "sed -n 's/a/b/e' file", "sed -n 'p' -e 'w out.txt' file",
+            "sed -n 'p' -f program.sed file", "sed -n 'p' -i file",
+            "sed -n 'p' --in-place file", "sed -n -f program.sed file", "sed -n",
+            "sed -n -e '1w out.txt' file", "sed -n -e '1p' -e 'e touch x' file",
+            "sed -n -e",
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(read_only(command))
+
     def test_the_boundary_refuses_actions_near_discovery_reads(self) -> None:
         from shell_boundary import read_only
         for command in (
