@@ -596,6 +596,16 @@ policy:
           argv_prefix: ["launchplane", "service", "export-agent-contract"]
         - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "service", "export-owner-control-contract"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "ci", "unittest-shard", "local"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "ci", "unittest-shard", "plan"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "ci", "unittest-shard", "run"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "service", "audit-config-authority"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "odoo-ownership", "check"]
       action: require_preferred
       message: Do not assume a global `launchplane` binary on ordinary workstations. Use the bundled helpers unless you are explicitly on a host-only Launchplane context with a repo-provided command.
       preferred:
@@ -625,12 +635,15 @@ policy:
 
 # Launchplane Expert
 
-The three source-only `service export-openapi`, `service export-agent-contract`,
-and `service export-owner-control-contract` commands may run through
-`uv run launchplane` in a verified `cbusillo/launchplane` checkout or worktree,
-including frontend contract generation. Set the tool's working directory to that
-checkout; shell directory/project overrides retain the block. All other
-Launchplane CLI commands keep the helper route below. Consumers without
+The source-only `service export-openapi`, `service export-agent-contract`,
+`service export-owner-control-contract`, `service audit-config-authority`,
+`odoo-ownership check`, and `ci unittest-shard local|plan|run` gates may run
+through `uv run [--extra dev] launchplane` in a verified `cbusillo/launchplane`
+checkout or linked worktree, including frontend contract generation. Use the
+tool's working directory or a single literal absolute `cd <checkout> &&` prefix.
+Other shell directory/project overrides retain the block. PostgreSQL integration
+commands that target a database and all live/operator CLI commands retain their
+helper route below. Consumers without
 repository-exception support keep the original block; do not bypass it through
 an alternate entry point.
 

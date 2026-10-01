@@ -92,10 +92,13 @@ exception. Ambient `GIT_*` overrides are removed for these local reads. This is
 checkout identity evidence for the habit guardrail, not proof of trusted source
 or a security boundary.
 
-The hook uses the event's `cwd` (or its process cwd when absent). Shell directory
+The hook uses the event's `cwd` (or its process cwd when absent), or one leading
+literal absolute `cd <directory> &&` prefix whose existing target is independently
+verified by Git. It never executes the shell to infer context. Other directory
 or uv project switches, environment assignments, and explicit Launchplane
-executable paths retain the block. Use the tool's working-directory option and
-`uv run launchplane service export-...` from that checkout instead. A simple
+executable paths retain the block. Use the tool's working-directory option or
+that single prefix and `uv run [--extra dev] launchplane` for the declared
+source-only exports and offline gates. A simple
 shell wrapper uses the same checks on its enclosed command. The simulator
 receives already normalized argv and the consumer's verified command directory;
 `--cwd` describes that directory, not a shell `cd` instruction.

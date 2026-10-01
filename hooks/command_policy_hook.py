@@ -51,7 +51,7 @@ SHELLS = {"sh", "bash", "zsh"}
 SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
 GH_WRAPPER_FLAGS = {"--print-auth-account", "--require-automation-auth"}
 ENV_VALUE_FLAGS = {"-u", "--unset", "-C", "--chdir"}
-UV_VALUE_FLAGS = {"--python", "-p", "--project", "--directory", "--with", "--with-editable", "--with-requirements"}
+UV_VALUE_FLAGS = {"--python", "-p", "--extra", "--group", "--project", "--directory", "--with", "--with-editable", "--with-requirements"}
 
 
 def load_simulator() -> ModuleType:
@@ -158,12 +158,29 @@ def describe(policy: dict[str, Any], skill: str) -> str:
 
 
 def exception_cwd(shell: str, cwd: Path) -> Path | None:
-    """Use the tool's cwd only when the shell cannot redirect command resolution.
+    """Accept the tool cwd or one literal leading cd joined by success-only &&.
 
-    Directory/project switches and explicit executable paths keep the original
-    block. Callers can use the tool's working-directory option instead; guessing
-    a compound shell's effective directory would widen repository exceptions.
+    Other directory/project switches and executable overrides retain the block.
+    The simulator independently verifies the resulting checkout's Git identity.
     """
+    prefix = re.fullmatch(
+        r"\s*cd\s+(?:--\s+)?(?P<path>'[^']*'|\"[^\"]*\"|[^\s;&|()<>]+)\s*&&(?P<command>[\s\S]+)",
+        shell,
+    )
+    if prefix:
+        path_text = shlex.split(prefix["path"])[0]
+        # No expansion, CDPATH lookup, or guessing after a failed cd.
+        if any(character in path_text for character in "$`\\~*?["):
+            return None
+        target = Path(path_text)
+        if not target.is_absolute() or not target.is_dir():
+            return None
+        lexer = shlex.shlex(prefix["command"], posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        if any(OPERATORS.match(token) and token != "&&" for token in lexer):
+            return None
+        cwd = target
+        shell = prefix["command"]
     try:
         commands = shell_commands(shell)
     except ValueError:
@@ -177,7 +194,7 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
                 return exception_cwd(tokens[index + 1], cwd)
         return None
     for token in tokens:
-        if token in {"cd", "pushd", "popd", "eval", "source", ".", "--active", "--no-project"} or Path(token).name in SHELLS:
+        if token in {"cd", "pushd", "popd", "eval", "source", "--active", "--no-project"} or Path(token).name in SHELLS:
             return None
         if token.startswith("-C") or ASSIGNMENT.match(token) or token.split("=", 1)[0] in {"-C", "--chdir", "--directory", "--project", "--with", "--with-editable", "--with-requirements"}:
             return None
@@ -186,6 +203,8 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
     for argv in commands:
         while argv and argv[0] in TRANSPARENT:
             argv = argv[1:]
+        if argv[:1] == ["."]:
+            return None
         if "launchplane" in argv and argv[:2] != ["uv", "run"]:
             return None
     return cwd if cwd.is_absolute() else None
