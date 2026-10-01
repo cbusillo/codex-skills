@@ -59,6 +59,12 @@ def bash(command: str, cwd: Path | None = None) -> subprocess.CompletedProcess[s
     return subprocess.CompletedProcess([str(HOOK)], returncode, "", stderr.getvalue())
 
 
+def linked_worktree(checkout: Path, linked: Path) -> Path:
+    subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], check=True)
+    subprocess.run(["git", "-C", str(checkout), "worktree", "add", "--detach", str(linked)], check=True, capture_output=True)
+    return linked
+
+
 class CommandPolicyHookTests(unittest.TestCase):
     def test_repository_exports_are_scoped_to_real_checkouts_and_worktrees(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -73,11 +79,17 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "launchplane service export-openapi --output generated/openapi.json",
                 "launchplane service export-agent-contract --output contracts/agent.json",
                 "launchplane service export-owner-control-contract --output contracts/owner.json",
+                "launchplane ci unittest-shard local",
+                "launchplane ci unittest-shard plan --shard-count 2 --timings-file timings.json",
+                "launchplane ci unittest-shard run --shard-count 2 --shard-index 0",
+                "launchplane service audit-config-authority --control-plane-root .",
+                "launchplane odoo-ownership check --workspace-root ..",
             )
             for command in commands:
                 with self.subTest(command=command):
                     self.assertEqual(bash("uv run " + command, checkout).returncode, 0)
                     self.assertEqual(bash("uv run " + command, frontend).returncode, 0)
+                    self.assertEqual(bash("uv run --extra dev " + command, checkout).returncode, 0)
                     self.assertEqual(bash("uv run " + command, root).returncode, 2)
                     self.assertEqual(SIMULATOR.simulate(shlex.split(command), cwd=checkout), [])
                     self.assertTrue(SIMULATOR.simulate(shlex.split(command)))
@@ -86,9 +98,7 @@ class CommandPolicyHookTests(unittest.TestCase):
             self.assertEqual(bash("launchplane service start", checkout).returncode, 2)
             self.assertEqual(bash("uv run " + commands[0] + " && launchplane service start", checkout).returncode, 2)
             # A real linked worktree, not a mocked directory name or host runtime.
-            subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], check=True)
-            linked = root / "linked"
-            subprocess.run(["git", "-C", str(checkout), "worktree", "add", "--detach", str(linked)], check=True, capture_output=True)
+            linked = linked_worktree(checkout, root / "linked")
             self.assertEqual(bash("uv run " + commands[0], linked).returncode, 0)
             for origin in (
                 "https://github.com/cbusillo/launchplane.git",
@@ -116,6 +126,11 @@ class CommandPolicyHookTests(unittest.TestCase):
             command = "launchplane service export-openapi --output artifact.json"
             for line in (
                 "cd /other && " + command,
+                ". /other/setup && uv run " + command,
+                "builtin . /other/setup && uv run " + command,
+                "{ . /other/setup; uv run " + command + "; }",
+                "if . /other/setup; then uv run " + command + "; fi",
+                "! . /other/setup; uv run " + command,
                 "uv run --directory /other " + command,
                 "uv run --project=/other " + command,
                 "env -C /other " + command,
@@ -142,6 +157,96 @@ class CommandPolicyHookTests(unittest.TestCase):
                 self.assertEqual(bash("uv run " + command, checkout).returncode, 0)
             payload = json.dumps({"tool_name": "Bash", "cwd": str(checkout), "tool_input": {"command": "uv run " + command}})
             self.assertEqual(run_hook(payload).returncode, 0)
+
+    def test_literal_cd_prefix_uses_only_the_verified_target_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkout = root / "launchplane checkout"
+            checkout.mkdir()
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True)
+            linked = linked_worktree(checkout, root / "linked")
+            gate = "uv run --extra dev launchplane ci unittest-shard local"
+            export = "uv run launchplane service export-openapi --output artifact.json"
+            for target in (checkout, linked):
+                for command in (gate, export):
+                    for prefix in ("cd ", "cd -- "):
+                        line = prefix + shlex.quote(str(target)) + "&&" + command
+                        with self.subTest(line=line):
+                            self.assertEqual(bash(line, root).returncode, 0)
+                            self.assertEqual(bash("bash -lc " + shlex.quote(line), root).returncode, 0)
+            for line in (
+                "cd " + shlex.quote(str(root)) + " && " + gate,
+                "cd /missing-launchplane-checkout && " + gate,
+                "cd linked && " + gate,
+                "cd '$CHECKOUT' && " + gate,
+                "cd " + shlex.quote(str(checkout)) + " ; " + gate,
+                "cd " + shlex.quote(str(checkout)) + " || " + gate,
+                "cd " + shlex.quote(str(checkout)) + " && false || " + gate,
+                "cd " + shlex.quote(str(checkout)) + " && true; " + gate,
+                "(cd " + shlex.quote(str(checkout)) + " && " + gate + ")",
+                "cd " + shlex.quote(str(checkout)) + " && cd " + shlex.quote(str(root)) + " && " + gate,
+                "cd " + shlex.quote(str(checkout)) + " && uv run --project /other launchplane ci unittest-shard local",
+                "cd " + shlex.quote(str(checkout)) + " && uv run launchplane service start",
+                "cd " + shlex.quote(str(checkout)) + " && " + gate + " && uv run launchplane merge-train run-once",
+            ):
+                with self.subTest(line=line):
+                    self.assertEqual(bash(line, checkout).returncode, 2)
+
+    def test_offline_gate_exceptions_do_not_allow_other_cli_routes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True)
+            for command in (
+                "launchplane ci postgres-integration",
+                "launchplane ci unittest-shard run-targets",
+                "launchplane ci unittest-shard list",
+                "launchplane ci unittest-shard local-other",
+                "launchplane ci other-command",
+                "launchplane service audit-config-authority-other",
+                "launchplane odoo-ownership other-command",
+                "launchplane odoo-targets replacement-plan",
+                "launchplane merge-train run-once",
+                "launchplane service start",
+            ):
+                with self.subTest(command=command):
+                    self.assertEqual(bash("uv run --extra dev " + command, checkout).returncode, 2)
+            self.assertEqual(bash("launchplane ci unittest-shard local", checkout).returncode, 2)
+            self.assertEqual(bash("uv run --project /other launchplane ci unittest-shard local", checkout).returncode, 2)
+
+    def test_gate_batches_keep_newline_and_substitution_live_commands_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True)
+            gate = "uv run --extra dev launchplane ci unittest-shard local"
+            live = "uv run launchplane merge-train run-once"
+            for line in (
+                gate + "\n" + live,
+                gate + " # it's fine\n" + live,
+                "ls\n" + gate + "\n" + live,
+                "cd " + shlex.quote(str(checkout)) + " && " + gate + "\n" + live,
+                "cd " + shlex.quote(str(checkout)) + " && " + gate + " # fine\n" + live,
+                'uv run launchplane service export-openapi --output "$(' + live + ')"',
+                'uv run launchplane service export-openapi --output "`' + live + '`"',
+            ):
+                with self.subTest(line=line):
+                    self.assertEqual(bash(line, checkout).returncode, 2)
+            self.assertEqual(bash(gate + "\n", checkout).returncode, 0)
+            self.assertEqual(bash("printf '%s' 'literal\ntext'\n" + gate, checkout).returncode, 0)
+
+    def test_newline_parsing_preserves_heredoc_baseline_without_gate_exceptions(self) -> None:
+        self.assertEqual(bash("cat > release.sh <<'EOF'\ngit push origin main\nEOF").returncode, 0)
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True)
+            line = "uv run launchplane service export-openapi --output artifact.json && cat <<'EOF'\ntext\nEOF"
+            self.assertEqual(bash(line, checkout).returncode, 2)
+
+    def test_cd_path_partial_quotes_do_not_skip_other_policies(self) -> None:
+        self.assertEqual(bash("cd /tmp/a'b && x' || gh pr merge 17").returncode, 2)
 
     def test_shell_comments_preserve_existing_blocks(self) -> None:
         for line in ("gh pr merge 17 # it's green", "# don't bypass\ngh pr merge 17"):
