@@ -162,7 +162,8 @@ read-only audit ran.
 
 To clean older markers that included unadopted repositories, preview with
 `uv run <skill-dir>/scripts/direction_audit.py --prune-unadopted`, then repeat
-with `--apply-prune` to apply the authorized cleanup. The helper confirms
+with `--apply-prune` to recheck and apply the authorized cleanup, reporting
+the entries removed by that run. The helper confirms
 repository visibility before treating a missing direction file as unadopted,
 preserves unreadable entries and unrelated marker state, and creates a private
 backup beside the marker before removing confirmed entries. Unknown entries

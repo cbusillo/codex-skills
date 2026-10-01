@@ -383,7 +383,7 @@ def merged_direction(repo: str, *, fetch: Callable[[list[str]], Any]) -> str | N
     try:
         body = fetch(["api", f"repos/{repo}/contents/DIRECTION.md", "--method", "GET"])
     except AuditError as exc:
-        if "404" in str(exc) or "Not Found" in str(exc):
+        if re.search(r"\bHTTP 404\b", str(exc)):
             return None
         raise
     if isinstance(body, dict) and isinstance(body.get("content"), str):
@@ -478,7 +478,7 @@ def prune_unadopted(path: pathlib.Path, *, fetch: Callable[[list[str]], Any], ap
             try:
                 body = fetch(["api", f"repos/{repo}/contents/DIRECTION.md", "--method", "GET"])
             except AuditError as exc:
-                if "404" not in str(exc) and "Not Found" not in str(exc):
+                if not re.search(r"\bHTTP 404\b", str(exc)):
                     raise
                 removed.append(repo)
             else:

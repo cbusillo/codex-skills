@@ -494,6 +494,27 @@ def test_prune_rejects_malformed_input_and_concurrent_marker_edits() -> None:
         assert marker.read_text() == changed
 
 
+def test_prune_does_not_confuse_repository_digits_with_http_status() -> None:
+    module = load()
+    def fetch(args: list[str]) -> dict[str, Any]:
+        if args[1].endswith("/contents/DIRECTION.md"):
+            raise module.AuditError(f"wrapper/go404 {args[1]} failed: HTTP 502")
+        return {"full_name": "o/app404"}
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        marker.write_text('{"audits":{"o/app404":"a"}}')
+        original = marker.read_bytes()
+        result = module.prune_unadopted(marker, fetch=fetch, apply=True)
+        assert result["removed"] == [] and "o/app404" in result["unknown"]
+        assert marker.read_bytes() == original
+        try:
+            module.merged_direction("o/app404", fetch=fetch)
+        except module.AuditError:
+            pass
+        else:
+            raise AssertionError("repository digits were mistaken for a missing direction file")
+
+
 def test_open_audit_questions_beyond_the_general_issue_cap_are_still_reported() -> None:
     module = load()
     question = issue(1, "Old audit question", labels=("audit",))
