@@ -3109,6 +3109,8 @@ def test_reconcile_requests_read_keeps_testing_operation_ids() -> None:
         "active_operation_id": "odoo-target-replacement-example-testing-3",
         "deployed_operation_id": "odoo-target-replacement-example-testing-0",
         "last_failed_operation_id": "odoo-target-replacement-example-testing-1",
+        "last_failed_error_code": "health_check_failed",
+        "last_failed_error_summary": "Health check did not pass within the wait window.",
         "missing_keys": ["EXAMPLE_ODOO_ADMIN_LOGIN"],
         "rejected_builds": [{"commit": "abc123", "error": "Private build failure text"}],
         "pr_feedback": {"error": "Private feedback text"},
@@ -3131,6 +3133,8 @@ def test_reconcile_requests_read_keeps_testing_operation_ids() -> None:
         "active_operation_id",
         "deployed_operation_id",
         "last_failed_operation_id",
+        "last_failed_error_code",
+        "last_failed_error_summary",
         "missing_keys",
     ):
         assert kept[name] == plan[name], name
