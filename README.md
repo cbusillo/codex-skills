@@ -322,7 +322,7 @@ falling back to `~/.code/session-events.jsonl` on either harness. Set `CODE_HOME
 to the same shared directory for both harnesses when using an override.
 Records contain `schema_version`, `harness`, `session_id`, optional `turn_id`
 (null on Claude), UTC `time`, `event`, `advisory: true`, `clean: null`, and
-`stop_hook_active` when supplied for Stop. Neither event proves clean final
+`stop_hook_active` (null unless a boolean is supplied for Stop). Neither event proves clean final
 completion; the supervisor must verify current session state. Messages,
 transcripts, credentials and working directories are not copied. Concurrent
 local writes append whole lines; storage errors leave the session running and
@@ -336,7 +336,9 @@ loads Stop from the catalog hook source. Existing installations can preview
 `scripts/install-catalog.py` and rerun it with `--write`. Codex may skip changed
 or new definitions until reviewed through its supported `/hooks` flow; no trust
 is granted or copied by the installer. To suppress Codex alerts independently,
-leave their entries untrusted in `/hooks` while retaining other approved hooks.
+disable their reviewed definitions with the `/hooks` toggle while retaining
+other enabled hooks. Leaving entries untrusted can prompt for review again
+on later launches.
 On either harness, set `SESSION_ALERTS_DISABLED=1` in the hook environment to
 suppress alerts independently without changing other hooks. For example, launch
 Claude Code with `SESSION_ALERTS_DISABLED=1 claude` or Codex with
@@ -356,7 +358,8 @@ through the documented installer preview. For a stale dotfiles symlink, use
 entry includes `catalog_alert_entries` with the generated Stop/Interrupt groups
 for your dotfiles source; apply those groups there, preserving their positions
 and unrelated hooks. Then run `scripts/catalog_runtime.py --update` to clear
-the old skipped-refresh receipt. This preview contains no trust state.
+the old skipped-refresh receipt. This preview contains no trust state. Dotfiles
+shared across hosts with different catalog paths need per-host rendered entries.
 Supervisors own local retention of the events file; truncating it discards old
 notices and subsequent invocations append new ones. Readers should skip malformed
 lines, which can result from interrupted or partial storage writes.
