@@ -656,6 +656,7 @@ def global_fixture(
     repo: str = "someone/direction",
     discovered: list[dict[str, Any]] | None = None,
     comments: dict[tuple[str, int], list[dict[str, Any]]] | None = None,
+    relationship_requests: list[str] | None = None,
 ) -> Any:
     module = load_module()
     captured: dict[str, Any] = {}
@@ -673,6 +674,11 @@ def global_fixture(
         return "automation-gh", by_key[key]
 
     def collect(path: str, **kwargs: Any) -> Any:
+        if relationship_requests is not None and any(path.endswith("/" + name) for name in ("blocked_by", "blocking", "sub_issues")):
+            relationship_requests.append(path)
+            parts = path.split("/")
+            key = ("/".join(parts[2:4]), int(parts[5]))
+            return "automation-gh", edges.get(key, relationships())[parts[-1]]
         if path.endswith("/comments"):
             parts = path.split("/")
             return "automation-gh", (comments or {}).get(("/".join(parts[2:4]), int(parts[5])), [])
@@ -688,6 +694,7 @@ def global_fixture(
             for name, values in edges.get((target_repo, number), relationships()).items()
         }, []
 
+    native_reader = module.read_next_issue_relationships
     with patch.multiple(
         module,
         default_repo=lambda explicit: explicit or repo,
@@ -696,7 +703,7 @@ def global_fixture(
         collect_paged_rest_items=collect,
         discover_direction_work=lambda *_args, **_kwargs: (discovered or [], {"complete": True, "repositories": []}),
         next_focus_context=lambda *_: (None, {}, {"available": False, "reason": "project_not_configured"}),
-        read_next_issue_relationships=read_relationships,
+        read_next_issue_relationships=native_reader if relationship_requests is not None else read_relationships,
         read_next_parent=lambda target, number: parent_map.get((target.casefold(), number)),
         get_issue=get_node,
         milestone_route=lambda: ("gh", "automation-gh"),
@@ -1527,6 +1534,40 @@ def test_milestone_candidate_coverage_is_scoped_to_graph() -> None:
         assert result["candidate_coverage"]["complete"]
         assert result["candidate_coverage"]["warning"] is None
 
+def test_global_native_summary_savings_reach_real_reader() -> None:
+    root = track("someone/direction", 1, "First")
+    leaf = global_issue("someone/product", 2)
+    for item in (root, leaf):
+        item["issue_dependencies_summary"] = {"total_blocked_by": 0, "total_blocking": 0}
+        item["sub_issues_summary"] = {"total": 0}
+    root["sub_issues_summary"]["total"] = 1
+    calls: list[str] = []
+    with global_fixture([root], [leaf], {(root["repo"], 1): relationships(sub_issues=[leaf])}, relationship_requests=calls) as (module, result, _reads):
+        module.cmd_next(next_args())
+        assert [item["number"] for item in result["candidates"]] == [2]
+        assert calls == ["/repos/someone/direction/issues/1/sub_issues"]
+
+
+def test_unvisited_track_ancestry_and_unparsed_repository_direction_context() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    first = global_issue("someone/product", 3)
+    later = global_issue("someone/product", 4)
+    edges = {(roots[0]["repo"], 1): relationships(sub_issues=[first]), (roots[1]["repo"], 2): relationships(sub_issues=[later])}
+    with global_fixture(roots, [first, later], edges, discovered=[later]) as (module, result, _reads):
+        module.cmd_next(next_args(scan_limit=2))
+        candidate = next(item for item in result["candidates"] if item["number"] == 4)
+        assert candidate["overall_milestone_context"]["titles"] == ["Second"]
+        assert candidate["overall_milestone_context"]["source"] == "native_track_ancestry"
+        assert result["graph_context"]["truncated"]
+        read = module.repository_direction_milestones
+        assert read({"direction": "## Milestones\n- First without supported formatting"}) is None
+        assert read({"direction": "## Other waypoints\n- `First`"}) is None
+        assert read({"direction": "## Milestones\n"}) == []
+        assert read({"direction": None}) == []
+        assert read({"error": "not accessible", "direction": None}) is None
+        assert read({"direction": "## Milestones\n- `First`"}) == ["First"]
+
+
 def test_native_zero_totals_skip_reads_but_closed_history_and_unknowns_do_not() -> None:
     module = load_module()
     raw = issue(1)
@@ -1600,6 +1641,8 @@ def test_skipped_repository_counts_exclude_graph_overlap_and_marked_incidents() 
 
 
 TESTS = [
+    test_global_native_summary_savings_reach_real_reader,
+    test_unvisited_track_ancestry_and_unparsed_repository_direction_context,
     test_native_zero_totals_skip_reads_but_closed_history_and_unknowns_do_not,
     test_overall_waypoint_context_requires_native_or_listed_direction_evidence,
     test_skipped_repository_counts_exclude_graph_overlap_and_marked_incidents,

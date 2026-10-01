@@ -2549,6 +2549,21 @@ def discover_direction_work(
     return ordered, coverage
 
 
+def repository_direction_milestones(source: dict[str, Any]) -> list[str] | None:
+    """Keep absent/empty waypoints distinct from an unread or unparsed source."""
+    if source.get("error"):
+        return None
+    text = source.get("direction")
+    if text is None:
+        return []
+    titles = direction_milestone_titles(text)
+    if not re.search(r"(?m)^##\s+Milestones\s*$", text):
+        return None
+    if not titles and section_map(text).get("Milestones", "").strip():
+        return None
+    return titles
+
+
 def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     selection_context = next_selection_context(args)
     direction_text = load_direction(repo)
@@ -2741,7 +2756,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                 discoveries.append(item)
     portfolio = github_direction_next.rank_portfolio_work(
         ranked, discoveries, milestone_titles=titles, selection_context=selection_context,
-        repository_milestones={source["repo"]: direction_milestone_titles(source["direction"]) if source.get("direction") else None for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
+        repository_milestones={source["repo"]: repository_direction_milestones(source) for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
     )
     ranked.update(portfolio)
     ranked["candidates"] = ranked["candidates"][:args.limit]

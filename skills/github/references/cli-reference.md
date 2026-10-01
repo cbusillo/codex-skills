@@ -473,8 +473,10 @@ and marked-incident reads. Source truncation/access failures remain explicit in
 `discovery_context.repositories`, so these counts do not claim full inventory.
 Every candidate has `overall_milestone_context` with `matched`, `none_found` or
 `unknown`, titles and its evidence source. Matches require a native Track
-path/ancestry or an issue milestone listed in both repository and overall
-direction. Context does not alter eligibility, availability or ranking.
+path/ancestry or an open issue milestone title listed in both repository and
+overall direction. Title matches explicitly carry `basis: exact_listed_title_match`,
+not a native Track-link claim. Unread or unparsed direction stays unknown.
+Context does not alter eligibility, availability or ranking.
 Relationship endpoints are skipped only when the already-read native issue
 summary explicitly reports an integer-zero total for that relationship; missing,
 malformed or nonzero totals keep the bounded reads, including closed history.
