@@ -237,9 +237,30 @@ Codex 0.157.0 supports a blocking `PreToolUse` hook, exposes shell calls as
 It also accepts the JSON deny decision used by the registered launcher. Hooks
 are enabled by default in that version; if the host explicitly disabled them,
 restore its `features.hooks` setting before expecting enforcement.
-`--codex-hook` renders the existing `hooks/hooks.json` PreToolUse declaration
-into `~/.codex/hooks.json`, retaining other hooks. It does not grant hook trust;
-review the new entry through Codex's `/hooks` interface. Once registered and
+`--codex-hook` maintains the catalog's `PreToolUse` and `SessionStart` hooks in
+`~/.codex/hooks.json`, retaining other hooks. It also moves existing inline
+event declarations from `config.toml` into JSON, preserving their commands,
+matchers, timeouts, unrelated settings, and Codex-managed `[hooks.state]`.
+An existing catalog direction hook is retained rather than registered twice.
+Both the installer and sync helper use this same migration path. Unsupported
+or conflicting definitions stop with an actionable error before writing.
+
+For an existing installation, migrate hooks alone from the maintained runtime
+checkout, reviewing the preview before applying it:
+
+```sh
+uv run scripts/sync-global-instructions.py --codex-hook --hooks-only
+uv run scripts/sync-global-instructions.py --codex-hook --hooks-only --write
+```
+
+Changed files receive private sibling backups. To undo migration, restore both
+the `hooks.json` and `config.toml` backups reported by the helper; if JSON was
+newly created, remove only that newly created file after restoring TOML.
+Repeating synchronization produces no changes once consolidated. Migrating a
+hook changes its definition source, so review any untrusted entries through
+Codex's `/hooks` interface before expecting them to run. The helper never grants,
+copies, or invents hook trust. See the [official hook guidance](https://learn.chatgpt.com/docs/hooks).
+Once registered and
 trusted, a catalog pull updates the same policy script on both hosts. The
 Claude-only skills protocol is not added to Codex's base instructions.
 
@@ -348,8 +369,10 @@ day old or the current repository's audit more than a week old. It never
 reads stdin, always exits 0, runs only on `startup`, `resume`, and `clear`
 (not after a compaction), and is bounded to 15 seconds with Python downloads
 disabled. The marker is `~/.code/direction-last-check.json` on every host
-unless `DIRECTION_MARKER` names another file. For Codex, register the same
-script as a session-start command hook in its hooks configuration.
+unless `DIRECTION_MARKER` names another file. For Codex, the installer or
+`scripts/sync-global-instructions.py --codex-hook` registers this hook in
+`hooks.json`; review it through `/hooks` once. Keep user-layer event definitions
+in JSON so later setup does not recreate inline TOML declarations.
 Claude's separate `compact` handler uses `--skills-only` to restore the protocol
 without repeating the executing loop or overdue-audit reminder.
 

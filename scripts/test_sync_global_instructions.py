@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["tomlkit==0.15.1"]
 # ///
 """Global instructions preserve private sections and existing files on adoption."""
 
@@ -10,6 +10,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -20,6 +21,100 @@ SPEC.loader.exec_module(sync)
 
 
 class GlobalInstructionsTests(unittest.TestCase):
+    def test_mixed_hooks_migrate_with_preview_backup_trust_and_idempotence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex = Path(directory)
+            config = codex / "config.toml"
+            original = f'''# Personal setting\nmodel = "personal-model"\n
+[[hooks.SessionStart]]
+matcher = "startup|resume|clear"
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "uv run {sync.ROOT / 'hooks' / 'direction_check_hook.py'}"
+timeout = 15
+
+[[hooks.Stop]]
+matcher = "*"
+[[hooks.Stop.hooks]]
+type = "command"
+command = "my-stop"
+
+# Codex-managed trust, preserve it verbatim.
+[hooks.state."source-bound-id"]
+approved = true
+hash = "existing-hash"
+'''
+            config.write_text(original)
+            hook_path = codex / "hooks.json"
+            hook_path.write_text(sync.render_codex_hook(hook_path))
+            old_json = hook_path.read_bytes()
+            expected = tomllib.loads(original)
+            plan = sync.prepare_codex_hooks(codex)
+            self.assertEqual(config.read_text(), original)
+            self.assertEqual(hook_path.read_bytes(), old_json)
+            hooks = json.loads(plan[hook_path])["hooks"]
+            self.assertEqual(hooks["SessionStart"], expected["hooks"]["SessionStart"])
+            self.assertEqual(hooks["Stop"], expected["hooks"]["Stop"])
+            self.assertEqual(len(hooks["PreToolUse"]), 1)
+            receipt = sync.write_codex_hooks(plan, codex)
+            for item in receipt:
+                if "backup" in item:
+                    self.assertEqual(Path(item["backup"]).stat().st_mode & 0o777, 0o600)
+            cleaned = tomllib.loads(config.read_text())
+            self.assertEqual(cleaned["hooks"], {"state": expected["hooks"]["state"]})
+            self.assertEqual(cleaned["model"], expected["model"])
+            self.assertIn(original[original.index('[hooks.state.'):], config.read_text())
+            second = sync.prepare_codex_hooks(codex)
+            self.assertEqual(list(second), [hook_path])
+            self.assertTrue(all(item["state"] == "current" for item in sync.write_codex_hooks(second, codex)))
+            self.assertEqual(len(list(codex.glob("*.backup-*"))), 2)
+
+    def test_fresh_hook_setup_registers_both_events_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex = Path(directory)
+            first = sync.prepare_codex_hooks(codex)
+            hook_path = codex / "hooks.json"
+            self.assertEqual(set(json.loads(first[hook_path])["hooks"]), {"SessionStart", "PreToolUse"})
+            sync.write_codex_hooks(first, codex)
+            self.assertEqual(sync.prepare_codex_hooks(codex), first)
+            self.assertFalse((codex / "config.toml").exists())
+
+    def test_conflicts_malformed_hooks_and_symlink_migration_refuse_without_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex = Path(directory)
+            config, hook_path = codex / "config.toml", codex / "hooks.json"
+            inline = '[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ncommand = "my-stop"\n'
+            config.write_text(inline)
+            duplicate = {"hooks": {"Stop": [{"hooks": [{"command": "my-stop"}]}]}}
+            hook_path.write_text(json.dumps(duplicate))
+            before = hook_path.read_bytes()
+            with self.assertRaisesRegex(ValueError, "Conflicting"):
+                sync.prepare_codex_hooks(codex)
+            self.assertEqual(hook_path.read_bytes(), before)
+            self.assertEqual(config.read_text(), inline)
+            hook_path.write_text('{"hooks":{"Stop":[null]}}')
+            with self.assertRaises(ValueError):
+                sync.prepare_codex_hooks(codex)
+            hook_path.write_text('{}')
+            target = codex / "actual.toml"
+            config.rename(target)
+            config.symlink_to(target)
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                sync.prepare_codex_hooks(codex)
+            self.assertEqual(target.read_text(), inline)
+
+    def test_hook_sources_changed_after_preview_are_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex = Path(directory)
+            outputs = sync.prepare_codex_hooks(codex)
+            config = codex / "config.toml"
+            changed = '[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ncommand = "added-after-preview"\n'
+            config.write_text(changed)
+            with self.assertRaisesRegex(ValueError, "changed during preparation"):
+                sync.write_codex_hooks(outputs, codex)
+            self.assertFalse((codex / "hooks.json").exists())
+            self.assertEqual(config.read_text(), changed)
+
     def test_explicit_host_directories_receive_identical_instructions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
