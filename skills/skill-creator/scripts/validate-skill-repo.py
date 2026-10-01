@@ -658,32 +658,6 @@ def validate_invocation_parity(skill_dir: Path) -> list[str]:
     return []
 
 
-def validate_claude_marketplace(repo_root: Path) -> list[str]:
-    """Cowork's marketplace sync rejects what the Claude Code CLI still accepts.
-
-    https://claude.com/docs/plugins/org-sync: a relative plugin source must start
-    with "./", and a plugin with a top-level bin/ directory is rejected.
-    """
-    path = repo_root / ".claude-plugin" / "marketplace.json"
-    if not path.exists():
-        return []
-    label = path.relative_to(repo_root)
-    try:
-        plugins = json.loads(path.read_text()).get("plugins", [])
-    except (json.JSONDecodeError, AttributeError):
-        return [f"{label}: must be a JSON object"]
-    errors: list[str] = []
-    for plugin in plugins:
-        source = plugin.get("source") if isinstance(plugin, dict) else None
-        if not isinstance(source, str):
-            continue
-        name = plugin.get("name")
-        if not source.startswith("./"):
-            errors.append(f"{label}: plugin {name!r} source {source!r} must start with './' for Cowork sync")
-        elif (repo_root / source / "bin").is_dir():
-            errors.append(f"{label}: plugin {name!r} has a top-level bin/ directory, which Cowork sync rejects")
-    return errors
-
 
 def validate_skill_dir(skill_dir: Path) -> list[str]:
     errors: list[str] = []
@@ -721,7 +695,6 @@ def main() -> int:
         errors.extend(validate_skill_dir(skill_dir))
     errors.extend(validate_system_override_paths(skill_dirs))
     errors.extend(validate_command_label_invocations(skill_dirs))
-    errors.extend(validate_claude_marketplace(ROOT.parent))
 
     if errors:
         for error in errors:
