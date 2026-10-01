@@ -300,6 +300,19 @@ commands:
         "<repository-id>",
       ]
     purpose: Reads bounded active change-impact policy metadata for verification.
+  - name: launchplane-target-replacement-operation-read
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "target-replacement-operation-read",
+        "--operation-id",
+        "<operation-id>",
+      ]
+    purpose: Reads one Odoo deploy operation's status, phase, times and error code.
   - name: launchplane-merge-train-policy-import-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -696,8 +709,9 @@ operation map rather than adding duplicate literals.
 The merge-train policy import, repository inventory, product expected configuration,
 generic-web deploy-recovery, Odoo addon-settings, integration-allowances,
 testing-hold, product-repository-identity, product-environment-read,
-product-activity-read, preview-history-read, and reconcile-requests-read commands are explicit bounded local extensions because the
-vendored public
+product-activity-read, preview-history-read, reconcile-requests-read, and
+target-replacement-operation-read commands are explicit bounded local
+extensions because the vendored public
 operation projection does not contain their routes. Do not describe them as contract-backed. If a later artifact adds those
 routes, migrate them deliberately and remove the local-extension entries instead
 of retaining parallel sources of truth.
@@ -1043,6 +1057,15 @@ verification.
   event reconciler last decided for each of a product's previews and its
   testing lane: state, attempt, delivery id, last error, and the plan's
   action, reason, commit, digests and ids.
+- `GET /v1/drivers/odoo/target-replacement/operations/{operation_id}`: Bounded
+  local-extension read (`target-replacement-operation-read --operation-id`)
+  for why a testing or stable Odoo deploy failed: take the id from
+  `reconcile-requests-read` (`queued_operation_id`, `active_operation_id`,
+  `deployed_operation_id` or `last_failed_operation_id`). It returns status,
+  phase, times, attempt, artifact id, image digest, step statuses and error
+  code; free-text error messages are dropped. The service authorizes it as
+  `odoo_target_replacement_apply.execute` on the operation's own product,
+  context and instance.
 - `POST /v1/work-graph/merge-train/controller/run-once`: Preferred merge-train
   controller path; call repeatedly to advance one safe phase at a time.
 - `POST /v1/previews/pr-feedback/remediation`: Contract-backed bounded preview
