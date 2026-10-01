@@ -21,7 +21,7 @@ formatting rules in every `SKILL.md`.
 - For the owner's own repositories, the label may omit the owner prefix;
   always keep the repository name. For another owner's repository, use
   `[OWNER/repo#N](URL) short title`. Bare `#N` and `PR #N` labels lose context.
-- In plain-text titles and commit subjects, use repository-qualified IDs and
+- In plain-text titles and commit subjects, use full `OWNER/REPO#N` IDs and
   a short description; put clickable links in the associated Markdown body.
 - Preserve exact-output requests, runnable commands, machine-readable fields,
   helper-checked owner-decision lines, and `Refs`/closing syntax verbatim;
@@ -143,3 +143,6 @@ formatting rules in every `SKILL.md`.
   Reference this guide when the skill needs formatting behavior.
 - Avoid filler status text in durable comments. Future agents need facts,
   evidence, decisions, blockers, and next actions.
+- Before sending, scan the whole reply for numbered issue/PR mentions. Link
+  each prose mention with its short title, or use a pronoun instead; leave
+  literal commands and helper-consumed text unchanged.
