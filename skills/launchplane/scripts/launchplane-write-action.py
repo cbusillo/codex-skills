@@ -3066,7 +3066,9 @@ def _project_odoo_addon_settings_result(result: object) -> dict[str, object]:
     return projected
 
 
-def _project_success_output(operation: str, provider_payload: dict[str, Any]) -> tuple[dict[str, object], dict[str, object]]:
+def _project_success_output(
+    operation: str, provider_payload: dict[str, Any], *, request: dict[str, object] | None = None
+) -> tuple[dict[str, object], dict[str, object]]:
     if operation in {
         "generic-web-deploy-recovery-dry-run",
         "generic-web-deploy-recovery-apply",
@@ -3099,10 +3101,21 @@ def _project_success_output(operation: str, provider_payload: dict[str, Any]) ->
         }
         if not isinstance(source["summary"], dict):
             raise LaunchplaneSafetyError("invalid_response")
-        # Removal dispositions appear only when the request asked for removals, and
-        # then in both sections; add-only responses keep exactly added/unchanged.
-        runtime_changes = source["runtime_environment_keys"]
-        removal_shape = isinstance(runtime_changes, dict) and "removed" in runtime_changes
+        # The submitted request, not the response, decides the shape: a removal
+        # request needs every removal disposition (an older service that drops
+        # them must not look like a reviewed removal), and an add-only request
+        # keeps exactly added/unchanged.
+        removal_shape = request is not None and request.get("removal_requested") is True
+        if removal_shape:
+            summary = source["summary"]
+            for count_key in (
+                "runtime_environment_key_remove_count", "managed_secret_binding_remove_count",
+                "runtime_environment_key_absent_count", "managed_secret_binding_absent_count",
+                "managed_secret_binding_still_bound_count",
+            ):
+                count = summary.get(count_key)
+                if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                    raise LaunchplaneSafetyError("invalid_response")
         for kind, removal_dispositions in (
             ("runtime_environment_keys", ("removed", "absent")),
             ("managed_secret_bindings", ("removed", "absent", "still_bound")),
@@ -3301,7 +3314,7 @@ def http_error_recommendation(status: str) -> str:
 def summarize_success(
     *, operation: str, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    records, result = _project_success_output(operation, provider_payload)
+    records, result = _project_success_output(operation, provider_payload, request=request)
     status = public_code(provider_payload.get("status"), default="accepted")
     payload = base_payload(status=status, operation=operation, request=request)
     payload["records"] = records
@@ -4214,6 +4227,18 @@ def product_config_payload_body(args: argparse.Namespace, *, mode: str) -> dict[
     return body
 
 
+def _validate_expected_config_removal(item: dict[str, object], *, identity_key: str) -> None:
+    """A removal names one declared identity with plain strings and nothing else."""
+    if not all(isinstance(value, str) for value in item.values()):
+        raise ValueError("invalid_expected_config_removal")
+    if not str(item.get(identity_key, "")).strip():
+        raise ValueError("invalid_expected_config_removal")
+    if "integration" in item and not str(item["integration"]).strip():
+        raise ValueError("invalid_expected_config_removal")
+    if str(item.get("instance", "")).strip() and not str(item.get("context", "")).strip():
+        raise ValueError("invalid_expected_config_removal")
+
+
 def product_expected_config_payload_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
     body = read_payload_file(args.payload_file)
     if set(body) - {
@@ -4241,6 +4266,8 @@ def product_expected_config_payload_body(args: argparse.Namespace, *, mode: str)
         for item in requirements:
             if not isinstance(item, dict) or set(item) - allowed:
                 raise ValueError("invalid_expected_config_payload")
+            if kind.startswith("remove_"):
+                _validate_expected_config_removal(item, identity_key="key" if kind == "remove_runtime_environment_keys" else "binding_key")
             owner_input = item.get("owner_input")
             if owner_input is not None and (
                 not isinstance(owner_input, dict)
@@ -5273,6 +5300,9 @@ def main(argv: list[str]) -> int:
                 "action": "product_profile.expected_config.apply",
                 "payload_source": "private_file",
                 "payload_digest": metadata_review_digest(body),
+                "removal_requested": bool(
+                    body.get("remove_runtime_environment_keys") or body.get("remove_managed_secret_bindings")
+                ),
             }
             return execute_post(
                 args=args,

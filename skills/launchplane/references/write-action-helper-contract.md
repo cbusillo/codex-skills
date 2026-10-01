@@ -172,7 +172,10 @@ When the request removes anything, it also reports removed and absent counts for
 both sections and `managed_secret_bindings_still_bound_count`: stored secret
 bindings that still hold a value for a removed requirement. Removal never
 unbinds or deletes a stored secret. Absent means the identity was not declared,
-so a repeated removal is a no-op.
+so a repeated removal is a no-op. Removal items must be plain strings with a
+non-empty key or binding key, and an instance needs a context. A removal request
+whose response lacks any removal disposition or count is refused, so it cannot
+serve as apply evidence.
 Read back the product profile after apply, including when a response is uncertain.
 
 The service requires `product_profile.expected_config.apply` for the named product
