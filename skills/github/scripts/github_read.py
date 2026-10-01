@@ -216,12 +216,14 @@ class GitHubReader:
         self.failed_results: list[github_api_core.ApiResult] = []
         self.degraded_reasons: list[dict[str, str]] = []
         self.last_result: Optional[github_api_core.ApiResult] = None
+        self._escape_sequences_supported: Optional[bool] = None
 
     def _transport_request(
         self, method: str, path: str, *, step: str, body: Any = None,
         bucket: str = "rest_core", retry_policy: Optional[github_api_core.RetryPolicy] = None,
         deadline_at: Optional[float] = None, operation: Optional[str] = None,
-        extra_headers: Optional[dict[str, str]] = None
+        extra_headers: Optional[dict[str, str]] = None,
+        allow_escape_sequences: bool = False,
     ) -> github_api_core.ApiResult:
         return github_api_core.call_gh_with_retry(
             method,
@@ -239,6 +241,7 @@ class GitHubReader:
             extra_headers=extra_headers,
             retry_policy=retry_policy,
             deadline_at=deadline_at,
+            allow_escape_sequences=allow_escape_sequences,
         )
 
     def graphql_json(
@@ -324,10 +327,47 @@ class GitHubReader:
         return self.request("GET", path, step=step).body
 
     def get_text(self, path: str, *, step: str) -> str:
-        body = self.request("GET", path, step=step).body
+        # Older CLIs print logs without this opt-in. Probe the configured CLI,
+        # including wrapper arguments, rather than changing readers or identity.
+        if self._escape_sequences_supported is None:
+            try:
+                help_result = subprocess.run(
+                    [self.gh_cmd, *self.gh_prefix_args, "api", "--help"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, timeout=60,
+                )
+                self._escape_sequences_supported = (
+                    help_result.returncode == 0
+                    and b"--allow-escape-sequences" in help_result.stdout
+                )
+                if help_result.returncode != 0:
+                    self.mark_degraded(
+                        "log_cli_capability", "cli_help_failed",
+                        "Configured CLI help probe failed; log escape opt-in support is unknown",
+                    )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                self._escape_sequences_supported = False
+                self.mark_degraded(
+                    "log_cli_capability", "cli_help_failed",
+                    f"Configured CLI help probe failed ({type(exc).__name__}); log escape opt-in support is unknown",
+                )
+        # Text logs do not participate in the JSON conditional-response cache.
+        result = self._transport_request(
+            "GET", path, step=step,
+            allow_escape_sequences=self._escape_sequences_supported,
+        )
+        self._record_result(result, method="GET", path=path, step=step)
+        if not result.ok:
+            message = result.failure.message if result.failure else "GitHub REST read failed"
+            raise GitHubReadError(message, result=result, diagnostics=self.diagnostics())
+        body = result.body
         if not isinstance(body, str):
             self.invalid_response(step, f"GitHub {step} response was not text")
-        return body
+        # Remove terminal commands before log text reaches reports or snippets.
+        body = re.sub(r"\x1b][^\x07\x1b]*(?:\x07|\x1b\\)", "", body)
+        body = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", body)
+        body = re.sub(r"\x1b[ -/]*[@-~]", "", body)
+        return re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", body)
 
     def paged_json(
         self,

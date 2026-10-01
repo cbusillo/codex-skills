@@ -767,6 +767,7 @@ def test_workflow_metadata_jobs_and_text_log_normalize() -> None:
             "run_attempt": 2,
         })),
         process(include_output({"jobs": [{"id": 33, "run_id": 22, "name": "tests", "status": "completed", "conclusion": "failure"}]})),
+        process(b"api flags: --allow-escape-sequences"),
         process(include_output("line one\nerror: failed\n", content_type="text/plain")),
     ]
     reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="test.actions")
@@ -778,6 +779,70 @@ def test_workflow_metadata_jobs_and_text_log_normalize() -> None:
     assert run["runAttempt"] == 2
     assert jobs[0]["id"] == 33
     assert "error: failed" in log
+
+
+def test_text_logs_opt_in_and_remove_terminal_commands() -> None:
+    reader = github_read.GitHubReader(
+        gh_cmd="fake-wrapper", gh_prefix_args=["--reader-option"],
+        operation="test.actions",
+    )
+    responses = [
+        process(b"api flags: --allow-escape-sequences"),
+        process(include_output(
+            "\x1b[31merror: failed\x1b[0m\n"
+            "\x1b]8;;https://example.invalid\x1b\\details\x1b]8;;\x07\n"
+            "\x1b[2Jnext\x00\x07\tline",
+            content_type="text/plain",
+        )),
+        process(include_output("second log", content_type="text/plain")),
+        process(include_output({"ok": True})),
+    ]
+    with patch("subprocess.run", side_effect=responses) as run:
+        log = github_read.job_log(reader, "o/r", 33)
+        assert github_read.job_log(reader, "o/r", 34) == "second log"
+        assert reader.get_json("/repos/o/r", step="metadata") == {"ok": True}
+    assert log == "error: failed\ndetails\nnext\tline"
+    assert run.call_args_list[0].args[0] == [
+        "fake-wrapper", "--reader-option", "api", "--help",
+    ]
+    for call in run.call_args_list[1:3]:
+        assert "--allow-escape-sequences" in call.args[0]
+    assert "--allow-escape-sequences" not in run.call_args_list[3].args[0]
+    assert reader.diagnostics()["degraded"] is False
+
+
+def test_text_logs_support_older_cli_and_preserve_failures() -> None:
+    reader = github_read.GitHubReader(gh_cmd="old-gh", operation="test.actions")
+    responses = [
+        process(b"api flags: --include"),
+        process(include_output("\x1b[31mlegacy failure\x1b[0m", content_type="text/plain")),
+        process(include_output({"message": "Forbidden"}, status=403), returncode=1),
+    ]
+    with patch("subprocess.run", side_effect=responses) as run:
+        assert github_read.job_log(reader, "o/r", 33) == "legacy failure"
+        try:
+            github_read.job_log(reader, "o/r", 34)
+        except github_read.GitHubReadError as exc:
+            assert exc.result.status == 403
+        else:
+            raise AssertionError("Denied logs must remain a read failure")
+    assert all("--allow-escape-sequences" not in call.args[0] for call in run.call_args_list)
+    assert reader.diagnostics()["degraded"] is True
+
+
+def test_text_log_capability_probe_failure_is_visible() -> None:
+    for failure in (
+        subprocess.TimeoutExpired(["fake-gh", "api", "--help"], 60),
+        process(b"", returncode=1, stderr="private configuration detail"),
+    ):
+        reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="test.actions")
+        responses = [failure, process(include_output("plain log", content_type="text/plain"))]
+        with patch("subprocess.run", side_effect=responses):
+            assert github_read.job_log(reader, "o/r", 33) == "plain log"
+        diagnostics = reader.diagnostics()
+        assert diagnostics["degraded"] is True
+        assert "log_cli_capability" in diagnostics["degradedComponents"]
+        assert "private configuration detail" not in json.dumps(diagnostics)
 
 
 def main() -> None:
@@ -814,6 +879,9 @@ def main() -> None:
         test_pull_checks_preserve_check_runs_when_status_permission_is_missing,
         test_shape_failure_marks_diagnostics_degraded,
         test_workflow_metadata_jobs_and_text_log_normalize,
+        test_text_logs_opt_in_and_remove_terminal_commands,
+        test_text_logs_support_older_cli_and_preserve_failures,
+        test_text_log_capability_probe_failure_is_visible,
     ]
     failed: list[str] = []
     for test in tests:

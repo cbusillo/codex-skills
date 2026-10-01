@@ -1542,6 +1542,7 @@ def build_gh_command(
     api_version: str = DEFAULT_API_VERSION,
     extra_headers: Optional[dict[str, str]] = None,
     has_body: Optional[bool] = None,
+    allow_escape_sequences: bool = False,
 ) -> list[str]:
     """
     Build a body-safe ``gh api --include`` command list.
@@ -1568,6 +1569,9 @@ def build_gh_command(
         f"X-GitHub-Api-Version: {api_version}",
         path,
     ]
+
+    if allow_escape_sequences:
+        cmd.append("--allow-escape-sequences")
 
     if has_body is None:
         has_body = method.upper() not in ("GET", "HEAD", "DELETE")
@@ -2798,6 +2802,7 @@ def call_gh(
     bucket: Optional[str] = None,
     graphql_operation: Optional[GraphQLOperation] = None,
     timeout_seconds: Optional[float] = None,
+    allow_escape_sequences: bool = False,
 ) -> ApiResult:
     """
     Execute a single GitHub REST API call via gh CLI.
@@ -2897,6 +2902,7 @@ def call_gh(
         api_version=api_version,
         extra_headers=extra_headers,
         has_body=has_body,
+        allow_escape_sequences=allow_escape_sequences,
     )
 
     stdin_bytes: Optional[bytes] = None
@@ -3144,6 +3150,7 @@ def call_gh_with_retry(
     retry_runtime: Optional[RetryRuntime] = None,
     deadline_at: Optional[float] = None,
     matrix_path: pathlib.Path = DEFAULT_OPERATION_MATRIX,
+    allow_escape_sequences: bool = False,
 ) -> ApiResult:
     resolved_graphql_operation = graphql_operation
     if is_graphql_path(path) and resolved_graphql_operation is None:
@@ -3176,6 +3183,7 @@ def call_gh_with_retry(
             bucket=resolved_bucket,
             graphql_operation=resolved_graphql_operation,
             timeout_seconds=timeout_seconds,
+            allow_escape_sequences=allow_escape_sequences,
         )
 
     return run_with_retry(
