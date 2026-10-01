@@ -179,8 +179,9 @@ active issue labels and continuing background jobs do not lift a hold.
 5. For `next`, report the selected issue, why it fits the plan, and recorded
    waits, then stop without changing planning state. On authorized `go`, run
    `gh-plan.py claim <issue> --worker <worker> --session <session-id>
-   --branch work/issue-<number> --next-action "<action>"` before creating a
-   branch or worktree. Read [Planning: Claim](../github/references/cli-reference.md#planning-claim)
+   --branch <task-branch> --next-action "<action>"` before creating a
+   branch or worktree, using exactly the branch the worktree helper will create
+   (`work/<task-slug>` for `dev-worktree`). Read [Planning: Claim](../github/references/cli-reference.md#planning-claim)
    for refusal, partial recovery, or release. Continue only on confirmed success;
    preserve competing or uncertain ownership for the owner to decide. Keep
    Current Status current through handoff or completion.

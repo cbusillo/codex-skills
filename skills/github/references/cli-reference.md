@@ -344,8 +344,15 @@ the target repository:
 ```bash
 uv run <skill-dir>/scripts/gh-plan.py claim <issue> \
   --worker <worker-token> --session <session-id> \
-  --branch work/issue-<number> --next-action "<action>"
+  --branch work/<task-slug> --next-action "<action>"
 ```
+
+Claim the exact branch that the worktree helper will create. For
+`dev-worktree <repo> <task-slug> <start>`, that is `work/<task-slug>`.
+Verify holds and recorded waits under Choose Work before invoking claim:
+claim records ownership, not an owner decision or permission to lift a hold.
+It preserves existing wait/blocker lines and returns the previous Current
+Status; reconcile satisfied waits separately under the existing authority.
 
 The command checks Current Status and the complete discussion, unresolved
 native blockers, registered worktrees, local branches, live remote heads, open
@@ -372,10 +379,14 @@ After a partial failure, read the issue before retrying. The same worker,
 session, and branch can resume its existing claim without another comment;
 unknown comment writes remain governed by the shared retry policy. Never erase
 a competing claim to recover. On completion or verified handoff, reconcile
-Current Status and post `Released by <worker-token>` through the same bot
-identity. Release affects that worker's earlier comments, not another worker's
+Current Status and post `Released claim <claim-comment-id>` through the same bot
+identity. Release affects that exact comment, not another worker's
 record or retained branch/worktree evidence; those still need ordinary
 ownership and preservation review.
+
+Use a unique worker token per native session. Legacy `Released by <worker>`
+comments are accepted only when the earlier structured claims for that token
+all belong to one session; reuse requires exact comment-ID releases.
 
 After a verified retained-work handoff, use `--resume-from <claim-comment-id>`.
 The source must be one structured claim explicitly released by its author.

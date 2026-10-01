@@ -325,6 +325,25 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(len(self.comments), 2)
         self.assertEqual(len(CLAIM.records(self.comments[-1]["body"])), 1)
 
+    def test_claim_preserves_owner_wait_and_returns_original_status(self):
+        self.issue["body"] += "Waiting for: owner choice between A and B\n"
+        self.run_claim()
+        self.assertIn("Waiting for: owner choice between A and B", self.issue["body"])
+        self.assertIn("owner choice", self.emitted.call_args.args[0]["previous_current_status"])
+
+    def test_reused_worker_token_release_does_not_release_another_session(self):
+        self.comments = [{"id": 1, "body": CLAIM.marker(OTHER)}, {"id": 2, "body": "Released by trial-b"},
+                         {"id": 3, "body": CLAIM.marker({**OTHER, "session": "new-session"})},
+                         {"id": 4, "body": "Released by trial-b"}]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual([e["id"] for e in caught.exception.payload["competing_evidence"]], [3])
+
+    def test_origin_case_does_not_change_repository_identity(self):
+        replies = ["git@github.com:OWNER/Repo.git\n", "worktree /fixture/repo\nbranch refs/heads/main\n", "main\n", ""]
+        with patch.object(CLAIM, "run_read", side_effect=replies), patch.object(CLAIM.shutil, "which", return_value=None):
+            self.assertEqual(CLAIM.local_inventory("owner/repo", 42)["local_branches"], ["main"])
+
 
 if __name__ == "__main__":
     unittest.main()

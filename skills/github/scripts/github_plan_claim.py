@@ -74,7 +74,15 @@ def discussion_evidence(
         match = re.match(r"Released by (\S+)", comment.get("body") or "")
         if match:
             author = (comment.get("user") or {}).get("login", "")
-            released[match.group(1), author] = index
+            worker = match.group(1)
+            prior_sessions = {
+                record["session"] for prior in comments[:index]
+                if (prior.get("user") or {}).get("login", "") == author
+                for record in records(prior.get("body") or "") if record["worker"] == worker
+            }
+            # A reused token cannot release a different native session.
+            if len(prior_sessions) <= 1:
+                released[worker, author] = index
         match_id = re.match(r"Released claim (\d+)(?:\s|$)", comment.get("body") or "")
         if match_id:
             author = (comment.get("user") or {}).get("login", "")
@@ -115,7 +123,7 @@ def run_read(argv: list[str], *, cwd: pathlib.Path | None = None) -> str:
 
 def local_inventory(repo: str, number: int) -> dict[str, Any]:
     remote = run_read(["git", "remote", "get-url", "origin"]).strip()
-    if not re.search(rf"[:/]{re.escape(repo)}(?:\.git)?$", remote):
+    if not re.search(rf"[:/]{re.escape(repo)}(?:\.git)?$", remote, re.IGNORECASE):
         raise ValueError("Run claim from a checkout of the target repository")
     worktrees = []
     for block in run_read(["git", "worktree", "list", "--porcelain"]).strip().split("\n\n"):

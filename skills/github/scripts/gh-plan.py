@@ -1909,6 +1909,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
 
     try:
         issue, status, comments, can_update = claim_snapshot(args.issue, repo)
+        previous_status = status
         conflicts, owned = github_plan_claim.discussion_evidence(status, comments, claim)
         if conflicts:
             refuse(conflicts)
@@ -1954,10 +1955,12 @@ def cmd_claim(args: argparse.Namespace) -> None:
         if not any(github_plan_claim.same_owner(record, claim) for record in observed):
             raise PlanError("Claim was not visible on readback; do not create a worktree")
         completed.append("claim_readback")
+        waits = "\n".join(line for line in status.splitlines()
+                          if re.match(r"(?i)^(?:Blocked by|Waiting for|Parked until):", line))
         status_text = (
             f"State: Active; owned by {claim['worker']}.\nSession: {claim['session']}\n"
             f"Branch: {claim['branch']}\nNext action: {args.next_action}\n"
-            f"Blocked by: None.\nWaiting for: Nothing for execution.\nLast verified: {claim['claimed_at']}\n\n"
+            f"{waits or 'Blocked by: None.'}\nLast verified: {claim['claimed_at']}\n\n"
             + github_plan_claim.marker(claim)
         )
         if can_update:
@@ -2010,6 +2013,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         raise
     emit({"ok": True, "actor": actor, "claim": claim, "claim_comment": claim_comment, "issue": compact_issue(final),
           "current_status_location": "issue_body" if can_update else "claim_comment",
+          "previous_current_status": previous_status,
           "session_coverage": inventory["session_coverage"], "exclusive_lock": False,
           "completed_steps": completed})
 
@@ -3881,7 +3885,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("issue")
     p.add_argument("--worker", required=True)
     p.add_argument("--session", required=True)
-    p.add_argument("--branch", required=True, help="Intended task branch; create it only after claim succeeds")
+    p.add_argument("--branch", required=True, help="Exact task branch the worktree helper will create; create it only after claim succeeds")
     p.add_argument("--next-action", required=True)
     p.add_argument("--resume-from", type=int, help="Released structured claim comment ID for verified retained-work handoff")
     p.set_defaults(func=cmd_claim)
