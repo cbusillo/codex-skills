@@ -53,8 +53,8 @@ def status_line(root: Path) -> str:
                 recorded = json.loads(receipt.read_text())
                 stamp = dt.datetime.fromisoformat(recorded["checked_at"])
                 if recorded.get("state") == "error":
-                    state = {"state": "blocked", "reason": "last scheduled update failed; run scripts/catalog_runtime.py --update"}
-                elif dt.datetime.now(dt.timezone.utc) - stamp > dt.timedelta(hours=12):
+                    state = {"state": "blocked", "reason": "last catalog update failed; run scripts/catalog_runtime.py --update"}
+                elif dt.datetime.now(dt.timezone.utc) - stamp > dt.timedelta(hours=12) and (root / ".local" / "catalog-install.json").is_file() and json.loads((root / ".local" / "catalog-install.json").read_text()).get("scheduled_updater", False):
                     state = {"state": "stale", "reason": "scheduled update has not checked origin in over 12 hours"}
         if state["state"] == "current":
             return ""

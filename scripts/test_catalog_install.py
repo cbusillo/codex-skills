@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
 import importlib.util
 import io
 import json
@@ -134,7 +135,7 @@ class InstallTests(unittest.TestCase):
         self.assertNotIn("Private replacement.", (self.codex / "AGENTS.md").read_text())
 
     def test_json_session_hook_is_preserved_without_duplicate(self):
-        existing = {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "uv run /catalog/hooks/direction_check_hook.py"}]}]}}
+        existing = {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": f"uv run {self.catalog / 'hooks' / 'direction_check_hook.py'}"}]}]}}
         (self.codex / "hooks.json").write_text(json.dumps(existing))
         self.install()
         self.assertEqual(json.loads((self.codex / "hooks.json").read_text())["hooks"]["SessionStart"], existing["hooks"]["SessionStart"])
@@ -144,7 +145,7 @@ class InstallTests(unittest.TestCase):
         receipt = self.catalog / ".local" / "catalog-global-source.md"
         previous = receipt.read_bytes()
         (self.catalog / "instructions" / "global.md").write_text("Different shared source.\n")
-        original = self.sync.synchronize
+        original = getattr(self.sync, "synchronize")
         def fail_host(content, destinations, **kwargs):
             if kwargs.get("write") and self.codex / "AGENTS.md" in destinations:
                 raise OSError("fixture host write failed")
@@ -185,11 +186,66 @@ class InstallTests(unittest.TestCase):
         self.assertNotIn("Private personal text", json.dumps(result))
 
     def test_existing_legacy_session_hook_is_preserved_without_duplicate(self):
-        config = '[[hooks.SessionStart]]\nmatcher = "startup"\n[[hooks.SessionStart.hooks]]\ncommand = "uv run /catalog/hooks/direction_check_hook.py"\n'
+        config = f'[[hooks.SessionStart]]\nmatcher = "startup"\n[[hooks.SessionStart.hooks]]\ncommand = "uv run {self.catalog / "hooks" / "direction_check_hook.py"}"\n'
         (self.codex / "config.toml").write_text(config)
         self.install()
         self.assertNotIn("SessionStart", json.loads((self.codex / "hooks.json").read_text())["hooks"])
         self.assertEqual((self.codex / "config.toml").read_text(), config)
+
+    def test_installed_host_edits_are_reported_without_overwriting_and_can_be_adopted(self):
+        self.install()
+        host = self.codex / "AGENTS.md"
+        edited = host.read_text() + "New personal rule.\n"
+        host.write_text(edited)
+        with self.assertRaisesRegex(ValueError, "Installed instructions changed"):
+            self.install()
+        self.assertEqual(host.read_text(), edited)
+        # Explicitly reconcile the edit through the documented private source.
+        local = self.catalog / ".local" / "global-instructions.md"
+        local.write_text("New personal rule.\n")
+        getattr(self.sync, "synchronize")(self.sync.render(self.catalog / "instructions" / "global.md", local), [host], write=True)
+        self.install()
+        self.assertIn("New personal rule.", (self.claude / "CLAUDE.md").read_text())
+
+    def test_launchd_failure_keeps_install_receipts_and_can_recover_after_a_pull(self):
+        def launch(command_args, **_kwargs):
+            if command_args[1] == "bootstrap":
+                raise subprocess.CalledProcessError(1, command_args)
+            return subprocess.CompletedProcess(command_args, 1)
+        with mock.patch.object(sys, "platform", "darwin"), mock.patch.object(shutil, "which", return_value="/fixture/uv"), mock.patch.object(runtime, "checkout_state", return_value={"state": "current"}), mock.patch.object(subprocess, "run", side_effect=launch):
+            with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                installer.install(self.home, self.codex, self.claude, write=True, updater=True)
+        self.assertTrue((self.catalog / ".local" / "catalog-install.json").is_file())
+        self.assertTrue((self.catalog / ".local" / "catalog-global-source.md").is_file())
+        (self.catalog / "instructions" / "global.md").write_text("Pulled shared instructions.\n")
+        self.install()
+        self.assertIn("Pulled shared instructions.", (self.codex / "AGENTS.md").read_text())
+
+    def test_stale_legacy_hook_is_reported_without_partial_install(self):
+        existing = {"hooks": {"SessionStart": [{"hooks": [{"command": "uv run /deleted-worktree/hooks/direction_check_hook.py"}]}]}}
+        (self.codex / "hooks.json").write_text(json.dumps(existing))
+        with self.assertRaisesRegex(ValueError, "Existing session hook preserved"):
+            self.install()
+        self.assertFalse((self.codex / "AGENTS.md").exists())
+        self.assertEqual(json.loads((self.codex / "hooks.json").read_text()), existing)
+
+    def test_manual_sync_from_an_older_committed_source_is_adopted(self):
+        command("git", "init", "-q", str(self.catalog))
+        UpdateTests.configure(self.catalog)
+        command("git", "add", "instructions/global.md", cwd=self.catalog)
+        command("git", "commit", "-qm", "original instructions", cwd=self.catalog)
+        local = self.catalog / ".local" / "global-instructions.md"
+        local.parent.mkdir()
+        local.write_text("Private instruction.\n")
+        old = self.sync.render(self.catalog / "instructions" / "global.md", local)
+        (self.codex / "AGENTS.md").write_text(old)
+        (self.catalog / "instructions" / "global.md").write_text("Current shared instructions.\n")
+        command("git", "commit", "-qam", "update instructions", cwd=self.catalog)
+        self.install()
+        content = (self.codex / "AGENTS.md").read_text()
+        self.assertIn("Current shared instructions.", content)
+        self.assertIn("Private instruction.", content)
+        self.assertNotIn("Use the catalog.", content)
 
     def test_launchd_install_bootstraps_once_and_preserves_a_conflicting_job(self):
         def run(*, write=True):
@@ -326,10 +382,23 @@ class UpdateTests(unittest.TestCase):
     def test_fetch_failure_is_visible_and_recovery_clears_it(self):
         command("git", "remote", "set-url", "origin", str(self.base / "missing"), cwd=self.checkout)
         self.assertEqual(runtime.update(self.checkout)["state"], "error")
-        self.assertIn("scheduled update failed", runtime.status_line(self.checkout))
+        self.assertIn("Catalog blocked", runtime.status_line(self.checkout))
         command("git", "remote", "set-url", "origin", str(self.origin), cwd=self.checkout)
         self.assertEqual(runtime.update(self.checkout)["state"], "current")
         self.assertEqual(runtime.status_line(self.checkout), "")
+
+    def test_manual_update_does_not_imply_an_overdue_schedule(self):
+        self.assertEqual(runtime.update(self.checkout)["state"], "current")
+        receipt = self.checkout / ".local" / "catalog-update.json"
+        status = json.loads(receipt.read_text())
+        status["checked_at"] = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1)).isoformat()
+        receipt.write_text(json.dumps(status))
+        self.assertEqual(runtime.status_line(self.checkout), "")
+        install = self.checkout / ".local" / "catalog-install.json"
+        install.write_text(json.dumps({"scheduled_updater": False}))
+        self.assertEqual(runtime.status_line(self.checkout), "")
+        install.write_text(json.dumps({"scheduled_updater": True}))
+        self.assertIn("Catalog stale", runtime.status_line(self.checkout))
 
     def test_hook_emits_one_catalog_line_on_both_harnesses_only_when_needed(self):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))

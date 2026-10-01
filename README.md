@@ -40,6 +40,15 @@ legacy catalog bindings and other host settings are preserved. Personal skills
 in `~/.agents/skills` coexist with the nested catalog binding; an existing link
 from that whole directory to this catalog remains in place.
 
+Edit personal instructions in `.local/global-instructions.md`. The installer
+records the generated host files and reports later hand edits instead of
+overwriting them during a scheduled refresh. To adopt a hand edit, merge it
+into that private source, preview `uv run scripts/sync-global-instructions.py`,
+then run it with `--write` and rerun the installer. Older manual-sync output
+is adopted when it matches committed catalog history and that private source;
+unrecognized output is preserved for inspection. A session hook pointing at
+another checkout is also reported; inspect and update its path before rerunning.
+
 On macOS, opt into the guarded six-hour updater in the same install run:
 
 ```sh
