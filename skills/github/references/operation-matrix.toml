@@ -603,7 +603,7 @@ entrypoint = "github/scripts/github_read.py job-log"
 intent = "Read a workflow job log as text through REST."
 current_transport = "rest_api"
 selected_transport = "rest_api"
-endpoint_or_command = "GET /repos/{repo}/actions/jobs/{job_id}/logs"
+endpoint_or_command = "Configured CLI api --help capability probe, then GET /repos/{repo}/actions/jobs/{job_id}/logs with --allow-escape-sequences when supported; returned terminal controls are stripped. No additional permission or profile grant; metadata JSON reads are unchanged and unavailable logs remain degraded."
 quota_bucket = "rest_core"
 actor_policy = "automation_required"
 mutation_class = "read"
@@ -611,8 +611,8 @@ idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "fresh_read"
 retained_graphql_rationale = "No retained GraphQL transport; job logs are served by the Actions REST API."
-source_refs = ["github/scripts/github_read.py:job_log"]
-test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_matrix_approved", "github/scripts/test_github_read.py:test_workflow_metadata_jobs_and_text_log_normalize"]
+source_refs = ["github/scripts/github_read.py:job_log", "github/scripts/github_read.py:GitHubReader", "github/scripts/github_api.py:build_gh_command"]
+test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_matrix_approved", "github/scripts/test_github_read.py:test_workflow_metadata_jobs_and_text_log_normalize", "github/scripts/test_github_read.py:test_text_logs_opt_in_and_remove_terminal_commands", "github/scripts/test_github_read.py:test_text_logs_support_older_cli_and_preserve_failures"]
 
 [[operations]]
 id = "github.read.repository"
