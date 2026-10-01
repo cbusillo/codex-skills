@@ -475,6 +475,12 @@ Transient provider failures
 are classified with retry metadata, but this read path does not silently switch
 actors or automatically retry outside the shared retry policy.
 
+Log reads probe the configured CLI's help for `--allow-escape-sequences`, use
+that supported opt-in when available, and strip terminal controls before
+returning text or failure snippets. Older CLIs retain their existing log-read
+behavior. This does not change the selected identity, permissions, or metadata
+JSON reads; unavailable logs still produce a named degraded component.
+
 Do not paste long logs into chat. Include the short snippet, the run link, and
 the exact local command that should reproduce the failure when one is obvious.
 

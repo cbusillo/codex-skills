@@ -30,6 +30,9 @@ with open(os.environ["FAKE_GH_RESPONSES"], encoding="utf-8") as handle:
 path = next((arg for arg in sys.argv[1:] if arg.startswith("/") or arg.startswith("http")), "")
 with open(os.environ["FAKE_GH_LOG"], "a", encoding="utf-8") as handle:
     handle.write(" ".join(sys.argv[1:]) + "\n")
+if sys.argv[1:] == ["api", "--help"]:
+    print("api flags: --allow-escape-sequences")
+    raise SystemExit(0)
 entry = responses.get(path)
 if entry is None:
     print(f"unexpected path: {path}", file=sys.stderr)
@@ -46,6 +49,9 @@ print("x-ratelimit-used: 10")
 print("x-ratelimit-resource: core")
 print()
 body = entry.get("body")
+if isinstance(body, str) and "\x1b" in body and "--allow-escape-sequences" not in sys.argv:
+    print("response contains terminal escape sequences", file=sys.stderr)
+    raise SystemExit(1)
 if body is not None:
     print(body if isinstance(body, str) else json.dumps(body))
 raise SystemExit(0 if 200 <= status < 300 else 1)
@@ -100,7 +106,7 @@ def base_responses(details_url: str = "https://github.com/o/r/actions/runs/22/jo
         "/repos/o/r/commits/abc/status": {"body": {"state": "failure"}},
         "/repos/o/r/actions/runs/22": {"body": run_metadata()},
         "/repos/o/r/actions/jobs/33/logs": {
-            "body": "setup\nerror: assertion failed\nsummary",
+            "body": "setup\n\x1b[31merror: assertion failed\x1b[0m\nsummary",
             "content_type": "text/plain",
         },
     }
@@ -158,9 +164,11 @@ def test_failing_check_uses_rest_metadata_and_job_log() -> None:
     assert payload["failingCount"] == 1
     assert payload["checks"][0]["jobId"] == "33"
     assert "error: assertion failed" in payload["checks"][0]["failureSnippet"]
+    assert "\x1b" not in payload["checks"][0]["failureSnippet"]
     assert payload["diagnostics"]["degraded"] is False
     assert payload["diagnostics"]["requestCount"] == 6
-    assert all(call.startswith("api --method GET --include") for call in calls)
+    assert all(call == "api --help" or call.startswith("api --method GET --include") for call in calls)
+    assert any("/actions/jobs/33/logs" in call and "--allow-escape-sequences" in call for call in calls)
     assert not any("pr checks" in call or "run view" in call for call in calls)
 
 
