@@ -138,15 +138,15 @@ local extensions until the vendored artifact is refreshed.
   grant gets `authorization_denied`. It returns the operation's id, product,
   context, instance, status, phase, attempt, deployment record id, the
   requested artifact id, created, updated, started, heartbeat and finished
-  times, and `error_code` and `error_message`; and, once a result exists, the
-  deploy, post-deploy, health, canonical and logo statuses, the deployment and
-  release tuple ids, artifact id and image digest, and the result's error
-  message. Error messages are redacted: URLs, token-like values, sensitive
-  `name=value` pairs and the provider target name and id become `[redacted]`,
-  cut to 400 characters. Request settings, idempotency material, lease holder,
-  authorization and cancellation evidence, verification and override evidence,
-  URLs, the image repository and provider target names are dropped and listed
-  in `dropped_field_paths`; an unknown field is listed as
+  times, and `error_code`; and, once a result exists, the deploy, post-deploy,
+  health, canonical and logo statuses, the deployment and release tuple ids,
+  artifact id and image digest. Free-text error messages, on the operation and
+  on the result, are dropped rather than filtered: they can name hosts, provider
+  targets and settings that no filter reliably catches. Request settings,
+  idempotency material, lease holder, authorization and cancellation evidence,
+  verification and override evidence, URLs, the image repository and provider
+  target names are also dropped. Each dropped non-empty field is listed in
+  `dropped_field_paths`; an unknown field is listed as
   `<unlisted field>`. A secret-looking value in a kept field fails the read.
 - Path segments must be plain identifiers; anything else is refused before a
   request is sent. Runtime settings, managed secrets, available actions, URLs,

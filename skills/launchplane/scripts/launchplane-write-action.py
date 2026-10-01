@@ -35,7 +35,6 @@ from launchplane_safety import (  # noqa: E402
     public_timestamp,
     public_trace_id,
     public_url,
-    redacted_summary_string,
     safe_urlopen,
     validate_service_url,
 )
@@ -2774,9 +2773,11 @@ TARGET_REPLACEMENT_OPERATION_TIMESTAMPS = (
     "finished_at",
 )
 # Record fields the service writes that the read leaves out by design: request settings,
-# idempotency material, lease holders, authorization and cancellation evidence, the poll URL.
+# idempotency material, lease holders, authorization and cancellation evidence, the poll URL,
+# and free-text error messages, which can name hosts and settings that no filter catches.
 TARGET_REPLACEMENT_OPERATION_OMITTED_FIELDS = frozenset(
     {
+        "error_message",
         "schema_version",
         "idempotency_key",
         "idempotency_scope",
@@ -2849,28 +2850,16 @@ TARGET_REPLACEMENT_RESULT_FIELDS = frozenset(
 def _report_dropped_fields(
     source: dict[str, Any], *, prefix: str, kept: set[str], known: frozenset[str], drops: _FieldDrops
 ) -> None:
-    """Count every field the projection leaves out. Known record fields are named; any other
-    key is reported as ``<unlisted field>`` so a key name from the service is never echoed."""
-    for key in source:
-        if key in kept:
+    """Count every non-empty field the projection leaves out. Known record fields are named;
+    any other key is reported as ``<unlisted field>`` so a service key name is never echoed."""
+    for key, value in source.items():
+        if key in kept or value in (None, "", [], {}):
             continue
         drops.drop(f"{prefix}.{key}" if key in known else f"{prefix}.<unlisted field>")
 
 
-def _redacted_error_message(
-    path: str, value: object, drops: _FieldDrops, *, hide: tuple[str, ...]
-) -> str:
-    if value is None or value == "":
-        return ""
-    try:
-        return redacted_summary_string(value, max_length=400, hide=hide)
-    except LaunchplaneSafetyError:
-        drops.drop(path)
-        return ""
-
-
 def _project_target_replacement_result(
-    value: object, drops: _FieldDrops, *, hide: tuple[str, ...]
+    value: object, drops: _FieldDrops
 ) -> dict[str, object] | None:
     if value is None:
         return None
@@ -2888,9 +2877,6 @@ def _project_target_replacement_result(
     projected["image_digest"] = drops.keep(
         "result.image_reference", public_identifier, _image_digest(image_reference)
     )
-    projected["error_message"] = _redacted_error_message(
-        "result.error_message", result.get("error_message"), drops, hide=hide
-    )
     _report_dropped_fields(
         result,
         prefix="result",
@@ -2905,21 +2891,14 @@ def _project_target_replacement_result(
 
 
 def _project_target_replacement_operation(provider_payload: dict[str, Any]) -> dict[str, object]:
-    """One Odoo target-replacement operation's progress and redacted error. Settings,
-    URLs, provider target names and evidence payloads are dropped and listed by path; a
-    secret-looking value in a kept field fails the read."""
+    """One Odoo target-replacement operation's progress and error code. Error messages,
+    settings, URLs, provider target names and evidence payloads are dropped and listed by
+    path; a secret-looking value in a kept field fails the read."""
     operation = _require_dict(provider_payload.get("operation"))
     drops = _FieldDrops()
     raw_result = provider_payload.get("result")
     if raw_result is None:
         raw_result = operation.get("result")
-    result_source = raw_result if isinstance(raw_result, dict) else {}
-    # Provider target names never appear in the output, even inside an error message.
-    hide = tuple(
-        str(result_source.get(name))
-        for name in ("target_name", "target_id")
-        if isinstance(result_source.get(name), str)
-    )
 
     def field(name: str, validate: Any) -> object:
         return drops.keep(f"operation.{name}", validate, operation.get(name))
@@ -2944,9 +2923,6 @@ def _project_target_replacement_operation(provider_payload: dict[str, Any]) -> d
             "operation.request.artifact_id", public_identifier, request.get("artifact_id")
         ),
         "error_code": field("error_code", _public_dotted_code),
-        "error_message": _redacted_error_message(
-            "operation.error_message", operation.get("error_message"), drops, hide=hide
-        ),
     }
     for name in TARGET_REPLACEMENT_OPERATION_TIMESTAMPS:
         projected_operation[name] = field(
@@ -2971,7 +2947,7 @@ def _project_target_replacement_operation(provider_payload: dict[str, Any]) -> d
     )
     projected: dict[str, object] = {
         "operation": projected_operation,
-        "result": _project_target_replacement_result(raw_result, drops, hide=hide),
+        "result": _project_target_replacement_result(raw_result, drops),
         "dropped_field_count": drops.count,
         "dropped_field_paths": sorted(drops.paths),
     }
@@ -4173,7 +4149,7 @@ def summarize_target_replacement_operation_read(
         "trace_id": public_trace_id(provider_payload.get("trace_id")),
         "recommendation": (
             "Read operation.status, phase and error_code first; the result statuses say "
-            "which deploy or verification step failed."
+            "which deploy or verification step failed. Error messages are not returned."
         ),
     }
     assert_public_safe_shape(payload["summary"])

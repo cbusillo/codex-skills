@@ -294,45 +294,6 @@ def public_summary_string(value: object, *, max_length: int = 500, allow_url: bo
     return compact
 
 
-_URL_TEXT_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+")
-_SENSITIVE_ASSIGNMENT_NAMES = DENIED_KEY_FRAGMENTS + (
-    "api_key",
-    "private_key",
-    "cookie",
-    "authorization",
-)
-_SENSITIVE_ASSIGNMENT_RE = re.compile(
-    r"\S*(?:"
-    + "|".join(_SENSITIVE_ASSIGNMENT_NAMES)
-    + r")\S*\s*[=:]\s*(?:(?:Bearer|Basic)\s+)?\S+",
-    re.IGNORECASE,
-)
-
-
-def redacted_summary_string(
-    value: object, *, max_length: int = 400, hide: tuple[str, ...] = ()
-) -> str:
-    """Free text with URLs, token-like values, sensitive assignments and each ``hide``
-    value replaced by ``[redacted]``, cut to ``max_length``; raises when nothing is left."""
-    if not isinstance(value, str):
-        raise LaunchplaneSafetyError("invalid_response")
-    text = " ".join(value.split())
-    for hidden in hide:
-        if hidden.strip():
-            text = text.replace(hidden.strip(), "[redacted]")
-    text = _URL_TEXT_RE.sub("[redacted]", text)
-    text = _SENSITIVE_ASSIGNMENT_RE.sub("[redacted]", text)
-    text = _redact_token_like(text)
-    words = [
-        "[redacted]" if any(fragment in word.lower() for fragment in SUMMARY_VALUE_DENYLIST) else word
-        for word in text.split(" ")
-    ]
-    text = " ".join(words)
-    if len(text) > max_length:
-        text = text[: max_length - 3].rstrip() + "..."
-    return public_summary_string(text, max_length=max_length)
-
-
 def public_url(value: object) -> str:
     if not isinstance(value, str):
         raise LaunchplaneSafetyError("invalid_response")

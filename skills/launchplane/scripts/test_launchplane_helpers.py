@@ -3205,8 +3205,8 @@ def _target_replacement_operation_response() -> dict[str, Any]:
             "cancellation": None,
             "error_code": "post_deploy_failed",
             "error_message": (
-                "Odoo update on private-target-name failed: see "
-                "https://dokploy.example.invalid/logs?x=1 password=hunter2"
+                "Deploy failed on private-target-name: Connection refused by "
+                "db.internal.example:5432; login=\"correct horse battery staple\""
             ),
             "runner_trace_id": "runner-1",
             "poll_url": f"/v1/drivers/odoo/target-replacement/operations/{operation_id}",
@@ -3216,7 +3216,7 @@ def _target_replacement_operation_response() -> dict[str, Any]:
     }
 
 
-def test_target_replacement_operation_read_projects_progress_and_redacted_error() -> None:
+def test_target_replacement_operation_read_keeps_progress_and_drops_error_text() -> None:
     response = _target_replacement_operation_response()
     operation_id = response["operation"]["operation_id"]
     argv = ["target-replacement-operation-read", "--operation-id", operation_id]
@@ -3241,13 +3241,15 @@ def test_target_replacement_operation_read_projects_progress_and_redacted_error(
     assert operation["artifact_id"] == "artifact-example-abc123"
     assert operation["started_at"] == "2026-10-01T02:14:05Z"
     assert operation["error_code"] == "post_deploy_failed"
-    assert operation["error_message"] == "Odoo update on [redacted] failed: see [redacted] [redacted]"
+    assert "error_message" not in operation
     result = payload["result"]["result"]
     assert result["post_deploy_status"] == "fail"
     assert result["image_digest"] == "sha256:" + "e" * 64
-    assert result["error_message"] == "Post-deploy update failed on [redacted]."
+    assert "error_message" not in result
     paths = payload["result"]["dropped_field_paths"]
     for path in (
+        "operation.error_message",
+        "result.error_message",
         "operation.idempotency_key",
         "operation.authorization",
         "operation.lease_owner",
@@ -3272,7 +3274,8 @@ def test_target_replacement_operation_read_projects_progress_and_redacted_error(
         "private-override-value",
         "private-runtime-value",
         "private verification detail",
-        "hunter2",
+        "db.internal.example",
+        "battery staple",
         "example.invalid",
     ):
         assert private not in rendered, private
@@ -3289,7 +3292,7 @@ def test_target_replacement_operation_read_tolerates_a_pending_operation() -> No
     assert status == 0
     assert payload["result"]["result"] is None
     assert payload["result"]["operation"]["status"] == "pending"
-    assert payload["result"]["operation"]["error_message"] == ""
+    assert "operation.error_message" not in payload["result"]["dropped_field_paths"]
 
 
 def test_target_replacement_operation_read_refuses_bad_ids_and_unsafe_values() -> None:
@@ -4664,7 +4667,7 @@ def main() -> int:
         test_preview_history_read_needs_exactly_one_selector,
         test_reconcile_requests_read_keeps_the_decision_and_drops_the_rest,
         test_reconcile_requests_read_keeps_testing_operation_ids,
-        test_target_replacement_operation_read_projects_progress_and_redacted_error,
+        test_target_replacement_operation_read_keeps_progress_and_drops_error_text,
         test_target_replacement_operation_read_tolerates_a_pending_operation,
         test_target_replacement_operation_read_refuses_bad_ids_and_unsafe_values,
         test_testing_hold_body_binds_apply_to_saved_dry_run,

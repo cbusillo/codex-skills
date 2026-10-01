@@ -312,7 +312,7 @@ commands:
         "--operation-id",
         "<operation-id>",
       ]
-    purpose: Reads one Odoo deploy operation's status, phase, times and redacted error.
+    purpose: Reads one Odoo deploy operation's status, phase, times and error code.
   - name: launchplane-merge-train-policy-import-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -1062,8 +1062,8 @@ verification.
   for why a testing or stable Odoo deploy failed: take the id from
   `reconcile-requests-read` (`queued_operation_id`, `active_operation_id`,
   `deployed_operation_id` or `last_failed_operation_id`). It returns status,
-  phase, times, attempt, artifact id, image digest, step statuses and a
-  redacted error code and message. The service authorizes it as
+  phase, times, attempt, artifact id, image digest, step statuses and error
+  code; free-text error messages are dropped. The service authorizes it as
   `odoo_target_replacement_apply.execute` on the operation's own product,
   context and instance.
 - `POST /v1/work-graph/merge-train/controller/run-once`: Preferred merge-train
