@@ -336,6 +336,75 @@ or Project focus state.
 - `deps <issue>`: Page and show validated native `blocked_by`, `blocking`, and
   sub-issue relationships, preserving cross-repository issue references.
 
+### Planning: Claim
+
+Before an authorized `go` creates a branch or worktree, run from a checkout of
+the target repository:
+
+```bash
+uv run <skill-dir>/scripts/gh-plan.py claim <issue> \
+  --worker <worker-token> --session <session-id> \
+  --branch work/<task-slug> --next-action "<action>"
+```
+
+Claim the exact branch that the worktree helper will create. For
+`dev-worktree <repo> <task-slug> <start>`, that is `work/<task-slug>`.
+Verify holds and recorded waits under Choose Work before invoking claim.
+For a recorded wait or parked/blocked/stale/done state, pass
+`--wait-resolved "<existing resolution evidence>"` only after verifying its
+condition or recorded owner release. Without that evidence the command refuses
+before writing. It records the resolution and previous Current Status in the
+claim comment and returns the previous status for recovery. Claim and this
+argument grant no owner decision or permission to lift a repository hold.
+
+The command checks Current Status and the complete discussion, unresolved
+native blockers, registered worktrees, local branches, live remote heads, open
+PRs, and Claude's native `claude agents --json` session inventory when available.
+Codex CLI peer coverage is reported unavailable; a caller's supported session
+tools can add evidence but cannot turn partial coverage into a clear inventory.
+Known owners and ambiguous or stale records cause a nonzero refusal with the
+competing evidence. Age never expires a claim. Do not bypass a refusal by
+changing the worker, tool, or identity; ask the owner about ambiguous ownership
+and continue independent work.
+
+Use the actual native session ID, not a made-up label. On Claude Code, use
+session metadata or `claude agents --json` to identify this session by its
+directory, name, and process; if ambiguous, resolve that identity before claim.
+
+Success posts and reads back a claim, updates owned Current Status (or leaves
+the contributor's body intact and uses the claim comment), sets `plan:active`,
+and reads the metadata back. Check `ok`, `outcome_certainty`, and
+`completed_steps`; create the worktree only after confirmed success. This
+narrows a race and supplies no exclusive lock. Recheck competing activity
+during execution too.
+
+After a partial failure, read the issue before retrying. The same worker,
+session, and branch can resume its existing claim without another comment;
+unknown comment writes remain governed by the shared retry policy. Never erase
+a competing claim to recover. On completion or verified handoff, reconcile
+Current Status and post `Released claim <claim-comment-id>` through the same bot
+identity. Release affects that exact comment, not another worker's
+record or retained branch/worktree evidence; those still need ordinary
+ownership and preservation review.
+
+Use a unique worker token per native session. Legacy `Released by <worker>`
+comments are accepted only when the earlier structured claims for that token
+all belong to one session; reuse requires exact comment-ID releases.
+
+After a verified retained-work handoff, use `--resume-from <claim-comment-id>`.
+The source must be one structured claim explicitly released by its author.
+Only its exact branch, worktree, and PR evidence is accepted; competing Current
+Status, unreleased comments, other artifacts, and visible peer sessions still
+refuse. This flag supplies no cleanup or takeover authority: apply Choose Work's
+verified-handoff and preservation rules before passing it.
+
+A refused write/readback race includes `claim_recovery.release_own_claim` when
+this invocation posted a claim. Post its exact `Released claim <comment-id>`
+body through the same bot to release only that comment, then preserve the
+competing worker's state and recheck before any retry. If an owned Current
+Status was already updated, reconcile only that record too; never rewrite a
+competitor's record.
+
 ### Planning: Management
 
 - `create <title>`: Create a new plan issue. Exact-title dedupe uses REST issue
