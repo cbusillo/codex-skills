@@ -1,7 +1,10 @@
 #!/bin/sh
 set -eu
 
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 git_bin=${GIT_PUSH_AS_BOT_GIT:-git}
+identity_helper=${GIT_PUSH_AS_BOT_IDENTITY_HELPER:-$script_dir/github_identity.py}
+python_command=${GIT_PUSH_AS_BOT_PYTHON:-}
 
 if [ -n "${CODEX_SKILLS_ENV_FILE:-}" ]; then
 	env_file=$CODEX_SKILLS_ENV_FILE
@@ -22,7 +25,43 @@ if [ -f "$env_file" ]; then
 	set +a
 fi
 
-if [ -n "${CODEX_GITHUB_TOKEN:-}" ]; then
+# Select credentials the way the GitHub CLI wrapper does, so pushes and API writes
+# run as the same automation identity: a configured GitHub App comes first.
+app_variable_count=0
+for app_variable in GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH; do
+	eval "app_variable_value=\${$app_variable:-}"
+	if [ -n "$app_variable_value" ]; then
+		app_variable_count=$((app_variable_count + 1))
+	fi
+done
+
+if [ "$app_variable_count" -gt 0 ]; then
+	if [ "$app_variable_count" -ne 3 ]; then
+		echo "error: incomplete GitHub App configuration; set GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, and GITHUB_APP_PRIVATE_KEY_PATH" >&2
+		exit 1
+	fi
+	if [ -n "$python_command" ]; then
+		app_auth_output=$($python_command "$identity_helper" app-auth) || exit 1
+	elif command -v uv >/dev/null 2>&1; then
+		app_auth_output=$(uv run --no-project --no-config --python 3.12 "$identity_helper" app-auth) || exit 1
+	else
+		echo "error: git-push-as-bot requires uv or GIT_PUSH_AS_BOT_PYTHON for GitHub App authentication" >&2
+		exit 127
+	fi
+	app_login=$(printf '%s\n' "$app_auth_output" | sed -n '1p')
+	GIT_PUSH_AS_BOT_TOKEN=$(printf '%s\n' "$app_auth_output" | sed -n '2p')
+	if [ -z "$app_login" ] || [ -z "$GIT_PUSH_AS_BOT_TOKEN" ] || [ "$(printf '%s\n' "$app_auth_output" | sed -n '3p')" != "" ]; then
+		echo "error: GitHub App authentication helper returned an invalid response; refusing to push" >&2
+		exit 1
+	fi
+	expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-${CODEX_AUTOMATION_LOGIN:-}}
+	if [ -n "$expected_login" ] &&
+		[ "$(printf '%s' "$app_login" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$expected_login" | tr '[:upper:]' '[:lower:]')" ]; then
+		echo "error: push would run as '$app_login', expected '$expected_login'" >&2
+		echo "hint: configure CODEX_AUTOMATION_LOGIN for the GitHub App bot identity" >&2
+		exit 1
+	fi
+elif [ -n "${CODEX_GITHUB_TOKEN:-}" ]; then
 	GIT_PUSH_AS_BOT_TOKEN=$CODEX_GITHUB_TOKEN
 elif [ -n "${GH_TOKEN:-}" ]; then
 	GIT_PUSH_AS_BOT_TOKEN=$GH_TOKEN
@@ -30,7 +69,7 @@ elif [ -n "${GITHUB_TOKEN:-}" ]; then
 	GIT_PUSH_AS_BOT_TOKEN=$GITHUB_TOKEN
 else
 	echo "error: no bot GitHub token found; refusing to push as active local git user" >&2
-	echo "hint: configure CODEX_GITHUB_TOKEN for the automation role" >&2
+	echo "hint: configure a GitHub App or CODEX_GITHUB_TOKEN for the automation role" >&2
 	exit 1
 fi
 

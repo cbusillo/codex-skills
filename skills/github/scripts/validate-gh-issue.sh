@@ -374,6 +374,60 @@ grep -q '^remote=https://github.com/owner/repo.git$' "$env_log"
 grep -q '^askpass=.* prompt=0 token=codex-token$' "$env_log"
 grep -q '^remote=git@github.com:owner/repo.git$' "$env_log"
 
+# A configured GitHub App wins over a user token, as in gh-with-env-token.
+cat >"$tmpdir/fake-app-identity.py" <<'EOF'
+import os
+import sys
+
+assert sys.argv[1:] == ["app-auth"], sys.argv
+if os.environ.get("FAKE_APP_IDENTITY_FAIL"):
+    print("error: GitHub App authentication failed before gh invocation: fixture", file=sys.stderr)
+    raise SystemExit(1)
+print(os.environ.get("FAKE_APP_LOGIN", "fixture-app[bot]"))
+print("app-installation-token")
+EOF
+printf 'GITHUB_APP_ID=1\nGITHUB_APP_INSTALLATION_ID=2\nGITHUB_APP_PRIVATE_KEY_PATH=%s/missing.pem\nCODEX_GITHUB_TOKEN=codex-token\n' \
+	"$tmpdir" >"$tmpdir/app.env"
+
+: >"$env_log"
+PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" \
+	CODEX_AUTOMATION_LOGIN='Fixture-App[bot]' \
+	GIT_PUSH_AS_BOT_IDENTITY_HELPER="$tmpdir/fake-app-identity.py" \
+	GIT_PUSH_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
+	GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/git-push-as-bot" -u origin branch >/dev/null
+
+grep -q '^askpass=.* prompt=0 token=app-installation-token$' "$env_log"
+grep -q '^remote=git@github.com:owner/repo.git$' "$env_log"
+
+assert_push_refused() {
+	local message="$1"
+	shift
+	: >"$env_log"
+	if env PATH="$tmpdir:$PATH" GIT_PUSH_AS_BOT_IDENTITY_HELPER="$tmpdir/fake-app-identity.py" \
+		GIT_PUSH_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
+		GH_ISSUE_ENV_LOG="$env_log" "$@" \
+		"$repo_root/github/scripts/git-push-as-bot" -u origin branch >/dev/null 2>"$stderr_log"; then
+		echo "error: git-push-as-bot must refuse: $message" >&2
+		exit 1
+	fi
+	grep -q "$message" "$stderr_log"
+	if grep -q '^askpass=' "$env_log"; then
+		echo "error: git-push-as-bot pushed after refusing: $message" >&2
+		exit 1
+	fi
+}
+
+assert_push_refused "push would run as 'fixture-app\[bot\]', expected 'other-bot'" \
+	CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" CODEX_AUTOMATION_LOGIN=other-bot
+assert_push_refused 'GitHub App authentication failed' \
+	CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" FAKE_APP_IDENTITY_FAIL=1
+assert_push_refused 'invalid response' \
+	CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" FAKE_APP_LOGIN=
+printf 'GITHUB_APP_ID=1\nCODEX_GITHUB_TOKEN=codex-token\n' >"$tmpdir/partial-app.env"
+assert_push_refused 'incomplete GitHub App configuration' \
+	CODEX_SKILLS_ENV_FILE="$tmpdir/partial-app.env"
+
 : >"$env_log"
 PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	GH_TOKEN=exhausted-token CODEX_GITHUB_TOKEN=codex-token \
@@ -1257,6 +1311,35 @@ chmod +x "$tmpdir/gh-noisy-json"
 
 # The snapshot reports the repository's own metadata; take the expectation from
 # that file and require the path to exist, rather than restating it here.
+# gh-pr.py needs Python 3.12; the snapshot must run it through uv rather than
+# its shebang, which finds macOS's older python3 first on many machines.
+cat >"$tmpdir/py312-gh-pr.py" <<'EOF'
+import json
+import sys
+import tomllib  # noqa: F401  (absent before Python 3.11)
+
+if sys.argv[1] == "list":
+    print(json.dumps({"pullRequests": [{"number": 77, "title": "via uv", "isDraft": False}]}))
+else:
+    print("No open PR found for current branch", file=sys.stderr)
+    raise SystemExit(1)
+EOF
+printf '#!/bin/sh\necho "error: gh-pr.py was executed directly" >&2\nexit 9\n' >"$tmpdir/python3"
+chmod +x "$tmpdir/python3"
+PATH="$tmpdir:$PATH" GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
+	GITHUB_REPO_SNAPSHOT_PR_HELPER="$tmpdir/py312-gh-pr.py" \
+	"$repo_root/github/scripts/github-repo-snapshot.sh" --json |
+	jq -e '.github.openPullRequests[0].number == 77' >/dev/null
+PATH="$tmpdir:$PATH" GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
+	GITHUB_REPO_SNAPSHOT_PR_HELPER="$tmpdir/py312-gh-pr.py" \
+	"$repo_root/github/scripts/github-repo-snapshot.sh" >"$stdout_log" 2>"$stderr_log"
+grep -q '"number": 77' "$stdout_log"
+if grep -q 'gh-pr list failed' "$stderr_log"; then
+	echo "error: snapshot gh-pr list failed" >&2
+	exit 1
+fi
+rm "$tmpdir/python3"
+
 snapshot_metadata_root="$(git rev-parse --show-toplevel)"
 snapshot_local_config_example="$(jq -r '.launchplane.service.localConfigExample' "$snapshot_metadata_root/.github/github.json")"
 test -f "$snapshot_metadata_root/$snapshot_local_config_example"

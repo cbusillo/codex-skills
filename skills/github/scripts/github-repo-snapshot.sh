@@ -22,6 +22,12 @@ else
   exit 127
 fi
 
+# Run gh-pr.py through the same Python as the other reads; its shebang finds
+# whatever python3 is first on PATH, which may be older than it supports.
+run_pr_helper() {
+  GH_PR_GH="$gh_bin" "${python_command[@]}" "$pr_helper" "$@"
+}
+
 cleanup() {
   local path
   for path in ${cleanup_paths[@]+"${cleanup_paths[@]}"}; do
@@ -238,7 +244,7 @@ capture_pr_helper_json() {
   stdout="$(mktemp)"
   stderr="$(mktemp)"
   cleanup_paths+=("$stdout" "$stderr")
-  if GH_PR_GH="$gh_bin" "$pr_helper" "$@" >"$stdout" 2>"$stderr"; then
+  if run_pr_helper "$@" >"$stdout" 2>"$stderr"; then
     jq 'if type == "object" and has("pr") then .pr elif type == "object" and has("pullRequests") then .pullRequests else . end' "$stdout"
     return
   fi
@@ -442,7 +448,7 @@ if [[ "$json_output" -eq 1 ]]; then
   if [[ -x "$gh_bin" ]] || command -v "$gh_bin" >/dev/null 2>&1; then
     gh_available=1
     if [[ -n "$current_branch" ]]; then
-      if [[ -x "$pr_helper" ]] || command -v "$pr_helper" >/dev/null 2>&1; then
+      if [[ -f "$pr_helper" ]]; then
         capture_pr_helper_json view >"$tmpdir/current-pr.json"
         jq -n 'null' >"$tmpdir/current-pr-read.json"
       else
@@ -459,7 +465,7 @@ if [[ "$json_output" -eq 1 ]]; then
       jq -n '[]' >"$tmpdir/branch-runs.json"
       jq -n 'null' >"$tmpdir/branch-runs-read.json"
     fi
-    if [[ -x "$pr_helper" ]] || command -v "$pr_helper" >/dev/null 2>&1; then
+    if [[ -f "$pr_helper" ]]; then
       capture_pr_helper_json list --state open --limit 20 >"$tmpdir/open-prs.json"
       jq -n 'null' >"$tmpdir/open-prs-read.json"
     else
@@ -767,7 +773,7 @@ if [[ -x "$gh_bin" ]] || command -v "$gh_bin" >/dev/null 2>&1; then
   section "Current Branch Pull Request"
   if [[ -z "$current_branch" ]]; then
     echo "no pull request associated with a detached HEAD"
-  elif { [[ -x "$pr_helper" ]] || command -v "$pr_helper" >/dev/null 2>&1; } && GH_PR_GH="$gh_bin" "$pr_helper" view 2>/dev/null; then
+  elif [[ -f "$pr_helper" ]] && run_pr_helper view 2>/dev/null; then
     :
   else
     current_pr_tmp="$(mktemp)"
@@ -777,8 +783,8 @@ if [[ -x "$gh_bin" ]] || command -v "$gh_bin" >/dev/null 2>&1; then
   fi
 
   section "Open Pull Requests"
-  if [[ -x "$pr_helper" ]] || command -v "$pr_helper" >/dev/null 2>&1; then
-    run_or_note "gh-pr list" env GH_PR_GH="$gh_bin" "$pr_helper" list --state open --limit 20
+  if [[ -f "$pr_helper" ]]; then
+    run_or_note "gh-pr list" run_pr_helper list --state open --limit 20
   else
     open_prs_tmp="$(mktemp)"
     cleanup_paths+=("$open_prs_tmp")
