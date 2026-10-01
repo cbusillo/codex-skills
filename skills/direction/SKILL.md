@@ -252,6 +252,11 @@ Also list, from `gh-plan.py index` and the merged pull requests since the last
 audit, any reverted or reopened work. That count is the quality signal the
 throughput numbers do not carry.
 
+In the audit of `OWNER/direction`, you may also list, as information only, the
+repositories that received executing-loop work since the last audit but have no
+`DIRECTION.md`, saying that the overall direction applies to them. Never
+suggest that one adopt its own file; that is the owner's call.
+
 ## Unannounced Planted Run
 
 The milestone proof that escalation holds is a run the executing agent was

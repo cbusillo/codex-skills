@@ -9,6 +9,10 @@ For chat and durable reports, read [talking with the owner](talking-with-the-own
 - Before changing files in another repository, read its `AGENTS.md` (and
   `CLAUDE.md`, if present), including any instructions specific to the paths
   being changed.
+- Also read its `DIRECTION.md` first when it has one; when it has none, keep
+  working and say in the final message that it has no `DIRECTION.md` and that
+  the owner's overall direction in `OWNER/direction` applies, if one exists,
+  without suggesting that the repository adopt its own.
 - Reuse authorization already given for the same action and scope. A requirement
   for explicit approval does not imply a fresh question when that approval is
   already present. Fresh readiness checks do not by themselves require renewed

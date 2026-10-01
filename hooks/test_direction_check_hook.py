@@ -133,9 +133,9 @@ class ReminderTests(unittest.TestCase):
             self.assertIsNone(hook.direction_root(nested))
             (root / "DIRECTION.md").write_text("# Direction\n")
             self.assertEqual(hook.direction_root(nested), root.resolve())
-            self.assertIsNone(hook.adopted_repo(root.resolve()), "no origin, no repo key")
+            self.assertIsNone(hook.origin_repo(root.resolve()), "no origin, no repo key")
             subprocess.run(["git", "-C", str(root), "remote", "add", "origin", "git@github.com:owner/repo.git"], check=True)
-            self.assertEqual(hook.adopted_repo(root.resolve()), "owner/repo")
+            self.assertEqual(hook.origin_repo(root.resolve()), "owner/repo")
 
     def test_loop_prints_from_reference_only_in_direction_repo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -175,6 +175,100 @@ class ReminderTests(unittest.TestCase):
             (Path(tmp) / hook.MARKER_NAME).write_text(json.dumps({"turn": dt.datetime.now(dt.timezone.utc).isoformat(), "audits": {}}))
             proc = subprocess.run([sys.executable, str(HOOK), "--catalog-root", str(root)], stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env, cwd=tmp)
             self.assertEqual((proc.returncode, proc.stdout), (0, ""))
+
+
+OVERALL = """# Direction
+
+## Purpose
+
+Fixture purpose.
+
+## Stop Boundaries
+
+An agent asks the owner before:
+
+- a fixture boundary
+
+## Journey
+
+Fixture journey.
+"""
+
+
+class OverallDirectionTests(unittest.TestCase):
+    """A repository without its own DIRECTION.md shows its owner's overall direction."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.tmp)], check=False))
+        self.repo = self.tmp / "product"
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "remote", "add", "origin", "git@github.com:owner/product.git"], check=True)
+        self.calls = self.tmp / "reader-calls"
+        self.marker = self.tmp / hook.MARKER_NAME
+        self.audit("owner/direction")
+
+    def audit(self, *repos: str) -> None:
+        now = dt.datetime.now(dt.timezone.utc).isoformat()
+        self.marker.write_text(json.dumps({"turn": now, "audits": {repo: now for repo in repos}}))
+
+    def reader(self, *, body: str | None = None, error: str = "gh: Not Found (HTTP 404)") -> Path:
+        script = self.tmp / "reader"
+        if body is not None:
+            (self.tmp / "body.md").write_text(body)
+            action = f'cat "{self.tmp / "body.md"}"'
+        else:
+            action = f"echo '{error}' >&2; exit 1"
+        script.write_text(f'#!/bin/sh\necho "$@" >> "{self.calls}"\n{action}\n')
+        script.chmod(0o755)
+        return script
+
+    def run_hook(self, reader: Path, cwd: Path | None = None) -> str:
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, {"CLAUDECODE": "0"}), mock.patch.object(hook, "GH_READER", reader), mock.patch.object(hook, "marker_path", return_value=self.marker), mock.patch("pathlib.Path.cwd", return_value=cwd or self.repo), contextlib.redirect_stdout(output):
+            self.assertEqual(hook.main(), 0)
+        return output.getvalue().strip()
+
+    def test_shows_the_merged_stop_boundaries_link_and_loop(self) -> None:
+        text = self.run_hook(self.reader(body=OVERALL))
+        self.assertIn(hook.section(OVERALL, "Stop Boundaries"), text)
+        self.assertNotIn("Fixture purpose", text, "only the stop boundaries are printed, not the whole file")
+        self.assertIn("https://github.com/owner/direction/", text)
+        self.assertTrue(text.endswith(hook.LOOP_PATH.read_text().strip()))
+        self.assertIn("repos/owner/direction/contents/DIRECTION.md", self.calls.read_text())
+
+    def test_own_direction_file_keeps_todays_output_without_a_read(self) -> None:
+        (self.repo / "DIRECTION.md").write_text("# Direction\n")
+        self.audit("owner/direction", "owner/product")
+        self.assertEqual(self.run_hook(self.reader(body=OVERALL)), hook.LOOP_PATH.read_text().strip())
+        self.assertFalse(self.calls.exists())
+
+    def test_owner_without_an_audited_direction_repository_sees_nothing_and_costs_no_read(self) -> None:
+        self.audit("owner/product", "other/direction")
+        self.assertEqual(self.run_hook(self.reader(body=OVERALL)), "")
+        self.assertFalse(self.calls.exists())
+
+    def test_falls_back_to_a_sibling_checkout_when_github_cannot_be_read(self) -> None:
+        local = self.tmp / "direction"
+        subprocess.run(["git", "init", "-q", str(local)], check=True)
+        subprocess.run(["git", "-C", str(local), "remote", "add", "origin", "https://github.com/owner/direction.git"], check=True)
+        (local / "DIRECTION.md").write_text(OVERALL)
+        subprocess.run(["git", "-C", str(local), "add", "DIRECTION.md"], check=True)
+        subprocess.run(["git", "-C", str(local), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "d"], check=True)
+        (local / "DIRECTION.md").write_text("uncommitted draft\n")
+        worktree = self.tmp / "linked"
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "i"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "worktree", "add", "-q", str(worktree)], check=True)
+        text = self.run_hook(self.reader(error="error connecting to api.github.com"), cwd=worktree)
+        self.assertIn(hook.section(OVERALL, "Stop Boundaries"), text)
+        self.assertIn(str(local.resolve()), text)
+        self.assertNotIn("uncommitted draft", text)
+
+    def test_unreadable_overall_direction_is_one_line(self) -> None:
+        text = self.run_hook(self.reader(error="error connecting to api.github.com"))
+        self.assertEqual(len(text.splitlines()), 1)
+        self.assertIn("https://github.com/owner/direction/", text)
+        self.assertIn("error connecting to api.github.com", text)
 
 
 if __name__ == "__main__":
