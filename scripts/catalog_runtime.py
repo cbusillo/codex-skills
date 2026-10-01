@@ -106,7 +106,8 @@ def update(root: Path) -> dict[str, str]:
                 if state["state"] == "current" and (root / ".local" / "catalog-install.json").is_file():
                     failure_step = "instruction refresh"
                     # Refresh installed global instructions through the same installer;
-                    # Bindings and hooks are left as the user configured them.
+                    # Existing catalog hook bindings receive alert updates; removed
+                    # bindings and unrelated hooks remain as the user configured them.
                     installation = json.loads((root / ".local" / "catalog-install.json").read_text())
                     if not isinstance(installation, dict):
                         raise ValueError("invalid installation receipt")

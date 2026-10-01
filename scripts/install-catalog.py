@@ -209,6 +209,27 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         existing_session = existing_session_hook(sessions)
         hooks = sync.render_codex_hook(hook_path, catalog=ROOT, include_session_start=not (legacy_session or existing_session))
         hook_preview = sync.synchronize(hooks, [hook_path], write=False)
+    elif hook_path.exists():
+        existing = json.loads(safe_file(hook_path))
+        groups = existing.get("hooks", {}) if isinstance(existing, dict) else None
+        if not isinstance(groups, dict):
+            raise ValueError("Invalid hooks.json configuration")
+        for event in ("PreToolUse", "SessionStart", "Stop", "Interrupt"):
+            if not isinstance(groups.get(event, []), list):
+                raise ValueError(f"Invalid {event} configuration")
+        # Add/update alerts only for an installation still bound to catalog
+        # hooks. Removing catalog hooks opts out; never restore deleted bindings.
+        managed = any(
+            isinstance(group, dict) and isinstance(group.get("hooks"), list)
+            and any(isinstance(handler, dict) and handler.get("statusMessage") in (
+                sync.HOOK_LABEL, "codex-skills session start", "codex-skills stop alert", "codex-skills interrupt alert",
+            ) for handler in group["hooks"])
+            for event in ("PreToolUse", "SessionStart", "Stop", "Interrupt")
+            for group in groups.get(event, [])
+        )
+        if managed:
+            hooks = sync.render_codex_hook(hook_path, catalog=ROOT, alerts_only=True)
+            hook_preview = sync.synchronize(hooks, [hook_path], write=False)
     launch_path = home / "Library" / "LaunchAgents" / f"{LABEL}.plist"
     launch_content = None
     launch_changed = False
@@ -295,7 +316,7 @@ def main() -> int:
     parser.add_argument("--write", action="store_true", help="Apply; default is a read-only preview")
     parser.add_argument("--show-diff", action="store_true", help="Include private instruction diffs in preview output")
     parser.add_argument("--updater", action="store_true", help="Also enable a guarded six-hour launchd updater")
-    parser.add_argument("--refresh-instructions", action="store_true", help="Refresh installed global instructions only; leave bindings and hooks alone")
+    parser.add_argument("--refresh-instructions", action="store_true", help="Refresh global instructions and bound catalog alerts; preserve bindings and unrelated hooks")
     parser.add_argument("--home-dir", type=Path, help="Fixture home in an isolated catalog checkout; overrides host environment directories")
     parser.add_argument("--codex-dir", type=Path, help="Explicit Codex destination")
     parser.add_argument("--claude-dir", type=Path, help="Explicit Claude Code destination")

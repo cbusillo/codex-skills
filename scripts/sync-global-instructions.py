@@ -15,6 +15,7 @@ instructions unless --allow-missing-local is given.
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime as dt
 import difflib
 import hashlib
@@ -37,8 +38,8 @@ def render(source: Path, local_source: Path) -> str:
     return "\n\n".join(section for section in sections if section) + "\n"
 
 
-def render_codex_hook(destination: Path, catalog: Path = ROOT, *, include_session_start: bool = False) -> str:
-    """Bind the same PreToolUse declaration without changing other host hooks."""
+def render_codex_hook(destination: Path, catalog: Path = ROOT, *, include_session_start: bool = False, alerts_only: bool = False) -> str:
+    """Bind catalog declarations, preserving unrelated hooks and host trust."""
     if destination.is_symlink() or (destination.exists() and not destination.is_file()):
         raise ValueError(f"Refusing a symlink or non-file destination: {destination}")
     config = json.loads(destination.read_text()) if destination.exists() else {}
@@ -46,19 +47,24 @@ def render_codex_hook(destination: Path, catalog: Path = ROOT, *, include_sessio
         raise ValueError(f"Invalid hooks configuration: {destination}")
     hooks = config.setdefault("hooks", {})
     source = json.loads((catalog / "hooks" / "hooks.json").read_text())["hooks"]
-    events = ["PreToolUse", "SessionStart"] if include_session_start else ["PreToolUse"]
+    events = ["Stop", "Interrupt"] if alerts_only else ["PreToolUse", "Stop", "Interrupt"]
+    if include_session_start:
+        events.append("SessionStart")
     for event in events:
         existing = hooks.get(event, [])
         if not isinstance(existing, list):
             raise ValueError(f"Invalid {event} configuration: {destination}")
-        declarations = source[event]
-        label = HOOK_LABEL if event == "PreToolUse" else "codex-skills session start"
+        # Claude has no Interrupt event; Codex binds its native event to the
+        # same alert declaration. Keep one maintained command source.
+        declarations = copy.deepcopy(source["Stop" if event == "Interrupt" else event])
+        label = {"PreToolUse": HOOK_LABEL, "SessionStart": "codex-skills session start",
+                 "Stop": "codex-skills stop alert", "Interrupt": "codex-skills interrupt alert"}[event]
         if event == "SessionStart":
             declarations = [group for group in declarations if group.get("matcher") != "compact"]
         for group in declarations:
             for handler in group["hooks"]:
                 handler["command"] = shlex.join([
-                    "env", f"CLAUDE_PLUGIN_ROOT={catalog}", "sh", "-c", handler["command"],
+                    "env", f"CLAUDE_PLUGIN_ROOT={catalog}", "CODEX_SKILLS_HARNESS=codex", "sh", "-c", handler["command"],
                 ])
                 handler["statusMessage"] = label
         hooks[event] = [group for group in existing if not (
@@ -129,7 +135,7 @@ def main() -> int:
     parser.add_argument("--claude-dir", type=Path, help="Claude configuration directory (default CLAUDE_CONFIG_DIR, then ~/.claude)")
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--allow-missing-local", action="store_true", help="Proceed with write even if the local source is missing")
-    parser.add_argument("--codex-hook", action="store_true", help="Also register the catalog's PreToolUse hook in .codex/hooks.json; host hook trust is unchanged")
+    parser.add_argument("--codex-hook", action="store_true", help="Also register catalog command-policy and session-alert hooks in .codex/hooks.json; host hook trust is unchanged")
     args = parser.parse_args()
     if args.home_dir and (args.codex_dir or args.claude_dir):
         parser.error("--home-dir cannot be combined with a host directory override")

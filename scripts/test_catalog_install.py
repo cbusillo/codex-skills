@@ -382,6 +382,30 @@ class InstallTests(unittest.TestCase):
         self.install()
         self.assertIn("Moved rule.", host.read_text())
 
+    def test_refresh_upgrades_bound_alerts_preserving_other_hooks_and_trust(self):
+        self.install()
+        hook_path = self.codex / "hooks.json"
+        existing = json.loads(hook_path.read_text())
+        # Emulate an older installed catalog without alert registrations.
+        existing["hooks"].pop("Stop")
+        existing["hooks"].pop("Interrupt")
+        other = {"hooks": [{"type": "command", "command": "my-stop-hook"}]}
+        existing["hooks"]["Stop"] = [other]
+        hook_path.write_text(json.dumps(existing))
+        config = self.codex / "config.toml"
+        config.write_text('[hooks.state]\nopaque_trust = "preserve"\n')
+        installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        upgraded = json.loads(hook_path.read_text())
+        self.assertEqual(upgraded["hooks"]["Stop"][0], other)
+        self.assertEqual(upgraded["hooks"]["PreToolUse"], existing["hooks"]["PreToolUse"])
+        self.assertEqual(upgraded["hooks"]["SessionStart"], existing["hooks"]["SessionStart"])
+        self.assertEqual(len(upgraded["hooks"]["Stop"]), 2)
+        self.assertEqual(len(upgraded["hooks"]["Interrupt"]), 1)
+        self.assertEqual(config.read_text(), '[hooks.state]\nopaque_trust = "preserve"\n')
+        first = hook_path.read_bytes()
+        installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertEqual(hook_path.read_bytes(), first)
+
     def test_refresh_keeps_removed_bindings_and_hooks_removed(self):
         self.install()
         (self.claude / "skills" / "shared").unlink()

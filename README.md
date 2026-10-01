@@ -96,7 +96,7 @@ The updater fetches and fast-forwards only a clean `main` with no local commits;
 it never switches, resets, stashes, cleans, or merges divergence. A pull makes
 new skills visible without adding links and refreshes installed global instructions
 through its instruction-only refresh, preserving the private supplement and
-leaving current bindings and hooks alone. The existing session-start hook prints
+preserving bindings and unrelated hooks. Bound catalog hooks receive session-alert updates; removing all catalog hooks opts out of that refresh. The existing session-start hook prints
 one catalog line for a stale or blocked checkout, a failed update, or a scheduled
 check older than twelve hours. A manual pull that changes shared instructions
 also reports a stale installation until the instruction refresh runs. Session
@@ -237,7 +237,7 @@ Codex 0.157.0 supports a blocking `PreToolUse` hook, exposes shell calls as
 It also accepts the JSON deny decision used by the registered launcher. Hooks
 are enabled by default in that version; if the host explicitly disabled them,
 restore its `features.hooks` setting before expecting enforcement.
-`--codex-hook` renders the existing `hooks/hooks.json` PreToolUse declaration
+`--codex-hook` renders the `hooks/hooks.json` command-policy and session-alert declarations
 into `~/.codex/hooks.json`, retaining other hooks. It does not grant hook trust;
 review the new entry through Codex's `/hooks` interface. Once registered and
 trusted, a catalog pull updates the same policy script on both hosts. The
@@ -352,6 +352,46 @@ unless `DIRECTION_MARKER` names another file. For Codex, register the same
 script as a session-start command hook in its hooks configuration.
 Claude's separate `compact` handler uses `--skills-only` to restore the protocol
 without repeating the executing loop or overdue-audit reminder.
+
+### Session alerts
+
+The same catalog hook source registers advisory `Stop` alerts on both harnesses
+and `Interrupt` alerts on Codex. Claude Code has no native Interrupt event, and
+its Stop event does not run for user interruptions or API errors. These notices
+are prompts for a supervisor to check session state, not completion records:
+a Stop hook can run again when another hook continues the turn. The hook never
+returns a continuation, approval, or blocking decision.
+
+Each invocation appends one JSON line to `$CODE_HOME/session-events.jsonl`,
+falling back to `~/.code/session-events.jsonl` on either harness. Set `CODE_HOME`
+to the same shared directory for both harnesses when using an override.
+Records contain `schema_version`, `harness`, `session_id`, optional `turn_id`
+(null on Claude), UTC `time`, `event`, `advisory: true`, `clean: null`, and
+`stop_hook_active` when supplied for Stop. Neither event proves clean final
+completion; the supervisor must verify current session state. Messages,
+transcripts, credentials and working directories are not copied. Concurrent
+local writes append whole lines; storage errors leave the session running and
+emit a short diagnostic. Delivery is best effort, without exactly-once or
+all-outcomes coverage.
+
+The installer renders Codex alerts into its existing `hooks.json` path, leaving
+trust bookkeeping unchanged. The catalog updater refreshes only alert entries
+for installations that still have catalog-owned hook bindings. Claude's plugin
+loads Stop from the catalog hook source. Existing installations can preview
+`scripts/install-catalog.py` and rerun it with `--write`. Codex may skip changed
+or new definitions until reviewed through its supported `/hooks` flow; no trust
+is granted or copied by the installer. The stream appears on the first alert;
+once it exists a local supervisor can use:
+
+```bash
+tail -f "${CODE_HOME:-$HOME/.code}/session-events.jsonl"
+```
+
+Verify session state after each notice. Do not interpret `clean: null` or a
+quiet stream as evidence that a session succeeded, failed, or is still active.
+The hook command uses a three-second timeout with Python downloads disabled.
+See the [Codex hook contract](https://learn.chatgpt.com/docs/hooks) and
+[Claude Code hook contract](https://code.claude.com/docs/en/hooks#stop).
 
 ## Instruction scope
 

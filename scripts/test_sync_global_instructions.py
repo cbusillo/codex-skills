@@ -36,7 +36,9 @@ class GlobalInstructionsTests(unittest.TestCase):
             path.write_text(first)
             self.assertEqual(first, sync.render_codex_hook(path))
             hooks = json.loads(first)["hooks"]
-            self.assertEqual(hooks["Stop"], [other])
+            self.assertEqual(hooks["Stop"][0], other)
+            self.assertEqual(len(hooks["Stop"]), 2)
+            self.assertEqual(len(hooks["Interrupt"]), 1)
             self.assertEqual(hooks["PreToolUse"][0], other)
             self.assertIn("command_policy_hook.py", hooks["PreToolUse"][1]["hooks"][0]["command"])
 
