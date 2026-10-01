@@ -2500,27 +2500,36 @@ def _project_product_environment(value: object) -> dict[str, object]:
 
 
 PRODUCT_PROFILE_MAX_LANES = 20
+PRODUCT_PRODUCTION_USES = {"unknown", "prelaunch", "live"}
+GITHUB_LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
 
 
 def _project_product_profile(value: object) -> dict[str, object]:
     """Who owns the product and how its production is classified; settings, secrets,
     images, URLs, workflows and expected configuration are dropped."""
     source = _require_dict(value)
-    owner = source.get("owner") or {}
-    if not isinstance(owner, dict):
+    owner = {} if source.get("owner") is None else source.get("owner")
+    lanes = [] if source.get("lanes") is None else source.get("lanes")
+    if not isinstance(owner, dict) or not isinstance(lanes, list):
         raise LaunchplaneSafetyError("invalid_response")
-    lanes = source.get("lanes") or []
-    if not isinstance(lanes, list):
+    production_use = source.get("production_use") or "unknown"
+    if production_use not in PRODUCT_PRODUCTION_USES:
+        # Only prelaunch skips Owner review; an unknown class must not read as either.
+        raise LaunchplaneSafetyError("invalid_response")
+    owner_login = owner.get("github_login") or ""
+    if owner_login and (
+        not isinstance(owner_login, str) or not GITHUB_LOGIN_RE.fullmatch(owner_login)
+    ):
         raise LaunchplaneSafetyError("invalid_response")
     projected: dict[str, object] = {
         "product": public_identifier(source.get("product")),
         "display_name": _optional_text(source.get("display_name"), max_length=120),
         "driver_id": _optional_identifier(source.get("driver_id")),
         "repository": _optional_identifier(source.get("repository")),
-        "production_use": public_code(source.get("production_use"), default="unknown"),
+        "production_use": production_use,
         "lifecycle_state": _optional_code(source.get("lifecycle_state")),
-        "owner_github_login": _optional_identifier(owner.get("github_login")),
-        "owner_review_label": _optional_identifier(owner.get("review_label")),
+        "owner_github_login": owner_login,
+        "owner_review_label": _optional_code(owner.get("review_label")),
         "lanes": [
             {
                 "context": public_identifier(_require_dict(lane).get("context")),

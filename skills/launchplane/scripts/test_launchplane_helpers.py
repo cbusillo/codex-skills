@@ -2808,6 +2808,11 @@ def test_product_profile_read_returns_owner_and_production_use_only() -> None:
         lambda body: body.update(extra="x"),
         lambda body: body["profile"].update(production_use="not a code"),
         lambda body: body["profile"]["owner"].update(github_login="Bearer abcdefghijklmnop"),
+        lambda body: body["profile"]["owner"].update(github_login="https://private.example/x"),
+        lambda body: body["profile"]["owner"].update(review_label="https://private.example/x"),
+        lambda body: body["profile"].update(production_use="retired"),
+        lambda body: body["profile"].update(owner=False),
+        lambda body: body["profile"].update(lanes={}),
     ):
         mutated = _product_profile_response()
         mutate(mutated)
