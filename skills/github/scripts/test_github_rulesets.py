@@ -130,6 +130,7 @@ def test_no_app_never_removes_an_existing_app_bypass() -> None:
                     assert exc.cause == "unconfigured_identity"
                     assert exc.payload["existing_app_ids"] == [77]
                     assert exc.payload["ruleset_id"] == current[0]["id"]
+                    assert exc.payload["failed_repository"] == "owner/repo"
                 else:
                     raise AssertionError("missing configuration must not remove an existing App bypass")
         assert client.writes == []

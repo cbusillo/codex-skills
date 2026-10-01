@@ -466,8 +466,12 @@ def plan_repository(
     repo: str,
     specs: Sequence[RulesetSpec],
 ) -> dict[str, Any]:
-    rulesets = client.list_rulesets(repo)
-    changes = plan_changes(rulesets, specs)
+    try:
+        rulesets = client.list_rulesets(repo)
+        changes = plan_changes(rulesets, specs)
+    except RulesetError as exc:
+        raise RulesetError(str(exc), cause=exc.cause,
+                           payload={**exc.payload, "failed_repository": repo}) from exc
     return {
         "repo": repo,
         "changed": any(change.action != "none" for change in changes),
