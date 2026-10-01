@@ -20,4 +20,4 @@ turns:
       read: talking-with-the-owner\.md
       forbid: gh\b|gh-pr\.py
       final: '(?s)(?:.*\[[^\]\s]+#[0-9]+\]\(https://github\.com/[^/\s]+/[^/\s]+/(?:issues|pull)/[0-9]+\)\s+\S+){3}'
-      final_none: ['\b(?:PR|issue)\s+#[0-9]+']
+      final_none: ['\b(?:PR|issue)\s*#[0-9]+']

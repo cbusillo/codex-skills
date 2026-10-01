@@ -212,8 +212,8 @@ without unrelated changes; surface it instead.
   concurrent update rejects the push, re-read the head and integrate only when
   safe. Restart the watcher with `--pr <number>`, not `--pr auto`.
 - Commit with `github/scripts/git-commit-as-bot` (for example
-  `fix: address CI failure on PR #<n>` or
-  `fix: address PR review feedback (#<n>)`) and push with
+  `fix: address CI failure on OWNER/REPO#<n>` or
+  `fix: address PR review feedback (OWNER/REPO#<n>)`) and push with
   `github/scripts/git-push-as-bot`. Never force-push the PR head or use
   destructive Git commands, and switch branches only to recover context.
 
