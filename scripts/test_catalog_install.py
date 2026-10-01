@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["tomlkit==0.15.1"]
 # ///
 """Install and update behavior against fixture homes and real local Git remotes."""
 from __future__ import annotations
@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -266,8 +267,27 @@ class InstallTests(unittest.TestCase):
         config = f'[[hooks.SessionStart]]\nmatcher = "startup"\n[[hooks.SessionStart.hooks]]\ncommand = "uv run {self.catalog / "hooks" / "direction_check_hook.py"}"\n'
         (self.codex / "config.toml").write_text(config)
         self.install()
-        self.assertNotIn("SessionStart", json.loads((self.codex / "hooks.json").read_text())["hooks"])
-        self.assertEqual((self.codex / "config.toml").read_text(), config)
+        hooks = json.loads((self.codex / "hooks.json").read_text())["hooks"]
+        self.assertEqual(len(hooks["SessionStart"]), 1)
+        self.assertEqual(hooks["SessionStart"][0]["matcher"], "startup")
+        self.assertNotIn("SessionStart", tomllib.loads((self.codex / "config.toml").read_text()).get("hooks", {}))
+        backups = list(self.codex.glob("config.toml.backup-*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_text(), config)
+
+    def test_first_install_can_preserve_symlinked_inline_hooks(self):
+        target = self.root / "dotfiles.toml"
+        original = '[[hooks.SessionStart]]\n[[hooks.SessionStart.hooks]]\ncommand="trusted-existing-hook"\n'
+        target.write_text(original)
+        (self.codex / "config.toml").symlink_to(target)
+        with self.assertRaisesRegex(ValueError, "skip-codex-hooks"):
+            self.install()
+        result = installer.install(self.home, self.codex, self.claude, write=True, updater=False, skip_codex_hooks=True)
+        self.assertTrue((self.codex / "config.toml").is_symlink())
+        self.assertEqual(target.read_text(), original)
+        self.assertFalse((self.codex / "hooks.json").exists())
+        self.assertTrue((self.home / ".agents" / "skills" / "shared").is_symlink())
+        self.assertEqual(result["migrated_events"], {})
 
     def test_installed_host_edits_are_reported_without_overwriting_and_can_be_adopted(self):
         self.install()
