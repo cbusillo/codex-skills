@@ -4,6 +4,9 @@ description: "Comprehensive GitHub Expert persona for repository execution and h
 metadata:
   short-description: Execute GitHub repo workflows
 resources:
+  - path: scripts/github_app_setup.py
+    kind: script
+    description: Owner-operated manifest registration and private configuration for a separate automation App.
   - path: scripts/github-capabilities.py
     kind: script
     description: Derives the supported permission profile and safely audits the configured App across installed repositories.
@@ -80,6 +83,11 @@ resources:
     kind: reference
     description: Machine-readable transport, quota, actor, retry, and reconciliation decisions for GitHub helper operations.
 commands:
+  - name: github-app-guided-setup
+    source: skill
+    resource_path: scripts/github_app_setup.py
+    example_argv: ["uv", "run", "scripts/github_app_setup.py", "start", "--owner", "OWNER", "--name", "Repository automation"]
+    purpose: Guides owner browser creation/installation and writes verified private automation configuration without applying rulesets.
   - name: github-plan-milestone-list
     source: skill
     resource_path: scripts/gh-plan.py

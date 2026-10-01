@@ -461,7 +461,9 @@ a small wrapper around `gh` that reads the user's ignored `local.env` file under
 `$CODE_HOME`, `$CODEX_HOME`, or `~/.code` and exports a token only for the
 command it runs.
 
-Copy `.env.example` to `$CODE_HOME/local.env`, `$CODEX_HOME/local.env`, or
+For a new GitHub.com automation identity, use
+[Guided separate automation identity](#guided-separate-automation-identity).
+For an existing App or GitHub Enterprise configuration, copy `.env.example` to `$CODE_HOME/local.env`, `$CODEX_HOME/local.env`, or
 `~/.code/local.env`, matching the runtime home you use. Prefer a private GitHub
 App installed only on the repositories the automation manages. Give it
 `Contents: Read and write`, `Issues: Read and write`, `Pull requests: Read and
@@ -536,6 +538,116 @@ one-off command whose human-owned actor is acceptable.
 
 The `local.env` file is local to the user account. Do not commit real
 tokens.
+
+### Guided Separate Automation Identity
+
+A sole owner can adopt and audit without an App. Later direction changes need
+a different PR author so the owner can approve them; the direction rule keeps
+code-owner review with **no bypass**. Use a private GitHub App for that author.
+Unlike a separate machine-user account with a fine-grained token, it needs no
+second account or manually renewed user token. Existing machine-user token
+configuration above remains supported.
+
+Run this on the machine where your agents run, from the catalog checkout:
+
+```sh
+uv run skills/github/scripts/github_app_setup.py start --owner OWNER --name 'Repository automation'
+```
+
+For an organization-owned App, add `--organization`. The guided flow supports
+GitHub.com; existing GitHub Enterprise settings use the manual configuration
+above. Review the permission list in GitHub before creating the App: the
+manifest is derived from the catalog's [full-operation profile](skills/github/references/github-permissions.md),
+keeps webhooks inactive, and adds no organization permissions. Grants do not
+authorize actions outside your task.
+
+Setup checks the account type before opening the browser. Its success result
+names the exact `local.env` written; use the same home selection in the agent
+session if its environment differs from the setup terminal.
+
+The **owner** does two browser steps: name/create the private App under the
+intended account, then install it on that account with **Only select
+repositories**, choosing the adopted repositories. Return to the terminal and
+press Enter. No new human collaborator or repository seat is needed. The helper
+receives GitHub's registration callback on loopback, stores the key privately
+under `~/.config/codex-skills/github-app/`, verifies the installation/account
+and permissions, and writes the App IDs, key path, bot login and commit email
+to the same `local.env` location the wrappers resolve. There is no config file
+to hand-edit and no key or token to paste into chat.
+
+Existing identity conflicts are reported before the browser steps. An **All
+repositories** installation produces a visible scope notice, including its
+access to future repositories; change the installation settings if only the
+adopted repositories were intended. The helper preserves the owner's existing
+ability to choose all repositories.
+
+If setup stops after registration, keep the private directory printed by the
+helper (also reported as `session` in its JSON result), finish the installation in GitHub, then resume:
+
+```sh
+uv run skills/github/scripts/github_app_setup.py resume --session /private/setup-directory
+```
+
+If installation discovery is ambiguous, add `--installation-id ID` from the
+installation's GitHub settings URL. Existing identity variables are preserved
+unless you explicitly add `--replace-identity`; that writes a private
+`local-env-before-*.env` backup inside the private setup directory and updates existing actor/commit overrides
+together. To undo that replacement, restore the reviewed backup to `local.env`
+with mode `600`, leaving the App registration/installations intact until you
+decide whether to remove them. Keep the saved key directory while this identity
+is in use.
+
+Replacement reports the previous primary login but does not automatically trust
+it as a bot. When it is an **owner-controlled automation account**, add
+`--previous-bot OLD-BOT` to preserve historical managed-plan and milestone
+authorship through the existing `CODEX_AUTOMATION_BOT_LOGINS` setting. Existing
+trusted bots from `local.env` are retained; temporary shell exports are not saved
+as permanent trust. The helper rejects the App owner's login. For an organization,
+you must also exclude every personal owner's login. Never pass a personal owner
+or a third-party bot; old human-authored requests stay protected.
+
+If the callback failed or the browser cannot reach this machine's loopback
+address, use the App's GitHub settings to download/generate a private key,
+restrict that file to mode `600`, install the App, and import it without editing
+configuration:
+
+```sh
+uv run skills/github/scripts/github_app_setup.py import --owner OWNER --app-id ID --slug APP-SLUG --key /private/downloaded-key.pem
+```
+
+After a successful import, keep the reported private session (it contains the
+configured key). You may remove the redundant downloaded copy once you have
+verified the new configuration.
+
+If GitHub created the App under the wrong account, its key is still saved
+privately. Correct or transfer the App ownership in GitHub before resuming;
+the helper verifies the current registration owner as well as the installation
+account before writing configuration.
+
+Check the separate author before writing:
+
+```sh
+skills/github/scripts/gh-with-env-token --check
+uv run skills/github/scripts/github-capabilities.py audit --repo OWNER/REPO
+```
+
+The reported actor must be your App's `APP-SLUG[bot]`, distinct from the owner's
+login. Audit each selected adopted repository; permission declarations and a
+successful identity check alone do not prove private repository access. On an
+already adopted repository, the agent opens a normal direction PR using the
+bot commit/push and PR helpers, the owner reviews and approves it as the eligible
+code owner, then the authorized merge follows green CI. A self-approval or
+unreviewed direction merge remains refused. Owner-only ruleset plan/apply stays
+with the owner through the standard helper below; setup never applies rulesets,
+changes `CODEOWNERS`, or approves/merges a PR.
+
+The automated setup acceptance uses an isolated Git repository and a fake
+GitHub endpoint to exercise registration, private credential discovery, bot
+commits/PR authorship and distinct owner approval under the current no-bypass
+ruleset payload. It does not claim a real App was registered or a real owner's
+browser completed the flow. Primary references:
+[manifest registration](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest)
+and [App versus machine-user accounts](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/differences-between-github-apps-and-oauth-apps).
 
 ### Standard Repository Rulesets
 

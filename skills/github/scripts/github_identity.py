@@ -404,6 +404,16 @@ def _app_headers(config: GitHubAppConfig, *, now: int) -> dict[str, str]:
     }
 
 
+def github_app_headers(config: GitHubAppConfig, *, now: int | None = None) -> dict[str, str]:
+    """App JWT headers for verified setup/identity endpoints; never print them."""
+    return _app_headers(config, now=int(time.time() if now is None else now))
+
+
+def github_app_request(request: urllib.request.Request, *, operation: str) -> object:
+    """Shared no-redirect JSON transport; single attempt, including manifest conversion."""
+    return _request_json(request, operation=operation)
+
+
 def _request_app_login(config: GitHubAppConfig, *, now: int) -> str:
     request = urllib.request.Request(
         f"{config.api_url}/app",
