@@ -15,6 +15,26 @@ shared_cooldown_semantics = "Cross-process cooldowns are keyed by GitHub host, a
 actor_policy_semantics = "Automation-required operations use the configured bot token, active-human-required operations explicitly clear token environment variables and use the active local gh account, and split-identity operations verify both roles before protected workflow mutation."
 
 [[operations]]
+id = "github.app.setup"
+capabilities = ["app_registration"]
+permission_mode = "delegated"
+permission_note = "Owner browser creates and installs a private App; setup derives the existing full-operation repository profile. App JWT verifies the newly selected installation, public user metadata supplies its commit identity, and private local configuration is written only after verification. No added default repository grant or protection write."
+entrypoint = "github/scripts/github_app_setup.py start|resume|import"
+intent = "Guide separate automation identity registration, installation verification and private wrapper configuration."
+current_transport = "composite"
+selected_transport = "composite"
+endpoint_or_command = "Owner form POST https://github.com/settings/apps/new (or organization equivalent); POST /app-manifests/{code}/conversions once; GET /app/installations pages; GET /app/installations/{id}; GET /users/{bot}; private key/registration/local.env writes"
+quota_bucket = "mixed"
+actor_policy = "split_identity_required"
+mutation_class = "mixed"
+idempotency = "non_idempotent"
+retry_eligibility = "manual"
+reconciliation_strategy = "fail_closed_write"
+retained_graphql_rationale = "No GraphQL. Registration conversion is not retried after an unknown outcome; owner can recover from GitHub settings with the import route. Saved successful registrations resume installation/configuration without recreating the App."
+source_refs = ["github/scripts/github_app_setup.py:register", "github/scripts/github_app_setup.py:configure", "github/scripts/github_app_setup.py:write_configuration", "github/scripts/github_app_setup.py:main"]
+test_refs = ["github/scripts/test_github_app_setup.py:test_manifest_callback_and_private_recovery", "github/scripts/test_github_app_setup.py:test_fixture_repository_setup_and_direction_review", "github/scripts/test_github_app_setup.py:test_wrong_installation_and_missing_permissions_preserve_configuration", "github/scripts/test_github_app_setup.py:test_existing_identity_requires_explicit_replacement_and_keeps_backup"]
+
+[[operations]]
 id = "github.api.call"
 capabilities = ["contents_read", "contents_write", "issues_read", "issues_write", "pull_requests_read", "pull_requests_write", "actions_read", "actions_write", "metadata_read", "checks_read", "statuses_read", "security_events_read", "vulnerability_alerts_read", "secret_scanning_alerts_read", "administration_read", "deployments_read", "workflows_write", "discussions_read", "discussions_write", "operator_session", "operator_actions_read", "environment_approve", "protection_write", "checks_publish", "statuses_publish", "deployments_publish", "projects_read", "packages_read", "projects_write", "packages_write"]
 permission_mode = "input_dependent"
@@ -1914,7 +1934,18 @@ probe = "separate_actor"
 degraded_behavior = "Registry authentication uses an authorized workflow GITHUB_TOKEN or supported classic PAT and package access. Some Packages REST endpoints support App tokens; inspect the exact endpoint, owner and token type instead of claiming registry support from an App grant."
 documentation = "https://docs.github.com/en/packages/learn-github-packages/introduction-to-github-packages"
 
+[capabilities.app_registration]
+scope = "account"
+permission = "App registration ownership and installation selection"
+access = "write"
+actor = "operator"
+read_supported = false
+probe = "separate_actor"
+degraded_behavior = "Only the owner creates/installs the App in their browser. Conversion uses the one-time manifest code, installation checks use that App's JWT, and interrupted setup uses private resume/import paths. No agent token or active-human gh fallback; no added default repository permission."
+documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest"
+
 [api_surface_fingerprints]
+"github/scripts/github_app_setup.py" = "f2535630ac5d9311a9d0a2dd2417a83a65d7e273b520072b532b41f932c6c044"
 "github/scripts/gh-comment" = "21ecb30d4d60b61c760f1df630fd6b56347873709bba2d05b7f32f9222fa4656"
 "github/scripts/gh-issue" = "2589d7e258872b5dc2609ceb581053b2daae205156ac360d1a84a2f49eb0f01f"
 "github/scripts/gh-plan.py" = "54d213cd33402204ff0db51216deb542a787a21e8221484ef0a85b2f7c79f54b"
