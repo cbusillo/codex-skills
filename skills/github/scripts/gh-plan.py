@@ -2341,6 +2341,7 @@ def next_focus_context(
 def read_next_issue_relationships(
     issue_repo: str,
     number: int,
+    issue: dict[str, Any] | None = None,
     *,
     limit: int = NEXT_RELATIONSHIP_LIMIT,
 ) -> tuple[str, dict[str, list[dict[str, Any]]], list[str]]:
@@ -2353,6 +2354,18 @@ def read_next_issue_relationships(
         ("sub_issues", f"/repos/{issue_repo}/issues/{number}/sub_issues"),
     ]
     for relationship, endpoint in endpoints:
+        summary_key, total_key = {
+            "blocked_by": ("issue_dependencies_summary", "total_blocked_by"),
+            "blocking": ("issue_dependencies_summary", "total_blocking"),
+            "sub_issues": ("sub_issues_summary", "total"),
+        }[relationship]
+        summary = (issue or {}).get(summary_key)
+        total = summary.get(total_key) if isinstance(summary, dict) else None
+        # Only native total zero proves there is no history to read. Open
+        # counts, missing fields and malformed values cannot prove emptiness.
+        if type(total) is int and total == 0:
+            relationships[relationship] = []
+            continue
         page_actor, items = collect_paged_rest_items(
             endpoint,
             query={},
@@ -2498,6 +2511,7 @@ def cmd_next(args: argparse.Namespace) -> None:
             relation_actor, relationships, truncated_relationships = read_next_issue_relationships(
                 repo,
                 int(issue["number"]),
+                issue,
             )
             actor = relation_actor or actor
         except PlanError as exc:
@@ -2718,6 +2732,21 @@ def discover_direction_work(
     return ordered, coverage
 
 
+def repository_direction_milestones(source: dict[str, Any]) -> list[str] | None:
+    """Keep absent/empty waypoints distinct from an unread or unparsed source."""
+    if source.get("error") or "direction" not in source:
+        return None
+    text = source.get("direction")
+    if text is None:
+        return []
+    titles = direction_milestone_titles(text)
+    if not re.search(r"(?m)^##\s+Milestones\s*$", text):
+        return None
+    if not titles and section_map(text).get("Milestones", "").strip():
+        return None
+    return titles
+
+
 def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     selection_context = next_selection_context(args)
     direction_text = load_direction(repo)
@@ -2792,7 +2821,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
             if static:
                 evaluated_node = {"item": static}
             else:
-                relation_actor, relationships, truncated = read_next_issue_relationships(issue_repo, number)
+                relation_actor, relationships, truncated = read_next_issue_relationships(issue_repo, number, raw_issue)
                 actor = relation_actor or actor
                 evaluated_node = github_direction_next.evaluate_direction_node(
                     raw_issue, config=target_config, focus=focus, relationships=relationships,
@@ -2872,10 +2901,16 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         seen = {(item["repo"].casefold(), item["number"]) for item in [*ranked["candidates"], *ranked["excluded"]] if item.get("exclusion") != "outside_direction_tracks"}
         inventory = [item for item in inventory if (item["repo"].casefold(), item["number"]) not in seen]
         scanned = github_direction_next.discovery_scan(inventory, args.scan_limit)
+        scanned_keys = {(item["repo"].casefold(), item["number"]) for item in scanned}
+        skipped_counts: dict[str, int] = {}
+        for item in inventory:
+            if (item["repo"].casefold(), item["number"]) not in scanned_keys:
+                skipped_counts[item["repo"]] = skipped_counts.get(item["repo"], 0) + 1
         discovery.update(
             evaluated=len(scanned), scan_limit=args.scan_limit,
             live_breakage_evaluated=sum(github_direction_next.is_live_breakage(item) for item in scanned),
             unevaluated_count=len(inventory) - len(scanned),
+            unevaluated_repositories=[{"repo": name, "issue_count": count} for name, count in sorted(skipped_counts.items())],
         )
         discovery["parent_limit_per_issue"] = 10
         discovery["complete"] &= not discovery["unevaluated_count"]
@@ -2905,6 +2940,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     portfolio = github_direction_next.rank_portfolio_work(
         ranked, discoveries, milestone_titles=titles, selection_context=selection_context,
         repository_milestones={source["repo"]: direction_milestone_titles(source["direction"]) if source.get("direction") else None for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
+        repository_waypoints={source["repo"]: repository_direction_milestones(source) for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
     )
     ranked.update(portfolio)
     ranked["candidates"] = ranked["candidates"][:args.limit]
@@ -2918,6 +2954,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         "warning": None if candidate_coverage_complete else
         "Partial ranked list within the requested scope: graph or portfolio coverage is incomplete; unseen work may outrank these candidates.",
         "unevaluated_discovery_count": discovery.get("unevaluated_count", 0),
+        "unevaluated_repositories": discovery.get("unevaluated_repositories", []),
     }
     ranked["truncated"] |= bool(discovery.get("inventory_truncated") or discovery.get("unevaluated_count") or any(source.get("truncated") for source in discovery.get("repositories", [])))
     sections = section_map(direction_text or "")

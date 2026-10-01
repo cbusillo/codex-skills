@@ -46,6 +46,19 @@ issue-list bound. Repository access/inventory limits and failed reads remain
 explicit coverage limits. Inspect `candidate_coverage` beside the ranked list:
 a partial list cannot establish that no higher-priority work exists.
 
+Each candidate's `overall_milestone_context` reports an established native Track
+path/ancestry/blocking target or an exact waypoint title shared by the issue's open milestone,
+its repository direction and the overall direction. A title match carries
+`basis: exact_listed_title_match`; it does not claim a native Track link.
+`none_found` means the inspected context
+contains no such link; `unknown` preserves incomplete context. This explanation
+does not change ranking, adopt direction or establish availability.
+`candidate_coverage.unevaluated_repositories` names the inventoried sources and
+issue counts omitted by the ordinary evaluation allowance after graph overlap
+and marked-incident handling. Other source bounds/failures remain in
+`discovery_context.repositories`; omitted counts are not a complete portfolio
+inventory when those sources are truncated or inaccessible.
+
 The helper's `candidates` are possible work and may need review;
 `available_candidates` contains only current caller-reviewed work. An empty
 available list with nonzero `review_required_count` means selection is unfinished,
