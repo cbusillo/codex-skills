@@ -473,13 +473,15 @@ and marked-incident reads. Source truncation/access failures remain explicit in
 `discovery_context.repositories`, so these counts do not claim full inventory.
 Every candidate has `overall_milestone_context` with `matched`, `none_found` or
 `unknown`, titles and its evidence source. Matches require a native Track
-path/ancestry or an open issue milestone title listed in both repository and
+path/ancestry/blocking target or an open issue milestone title listed in both repository and
 overall direction. Title matches explicitly carry `basis: exact_listed_title_match`,
 not a native Track-link claim. Unread or unparsed direction stays unknown.
 Context does not alter eligibility, availability or ranking.
 Relationship endpoints are skipped only when the already-read native issue
 summary explicitly reports an integer-zero total for that relationship; missing,
 malformed or nonzero totals keep the bounded reads, including closed history.
+Zero totals reflect the issue inventory's read-time snapshot; a relationship
+added afterward appears on a fresh read, not retroactively in this result.
 Mark only current incidents: every marked issue gets normal relationship,
 discussion and ancestry reads outside the ordinary scan allowance, so API cost
 increases with the marked inventory. Explicit milestone scope remains narrow.
@@ -525,7 +527,11 @@ inaccessible nodes to unknown and preserving provider/auth/quota stop behavior.
 `rank_portfolio_work` combines graph candidates, discoveries, and caller selection
 evidence with the same holds, review states, and priority. Services must supply
 repository milestone order and bounded parent evidence through those shared
-functions, and report their discovery coverage separately. A repository hold
+functions, and report their discovery coverage separately. Supply parsed
+`repository_waypoints` separately from ranking order for waypoint explanations:
+an absent direction file or empty section maps to `[]`, an unread/unparsed
+source to `None`. Omitted waypoint evidence stays unknown; the ranking map
+alone cannot prove parsing. A repository hold
 filters work in that repository without cutting native paths to independent
 work in another. Calling only `rank_direction_work` proves
 graph coverage, not portfolio discovery.

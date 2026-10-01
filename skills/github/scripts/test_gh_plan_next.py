@@ -1534,6 +1534,34 @@ def test_milestone_candidate_coverage_is_scoped_to_graph() -> None:
         assert result["candidate_coverage"]["complete"]
         assert result["candidate_coverage"]["warning"] is None
 
+def test_discovered_blocker_explains_its_native_link_to_waiting_track_work() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    waiting = global_issue("someone/direction", 7, labels=["plan", "plan:waiting"])
+    blocker = global_issue("someone/product", 12)
+    edges = {(roots[0]["repo"], 1): relationships(sub_issues=[waiting]), (waiting["repo"], 7): relationships(blocked_by=[blocker]), (blocker["repo"], 12): relationships(blocking=[waiting])}
+    with global_fixture(roots, [waiting, blocker], edges, discovered=[blocker]) as (module, result, _reads):
+        module.discover_direction_work = lambda *_a, **_kw: ([blocker], {"complete": True, "repositories": [{"repo": blocker["repo"], "direction": DIRECTION}]})
+        module.cmd_next(next_args())
+        candidate = result["candidates"][0]
+        assert candidate["overall_milestone_context"]["state"] == "matched"
+        assert candidate["overall_milestone_context"]["titles"] == ["First"]
+        assert candidate["availability"] == "needs_review" and not candidate.get("via")
+
+
+def test_service_waypoint_evidence_cannot_be_inferred_from_ranking_map() -> None:
+    shared = load_module().github_direction_next
+    raw = global_issue("someone/product", 1)
+    candidate = {**raw, "url": raw["html_url"], "discussion": shared.discussion_snapshot(raw, [], complete=True)}
+    candidate = shared.include_parent_context(candidate, [], complete=True, tracking_roots=[])
+    graph = {"candidates": [], "dependency_context": {"complete": True}}
+    kwargs = {"milestone_titles": [], "repository_milestones": {raw["repo"]: []}}
+    result = shared.rank_portfolio_work(graph, [candidate], **kwargs)
+    assert result["candidates"][0]["overall_milestone_context"]["state"] == "unknown"
+    for evidence, expected in ((None, "unknown"), ([], "none_found")):
+        result = shared.rank_portfolio_work(graph, [candidate], **kwargs, repository_waypoints={raw["repo"]: evidence})
+        assert result["candidates"][0]["overall_milestone_context"]["state"] == expected
+
+
 def test_waypoint_evidence_does_not_change_repository_ranking_fallback() -> None:
     older = global_issue("someone/tool", 20, created_at="2026-07-01T00:00:00Z")
     newer = global_issue("someone/tool", 10, created_at="2026-02-01T00:00:00Z")
@@ -1663,6 +1691,8 @@ def test_skipped_repository_counts_exclude_graph_overlap_and_marked_incidents() 
 
 
 TESTS = [
+    test_discovered_blocker_explains_its_native_link_to_waiting_track_work,
+    test_service_waypoint_evidence_cannot_be_inferred_from_ranking_map,
     test_waypoint_evidence_does_not_change_repository_ranking_fallback,
     test_global_native_summary_savings_reach_real_reader,
     test_unvisited_track_ancestry_and_unparsed_repository_direction_context,

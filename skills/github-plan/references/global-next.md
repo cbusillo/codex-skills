@@ -47,7 +47,7 @@ explicit coverage limits. Inspect `candidate_coverage` beside the ranked list:
 a partial list cannot establish that no higher-priority work exists.
 
 Each candidate's `overall_milestone_context` reports an established native Track
-path/ancestry or an exact waypoint title shared by the issue's open milestone,
+path/ancestry/blocking target or an exact waypoint title shared by the issue's open milestone,
 its repository direction and the overall direction. A title match carries
 `basis: exact_listed_title_match`; it does not claim a native Track link.
 `none_found` means the inspected context

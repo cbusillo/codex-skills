@@ -341,16 +341,17 @@ def overall_milestone_context(
     if item.get("via") and (item.get("milestone") or {}).get("title") in milestone_titles:
         return {"state": "matched", "titles": [item["milestone"]["title"]], "source": "native_track_path"}
     parent_keys = {(p["repo"].casefold(), p["number"]) for p in (item.get("discussion") or {}).get("parents", [])}
+    blocking_keys = {(p["repo"].casefold(), p["number"]) for p in item.get("blocking", []) if p.get("state") == "open"}
     tracking_keys = {(p["repo"].casefold(), p["number"]) for p in graph.get("tracking_milestones", [])}
     linked = {
         entry["milestone"]["title"]
         for entry in [*graph.get("candidates", []), *graph.get("excluded", []), *graph.get("tracking_milestones", [])]
         if (entry.get("milestone") or {}).get("title") in milestone_titles
         and (entry.get("via") or (entry["repo"].casefold(), entry["number"]) in tracking_keys)
-        and (entry["repo"].casefold(), entry["number"]) in parent_keys
+        and (entry["repo"].casefold(), entry["number"]) in parent_keys | blocking_keys
     }
     if linked:
-        return {"state": "matched", "titles": [title for title in milestone_titles if title in linked], "source": "native_track_ancestry"}
+        return {"state": "matched", "titles": [title for title in milestone_titles if title in linked], "source": "native_track_links" if blocking_keys else "native_track_ancestry"}
     repo = item["repo"]
     repository_titles = next((value for key, value in repository_milestones.items() if key.casefold() == repo.casefold()), None)
     local_title = (item.get("milestone") or {}).get("title")
@@ -358,7 +359,7 @@ def overall_milestone_context(
         return {"state": "matched", "titles": [local_title], "source": f"{repo}:DIRECTION.md", "basis": "exact_listed_title_match"}
     known_repo = any(key.casefold() == repo.casefold() for key in repository_milestones)
     ancestry_complete = (item.get("discussion") or {}).get("ancestry_complete")
-    complete = known_repo and repository_titles is not None and ancestry_complete and graph.get("dependency_context", {}).get("complete", False)
+    complete = known_repo and repository_titles is not None and ancestry_complete and not item.get("blocking") and graph.get("dependency_context", {}).get("complete", False)
     return {"state": "none_found" if complete else "unknown", "titles": [], "source": "checked_native_ancestry_and_repository_direction" if complete else "incomplete_context"}
 
 
@@ -390,7 +391,7 @@ def rank_portfolio_work(
         item = {**raw, "availability": "needs_review"}
         item["overall_milestone_context"] = overall_milestone_context(
             item, graph, milestone_titles,
-            repository_waypoints if repository_waypoints is not None else repository_milestones or {},
+            repository_waypoints or {},
         )
         hold = repository_hold(context, item["repo"])
         if hold:
