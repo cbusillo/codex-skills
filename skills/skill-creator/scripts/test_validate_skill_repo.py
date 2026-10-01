@@ -602,7 +602,35 @@ def test_invocation_policy_matches_on_both_hosts() -> None:
         assert not module.validate_invocation_parity(skill_dir)
 
 
+def write_marketplace(root: Path, source: str) -> None:
+    (root / ".claude-plugin").mkdir()
+    put_text(root / ".claude-plugin" / "marketplace.json", f'{{"plugins": [{{"name": "shared", "source": "{source}"}}]}}')
+
+
+def test_claude_marketplace_accepts_dot_slash_root() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        write_marketplace(root, "./")
+        assert not module.validate_claude_marketplace(root)
+
+
+def test_claude_marketplace_rejects_what_cowork_sync_rejects() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        write_marketplace(root, ".")
+        assert "must start with './'" in " ".join(module.validate_claude_marketplace(root))
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        write_marketplace(root, "./")
+        (root / "bin").mkdir()
+        assert "top-level bin/" in " ".join(module.validate_claude_marketplace(root))
+
+
 def main() -> int:
+    test_claude_marketplace_accepts_dot_slash_root()
+    test_claude_marketplace_rejects_what_cowork_sync_rejects()
     test_invocation_policy_matches_on_both_hosts()
     test_openai_yaml_accepts_documented_shape()
     test_openai_yaml_rejects_schema_drift()

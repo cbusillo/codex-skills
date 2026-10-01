@@ -84,24 +84,27 @@ so missing source or a uv startup failure cannot masquerade as a policy denial.
 Cowork in the Claude desktop app does not read `~/.claude/skills`; it installs
 plugins from a marketplace. This repository is one:
 `.claude-plugin/marketplace.json` lists the repository root as the `shared`
-plugin. In the desktop app or on claude.ai:
+plugin. In the desktop app:
 
-1. Open **Customize**, then **Plugins**.
-2. Select **Add**, then **Add marketplace**, and enter `OWNER/codex-skills`.
-3. Install **shared** from that marketplace, then start a new Cowork task.
+1. Switch the app to **Cowork** first. The **Customize** page belongs to the
+   mode it was opened from; opened from **Code**, it installs into Claude Code
+   instead and Cowork sees nothing.
+2. Open **Customize**, then **Plugins**.
+3. Select **Add**, then **Add marketplace**, and enter `OWNER/codex-skills`.
+4. Install **shared** from that marketplace, then start a new Cowork task.
 
 Turn on **Sync automatically** on the marketplace, or use **Check for
 updates**, to pick up new commits. The plugin has no pinned version, so each
 commit on the default branch is a new version. Cowork reads only the default
 branch.
 
-The install belongs to your claude.ai account, so Claude Code on the same
-account also receives it as `shared@synced`. Where the repository is already
-linked into `~/.claude/skills`, that link wins and the synced copy is reported
-as not loaded; nothing changes for that machine. Do not also install the
-marketplace plugin from the Claude Code command line on such a machine: an
-installed marketplace plugin outranks the link and would replace the in-place
-checkout with a cached copy.
+Cowork keeps its plugins apart from Claude Code's. Do not install the
+marketplace plugin into Claude Code, from the Code mode's **Customize** page or
+the command line, on a machine where the repository is linked into
+`~/.claude/skills`: an installed plugin named `shared` outranks the link, even
+while disabled, and Claude Code then reads a cached copy instead of the
+checkout. To undo such an install, run
+`claude plugin uninstall shared@codex-skills`.
 
 ### Shared global instructions and Codex hooks
 
