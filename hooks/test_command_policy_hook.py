@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import io
+import importlib.util
 import json
 import os
 import shlex
@@ -27,6 +28,12 @@ sys.path.insert(0, str(HOOK.parent))
 
 import command_policy_hook  # noqa: E402
 
+VALIDATOR_PATH = HOOK.parents[1] / "skills/skill-creator/scripts/quick_validate.py"
+validator_spec = importlib.util.spec_from_file_location("quick_validate", VALIDATOR_PATH)
+assert validator_spec is not None and validator_spec.loader is not None
+quick_validate = importlib.util.module_from_spec(validator_spec)
+validator_spec.loader.exec_module(quick_validate)
+
 SIMULATOR = command_policy_hook.load_simulator()
 # The catalog is parsed from every SKILL.md; parse it once for the in-process cases.
 SIMULATOR.iter_policies = functools.cache(SIMULATOR.iter_policies)
@@ -39,9 +46,9 @@ def run_hook(payload: str, *arguments: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def bash(command: str) -> subprocess.CompletedProcess[str]:
+def bash(command: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     """Run the hook's entry point in-process; run_hook covers the real process."""
-    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}})
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd or Path.cwd())})
     stderr = io.StringIO()
     with (
         mock.patch.object(sys, "stdin", io.StringIO(payload)),
@@ -53,6 +60,111 @@ def bash(command: str) -> subprocess.CompletedProcess[str]:
 
 
 class CommandPolicyHookTests(unittest.TestCase):
+    def test_repository_exports_are_scoped_to_real_checkouts_and_worktrees(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkout = root / "checkout"
+            checkout.mkdir()
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True)
+            frontend = checkout / "frontend"
+            frontend.mkdir()
+            commands = (
+                "launchplane service export-openapi --output generated/openapi.json",
+                "launchplane service export-agent-contract --output contracts/agent.json",
+                "launchplane service export-owner-control-contract --output contracts/owner.json",
+            )
+            for command in commands:
+                with self.subTest(command=command):
+                    self.assertEqual(bash("uv run " + command, checkout).returncode, 0)
+                    self.assertEqual(bash("uv run " + command, frontend).returncode, 0)
+                    self.assertEqual(bash("uv run " + command, root).returncode, 2)
+                    self.assertEqual(SIMULATOR.simulate(shlex.split(command), cwd=checkout), [])
+                    self.assertTrue(SIMULATOR.simulate(shlex.split(command)))
+            self.assertEqual(bash("pnpm --dir frontend generate:openapi", checkout).returncode, 0)
+            self.assertEqual(bash("launchplane merge-train run-once", checkout).returncode, 2)
+            self.assertEqual(bash("launchplane service start", checkout).returncode, 2)
+            self.assertEqual(bash("uv run " + commands[0] + " && launchplane service start", checkout).returncode, 2)
+            # A real linked worktree, not a mocked directory name or host runtime.
+            subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], check=True)
+            linked = root / "linked"
+            subprocess.run(["git", "-C", str(checkout), "worktree", "add", "--detach", str(linked)], check=True, capture_output=True)
+            self.assertEqual(bash("uv run " + commands[0], linked).returncode, 0)
+            for origin in (
+                "https://github.com/cbusillo/launchplane.git",
+                "ssh://git@github.com/cbusillo/launchplane.git",
+                "https://github.com/cbusillo/launchplane",
+            ):
+                subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", origin], check=True)
+                self.assertEqual(bash("uv run " + commands[0], checkout).returncode, 0)
+            for origin in (
+                "https://github.com/other/launchplane.git",
+                "https://github.com/cbusillo/launchplane-other.git",
+                "https://github.com.evil.invalid/cbusillo/launchplane.git",
+                "https://evil.invalid/cbusillo/launchplane.git",
+            ):
+                subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", origin], check=True)
+                self.assertEqual(bash("uv run " + commands[0], checkout).returncode, 2)
+            subprocess.run(["git", "-C", str(checkout), "config", "--unset", "remote.origin.url"], check=True)
+            self.assertEqual(bash("uv run " + commands[0], checkout).returncode, 2)
+
+    def test_repository_exception_cannot_follow_unverified_command_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "https://github.com/cbusillo/launchplane.git"], check=True)
+            command = "launchplane service export-openapi --output artifact.json"
+            for line in (
+                "cd /other && " + command,
+                "uv run --directory /other " + command,
+                "uv run --project=/other " + command,
+                "env -C /other " + command,
+                "env -C/other " + command,
+                "uv run --no-project " + command,
+                "uv run --with other-package " + command,
+                "UV_PROJECT=/other uv run " + command,
+                "/global/bin/" + command,
+                "bash -lc 'cd /other && " + command + "'",
+                "true && bash -lc 'cd /other && " + command + "'",
+                "bash -lc 'true' && cd /other && " + command,
+                "uv run --with=other-package " + command,
+                "(cd /other && uv run " + command + ")",
+                "true&&cd /other&&uv run " + command,
+                "true&&bash -lc 'cd /other && uv run " + command + "'",
+                command,
+            ):
+                with self.subTest(line=line):
+                    self.assertEqual(bash(line, checkout).returncode, 2)
+            self.assertEqual(bash("bash -lc 'uv run " + command + "'", checkout).returncode, 0)
+            with mock.patch("subprocess.run", side_effect=OSError("git unavailable")):
+                self.assertEqual(bash("uv run " + command, checkout).returncode, 2)
+            with mock.patch.dict(os.environ, {"GIT_DIR": "/other", "GIT_WORK_TREE": "/other"}):
+                self.assertEqual(bash("uv run " + command, checkout).returncode, 0)
+            payload = json.dumps({"tool_name": "Bash", "cwd": str(checkout), "tool_input": {"command": "uv run " + command}})
+            self.assertEqual(run_hook(payload).returncode, 0)
+
+    def test_shell_comments_preserve_existing_blocks(self) -> None:
+        for line in ("gh pr merge 17 # it's green", "# don't bypass\ngh pr merge 17"):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 2)
+
+    def test_unrelated_commands_do_not_read_repository_identity(self) -> None:
+        with mock.patch.dict(vars(SIMULATOR), {"verified_repository": mock.Mock(side_effect=AssertionError("unexpected Git read"))}):
+            self.assertIsNone(command_policy_hook.blocking_policy("git status && printf ok"))
+
+    def test_repository_exception_metadata_rejects_ambiguous_or_empty_scopes(self) -> None:
+        policy = {"id": "fixture", "match": {"argv_prefix": ["demo"]}, "action": "reject"}
+        self.assertIsNone(quick_validate.validate_command_policies([policy]))
+        scoped = {"repository": "owner/repo", "argv_prefix": ["demo", "export"]}
+        self.assertIsNone(quick_validate.validate_command_policies([{**policy, "exceptions": [scoped]}]))
+        for exceptions in (
+            "owner/repo", [{}], [{**scoped, "repository": "https://github.com/owner/repo"}],
+            [{**scoped, "argv_prefix": []}], [{**scoped, "shell_regex": ".*"}],
+            [{**scoped, "argv_prefix": ["demo"]}], [{**scoped, "argv_prefix": ["other", "export"]}],
+        ):
+            with self.subTest(exceptions=exceptions):
+                self.assertIsNotNone(quick_validate.validate_command_policies([{**policy, "exceptions": exceptions}]))
+
     def test_json_mode_denies_without_using_the_launcher_error_exit_code(self) -> None:
         result = run_hook(json.dumps({"tool_name": "Bash", "tool_input": {"command": "gh-with-env-token pr merge 17"}}), "--json")
         self.assertEqual(result.returncode, 0)

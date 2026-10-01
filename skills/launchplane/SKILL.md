@@ -576,6 +576,13 @@ policy:
     - id: prefer-launchplane-helpers-over-global-cli
       match:
         argv_prefix: ["launchplane"]
+      exceptions:
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "service", "export-openapi"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "service", "export-agent-contract"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "service", "export-owner-control-contract"]
       action: require_preferred
       message: Do not assume a global `launchplane` binary on ordinary workstations. Use the bundled helpers unless you are explicitly on a host-only Launchplane context with a repo-provided command.
       preferred:
@@ -604,6 +611,15 @@ policy:
 ---
 
 # Launchplane Expert
+
+The three source-only `service export-openapi`, `service export-agent-contract`,
+and `service export-owner-control-contract` commands may run through
+`uv run launchplane` in a verified `cbusillo/launchplane` checkout or worktree,
+including frontend contract generation. Set the tool's working directory to that
+checkout; shell directory/project overrides retain the block. All other
+Launchplane CLI commands keep the helper route below. Consumers without
+repository-exception support keep the original block; do not bypass it through
+an alternate entry point.
 
 Use this skill to inspect product/runtime state and perform safe,
 authenticated mutations via the Launchplane service API.
