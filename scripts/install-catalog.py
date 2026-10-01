@@ -16,6 +16,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -202,13 +203,35 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                             entry["catalog_alert_entries"] = json.loads(generated)["hooks"]
                         hook_preview = [entry]
                 else:
-                    hooks = sync.render_codex_hook(hook_path, catalog=ROOT, alerts_only=True)
+                    hooks = expected
                     hook_preview = sync.synchronize(hooks, [hook_path], write=False)
         except (OSError, ValueError) as error:
             # Alert setup must not stop an existing instruction-only refresh.
             # Keep the unsafe/unmanaged destination untouched and report the gap.
             hooks = None
             hook_preview = [{"path": str(hook_path), "state": "skipped", "reason": str(error)}]
+    if refresh_instructions and not skip_codex_hooks and not hook_preview:
+        # A legacy inline catalog binding needs the explicit migration path.
+        # Do not silently add a second definition source during background refresh.
+        config_path = codex / "config.toml"
+        try:
+            settings = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
+            inline = settings.get("hooks", {})
+            bound = any(
+                isinstance(group, dict) and isinstance(group.get("hooks"), list)
+                and any(isinstance(handler, dict) and (
+                    handler.get("statusMessage") in (sync.HOOK_LABEL, "codex-skills session start")
+                    or any(str(ROOT / "hooks" / script) in str(handler.get("command", ""))
+                           for script in ("command_policy_hook.py", "direction_check_hook.py"))
+                ) for handler in group["hooks"])
+                for event, groups in inline.items() if event != "state" and isinstance(groups, list)
+                for group in groups
+            ) if isinstance(inline, dict) else False
+            if bound:
+                hook_preview = [{"path": str(hook_path), "state": "skipped",
+                                 "reason": "Inline catalog hooks need migration before alerts can be refreshed; preview scripts/sync-global-instructions.py --codex-hook --hooks-only, then apply with --write and review through /hooks"}]
+        except (OSError, ValueError) as error:
+            hook_preview = [{"path": str(config_path), "state": "skipped", "reason": str(error)}]
     launch_path = home / "Library" / "LaunchAgents" / f"{LABEL}.plist"
     launch_content = None
     launch_changed = False
@@ -274,8 +297,6 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                 try:
                     outputs += sync.synchronize(hooks, [hook_path], write=True, expected_previous={hook_path: hook_previous})
                 except (OSError, ValueError) as error:
-                    if not refresh_instructions:
-                        raise
                     outputs.append({"path": str(hook_path), "state": "skipped", "reason": str(error)})
             else:
                 outputs += hook_preview
@@ -299,7 +320,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             "private_source": str(local), "updater": "enabled" if updater and write else "requested" if updater else "unchanged" if previous_installation.get("scheduled_updater") else "off",
             "migrated_events": hook_outputs.migrated_events if hook_outputs else {},
             "disabled_migrated_handlers": hook_outputs.disabled_migrated_handlers if hook_outputs else [],
-            "codex_hook_setup": "skipped; existing definitions unchanged" if skip_codex_hooks else "unchanged" if refresh_instructions else "prepared",
+            "codex_hook_setup": "skipped; existing definitions unchanged" if skip_codex_hooks else "alert refresh evaluated" if refresh_instructions else "prepared",
             "hook_trust": sync.HOOK_TRUST_NOTICE}
 
 

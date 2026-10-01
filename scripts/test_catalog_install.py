@@ -426,6 +426,17 @@ class InstallTests(unittest.TestCase):
         installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
         self.assertEqual(hook_path.read_bytes(), first)
 
+    def test_inline_catalog_binding_reports_migration_without_changing_trust(self):
+        self.install()
+        (self.codex / "hooks.json").unlink()
+        config = self.codex / "config.toml"
+        original = f'[[hooks.PreToolUse]]\n[[hooks.PreToolUse.hooks]]\ncommand="uv run {installer.ROOT / "hooks" / "command_policy_hook.py"}"\n[hooks.state]\nopaque_trust="preserve"\n'
+        config.write_text(original)
+        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertTrue(any(entry["state"] == "skipped" and "migration" in entry.get("reason", "") for entry in receipt["outputs"]))
+        self.assertEqual(config.read_text(), original)
+        self.assertFalse((self.codex / "hooks.json").exists())
+
     def test_concurrent_hook_edit_is_preserved_and_refresh_reports_skip(self):
         self.install()
         hook_path = self.codex / "hooks.json"
@@ -465,6 +476,8 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(target.read_text(), original)
         self.assertTrue(hook_path.is_symlink())
         modified = json.loads(original)
+        user_stop = {"hooks": [{"command": "personal-stop"}]}
+        modified["hooks"]["Stop"].insert(0, user_stop)
         modified["hooks"]["Stop"][-1]["hooks"][0]["command"] = "old-alert-command"
         target.write_text(json.dumps(modified))
         receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
@@ -475,10 +488,12 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(json.loads(target.read_text()), modified)
         # A dotfiles manager can apply this preview without hand-writing command
         # strings. Unrelated existing events stay in its authoritative source.
-        modified["hooks"].update(entries)
+        for event, generated in entries.items():
+            modified["hooks"][event] = [group for group in modified["hooks"].get(event, []) if group == user_stop] + generated
         target.write_text(json.dumps(modified))
         receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
         self.assertFalse(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
+        self.assertEqual(json.loads(target.read_text())["hooks"]["Stop"][0], user_stop)
 
     def test_removed_binding_in_dotfiles_symlink_is_not_refreshed(self):
         self.install()
