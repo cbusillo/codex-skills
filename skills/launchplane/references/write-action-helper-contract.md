@@ -150,13 +150,16 @@ vendored artifact is refreshed.
 
 ## Product expected configuration
 
-Use `product-expected-config-dry-run --payload-file PRIVATE.json` to add declared
-runtime keys or managed-secret requirements through
+Use `product-expected-config-dry-run --payload-file PRIVATE.json` to add or
+remove declared runtime keys or managed-secret requirements through
 `POST /v1/product-profiles/expected-config/apply`. The private file contains the
 explicit product, reason, optional source label, and the service's
-`runtime_environment_keys` / `managed_secret_bindings` metadata. A secret
-requirement may include `owner_input: {label, instructions}` with an explicit
-context. This endpoint accepts metadata only, never credential values.
+`runtime_environment_keys` / `managed_secret_bindings` metadata to add and
+`remove_runtime_environment_keys` (`key`, `context`, `instance`) /
+`remove_managed_secret_bindings` (`integration`, `binding_key`, `context`,
+`instance`) identities to remove. A secret requirement may include
+`owner_input: {label, instructions}` with an explicit context. This endpoint
+accepts metadata only, never credential values.
 
 Save the helper output outside the repository, review it against the private
 input, then call `product-expected-config-apply` with the same payload file,
@@ -165,13 +168,22 @@ The helper binds the review to the exact metadata (excluding mode); changed
 input requires another dry-run. Only apply accepts an idempotency key, so a
 dry-run cannot reserve that key before the application.
 Output contains record identity and added/unchanged counts, not Owner instructions.
+When the request removes anything, it also reports removed and absent counts for
+both sections and `managed_secret_bindings_still_bound_count`: stored secret
+bindings that still hold a value for a removed requirement. Removal never
+unbinds or deletes a stored secret. Absent means the identity was not declared,
+so a repeated removal is a no-op. Removal items must be plain strings with a
+non-empty key or binding key, and an instance needs a context. A removal request
+whose response lacks any removal disposition or count is refused, so it cannot
+serve as apply evidence.
 Read back the product profile after apply, including when a response is uncertain.
 
 The service requires `product_profile.expected_config.apply` for the named product
 in the Launchplane context. A denial remains a missing grant, not permission to
 try another credential or workflow. Adding a requirement does not apply runtime
-values, activate a mail server, or deploy anything. Existing requirements are
-additive: this endpoint does not replace metadata on an already declared key.
+values, activate a mail server, or deploy anything. Additions do not replace
+metadata on an already declared key, and one request cannot add and remove the
+same identity.
 
 For stale Launchplane-managed preview comments that cannot be replayed under a
 current workflow identity, use `preview-feedback-remediation`. Run with
