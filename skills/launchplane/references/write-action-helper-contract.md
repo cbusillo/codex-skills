@@ -108,6 +108,11 @@ local extensions until the vendored artifact is refreshed.
 - `product-activity-read --product` returns up to 50 events, newest first, each
   with type, lane, action, status, time, title, summary and up to 10 record
   links; `events_truncated` says when more were returned.
+- `product-profile-read --product` calls `GET /v1/product-profiles/{product}`
+  and returns the product's Owner login and review label, `production_use`,
+  lifecycle state, display name, driver, repository and lanes (context and
+  instance only). `prelaunch` is the only value that skips Owner release
+  review. A malformed or secret-looking value fails the whole read.
 - An odd value in an optional field (for example a status Launchplane added
   later) is dropped to `""` and listed by path in `dropped_field_paths`, with
   `dropped_field_count`; an event without a usable id or type is left out and

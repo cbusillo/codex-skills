@@ -59,6 +59,7 @@ READ_ONLY_OPERATIONS = {
     "testing-hold-read",
     "product-environment-read",
     "product-activity-read",
+    "product-profile-read",
     "preview-history-read",
     "reconcile-requests-read",
     "target-replacement-operation-read",
@@ -2498,6 +2499,51 @@ def _project_product_environment(value: object) -> dict[str, object]:
     return projected
 
 
+PRODUCT_PROFILE_MAX_LANES = 20
+PRODUCT_PRODUCTION_USES = {"unknown", "prelaunch", "live"}
+GITHUB_LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
+
+
+def _project_product_profile(value: object) -> dict[str, object]:
+    """Who owns the product and how its production is classified; settings, secrets,
+    images, URLs, workflows and expected configuration are dropped."""
+    source = _require_dict(value)
+    owner = {} if source.get("owner") is None else source.get("owner")
+    lanes = [] if source.get("lanes") is None else source.get("lanes")
+    if not isinstance(owner, dict) or not isinstance(lanes, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    production_use = source.get("production_use") or "unknown"
+    if production_use not in PRODUCT_PRODUCTION_USES:
+        # Only prelaunch skips Owner review; an unknown class must not read as either.
+        raise LaunchplaneSafetyError("invalid_response")
+    owner_login = owner.get("github_login") or ""
+    if owner_login and (
+        not isinstance(owner_login, str) or not GITHUB_LOGIN_RE.fullmatch(owner_login)
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "product": public_identifier(source.get("product")),
+        "display_name": _optional_text(source.get("display_name"), max_length=120),
+        "driver_id": _optional_identifier(source.get("driver_id")),
+        "repository": _optional_identifier(source.get("repository")),
+        "production_use": production_use,
+        "lifecycle_state": _optional_code(source.get("lifecycle_state")),
+        "owner_github_login": owner_login,
+        "owner_review_label": _optional_code(owner.get("review_label")),
+        "lanes": [
+            {
+                "context": public_identifier(_require_dict(lane).get("context")),
+                "instance": public_identifier(_require_dict(lane).get("instance")),
+            }
+            for lane in lanes[:PRODUCT_PROFILE_MAX_LANES]
+        ],
+        "lanes_truncated": len(lanes) > PRODUCT_PROFILE_MAX_LANES,
+        "updated_at": _optional_text(source.get("updated_at")),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
 class _FieldDrops:
     """Field paths a tolerant projection dropped, so a partial read says what is missing."""
 
@@ -4103,6 +4149,22 @@ def summarize_product_environment_read(
     )
 
 
+def summarize_product_profile_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    return _summarize_product_read(
+        operation="product-profile-read",
+        request=request,
+        provider_payload=provider_payload,
+        result_key="profile",
+        project=_project_product_profile,
+        recommendation=(
+            "production_use prelaunch skips Owner release review; live and unknown "
+            "both require it."
+        ),
+    )
+
+
 def summarize_product_activity_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
@@ -4184,6 +4246,7 @@ def summarize_target_replacement_operation_read(
 PRODUCT_READ_SUMMARIZERS = {
     "product-environment-read": summarize_product_environment_read,
     "product-activity-read": summarize_product_activity_read,
+    "product-profile-read": summarize_product_profile_read,
     "preview-history-read": summarize_preview_history_read,
     "reconcile-requests-read": summarize_reconcile_requests_read,
     "target-replacement-operation-read": summarize_target_replacement_operation_read,
@@ -5343,6 +5406,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     product_environment_read.add_argument("--product", required=True)
     product_environment_read.add_argument("--environment", required=True)
 
+    product_profile_read = subparsers.add_parser(
+        "product-profile-read",
+        help="Read a product's Owner, production use and lanes.",
+    )
+    product_profile_read.add_argument("--product", required=True)
+
     product_activity_read = subparsers.add_parser(
         "product-activity-read",
         help="Read a product's recent deployment, promotion and preview activity.",
@@ -5709,6 +5778,15 @@ def main(argv: list[str]) -> int:
             request = {
                 "product": public_identifier(args.product),
                 "environment": public_identifier(args.environment),
+                "payload_source": "operator_argument",
+            }
+            return execute_product_read(
+                args=args, operation=args.command, request=request, path=path
+            )
+        if args.command == "product-profile-read":
+            path = _product_read_path(args.command, product=args.product)
+            request = {
+                "product": public_identifier(args.product),
                 "payload_source": "operator_argument",
             }
             return execute_product_read(
