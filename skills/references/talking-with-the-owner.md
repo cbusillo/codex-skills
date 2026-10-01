@@ -104,6 +104,10 @@ formatting rules in every `SKILL.md`.
   `[label](/absolute/path/file.ext:line)`. Include a line number when it helps.
 - In GitHub comments, avoid local absolute paths. Use repo-relative paths,
   commit URLs, PR URLs, issue URLs, workflow run URLs, or dated comments.
+- For images stored in private repositories, use
+  `https://github.com/OWNER/REPO/blob/<sha>/<path>?raw=true` for readers with
+  repository access, or upload an attachment; bare `raw.githubusercontent.com`
+  URLs do not carry the viewer's GitHub session and can return 404.
 - Prefer point-in-time evidence for handoffs and closeout: merge commits,
   workflow run URLs, PR numbers, issue comments, landing-plan or deploy record
   ids, and exact dates when relative timing could become stale.
