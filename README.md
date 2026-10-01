@@ -363,7 +363,9 @@ tail -f "${CODE_HOME:-$HOME/.code}/session-events.jsonl"
 
 Verify session state after each notice. Do not interpret `clean: null` or a
 quiet stream as evidence that a session succeeded, failed, or is still active.
-The hook command uses a three-second timeout with Python downloads disabled.
+The hook command uses a three-second timeout with Python downloads disabled,
+and launch failures return success to the harness so they cannot request Stop
+continuation. Disposable routing-eval sessions suppress these alerts.
 See the [Codex hook contract](https://learn.chatgpt.com/docs/hooks) and
 [Claude Code hook contract](https://code.claude.com/docs/en/hooks#stop).
 

@@ -106,6 +106,20 @@ class SessionAlertTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual([r["harness"] for r in self.records()], ["claude", "codex", "codex"])
 
+    def test_launcher_failure_cannot_request_stop_continuation(self):
+        launcher = self.home / "uv"
+        launcher.write_text("#!/bin/sh\necho bootstrap-failed >&2\nexit 2\n")
+        launcher.chmod(0o755)
+        env = {**self.env, "PATH": f"{self.home}:/bin:/usr/bin", "CLAUDE_PLUGIN_ROOT": str(ROOT)}
+        plugin = json.loads((ROOT / "hooks" / "hooks.json").read_text())["hooks"]["Stop"]
+        rendered = json.loads(sync.render_codex_hook(self.home / "hooks.json", ROOT))["hooks"]
+        commands = [plugin[0]["hooks"][0]["command"], *[rendered[event][0]["hooks"][0]["command"] for event in ("Stop", "Interrupt")]]
+        for command in commands:
+            result = self.run_hook({"hook_event_name": "Stop", "session_id": "s"}, env=env, command=["sh", "-c", command])
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("bootstrap-failed", result.stderr)
+        self.assertFalse(self.events.exists())
+
     def test_alerts_can_be_disabled_independently_on_both_harnesses(self):
         for harness in ("codex", "claude"):
             env = {**self.env, "CODEX_SKILLS_HARNESS": harness, "SESSION_ALERTS_DISABLED": "1"}
