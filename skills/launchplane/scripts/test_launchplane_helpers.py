@@ -4363,6 +4363,55 @@ def test_expected_config_review_binds_metadata_and_never_prints_owner_instructio
             assert "must-never-be-metadata" not in output.getvalue()
 
 
+def test_expected_config_removal_reports_dispositions_and_refuses_partial_shapes() -> None:
+    with TemporaryDirectory() as directory:
+        payload_path = Path(directory) / "metadata.json"
+        removal = {"key": "ODOO_VERSION", "context": "example-site", "instance": ""}
+        secret_removal = {"integration": "runtime_environment", "binding_key": "SMTP_PASSWORD", "context": "example-site", "instance": ""}
+        body = {
+            "schema_version": 1, "product": "example-site", "reason": "Sites build their own images.",
+            "remove_runtime_environment_keys": [removal], "remove_managed_secret_bindings": [secret_removal],
+        }
+        payload_path.write_text(json.dumps(body))
+        secret_section: dict[str, Any] = {"added": [], "unchanged": [], "removed": [], "absent": [secret_removal], "still_bound": []}
+        calls: list[dict[str, Any]] = []
+
+        def post(**kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return {
+                "status": "accepted", "trace_id": "launchplane_req_expected_config",
+                "records": {"product_profile": "example-site"},
+                "result": {
+                    "status": "ok", "mode": kwargs["body"]["mode"], "product": "example-site",
+                    "source_label": "operator", "changed": True,
+                    "runtime_environment_keys": {"added": [], "unchanged": [], "removed": [removal], "absent": []},
+                    "managed_secret_bindings": secret_section,
+                    "summary": {},
+                },
+            }
+
+        with (
+            temporary_attribute(write_action, "prepare_operator_settings", lambda **_kwargs: {"service_url": "https://launchplane.example.invalid", "token": "fixture-only"}),
+            temporary_attribute(write_action, "request_launchplane", post),
+        ):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                assert write_action.main(["product-expected-config-dry-run", "--payload-file", str(payload_path)]) == 0
+            result = json.loads(output.getvalue())["result"]
+            assert calls[-1]["body"]["remove_runtime_environment_keys"] == [removal]
+            assert result["runtime_environment_keys_removed_count"] == 1
+            assert result["managed_secret_bindings_absent_count"] == 1
+            assert result["managed_secret_bindings_still_bound_count"] == 0
+            del secret_section["still_bound"]
+            with redirect_stdout(io.StringIO()):
+                assert write_action.main(["product-expected-config-dry-run", "--payload-file", str(payload_path)]) != 0
+            body["remove_managed_secret_bindings"] = [{**secret_removal, "owner_input": {"label": "Mail"}}]
+            payload_path.write_text(json.dumps(body))
+            with redirect_stdout(io.StringIO()):
+                assert write_action.main(["product-expected-config-dry-run", "--payload-file", str(payload_path)]) == 2
+            assert len(calls) == 2, "Removal items accept identity fields only"
+
+
 def test_owner_review_reader_keeps_full_prose_and_uses_only_the_private_route() -> None:
     decision = {
         "record_id": "decision-one", "product": "example-site", "repository": "example/site",
@@ -4422,6 +4471,7 @@ def main() -> int:
         test_owner_review_reader_rejects_wrong_subject_or_selected_record,
         test_owner_review_reader_surfaces_denial_without_credentials_or_provider_text,
         test_expected_config_review_binds_metadata_and_never_prints_owner_instructions,
+        test_expected_config_removal_reports_dispositions_and_refuses_partial_shapes,
         test_agent_operator_contract_identity_and_provenance_semantics,
         test_agent_operator_contract_rejects_drift_and_unsafe_content,
         test_agent_operator_contract_routes_every_local_consumer,

@@ -3099,11 +3099,19 @@ def _project_success_output(operation: str, provider_payload: dict[str, Any]) ->
         }
         if not isinstance(source["summary"], dict):
             raise LaunchplaneSafetyError("invalid_response")
-        for kind in ("runtime_environment_keys", "managed_secret_bindings"):
+        # Removal dispositions appear only when the request asked for removals, and
+        # then in both sections; add-only responses keep exactly added/unchanged.
+        runtime_changes = source["runtime_environment_keys"]
+        removal_shape = isinstance(runtime_changes, dict) and "removed" in runtime_changes
+        for kind, removal_dispositions in (
+            ("runtime_environment_keys", ("removed", "absent")),
+            ("managed_secret_bindings", ("removed", "absent", "still_bound")),
+        ):
+            dispositions = ("added", "unchanged") + (removal_dispositions if removal_shape else ())
             changes = source[kind]
-            if not isinstance(changes, dict) or set(changes) != {"added", "unchanged"}:
+            if not isinstance(changes, dict) or set(changes) != set(dispositions):
                 raise LaunchplaneSafetyError("invalid_response")
-            for disposition in ("added", "unchanged"):
+            for disposition in dispositions:
                 items = changes[disposition]
                 if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
                     raise LaunchplaneSafetyError("invalid_response")
@@ -4208,7 +4216,11 @@ def product_config_payload_body(args: argparse.Namespace, *, mode: str) -> dict[
 
 def product_expected_config_payload_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
     body = read_payload_file(args.payload_file)
-    if set(body) - {"schema_version", "product", "mode", "reason", "source_label", "runtime_environment_keys", "managed_secret_bindings"}:
+    if set(body) - {
+        "schema_version", "product", "mode", "reason", "source_label",
+        "runtime_environment_keys", "managed_secret_bindings",
+        "remove_runtime_environment_keys", "remove_managed_secret_bindings",
+    }:
         raise ValueError("invalid_expected_config_payload")
     if body.get("schema_version") != 1:
         raise ValueError("schema_version_required")
@@ -4220,6 +4232,8 @@ def product_expected_config_payload_body(args: argparse.Namespace, *, mode: str)
     for kind, allowed in (
         ("runtime_environment_keys", {"key", "context", "instance"}),
         ("managed_secret_bindings", {"integration", "binding_key", "context", "instance", "owner_input"}),
+        ("remove_runtime_environment_keys", {"key", "context", "instance"}),
+        ("remove_managed_secret_bindings", {"integration", "binding_key", "context", "instance"}),
     ):
         requirements = body.get(kind, [])
         if not isinstance(requirements, list):
@@ -4931,7 +4945,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     apply.add_argument("--idempotency-key", required=True)
     apply.add_argument("--reviewed-dry-run", action="store_true")
     for command in ("product-expected-config-dry-run", "product-expected-config-apply"):
-        expected_config = subparsers.add_parser(command, help="Add declared product configuration requirements; never credential values.")
+        expected_config = subparsers.add_parser(command, help="Add or remove declared product configuration requirements; never credential values.")
         expected_config.add_argument("--payload-file", required=True, help="Private local JSON metadata file.")
         expected_config.set_defaults(idempotency_key="")
         if command.endswith("-apply"):
