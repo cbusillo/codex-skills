@@ -22,6 +22,21 @@ SPEC.loader.exec_module(sync)
 
 
 class GlobalInstructionsTests(unittest.TestCase):
+    def test_disabled_migrated_hook_is_reported_without_copying_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex = Path(directory)
+            config = codex / "config.toml"
+            state_key = f"{config}:stop:0:0"
+            original = f'[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ncommand="disabled-hook"\n[hooks.state."{state_key}"]\nenabled=false\ntrusted_hash="old-hash"\n'
+            config.write_text(original)
+            outputs = sync.prepare_codex_hooks(codex)
+            self.assertEqual(outputs.disabled_migrated_handlers, [{"event": "Stop", "group": 0, "handler": 0}])
+            migrated = json.loads(outputs[codex / "hooks.json"])
+            self.assertNotIn("state", migrated["hooks"])
+            self.assertEqual(config.read_text(), original)
+            sync.write_codex_hooks(outputs, codex)
+            self.assertEqual(tomllib.loads(config.read_text())["hooks"]["state"], tomllib.loads(original)["hooks"]["state"])
+
     def test_hook_cli_preview_write_and_diff_selection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

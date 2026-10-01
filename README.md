@@ -205,14 +205,17 @@ For an existing installation, migrate hooks alone from the maintained runtime
 checkout, reviewing the preview before applying it:
 
 ```sh
-uv run scripts/sync-global-instructions.py --codex-hook --hooks-only --show-diff
+uv run scripts/sync-global-instructions.py --codex-hook --hooks-only
 uv run scripts/sync-global-instructions.py --codex-hook --hooks-only --write
 ```
 
-Full diffs are opt-in with `--show-diff`; review them locally because TOML
+Full diffs are opt-in with `--show-diff` for a person's local review because TOML
 context may contain private settings. Changed files receive private sibling backups. To undo migration, restore both
 the `hooks.json` and `config.toml` backups reported by the helper; if JSON was
 newly created, remove only that newly created file after restoring TOML.
+Restore whole backups only if the files have not changed since migration.
+Otherwise restore just the hook declarations while retaining newer settings
+and Codex-managed trust state.
 Repeating synchronization produces no changes once consolidated. Migrating a
 hook changes its definition source, so review any untrusted entries through
 Codex's `/hooks` interface before expecting them to run. The helper never grants,
@@ -223,9 +226,15 @@ Standalone TOML comments attached to removed hook tables are retained at the
 end of the remaining TOML. An interrupted migration reports completed-file
 backups; preview again to reconcile identical declarations and finish migration.
 Inline comments on migrated values remain recoverable in the TOML backup.
-If `config.toml` is a symlink with inline hooks, instruction-only sync without
-`--codex-hook` keeps the existing hooks working. To migrate, preserve the link
+If `config.toml` is a symlink with inline hooks, install with
+`--skip-codex-hooks` or use instruction-only sync without `--codex-hook` to keep
+the existing hooks working. The installer reports skipped hook setup and leaves
+its definitions and trust alone; a mixed-source warning may remain until migration.
+To migrate, preserve the link
 target's contents in a regular `config.toml`, then preview again.
+Migration does not copy disabled choices from old source keys. The preview and
+receipt identify recognized disabled handlers by event and position; keep those
+hooks disabled when reviewing them through `/hooks`.
 Once registered and
 trusted, a catalog pull updates the same policy script on both hosts. The
 Claude-only skills protocol is not added to Codex's base instructions.

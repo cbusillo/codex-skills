@@ -275,6 +275,20 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_text(), config)
 
+    def test_first_install_can_preserve_symlinked_inline_hooks(self):
+        target = self.root / "dotfiles.toml"
+        original = '[[hooks.SessionStart]]\n[[hooks.SessionStart.hooks]]\ncommand="trusted-existing-hook"\n'
+        target.write_text(original)
+        (self.codex / "config.toml").symlink_to(target)
+        with self.assertRaisesRegex(ValueError, "skip-codex-hooks"):
+            self.install()
+        result = installer.install(self.home, self.codex, self.claude, write=True, updater=False, skip_codex_hooks=True)
+        self.assertTrue((self.codex / "config.toml").is_symlink())
+        self.assertEqual(target.read_text(), original)
+        self.assertFalse((self.codex / "hooks.json").exists())
+        self.assertTrue((self.home / ".agents" / "skills" / "shared").is_symlink())
+        self.assertEqual(result["migrated_events"], {})
+
     def test_installed_host_edits_are_reported_without_overwriting_and_can_be_adopted(self):
         self.install()
         host = self.codex / "AGENTS.md"
