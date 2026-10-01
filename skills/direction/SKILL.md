@@ -144,7 +144,8 @@ helper, using the merged `DIRECTION.md` the audit fetched rather than the
 local file. The adopted repositories are the ones in the marker's `audits`
 map plus any the owner names; a repository enters the map only when an
 audit reads its merged `DIRECTION.md`. An unadopted audit still reports
-`direction_missing` and leaves the marker untouched. Nobody opens a session per repository; the
+`direction_missing` and leaves the marker untouched. Nobody opens a session
+per repository; the
 per-repository reminder line only fires when a session happens to open inside
 an adopted repository whose audit is stale.
 
@@ -168,7 +169,11 @@ repository visibility before treating a missing direction file as unadopted,
 preserves unreadable entries and unrelated marker state, and creates a private
 backup beside the marker before removing confirmed entries. Unknown entries
 remain for a later audit with the required read access; they are not evidence
-of adoption. Restore the reported backup to the marker path to undo cleanup.
+of adoption. Exit 3 reports unknown entries even when confirmed removals were
+applied; check `applied` and `backup` rather than treating it as no change.
+The documented owner-only reader also works here with `--gh gh` for private
+repositories. To undo cleanup, restore the backup only if no later turn or audit
+ran; otherwise reinsert just the removed audit entries, retaining newer stamps.
 
 The catalog's session-start hook reads that marker on every host and opens a
 session with one line when the last turn is more than a day old, or when the
