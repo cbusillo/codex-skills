@@ -78,7 +78,7 @@ def personal_source(sync, destinations: list[Path], local: Path) -> str:
                 text.startswith(prefix.rstrip() + "\n") or text.strip() == prefix.strip()
             )]
             if matches and not local.exists() and not previous_base:
-                raise ValueError(f"Ambiguous generated instructions: {path}; restore the authoritative private source in {local} before rerunning")
+                raise ValueError(f"Ambiguous generated instructions: {path}; restore the authoritative private source in {local}, or create an empty file there if you have verified there are no private instructions, before rerunning")
             matched = matches[0] if matches else None
             if matched is None:
                 raise ValueError(f"Generated instructions differ from known catalog source: {path}; reconcile personal text in {local}, preview scripts/sync-global-instructions.py, then write and rerun")
@@ -86,9 +86,7 @@ def personal_source(sync, destinations: list[Path], local: Path) -> str:
                 if text[len(matched):].strip() != initial_private:
                     raise ValueError(f"Generated instructions differ from the private source: {path}; reconcile the host edits in {local}, preview scripts/sync-global-instructions.py, then write and rerun")
                 continue
-            if local.exists() or previous_base:
-                continue  # The private source is authoritative after adoption.
-            text = text[len(matched):].strip()
+            continue  # The private source is authoritative after adoption.
         else:
             text = text.strip()
         if text and "\n\n" + text + "\n\n" not in "\n\n" + content + "\n\n":

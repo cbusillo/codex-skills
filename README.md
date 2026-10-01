@@ -58,9 +58,11 @@ unrecognized output is preserved for inspection. A session hook pointing at
 another checkout is also reported; inspect and update its path before rerunning.
 If the private source is missing after installation, restore it before refreshing;
 use an empty source file when you intend to remove its instructions.
-When a missing private source leaves several historical interpretations of a
-generated file, the installer preserves the file and asks you to restore that
-source. It does not guess whether a formerly shared paragraph is now private.
+When the private source is missing and a generated file differs from the current
+shared output, the installer preserves it and asks you to restore that source.
+If inspection confirms there were no private instructions, create an empty
+`.local/global-instructions.md` and rerun. It does not guess whether a formerly
+shared paragraph is now private.
 Use an isolated catalog checkout for fixture homes: the installer stores the
 private source and installation destinations in that checkout and refuses to
 redirect an existing installation to a different home.
@@ -144,8 +146,10 @@ that explicitly prefers that wrapper stays allowed; a wrapped `gh pr merge`
 still requires the `github` helper. Blocking messages name the skill to load.
 Manual-only skills mirror Codex's `agents/openai.yaml` policy in Claude's
 `disable-model-invocation` frontmatter, checked by the catalog validator.
-Invoke those workflows with `/shared:skill-name` on Claude and `$shared:skill-name`
-on Codex; Claude's field requires an actual user slash-command invocation.
+Invoke those workflows with `/shared:skill-name` on Claude. On Codex use the
+name shown in its skill list: `$shared:skill-name` for the new catalog binding,
+or `$skill-name` when a preserved legacy binding lists an unprefixed name.
+Claude's field requires an actual user slash-command invocation.
 The registered hook uses a JSON deny decision and an exit-zero launcher fallback,
 so missing source or a uv startup failure cannot masquerade as a policy denial.
 
