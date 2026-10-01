@@ -71,6 +71,16 @@ commands:
     resource_path: scripts/jb-inspect.py
     example_argv: ["uv", "run", "scripts/jb-inspect.py", "cleanup-helper-leases", "--no-dry-run"]
     purpose: Reconciles stale helper-owned leases under the lifecycle lock without path-only project closes.
+  - name: jetbrains-inspection-remove-worktree
+    source: skill
+    resource_path: scripts/jb-inspect.py
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "remove-worktree", "--repo", "/exact/task/path"]
+    purpose: Dry-runs live helper-owned SDK retirement; with --no-dry-run retires SDKs before non-force linked worktree removal.
+  - name: jetbrains-inspection-cleanup-helper-sdks
+    source: skill
+    resource_path: scripts/jb-inspect.py
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "cleanup-helper-sdks"]
+    purpose: Dry-runs helper-owned removed-worktree SDK cleanup through discovered live IDEs.
 policy:
   command_policies:
     - id: prefer-jb-inspect-for-plugin-http
@@ -221,6 +231,25 @@ Command model:
   strict incomplete or failed gates exit nonzero.
 - `cleanup-helper-leases`: reconcile stale helper-owned leases under the
   lifecycle lock; unresolved identity or close failures return nonzero.
+- `remove-worktree --repo /exact/task/path`: after the repository cleanup
+  checks establish disposition, dry-run SDK retirement through every discovered
+  live IDE. With `--no-dry-run`, unregister only SDKs proved helper-owned, then
+  remove the clean, unlocked linked worktree with non-force Git removal. Close
+  its IDE project and reconcile its leases first. Primary checkouts, locked apply attempts,
+  dirty worktrees, missing plugin support, session drift and unsafe SDK cleanup
+  retain the worktree. Unrecorded SDKs remain registered and are reported as
+  preserved; their `not_helper_owned` refusal does not prevent eligible Git
+  removal. Other refusal reasons retain the worktree. This command preserves
+  its branch. Prior cleanup disposition must also preserve unique detached
+  commits and valuable ignored files; this command does not classify them.
+- `cleanup-helper-sdks`: dry-run the plugin's helper-owned removed-worktree SDK
+  inventory. Review the listed entries, then use `--no-dry-run` with repeated
+  `--worktree-path /reviewed/orphan` flags. Apply is limited to those paths
+  still present in the current preview. Refused orphan records remain listed
+  and are excluded from apply without blocking unrelated eligible paths. A locked worktree can be previewed;
+  release its lock only for removal apply and restore it if removal fails. Start each IDE that
+  prepared the removed worktrees before cleanup; discovery covers running IDEs,
+  not offline SDK tables. Legacy SDK names or paths are never ownership proof.
 
 The helper owns route selection, trusted auto-open, lease-bound cleanup, and
 bounded retries. Inspect the exact worktree; never close a preexisting or

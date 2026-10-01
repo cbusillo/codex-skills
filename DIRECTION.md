@@ -56,7 +56,7 @@ until they pass.
 
 ## Milestones
 
-- `Adopted beyond this repository` proves that the other two owners' agents
+- `Adopted beyond this repository` proves that the other owners' agents
   adopt direction and the review policy from the steps on GitHub alone and
   report a clean or triaged first audit; ends if adoption needs a hand edit
   that a catalog pull should have carried, or the owners remove it as
