@@ -4,6 +4,10 @@ description: Use when the user asks for a plan, what's next / what is next in a 
 metadata:
   short-description: Plan durable work in GitHub issues
 commands:
+  - name: github-plan-claim
+    source: repo
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "claim", "<issue>", "--worker", "<worker>", "--session", "<session-id>", "--branch", "work/issue-<number>", "--next-action", "<action>"]
+    purpose: Rechecks ownership, records and reads back the claim, and activates planning state before a task worktree is created.
   - name: github-plan-index
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "index"]
@@ -173,12 +177,13 @@ active issue labels and continuing background jobs do not lift a hold.
    with its recorded owner, with a recommendation; keep this decision visible
    while recommending independent work.
 5. For `next`, report the selected issue, why it fits the plan, and recorded
-   waits, then stop without changing planning state. On `go`, recheck ownership
-   immediately before creating the worktree, not from an earlier `next`, and,
-   where posting is authorized, record the worker/session, branch, and next
-   action in owned Current Status or a bot-authored planning comment before
-   implementation, then read back for competing activity. Keep that record
-   current through handoff or completion.
+   waits, then stop without changing planning state. On authorized `go`, run
+   `gh-plan.py claim <issue> --worker <worker> --session <session-id>
+   --branch work/issue-<number> --next-action "<action>"` before creating a
+   branch or worktree. Read [Planning: Claim](../github/references/cli-reference.md#planning-claim)
+   for refusal, partial recovery, or release. Continue only on confirmed success;
+   preserve competing or uncertain ownership for the owner to decide. Keep
+   Current Status current through handoff or completion.
 
 Also report each `blocking_work_elsewhere` pair from `gh-plan.py next`, naming
 the local blocker and the repository/issue it holds up. Read the blocker's

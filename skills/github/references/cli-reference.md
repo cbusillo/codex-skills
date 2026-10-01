@@ -336,6 +336,43 @@ or Project focus state.
 - `deps <issue>`: Page and show validated native `blocked_by`, `blocking`, and
   sub-issue relationships, preserving cross-repository issue references.
 
+### Planning: Claim
+
+Before an authorized `go` creates a branch or worktree, run from a checkout of
+the target repository:
+
+```bash
+uv run <skill-dir>/scripts/gh-plan.py claim <issue> \
+  --worker <worker-token> --session <session-id> \
+  --branch work/issue-<number> --next-action "<action>"
+```
+
+The command checks Current Status and the complete discussion, unresolved
+native blockers, registered worktrees, local branches, live remote heads, open
+PRs, and Claude's native `claude agents --json` session inventory when available.
+Codex CLI peer coverage is reported unavailable; a caller's supported session
+tools can add evidence but cannot turn partial coverage into a clear inventory.
+Known owners and ambiguous or stale records cause a nonzero refusal with the
+competing evidence. Age never expires a claim. Do not bypass a refusal by
+changing the worker, tool, or identity; ask the owner about ambiguous ownership
+and continue independent work.
+
+Success posts and reads back a claim, updates owned Current Status (or leaves
+the contributor's body intact and uses the claim comment), sets `plan:active`,
+and reads the metadata back. Check `ok`, `outcome_certainty`, and
+`completed_steps`; create the worktree only after confirmed success. This
+narrows a race and supplies no exclusive lock. Recheck competing activity
+during execution too.
+
+After a partial failure, read the issue before retrying. The same worker,
+session, and branch can resume its existing claim without another comment;
+unknown comment writes remain governed by the shared retry policy. Never erase
+a competing claim to recover. On completion or verified handoff, reconcile
+Current Status and post `Released by <worker-token>` through the same bot
+identity. Release affects that worker's earlier comments, not another worker's
+record or retained branch/worktree evidence; those still need ordinary
+ownership and preservation review.
+
 ### Planning: Management
 
 - `create <title>`: Create a new plan issue. Exact-title dedupe uses REST issue
