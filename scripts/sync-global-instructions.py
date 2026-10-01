@@ -175,7 +175,7 @@ def prepare_codex_hooks(codex: Path, catalog: Path = ROOT) -> HookOutputs:
     for event, groups in list(hooks.items()) + list(events.items()):
         if not isinstance(groups, list) or any(not isinstance(group, dict) or not isinstance(group.get("hooks"), list)
                                               or any(not isinstance(handler, dict) for handler in group["hooks"]) for group in groups):
-            raise ValueError(f"Invalid {event} hook definition; inspect hooks.json and config.toml before rerunning")
+            raise ValueError(f"Invalid {event} hook definition; inspect hooks.json and config.toml before rerunning. Install with --skip-codex-hooks, or synchronize instructions without --codex-hook, to keep working.")
     original_json_hooks = {event: list(groups) for event, groups in hooks.items()}
     for event, groups in events.items():
         existing = hooks.get(event, [])
@@ -184,7 +184,7 @@ def prepare_codex_hooks(codex: Path, catalog: Path = ROOT) -> HookOutputs:
                 commands = {handler.get("command") for handler in group["hooks"] if isinstance(handler.get("command"), str)}
                 other_commands = {handler.get("command") for handler in other["hooks"] if isinstance(handler.get("command"), str)}
                 if group != other and group.get("matcher") == other.get("matcher") and commands & other_commands:
-                    raise ValueError(f"Conflicting {event} definitions in both sources; reconcile the duplicate hooks before rerunning")
+                    raise ValueError(f"Conflicting {event} definitions in both sources; reconcile the duplicate hooks before rerunning. Install with --skip-codex-hooks, or synchronize instructions without --codex-hook, to keep working.")
         hooks[event] = existing + [group for group in groups if group not in existing]
     sessions = hooks.get("SessionStart", [])
     existing_session = existing_session_hook(sessions, catalog)
@@ -240,7 +240,7 @@ def prepare_codex_hooks(codex: Path, catalog: Path = ROOT) -> HookOutputs:
         else:
             del expected["hooks"]
         if tomllib.loads(cleaned) != expected:
-            raise ValueError("TOML migration would change unrelated settings; preserve the configuration and inspect it")
+            raise ValueError("TOML migration would change unrelated settings; preserve the configuration and inspect it. Install with --skip-codex-hooks, or synchronize instructions without --codex-hook, to keep working.")
         outputs[config_path] = cleaned
     return HookOutputs(outputs, previous, {event: len(groups) for event, groups in events.items()}, disabled_migrated)
 
