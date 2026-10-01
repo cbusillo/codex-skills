@@ -9,10 +9,17 @@ formatting rules in every `SKILL.md`.
 
 - Assume the owner has not read the issue, file, or earlier session you just
   read. Introduce an issue, PR, person, or catalog term by what it is and where
-  it came from, then give its number or name. A number or name never replaces
-  the description.
-- Make every issue and PR reference in chat a clickable GitHub link, for
-  example: "the runtime checkout fix, [PR #753](https://github.com/OWNER/REPO/pull/753)."
+  it came from. A number or name never replaces the description.
+- Write every issue and PR reference in chat and GitHub text for the owner as
+  `[repo#N](URL) short title`, for example:
+  `[catalog#753](https://github.com/OWNER/catalog/pull/753) runtime checkout`.
+  Use the correct `/issues/N` or `/pull/N` URL and put a few words of title
+  after the link, including in lists, tables, and repeated mentions.
+- For the owner's own repositories, the label may omit the owner prefix;
+  always keep the repository name. For another owner's repository, use
+  `[OWNER/repo#N](URL) short title`. Bare `#N` and `PR #N` labels lose context.
+- Preserve exact-output requests, runnable commands, machine-readable fields,
+  and issue-closing syntax; apply this format to the surrounding prose.
 - In chat, report findings in plain words first. Keep skill vocabulary such as turn,
   audit, escalation, deviation, and marker in files unless the owner used it
   first.
