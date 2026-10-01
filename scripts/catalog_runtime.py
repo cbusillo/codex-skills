@@ -66,7 +66,7 @@ def status_line(root: Path) -> str:
                     recovery = "preview scripts/install-catalog.py --refresh-instructions, reconcile, then run scripts/catalog_runtime.py --update" if step == "instruction refresh" else "run scripts/catalog_runtime.py --update"
                     state = {"state": "blocked", "reason": f"last {step} failed; {recovery}"}
                 elif recorded.get("alert_refresh"):
-                    state = {"state": "blocked", "reason": "catalog checkout is current but alert refresh was skipped; preview scripts/install-catalog.py --refresh-instructions, reconcile hooks.json, then run scripts/catalog_runtime.py --update"}
+                    state = {"state": "notice", "reason": "catalog checkout is current but alert refresh was skipped; preview scripts/install-catalog.py --refresh-instructions, reconcile hooks.json, then run scripts/catalog_runtime.py --update"}
             checked_at = dt.datetime.fromisoformat(stamp) if stamp else None
             if checked_at is not None and checked_at.tzinfo is None:
                 raise ValueError("update timestamp has no timezone")

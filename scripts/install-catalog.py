@@ -211,7 +211,12 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         hook_preview = sync.synchronize(hooks, [hook_path], write=False)
     elif hook_path.exists() or hook_path.is_symlink():
         try:
-            existing = json.loads(safe_file(hook_path))
+            # Reading a dotfiles-managed symlink does not authorize writing it.
+            # Inspect only to recognize a removed catalog binding; rendering
+            # still refuses symlink/non-file destinations when bound.
+            if not hook_path.is_file():
+                raise ValueError("Hook destination is not a regular file")
+            existing = json.loads(hook_path.read_text())
             groups = existing.get("hooks", {}) if isinstance(existing, dict) else None
             if not isinstance(groups, dict):
                 raise ValueError("Invalid hooks.json configuration")
@@ -220,7 +225,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                     raise ValueError(f"Invalid {event} configuration")
             # Add/update alerts only for an installation still bound to catalog
             # hooks. Removing all catalog hooks opts out; alerts follow any remaining
-                # catalog binding. Independent suppression uses native /hooks trust.
+            # catalog binding. Independent suppression uses SESSION_ALERTS_DISABLED.
             managed = any(
                 isinstance(group, dict) and isinstance(group.get("hooks"), list)
                 and any(isinstance(handler, dict) and handler.get("statusMessage") in (

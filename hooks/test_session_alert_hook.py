@@ -106,6 +106,16 @@ class SessionAlertTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual([r["harness"] for r in self.records()], ["claude", "codex", "codex"])
 
+    def test_alerts_can_be_disabled_independently_on_both_harnesses(self):
+        for harness in ("codex", "claude"):
+            env = {**self.env, "CODEX_SKILLS_HARNESS": harness, "SESSION_ALERTS_DISABLED": "1"}
+            result = self.run_hook({"hook_event_name": "Stop", "session_id": "s"}, env=env)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(json.loads(result.stdout), {})
+        self.assertFalse(self.events.exists())
+        self.run_hook({"hook_event_name": "Stop", "session_id": "s"})
+        self.assertEqual(len(self.records()), 1)
+
     def test_relative_shared_home_is_skipped_without_writing_in_repository(self):
         result = self.run_hook({"hook_event_name": "Stop", "session_id": "s"}, env={**self.env, "CODE_HOME": "."})
         self.assertEqual(result.returncode, 0)

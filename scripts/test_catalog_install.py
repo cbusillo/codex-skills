@@ -406,6 +406,18 @@ class InstallTests(unittest.TestCase):
         installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
         self.assertEqual(hook_path.read_bytes(), first)
 
+    def test_removed_binding_in_dotfiles_symlink_is_not_refreshed(self):
+        self.install()
+        hook_path = self.codex / "hooks.json"
+        hook_path.unlink()
+        target = self.root / "dotfiles-hooks"
+        target.write_text('{"hooks": {}}\n')
+        hook_path.symlink_to(target)
+        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertFalse(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
+        self.assertTrue(hook_path.is_symlink())
+        self.assertEqual(target.read_text(), '{"hooks": {}}\n')
+
     def test_unsafe_alert_destination_does_not_block_instruction_refresh(self):
         self.install()
         hook_path = self.codex / "hooks.json"
@@ -677,6 +689,19 @@ class UpdateTests(unittest.TestCase):
             self.assertFalse((fixture_home / ".claude" / "skills" / "shared").exists())
             self.assertEqual(hooks.read_text(), '{"hooks": {}}\n')
             self.assertEqual(runtime.status_line(self.checkout), "")
+            # Exercise the real subprocess output -> update receipt -> status
+            # path, including clearing the diagnostic after reconciliation.
+            hooks.write_text("invalid JSON")
+            skipped = runtime.update(self.checkout)
+            self.assertEqual(skipped["state"], "current")
+            self.assertIn("alert_refresh", skipped)
+            self.assertIn("alert refresh was skipped", runtime.status_line(self.checkout))
+            self.assertIn("Catalog notice", runtime.status_line(self.checkout))
+            hooks.write_text('{"hooks": {}}\n')
+            fixed = runtime.update(self.checkout)
+            self.assertNotIn("alert_refresh", fixed)
+            self.assertEqual(runtime.status_line(self.checkout), "")
+
 
     def test_dirty_untracked_off_main_detached_ahead_and_diverged_are_preserved(self):
         scenarios = ("dirty", "untracked", "branch", "detached", "ahead", "diverged")

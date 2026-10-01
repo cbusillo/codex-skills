@@ -24,6 +24,8 @@ def events_path(env: Mapping[str, str]) -> Path:
 
 
 def notice(payload: object, env: Mapping[str, str]) -> dict | None:
+    if env.get("SESSION_ALERTS_DISABLED") == "1":
+        return None
     if not isinstance(payload, dict):
         return None
     event = payload.get("hook_event_name")
@@ -52,7 +54,7 @@ def notice(payload: object, env: Mapping[str, str]) -> dict | None:
 
 def append_notice(path: Path, record: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    data = (json.dumps(record, separators=(",", ":"), ensure_ascii=True) + "\n").encode()
+    data = (json.dumps(record, separators=(",", ":")) + "\n").encode()
     # O_APPEND plus one write keeps concurrent local hook records intact. Do not
     # follow a redirected file, or wait on a FIFO when the destination is unsafe.
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)

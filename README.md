@@ -337,16 +337,23 @@ loads Stop from the catalog hook source. Existing installations can preview
 or new definitions until reviewed through its supported `/hooks` flow; no trust
 is granted or copied by the installer. To suppress Codex alerts independently,
 leave their entries untrusted in `/hooks` while retaining other approved hooks.
+On either harness, set `SESSION_ALERTS_DISABLED=1` in the hook environment to
+suppress alerts independently without changing other hooks. For example, launch
+Claude Code with `SESSION_ALERTS_DISABLED=1 claude` or Codex with
+`SESSION_ALERTS_DISABLED=1 codex`. Removing the variable resumes alerts.
 If an instruction refresh cannot safely update a hook destination, it leaves
 that destination untouched, reports the skipped alert refresh in its output
 and updater receipt, and still refreshes instructions. The next session-start
 status line names the skipped alert refresh and its recovery command. Hook writes
-require a regular hooks.json file; a symlink or malformed destination remains
-unverified rather than being treated as opt-out. Reconcile that destination
+require a regular hooks.json file. A readable symlink with no catalog labels
+is recognized as unbound and left alone. A bound symlink or malformed destination
+remains unverified and produces a notice, while checkout/instruction updates
+continue. Reconcile that destination
 through the documented installer preview, then run
 `scripts/catalog_runtime.py --update` to clear the old skipped-refresh receipt.
 Supervisors own local retention of the events file; truncating it discards old
-notices and subsequent invocations append new ones.
+notices and subsequent invocations append new ones. Readers should skip malformed
+lines, which can result from interrupted or partial storage writes.
 The stream appears on the first alert;
 once it exists a local supervisor can use:
 
