@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import yaml
 
@@ -82,6 +85,7 @@ def policy_catalog() -> list[dict[str, Any]]:
                 "match": matcher,
                 "preferred": preferred,
                 "message": policy.get("message"),
+                "exceptions": policy.get("exceptions", []),
             }
         )
     return catalog
@@ -94,10 +98,16 @@ def match_policy(
     policy: dict[str, Any],
     argv: list[str],
     shell: str,
+    repository: str | None = None,
 ) -> PolicyMatch | None:
     matcher = policy.get("match")
     if not isinstance(matcher, dict):
         return None
+    for exception in policy.get("exceptions", []):
+        if repository is not None and exception.get("repository") == repository:
+            prefix = exception.get("argv_prefix", [])
+            if prefix and argv[:len(prefix)] == prefix:
+                return None
     policy_id = str(policy.get("id") or f"policy-{index}")
     if "argv_exact" in matcher:
         expected = [str(token) for token in matcher["argv_exact"]]
@@ -114,12 +124,35 @@ def match_policy(
     return None
 
 
-def simulate(argv: list[str], shell: str | None = None) -> list[PolicyMatch]:
+def verified_repository(cwd: Path) -> str | None:
+    """Identify a GitHub checkout/worktree from its own origin, without network I/O."""
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+            env=environment, capture_output=True, text=True, timeout=2, check=True,
+        )
+        root = result.stdout.strip()
+        result = subprocess.run(
+            ["git", "-C", root, "config", "--get", "remote.origin.url"],
+            env=environment, capture_output=True, text=True, timeout=2, check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.fullmatch(
+        r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
+        r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?", result.stdout.strip(),
+    )
+    return match.group(1).lower() if match else None
+
+
+def simulate(argv: list[str], shell: str | None = None, *, cwd: Path | None = None) -> list[PolicyMatch]:
     shell_text = shell if shell is not None else shlex.join(argv)
+    repository = verified_repository(cwd) if cwd is not None else None
     matches = [
         match
         for skill_order, skill, index, policy in iter_policies()
-        if (match := match_policy(skill_order, skill, index, policy, argv, shell_text)) is not None
+        if (match := match_policy(skill_order, skill, index, policy, argv, shell_text, repository)) is not None
     ]
     return sorted(matches, key=lambda match: match.score, reverse=True)
 
@@ -287,55 +320,49 @@ def print_catalog(json_output: bool) -> None:
 
 
 def self_test() -> None:
-    global iter_policies
-    original_iter = iter_policies
+    mock_policies = []
+    with patch(__name__ + ".iter_policies", side_effect=lambda: mock_policies):
+        # Test case 1: Matcher precedence (argv_exact beats argv_prefix beats shell_regex)
+        mock_policies = [
+            (0, "skill-a", 0, {"id": "exact-policy", "match": {"argv_exact": ["demo"]}}),
+            (1, "skill-b", 0, {"id": "prefix-policy", "match": {"argv_prefix": ["demo"]}}),
+            (2, "skill-c", 0, {"id": "regex-policy", "match": {"shell_regex": "demo"}}),
+        ]
+        matches = simulate(["demo"])
+        assert len(matches) == 3
+        assert matches[0].skill == "skill-a"
+        assert matches[0].policy_id == "exact-policy"
+        assert matches[1].skill == "skill-b"
+        assert matches[2].skill == "skill-c"
 
-    # Test case 1: Matcher precedence (argv_exact beats argv_prefix beats shell_regex)
-    mock_policies = [
-        (0, "skill-a", 0, {"id": "exact-policy", "match": {"argv_exact": ["demo"]}}),
-        (1, "skill-b", 0, {"id": "prefix-policy", "match": {"argv_prefix": ["demo"]}}),
-        (2, "skill-c", 0, {"id": "regex-policy", "match": {"shell_regex": "demo"}}),
-    ]
-    iter_policies = lambda: mock_policies
-    matches = simulate(["demo"])
-    assert len(matches) == 3
-    assert matches[0].skill == "skill-a"
-    assert matches[0].policy_id == "exact-policy"
-    assert matches[1].skill == "skill-b"
-    assert matches[2].skill == "skill-c"
+        # Test case 2: Prefix length precedence (longer prefix beats shorter prefix)
+        mock_policies = [
+            (0, "skill-a", 0, {"id": "short-prefix", "match": {"argv_prefix": ["demo"]}}),
+            (1, "skill-b", 0, {"id": "long-prefix", "match": {"argv_prefix": ["demo", "sub"]}}),
+        ]
+        matches = simulate(["demo", "sub"])
+        assert len(matches) == 2
+        assert matches[0].skill == "skill-b"
+        assert matches[0].policy_id == "long-prefix"
 
-    # Test case 2: Prefix length precedence (longer prefix beats shorter prefix)
-    mock_policies = [
-        (0, "skill-a", 0, {"id": "short-prefix", "match": {"argv_prefix": ["demo"]}}),
-        (1, "skill-b", 0, {"id": "long-prefix", "match": {"argv_prefix": ["demo", "sub"]}}),
-    ]
-    iter_policies = lambda: mock_policies
-    matches = simulate(["demo", "sub"])
-    assert len(matches) == 2
-    assert matches[0].skill == "skill-b"
-    assert matches[0].policy_id == "long-prefix"
+        # Test case 3: Skill order tie-breaking (alphabetical/list order)
+        mock_policies = [
+            (1, "skill-b", 0, {"id": "policy-b", "match": {"argv_prefix": ["demo"]}}),
+            (0, "skill-a", 0, {"id": "policy-a", "match": {"argv_prefix": ["demo"]}}),
+        ]
+        matches = simulate(["demo"])
+        assert len(matches) == 2
+        assert matches[0].skill == "skill-a"
 
-    # Test case 3: Skill order tie-breaking (alphabetical/list order)
-    mock_policies = [
-        (1, "skill-b", 0, {"id": "policy-b", "match": {"argv_prefix": ["demo"]}}),
-        (0, "skill-a", 0, {"id": "policy-a", "match": {"argv_prefix": ["demo"]}}),
-    ]
-    iter_policies = lambda: mock_policies
-    matches = simulate(["demo"])
-    assert len(matches) == 2
-    assert matches[0].skill == "skill-a"
+        # Test case 4: Policy index tie-breaking (index order)
+        mock_policies = [
+            (0, "skill-a", 1, {"id": "policy-second", "match": {"argv_prefix": ["demo"]}}),
+            (0, "skill-a", 0, {"id": "policy-first", "match": {"argv_prefix": ["demo"]}}),
+        ]
+        matches = simulate(["demo"])
+        assert len(matches) == 2
+        assert matches[0].policy_id == "policy-first"
 
-    # Test case 4: Policy index tie-breaking (index order)
-    mock_policies = [
-        (0, "skill-a", 1, {"id": "policy-second", "match": {"argv_prefix": ["demo"]}}),
-        (0, "skill-a", 0, {"id": "policy-first", "match": {"argv_prefix": ["demo"]}}),
-    ]
-    iter_policies = lambda: mock_policies
-    matches = simulate(["demo"])
-    assert len(matches) == 2
-    assert matches[0].policy_id == "policy-first"
-
-    iter_policies = original_iter
     print("ok validate-command-policy-simulator self-test")
 
 
@@ -343,6 +370,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", nargs="*", help="Command tokens to simulate")
     parser.add_argument("--shell", help="Shell string to use for shell_regex matching")
+    parser.add_argument("--cwd", type=Path, help="Verified command working directory for repository exceptions")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--catalog", action="store_true", help="Print all structured command policies")
     parser.add_argument("--self-test", action="store_true", help="Run precedence self tests")
@@ -357,7 +385,7 @@ def main() -> int:
         return 0
 
     if args.command:
-        payload = [match.__dict__ for match in simulate(args.command, args.shell)]
+        payload = [match.__dict__ for match in simulate(args.command, args.shell, cwd=args.cwd)]
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:

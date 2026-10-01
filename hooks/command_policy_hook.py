@@ -151,13 +151,39 @@ def describe(policy: dict[str, Any], skill: str) -> str:
     return "\n".join(lines)
 
 
-def blocking_policy(shell: str) -> tuple[dict[str, Any], str] | None:
+def exception_cwd(shell: str, cwd: Path) -> Path | None:
+    """Use the tool's cwd only when the shell cannot redirect command resolution.
+
+    Directory/project switches and explicit executable paths keep the original
+    block. Callers can use the tool's working-directory option instead; guessing
+    a compound shell's effective directory would widen repository exceptions.
+    """
+    tokens = shlex.split(shell)
+    if tokens and Path(tokens[0]).name in SHELLS:
+        for index, token in enumerate(tokens[1:-1], start=1):
+            if SHELL_COMMAND_FLAG.match(token):
+                if index + 2 != len(tokens):
+                    return None
+                return exception_cwd(tokens[index + 1], cwd)
+        return None
+    for token in tokens:
+        if token in {"cd", "pushd", "popd", "eval", "source", ".", "--active", "--no-project"} or Path(token).name in SHELLS:
+            return None
+        if token.startswith("-C") or ASSIGNMENT.match(token) or token.split("=", 1)[0] in {"-C", "--chdir", "--directory", "--project", "--with", "--with-editable", "--with-requirements"}:
+            return None
+        if Path(token).name == "launchplane" and token != "launchplane":
+            return None
+    return cwd if cwd.is_absolute() else None
+
+
+def blocking_policy(shell: str, cwd: Path | None = None) -> tuple[dict[str, Any], str] | None:
     simulator = load_simulator()
     catalog = {(entry["skill"], entry["id"]): entry for entry in simulator.policy_catalog()}
+    context = exception_cwd(shell, cwd or Path.cwd())
     for argv in simple_commands(shell):
         wrapped_gh = argv[0] == "gh-with-env-token"
         matched_argv = ["gh", *argv[1:]] if wrapped_gh else argv
-        for match in simulator.simulate(matched_argv, shell):
+        for match in simulator.simulate(matched_argv, shell, cwd=context):
             policy = catalog[(match.skill, match.policy_id)]
             if wrapped_gh and policy.get("action") == "require_preferred" and any(
                 Path(preferred.get("path", "")).name == "gh-with-env-token"
@@ -177,7 +203,7 @@ def main() -> int:
         if event.get("tool_name") != "Bash":
             return 0
         shell = event["tool_input"]["command"]
-        blocked = blocking_policy(shell)
+        blocked = blocking_policy(shell, Path(event.get("cwd") or Path.cwd()))
     except Exception as error:  # noqa: BLE001 - fail open, see module docstring
         print(f"command policy hook skipped: {error!r}", file=sys.stderr)
         return 0

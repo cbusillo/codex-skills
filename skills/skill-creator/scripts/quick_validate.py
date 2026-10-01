@@ -344,7 +344,7 @@ def validate_command_policies(command_policies, skill_dir=None):
         path = f"policy.command_policies[{index}]"
         if not isinstance(command_policy, dict):
             return f"{path} must be a YAML dictionary"
-        unexpected = set(command_policy) - {"id", "match", "action", "message", "preferred"}
+        unexpected = set(command_policy) - {"id", "match", "action", "message", "preferred", "exceptions"}
         if unexpected:
             return f"Unexpected key(s) in {path}: {', '.join(sorted(unexpected))}"
         if not valid_nonempty_string(command_policy.get("id"), MAX_COMMAND_POLICY_ID_LENGTH):
@@ -352,6 +352,18 @@ def validate_command_policies(command_policies, skill_dir=None):
         matcher_error = validate_command_policy_match(command_policy.get("match"), path)
         if matcher_error:
             return matcher_error
+        exceptions = command_policy.get("exceptions", [])
+        if not isinstance(exceptions, list) or len(exceptions) > MAX_COMMAND_POLICY_PREFERRED:
+            return f"{path}.exceptions must be a bounded list"
+        for exception in exceptions:
+            if not isinstance(exception, dict) or set(exception) != {"repository", "argv_prefix"}:
+                return f"{path}.exceptions entries must set repository and argv_prefix only"
+            repository = exception["repository"]
+            if not isinstance(repository, str) or not re.fullmatch(r"[a-z0-9_.-]+/[a-z0-9_.-]+", repository):
+                return f"{path}.exceptions repository must be a lowercase GitHub owner/repo"
+            error = validate_argv_tokens(exception["argv_prefix"], f"{path}.exceptions.argv_prefix")
+            if error:
+                return error
         action = command_policy.get("action")
         if not isinstance(action, str) or action not in ALLOWED_COMMAND_POLICY_ACTIONS:
             allowed = ", ".join(sorted(ALLOWED_COMMAND_POLICY_ACTIONS))

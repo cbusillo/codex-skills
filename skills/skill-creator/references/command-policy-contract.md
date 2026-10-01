@@ -31,6 +31,11 @@ They may describe stable command ownership, risk, and safe routes:
   `require_confirm`, or `reject`.
 - `message`: short risk explanation suitable for surfacing to the agent.
 - `preferred`: replacement routes, usually helper scripts or delegated skills.
+- `exceptions`: optional list of `{repository: owner/repo, argv_prefix: [...]}`
+  pairs for source-only commands in their owning GitHub repository. Repository
+  names are lowercase. A consumer skips only that matching policy when both the
+  argv prefix and verified command working directory match. Without repository
+  evidence or exception support, the original policy still applies.
 
 Frontmatter must not encode installation-specific runtime state such as concrete
 bot logins, token names beyond helper documentation, enterprise host allowlists,
@@ -73,6 +78,24 @@ When multiple policies match, the primary policy is selected deterministically:
 
 Diagnostics should include all matching policies even when one primary policy is
 selected. That keeps sibling-skill ownership disputes visible.
+
+## Repository Evidence
+
+The simulator's `--cwd` and the shared command hook verify a Git checkout or
+linked worktree by reading its Git top-level and exact GitHub `origin` identity.
+They accept HTTPS, SCP-style SSH, and SSH URLs without contacting GitHub;
+non-Git directories, missing origins, other hosts, and failed reads supply no
+exception. Ambient `GIT_*` overrides are removed for these local reads. This is
+checkout identity evidence for the habit guardrail, not proof of trusted source
+or a security boundary.
+
+The hook uses the event's `cwd` (or its process cwd when absent). Shell directory
+or uv project switches, environment assignments, and explicit Launchplane
+executable paths retain the block. Use the tool's working-directory option and
+`uv run launchplane service export-...` from that checkout instead. A simple
+shell wrapper uses the same checks on its enclosed command. The simulator
+receives already normalized argv and the consumer's verified command directory;
+`--cwd` describes that directory, not a shell `cd` instruction.
 
 ## Runtime Configuration
 
