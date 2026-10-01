@@ -807,7 +807,9 @@ preflight failures use the shared classifier before the mutation is refused.
 For commits and pushes performed by Code or spawned agents, use
 `scripts/git-commit-as-bot` and `scripts/git-push-as-bot` so Git author,
 committer, push events, and resulting Actions runs stay owned by
-the configured automation account.
+the configured automation account. The push helper picks credentials the same
+way as the wrapper: a configured GitHub App first, then `CODEX_GITHUB_TOKEN`,
+`GH_TOKEN`, and `GITHUB_TOKEN`.
 
 Planning helpers preserve the selected actor when authentication or quota
 failures occur. Set `GH_PLAN_SKIP_BOT=1` for explicitly authorized temporary

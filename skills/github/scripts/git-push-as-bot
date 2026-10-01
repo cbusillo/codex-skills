@@ -1,7 +1,11 @@
 #!/bin/sh
 set -eu
 
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 git_bin=${GIT_PUSH_AS_BOT_GIT:-git}
+gh_bin=${GIT_PUSH_AS_BOT_GH:-gh}
+identity_helper=${GIT_PUSH_AS_BOT_IDENTITY_HELPER:-$script_dir/github_identity.py}
+python_command=${GIT_PUSH_AS_BOT_PYTHON:-}
 
 if [ -n "${CODEX_SKILLS_ENV_FILE:-}" ]; then
 	env_file=$CODEX_SKILLS_ENV_FILE
@@ -15,24 +19,44 @@ else
 	env_file=
 fi
 
-if [ -f "$env_file" ]; then
-	set -a
-	# shellcheck disable=SC1090
-	. "$env_file"
-	set +a
-fi
-
-if [ -n "${CODEX_GITHUB_TOKEN:-}" ]; then
-	GIT_PUSH_AS_BOT_TOKEN=$CODEX_GITHUB_TOKEN
-elif [ -n "${GH_TOKEN:-}" ]; then
-	GIT_PUSH_AS_BOT_TOKEN=$GH_TOKEN
-elif [ -n "${GITHUB_TOKEN:-}" ]; then
-	GIT_PUSH_AS_BOT_TOKEN=$GITHUB_TOKEN
-else
-	echo "error: no bot GitHub token found; refusing to push as active local git user" >&2
-	echo "hint: configure CODEX_GITHUB_TOKEN for the automation role" >&2
+# The helper rewrites and checks origin only, so it pushes only there; another
+# remote or a URL could use the person's own SSH key or credentials.
+repository_argument=
+next_is=
+for argument in "$@"; do
+	case $next_is in
+	value) next_is= ; continue ;;
+	repository) repository_argument=$argument; break ;;
+	esac
+	case $argument in
+	--repo=*) repository_argument=${argument#--repo=}; break ;;
+	--repo | --) next_is=repository ;;
+	-o | --push-option | --receive-pack | --exec) next_is=value ;;
+	-*) ;;
+	*) repository_argument=$argument; break ;;
+	esac
+done
+if [ "$repository_argument" != origin ]; then
+	echo "error: git-push-as-bot pushes only to origin; got '${repository_argument:-<none>}'" >&2
+	echo "hint: run git-push-as-bot [options] origin <refspec>" >&2
 	exit 1
 fi
+
+if [ -f "$env_file" ]; then
+	# Read private configuration without exporting it to git and its hooks.
+	# shellcheck disable=SC1090
+	. "$env_file"
+fi
+expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-${CODEX_AUTOMATION_LOGIN:-}}
+if [ -z "$expected_login" ]; then
+	echo "error: git-push-as-bot requires the configured automation login; refusing to push" >&2
+	echo "hint: set CODEX_AUTOMATION_LOGIN in local.env, as git-commit-as-bot and GitHub writes require" >&2
+	exit 1
+fi
+
+same_login() {
+	[ "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" ]
+}
 
 origin_url=$("$git_bin" remote get-url origin)
 case "$origin_url" in
@@ -56,25 +80,107 @@ esac
 
 repo=${repo%.git}
 https_url="https://github.com/$repo.git"
-askpass=$(mktemp "${TMPDIR:-/tmp}/git-push-as-bot.XXXXXX")
+
+# Select credentials the way the GitHub CLI wrapper does, so pushes and API writes
+# run as the same automation identity: a configured GitHub App comes first, with
+# the installation on origin's repository (each owner installs it separately).
+app_variable_count=0
+for app_variable in GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH; do
+	eval "app_variable_value=\${$app_variable:-}"
+	if [ -n "$app_variable_value" ]; then
+		app_variable_count=$((app_variable_count + 1))
+	fi
+done
+
+if [ "$app_variable_count" -gt 0 ]; then
+	if [ "$app_variable_count" -ne 3 ]; then
+		echo "error: incomplete GitHub App configuration; set GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, and GITHUB_APP_PRIVATE_KEY_PATH" >&2
+		exit 1
+	fi
+	if [ -n "$python_command" ]; then
+		app_auth_output=$($python_command "$identity_helper" app-auth --repo "$repo" --require-installation) || exit 1
+	elif command -v uv >/dev/null 2>&1; then
+		app_auth_output=$(uv run --no-project --no-config --python 3.12 "$identity_helper" app-auth --repo "$repo" --require-installation) || exit 1
+	else
+		echo "error: git-push-as-bot requires uv or GIT_PUSH_AS_BOT_PYTHON for GitHub App authentication" >&2
+		exit 127
+	fi
+	app_login=$(printf '%s\n' "$app_auth_output" | sed -n '1p')
+	GIT_PUSH_AS_BOT_TOKEN=$(printf '%s\n' "$app_auth_output" | sed -n '2p')
+	if [ -z "$app_login" ] || [ -z "$GIT_PUSH_AS_BOT_TOKEN" ] || [ "$(printf '%s\n' "$app_auth_output" | sed -n '3p')" != "" ]; then
+		echo "error: GitHub App authentication helper returned an invalid response; refusing to push" >&2
+		exit 1
+	fi
+	if ! same_login "$app_login" "$expected_login"; then
+		echo "error: push would run as '$app_login', expected '$expected_login'" >&2
+		echo "hint: configure CODEX_AUTOMATION_LOGIN for the GitHub App bot identity" >&2
+		exit 1
+	fi
+elif [ -n "${CODEX_GITHUB_TOKEN:-}" ]; then
+	GIT_PUSH_AS_BOT_TOKEN=$CODEX_GITHUB_TOKEN
+elif [ -n "${GH_TOKEN:-}" ]; then
+	GIT_PUSH_AS_BOT_TOKEN=$GH_TOKEN
+elif [ -n "${GITHUB_TOKEN:-}" ]; then
+	GIT_PUSH_AS_BOT_TOKEN=$GITHUB_TOKEN
+else
+	echo "error: no bot GitHub token found; refusing to push as active local git user" >&2
+	echo "hint: configure a GitHub App or CODEX_GITHUB_TOKEN for the automation role" >&2
+	exit 1
+fi
+
+# A user token may be one a person exported in their shell; confirm it belongs
+# to the configured automation login before pushing with it.
+if [ "$app_variable_count" -eq 0 ]; then
+	token_login=$(GH_TOKEN=$GIT_PUSH_AS_BOT_TOKEN "$gh_bin" api user --jq .login 2>/dev/null) || token_login=
+	if [ -z "$token_login" ]; then
+		echo "error: unable to verify the push token's GitHub account; refusing to push" >&2
+		echo "hint: the check uses the GitHub CLI; install it and confirm the token is valid" >&2
+		exit 1
+	fi
+	if ! same_login "$token_login" "$expected_login"; then
+		echo "error: push would run as '$token_login', expected '$expected_login'" >&2
+		echo "hint: configure CODEX_GITHUB_TOKEN for the automation account" >&2
+		exit 1
+	fi
+fi
+
+askpass_dir=$(mktemp -d "${TMPDIR:-/tmp}/git-push-as-bot.XXXXXX")
+askpass=$askpass_dir/askpass
 
 cleanup() {
 	"$git_bin" remote set-url origin "$origin_url" >/dev/null 2>&1 || true
-	rm -f "$askpass"
+	rm -rf "$askpass_dir"
 }
-trap cleanup EXIT INT HUP TERM
+trap cleanup EXIT
+trap 'exit 130' INT HUP TERM
 
+# Hand the token to git through a file in a private directory, not through
+# the environment that git passes on to repository hooks.
+chmod 700 "$askpass_dir"
+(umask 077 && printf '%s\n' "$GIT_PUSH_AS_BOT_TOKEN" >"$askpass_dir/token")
 cat >"$askpass" <<'EOF'
 #!/bin/sh
 case "$1" in
 *Username*) printf '%s\n' x-access-token ;;
-*) printf '%s\n' "$GIT_PUSH_AS_BOT_TOKEN" ;;
+*) cat "$(dirname "$0")/token" ;;
 esac
 EOF
 chmod 700 "$askpass"
 
 "$git_bin" remote set-url origin "$https_url"
+# A pushurl or an insteadOf rewrite (to SSH, for example) would push with
+# credentials other than the automation token.
+push_urls=$("$git_bin" remote get-url --push --all origin)
+if [ "$push_urls" != "$https_url" ]; then
+	echo "error: origin pushes to '$(printf '%s' "$push_urls" | tr '\n' ' ')', not only '$https_url'; refusing to push without the automation token" >&2
+	echo "hint: remove remote.origin.pushurl or the url.*.insteadOf rule that rewrites github.com HTTPS URLs" >&2
+	exit 1
+fi
+# Git asks configured credential helpers before GIT_ASKPASS, and a helper such
+# as the GitHub CLI's answers with the active human account; an extraHeader
+# (actions/checkout persists one) would authenticate before either. Clear both
+# for this URL so the push can only use the automation token.
 GIT_ASKPASS=$askpass \
 	GIT_TERMINAL_PROMPT=0 \
-	GIT_PUSH_AS_BOT_TOKEN=$GIT_PUSH_AS_BOT_TOKEN \
-	"$git_bin" push "$@"
+	env -u CODEX_GITHUB_TOKEN -u GH_TOKEN -u GITHUB_TOKEN -u GIT_PUSH_AS_BOT_TOKEN \
+	"$git_bin" -c credential.helper= -c "http.$https_url.extraHeader=" push "$@"
