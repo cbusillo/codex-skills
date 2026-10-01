@@ -54,15 +54,17 @@ def personal_source(sync, destinations: list[Path], local: Path) -> str:
         if not text or text == known:
             continue
         if text.startswith(sync.HEADER):
-            matched = next((prefix.rstrip() for prefix in (base, previous_base) if prefix and (
+            matched = next((prefix.rstrip() for prefix in sorted((base, previous_base), key=len, reverse=True) if prefix and (
                 text.startswith(prefix.rstrip() + "\n") or text.strip() == prefix.strip()
             )), None)
             if matched is None:
                 raise ValueError(f"Generated instructions differ from current source: {path}; inspect and restore their private supplement in {local} before rerunning")
+            if local.exists() or previous_base:
+                continue  # The private source is authoritative after adoption.
             text = text[len(matched):].strip()
         else:
             text = text.strip()
-        if text and text not in content:
+        if text and "\n\n" + text + "\n\n" not in "\n\n" + content + "\n\n":
             content = "\n\n".join(filter(None, (content, text)))
     return content + "\n" if content else ""
 
@@ -78,12 +80,25 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
     # All destinations are inspected before any mutation.
     instruction_preview = sync.synchronize(content, destinations, write=False)
     config = tomllib.loads(safe_file(codex / "config.toml"))
-    legacy_session = any("direction_check_hook.py" in str(group) for group in config.get("hooks", {}).get("SessionStart", []))
+    config_hooks = config.get("hooks", {})
+    if not isinstance(config_hooks, dict) or not isinstance(config_hooks.get("SessionStart", []), list):
+        raise ValueError("Invalid hooks configuration in config.toml")
+    legacy_session = any("direction_check_hook.py" in str(group) for group in config_hooks.get("SessionStart", []))
     hook_path = codex / "hooks.json"
-    hooks = sync.render_codex_hook(hook_path, include_session_start=not legacy_session)
+    existing_hooks = json.loads(safe_file(hook_path) or "{}")
+    if not isinstance(existing_hooks, dict) or not isinstance(existing_hooks.get("hooks", {}), dict):
+        raise ValueError("Invalid hooks.json configuration")
+    sessions = existing_hooks.get("hooks", {}).get("SessionStart", [])
+    if not isinstance(sessions, list):
+        raise ValueError("Invalid SessionStart configuration")
+    existing_session = any("direction_check_hook.py" in str(group) and "codex-skills session start" not in str(group) for group in sessions)
+    hooks = sync.render_codex_hook(hook_path, include_session_start=not (legacy_session or existing_session))
     hook_preview = sync.synchronize(hooks, [hook_path], write=False)
     launch_path = home / "Library" / "LaunchAgents" / f"{LABEL}.plist"
     launch_content = None
+    launch_changed = False
+    installation_path = ROOT / ".local" / "catalog-install.json"
+    safe_file(installation_path)
     if updater:
         if sys.platform != "darwin":
             raise ValueError("--updater supports macOS launchd; run catalog_runtime.py --update manually elsewhere")
@@ -97,22 +112,27 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         if state["state"] == "blocked":
             raise ValueError(f"Cannot schedule this checkout: {state['reason']}")
         launch_content = plistlib.dumps({
-            "Label": LABEL,
+            "Label": LABEL, "CodexSkillsInstaller": 1,
             "ProgramArguments": [uv, "run", "--quiet", "--no-python-downloads", str(ROOT / "scripts" / "catalog_runtime.py"), "--update"],
             "WorkingDirectory": str(ROOT), "StartInterval": 21600, "RunAtLoad": True,
-            "EnvironmentVariables": {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+            "EnvironmentVariables": {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "CODEX_HOME": str(codex), "CLAUDE_CONFIG_DIR": str(claude)},
             "StandardOutPath": str(ROOT / ".local" / "catalog-update.log"),
             "StandardErrorPath": str(ROOT / ".local" / "catalog-update-error.log"),
         }).decode()
         old = safe_file(launch_path)
         if old and old != launch_content:
-            raise ValueError(f"Existing launchd job preserved: {launch_path}; inspect and move it aside before rerunning")
+            try:
+                previous = plistlib.loads(old.encode())
+            except (ValueError, plistlib.InvalidFileException):
+                previous = {}
+            if not (previous.get("CodexSkillsInstaller") == 1 and previous.get("Label") == LABEL and previous.get("WorkingDirectory") == str(ROOT)):
+                raise ValueError(f"Existing launchd job preserved: {launch_path}; inspect and move it aside before rerunning")
+        launch_changed = bool(old and old != launch_content)
     if write:
         if personal != safe_file(local):
             local.parent.mkdir(parents=True, exist_ok=True)
             sync.synchronize(personal, [local], write=True)
         base = sync.render(ROOT / "instructions" / "global.md", ROOT / ".absent-personal-source")
-        sync.synchronize(base, [ROOT / ".local" / "catalog-global-source.md"], write=True)
         for path, target in pending:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.symlink_to(target, target_is_directory=True)
@@ -123,8 +143,13 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             (ROOT / ".local").mkdir(exist_ok=True)
             domain = f"gui/{os.getuid()}"
             loaded = subprocess.run(["launchctl", "print", f"{domain}/{LABEL}"], capture_output=True)
-            if loaded.returncode:
+            if not loaded.returncode and launch_changed:
+                subprocess.run(["launchctl", "bootout", f"{domain}/{LABEL}"], check=True)
+            if loaded.returncode or launch_changed:
                 subprocess.run(["launchctl", "bootstrap", domain, str(launch_path)], check=True)
+        installation = json.dumps({"home": str(home), "codex": str(codex), "claude": str(claude)}, indent=2) + "\n"
+        sync.synchronize(installation, [installation_path], write=True)
+        sync.synchronize(base, [ROOT / ".local" / "catalog-global-source.md"], write=True)
     else:
         outputs = instruction_preview + hook_preview
     # Avoid printing private instruction text/diffs in the normal install output.
@@ -139,10 +164,14 @@ def main() -> int:
     parser.add_argument("--write", action="store_true", help="Apply; default is a read-only preview")
     parser.add_argument("--updater", action="store_true", help="Also enable a guarded six-hour launchd updater")
     parser.add_argument("--home-dir", type=Path, help="Fixture home; overrides host environment directories")
+    parser.add_argument("--codex-dir", type=Path, help="Explicit Codex destination")
+    parser.add_argument("--claude-dir", type=Path, help="Explicit Claude Code destination")
     args = parser.parse_args()
     home = (args.home_dir or Path.home()).resolve()
     codex = home / ".codex" if args.home_dir else Path(os.environ.get("CODEX_HOME") or home / ".codex")
     claude = home / ".claude" if args.home_dir else Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude")
+    codex = (args.codex_dir or codex).resolve()
+    claude = (args.claude_dir or claude).resolve()
     try:
         print(json.dumps(install(home, codex, claude, write=args.write, updater=args.updater), indent=2))
         return 0

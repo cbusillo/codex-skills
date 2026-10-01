@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def git(root: Path, *args: str) -> str:
-    result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=60)
+    result = subprocess.run(["git", "--no-optional-locks", "-C", str(root), *args], capture_output=True, text=True, timeout=60)
     if result.returncode:
         raise ValueError(f"git {args[0]} failed")
     return result.stdout.strip()
@@ -28,7 +28,7 @@ def checkout_state(root: Path) -> dict[str, str]:
     if Path(git(root, "rev-parse", "--show-toplevel")).resolve() != root.resolve():
         raise ValueError("catalog path is not a checkout root")
     head = git(root, "rev-parse", "HEAD")
-    branch = git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
+    branch = git(root, "rev-parse", "--abbrev-ref", "HEAD")
     if branch != "main":
         return {"state": "blocked", "reason": f"branch is {branch}, expected main", "head": head}
     if git(root, "status", "--porcelain", "--untracked-files=all"):
@@ -87,11 +87,13 @@ def update(root: Path) -> dict[str, str]:
                 if state["state"] == "current" and (root / ".local" / "catalog-global-source.md").is_file():
                     # Refresh installed global instructions through the same installer;
                     # stable hook entries retain their trust and unrelated settings.
-                    result = subprocess.run([sys.executable, str(root / "scripts" / "install-catalog.py"), "--write"],
+                    installation = json.loads((root / ".local" / "catalog-install.json").read_text())
+                    result = subprocess.run([sys.executable, str(root / "scripts" / "install-catalog.py"), "--write",
+                                             "--home-dir", installation["home"], "--codex-dir", installation["codex"], "--claude-dir", installation["claude"]],
                                             capture_output=True, text=True, timeout=60)
                     if result.returncode:
                         raise ValueError("catalog pulled but install refresh failed; rerun scripts/install-catalog.py --write")
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
             state = {"state": "error", "reason": str(error)}
         state["checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
         receipt = root / ".local" / "catalog-update.json"

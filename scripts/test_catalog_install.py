@@ -90,6 +90,45 @@ class InstallTests(unittest.TestCase):
         self.assertIn("Keep private instructions.", generated)
         self.assertNotIn("Use the catalog.", generated)
 
+    def test_private_source_edits_and_shared_trims_do_not_restore_removed_text(self):
+        (self.codex / "AGENTS.md").write_text("Private original.\n")
+        self.install()
+        local = self.catalog / ".local" / "global-instructions.md"
+        local.write_text("Private replacement.\n")
+        (self.catalog / "instructions" / "global.md").write_text("# Shared\n")
+        self.install()
+        content = (self.codex / "AGENTS.md").read_text()
+        self.assertIn("Private replacement.", content)
+        self.assertNotIn("Private original.", content)
+        self.assertNotIn("Use the catalog.", content)
+        self.assertEqual(local.read_text(), "Private replacement.\n")
+        local.unlink()
+        self.install()
+        self.assertNotIn("Private replacement.", (self.codex / "AGENTS.md").read_text())
+
+    def test_json_session_hook_is_preserved_without_duplicate(self):
+        existing = {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "uv run /catalog/hooks/direction_check_hook.py"}]}]}}
+        (self.codex / "hooks.json").write_text(json.dumps(existing))
+        self.install()
+        self.assertEqual(json.loads((self.codex / "hooks.json").read_text())["hooks"]["SessionStart"], existing["hooks"]["SessionStart"])
+
+    def test_failed_host_write_keeps_previous_base_receipt(self):
+        self.install()
+        receipt = self.catalog / ".local" / "catalog-global-source.md"
+        previous = receipt.read_bytes()
+        (self.catalog / "instructions" / "global.md").write_text("Different shared source.\n")
+        original = self.sync.synchronize
+        def fail_host(content, destinations, **kwargs):
+            if kwargs.get("write") and self.codex / "AGENTS.md" in destinations:
+                raise OSError("fixture host write failed")
+            return original(content, destinations, **kwargs)
+        with mock.patch.object(self.sync, "synchronize", side_effect=fail_host):
+            with self.assertRaises(OSError):
+                self.install()
+        self.assertEqual(receipt.read_bytes(), previous)
+        self.install()
+        self.assertIn("Different shared source", (self.codex / "AGENTS.md").read_text())
+
     def test_conflicting_binding_preflights_without_writes(self):
         path = self.claude / "skills" / "shared"
         path.parent.mkdir()
@@ -136,12 +175,17 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(spec["WorkingDirectory"], str(self.catalog))
             self.assertEqual(spec["ProgramArguments"][-1], "--update")
             self.assertTrue(any(call.args[0][1] == "bootstrap" for call in launchctl.call_args_list))
+            self.assertEqual(spec["EnvironmentVariables"]["CODEX_HOME"], str(self.codex))
+            self.assertEqual(spec["EnvironmentVariables"]["CLAUDE_CONFIG_DIR"], str(self.claude))
             launchctl.reset_mock()
             launchctl.return_value.returncode = 0
             before = job.read_bytes()
             run()
             self.assertEqual(job.read_bytes(), before)
             self.assertFalse(any(call.args[0][1] == "bootstrap" for call in launchctl.call_args_list))
+            with mock.patch.dict(os.environ, {"PATH": "/fixture/changed"}):
+                run()
+            self.assertTrue(any(call.args[0][1] == "bootout" for call in launchctl.call_args_list))
             job.write_text("user-owned job")
             with self.assertRaisesRegex(ValueError, "Existing launchd job preserved"):
                 run()
@@ -218,7 +262,9 @@ class UpdateTests(unittest.TestCase):
             command("git", "add", ".", cwd=self.seed)
             command("git", "commit", "-qm", "catalog update", cwd=self.seed)
             command("git", "push", "-q", "origin", "main", cwd=self.seed)
-            self.assertEqual(runtime.update(self.checkout)["state"], "current")
+            with mock.patch.dict(os.environ, {"HOME": str(self.base / "other-home"), "CODEX_HOME": "", "CLAUDE_CONFIG_DIR": ""}):
+                self.assertEqual(runtime.update(self.checkout)["state"], "current")
+            self.assertFalse((self.base / "other-home" / ".codex").exists())
             self.assertIn("Updated shared instructions", (fixture_home / ".codex" / "AGENTS.md").read_text())
             self.assertTrue((fixture_home / ".agents" / "skills" / "new").is_file())
 
@@ -264,11 +310,13 @@ class UpdateTests(unittest.TestCase):
         self.advance()
         command("git", "fetch", "-q", "origin", cwd=self.checkout)
         actual = runtime.status_line(self.checkout)
+        (self.checkout / ".local").mkdir(exist_ok=True)
+        (self.checkout / ".local" / "catalog-install.json").write_text("{}")
         for env in ({"CLAUDECODE": "1"}, {"CODEX_HOME": "/fixture"}):
             with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(runtime, "status_line", return_value=actual), mock.patch.object(hook, "direction_root", return_value=None), mock.patch.object(hook, "reminder", return_value=""):
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output):
-                    self.assertEqual(hook.main(), 0)
+                    self.assertEqual(hook.main(catalog_root=self.checkout), 0)
                 self.assertEqual(output.getvalue().count("Catalog stale:"), 1)
         runtime.update(self.checkout)
         self.assertEqual(runtime.status_line(self.checkout), "")
