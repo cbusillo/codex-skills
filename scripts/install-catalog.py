@@ -91,7 +91,10 @@ def personal_source(sync, destinations: list[Path], local: Path) -> str:
 def existing_session_hook(groups: list) -> bool:
     found = False
     for group in groups:
-        for handler in group.get("hooks", []) if isinstance(group, dict) else []:
+        handlers = group.get("hooks", []) if isinstance(group, dict) else []
+        if not isinstance(handlers, list):
+            raise ValueError("Invalid SessionStart hook handlers; inspect hooks.json or config.toml before rerunning")
+        for handler in handlers:
             if not isinstance(handler, dict):
                 continue
             command = handler.get("command", "")
@@ -103,10 +106,12 @@ def existing_session_hook(groups: list) -> bool:
             plugin_root = next((token.partition("=")[2] for token in tokens if token.startswith("CLAUDE_PLUGIN_ROOT=")), os.environ.get("CLAUDE_PLUGIN_ROOT", ""))
             candidates = list(tokens)
             for index, token in enumerate(tokens):
-                if Path(token).name in ("sh", "bash", "zsh"):
+                if Path(token).name in ("sh", "bash", "zsh", "fish"):
                     for flag_index in range(index + 1, len(tokens) - 1):
                         flag = tokens[flag_index]
                         if not flag.startswith("-"):
+                            if tokens[flag_index - 1] in ("-o", "+o", "--rcfile", "--init-file"):
+                                continue
                             break
                         if flag == "-c" or (not flag.startswith("--") and "c" in flag[1:]):
                             candidates.extend(shlex.split(tokens[flag_index + 1]))
@@ -162,7 +167,8 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
     hooks, hook_preview = None, []
     hook_path = codex / "hooks.json"
     if not refresh_instructions:
-        config = tomllib.loads(safe_file(codex / "config.toml"))
+        config_path = codex / "config.toml"
+        config = tomllib.loads(config_path.read_text() if config_path.exists() or config_path.is_symlink() else "")
         config_hooks = config.get("hooks", {})
         if not isinstance(config_hooks, dict) or not isinstance(config_hooks.get("SessionStart", []), list):
             raise ValueError("Invalid hooks configuration in config.toml")
@@ -179,6 +185,8 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
     launch_path = home / "Library" / "LaunchAgents" / f"{LABEL}.plist"
     launch_content = None
     launch_changed = False
+    loaded = None
+    domain = ""
     if updater:
         if sys.platform != "darwin":
             raise ValueError("--updater supports macOS launchd; run catalog_runtime.py --update manually elsewhere")
@@ -208,6 +216,11 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             if not (previous.get("CodexSkillsInstaller") == 1 and previous.get("Label") == LABEL and previous.get("WorkingDirectory") == str(ROOT)):
                 raise ValueError(f"Existing launchd job preserved: {launch_path}; inspect and move it aside before rerunning")
         launch_changed = bool(old and old != launch_content)
+        if write:
+            domain = f"gui/{os.getuid()}"
+            loaded = subprocess.run(["launchctl", "print", f"{domain}/{LABEL}"], capture_output=True)
+            if not loaded.returncode and not old:
+                raise ValueError("Existing loaded launchd job preserved; inspect it with launchctl print and unload your old job before enabling this checkout's updater")
     if write:
         if not local.exists() or personal != safe_file(local):
             local.parent.mkdir(parents=True, exist_ok=True)
@@ -232,8 +245,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         if launch_content is not None:
             sync.synchronize(launch_content, [launch_path], write=True)
             (ROOT / ".local").mkdir(exist_ok=True)
-            domain = f"gui/{os.getuid()}"
-            loaded = subprocess.run(["launchctl", "print", f"{domain}/{LABEL}"], capture_output=True)
+            assert loaded is not None
             if not loaded.returncode and launch_changed:
                 subprocess.run(["launchctl", "bootout", f"{domain}/{LABEL}"], check=True)
             if loaded.returncode or launch_changed:
@@ -261,6 +273,8 @@ def main() -> int:
     parser.add_argument("--codex-dir", type=Path, help="Explicit Codex destination")
     parser.add_argument("--claude-dir", type=Path, help="Explicit Claude Code destination")
     args = parser.parse_args()
+    if args.home_dir and args.updater and args.write:
+        parser.error("--home-dir is a fixture destination; use a read-only preview or mocked scheduler tests instead of activating a real launchd job")
     home = (args.home_dir or Path.home()).resolve()
     codex = home / ".codex" if args.home_dir else Path(os.environ.get("CODEX_HOME") or home / ".codex")
     claude = home / ".claude" if args.home_dir else Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude")

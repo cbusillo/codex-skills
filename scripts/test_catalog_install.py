@@ -309,7 +309,7 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(json.loads((self.codex / "hooks.json").read_text())["hooks"]["SessionStart"], hook["hooks"]["SessionStart"])
 
     def test_login_shell_and_shell_options_preserve_correct_hooks(self):
-        for shell in ("bash -lc", "zsh -lc", "bash -l -c", "bash --noprofile -c"):
+        for shell in ("bash -lc", "zsh -lc", "bash -l -c", "bash --noprofile -c", "bash -o pipefail -c", "fish -c"):
             with self.subTest(shell=shell):
                 entry = {"hooks": {"SessionStart": [{"hooks": [{"command": f"{shell} 'uv run {self.catalog}/hooks/direction_check_hook.py'"}]}]}}
                 (self.codex / "hooks.json").write_text(json.dumps(entry))
@@ -356,6 +356,35 @@ class InstallTests(unittest.TestCase):
             installer.install(self.root / "fixture-home", self.root / "fixture-home/.codex", self.root / "fixture-home/.claude", write=True, updater=False)
         self.assertEqual(receipt.read_bytes(), previous)
         self.assertFalse((self.root / "fixture-home").exists())
+
+    def test_read_only_codex_config_symlink_is_preserved(self):
+        target = self.root / "managed-config.toml"
+        target.write_text('model = "configured-model"\n')
+        config = self.codex / "config.toml"
+        config.symlink_to(target)
+        self.install()
+        self.assertTrue(config.is_symlink())
+        self.assertEqual(target.read_text(), 'model = "configured-model"\n')
+
+    def test_invalid_session_handlers_are_reported_before_writes(self):
+        (self.codex / "hooks.json").write_text('{"hooks":{"SessionStart":[{"hooks":null}]}}')
+        with self.assertRaisesRegex(ValueError, "Invalid SessionStart"):
+            self.install()
+        self.assertFalse((self.codex / "AGENTS.md").exists())
+
+    def test_fixture_cli_cannot_activate_a_real_launchd_updater(self):
+        script = Path(__file__).with_name("install-catalog.py")
+        result = subprocess.run([sys.executable, str(script), "--home-dir", str(self.home), "--updater", "--write"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse((self.home / ".agents").exists())
+
+    def test_loaded_job_without_an_owned_plist_is_preserved_before_writes(self):
+        with mock.patch.object(sys, "platform", "darwin"), mock.patch.object(shutil, "which", return_value="/fixture/uv"), mock.patch.object(runtime, "checkout_state", return_value={"state": "current"}), mock.patch.object(subprocess, "run") as launchctl:
+            launchctl.return_value.returncode = 0
+            with self.assertRaisesRegex(ValueError, "Existing loaded launchd job preserved"):
+                installer.install(self.home, self.codex, self.claude, write=True, updater=True)
+            self.assertTrue(all(call.args[0][1] == "print" for call in launchctl.call_args_list))
+            self.assertFalse((self.codex / "AGENTS.md").exists())
 
     def test_launchd_install_bootstraps_once_and_preserves_a_conflicting_job(self):
         def run(*, write=True):

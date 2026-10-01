@@ -44,8 +44,7 @@ The output names unmanaged instruction sources that will be combined. Review
 `--show-diff` when those sources need tidying; the installer preserves their text
 instead of choosing between personal rules. One checkout records one active
 pair of host destinations. Reinstalling with different native host overrides
-reconfigures that pair and reports the previous and requested directories. Use
-a separate checkout for a second independently updated configuration.
+reconfigures that pair and reports the previous and requested directories.
 
 Edit personal instructions in `.local/global-instructions.md`. The installer
 records the generated host files and reports later hand edits instead of
@@ -73,6 +72,11 @@ It installs `~/Library/LaunchAgents/com.codex-skills.catalog-update.plist`.
 The remote must be readable without interaction for unattended fetches; the
 HTTPS clone above works for public catalogs. For private or SSH remotes, set up
 non-interactive read access first or use manual updates.
+If a job with the catalog label is loaded without an installer-owned plist,
+the installer preserves it and reports the conflict. Inspect it with
+`launchctl print gui/$(id -u)/com.codex-skills.catalog-update`; unload your old
+job before enabling this updater. Fixture homes support previews and mocked
+scheduler tests; `--home-dir --write --updater` cannot activate a real job.
 The updater fetches and fast-forwards only a clean `main` with no local commits;
 it never switches, resets, stashes, cleans, or merges divergence. A pull makes
 new skills visible without adding links and refreshes installed global instructions
