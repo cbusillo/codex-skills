@@ -218,8 +218,11 @@ absence of people context is normal. Verify unknown actors' claims and
 permissions before routing or relying on them. Mention someone only when their
 attention is needed now; assignees name the person with a concrete next action.
 
-Search with `index` or `search` before creating; reuse an overlapping canonical
-issue. Read its full discussion before changing scope. Use the configured
+Search with `index` or `search` before creating or proposing an issue, helper,
+or tooling; reuse an overlapping canonical issue. Search open and closed issues
+across the owner's repositories, not only this one:
+`gh-plan.py search "<terms> user:<owner>" --state all`. Say what you found or
+what you searched. Read its full discussion before changing scope. Use the configured
 planning label, normally `plan`, and existing label conventions; ask before
 creating labels.
 

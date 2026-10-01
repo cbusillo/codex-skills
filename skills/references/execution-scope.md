@@ -45,6 +45,19 @@ For chat and durable reports, read [talking with the owner](talking-with-the-own
   choice, a recommendation when evidence supports one, and practical consequences
   in plain language. Include technical detail when it affects the choice; resolve
   routine engineering decisions within existing authorization.
+- Before asking the user to approve a deploy, promotion, recovery, onboarding,
+  or permission-gated path, check the whole path read-only first. For each
+  step, find the identity it runs as and that identity's effective access, the
+  environment, ruleset, and branch-protection gates it must pass, any refusal
+  in the code it calls, whether its dry run validates what its apply will, and
+  past failures of the same step in run history. Report every blocker found in
+  one message and ask once. When a step cannot be checked read-only, name it
+  as unverified in that same message instead of discovering it after approval.
+- Before proposing a new issue, helper, or tooling, search open and closed
+  issues in the affected repository and the user's related repositories for
+  the same need. Build on what exists: reopen, extend, or adopt it, and say
+  which issue you found. Propose something new only when the search finds
+  nothing that covers it, and say what you searched.
 - Preserve unrelated changes and isolate implementation when necessary. Ask when
   edits overlap or ownership cannot be established, rather than treating every
   dirty checkout as a blocker. Isolation does not relax protected-branch or
