@@ -1,0 +1,617 @@
+{
+  "scope": "Explicit-source instruction trials; actual replies qualified separately from native scores; labels trim incidental surrounding whitespace. No GitHub mutations or implicit-discovery claim.",
+  "baseline_source": "de016bf",
+  "candidate_source": "4d78086",
+  "records": [
+    {
+      "host": "claude",
+      "stage": "baseline",
+      "case": "owner-refs-draft",
+      "run": 1,
+      "model": "claude-opus-5-5",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "all_records": false,
+        "labels_urls_and_owner_prefix": false,
+        "short_titles": false,
+        "no_unlinked_prose_ids": false,
+        "literal_machine_lines": false
+      },
+      "qualified": false,
+      "final": "Here's the draft comment for [PR #914](https://github.com/sample-owner/catalog/pull/914). I haven't posted it or run any commands.\n\n---\n\n**Draft comment for sample-owner/catalog PR #914**\n\n````markdown\nThis PR (\"Routing repair\") implements the helper-selection change requested in\n[sample-owner/catalog#812 \"Helper selection\"](https://github.com/sample-owner/catalog/issues/812).\nThe tests pass on this PR.\n\nNot in scope: [another-owner/gateway#812 \"Retry limits\"](https://github.com/another-owner/gateway/issues/812)\nis a separate issue in another repository. It has the same number by coincidence. It stays with\nthe gateway maintainer, and this PR does not close or change it.\n\nRemaining work:\n- Review and merge this PR so catalog#812 closes.\n- Retry limits continue in gateway#812, owned by that maintainer.\n\n```\nFixes sample-owner/catalog#812\nuv run skills/github/scripts/gh-pr.py view 914\n```\n````\n\n---\n\nNotes:\n\n- **The \"Fixes\" line won't close anything here.** A closing keyword inside a code block or a comment has no effect. GitHub only acts on it in the PR description or a commit message. If you want merging this PR to close catalog#812, the `Fixes sample-owner/catalog#812` line has to go in the PR description.\n- **Both issues are numbered 812.** So the comment always names the owner and repo, and explicitly says the gateway issue is unaffected. Otherwise a reader could easily mix them up.\n- **I didn't check any of the facts.** I took the PR title, the issue titles, the passing tests and who owns the gateway issue from what you told me. I didn't look them up on GitHub.\n\nAlso, this machine has no record of a direction check yet. When it suits you, open Claude Code and run the `direction` skill.\n\nThe draft is done. It's yours to edit and post."
+    },
+    {
+      "host": "claude",
+      "stage": "baseline",
+      "case": "owner-refs-draft",
+      "run": 2,
+      "model": "claude-opus-5-5",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": false,
+        "short_titles": true,
+        "no_unlinked_prose_ids": false,
+        "literal_machine_lines": true
+      },
+      "qualified": false,
+      "final": "Here's the draft. I haven't posted it or run anything.\n\n---\n\n**Draft PR comment for [sample-owner/catalog PR #914](https://github.com/sample-owner/catalog/pull/914) (\"Routing repair\")**\n\n> This PR implements the helper selection work tracked in [sample-owner/catalog issue #812](https://github.com/sample-owner/catalog/issues/812) (\"Helper selection\"), and its tests pass.\n>\n> **Remaining work:** There is a different issue that also has the number 812: [another-owner/gateway issue #812](https://github.com/another-owner/gateway/issues/812) (\"Retry limits\"). It belongs to a separate repository, this PR doesn't address it, and it stays with that repository's maintainer. Nothing in this PR depends on it, and no action on it is needed here.\n>\n> ```text\n> Fixes sample-owner/catalog#812\n> uv run skills/github/scripts/gh-pr.py view 914\n> ```\n\n---\n\nTwo things to check before you post it:\n\n1. **A comment won't close the issue.** GitHub only acts on `Fixes` when it appears in the PR description or a commit message. In a comment, and especially inside a code block, it does nothing. If you want PR #914 to close sample-owner/catalog#812 when it merges, add `Fixes sample-owner/catalog#812` to the PR description too.\n2. **The command doesn't name a repository.** `gh-pr.py view 914` will look up PR 914 in whatever repository it's run from. Whatever reads that line needs to run it inside sample-owner/catalog, or add `--repo sample-owner/catalog` before `view`. I kept your line exactly as you gave it.\n\nWhen you post it, use `scripts/gh-pr.py --repo sample-owner/catalog comment 914 --body-file <file>` so the Markdown comes through unchanged."
+    },
+    {
+      "host": "claude",
+      "stage": "baseline",
+      "case": "owner-refs-draft",
+      "run": 3,
+      "model": "claude-opus-5-5",
+      "source_read": true,
+      "native_passed": false,
+      "checks": {
+        "all_records": false,
+        "labels_urls_and_owner_prefix": false,
+        "short_titles": false,
+        "no_unlinked_prose_ids": false,
+        "literal_machine_lines": false
+      },
+      "qualified": false,
+      "final": "I followed `shared:github` and read the whole [talking-with-the-owner reference](CATALOG_FIXTURE/baseline-catalog/skills/references/talking-with-the-owner.md). Here's the draft. I haven't posted it or run anything.\n\n---\n\n**Draft comment for [sample-owner/catalog PR #914](https://github.com/sample-owner/catalog/pull/914):**\n\n````markdown\nThis PR, \"Routing repair\", implements the helper selection work tracked in\n[sample-owner/catalog#812 \"Helper selection\"](https://github.com/sample-owner/catalog/issues/812),\nand its tests pass. Once it merges, that issue's finish line is met.\n\nA separate issue also has the number 812 but is not covered here:\n[another-owner/gateway#812 \"Retry limits\"](https://github.com/another-owner/gateway/issues/812)\nis in a different repository and stays with that project's maintainer. This PR\ndoes not close or change it.\n\nRemaining work:\n- Merge this PR, then confirm sample-owner/catalog#812 is closed.\n- another-owner/gateway#812 is up to its maintainer; nothing is needed from this repository.\n\n```\nFixes sample-owner/catalog#812\nuv run skills/github/scripts/gh-pr.py view 914\n```\n````\n\n---\n\nThings to know before you post it:\n- **The issue won't close from this comment.** GitHub only acts on closing keywords in a PR's description or commit messages. A `Fixes` line in a comment, especially inside a code block, does nothing. If you want sample-owner/catalog#812 to close automatically when the PR merges, put `Fixes sample-owner/catalog#812` in PR #914's description.\n- **Both issues are #812,** so the draft always writes out the full `owner/repo#812` reference. A bare `#812` on this PR would point to the catalog issue.\n- **I didn't check the facts.** The PR-to-issue link, the passing tests and the gateway issue's status all come from what you told me, because I didn't run any GitHub commands.\n- **Posting it:** I can do it with `uv run scripts/gh-pr.py --repo sample-owner/catalog comment 914 --body-file <file>` if you'd like."
+    },
+    {
+      "host": "claude",
+      "stage": "baseline",
+      "case": "owner-refs-exact",
+      "run": 1,
+      "model": "claude-opus-5-5",
+      "source_read": true,
+      "native_passed": false,
+      "checks": {
+        "exact_literal": true
+      },
+      "qualified": true,
+      "final": "PR #481"
+    },
+    {
+      "host": "claude",
+      "stage": "baseline",
+      "case": "owner-refs-exact",
+      "run": 2,
+      "model": "claude-opus-5-5",
+      "source_read": true,
+      "native_passed": false,
+      "checks": {
+        "exact_literal": true
+      },
+      "qualified": true,
+      "final": "PR #481"
+    },
+    {
+      "host": "claude",
+      "stage": "baseline",
+      "case": "owner-refs-exact",
+      "run": 3,
+      "model": "claude-opus-5-5",
+      "source_read": true,
+      "native_passed": false,
+      "checks": {
+        "exact_literal": true
+      },
+      "qualified": true,
+      "final": "PR #481"
+    },
+    {
+      "host": "claude",
+      "stage": "baseline",
+      "case": "owner-refs-status",
+      "run": 1,
+      "model": "claude-opus-5-5",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": false,
+        "short_titles": false,
+        "no_unlinked_prose_ids": true
+      },
+      "qualified": false,
+      "final": "Here's the status of all three. It's based only on the records you gave me. I didn't check GitHub or change anything.\n\n- **Installer visibility**, in your catalog repo ([sample-owner/catalog issue #481](https://github.com/sample-owner/catalog/issues/481)): **Done.** Nobody needs to do anything else.\n- **Retry receipts**, a pull request in your service repo ([sample-owner/service PR #481](https://github.com/sample-owner/service/pull/481)): **Waiting on CI** (the automated checks). The checks run on their own. Once they finish, it's back with you (sample-owner) to look at the results and decide whether to merge. This is a different item from the catalog issue; they just share the number 481.\n- **Webhook timeout**, in someone else's gateway repo ([another-owner/gateway issue #62](https://github.com/another-owner/gateway/issues/62)): **Waiting on that repo's maintainer.** The next step is theirs, not yours. You only need to act if they reply asking you for something.\n\nSo one item is finished and two are waiting. CI and then you handle the service PR, and the other repo's maintainer handles the gateway issue."
+    },
+    {
+      "host": "claude",
+      "stage": "baseline",
+      "case": "owner-refs-status",
+      "run": 2,
+      "model": "claude-opus-5-5",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": false,
+        "short_titles": false,
+        "no_unlinked_prose_ids": true
+      },
+      "qualified": false,
+      "final": "Here's the status as of 2026-09-30. It's based only on the three records you gave me. I didn't query GitHub, so none of this was checked against live state.\n\n**Done**\n- **Installer visibility**, [sample-owner/catalog issue #481](https://github.com/sample-owner/catalog/issues/481): finished. Nobody has a next step.\n\n**Waiting**\n- **Retry receipts**, [sample-owner/service PR #481](https://github.com/sample-owner/service/pull/481): waiting on CI, so CI goes next. The records don't say who reviews or merges after CI finishes. Since it's in your repository, I assume that's you once the checks pass. This is a different item from the catalog issue that has the same number.\n- **Webhook timeout**, [another-owner/gateway issue #62](https://github.com/another-owner/gateway/issues/62): waiting on the gateway project's maintainer. That repository belongs to another-owner, not you, so the maintainer takes the next step. The records don't name them. You can't act on it except to follow up in the thread if it stays quiet.\n\n**Bottom line:** One item is finished. CI owns the next step on the service PR, and the gateway maintainer owns the next step on the webhook issue. You don't need to do anything until CI finishes on Retry receipts."
+    },
+    {
+      "host": "claude",
+      "stage": "baseline",
+      "case": "owner-refs-status",
+      "run": 3,
+      "model": "claude-opus-5-5",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": false,
+        "short_titles": false,
+        "no_unlinked_prose_ids": true
+      },
+      "qualified": false,
+      "final": "Here's the status of all three items. This is based only on the records you gave me. I didn't check GitHub, so nothing here is newer than your input.\n\n**Installer visibility** ([sample-owner/catalog issue 481](https://github.com/sample-owner/catalog/issues/481)): Done. There's no next step. If you want the plan record tidied up, the only thing left would be confirming the issue is closed with its planning labels cleared. I didn't check that.\n\n**Retry receipts** ([sample-owner/service PR 481](https://github.com/sample-owner/service/pull/481)): This pull request is waiting for its CI checks to finish. The checks run on their own. After that, **you** take the next step: if the checks pass, review and merge it; if they fail, fix the cause. Note that this is a different item from the catalog issue. They're in different repositories and only share the number 481.\n\n**Webhook timeout** ([another-owner/gateway issue 62](https://github.com/another-owner/gateway/issues/62)): This issue is in a repository you don't own, and it's waiting for **its maintainer at another-owner** to respond. You don't have to do anything unless you want to follow up there. Neither you nor I can move it forward from your side.\n\nThat's the whole report. Nothing is still running on my end. The open items wait on CI and then you for the service PR, and on the another-owner maintainer for the gateway issue."
+    },
+    {
+      "host": "claude",
+      "stage": "candidate",
+      "case": "owner-refs-draft",
+      "run": 1,
+      "model": "claude-opus-5-5",
+      "source_read": true,
+      "native_passed": false,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": true,
+        "short_titles": true,
+        "no_unlinked_prose_ids": true,
+        "literal_machine_lines": true
+      },
+      "qualified": true,
+      "final": "Here's the draft comment for [catalog#914](https://github.com/sample-owner/catalog/pull/914) routing repair. I haven't posted anything or run any GitHub commands.\n\n---\n\n[catalog#914](https://github.com/sample-owner/catalog/pull/914) routing repair implements [catalog#812](https://github.com/sample-owner/catalog/issues/812) helper selection, and its tests pass. Once this PR merges, the closing line below will close that issue.\n\n**Remaining work:** [another-owner/gateway#812](https://github.com/another-owner/gateway/issues/812) retry limits is a separate issue in another owner's repository and stays with that maintainer. This PR doesn't address or close it. The two issues only share the number 812.\n\n```\nFixes sample-owner/catalog#812\nuv run skills/github/scripts/gh-pr.py view 914\n```\n\n---\n\nNotes:\n- The two machine-read lines are copied exactly. Since they're inside a code block, GitHub won't treat `Fixes sample-owner/catalog#812` as a closing keyword there. If you want the issue to close automatically when the PR merges, that line also has to go in the PR body, outside a code block.\n- I used only the facts you gave me and didn't check any of them against GitHub. The draft doesn't say whether [catalog#914](https://github.com/sample-owner/catalog/pull/914) routing repair has merged or passed review.\n\nThe draft is ready. Next, you can post it or ask me for edits."
+    },
+    {
+      "host": "claude",
+      "stage": "candidate",
+      "case": "owner-refs-draft",
+      "run": 2,
+      "model": "claude-opus-5-5",
+      "source_read": true,
+      "native_passed": false,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": true,
+        "short_titles": true,
+        "no_unlinked_prose_ids": true,
+        "literal_machine_lines": true
+      },
+      "qualified": true,
+      "final": "Here's the draft. I haven't posted it or run any commands.\n\n---\n\n[catalog#914](https://github.com/sample-owner/catalog/pull/914) Routing repair implements [catalog#812](https://github.com/sample-owner/catalog/issues/812) Helper selection, and its tests pass.\n\n**Still open:** [another-owner/gateway#812](https://github.com/another-owner/gateway/issues/812) Retry limits is a separate issue in another repository. It has the same number but no other connection to this PR, and this PR doesn't change it. That repository's maintainer still owns it.\n\n```\nFixes sample-owner/catalog#812\nuv run skills/github/scripts/gh-pr.py view 914\n```\n\n---\n\n**Note on the `Fixes` line:** GitHub only acts on closing keywords in a PR description or a commit message. In a comment, and especially inside a code block, the line won't close [catalog#812](https://github.com/sample-owner/catalog/issues/812) Helper selection when the PR merges. If you want it closed automatically, the line also needs to go in the PR description.\n\nI'm done. Posting the comment is up to you."
+    },
+    {
+      "host": "claude",
+      "stage": "candidate",
+      "case": "owner-refs-draft",
+      "run": 3,
+      "model": "claude-opus-5-5",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": true,
+        "short_titles": true,
+        "no_unlinked_prose_ids": true,
+        "literal_machine_lines": true
+      },
+      "qualified": true,
+      "final": "Here's the draft. I haven't posted it or run any commands.\n\n---\n\n**Draft PR comment for [catalog#914](https://github.com/sample-owner/catalog/pull/914) Routing repair**\n\n> This PR completes [catalog#812](https://github.com/sample-owner/catalog/issues/812) Helper selection, and its tests pass. Merging it will close that issue.\n>\n> **Remaining work:** [another-owner/gateway#812](https://github.com/another-owner/gateway/issues/812) Retry limits is a different issue in another repository. It just happens to have the same number. Its maintainer still owns it, and this PR neither fixes nor closes it.\n>\n> ```\n> Fixes sample-owner/catalog#812\n> uv run skills/github/scripts/gh-pr.py view 914\n> ```\n\n---\n\nNotes:\n- The closing keyword uses the full `sample-owner/catalog#812` form. A bare `#812` would be ambiguous next to the gateway issue. Both machine-read lines are copied exactly as you gave them.\n- Inside a code block, GitHub doesn't act on `Fixes`, so this comment won't close the catalog issue by itself. For that to happen when the PR merges, `Fixes sample-owner/catalog#812` needs to be in the PR body too, outside a code block.\n- When you're ready to post, write the comment to a file and run `uv run skills/github/scripts/gh-pr.py --repo sample-owner/catalog comment 914 --body-file <file>`.\n\nThe draft is done. Posting it is up to you."
+    },
+    {
+      "host": "claude",
+      "stage": "candidate",
+      "case": "owner-refs-exact",
+      "run": 1,
+      "model": "claude-opus-5-5",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "exact_literal": true
+      },
+      "qualified": true,
+      "final": "PR #481"
+    },
+    {
+      "host": "claude",
+      "stage": "candidate",
+      "case": "owner-refs-exact",
+      "run": 2,
+      "model": "claude-opus-5-5",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "exact_literal": true
+      },
+      "qualified": true,
+      "final": "PR #481"
+    },
+    {
+      "host": "claude",
+      "stage": "candidate",
+      "case": "owner-refs-exact",
+      "run": 3,
+      "model": "claude-opus-5-5",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "exact_literal": true
+      },
+      "qualified": true,
+      "final": "PR #481"
+    },
+    {
+      "host": "claude",
+      "stage": "candidate",
+      "case": "owner-refs-status",
+      "run": 1,
+      "model": "claude-opus-5-5",
+      "source_read": true,
+      "native_passed": false,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": true,
+        "short_titles": true,
+        "no_unlinked_prose_ids": true
+      },
+      "qualified": true,
+      "final": "This report uses only the three records you gave me and was not checked against GitHub. Nothing was checked live, and no planning state was changed.\n\n- **Done:** [catalog#481](https://github.com/sample-owner/catalog/issues/481) Installer visibility. No next step and no owner needed.\n- **Waiting on CI:** [service#481](https://github.com/sample-owner/service/pull/481) Retry receipts. CI runs on its own. Once it finishes, you take the next step: merge if it's green, or fix and re-run if it fails. Nobody is watching it now, so it won't move until someone checks back.\n- **Waiting on the other project's maintainer:** [another-owner/gateway#62](https://github.com/another-owner/gateway/issues/62) Webhook timeout. This is in another owner's repository, so the maintainer of another-owner/gateway takes the next step. Your records don't name that person or say what they're expected to do. Until they act, there's nothing for you to do there.\n\nThe report is finished. The CI result and that maintainer's response are the only things still pending."
+    },
+    {
+      "host": "claude",
+      "stage": "candidate",
+      "case": "owner-refs-status",
+      "run": 2,
+      "model": "claude-opus-5-5",
+      "source_read": true,
+      "native_passed": false,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": true,
+        "short_titles": true,
+        "no_unlinked_prose_ids": true
+      },
+      "qualified": true,
+      "final": "Quick note first: no direction check has been recorded on this machine yet. When you get a chance, open Claude Code and run the `direction` skill.\n\n**Status update (from the records you gave me; I didn't check GitHub)**\n\n- [catalog#481](https://github.com/sample-owner/catalog/issues/481) Installer visibility: **done.** Nobody needs to do anything.\n- [service#481](https://github.com/sample-owner/service/pull/481) Retry receipts: **waiting on CI.** CI has to finish first. Then it's your call to review or merge it, or to fix it if CI fails. Your records don't name a separate reviewer.\n- [another-owner/gateway#62](https://github.com/another-owner/gateway/issues/62) Webhook timeout: **waiting on its maintainer** in `another-owner`'s repository. That maintainer takes the next step, and there's nothing for you to do until they respond.\n\nNothing needs a decision from you right now. The one action that will come to you is the merge or fix on the service pull request once CI finishes."
+    },
+    {
+      "host": "claude",
+      "stage": "candidate",
+      "case": "owner-refs-status",
+      "run": 3,
+      "model": "claude-opus-5-5",
+      "source_read": true,
+      "native_passed": false,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": true,
+        "short_titles": true,
+        "no_unlinked_prose_ids": true
+      },
+      "qualified": true,
+      "final": "Quick note before the update: no daily direction check is on record for this machine. When you have a minute, open Claude Code and run the `direction` skill.\n\n**Status as of 2026-10-01** (from the records you gave me; I didn't check GitHub)\n\n- **[catalog#481](https://github.com/sample-owner/catalog/issues/481) Installer visibility**: done. Nobody needs to do anything else.\n- **[service#481](https://github.com/sample-owner/service/pull/481) Retry receipts**: this pull request is waiting on its CI checks. Next, CI has to finish. After that, you decide whether to merge it, since it's your repo. Your records don't name anyone else as reviewer or merger, so I'm assuming that step is yours.\n- **[another-owner/gateway#62](https://github.com/another-owner/gateway/issues/62) Webhook timeout**: this issue is waiting on the gateway maintainer. They're in another-owner's namespace, so it's their move. You don't need to do anything unless you want to ask them about it.\n\nThat's everything. Nothing is running, so the only open items are CI on the service PR and the maintainer on the gateway issue."
+    },
+    {
+      "host": "codex",
+      "stage": "baseline",
+      "case": "owner-refs-draft",
+      "run": 1,
+      "model": "gpt-6.1-sol",
+      "source_read": true,
+      "native_passed": false,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": false,
+        "short_titles": false,
+        "no_unlinked_prose_ids": true,
+        "literal_machine_lines": true
+      },
+      "qualified": false,
+      "final": "[\u201cRouting repair,\u201d sample-owner/catalog PR #914](https://github.com/sample-owner/catalog/pull/914), implements [\u201cHelper selection,\u201d sample-owner/catalog issue #812](https://github.com/sample-owner/catalog/issues/812). Its tests pass.\n\nRemaining work: the gateway maintainer retains responsibility for [\u201cRetry limits,\u201d another-owner/gateway issue #812](https://github.com/another-owner/gateway/issues/812).\n\n```text\nFixes sample-owner/catalog#812\nuv run skills/github/scripts/gh-pr.py view 914\n```"
+    },
+    {
+      "host": "codex",
+      "stage": "baseline",
+      "case": "owner-refs-draft",
+      "run": 2,
+      "model": "gpt-6.1-sol",
+      "source_read": true,
+      "native_passed": false,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": false,
+        "short_titles": false,
+        "no_unlinked_prose_ids": true,
+        "literal_machine_lines": true
+      },
+      "qualified": false,
+      "final": "The routing repair in [catalog PR #914 \u201cRouting repair\u201d](https://github.com/sample-owner/catalog/pull/914) implements [catalog issue #812 \u201cHelper selection\u201d](https://github.com/sample-owner/catalog/issues/812), and its tests pass.\n\nRemaining work: [another-owner/gateway issue #812 \u201cRetry limits\u201d](https://github.com/another-owner/gateway/issues/812) remains with that repository\u2019s maintainer to resolve.\n\n```text\nFixes sample-owner/catalog#812\nuv run skills/github/scripts/gh-pr.py view 914\n```"
+    },
+    {
+      "host": "codex",
+      "stage": "baseline",
+      "case": "owner-refs-draft",
+      "run": 3,
+      "model": "gpt-6.1-sol",
+      "source_read": true,
+      "native_passed": false,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": false,
+        "short_titles": false,
+        "no_unlinked_prose_ids": true,
+        "literal_machine_lines": true
+      },
+      "qualified": false,
+      "final": "The routing repair in [catalog PR #914 \u201cRouting repair\u201d](https://github.com/sample-owner/catalog/pull/914) implements [catalog issue #812 \u201cHelper selection\u201d](https://github.com/sample-owner/catalog/issues/812), and its tests pass. Remaining retry-limit work is tracked in [gateway issue #812 \u201cRetry limits\u201d](https://github.com/another-owner/gateway/issues/812) and stays with that repository\u2019s maintainer.\n\n```text\nFixes sample-owner/catalog#812\nuv run skills/github/scripts/gh-pr.py view 914\n```"
+    },
+    {
+      "host": "codex",
+      "stage": "baseline",
+      "case": "owner-refs-status",
+      "run": 1,
+      "model": "gpt-6.1-sol",
+      "source_read": true,
+      "native_passed": false,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": false,
+        "short_titles": false,
+        "no_unlinked_prose_ids": true
+      },
+      "qualified": false,
+      "final": "Based on your verified records:\n\n- **Installer visibility** \u2014 [sample-owner/catalog issue #481](https://github.com/sample-owner/catalog/issues/481) is done. No next step remains.\n- **Retry receipts** \u2014 [sample-owner/service PR #481](https://github.com/sample-owner/service/pull/481) is waiting on CI. CI runs next; afterward, you or the PR maintainer checks the result.\n- **Webhook timeout** \u2014 [another-owner/gateway issue #62](https://github.com/another-owner/gateway/issues/62) is waiting on its maintainer. That maintainer takes the next step.\n\nOffline report complete; no GitHub queries or planning changes made."
+    },
+    {
+      "host": "codex",
+      "stage": "baseline",
+      "case": "owner-refs-status",
+      "run": 2,
+      "model": "gpt-6.1-sol",
+      "source_read": true,
+      "native_passed": false,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": false,
+        "short_titles": false,
+        "no_unlinked_prose_ids": true
+      },
+      "qualified": false,
+      "final": "Based on your verified records:\n\n- Installer visibility, [sample-owner/catalog issue #481](https://github.com/sample-owner/catalog/issues/481), is done. No next step remains.\n- Retry receipts, [sample-owner/service PR #481](https://github.com/sample-owner/service/pull/481), is waiting on CI. CI runs next; the PR\u2019s responsible maintainer then checks the result.\n- Webhook timeout, [another-owner/gateway issue #62](https://github.com/another-owner/gateway/issues/62), is waiting on that repository\u2019s maintainer. They take the next step.\n\nThe offline report is complete; no GitHub queries or planning changes were made."
+    },
+    {
+      "host": "codex",
+      "stage": "baseline",
+      "case": "owner-refs-status",
+      "run": 3,
+      "model": "gpt-6.1-sol",
+      "source_read": true,
+      "native_passed": false,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": false,
+        "short_titles": false,
+        "no_unlinked_prose_ids": true
+      },
+      "qualified": false,
+      "final": "Based on your verified records:\n\n- Installer visibility in sample-owner/catalog, [issue #481](https://github.com/sample-owner/catalog/issues/481): **done**. No next step remains.\n- Retry receipts in sample-owner/service, [PR #481](https://github.com/sample-owner/service/pull/481): **waiting on CI**. CI finishes next; the PR owner then checks the result.\n- Webhook timeout in another-owner/gateway, [issue #62](https://github.com/another-owner/gateway/issues/62): **waiting on its maintainer**. That maintainer takes the next step.\n\nThe offline report is complete; no GitHub queries or planning changes were made."
+    },
+    {
+      "host": "codex",
+      "stage": "baseline",
+      "case": "owner-refs-exact",
+      "run": 1,
+      "model": "gpt-6.1-sol",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "exact_literal": true
+      },
+      "qualified": true,
+      "final": "PR #481"
+    },
+    {
+      "host": "codex",
+      "stage": "baseline",
+      "case": "owner-refs-exact",
+      "run": 2,
+      "model": "gpt-6.1-sol",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "exact_literal": true
+      },
+      "qualified": true,
+      "final": "PR #481"
+    },
+    {
+      "host": "codex",
+      "stage": "baseline",
+      "case": "owner-refs-exact",
+      "run": 3,
+      "model": "gpt-6.1-sol",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "exact_literal": true
+      },
+      "qualified": true,
+      "final": "PR #481"
+    },
+    {
+      "host": "codex",
+      "stage": "candidate",
+      "case": "owner-refs-draft",
+      "run": 1,
+      "model": "gpt-6.1-sol",
+      "source_read": true,
+      "native_passed": false,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": true,
+        "short_titles": true,
+        "no_unlinked_prose_ids": true,
+        "literal_machine_lines": true
+      },
+      "qualified": true,
+      "final": "[ catalog#914](https://github.com/sample-owner/catalog/pull/914) Routing repair implements [catalog#812](https://github.com/sample-owner/catalog/issues/812) Helper selection, and its tests pass. Remaining work on [another-owner/gateway#812](https://github.com/another-owner/gateway/issues/812) Retry limits stays with that repository\u2019s maintainer.\n\n```text\nFixes sample-owner/catalog#812\nuv run skills/github/scripts/gh-pr.py view 914\n```"
+    },
+    {
+      "host": "codex",
+      "stage": "candidate",
+      "case": "owner-refs-draft",
+      "run": 2,
+      "model": "gpt-6.1-sol",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": true,
+        "short_titles": true,
+        "no_unlinked_prose_ids": true,
+        "literal_machine_lines": true
+      },
+      "qualified": true,
+      "final": "[catalog#914](https://github.com/sample-owner/catalog/pull/914) Routing repair implements [catalog#812](https://github.com/sample-owner/catalog/issues/812) Helper selection, and its tests pass. Remaining work on [another-owner/gateway#812](https://github.com/another-owner/gateway/issues/812) Retry limits stays with that repository\u2019s maintainer.\n\n```text\nFixes sample-owner/catalog#812\nuv run skills/github/scripts/gh-pr.py view 914\n```"
+    },
+    {
+      "host": "codex",
+      "stage": "candidate",
+      "case": "owner-refs-draft",
+      "run": 3,
+      "model": "gpt-6.1-sol",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": true,
+        "short_titles": true,
+        "no_unlinked_prose_ids": true,
+        "literal_machine_lines": true
+      },
+      "qualified": true,
+      "final": "Draft (not posted):\n\n[catalog#914](https://github.com/sample-owner/catalog/pull/914) Routing repair implements [catalog#812](https://github.com/sample-owner/catalog/issues/812) Helper selection, and its tests pass. Remaining work is [another-owner/gateway#812](https://github.com/another-owner/gateway/issues/812) Retry limits; that maintainer retains responsibility for addressing it.\n\n```text\nFixes sample-owner/catalog#812\nuv run skills/github/scripts/gh-pr.py view 914\n```"
+    },
+    {
+      "host": "codex",
+      "stage": "candidate",
+      "case": "owner-refs-status",
+      "run": 1,
+      "model": "gpt-6.1-sol",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": true,
+        "short_titles": true,
+        "no_unlinked_prose_ids": true
+      },
+      "qualified": true,
+      "final": "Based only on your verified records:\n\n- [catalog#481](https://github.com/sample-owner/catalog/issues/481) Installer visibility \u2014 **done**. No next step remains.\n- [service#481](https://github.com/sample-owner/service/pull/481) Retry receipts \u2014 **waiting on CI**. CI completes the checks; the PR owner then reviews the result.\n- [another-owner/gateway#62](https://github.com/another-owner/gateway/issues/62) Webhook timeout \u2014 **waiting on its maintainer**. The gateway maintainer takes the next step.\n\nOffline report complete; no GitHub queries or planning changes made."
+    },
+    {
+      "host": "codex",
+      "stage": "candidate",
+      "case": "owner-refs-status",
+      "run": 2,
+      "model": "gpt-6.1-sol",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": true,
+        "short_titles": true,
+        "no_unlinked_prose_ids": true
+      },
+      "qualified": true,
+      "final": "Based on your verified records:\n\n- [catalog#481](https://github.com/sample-owner/catalog/issues/481) Installer visibility \u2014 done; no next step remains.\n- [service#481](https://github.com/sample-owner/service/pull/481) Retry receipts \u2014 waiting on CI. CI runs next; the PR owner then reviews the result and addresses any failures.\n- [another-owner/gateway#62](https://github.com/another-owner/gateway/issues/62) Webhook timeout \u2014 waiting on its maintainer, who takes the next step.\n\nThe offline report is complete; no GitHub queries or planning changes were made."
+    },
+    {
+      "host": "codex",
+      "stage": "candidate",
+      "case": "owner-refs-status",
+      "run": 3,
+      "model": "gpt-6.1-sol",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "all_records": true,
+        "labels_urls_and_owner_prefix": true,
+        "short_titles": true,
+        "no_unlinked_prose_ids": true
+      },
+      "qualified": true,
+      "final": "Based on your verified records:\n\n- [catalog#481](https://github.com/sample-owner/catalog/issues/481) Installer visibility \u2014 done; no next step remains.\n- [service#481](https://github.com/sample-owner/service/pull/481) Retry receipts \u2014 waiting on CI. CI runs next; the PR maintainer then checks the result and addresses any failures.\n- [another-owner/gateway#62](https://github.com/another-owner/gateway/issues/62) Webhook timeout \u2014 waiting on its maintainer, who takes the next step.\n\nOffline report complete; no GitHub queries or planning changes made."
+    },
+    {
+      "host": "codex",
+      "stage": "candidate",
+      "case": "owner-refs-exact",
+      "run": 1,
+      "model": "gpt-6.1-sol",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "exact_literal": true
+      },
+      "qualified": true,
+      "final": "PR #481"
+    },
+    {
+      "host": "codex",
+      "stage": "candidate",
+      "case": "owner-refs-exact",
+      "run": 2,
+      "model": "gpt-6.1-sol",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "exact_literal": true
+      },
+      "qualified": true,
+      "final": "PR #481"
+    },
+    {
+      "host": "codex",
+      "stage": "candidate",
+      "case": "owner-refs-exact",
+      "run": 3,
+      "model": "gpt-6.1-sol",
+      "source_read": true,
+      "native_passed": true,
+      "checks": {
+        "exact_literal": true
+      },
+      "qualified": true,
+      "final": "PR #481"
+    }
+  ],
+  "method": "Field qualification from raw replies and tracked task records, plus manual inspection of quoted protocol text. Incidental link-label whitespace is normalized. Native votes and lexical grades remain separate, unchanged evidence. Explicit-source cases only; no implicit discovery or live GitHub operation claim.",
+  "limits": [
+    "Generic lexical grades do not prove per-record URL/label agreement; raw replies were checked against task records.",
+    "Native LLM votes rejected correct replies and accepted wrong baseline labels; they are not acceptance.",
+    "Earlier draft pilot prohibited commands and prevented Codex file reads; corrected v2 input was rerun before comparison.",
+    "First candidates had repeated unlinked prose mentions; preserved as failed candidates."
+  ],
+  "source_hashes": {
+    "baseline": "2fd2ad3a98719644dfed2012d43d74af799ae69e1fee2a9f91fe74292d8f0a7d",
+    "candidate": "ecaee6c9b31718549726feb4d4bc29271d8b9ffe67ceced749665e079fef29a3"
+  },
+  "case_hashes": {
+    "owner-refs-draft": "137eaad94ef11d60c1b115c4f1cd11e25b09f94ea21af2ae7f0bcfa567a794ea",
+    "owner-refs-status": "0d6f678604dfd5317626514424b2ac71aff076922766706d5f7b992a224512be",
+    "owner-refs-exact": "b6a3bb52d09a105cabf994eb804fba430f94d70f8020d272dc74a73370ad5a03"
+  },
+  "harness_hash": "b6c2a449d7e9ab60639102db54389769bbf622c215e677eac8ca67ce1fe71916",
+  "review": {
+    "provider": "anthropic",
+    "model": "claude-opus-5-5",
+    "findings": "Literal helper decision lines preserved; full owner/repo in plain subjects; supersede and memory-filter follow-ups #965/#966; generic grading limits explicitly qualified from raw output; bare-label regex claim refuted by synthetic probe."
+  }
+}
