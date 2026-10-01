@@ -505,6 +505,8 @@ def run_case(host: str, catalog: Path, case: Path, destination: Path, model: str
     }
     prompts = [turn["prompt"] for turn in turns] if turns else [data["execution"]["prompt"]]
     env = dict(os.environ)
+    # Disposable eval sessions cannot be verified by the real supervisor.
+    env["SESSION_ALERTS_DISABLED"] = "1"
     env.pop("CLAUDECODE", None)
     if host == "claude":
         settings = destination / "settings.json"
