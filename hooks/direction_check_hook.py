@@ -9,7 +9,7 @@ The `direction` skill records the end of every daily turn in a small local
 marker, and the audit script records each weekly audit there per repository.
 At session start this hook prints the skills protocol on Claude Code and the executing loop for repositories with a
 root DIRECTION.md. In a repository without one, whose origin owner keeps an overall direction in OWNER/direction
-that has been audited on this machine, it prints that file's stop boundaries, where the file lives, and the loop.
+that has been audited on this machine or is checked out beside it, it prints that file's stop boundaries, where the file lives, and the loop.
 It reads the marker and prints one line when the last
 turn is older than a day, or when the repository the session opened in has a
 `DIRECTION.md` and its last audit is older than a week. Outside a direction
@@ -144,44 +144,52 @@ def read_merged_overall(owner: str) -> tuple[str | None, str]:
     return None, f"GitHub read failed: {detail[:160]}"
 
 
-def read_local_overall(owner: str, root: Path) -> tuple[str | None, str]:
-    """The committed overall DIRECTION.md from a sibling `direction` checkout of this repository's main checkout."""
+def local_overall_checkout(owner: str, root: Path) -> Path | None:
+    """A `direction` checkout of OWNER/direction beside this repository's main checkout."""
     common = git_line(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
     if not common:
-        return None, "no local checkout found"
+        return None
     local = Path(common).parent.parent / OVERALL_REPO
-    if (origin_repo(local) or "").lower() != f"{owner}/{OVERALL_REPO}".lower():
-        return None, f"no local checkout of {owner}/{OVERALL_REPO} at {local}"
+    return local if (origin_repo(local) or "").lower() == f"{owner}/{OVERALL_REPO}".lower() else None
+
+
+def read_local_overall(local: Path | None) -> tuple[str | None, str]:
+    """DIRECTION.md as last fetched from the remote default branch, never a local branch or draft."""
+    if local is None:
+        return None, "no local checkout beside this repository"
     try:
-        result = subprocess.run(["git", "show", "HEAD:DIRECTION.md"], cwd=local, text=True, capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+        result = subprocess.run(["git", "show", "refs/remotes/origin/HEAD:DIRECTION.md"], cwd=local, text=True, capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None, f"could not read {local}"
     if result.returncode != 0 or not result.stdout.strip():
-        return None, f"{local} has no committed DIRECTION.md"
-    return result.stdout, f"the local checkout at {local}, which may be behind GitHub"
+        return None, f"{local} has no fetched default branch with a DIRECTION.md"
+    return result.stdout, f"the default branch last fetched into {local}, which may be behind GitHub"
 
 
 def overall_direction(repo: str | None, root: Path | None, marker: dict[str, object], loop: str) -> str:
     """Overall direction for a checkout without its own DIRECTION.md, empty when its owner keeps none here.
 
-    Only an owner whose OWNER/direction has been audited on this machine counts. That keeps
-    another person's repository from putting its text into the session, and it keeps owners
-    who never set up an overall direction from paying for a network read at every start.
+    Only an owner who set up OWNER/direction on this machine counts: it has been audited here, or
+    it is checked out beside this repository. That keeps another person's repository from putting
+    its text into the session, and it keeps owners who never set up an overall direction from
+    paying for a network read at every start.
     """
     if not repo or root is None:
         return ""
     owner = repo.split("/", 1)[0]
     audits = marker.get("audits")
-    if not isinstance(audits, dict) or not any(str(key).lower() == f"{owner}/{OVERALL_REPO}".lower() for key in audits):
+    audited = isinstance(audits, dict) and any(str(key).lower() == f"{owner}/{OVERALL_REPO}".lower() for key in audits)
+    local = local_overall_checkout(owner, root)
+    if not audited and local is None:
         return ""
     url = f"https://github.com/{owner}/{OVERALL_REPO}/blob/HEAD/DIRECTION.md"
     text, source = read_merged_overall(owner)
     if text is None:
-        text, local_reason = read_local_overall(owner, root)
+        text, local_reason = read_local_overall(local)
         if text is None:
             return (
                 f"Overall direction: this repository has no DIRECTION.md of its own, so {owner}'s overall direction in "
-                f"{url} applies, but it could not be read ({source}; {local_reason}). Read it before acting."
+                f"{url} applies, but it could not be read at session start ({source}; {local_reason})."
             )
         source = local_reason
     boundaries = section(text, "Stop Boundaries") or "(the file has no Stop Boundaries section; read it in full)"

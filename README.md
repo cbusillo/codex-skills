@@ -342,10 +342,11 @@ In a repository with a root `DIRECTION.md`, it prints the shared
 defines `next`, `go`, escalation, landing, and closeout for either harness
 when its session-start hook is registered.
 In a repository without one, when its origin owner's `OWNER/direction`
-repository is in the marker's audited repositories, it prints that overall
-direction's stop boundaries, read from the merged default branch (or from a
-`direction` checkout beside the repository's main checkout when GitHub cannot
-be read), with the file's link and the executing loop. When neither can be read
+repository is in the marker's audited repositories or is checked out as
+`direction` beside the repository's main checkout, it prints that overall
+direction's stop boundaries, read from the merged default branch (or from that
+checkout's last-fetched default branch when GitHub cannot be read), with the
+file's link and the executing loop. When neither can be read
 it says so in one line. Other owners' repositories print nothing extra.
 It reads a local marker that `direction_mark.py` writes at the end of a daily
 turn and that the audit script writes per repository when an audit completes,

@@ -248,14 +248,24 @@ class OverallDirectionTests(unittest.TestCase):
         self.assertEqual(self.run_hook(self.reader(body=OVERALL)), "")
         self.assertFalse(self.calls.exists())
 
-    def test_falls_back_to_a_sibling_checkout_when_github_cannot_be_read(self) -> None:
+    def sibling_checkout(self) -> Path:
+        """A clone of owner/direction beside the product, on an unmerged proposal branch."""
+        upstream = self.tmp / "upstream"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(upstream)], check=True)
+        (upstream / "DIRECTION.md").write_text(OVERALL)
+        subprocess.run(["git", "-C", str(upstream), "add", "DIRECTION.md"], check=True)
+        subprocess.run(["git", "-C", str(upstream), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "d"], check=True)
         local = self.tmp / "direction"
-        subprocess.run(["git", "init", "-q", str(local)], check=True)
-        subprocess.run(["git", "-C", str(local), "remote", "add", "origin", "https://github.com/owner/direction.git"], check=True)
-        (local / "DIRECTION.md").write_text(OVERALL)
-        subprocess.run(["git", "-C", str(local), "add", "DIRECTION.md"], check=True)
-        subprocess.run(["git", "-C", str(local), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "d"], check=True)
+        subprocess.run(["git", "clone", "-q", str(upstream), str(local)], check=True)
+        subprocess.run(["git", "-C", str(local), "remote", "set-url", "origin", "https://github.com/owner/direction.git"], check=True)
+        subprocess.run(["git", "-C", str(local), "checkout", "-qb", "proposal"], check=True)
+        (local / "DIRECTION.md").write_text("committed proposal\n")
+        subprocess.run(["git", "-C", str(local), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "p"], check=True)
         (local / "DIRECTION.md").write_text("uncommitted draft\n")
+        return local
+
+    def test_falls_back_to_the_fetched_default_branch_of_a_sibling_checkout(self) -> None:
+        local = self.sibling_checkout()
         worktree = self.tmp / "linked"
         subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "i"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "worktree", "add", "-q", str(worktree)], check=True)
@@ -263,6 +273,13 @@ class OverallDirectionTests(unittest.TestCase):
         self.assertIn(hook.section(OVERALL, "Stop Boundaries"), text)
         self.assertIn(str(local.resolve()), text)
         self.assertNotIn("uncommitted draft", text)
+        self.assertNotIn("committed proposal", text)
+
+    def test_a_sibling_checkout_counts_as_set_up_without_an_audit(self) -> None:
+        self.sibling_checkout()
+        self.audit()
+        text = self.run_hook(self.reader(body=OVERALL))
+        self.assertIn(hook.section(OVERALL, "Stop Boundaries"), text)
 
     def test_unreadable_overall_direction_is_one_line(self) -> None:
         text = self.run_hook(self.reader(error="error connecting to api.github.com"))
