@@ -116,6 +116,9 @@ def update(root: Path) -> dict[str, str]:
                                             capture_output=True, text=True, timeout=60)
                     if result.returncode:
                         raise ValueError("catalog is current but instruction refresh failed; preview scripts/install-catalog.py --refresh-instructions to diagnose and reconcile")
+                    refreshed = json.loads(result.stdout)
+                    if any(entry.get("state") == "skipped" for entry in refreshed.get("outputs", [])):
+                        state["alert_refresh"] = "skipped; preview scripts/install-catalog.py --refresh-instructions to diagnose"
         except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
             state = {"state": "error", "reason": str(error), "failure_step": failure_step}
         state["checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat()

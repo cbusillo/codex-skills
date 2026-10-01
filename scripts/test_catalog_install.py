@@ -406,6 +406,20 @@ class InstallTests(unittest.TestCase):
         installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
         self.assertEqual(hook_path.read_bytes(), first)
 
+    def test_unsafe_alert_destination_does_not_block_instruction_refresh(self):
+        self.install()
+        hook_path = self.codex / "hooks.json"
+        hook_path.unlink()
+        target = self.root / "dotfiles-hooks"
+        target.write_text("preserve")
+        hook_path.symlink_to(target)
+        (self.catalog / "instructions" / "global.md").write_text("Updated instructions.\n")
+        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertEqual(target.read_text(), "preserve")
+        self.assertTrue(hook_path.is_symlink())
+        self.assertTrue(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
+        self.assertIn("Updated instructions.", (self.codex / "AGENTS.md").read_text())
+
     def test_refresh_keeps_removed_bindings_and_hooks_removed(self):
         self.install()
         (self.claude / "skills" / "shared").unlink()

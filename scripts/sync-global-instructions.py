@@ -63,14 +63,24 @@ def render_codex_hook(destination: Path, catalog: Path = ROOT, *, include_sessio
             declarations = [group for group in declarations if group.get("matcher") != "compact"]
         for group in declarations:
             for handler in group["hooks"]:
-                handler["command"] = shlex.join([
-                    "env", f"CLAUDE_PLUGIN_ROOT={catalog}", "CODEX_SKILLS_HARNESS=codex", "sh", "-c", handler["command"],
-                ])
+                environment = ["env", f"CLAUDE_PLUGIN_ROOT={catalog}"]
+                if event in ("Stop", "Interrupt"):
+                    environment.append("CODEX_SKILLS_HARNESS=codex")
+                handler["command"] = shlex.join([*environment, "sh", "-c", handler["command"]])
                 handler["statusMessage"] = label
-        hooks[event] = [group for group in existing if not (
-            isinstance(group, dict) and len(group.get("hooks", [])) == 1
+        merged = list(existing)
+        positions = [index for index, group in enumerate(existing) if (
+            isinstance(group, dict) and isinstance(group.get("hooks"), list) and len(group["hooks"]) == 1
             and isinstance(group["hooks"][0], dict) and group["hooks"][0].get("statusMessage") == label
-        )] + declarations
+        )]
+        if positions and len(positions) != len(declarations):
+            raise ValueError(f"Conflicting catalog {event} entries; inspect {destination} before rerunning")
+        if positions:
+            for index, declaration in zip(positions, declarations):
+                merged[index] = declaration
+        else:
+            merged.extend(declarations)
+        hooks[event] = merged
     return json.dumps(config, indent=2) + "\n"
 
 

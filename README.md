@@ -380,7 +380,12 @@ for installations that still have catalog-owned hook bindings. Claude's plugin
 loads Stop from the catalog hook source. Existing installations can preview
 `scripts/install-catalog.py` and rerun it with `--write`. Codex may skip changed
 or new definitions until reviewed through its supported `/hooks` flow; no trust
-is granted or copied by the installer. The stream appears on the first alert;
+is granted or copied by the installer. To suppress Codex alerts independently,
+leave their entries untrusted in `/hooks` while retaining other approved hooks.
+If an instruction refresh cannot safely update a hook destination, it leaves
+that destination untouched, reports the skipped alert refresh in its output
+and updater receipt, and still refreshes instructions.
+The stream appears on the first alert;
 once it exists a local supervisor can use:
 
 ```bash

@@ -7,6 +7,7 @@
 
 import importlib.util
 import json
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,29 @@ class GlobalInstructionsTests(unittest.TestCase):
             self.assertEqual(len(hooks["Interrupt"]), 1)
             self.assertEqual(hooks["PreToolUse"][0], other)
             self.assertIn("command_policy_hook.py", hooks["PreToolUse"][1]["hooks"][0]["command"])
+
+    def test_existing_commands_and_group_positions_preserve_trust_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "hooks.json"
+            source = json.loads((sync.ROOT / "hooks" / "hooks.json").read_text())["hooks"]
+            legacy = {}
+            for event, label in (("PreToolUse", sync.HOOK_LABEL), ("SessionStart", "codex-skills session start")):
+                groups = [group for group in source[event] if group.get("matcher") != "compact"]
+                for group in groups:
+                    for handler in group["hooks"]:
+                        handler["command"] = shlex.join(["env", f"CLAUDE_PLUGIN_ROOT={sync.ROOT}", "sh", "-c", handler["command"]])
+                        handler["statusMessage"] = label
+                legacy[event] = groups
+            path.write_text(json.dumps({"hooks": legacy}))
+            first = sync.render_codex_hook(path, include_session_start=True)
+            rendered = json.loads(first)["hooks"]
+            self.assertEqual(rendered["PreToolUse"], legacy["PreToolUse"])
+            self.assertEqual(rendered["SessionStart"], legacy["SessionStart"])
+            other = {"hooks": [{"type": "command", "command": "user-hook"}]}
+            for event in ("Stop", "Interrupt"):
+                rendered[event].append(other)
+            path.write_text(json.dumps({"hooks": rendered}))
+            self.assertEqual(json.loads(sync.render_codex_hook(path, include_session_start=True))["hooks"], rendered)
 
     def test_preview_adoption_backup_and_idempotence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

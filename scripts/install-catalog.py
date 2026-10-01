@@ -209,27 +209,33 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         existing_session = existing_session_hook(sessions)
         hooks = sync.render_codex_hook(hook_path, catalog=ROOT, include_session_start=not (legacy_session or existing_session))
         hook_preview = sync.synchronize(hooks, [hook_path], write=False)
-    elif hook_path.exists():
-        existing = json.loads(safe_file(hook_path))
-        groups = existing.get("hooks", {}) if isinstance(existing, dict) else None
-        if not isinstance(groups, dict):
-            raise ValueError("Invalid hooks.json configuration")
-        for event in ("PreToolUse", "SessionStart", "Stop", "Interrupt"):
-            if not isinstance(groups.get(event, []), list):
-                raise ValueError(f"Invalid {event} configuration")
-        # Add/update alerts only for an installation still bound to catalog
-        # hooks. Removing catalog hooks opts out; never restore deleted bindings.
-        managed = any(
-            isinstance(group, dict) and isinstance(group.get("hooks"), list)
-            and any(isinstance(handler, dict) and handler.get("statusMessage") in (
-                sync.HOOK_LABEL, "codex-skills session start", "codex-skills stop alert", "codex-skills interrupt alert",
-            ) for handler in group["hooks"])
-            for event in ("PreToolUse", "SessionStart", "Stop", "Interrupt")
-            for group in groups.get(event, [])
-        )
-        if managed:
-            hooks = sync.render_codex_hook(hook_path, catalog=ROOT, alerts_only=True)
-            hook_preview = sync.synchronize(hooks, [hook_path], write=False)
+    elif hook_path.exists() or hook_path.is_symlink():
+        try:
+            existing = json.loads(safe_file(hook_path))
+            groups = existing.get("hooks", {}) if isinstance(existing, dict) else None
+            if not isinstance(groups, dict):
+                raise ValueError("Invalid hooks.json configuration")
+            for event in ("PreToolUse", "SessionStart", "Stop", "Interrupt"):
+                if not isinstance(groups.get(event, []), list):
+                    raise ValueError(f"Invalid {event} configuration")
+            # Add/update alerts only for an installation still bound to catalog
+            # hooks. Removing catalog hooks opts out; never restore deleted bindings.
+            managed = any(
+                isinstance(group, dict) and isinstance(group.get("hooks"), list)
+                and any(isinstance(handler, dict) and handler.get("statusMessage") in (
+                    sync.HOOK_LABEL, "codex-skills session start", "codex-skills stop alert", "codex-skills interrupt alert",
+                ) for handler in group["hooks"])
+                for event in ("PreToolUse", "SessionStart", "Stop", "Interrupt")
+                for group in groups.get(event, [])
+            )
+            if managed:
+                hooks = sync.render_codex_hook(hook_path, catalog=ROOT, alerts_only=True)
+                hook_preview = sync.synchronize(hooks, [hook_path], write=False)
+        except (OSError, ValueError) as error:
+            # Alert setup must not stop an existing instruction-only refresh.
+            # Keep the unsafe/unmanaged destination untouched and report the gap.
+            hooks = None
+            hook_preview = [{"path": str(hook_path), "state": "skipped", "reason": str(error)}]
     launch_path = home / "Library" / "LaunchAgents" / f"{LABEL}.plist"
     launch_content = None
     launch_changed = False
@@ -290,6 +296,8 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         sync.synchronize(installation, [installation_path], write=True)
         if hooks is not None:
             outputs += sync.synchronize(hooks, [hook_path], write=True)
+        else:
+            outputs += hook_preview
         if launch_content is not None:
             sync.synchronize(launch_content, [launch_path], write=True)
             (ROOT / ".local").mkdir(exist_ok=True)

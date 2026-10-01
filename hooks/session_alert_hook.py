@@ -18,6 +18,8 @@ from typing import Mapping
 def events_path(env: Mapping[str, str]) -> Path:
     # Host-specific CODEX_HOME/CLAUDE_CONFIG_DIR would split the shared stream.
     shared = Path(env.get("CODE_HOME") or Path.home() / ".code").expanduser()
+    if not shared.is_absolute():
+        raise ValueError("CODE_HOME must be absolute")
     return shared / "session-events.jsonl"
 
 
@@ -71,7 +73,7 @@ def main() -> int:
     except (OSError, ValueError):
         # An unavailable alert stream must not block or restart the session.
         print("Session alert unavailable; supervisor must check session state.", file=sys.stderr)
-    # Stop requires JSON stdout on Codex. Empty JSON has no decision fields.
+    # Empty JSON is accepted by both hosts and has no decision fields.
     print("{}")
     return 0
 
