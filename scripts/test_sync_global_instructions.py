@@ -7,6 +7,7 @@
 
 import importlib.util
 import json
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -42,7 +43,7 @@ class GlobalInstructionsTests(unittest.TestCase):
             state_key = f"{config}:stop:0:0"
             config.write_text(f'[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ncommand="existing-stop"\n[hooks.state."{state_key}"]\nenabled=false\n')
             outputs = sync.prepare_codex_hooks(codex)
-            self.assertEqual(json.loads(outputs[codex / "hooks.json"])["hooks"]["Stop"], [group])
+            self.assertEqual(json.loads(outputs[codex / "hooks.json"])["hooks"]["Stop"][0], group)
             self.assertEqual(outputs.disabled_migrated_handlers, [{"event": "Stop", "source_group": 0, "source_handler": 0, "deduplicated": True, "destination_group": None, "destination_handler": None}])
 
     def test_identical_inline_groups_report_the_correct_disabled_occurrence(self) -> None:
@@ -173,7 +174,7 @@ class GlobalInstructionsTests(unittest.TestCase):
                     sync.write_codex_hooks(outputs, codex)
             self.assertEqual(config.read_text(), changed)
             recovered = sync.prepare_codex_hooks(codex)
-            self.assertEqual(len(json.loads(recovered[codex / "hooks.json"])["hooks"]["Stop"]), 1)
+            self.assertEqual(sum(handler.get("command") == "my-stop" for group in json.loads(recovered[codex / "hooks.json"])["hooks"]["Stop"] for handler in group["hooks"]), 1)
             sync.write_codex_hooks(recovered, codex)
             self.assertEqual(tomllib.loads(config.read_text())["hooks"]["state"]["existing"]["trusted_hash"], "owner-reviewed")
     def test_mixed_hooks_migrate_with_preview_backup_trust_and_idempotence(self) -> None:
@@ -209,7 +210,7 @@ hash = "existing-hash"
             self.assertEqual(hook_path.read_bytes(), old_json)
             hooks = json.loads(plan[hook_path])["hooks"]
             self.assertEqual(hooks["SessionStart"], expected["hooks"]["SessionStart"])
-            self.assertEqual(hooks["Stop"], expected["hooks"]["Stop"])
+            self.assertEqual(hooks["Stop"], json.loads(old_json)["hooks"]["Stop"] + expected["hooks"]["Stop"])
             self.assertEqual(len(hooks["PreToolUse"]), 1)
             receipt = sync.write_codex_hooks(plan, codex)
             for item in receipt:
@@ -225,12 +226,12 @@ hash = "existing-hash"
             self.assertTrue(all(item["state"] == "current" for item in sync.write_codex_hooks(second, codex)))
             self.assertEqual(len(list(codex.glob("*.backup-*"))), 2)
 
-    def test_fresh_hook_setup_registers_both_events_once(self) -> None:
+    def test_fresh_hook_setup_registers_catalog_events_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             codex = Path(directory)
             first = sync.prepare_codex_hooks(codex)
             hook_path = codex / "hooks.json"
-            self.assertEqual(set(json.loads(first[hook_path])["hooks"]), {"SessionStart", "PreToolUse"})
+            self.assertEqual(json.loads(first[hook_path]), json.loads(sync.render_codex_hook(hook_path, include_session_start=True)))
             sync.write_codex_hooks(first, codex)
             self.assertEqual(sync.prepare_codex_hooks(codex), first)
             self.assertFalse((codex / "config.toml").exists())
@@ -287,9 +288,34 @@ hash = "existing-hash"
             path.write_text(first)
             self.assertEqual(first, sync.render_codex_hook(path))
             hooks = json.loads(first)["hooks"]
-            self.assertEqual(hooks["Stop"], [other])
+            self.assertEqual(hooks["Stop"][0], other)
+            self.assertEqual(len(hooks["Stop"]), 2)
+            self.assertEqual(len(hooks["Interrupt"]), 1)
             self.assertEqual(hooks["PreToolUse"][0], other)
             self.assertIn("command_policy_hook.py", hooks["PreToolUse"][1]["hooks"][0]["command"])
+
+    def test_existing_commands_and_group_positions_preserve_trust_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "hooks.json"
+            source = json.loads((sync.ROOT / "hooks" / "hooks.json").read_text())["hooks"]
+            legacy = {}
+            for event, label in (("PreToolUse", sync.HOOK_LABEL), ("SessionStart", "codex-skills session start")):
+                groups = [group for group in source[event] if group.get("matcher") != "compact"]
+                for group in groups:
+                    for handler in group["hooks"]:
+                        handler["command"] = shlex.join(["env", f"CLAUDE_PLUGIN_ROOT={sync.ROOT}", "sh", "-c", handler["command"]])
+                        handler["statusMessage"] = label
+                legacy[event] = groups
+            path.write_text(json.dumps({"hooks": legacy}))
+            first = sync.render_codex_hook(path, include_session_start=True)
+            rendered = json.loads(first)["hooks"]
+            self.assertEqual(rendered["PreToolUse"], legacy["PreToolUse"])
+            self.assertEqual(rendered["SessionStart"], legacy["SessionStart"])
+            other = {"hooks": [{"type": "command", "command": "user-hook"}]}
+            for event in ("Stop", "Interrupt"):
+                rendered[event].append(other)
+            path.write_text(json.dumps({"hooks": rendered}))
+            self.assertEqual(json.loads(sync.render_codex_hook(path, include_session_start=True))["hooks"], rendered)
 
     def test_preview_adoption_backup_and_idempotence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
