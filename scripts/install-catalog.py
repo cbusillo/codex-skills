@@ -261,7 +261,7 @@ def main() -> int:
         print(json.dumps(install(home, codex, claude, write=args.write, updater=args.updater, show_diff=args.show_diff, refresh_instructions=args.refresh_instructions, skip_codex_hooks=args.skip_codex_hooks), indent=2))
         return 0
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        print(f"Catalog not installed: {error}", file=sys.stderr)
+        print(f"Catalog setup stopped; earlier successful writes may remain: {error}", file=sys.stderr)
         return 1
 
 

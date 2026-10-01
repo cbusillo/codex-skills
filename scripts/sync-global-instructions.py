@@ -95,7 +95,7 @@ def render_codex_hook(destination: Path, catalog: Path = ROOT, *, include_sessio
 
 def safe_content(path: Path) -> str:
     if path.is_symlink() or (path.exists() and not path.is_file()):
-        raise ValueError(f"Refusing a symlink or non-file destination: {path}")
+        raise ValueError(f"Refusing a symlink or non-file destination: {path}. Install with --skip-codex-hooks, or synchronize instructions without --codex-hook, to preserve existing hooks while continuing setup.")
     return path.read_bytes().decode() if path.exists() else ""
 
 
@@ -163,9 +163,13 @@ def prepare_codex_hooks(codex: Path, catalog: Path = ROOT) -> HookOutputs:
             for group_index, group in enumerate(groups if isinstance(groups, list) else []):
                 handlers = group.get("hooks", []) if isinstance(group, dict) else []
                 for handler_index, _ in enumerate(handlers if isinstance(handlers, list) else []):
-                    keys = {f"{path}:{event_key}:{group_index}:{handler_index}" for path in (config_path.absolute(), config_path.resolve())}
-                    if any(isinstance(states.get(key), dict) and states[key].get("enabled") is False for key in keys):
-                        disabled_migrated.append({"event": event, "group": group_index, "handler": handler_index})
+                    suffix = f":{event_key}:{group_index}:{handler_index}"
+                    for key, state in states.items():
+                        if not (isinstance(key, str) and key.endswith(suffix) and isinstance(state, dict) and state.get("enabled") is False):
+                            continue
+                        if Path(key[:-len(suffix)]).resolve() == config_path.resolve():
+                            disabled_migrated.append({"event": event, "source_group": group_index, "source_handler": handler_index})
+                            break
     for event, groups in list(hooks.items()) + list(events.items()):
         if not isinstance(groups, list) or any(not isinstance(group, dict) or not isinstance(group.get("hooks"), list)
                                               or any(not isinstance(handler, dict) for handler in group["hooks"]) for group in groups):
@@ -186,6 +190,14 @@ def prepare_codex_hooks(codex: Path, catalog: Path = ROOT) -> HookOutputs:
     except TypeError as exc:
         raise ValueError("Inline hooks contain values unsupported by hooks.json; inspect config.toml before rerunning") from exc
     outputs = {hook_path: render_codex_hook(hook_path, catalog, include_session_start=not existing_session, config=config)}
+    rendered_hooks = json.loads(outputs[hook_path])["hooks"]
+    for disabled in disabled_migrated:
+        event = disabled["event"]
+        original_group = events[event][disabled["source_group"]]
+        destination_groups = rendered_hooks.get(event, [])
+        destination = next((index for index, group in enumerate(destination_groups) if group == original_group), None)
+        disabled["destination_group"] = destination
+        disabled["destination_handler"] = disabled["source_handler"] if destination is not None else None
     if events:
         import tomlkit
         from tomlkit.items import AoT, Comment, Table

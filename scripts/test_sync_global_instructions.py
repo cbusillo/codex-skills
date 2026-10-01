@@ -30,12 +30,29 @@ class GlobalInstructionsTests(unittest.TestCase):
             original = f'[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ncommand="disabled-hook"\n[hooks.state."{state_key}"]\nenabled=false\ntrusted_hash="old-hash"\n'
             config.write_text(original)
             outputs = sync.prepare_codex_hooks(codex)
-            self.assertEqual(outputs.disabled_migrated_handlers, [{"event": "Stop", "group": 0, "handler": 0}])
+            self.assertEqual(outputs.disabled_migrated_handlers, [{"event": "Stop", "source_group": 0, "source_handler": 0, "destination_group": 0, "destination_handler": 0}])
             migrated = json.loads(outputs[codex / "hooks.json"])
             self.assertNotIn("state", migrated["hooks"])
             self.assertEqual(config.read_text(), original)
             sync.write_codex_hooks(outputs, codex)
             self.assertEqual(tomllib.loads(config.read_text())["hooks"]["state"], tomllib.loads(original)["hooks"]["state"])
+
+    def test_disabled_handler_reports_destination_after_existing_json_group_through_home_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            codex = root / "actual-codex"
+            codex.mkdir()
+            alias = root / ".codex"
+            alias.symlink_to(codex, target_is_directory=True)
+            path = codex / "hooks.json"
+            path.write_text(sync.render_codex_hook(path))
+            state_key = f"{alias / 'config.toml'}:pre_tool_use:0:0"
+            original = f'[[hooks.PreToolUse]]\nmatcher="Read"\n[[hooks.PreToolUse.hooks]]\ncommand="disabled-reader"\n[hooks.state."{state_key}"]\nenabled=false\n'
+            (codex / "config.toml").write_text(original)
+            outputs = sync.prepare_codex_hooks(codex.resolve())
+            self.assertEqual(outputs.disabled_migrated_handlers, [{"event": "PreToolUse", "source_group": 0, "source_handler": 0, "destination_group": 1, "destination_handler": 0}])
+            destination = json.loads(outputs[path.resolve()])["hooks"]["PreToolUse"][1]
+            self.assertEqual(destination, tomllib.loads(original)["hooks"]["PreToolUse"][0])
 
     def test_hook_cli_preview_write_and_diff_selection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

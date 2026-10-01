@@ -19,6 +19,7 @@ Clone this repository somewhere durable, then install once on each machine:
 ```sh
 git clone https://github.com/OWNER/codex-skills.git ~/Developer/codex-skills
 cd ~/Developer/codex-skills
+uv run scripts/install-catalog.py
 uv run scripts/install-catalog.py --write
 ```
 
@@ -233,8 +234,11 @@ its definitions and trust alone; a mixed-source warning may remain until migrati
 To migrate, preserve the link
 target's contents in a regular `config.toml`, then preview again.
 Migration does not copy disabled choices from old source keys. The preview and
-receipt identify recognized disabled handlers by event and position; keep those
-hooks disabled when reviewing them through `/hooks`.
+receipt identify recognized disabled handlers by event, their old TOML position,
+and their destination JSON position. Keep those destination handlers disabled
+when reviewing them through `/hooks`; a null destination means that duplicate
+was removed and needs comparison with the remaining definitions. Full commands
+are available only in the person's local `--show-diff` review.
 Once registered and
 trusted, a catalog pull updates the same policy script on both hosts. The
 Claude-only skills protocol is not added to Codex's base instructions.
