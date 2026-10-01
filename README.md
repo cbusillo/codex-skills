@@ -106,6 +106,28 @@ while disabled, and Claude Code then reads a cached copy instead of the
 checkout. To undo such an install, run
 `claude plugin uninstall shared@codex-skills`.
 
+#### What does not work in Cowork
+
+A Cowork task runs in a Linux VM with `uv`, `git`, and `python3`, and loads the
+skills from the synced plugin. Tested on 2026-10-01, these parts of the catalog
+do not carry over:
+
+- **No `gh`.** The VM has no GitHub CLI, so the `github`, `github-plan`,
+  `babysit-pr`, and other GitHub helpers cannot run there.
+- **No hook takes effect.** Command policies are not enforced, so a raw
+  `gh pr merge` is not redirected to its helper, and the session-start skills
+  reminder and executing-loop reference never appear. Both hooks fail silently
+  by design, so this test cannot tell whether they never ran or ran and failed.
+
+Run a skill's helper through the base directory Cowork shows when the skill
+loads. `CLAUDE_PLUGIN_ROOT` is empty in the task's shell, as it is in Claude
+Code's.
+
+Cowork lists 24 of the 27 skills. The three missing ones, `memory-distillation`,
+`plan`, and `rollout-friction`, are manual-only (`disable-model-invocation:
+true`), which keeps them out of the model's skill list on Claude Code as well.
+Invoking them by name in Cowork has not been tested.
+
 ### Shared global instructions and Codex hooks
 
 [`instructions/global.md`](instructions/global.md) is the common source for
