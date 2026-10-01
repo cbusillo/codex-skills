@@ -71,7 +71,14 @@ def personal_source(sync, destinations: list[Path], local: Path) -> str:
 
 def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool, show_diff: bool = False) -> dict:
     sync = load_sync()
-    links = [(home / ".agents" / "skills", ROOT / "skills"), (claude / "skills" / "shared", ROOT)]
+    codex_skills = home / ".agents" / "skills"
+    # Keep an existing whole-catalog binding; otherwise share the discovery
+    # directory with personal skills through Codex's recursive discovery.
+    if not (codex_skills.is_symlink() and codex_skills.resolve() == (ROOT / "skills").resolve()):
+        if codex_skills.is_symlink() or (codex_skills.exists() and not codex_skills.is_dir()):
+            raise ValueError(f"Existing binding preserved: {codex_skills}; inspect it before rerunning")
+        codex_skills = codex_skills / "shared"
+    links = [(codex_skills, ROOT / "skills"), (claude / "skills" / "shared", ROOT)]
     pending = [(path, target) for path, target in links if binding(path, target)]
     destinations = [claude / "CLAUDE.md", codex / "AGENTS.md"]
     local = ROOT / ".local" / "global-instructions.md"

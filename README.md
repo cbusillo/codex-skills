@@ -22,7 +22,7 @@ cd ~/Developer/codex-skills
 uv run scripts/install-catalog.py --write
 ```
 
-The installer binds the entire catalog at `~/.agents/skills` for Codex and
+The installer binds the entire catalog at `~/.agents/skills/shared` for Codex and
 `~/.claude/skills/shared` for Claude Code, installs both hosts' global
 instructions, and registers the existing Codex command-policy and session-start
 hooks. It respects `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Approve newly registered
@@ -36,7 +36,9 @@ changed instruction files are backed up. Existing unrelated bindings, symlink
 instruction files, malformed settings, or generated instructions whose private
 source cannot be identified are reported and left in place. Inspect the reported
 path before moving it aside or restoring its private source, then rerun. Working
-legacy catalog bindings and other host settings are preserved.
+legacy catalog bindings and other host settings are preserved. Personal skills
+in `~/.agents/skills` coexist with the nested catalog binding; an existing link
+from that whole directory to this catalog remains in place.
 
 On macOS, opt into the guarded six-hour updater in the same install run:
 

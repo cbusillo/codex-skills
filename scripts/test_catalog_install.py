@@ -77,8 +77,35 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(hooks["SessionStart"][0], unrelated["hooks"]["SessionStart"][0])
         self.assertEqual((self.codex / "config.toml").read_text(), 'model = "my-model"\n')
         (self.catalog / "skills" / "new-skill").mkdir()
-        self.assertTrue((self.home / ".agents" / "skills" / "new-skill").is_dir())
+        self.assertTrue((self.home / ".agents" / "skills" / "shared" / "new-skill").is_dir())
         self.assertEqual((self.claude / "skills" / "shared").resolve(), self.catalog.resolve())
+
+    def test_personal_skills_coexist_and_existing_whole_catalog_binding_is_kept(self):
+        skills = self.home / ".agents" / "skills"
+        personal = skills / "personal" / "SKILL.md"
+        personal.parent.mkdir(parents=True)
+        personal.write_text("Personal instructions.\n")
+        self.install()
+        self.install()
+        self.assertEqual(personal.read_text(), "Personal instructions.\n")
+        self.assertEqual((skills / "shared").resolve(), (self.catalog / "skills").resolve())
+        (skills / "shared").unlink()
+        personal.unlink()
+        personal.parent.rmdir()
+        skills.rmdir()
+        skills.symlink_to(self.catalog / "skills", target_is_directory=True)
+        self.install()
+        self.assertEqual(skills.resolve(), (self.catalog / "skills").resolve())
+        self.assertFalse((self.catalog / "skills" / "shared").exists())
+
+    def test_conflicting_personal_shared_binding_is_preserved_without_writes(self):
+        shared = self.home / ".agents" / "skills" / "shared"
+        shared.mkdir(parents=True)
+        (shared / "SKILL.md").write_text("Unrelated skill.\n")
+        with self.assertRaisesRegex(ValueError, "Existing binding preserved"):
+            self.install()
+        self.assertEqual((shared / "SKILL.md").read_text(), "Unrelated skill.\n")
+        self.assertFalse((self.claude / "CLAUDE.md").exists())
 
     def test_source_update_preserves_personal_instructions_without_a_manual_merge(self):
         (self.codex / "AGENTS.md").write_text("Keep private instructions.\n")
@@ -266,7 +293,7 @@ class UpdateTests(unittest.TestCase):
                 self.assertEqual(runtime.update(self.checkout)["state"], "current")
             self.assertFalse((self.base / "other-home" / ".codex").exists())
             self.assertIn("Updated shared instructions", (fixture_home / ".codex" / "AGENTS.md").read_text())
-            self.assertTrue((fixture_home / ".agents" / "skills" / "new").is_file())
+            self.assertTrue((fixture_home / ".agents" / "skills" / "shared" / "new").is_file())
 
     def test_dirty_untracked_off_main_detached_ahead_and_diverged_are_preserved(self):
         scenarios = ("dirty", "untracked", "branch", "detached", "ahead", "diverged")
