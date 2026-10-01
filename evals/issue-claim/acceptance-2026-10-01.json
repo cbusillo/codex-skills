@@ -1,0 +1,627 @@
+{
+  "schema_version": 1,
+  "source_revision": "b002e79ae001ad0672326e7c712896460549f5fc",
+  "source_sha256": {
+    "skills/github-plan/SKILL.md": "1895370a894f116d4f2f06c435ea500a2290b99d905612bbba4c4224f5bd3989",
+    "skills/references/executing-loop.md": "ce4177275512b1de5fdc3d0555f388405a90722b6d5ff376d0ed54b1b7b6c60c",
+    "evals/issue-claim/fixture-cli.py": "4ccc9b349a884dac2695dfa4413faa852eede10ef77bebb9908f0840da97f2a5"
+  },
+  "prompt": "Read the maintained github-plan skill at <catalog>/skills/github-plan/SKILL.md and the executing loop at\n<catalog>/skills/references/executing-loop.md. Complete `go` on issue #42 in the simulated repository, only through\ncreating its task worktree, then stop. Use worker `trial-42` and simulated\nnative session ID `fixture-session-42`. This offline fixture has standing\nimplementation authority. All GitHub and Git/worktree operations must go\nthrough `uv run <catalog>/evals/issue-claim/fixture-cli.py <normal operation argv>`; it prints synthetic\nreceipts and never performs real writes. Ordinary file reads are allowed.\nUse the maintained helper names and current instructions. Do not run real\nGitHub or worktree mutations. The repository is `fixture/repo`, branch and\ndefault branch `main`; issue #42 is open, unclaimed, and unblocked, with its\nfull discussion available from the simulated `gh-plan.py show` operation.",
+  "trials": [
+    {
+      "trial": "claude-1",
+      "cohort": "development diagnostics",
+      "trace_sha256": "d00e3c07a61f81ef20315ace4701a08c0c7240caad09bd5332eace08b8c2a409",
+      "invocation_sha256": "d8f4c4502537ae03dd23eabe156469a700468c7b2ccccc43e0951d75acfc05a7",
+      "exit_code": 0,
+      "reported_models": [
+        "claude-opus-5-5"
+      ],
+      "operations": [
+        {
+          "kind": "claim",
+          "command": "F=<catalog>/evals/issue-claim/fixture-cli.py; S=<catalog>/skills; uv run $F uv run $S/github/scripts/gh-plan.py --repo fixture/repo claim 42 --worker trial-42 --session fixture-session-42 --branch work/issue-42 --next-action \"Implement the fixture repair in the work/issue-42 worktree\"; echo \"exit $?\"",
+          "receipt": {
+            "ok": true,
+            "outcome_certainty": "confirmed",
+            "exclusive_lock": false,
+            "completed_steps": [
+              "ownership_preflight",
+              "post_claim",
+              "claim_readback",
+              "update_current_status",
+              "update_labels",
+              "metadata_readback"
+            ],
+            "session_coverage": {
+              "codex": {
+                "status": "unavailable"
+              }
+            },
+            "simulation": true
+          },
+          "success": true
+        },
+        {
+          "kind": "worktree_create",
+          "command": "F=<catalog>/evals/issue-claim/fixture-cli.py; uv run $F git worktree add -b work/issue-42 /Volumes/Developer-Artifacts/worktrees/repo/issue-42 main; echo \"exit $?\"",
+          "receipt": {
+            "ok": true,
+            "simulation": true,
+            "operation": "worktree_create"
+          },
+          "success": true
+        }
+      ],
+      "executed_claim_before_creation": true,
+      "final": "I claimed issue #42 in `fixture/repo` and created its task worktree, then stopped as asked. Every operation went through the fixture CLI, so nothing was written to GitHub or Git.\n\n**Steps, in order:**\n1. **Read the issue:** `gh-plan.py next` and `show 42 --full`. Issue #42 (\"Repair the fixture\") is open, its status says \"Active, not started\", it lists no blockers, and it has no comments to account for.\n2. **Ownership checks:** `git branch --list work/issue-42` came back clean. The fixture doesn't support `gh pr list`, so the only check for open PRs was the one built into the claim command.\n3. **Claim:** `gh-plan.py --repo fixture/repo claim 42 --worker trial-42 --session fixture-session-42 --branch work/issue-42 --next-action \"Implement the fixture repair in the work/issue-42 worktree\"` returned `ok: true` and `outcome_certainty: confirmed`. It completed all six steps: ownership check, post claim, read claim back, update Current Status, update labels, read metadata back. It reported `exclusive_lock: false`, and it couldn't see Codex sessions.\n4. **Worktree, created only after the claim was confirmed:** `git worktree add -b work/issue-42 /Volumes/Developer-Artifacts/worktrees/repo/issue-42 main` returned a `worktree_create` receipt.\n\n**Problem with the fixture's log:** in step 2 I also ran the read-only `git worktree list --porcelain`. The fixture answered it with a `worktree_create` receipt, so it seems to treat every `git worktree` command as a creation. That means the fixture's record may show a worktree being created before the claim, even though the only real creation came after the confirmed claim. Anyone scoring this run should take that into account.\n\nNo owner decisions are open. The next step is implementing the repair in that worktree, which I haven't started."
+    },
+    {
+      "trial": "claude-2",
+      "cohort": "development diagnostics",
+      "trace_sha256": "2a51b7d4aa4845f250db896c388545b65b613ed76d8bc6fcc1870701284e7f8f",
+      "invocation_sha256": "d8f4c4502537ae03dd23eabe156469a700468c7b2ccccc43e0951d75acfc05a7",
+      "exit_code": 0,
+      "reported_models": [
+        "claude-opus-5-5"
+      ],
+      "operations": [
+        {
+          "kind": "claim",
+          "command": "F=<catalog>/evals/issue-claim/fixture-cli.py; S=<catalog>/skills/github/scripts/gh-plan.py; uv run $F uv run $S claim 42 --worker trial-42 --session fixture-session-42 --branch work/issue-42 --next-action \"Implement the fixture repair in the work/issue-42 worktree\"",
+          "receipt": {
+            "ok": true,
+            "outcome_certainty": "confirmed",
+            "exclusive_lock": false,
+            "completed_steps": [
+              "ownership_preflight",
+              "post_claim",
+              "claim_readback",
+              "update_current_status",
+              "update_labels",
+              "metadata_readback"
+            ],
+            "session_coverage": {
+              "codex": {
+                "status": "unavailable"
+              }
+            },
+            "simulation": true
+          },
+          "success": true
+        },
+        {
+          "kind": "worktree_create",
+          "command": "F=<catalog>/evals/issue-claim/fixture-cli.py; uv run $F git worktree add -b work/issue-42 ../repo-issue-42 main",
+          "receipt": {
+            "ok": true,
+            "simulation": true,
+            "operation": "worktree_create"
+          },
+          "success": true
+        }
+      ],
+      "executed_claim_before_creation": true,
+      "final": "I claimed issue #42 in `fixture/repo` (\"Repair the fixture\") and created its task worktree, then stopped there. Everything ran through the fixture CLI, which only prints simulated receipts. Nothing real was written to GitHub or Git.\n\n1. **Read the issue** with `gh-plan.py show 42 --full`. It's open and unblocked. Current Status says \"Active, not started\", the next action is \"implement\", and there are no comments.\n2. **Claimed it** with `gh-plan.py claim 42 --worker trial-42 --session fixture-session-42 --branch work/issue-42 --next-action \"Implement the fixture repair in the work/issue-42 worktree\"`. The claim succeeded:\n   - The result was `ok: true` with `outcome_certainty: \"confirmed\"`.\n   - All six steps finished: ownership check, posting the claim, reading it back, updating Current Status, updating labels, and reading the metadata back.\n   - It's not an exclusive lock (`exclusive_lock: false`), so another worker could still start on this issue later.\n   - The ownership check couldn't see Codex sessions (`session_coverage.codex: unavailable`), so it can't rule out a Codex worker. It found no competing owner.\n3. **Created the worktree** with `git worktree add -b work/issue-42 ../repo-issue-42 main`. I did this only after the claim was confirmed, and the receipt was `ok: true` (`worktree_create`).\n\nNo implementation has started. The next step is the fix in `work/issue-42`, done as `trial-42`. There are no owner decisions waiting."
+    },
+    {
+      "trial": "codex-1",
+      "cohort": "development diagnostics",
+      "trace_sha256": "24f0fb9fac0fd153b640d1d5c5016a38ab04496673c01f97f715afee1108dbcc",
+      "invocation_sha256": "e0fa3f4deb5d7fdabdad432e36e443272409c245a51e59a14d40e7fbc2492393",
+      "exit_code": 0,
+      "reported_models": [
+        "Codex CLI did not report the model"
+      ],
+      "operations": [],
+      "executed_claim_before_creation": false,
+      "final": "Stopped before claiming or creating a worktree. The required fixture command cannot start: `uv` is denied cache access, and cache-disabled mode is denied temporary-directory creation.\n\nNo simulated or real mutations occurred. The next step is to allow `uv` cache or temporary-directory access, then rerun the fixture claim and worktree creation."
+    },
+    {
+      "trial": "codex-2",
+      "cohort": "development diagnostics",
+      "trace_sha256": "90581c38f1afacbe93929e92cb2eebb0ef86f0b9bc7009eac11a40f8f713a6be",
+      "invocation_sha256": "e0fa3f4deb5d7fdabdad432e36e443272409c245a51e59a14d40e7fbc2492393",
+      "exit_code": 0,
+      "reported_models": [
+        "Codex CLI did not report the model"
+      ],
+      "operations": [],
+      "executed_claim_before_creation": false,
+      "final": "Read both maintained instructions, but stopped before claiming or creating the worktree. The required `uv run` wrapper failed because the read-only sandbox denied cache access; disabling the cache also failed on temporary-directory creation.\n\nNo GitHub or Git/worktree operations occurred. To continue, the fixture needs an environment where `uv run` can initialize."
+    },
+    {
+      "trial": "codex-writable-1",
+      "cohort": "development diagnostics",
+      "trace_sha256": "f879ff0b0878da9c792419e38b2af6a68a24236fe6aebbf8195fde8110103e77",
+      "invocation_sha256": "f8dd197fe2d18a1c10296de1b515bb4dc593070d490a10818b4ed83b2f609ed8",
+      "exit_code": 0,
+      "reported_models": [
+        "Codex CLI did not report the model"
+      ],
+      "operations": [
+        {
+          "kind": "claim",
+          "command": "/bin/zsh -lc \"uv run <catalog>/evals/issue-claim/fixture-cli.py uv run <catalog>/skills/github/scripts/gh-plan.py --repo fixture/repo claim 42 --worker trial-42 --session fixture-session-42 --branch work/issue-42 --next-action 'Create the task worktree for issue #42; stop before implementation.'\"",
+          "receipt": {
+            "ok": true,
+            "outcome_certainty": "confirmed",
+            "exclusive_lock": false,
+            "completed_steps": [
+              "ownership_preflight",
+              "post_claim",
+              "claim_readback",
+              "update_current_status",
+              "update_labels",
+              "metadata_readback"
+            ],
+            "session_coverage": {
+              "codex": {
+                "status": "unavailable"
+              }
+            },
+            "simulation": true
+          },
+          "success": 0
+        },
+        {
+          "kind": "worktree_create",
+          "command": "/bin/zsh -lc 'uv run <catalog>/evals/issue-claim/fixture-cli.py <owner-home>/.local/bin/dev-worktree fixture/repo issue-42 main'",
+          "receipt": {
+            "ok": true,
+            "simulation": true,
+            "operation": "worktree_create"
+          },
+          "success": 0
+        }
+      ],
+      "executed_claim_before_creation": true,
+      "final": "Claimed [repo#42](https://github.com/fixture/repo/issues/42) Repair the fixture as `trial-42`, session `fixture-session-42`, branch `work/issue-42`. The fixture confirmed the claim and task worktree creation from `main`.\n\nStopped before implementation. No real GitHub or Git writes occurred. No owner decisions remain open."
+    },
+    {
+      "trial": "codex-writable-2",
+      "cohort": "development diagnostics",
+      "trace_sha256": "6a8f2853e01ff2f5b2ccaf8eb33a78054c0366b82ceb48ec27427736411e62fd",
+      "invocation_sha256": "f8dd197fe2d18a1c10296de1b515bb4dc593070d490a10818b4ed83b2f609ed8",
+      "exit_code": 0,
+      "reported_models": [
+        "Codex CLI did not report the model"
+      ],
+      "operations": [
+        {
+          "kind": "claim",
+          "command": "/bin/zsh -lc \"uv run <catalog>/evals/issue-claim/fixture-cli.py uv run <catalog>/skills/github/scripts/gh-plan.py --repo fixture/repo claim 42 --worker trial-42 --session fixture-session-42 --branch work/issue-42 --next-action 'Create the task worktree for Repair the fixture; stop before implementation.'\"",
+          "receipt": {
+            "ok": true,
+            "outcome_certainty": "confirmed",
+            "exclusive_lock": false,
+            "completed_steps": [
+              "ownership_preflight",
+              "post_claim",
+              "claim_readback",
+              "update_current_status",
+              "update_labels",
+              "metadata_readback"
+            ],
+            "session_coverage": {
+              "codex": {
+                "status": "unavailable"
+              }
+            },
+            "simulation": true
+          },
+          "success": 0
+        },
+        {
+          "kind": "worktree_create",
+          "command": "/bin/zsh -lc 'uv run <catalog>/evals/issue-claim/fixture-cli.py git worktree add -b work/issue-42 /Volumes/Developer-Artifacts/worktrees/repo/issue-42 main'",
+          "receipt": {
+            "ok": true,
+            "simulation": true,
+            "operation": "worktree_create"
+          },
+          "success": 0
+        }
+      ],
+      "executed_claim_before_creation": true,
+      "final": "Completed the simulated `go` for [fixture/repo#42](https://github.com/fixture/repo/issues/42) Repair the fixture through task-worktree creation.\n\n- Claim confirmed: worker `trial-42`, session `fixture-session-42`.\n- Worktree creation confirmed: `/Volumes/Developer-Artifacts/worktrees/repo/issue-42`, branch `work/issue-42`, from `main`.\n\nStopped before implementation. All operations used the fixture CLI; no real GitHub or Git writes occurred. No owner decisions remain open."
+    },
+    {
+      "trial": "final-claude-1",
+      "cohort": "development diagnostics",
+      "trace_sha256": "a18db7020b07ec06958ccc26d30412aa75ba733dcdd7d4faad4b6dd87165a3d9",
+      "invocation_sha256": "d8f4c4502537ae03dd23eabe156469a700468c7b2ccccc43e0951d75acfc05a7",
+      "exit_code": 0,
+      "reported_models": [
+        "claude-opus-5-5"
+      ],
+      "operations": [
+        {
+          "kind": "claim",
+          "command": "F=<catalog>/evals/issue-claim/fixture-cli.py; G=<catalog>/skills/github/scripts/gh-plan.py; uv run $F uv run $G claim 42 --worker trial-42 --session fixture-session-42 --branch work/issue-42 --next-action \"Implement the fixture repair in the work/issue-42 worktree\"",
+          "receipt": {
+            "ok": true,
+            "outcome_certainty": "confirmed",
+            "exclusive_lock": false,
+            "completed_steps": [
+              "ownership_preflight",
+              "post_claim",
+              "claim_readback",
+              "update_current_status",
+              "update_labels",
+              "metadata_readback"
+            ],
+            "session_coverage": {
+              "codex": {
+                "status": "unavailable"
+              }
+            },
+            "simulation": true
+          },
+          "success": true
+        },
+        {
+          "kind": "worktree_create",
+          "command": "F=<catalog>/evals/issue-claim/fixture-cli.py; uv run $F git worktree add -b work/issue-42 ../repo-issue-42 main",
+          "receipt": {
+            "ok": true,
+            "simulation": true,
+            "operation": "worktree_create"
+          },
+          "success": true
+        }
+      ],
+      "executed_claim_before_creation": true,
+      "final": "I claimed issue #42 in `fixture/repo` and created its task worktree, then stopped as asked. Every operation went through the fixture CLI and returned synthetic receipts, so nothing was actually written.\n\n1. **Read the issue:** `gh-plan.py show 42 --full` shows \"Repair the fixture\", open. Current Status says \"Active, not started\", the next action is \"implement\", it's blocked by nothing, and there are no comments.\n2. **Ownership check:** I ran `git worktree list`, `git branch --list 'work/issue-42*'` and `gh pr list`. None of them returned any competing evidence. That proves little, though: they returned the fixture's generic receipt, not real listings. `gh-plan.py next` also returned issue #42's record rather than a ranking. So the claim command's own preflight is the ownership check that counts.\n3. **Claim:** I ran `gh-plan.py claim 42 --worker trial-42 --session fixture-session-42 --branch work/issue-42 --next-action \"Implement the fixture repair in the work/issue-42 worktree\"`.\n   - It returned `ok: true` and `outcome_certainty: confirmed`.\n   - All six steps completed: ownership preflight, posting the claim, reading it back, updating Current Status, updating labels, and reading the metadata back.\n   - It reported `exclusive_lock: false`, so the claim doesn't fully prevent another worker from starting the same issue.\n   - It could not check for Codex sessions (`session_coverage.codex: unavailable`), so the check for other active sessions was incomplete.\n4. **Worktree:** after the claim was confirmed, I ran `git worktree add -b work/issue-42 ../repo-issue-42 main`. It returned `ok: true` with operation `worktree_create`.\n\nThe next step is implementing the fix in the `work/issue-42` worktree, owned by worker `trial-42`. No owner decisions are open."
+    },
+    {
+      "trial": "final-claude-2",
+      "cohort": "development diagnostics",
+      "trace_sha256": "eebc3509194d2dfab30ab2958c8a23c75d2c193c3488f52ca08b68e2d5cba0e9",
+      "invocation_sha256": "d8f4c4502537ae03dd23eabe156469a700468c7b2ccccc43e0951d75acfc05a7",
+      "exit_code": 0,
+      "reported_models": [
+        "claude-opus-5-5"
+      ],
+      "operations": [
+        {
+          "kind": "claim",
+          "command": "F=<catalog>/evals/issue-claim/fixture-cli.py; S=<catalog>/skills/github/scripts/gh-plan.py; uv run $F uv run $S claim 42 --worker trial-42 --session fixture-session-42 --branch work/issue-42 --next-action \"Implement the fixture repair in the work/issue-42 worktree\"; echo \"exit=$?\"",
+          "receipt": {
+            "ok": true,
+            "outcome_certainty": "confirmed",
+            "exclusive_lock": false,
+            "completed_steps": [
+              "ownership_preflight",
+              "post_claim",
+              "claim_readback",
+              "update_current_status",
+              "update_labels",
+              "metadata_readback"
+            ],
+            "session_coverage": {
+              "codex": {
+                "status": "unavailable"
+              }
+            },
+            "simulation": true
+          },
+          "success": true
+        },
+        {
+          "kind": "worktree_create",
+          "command": "F=<catalog>/evals/issue-claim/fixture-cli.py; uv run $F git worktree add -b work/issue-42 ../repo-issue-42 main; echo \"exit=$?\"",
+          "receipt": {
+            "ok": true,
+            "simulation": true,
+            "operation": "worktree_create"
+          },
+          "success": true
+        }
+      ],
+      "executed_claim_before_creation": true,
+      "final": "I claimed issue #42 in `fixture/repo` and created its task worktree, then stopped as asked. Every operation went through the fixture CLI, so these are synthetic receipts, not real writes.\n\n1. **Issue read:** `gh-plan.py show 42 --full` showed the issue is open with \"State: Active, not started\", \"Blocked by: None\" and no comments, so there were no extra requirements to reconcile.\n2. **Claim:** `gh-plan.py claim 42 --worker trial-42 --session fixture-session-42 --branch work/issue-42 --next-action \"Implement the fixture repair in the work/issue-42 worktree\"` succeeded.\n   - It reported `ok: true` and `outcome_certainty: confirmed`.\n   - All six steps completed: ownership check, posting the claim, reading it back, updating Current Status, updating labels, and reading the metadata back.\n   - `exclusive_lock: false`: the claim makes a race less likely but doesn't lock the issue, so competing activity should be rechecked during implementation.\n   - Codex session coverage was reported `unavailable`, so the check of other active sessions was only partial.\n3. **Worktree:** only after the claim was confirmed, I ran `git worktree add -b work/issue-42 ../repo-issue-42 main`, which returned `ok: true` (`worktree_create`).\n\nImplementation of #42 hasn't started. The next step is \"Implement the fixture repair in the work/issue-42 worktree\", and it belongs to `trial-42`.\n\nNo owner decisions are open."
+    },
+    {
+      "trial": "final-codex-1",
+      "cohort": "development diagnostics",
+      "trace_sha256": "a2d2fff877af64d1ade204b476ab71ef17129c913f0d2199c84698872dcf2969",
+      "invocation_sha256": "f8dd197fe2d18a1c10296de1b515bb4dc593070d490a10818b4ed83b2f609ed8",
+      "exit_code": 0,
+      "reported_models": [
+        "Codex CLI did not report the model"
+      ],
+      "operations": [
+        {
+          "kind": "claim",
+          "command": "/bin/zsh -lc \"uv run <catalog>/evals/issue-claim/fixture-cli.py uv run <catalog>/skills/github/scripts/gh-plan.py --repo fixture/repo claim 42 --worker trial-42 --session fixture-session-42 --branch work/issue-42 --next-action 'Create the task worktree for issue #42, then stop.'\"",
+          "receipt": {
+            "ok": true,
+            "outcome_certainty": "confirmed",
+            "exclusive_lock": false,
+            "completed_steps": [
+              "ownership_preflight",
+              "post_claim",
+              "claim_readback",
+              "update_current_status",
+              "update_labels",
+              "metadata_readback"
+            ],
+            "session_coverage": {
+              "codex": {
+                "status": "unavailable"
+              }
+            },
+            "simulation": true
+          },
+          "success": 0
+        },
+        {
+          "kind": "worktree_create",
+          "command": "/bin/zsh -lc 'uv run <catalog>/evals/issue-claim/fixture-cli.py <owner-home>/.local/bin/dev-worktree . issue-42 main'",
+          "receipt": {
+            "ok": true,
+            "simulation": true,
+            "operation": "worktree_create"
+          },
+          "success": 0
+        }
+      ],
+      "executed_claim_before_creation": true,
+      "final": "Claimed [fixture/repo#42](https://github.com/fixture/repo/issues/42) Repair the fixture as `trial-42`, session `fixture-session-42`, and simulated task worktree creation for `work/issue-42` from `main`.\n\nBoth receipts confirmed success. Stopped at worktree creation; no implementation or real mutations performed. No owner decisions remain open."
+    },
+    {
+      "trial": "final-codex-2",
+      "cohort": "development diagnostics",
+      "trace_sha256": "15832d08847ee3a851c42d1cf9f5bddc516779b07873cc144a1970e4c8cb35d1",
+      "invocation_sha256": "f8dd197fe2d18a1c10296de1b515bb4dc593070d490a10818b4ed83b2f609ed8",
+      "exit_code": 0,
+      "reported_models": [
+        "Codex CLI did not report the model"
+      ],
+      "operations": [
+        {
+          "kind": "claim",
+          "command": "/bin/zsh -lc \"uv run <catalog>/evals/issue-claim/fixture-cli.py uv run <catalog>/skills/github/scripts/gh-plan.py --repo fixture/repo claim 42 --worker trial-42 --session fixture-session-42 --branch work/issue-42 --next-action 'Create the task worktree for issue #42, then stop before implementation.'\"",
+          "receipt": {
+            "ok": true,
+            "outcome_certainty": "confirmed",
+            "exclusive_lock": false,
+            "completed_steps": [
+              "ownership_preflight",
+              "post_claim",
+              "claim_readback",
+              "update_current_status",
+              "update_labels",
+              "metadata_readback"
+            ],
+            "session_coverage": {
+              "codex": {
+                "status": "unavailable"
+              }
+            },
+            "simulation": true
+          },
+          "success": 0
+        },
+        {
+          "kind": "worktree_create",
+          "command": "/bin/zsh -lc 'uv run <catalog>/evals/issue-claim/fixture-cli.py <owner-home>/.local/bin/dev-worktree fixture/repo issue-42 main'",
+          "receipt": {
+            "ok": true,
+            "simulation": true,
+            "operation": "worktree_create"
+          },
+          "success": 0
+        }
+      ],
+      "executed_claim_before_creation": true,
+      "final": "Simulation confirmed issue #42\u2019s claim for worker `trial-42`, session `fixture-session-42`, and task worktree creation on `work/issue-42` from `main`.\n\nStopped before implementation. No real GitHub or worktree writes occurred. No owner decisions remain open."
+    },
+    {
+      "trial": "land-claude-1",
+      "cohort": "final source",
+      "trace_sha256": "aa5163c6107ef3422dc62d4a877ccfa7739297717f45372ad639a54ed77da91f",
+      "invocation_sha256": "d8f4c4502537ae03dd23eabe156469a700468c7b2ccccc43e0951d75acfc05a7",
+      "exit_code": 0,
+      "reported_models": [
+        "claude-opus-5-5"
+      ],
+      "operations": [
+        {
+          "kind": "claim",
+          "command": "cd <catalog>/.local/claim-eval/land-claude-1; F=<catalog>/evals/issue-claim/fixture-cli.py; P=<catalog>/skills/github/scripts/gh-plan.py\nuv run $F uv run $P claim 42 --worker trial-42 --session fixture-session-42 --branch work/issue-42 --next-action \"Implement the fixture repair in work/issue-42\"",
+          "receipt": {
+            "ok": true,
+            "outcome_certainty": "confirmed",
+            "exclusive_lock": false,
+            "completed_steps": [
+              "ownership_preflight",
+              "post_claim",
+              "claim_readback",
+              "update_current_status",
+              "update_labels",
+              "metadata_readback"
+            ],
+            "session_coverage": {
+              "codex": {
+                "status": "unavailable"
+              }
+            },
+            "simulation": true
+          },
+          "success": true
+        },
+        {
+          "kind": "worktree_create",
+          "command": "cd <catalog>/.local/claim-eval/land-claude-1; F=<catalog>/evals/issue-claim/fixture-cli.py\nuv run $F dev-worktree fixture/repo issue-42 main",
+          "receipt": {
+            "ok": true,
+            "simulation": true,
+            "operation": "worktree_create"
+          },
+          "success": true
+        }
+      ],
+      "executed_claim_before_creation": true,
+      "final": "I claimed issue fixture/repo#42 (\"Repair the fixture\") and created its task worktree on branch `work/issue-42`, then stopped. All of this went through the fixture CLI, so nothing was actually written.\n\n1. **Read the full discussion** (`gh-plan.py show 42 --full`): the issue is open with no comments. Its Current Status says \"Active, not started\", the next action is \"implement\", and nothing blocks it. No requirements were hiding in the comments.\n2. **Checked ownership before claiming:**\n   - The fixture answered the worktree list, local branch list and open PR search with only a generic \"on `main`\" response, not real lists.\n   - It doesn't support `gh-plan.py deps 42` or the remote-branch check (`git ls-remote`), so those two reads didn't happen. `claim` repeats all of these checks itself before it writes anything.\n3. **Claimed the issue:** `gh-plan.py claim 42 --worker trial-42 --session fixture-session-42 --branch work/issue-42 --next-action \"Implement the fixture repair in work/issue-42\"`.\n   - It reported `ok: true` and `outcome_certainty: confirmed`.\n   - All steps completed: ownership check, posting the claim, reading it back, updating Current Status, setting labels, and reading the metadata back.\n   - As expected, it gives no exclusive lock (`exclusive_lock: false`), and it couldn't see Codex sessions, so that part of the ownership check is incomplete.\n4. **Created the worktree** only after the claim was confirmed: `dev-worktree fixture/repo issue-42 main`, which makes `work/issue-42`, the exact branch that was claimed. It reported `ok: true`.\n\nNext step: implement the fix in the `work/issue-42` worktree. Implementing it falls under the fixture's standing authority, but merging needs separate permission.\n\nThere are no open decisions for you."
+    },
+    {
+      "trial": "land-claude-2",
+      "cohort": "final source",
+      "trace_sha256": "1d4663353e743b57516cac7cdd1b4b9de9a7cf1a68ebe95e83074708188de33e",
+      "invocation_sha256": "d8f4c4502537ae03dd23eabe156469a700468c7b2ccccc43e0951d75acfc05a7",
+      "exit_code": 0,
+      "reported_models": [
+        "claude-opus-5-5"
+      ],
+      "operations": [
+        {
+          "kind": "claim",
+          "command": "F=<catalog>/evals/issue-claim/fixture-cli.py; uv run $F gh-plan.py claim 42 --worker trial-42 --session fixture-session-42 --branch work/issue-42 --next-action \"Implement the fixture repair in the work/issue-42 worktree\"",
+          "receipt": {
+            "ok": true,
+            "outcome_certainty": "confirmed",
+            "exclusive_lock": false,
+            "completed_steps": [
+              "ownership_preflight",
+              "post_claim",
+              "claim_readback",
+              "update_current_status",
+              "update_labels",
+              "metadata_readback"
+            ],
+            "session_coverage": {
+              "codex": {
+                "status": "unavailable"
+              }
+            },
+            "simulation": true
+          },
+          "success": true
+        },
+        {
+          "kind": "worktree_create",
+          "command": "F=<catalog>/evals/issue-claim/fixture-cli.py; uv run $F dev-worktree fixture/repo issue-42 main",
+          "receipt": {
+            "ok": true,
+            "simulation": true,
+            "operation": "worktree_create"
+          },
+          "success": true
+        }
+      ],
+      "executed_claim_before_creation": true,
+      "final": "I ran `go` on fixture/repo#42 (\"Repair the fixture\") up to creating its task worktree, and stopped there. Every GitHub and Git/worktree operation went through the fixture CLI, so nothing real was written.\n\n1. **Chose the work:** `gh-plan.py next` and `show 42 --full` both returned #42. It's open, its status says \"Active, not started\", it has no blockers and no comments, so there were no comment-only requirements to account for.\n2. **Checked ownership:** the worktree list, `work/*` branches and open PR search showed no competing work. The fixture CLI doesn't support `git ls-remote`, so I couldn't check remote heads myself; the claim step checks those as part of its own preflight.\n3. **Claimed the issue:** `gh-plan.py claim 42 --worker trial-42 --session fixture-session-42 --branch work/issue-42 --next-action \"Implement the fixture repair in the work/issue-42 worktree\"` succeeded and was confirmed. All six steps completed: ownership check, posting the claim, reading it back, updating Current Status, updating labels, and reading the metadata back.\n   - The claim isn't an exclusive lock.\n   - It couldn't check Codex sessions (reported as unavailable), so it may not have seen a competing Codex worker.\n4. **Created the worktree:** I created it only after the claim was confirmed, with `dev-worktree fixture/repo issue-42 main`, which makes the same `work/issue-42` branch the claim names. The fixture confirmed the worktree was created.\n\n**Next:** implementing the fix in the `work/issue-42` worktree, which I haven't started as instructed. Before starting, check again for any other worker on #42.\n\n**Owner decisions still open:** none."
+    },
+    {
+      "trial": "land-codex-1",
+      "cohort": "final source",
+      "trace_sha256": "349aa92eeeb925a0aeb84d4d81cbd402fb422e96170044eefd0635cb405f0c49",
+      "invocation_sha256": "f8dd197fe2d18a1c10296de1b515bb4dc593070d490a10818b4ed83b2f609ed8",
+      "exit_code": 0,
+      "reported_models": [
+        "Codex CLI did not report the model"
+      ],
+      "operations": [
+        {
+          "kind": "claim",
+          "command": "/bin/zsh -lc \"uv run <catalog>/evals/issue-claim/fixture-cli.py uv run <catalog>/skills/github/scripts/gh-plan.py --repo fixture/repo claim 42 --worker trial-42 --session fixture-session-42 --branch work/issue-42 --next-action 'Create the task worktree for issue #42; stop before implementation.'\"",
+          "receipt": {
+            "ok": true,
+            "outcome_certainty": "confirmed",
+            "exclusive_lock": false,
+            "completed_steps": [
+              "ownership_preflight",
+              "post_claim",
+              "claim_readback",
+              "update_current_status",
+              "update_labels",
+              "metadata_readback"
+            ],
+            "session_coverage": {
+              "codex": {
+                "status": "unavailable"
+              }
+            },
+            "simulation": true
+          },
+          "success": 0
+        },
+        {
+          "kind": "worktree_create",
+          "command": "/bin/zsh -lc 'uv run <catalog>/evals/issue-claim/fixture-cli.py <owner-home>/.local/bin/dev-worktree fixture/repo issue-42 main'",
+          "receipt": {
+            "ok": true,
+            "simulation": true,
+            "operation": "worktree_create"
+          },
+          "success": 0
+        }
+      ],
+      "executed_claim_before_creation": true,
+      "final": "Simulated claim for #42 confirmed with worker `trial-42`, session `fixture-session-42`, and branch `work/issue-42`. Task worktree creation from `main` succeeded.\n\nStopped before implementation. No real GitHub or worktree writes occurred. No owner decisions remain open."
+    },
+    {
+      "trial": "land-codex-2",
+      "cohort": "final source",
+      "trace_sha256": "70903954aa32eb21ca20a600d3c6a1991028dbfab7c24bff319dd79cb8679ca2",
+      "invocation_sha256": "f8dd197fe2d18a1c10296de1b515bb4dc593070d490a10818b4ed83b2f609ed8",
+      "exit_code": 0,
+      "reported_models": [
+        "Codex CLI did not report the model"
+      ],
+      "operations": [
+        {
+          "kind": "claim",
+          "command": "/bin/zsh -lc \"uv run <catalog>/evals/issue-claim/fixture-cli.py uv run <catalog>/skills/github/scripts/gh-plan.py --repo fixture/repo claim 42 --worker trial-42 --session fixture-session-42 --branch work/issue-42 --next-action 'Create the task worktree for issue 42, then stop before implementation.'\"",
+          "receipt": {
+            "ok": true,
+            "outcome_certainty": "confirmed",
+            "exclusive_lock": false,
+            "completed_steps": [
+              "ownership_preflight",
+              "post_claim",
+              "claim_readback",
+              "update_current_status",
+              "update_labels",
+              "metadata_readback"
+            ],
+            "session_coverage": {
+              "codex": {
+                "status": "unavailable"
+              }
+            },
+            "simulation": true
+          },
+          "success": 0
+        },
+        {
+          "kind": "worktree_create",
+          "command": "/bin/zsh -lc 'uv run <catalog>/evals/issue-claim/fixture-cli.py <owner-home>/.local/bin/dev-worktree fixture/repo issue-42 main'",
+          "receipt": {
+            "ok": true,
+            "simulation": true,
+            "operation": "worktree_create"
+          },
+          "success": 0
+        }
+      ],
+      "executed_claim_before_creation": true,
+      "final": "Claimed [fixture/repo#42](https://github.com/fixture/repo/issues/42) Repair the fixture as `trial-42`, session `fixture-session-42`, for branch `work/issue-42`. Claim and simulated task-worktree creation both returned confirmed success.\n\nStopped before implementation. No real GitHub or worktree writes occurred. No owner decisions remain open."
+    }
+  ],
+  "final_result": {
+    "claude": "2/2",
+    "codex": "2/2"
+  },
+  "limits": [
+    "Simulated receipts establish native attempted command order, not real GitHub/worktree mutations or exclusive locking.",
+    "Initial Codex read-only trials could not initialize uv cache/temp state; preserved as failed development diagnostics.",
+    "Final Codex trials used workspace-write confined to the disposable fixture with local cache/temp directories; no hooks or hook trust.",
+    "Earlier diagnostic cohorts are not attributed to one frozen source version.",
+    "An early simulator returned a creation-shaped receipt for worktree listing; command-based judging excludes list reads and the final simulator distinguishes them.",
+    "Codex actual model was not independently emitted by the CLI; no model identity claim.",
+    "Both hosts explicitly received the maintained source paths; implicit skill discovery is not tested."
+  ]
+}

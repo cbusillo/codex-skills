@@ -28,6 +28,7 @@ import github_issue as github_issue_core
 import github_milestone as github_milestone_core
 import github_identity
 import github_direction_next
+import github_plan_claim
 from github_direction_next import (
     normalize_labels,
     compact_list_issue,
@@ -83,6 +84,7 @@ PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
     "index": ("rest_api", "rest_core", False),
     "search": ("rest_api", "search", False),
     "show": ("rest_api", "rest_core", False),
+    "claim": ("composite", "rest_core", True),
     "create": ("composite", "mixed", True),
     "update-section": ("rest_api", "rest_core", True),
     "link": ("rest_api", "rest_core", True),
@@ -1861,6 +1863,187 @@ def cmd_show(args: argparse.Namespace) -> None:
         for comment in comments
     ]
     emit({"ok": True, "actor": actor, "issue": result})
+
+
+def claim_snapshot(ref: str, repo: str) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:
+    _, issue = get_issue(ref, repo)
+    if issue.get("state") != "open" or "pull_request" in issue:
+        raise PlanError("Claim requires an open issue")
+    sections, provenance = read_plan_sections(issue)
+    _, comments = collect_paged_rest_items(
+        f"/repos/{issue['repo']}/issues/{issue['number']}/comments",
+        query={}, bucket="rest_core", step_prefix="claim_comments",
+    )
+    can_update = provenance["section_updates_allowed"] and provenance["ownership"] != "contributor_unmanaged"
+    return issue, sections.get("Current Status", ""), comments, can_update
+
+
+def cmd_claim(args: argparse.Namespace) -> None:
+    repo = default_repo(args.repo)
+    issue_repo, number = issue_ref(args.issue, repo)
+    claim = {key: getattr(args, key) for key in ("worker", "session", "branch")}
+    for key, value in claim.items():
+        if not value or re.search(r"\s|[<>]", value):
+            raise PlanError(f"Claim {key} must be a nonempty single-line token")
+    if not args.next_action.strip() or any(c in args.next_action for c in "\n\r"):
+        raise PlanError("Claim next action must be a nonempty single line")
+    if args.wait_resolved is not None and (not args.wait_resolved.strip() or any(c in args.wait_resolved for c in "\n\r")):
+        raise PlanError("Wait resolution must record existing evidence on one line")
+    if subprocess.run(["git", "check-ref-format", "--branch", args.branch],
+                      capture_output=True).returncode:
+        raise PlanError("Claim branch is not a valid Git branch")
+    claim["claimed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    completed: list[str] = []
+    claim_comment: dict[str, Any] = {}
+    inventory: dict[str, Any] = {}
+    previous_status = ""
+    config = load_config(repo)
+
+    def check_wait(issue: dict[str, Any], status: str) -> None:
+        status_state = next_plan_status(issue, config)
+        reports = github_direction_next.waiting_records(compact_issue(issue), status)
+        blocked_text = any(
+            (match := re.match(r"\s*(?:[-*]\s+)?Blocked by:\s*(.+)", line, re.I))
+            and match.group(1).casefold().rstrip(" .") not in {"none", "n/a", "nothing", "-"}
+            for line in status.splitlines()
+        )
+        if (status_state in {"waiting", "blocked", "stale", "done"} or reports or blocked_text
+                or re.search(r"(?im)^\s*(?:[-*]\s+)?State:\s*(?:waiting|parked|blocked|stale|done)\b", status)):
+            if not args.wait_resolved:
+                raise ClassifiedPlanError("claim_wait_unresolved", "Verify the recorded wait or hold, then pass --wait-resolved with existing resolution evidence",
+                                          payload={"previous_current_status": status})
+
+    def claim_recovery() -> dict[str, Any]:
+        recovery = {}
+        comment_id = (claim_comment.get("comment") or {}).get("id")
+        if "post_claim" in completed and comment_id:
+            recovery = {"release_own_claim": {"comment_id": comment_id,
+                                             "body": f"Released claim {comment_id}"},
+                        "then": "Post this exact release through the same bot, preserve competing ownership, and recheck before any retry"}
+        return recovery
+
+    def refuse(conflicts: list[dict[str, Any]]) -> None:
+        raise ClassifiedPlanError(
+            "claim_conflict", "Another worker or ambiguous ownership evidence holds this issue; preserve it for owner review",
+            payload={"competing_evidence": conflicts, "claim_recovery": claim_recovery()},
+        )
+
+    try:
+        issue, status, comments, can_update = claim_snapshot(args.issue, repo)
+        previous_status = status
+        conflicts, owned = github_plan_claim.discussion_evidence(status, comments, claim)
+        if conflicts:
+            refuse(conflicts)
+        check_wait(issue, status)
+        if owned:
+            claim = {key: owned[0][key] for key in claim}
+        retained = github_plan_claim.retained_branch(comments, args.resume_from) if args.resume_from else None
+        _, blockers = collect_paged_rest_items(
+            f"/repos/{issue_repo}/issues/{number}/dependencies/blocked_by",
+            query={}, bucket="rest_core", step_prefix="claim_blockers",
+        )
+        if any(blocker.get("state") != "closed" for blocker in blockers):
+            raise PlanError("Claim requires resolved native blockers; preserve blocked planning state")
+        inventory = github_plan_claim.local_inventory(issue_repo, number)
+        _, pulls = collect_paged_rest_items(
+            f"/repos/{issue_repo}/pulls", query={"state": "open"},
+            bucket="rest_core", step_prefix="claim_open_prs",
+        )
+        conflicts = github_plan_claim.artifact_evidence(inventory, pulls, number, claim,
+                                                       own_record=bool(owned), retained=retained, repo=issue_repo)
+        if conflicts:
+            refuse(conflicts)
+        completed.append("ownership_preflight")
+        actor, gh_cmd, expected_actor = comment_route()
+        text = (
+            f"Claimed by {claim['worker']}\n\nSession: {claim['session']}\nBranch: {claim['branch']}\n"
+            f"Claimed at: {claim['claimed_at']}\nNext action: {args.next_action}\n\n"
+            + github_plan_claim.marker(claim)
+            + (f"\n\nWait resolution: {args.wait_resolved}" if args.wait_resolved else "")
+            + "\n\nPrevious Current Status:\n" + "\n".join("> " + line for line in previous_status.splitlines())
+        )
+        _, comment_owners = github_plan_claim.discussion_evidence("", comments, claim)
+        comment_recorded = any(record.get("_legacy") != "yes" for record in comment_owners)
+        if not comment_recorded:
+            claim_comment = github_comment_core.comment(
+                "issue", number, text, repo=issue_repo, gh_cmd=gh_cmd,
+                expected_actor=expected_actor, operation=CURRENT_OPERATION,
+                completed_steps=completed, failed_step="post_claim", dedupe_body=True,
+            )
+            completed.append("post_claim")
+        # Check the discussion again before touching status or labels.
+        issue, status, comments, can_update = claim_snapshot(args.issue, repo)
+        conflicts, observed = github_plan_claim.discussion_evidence(status, comments, claim)
+        if conflicts:
+            refuse(conflicts)
+        check_wait(issue, status)
+        if not any(github_plan_claim.same_owner(record, claim) for record in observed):
+            raise PlanError("Claim was not visible on readback; do not create a worktree")
+        completed.append("claim_readback")
+        status_text = (
+            f"State: Active; owned by {claim['worker']}.\nSession: {claim['session']}\n"
+            f"Branch: {claim['branch']}\nNext action: {args.next_action}\n"
+            f"Blocked by: None.\nWaiting for: Nothing.\nLast verified: {claim['claimed_at']}\n\n"
+            + github_plan_claim.marker(claim)
+        )
+        if can_update:
+            body = replace_issue_plan_section(issue, "Current Status", status_text)
+            rest_edit_issue(issue_repo, number, body=body)
+            completed.append("update_current_status")
+        label_map = config["labels"]
+        label_result = github_issue_core.edit_issue(
+            number, repo=issue_repo, add_labels=[label_map["active"]],
+            remove_labels=[label_map[key] for key in ("waiting", "stale", "done", "blocked")
+                           if label_map[key] in normalize_labels(issue.get("labels"))],
+            gh_cmd=gh_cmd, expected_actor=expected_actor, operation=CURRENT_OPERATION,
+        )
+        completed.append("update_labels")
+        actor = label_result.get("actor") or actor
+        final, final_status, final_comments, _ = claim_snapshot(args.issue, repo)
+        conflicts, observed = github_plan_claim.discussion_evidence(final_status, final_comments, claim)
+        if conflicts:
+            refuse(conflicts)
+        if not observed or label_map["active"] not in normalize_labels(final.get("labels")):
+            raise PlanError("Claim metadata was not visible on final readback")
+        if can_update and not any(github_plan_claim.same_owner(record, claim)
+                                  for record in github_plan_claim.records(final_status)):
+            raise PlanError("Current Status claim changed during readback")
+        completed.append("metadata_readback")
+    except github_comment_core.CommentError as exc:
+        error = plan_error_from_comment(exc, completed_steps=completed)
+        error.payload.update({"claim": claim, "claim_comment": claim_comment, "previous_current_status": previous_status,
+                              "claim_recovery": claim_recovery()})
+        raise error from exc
+    except github_issue_core.IssueError as exc:
+        error = plan_error_from_issue(exc, completed_steps=completed)
+        error.payload.update({"claim": claim, "claim_comment": claim_comment, "previous_current_status": previous_status,
+                              "claim_recovery": claim_recovery()})
+        raise error from exc
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        raise PlanError(str(exc), payload={"completed_steps": completed, "claim": claim,
+                                          "previous_current_status": previous_status,
+                                          "claim_recovery": claim_recovery(),
+                                          "claim_comment": claim_comment,
+                                          "session_coverage": inventory.get("session_coverage", {})}) from exc
+    except PlanError as exc:
+        exc.payload.update({"completed_steps": completed, "claim": claim, "claim_comment": claim_comment,
+                            "previous_current_status": previous_status,
+                            "claim_recovery": claim_recovery(),
+                            "session_coverage": inventory.get("session_coverage", {})})
+        if exc.failure is not None:
+            exc.failure.completed_steps = merge_completed_steps(completed, exc.failure.completed_steps)
+        elif completed:
+            exc.failure = github_api_core.FailureDetail(
+                cause=getattr(exc, "code", "claim_incomplete"), message=str(exc),
+                retryable=False, fallback_eligible=False, disposition="stop",
+                write_outcome="unknown", completed_steps=completed,
+            )
+        raise
+    emit({"ok": True, "actor": actor, "claim": claim, "claim_comment": claim_comment, "issue": compact_issue(final),
+          "current_status_location": "issue_body" if can_update else "claim_comment",
+          "previous_current_status": previous_status,
+          "session_coverage": inventory["session_coverage"], "exclusive_lock": False,
+          "completed_steps": completed})
 
 
 def cmd_create(args: argparse.Namespace) -> None:
@@ -3759,6 +3942,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--full", action="store_true", help="Include the entire body instead of selected sections")
     p.add_argument("--sections", nargs="+")
     p.set_defaults(func=cmd_show)
+
+    p = sub.add_parser("claim", help="Recheck, record, and read back issue ownership before work")
+    p.add_argument("issue")
+    p.add_argument("--worker", required=True)
+    p.add_argument("--session", required=True)
+    p.add_argument("--branch", required=True, help="Exact task branch the worktree helper will create; create it only after claim succeeds")
+    p.add_argument("--next-action", required=True)
+    p.add_argument("--resume-from", type=int, help="Released structured claim comment ID for verified retained-work handoff")
+    p.add_argument("--wait-resolved", help="Existing resolution evidence for a recorded wait/hold; grants no new authority")
+    p.set_defaults(func=cmd_claim)
 
     p = sub.add_parser("create", help="Create a durable plan issue")
     p.add_argument("title", nargs="?", help="Issue title (positional)")
