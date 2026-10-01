@@ -128,7 +128,10 @@ local extensions until the vendored artifact is refreshed.
   host only, the owner-review flag, and the names of omitted or missing
   integration keys (as `omitted_integration_keys` and `missing_keys`). Operation
   ids include `queued_operation_id`, `active_operation_id`,
-  `deployed_operation_id` and `last_failed_operation_id`. Any other plan field,
+  `deployed_operation_id` and `last_failed_operation_id`. A failed testing
+  deploy also keeps `last_failed_error_code` and `last_failed_error_summary`.
+  The service redacts that summary, and the helper's summary rules then apply
+  to it the same way they do to `last_error`. Any other plan field,
   such as rejected-build error text or PR feedback, is dropped and counted under
   `requests[].last_plan.<unlisted field>`; the same drop and omit rules apply.
 - `target-replacement-operation-read --operation-id` calls

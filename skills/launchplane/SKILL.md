@@ -1065,7 +1065,9 @@ verification.
   phase, times, attempt, artifact id, image digest, step statuses and error
   code; free-text error messages are dropped. The service authorizes it as
   `odoo_target_replacement_apply.execute` on the operation's own product,
-  context and instance.
+  context and instance. Without that grant, read why a reconciler testing
+  deploy failed from `reconcile-requests-read` (`last_failed_error_code` and
+  the service-redacted `last_failed_error_summary`).
 - `POST /v1/work-graph/merge-train/controller/run-once`: Preferred merge-train
   controller path; call repeatedly to advance one safe phase at a time.
 - `POST /v1/previews/pr-feedback/remediation`: Contract-backed bounded preview

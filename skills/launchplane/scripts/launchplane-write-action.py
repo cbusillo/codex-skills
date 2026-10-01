@@ -2632,6 +2632,7 @@ def _reconcile_plan_validators() -> dict[str, Any]:
             "preview_operation_status",
             "preview_result_status",
             "queued_operation_status",
+            "last_failed_error_code",
         ),
         _public_dotted_code,
     )
@@ -2661,6 +2662,8 @@ def _reconcile_plan_validators() -> dict[str, Any]:
     )
     fields.update(
         detail=lambda value: public_summary_string(value, max_length=400),
+        # Redacted by the service; the helper's own summary redaction still applies.
+        last_failed_error_summary=lambda value: public_summary_string(value, max_length=300),
         hold_reason=lambda value: public_summary_string(value, max_length=300),
         hold_recorded_at=lambda value: public_summary_string(value, max_length=64),
         preview_url=_public_origin_url,
