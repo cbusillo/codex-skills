@@ -243,13 +243,28 @@ class InstallTests(unittest.TestCase):
         local.write_text("Private instruction.\n")
         old = self.sync.render(self.catalog / "instructions" / "global.md", local)
         (self.codex / "AGENTS.md").write_text(old)
-        (self.catalog / "instructions" / "global.md").write_text("Current shared instructions.\n")
+        (self.catalog / "instructions" / "global.md").write_text("# Shared\n")
         command("git", "commit", "-qam", "update instructions", cwd=self.catalog)
         self.install()
         content = (self.codex / "AGENTS.md").read_text()
-        self.assertIn("Current shared instructions.", content)
+        self.assertIn("# Shared", content)
         self.assertIn("Private instruction.", content)
         self.assertNotIn("Use the catalog.", content)
+
+    def test_first_adoption_identifies_removed_shared_text_before_importing_private_text(self):
+        command("git", "init", "-q", str(self.catalog))
+        UpdateTests.configure(self.catalog)
+        command("git", "add", "instructions/global.md", cwd=self.catalog)
+        command("git", "commit", "-qm", "original instructions", cwd=self.catalog)
+        original = self.sync.render(self.catalog / "instructions" / "global.md", self.root / "absent")
+        (self.codex / "AGENTS.md").write_text(original + "Private rule.\n")
+        (self.catalog / "instructions" / "global.md").write_text("# Shared\n")
+        command("git", "commit", "-qam", "trim shared instructions", cwd=self.catalog)
+        self.install()
+        content = (self.codex / "AGENTS.md").read_text()
+        self.assertIn("Private rule.", content)
+        self.assertNotIn("Use the catalog.", content)
+        self.assertEqual((self.catalog / ".local" / "global-instructions.md").read_text(), "Private rule.\n")
 
     def test_first_adoption_preserves_unsynchronized_manual_instruction_edits(self):
         local = self.catalog / ".local" / "global-instructions.md"
@@ -286,6 +301,21 @@ class InstallTests(unittest.TestCase):
                 (self.codex / "hooks.json").write_text(json.dumps(entry))
                 self.install()
                 self.assertEqual(json.loads((self.codex / "hooks.json").read_text())["hooks"]["SessionStart"], entry["hooks"]["SessionStart"])
+
+    def test_existing_env_wrapped_hook_resolves_its_own_plugin_root(self):
+        hook = {"hooks": {"SessionStart": [{"hooks": [{"command": f"env CLAUDE_PLUGIN_ROOT={self.catalog} sh -c 'uv run \"${{CLAUDE_PLUGIN_ROOT}}/hooks/direction_check_hook.py\"'"}]}]}}
+        (self.codex / "hooks.json").write_text(json.dumps(hook))
+        self.install()
+        self.assertEqual(json.loads((self.codex / "hooks.json").read_text())["hooks"]["SessionStart"], hook["hooks"]["SessionStart"])
+
+    def test_a_different_home_does_not_redirect_an_existing_installation(self):
+        self.install()
+        receipt = self.catalog / ".local" / "catalog-install.json"
+        previous = receipt.read_bytes()
+        with self.assertRaisesRegex(ValueError, "Installed home differs"):
+            installer.install(self.root / "fixture-home", self.root / "fixture-home/.codex", self.root / "fixture-home/.claude", write=True, updater=False)
+        self.assertEqual(receipt.read_bytes(), previous)
+        self.assertFalse((self.root / "fixture-home").exists())
 
     def test_launchd_install_bootstraps_once_and_preserves_a_conflicting_job(self):
         def run(*, write=True):

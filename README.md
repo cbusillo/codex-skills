@@ -47,11 +47,14 @@ into that private source, preview `uv run scripts/sync-global-instructions.py`,
 then run it with `--write` and rerun the installer. Run
 `uv run scripts/catalog_runtime.py --update` to verify recovery and clear a
 recorded failed update. Older manual-sync output
-is adopted when it matches committed catalog history and that private source;
+is adopted when it matches recent committed catalog history and that private source;
 unrecognized output is preserved for inspection. A session hook pointing at
 another checkout is also reported; inspect and update its path before rerunning.
 If the private source is missing after installation, restore it before refreshing;
 use an empty source file when you intend to remove its instructions.
+Use an isolated catalog checkout for fixture homes: the installer stores the
+private source and installation destinations in that checkout and refuses to
+redirect an existing installation to a different home.
 
 On macOS, opt into the guarded six-hour updater in the same install run:
 
