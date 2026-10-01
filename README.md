@@ -458,6 +458,10 @@ automation App, and the other requires code-owner review for `DIRECTION.md` and
 and verifies that the active `gh` account is the repository owner before reading
 the full bypass configuration or writing anything. The configured App ID is
 printed in every plan so the operator can verify the intended bypass actor.
+A GitHub App is optional: with no App configured, the landing ruleset retains
+only the administrator bypass, and the result names the `no_app_bypass` limit.
+Only administrators can then update the default branch. Incomplete or invalid
+App configuration still fails rather than silently removing its bypass.
 
 Plan one or more repositories without changing GitHub:
 
@@ -481,7 +485,10 @@ the configured App is not installed will reject the App bypass actor; treat that
 as a pilot finding, install or deliberately exclude the repository, and rerun
 the idempotent plan before continuing. The direction audit reports
 `ruleset_missing` when an adopted repository lacks either active standard
-branch ruleset.
+branch ruleset. When the owner also acts as automation, the audit reports
+`owner_acts_as_automation` in `limits` and treats that login's milestone admissions
+as owner decisions. This known attribution limit does not make coverage incomplete
+or hide other findings; `ok` and `counts` still describe the findings.
 
 The direction rule intentionally has no bypass. An owner who is the sole code
 owner cannot approve their own pull request, so direction changes should normally

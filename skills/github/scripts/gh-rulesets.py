@@ -105,6 +105,11 @@ def run(
         "owner": owner,
         "actor": client.actor,
         "app_id": app_id,
+        "limits": [] if app_id is not None else [{
+            "kind": "no_app_bypass",
+            "detail": "No GitHub App is configured; only repository administrators can update the default branch. "
+                      "The direction rule still has no bypass; an owner-authored PR needs another eligible code owner.",
+        }],
         "repository_count": len(repositories),
         "changed": any(result["changed"] for result in results),
         "repositories": results,

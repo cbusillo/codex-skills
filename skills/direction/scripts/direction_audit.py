@@ -145,6 +145,7 @@ def audit(
     audit_since: dt.datetime | None = None,
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
+    limits: list[dict[str, Any]] = []
     audit_since = audit_since or now - dt.timedelta(days=7)
     if truncated:
         findings.append({"kind": "coverage_incomplete", "detail": "a bounded read was truncated or unavailable; drift beyond verified coverage is unreported", "listings": sorted(truncated)})
@@ -169,7 +170,13 @@ def audit(
     # The owner's automation can span identities, such as a bot user and a later App.
     bots = {login.lower() for login in (automation, *bot_logins) if login} - {owner.lower()}
     trusted = {owner.lower()} | bots
-    if direction_text is not None and listed and not bots:
+    if direction_text is not None and listed and automation and automation.casefold() == owner.casefold():
+        limits.append({
+            "kind": "owner_acts_as_automation",
+            "detail": "Owner and automation use the same login; owner-authored milestone admissions "
+                      "cannot be distinguished from automation-authored admissions and are treated as owner decisions.",
+        })
+    elif direction_text is not None and listed and not bots:
         findings.append({
             "kind": "coverage_incomplete",
             "detail": "automation identity is indistinguishable from the owner; milestone admission audit cannot classify actors",
@@ -276,6 +283,7 @@ def audit(
         "listed_milestones": listed,
         "open_milestones": sorted(open_titles),
         "findings": findings,
+        "limits": limits,
         "counts": _counts(findings),
     }
 

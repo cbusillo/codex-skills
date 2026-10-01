@@ -12,6 +12,7 @@ import copy
 import importlib.util
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import github_rulesets
 
@@ -89,6 +90,62 @@ def test_standard_specs_have_separate_bypass_boundaries() -> None:
     assert landing_pr["parameters"]["require_code_owner_review"] is False
     assert direction_pr["parameters"]["require_code_owner_review"] is True
     assert direction_pr["parameters"]["dismiss_stale_reviews_on_push"] is True
+
+
+def test_no_app_plan_and_confirmed_apply_converge_without_integration_bypass() -> None:
+    cli = load_cli()
+    client = FakeClient({"owner/repo": []})
+    with patch.object(github_rulesets.github_identity, "github_app_config", return_value=None):
+        plan = cli.run(args("plan"), client=client)
+        assert plan["app_id"] is None
+        assert [item["kind"] for item in plan["limits"]] == ["no_app_bypass"]
+        assert client.writes == []
+        applied = cli.run(args("apply", confirm_owner_admin_write=True), client=client)
+        assert applied["repositories"][0]["verified"] is True
+        landing, direction = client.repos["owner/repo"]
+        assert landing["bypass_actors"] == [{
+            "actor_id": github_rulesets.ADMIN_REPOSITORY_ROLE_ID,
+            "actor_type": "RepositoryRole", "bypass_mode": "always",
+        }]
+        assert direction["bypass_actors"] == []
+        direction_pr = next(rule for rule in direction["rules"] if rule["type"] == "pull_request")
+        assert direction_pr["parameters"]["require_code_owner_review"] is True
+        assert not cli.run(args("plan"), client=client)["changed"]
+        assert not cli.run(args("apply", confirm_owner_admin_write=True), client=client)["changed"]
+        assert len(client.writes) == 2
+
+
+def test_no_app_keeps_owner_and_apply_confirmations() -> None:
+    cli = load_cli()
+    scenarios = [
+        (args("plan"), FakeClient({"owner/repo": []}, owner="stranger"), "owner_actor_mismatch"),
+        (args("apply"), FakeClient({"owner/repo": []}), "authorization_required"),
+        (args("apply", repo=["owner/a", "owner/b"], confirm_owner_admin_write=True,
+              confirm_repository_count=1), FakeClient({"owner/a": [], "owner/b": []}), "confirmation_mismatch"),
+    ]
+    with patch.object(github_rulesets.github_identity, "github_app_config", return_value=None):
+        for request, client, cause in scenarios:
+            try:
+                cli.run(request, client=client)
+            except github_rulesets.RulesetError as exc:
+                assert exc.cause == cause
+            else:
+                raise AssertionError(f"missing refusal: {cause}")
+            assert client.writes == []
+
+
+def test_invalid_app_configuration_does_not_fall_back_to_owner_only() -> None:
+    cli = load_cli()
+    client = FakeClient({"owner/repo": []})
+    with patch.object(github_rulesets.github_identity, "github_app_config",
+                      side_effect=github_rulesets.github_identity.GitHubAppError("incomplete configuration")):
+        try:
+            cli.run(args("apply", confirm_owner_admin_write=True), client=client)
+        except github_rulesets.RulesetError as exc:
+            assert exc.cause == "unconfigured_identity"
+        else:
+            raise AssertionError("invalid App configuration must fail closed")
+    assert client.writes == []
 
 
 def test_unattributed_change_approval_is_off_and_omission_counts_as_drift() -> None:

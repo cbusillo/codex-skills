@@ -176,7 +176,11 @@ uv run <skill-dir>/scripts/direction_audit.py --repo OWNER/REPO
 ```
 
 It reads the merged `DIRECTION.md` from the default branch, never a checkout,
-and writes nothing. For each finding:
+and writes nothing. When the owner also acts as automation, `limits` names
+`owner_acts_as_automation`: admissions by that login are treated as owner
+decisions because the audit cannot tell who used it. This is a known attribution
+limit, not incomplete coverage; `ok` and `counts` still reflect all findings.
+For each finding:
 
 - `coverage_incomplete`: a bounded read was truncated or unavailable, or
   actor classification was unavailable. Name the affected listings and the

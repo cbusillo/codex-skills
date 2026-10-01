@@ -82,6 +82,23 @@ def test_clean_state_has_no_findings() -> None:
     assert result["listed_milestones"] == ["Thin fork decision", "Dogfood week"]
 
 
+def test_owner_as_automation_is_a_limit_and_preserves_real_findings() -> None:
+    module = load()
+    clean = run(module, automation="OWNER")
+    assert clean["ok"] is True
+    assert clean["findings"] == []
+    assert clean["counts"] == {}
+    assert [item["kind"] for item in clean["limits"]] == ["owner_acts_as_automation"]
+    assert run(module)["limits"] == [], "distinct automation retains the existing audit behavior"
+    assert "coverage_incomplete" in kinds(run(module, automation=None))
+    foreign = {**issue(10, "Foreign admission"), "milestone": {"title": "Thin fork decision"},
+               "_milestone_admitted_by": "other"}
+    dirty = run(module, automation="owner", issues=[foreign], truncated=["issues"], rulesets=[])
+    assert dirty["ok"] is False
+    assert set(kinds(dirty)) == {"coverage_incomplete", "ruleset_missing", "milestone_issue_quote_missing"}
+    assert dirty["limits"] == clean["limits"]
+
+
 def test_audit_questions_are_ordinary_open_issues_not_pull_requests() -> None:
     module = load()
     result = run(module, issues=[
@@ -157,7 +174,8 @@ def test_automation_milestone_admission_needs_a_quote_from_the_merged_line() -> 
     owner_admitted = run(module, issues=[{**base, "_milestone_admitted_by": "owner"}])
     assert owner_admitted["ok"] is True
     owner_fallback = run(module, automation="owner", issues=[{**base, "_milestone_admitted_by": "owner"}])
-    assert "coverage_incomplete" in kinds(owner_fallback)
+    assert owner_fallback["ok"] is True
+    assert [item["kind"] for item in owner_fallback["limits"]] == ["owner_acts_as_automation"]
     assert "milestone_issue_quote_missing" not in kinds(owner_fallback)
     closed = run(module, issues=[{**base, "state": "closed"}])
     assert "milestone_issue_quote_missing" in kinds(closed)
