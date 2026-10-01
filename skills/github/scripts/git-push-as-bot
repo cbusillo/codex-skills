@@ -110,6 +110,7 @@ if [ "$app_variable_count" -eq 0 ]; then
 	token_login=$(GH_TOKEN=$GIT_PUSH_AS_BOT_TOKEN "$gh_bin" api user --jq .login 2>/dev/null) || token_login=
 	if [ -z "$token_login" ]; then
 		echo "error: unable to verify the push token's GitHub account; refusing to push" >&2
+		echo "hint: the check uses the GitHub CLI; install it and confirm the token is valid" >&2
 		exit 1
 	fi
 	if ! same_login "$token_login" "$expected_login"; then
@@ -148,7 +149,8 @@ cleanup() {
 	"$git_bin" remote set-url origin "$origin_url" >/dev/null 2>&1 || true
 	rm -rf "$askpass_dir"
 }
-trap cleanup EXIT INT HUP TERM
+trap cleanup EXIT
+trap 'exit 130' INT HUP TERM
 
 # Hand the token to git through a file in a private directory, not through
 # the environment that git passes on to repository hooks.
