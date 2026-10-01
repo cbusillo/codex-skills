@@ -18,6 +18,8 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).parent))
 import github_plan_claim as CLAIM
 
+TEST_BOT = "fixture-bot[bot]"
+
 SPEC = importlib.util.spec_from_file_location("gh_plan_claim_under_test", Path(__file__).with_name("gh-plan.py"))
 assert SPEC and SPEC.loader
 PLAN = importlib.util.module_from_spec(SPEC)
@@ -32,7 +34,7 @@ class ClaimTests(unittest.TestCase):
         self.args = Namespace(repo="owner/repo", issue="42", worker=OWNER["worker"], session=OWNER["session"],
                               branch=OWNER["branch"], next_action="Implement the repair", resume_from=None, wait_resolved=None)
         self.issue = {"repo": "owner/repo", "number": 42, "title": "Repair", "state": "open",
-                      "user": {"login": PLAN.EXPECTED_ACTOR}, "labels": [],
+                      "user": {"login": TEST_BOT}, "labels": [],
                       "body": PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n\n## Objective\n\nKeep me\n\n## Current Status\n\nState: Open, not started.\n"}
         self.comments = []
         self.inventory = {"worktrees": [], "local_branches": [], "remote_branches": [], "sessions": [],
@@ -56,7 +58,7 @@ class ClaimTests(unittest.TestCase):
     def post(self, _kind, _number, body, **_):
         self.events.append("post")
         comment_id = len(self.comments) + 1
-        self.comments.append({"id": comment_id, "body": body, "user": {"login": PLAN.EXPECTED_ACTOR}})
+        self.comments.append({"id": comment_id, "body": body, "user": {"login": TEST_BOT}})
         self.after_post()
         return {"ok": True, "comment": {"id": comment_id}}
 
@@ -75,10 +77,12 @@ class ClaimTests(unittest.TestCase):
 
     def run_claim(self):
         with patch.multiple(PLAN, default_repo=lambda _: "owner/repo", get_issue=self.get_issue,
+                            EXPECTED_ACTOR=TEST_BOT,
                             collect_paged_rest_items=self.read_pages, rest_edit_issue=self.edit,
-                            comment_route=lambda: ("bot", "bot-gh", PLAN.EXPECTED_ACTOR),
+                            comment_route=lambda: ("bot", "bot-gh", TEST_BOT),
                             load_config=lambda _: copy.deepcopy(PLAN.DEFAULT_CONFIG), emit=self.emitted), \
                 patch.object(CLAIM, "local_inventory", return_value=self.inventory), \
+                patch.object(PLAN.github_identity, "configured_bot_logins", return_value=[TEST_BOT]), \
                 patch.object(PLAN.github_comment_core, "comment", side_effect=self.post), \
                 patch.object(PLAN.github_issue_core, "edit_issue", side_effect=self.labels):
             PLAN.cmd_claim(self.args)
