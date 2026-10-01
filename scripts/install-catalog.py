@@ -233,7 +233,8 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             "configuration_change": configuration_change, "unmanaged_instruction_sources": unmanaged_sources,
             "outputs": [{key: value for key, value in entry.items() if key != "diff" or show_diff} for entry in outputs],
             "private_source": str(local), "updater": "enabled" if updater and write else "requested" if updater else "unchanged" if previous_installation.get("scheduled_updater") else "off",
-            "hook_trust": "unchanged; approve new entries through Codex /hooks once"}
+            "migrated_events": hook_outputs.migrated_events if hook_outputs else {},
+            "hook_trust": sync.HOOK_TRUST_NOTICE}
 
 
 def main() -> int:

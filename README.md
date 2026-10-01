@@ -27,6 +27,8 @@ The installer binds the entire catalog at `~/.agents/skills/shared` for Codex an
 instructions, and registers the existing Codex command-policy and session-start
 hooks. It respects `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Approve newly registered
 hooks through Codex's `/hooks` interface once; installing never grants trust.
+Existing inline hooks are migrated to JSON and may stop running until reviewed
+again through `/hooks`, including policies that previously blocked commands.
 Restart the harness to discover the bindings.
 
 Run without `--write` to preview; add `--show-diff` to inspect instruction changes
@@ -220,6 +222,10 @@ change; the renderer retains existing policy positions when consolidating.
 Standalone TOML comments attached to removed hook tables are retained at the
 end of the remaining TOML. An interrupted migration reports completed-file
 backups; preview again to reconcile identical declarations and finish migration.
+Inline comments on migrated values remain recoverable in the TOML backup.
+If `config.toml` is a symlink with inline hooks, instruction-only sync without
+`--codex-hook` keeps the existing hooks working. To migrate, preserve the link
+target's contents in a regular `config.toml`, then preview again.
 Once registered and
 trusted, a catalog pull updates the same policy script on both hosts. The
 Claude-only skills protocol is not added to Codex's base instructions.

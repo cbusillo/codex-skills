@@ -22,6 +22,40 @@ SPEC.loader.exec_module(sync)
 
 
 class GlobalInstructionsTests(unittest.TestCase):
+    def test_hook_cli_preview_write_and_diff_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            codex = root / ".codex"
+            codex.mkdir()
+            (codex / "config.toml").write_text('[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ncommand="my-stop"\n')
+            argv = [sys.executable, str(Path(sync.__file__)), "--home-dir", str(root), "--codex-hook", "--hooks-only"]
+            def call(*options):
+                result = subprocess.run([*argv, *options], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return json.loads(result.stdout)
+            preview = call()
+            self.assertEqual(preview["migrated_events"], {"Stop": 1})
+            self.assertEqual(preview["hook_trust"], sync.HOOK_TRUST_NOTICE)
+            self.assertTrue(all("diff" not in item for item in preview["outputs"]))
+            self.assertTrue(all("diff" in item for item in call("--show-diff")["outputs"]))
+            self.assertFalse((codex / "hooks.json").exists())
+            call("--write")
+            self.assertFalse((codex / "AGENTS.md").exists())
+            self.assertFalse((root / ".claude" / "CLAUDE.md").exists())
+            self.assertTrue(all(item["state"] == "current" for item in call("--write")["outputs"]))
+            invalid = subprocess.run([sys.executable, str(Path(sync.__file__)), "--home-dir", str(root), "--hooks-only"], capture_output=True)
+            self.assertNotEqual(invalid.returncode, 0)
+
+    def test_instruction_preview_still_shows_diff_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.md"
+            source.write_text("Shared fixture rules.\n")
+            result = subprocess.run([sys.executable, str(Path(sync.__file__)), "--home-dir", str(root), "--source", str(source),
+                                     "--local-source", str(root / "absent.md")], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(all("Shared fixture rules." in item["diff"] for item in json.loads(result.stdout)["outputs"]))
+
     def test_instruction_refresh_runs_without_site_packages(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
