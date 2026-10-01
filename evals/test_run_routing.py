@@ -366,7 +366,8 @@ class RoutingScoreTests(unittest.TestCase):
             "grep text file && python3 -c 'print(1)'",
             "uv run skills/github/scripts/gh-pr.py view 45",
             "uv run skills/github/scripts/gh-pr.py --repo o/r merge 45 --help",
-            "uv run --with x helper.py --help", "uv run helper.sh --help",
+            "uv run --with x gh-pr.py --help", "uv run gh-pr.sh --help",
+            "uv run skills/skill-creator/scripts/validate-skill-behavior.py --help",
         ):
             with self.subTest(command=command):
                 self.assertFalse(read_only(command))

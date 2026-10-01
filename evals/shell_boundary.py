@@ -105,9 +105,13 @@ def sed_read_only(arguments: list[str]) -> bool:
     )
 
 
+# Catalog helpers whose argparse prints usage and exits before doing any work.
+HELP_HELPERS = {"gh-pr.py", "gh-plan.py", "reconcile-runtime-checkout.py", "gh_pr_watch.py"}
+
+
 def help_probe(tokens: list[str]) -> bool:
-    # `uv run helper.py [subcommand] --help` reads a catalog helper's usage before calling it.
-    return (tokens[:2] == ["uv", "run"] and len(tokens) in {4, 5} and tokens[2].endswith(".py")
+    # `uv run helper.py [subcommand] --help` reads a helper's usage before calling it.
+    return (tokens[:2] == ["uv", "run"] and len(tokens) in {4, 5} and Path(tokens[2]).name in HELP_HELPERS
             and tokens[-1] in {"--help", "-h"} and all(not token.startswith("-") for token in tokens[3:-1]))
 
 
