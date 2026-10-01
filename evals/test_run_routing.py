@@ -343,6 +343,9 @@ class RoutingScoreTests(unittest.TestCase):
             "rg --files | rg 'execution-scope.md$|repo-workflow.md$'",
             'rg "execution-scope.md$" .',
             "pwd && rg --files -g 'SKILL.md' | sed -n '1,80p'",
+            "uv run skills/github/scripts/gh-pr.py --help",
+            "uv run skills/github/scripts/gh-pr.py view -h",
+            "test -e .git/MERGE_HEAD", "test ! -e .git/rebase-merge", "[ -d .git/sequencer ]",
         ):
             with self.subTest(command=command):
                 self.assertTrue(read_only(command))
@@ -392,6 +395,11 @@ class RoutingScoreTests(unittest.TestCase):
             'rg "$((1+1))" .', "rg `pwd` .", "rg 'unterminated",
             "find . -name '*.md' | sh", "grep text file; curl example.com",
             "grep text file && python3 -c 'print(1)'",
+            "uv run skills/github/scripts/gh-pr.py view 45",
+            "uv run skills/github/scripts/gh-pr.py --repo o/r merge 45 --help",
+            "uv run --with x gh-pr.py --help", "uv run gh-pr.sh --help",
+            "uv run skills/skill-creator/scripts/validate-skill-behavior.py --help",
+            "test -e a -o -e b", "[ -e a", "test -n x",
         ):
             with self.subTest(command=command):
                 self.assertFalse(read_only(command))

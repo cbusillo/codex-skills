@@ -105,6 +105,23 @@ def sed_read_only(arguments: list[str]) -> bool:
     )
 
 
+def file_test(arguments: list[str]) -> bool:
+    # `test [!] -e path` and `[ -e path ]` only check whether a path exists.
+    if arguments[:1] == ["!"]:
+        arguments = arguments[1:]
+    return len(arguments) == 2 and arguments[0] in {"-e", "-f", "-d", "-L", "-s"}
+
+
+# Catalog helpers whose argparse prints usage and exits before doing any work.
+HELP_HELPERS = {"gh-pr.py", "gh-plan.py", "reconcile-runtime-checkout.py", "gh_pr_watch.py"}
+
+
+def help_probe(tokens: list[str]) -> bool:
+    # `uv run helper.py [subcommand] --help` reads a helper's usage before calling it.
+    return (tokens[:2] == ["uv", "run"] and len(tokens) in {4, 5} and Path(tokens[2]).name in HELP_HELPERS
+            and tokens[-1] in {"--help", "-h"} and all(not token.startswith("-") for token in tokens[3:-1]))
+
+
 def read_only(command: str) -> bool:
     # Reads let Codex load SKILL.md through its shell tool. The fixture uses
     # read-only host sandboxing as well; this is a test stop, not a security tool.
@@ -145,6 +162,10 @@ def read_only(command: str) -> bool:
         if name == "find" and find_read_only(tokens[1:]):
             continue
         if name == "git" and git_read_only(tokens[1:]):
+            continue
+        if help_probe(tokens):
+            continue
+        if (name == "test" and file_test(tokens[1:])) or (name == "[" and tokens[-1] == "]" and file_test(tokens[1:-1])):
             continue
         return False
     return True
