@@ -126,7 +126,7 @@ def reminder(marker: dict[str, object], now: dt.datetime, repo: str | None, path
     )
 
 
-def main(*, skills_only: bool = False) -> int:
+def main(*, skills_only: bool = False, catalog_root: Path | None = None) -> int:
     try:
         if os.environ.get("CLAUDECODE") == "1":
             try:
@@ -135,6 +135,16 @@ def main(*, skills_only: bool = False) -> int:
                 pass  # A missing protocol must not hide the loop or reminder.
         if skills_only:
             return 0
+        # Resolve the runtime catalog from this registered hook, never the task cwd.
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        try:
+            from scripts.catalog_runtime import status_line
+            catalog = catalog_root or Path(__file__).resolve().parents[1]
+            catalog_line = status_line(catalog) if (catalog / ".local" / "catalog-install.json").is_file() else ""
+            if catalog_line:
+                print(catalog_line)
+        except (ImportError, OSError):
+            pass
         path = marker_path()
         root = direction_root(Path.cwd())
         if root is not None:
@@ -151,4 +161,9 @@ def main(*, skills_only: bool = False) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(skills_only="--skills-only" in sys.argv[1:]))
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--skills-only", action="store_true")
+    parser.add_argument("--catalog-root", type=Path, help="Catalog checkout for status diagnostics")
+    args = parser.parse_args()
+    sys.exit(main(skills_only=args.skills_only, catalog_root=args.catalog_root))
