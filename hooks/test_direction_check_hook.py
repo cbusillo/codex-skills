@@ -58,7 +58,7 @@ class ReminderTests(unittest.TestCase):
                 ({"CLAUDECODE": "0"}, ""),
             ):
                 with self.subTest(host_env=host_env):
-                    result = subprocess.run([sys.executable, str(HOOK)], cwd=root, env={**env, **host_env}, text=True, capture_output=True, check=True)
+                    result = subprocess.run([sys.executable, str(HOOK), "--catalog-root", str(root)], cwd=root, env={**env, **host_env}, text=True, capture_output=True, check=True)
                     self.assertEqual(result.stdout.strip(), expected)
 
     def test_missing_protocol_does_not_hide_the_loop_or_reminder(self) -> None:
@@ -147,7 +147,7 @@ class ReminderTests(unittest.TestCase):
             marker_path.write_text(json.dumps({"turn": dt.datetime.now(dt.timezone.utc).isoformat(), "audits": {}}))
             env = {"DIRECTION_MARKER": str(marker_path), "PATH": "/usr/bin:/bin"}
             def run(cwd: Path) -> subprocess.CompletedProcess[str]:
-                return subprocess.run([sys.executable, str(HOOK)], cwd=cwd, env=env, capture_output=True, text=True, check=True)
+                return subprocess.run([sys.executable, str(HOOK), "--catalog-root", str(root)], cwd=cwd, env=env, capture_output=True, text=True, check=True)
 
             self.assertEqual(run(nested).stdout, "")
             (root / "DIRECTION.md").write_text("# Direction\n")
@@ -167,12 +167,13 @@ class ReminderTests(unittest.TestCase):
 
     def test_hook_process_never_blocks_and_ignores_stdin(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
             env = {"DIRECTION_MARKER": str(Path(tmp) / hook.MARKER_NAME), "PATH": "/usr/bin:/bin"}
-            proc = subprocess.run([sys.executable, str(HOOK)], input='{"hook_event_name":"SessionStart"}', capture_output=True, text=True, env=env, cwd=tmp)
+            proc = subprocess.run([sys.executable, str(HOOK), "--catalog-root", str(root)], input='{"hook_event_name":"SessionStart"}', capture_output=True, text=True, env=env, cwd=tmp)
             self.assertEqual(proc.returncode, 0)
             self.assertIn("Direction check overdue", proc.stdout)
             (Path(tmp) / hook.MARKER_NAME).write_text(json.dumps({"turn": dt.datetime.now(dt.timezone.utc).isoformat(), "audits": {}}))
-            proc = subprocess.run([sys.executable, str(HOOK)], stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env, cwd=tmp)
+            proc = subprocess.run([sys.executable, str(HOOK), "--catalog-root", str(root)], stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env, cwd=tmp)
             self.assertEqual((proc.returncode, proc.stdout), (0, ""))
 
 

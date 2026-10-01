@@ -3097,6 +3097,233 @@ def test_reconcile_requests_read_keeps_the_decision_and_drops_the_rest() -> None
     assert not payload["result"]
 
 
+def test_reconcile_requests_read_keeps_testing_operation_ids() -> None:
+    plan = {
+        "target": "testing",
+        "action": "deploy",
+        "held": False,
+        "deferred": "lane_busy",
+        "owner_review_requested": True,
+        "desired_artifact_id": "artifact-example-abc123",
+        "queued_operation_id": "odoo-target-replacement-example-testing-2",
+        "active_operation_id": "odoo-target-replacement-example-testing-3",
+        "deployed_operation_id": "odoo-target-replacement-example-testing-0",
+        "last_failed_operation_id": "odoo-target-replacement-example-testing-1",
+        "last_failed_error_code": "health_check_failed",
+        "last_failed_error_summary": "Health check did not pass within the wait window.",
+        "missing_keys": ["EXAMPLE_ODOO_ADMIN_LOGIN"],
+        "rejected_builds": [{"commit": "abc123", "error": "Private build failure text"}],
+        "pr_feedback": {"error": "Private feedback text"},
+    }
+    response = {
+        "status": "ok",
+        "product": "example-product",
+        "requests": [{"target_key": "example-product:testing", "last_plan": plan}],
+    }
+    argv = ["reconcile-requests-read", "--product", "example-product"]
+    status, payload, _calls = _run_product_read(argv, response)
+
+    assert status == 0
+    (request,) = payload["result"]["requests"]
+    kept = request["last_plan"]
+    for name in (
+        "deferred",
+        "owner_review_requested",
+        "queued_operation_id",
+        "active_operation_id",
+        "deployed_operation_id",
+        "last_failed_operation_id",
+        "last_failed_error_code",
+        "last_failed_error_summary",
+        "missing_keys",
+    ):
+        assert kept[name] == plan[name], name
+    assert "rejected_builds" not in kept
+    assert "pr_feedback" not in kept
+    assert payload["result"]["dropped_field_count"] == 2
+    rendered = json.dumps(payload)
+    assert "Private build failure text" not in rendered
+    assert "Private feedback text" not in rendered
+
+
+def _target_replacement_operation_response() -> dict[str, Any]:
+    operation_id = "odoo-target-replacement-example-testing-20261001T021400Z-0123456789abcdef"
+    result = {
+        "schema_version": 1,
+        "product": "example-product",
+        "context": "example",
+        "instance": "testing",
+        "strategy": "recreate-in-place",
+        "deployment_record_id": "deployment-example-testing-7",
+        "release_tuple_id": "",
+        "deploy_status": "pass",
+        "post_deploy_status": "fail",
+        "health_status": "skipped",
+        "canonical_status": "skipped",
+        "logo_status": "skipped",
+        "health_url": "https://testing.example.invalid/web/health",
+        "canonical_url": "https://testing.example.invalid",
+        "logo_urls": ["https://testing.example.invalid/logo.png"],
+        "verification_evidence": {"detail": "private verification detail"},
+        "post_deploy_override_evidence": {"EXAMPLE_FLAG": "private-override-value"},
+        "target_id": "provider-target-id-77",
+        "target_name": "private-target-name",
+        "artifact_id": "artifact-example-abc123",
+        "image_reference": "ghcr.io/example/private-image@sha256:" + "e" * 64,
+        "runtime_source": {"EXAMPLE_SETTING": "private-runtime-value"},
+        "error_message": "Post-deploy update failed on private-target-name.",
+    }
+    return {
+        "status": "ok",
+        "trace_id": "launchplane_req_target_replacement",
+        "operation": {
+            "schema_version": 2,
+            "operation_id": operation_id,
+            "product": "example-product",
+            "context": "example",
+            "instance": "testing",
+            "idempotency_key": "launchplane-reconcile:private-key",
+            "idempotency_scope": "reconcile:example-product",
+            "request_fingerprint": "f" * 64,
+            "request": {
+                "product": "example-product",
+                "instance": "testing",
+                "strategy": "recreate-in-place",
+                "artifact_id": "artifact-example-abc123",
+                "source_git_ref": "abc123",
+                "confirmation": "private confirmation phrase",
+            },
+            "authorization": {"action": "odoo_target_replacement_apply.execute"},
+            "status": "fail",
+            "phase": "post_deploy",
+            "deployment_record_id": "deployment-example-testing-7",
+            "created_at": "2026-10-01T02:14:00Z",
+            "updated_at": "2026-10-01T02:20:00Z",
+            "started_at": "2026-10-01T02:14:05Z",
+            "finished_at": "2026-10-01T02:20:00Z",
+            "lease_owner": "private-worker-host",
+            "lease_expires_at": "",
+            "heartbeat_at": "2026-10-01T02:19:30Z",
+            "attempt": 1,
+            "result": result,
+            "cancellation": None,
+            "error_code": "post_deploy_failed",
+            "error_message": (
+                "Deploy failed on private-target-name: Connection refused by "
+                "db.internal.example:5432; login=\"correct horse battery staple\""
+            ),
+            "runner_trace_id": "runner-1",
+            "poll_url": f"/v1/drivers/odoo/target-replacement/operations/{operation_id}",
+            "private_extension": {"value": "private extension value"},
+        },
+        "result": result,
+    }
+
+
+def test_target_replacement_operation_read_keeps_progress_and_drops_error_text() -> None:
+    response = _target_replacement_operation_response()
+    operation_id = response["operation"]["operation_id"]
+    argv = ["target-replacement-operation-read", "--operation-id", operation_id]
+    status, payload, calls = _run_product_read(argv, response)
+
+    assert status == 0
+    route = contract.LOCAL_EXTENSION_ROUTES["target-replacement-operation-read"]
+    assert route["method"] == "GET"
+    assert calls[0]["path"] == route["path"].format(operation_id=operation_id)
+    assert calls[0]["query"] == {}
+    assert payload["request"] == {
+        "operation_id": operation_id,
+        "payload_source": "operator_argument",
+    }
+    operation = payload["result"]["operation"]
+    assert operation["operation_id"] == operation_id
+    assert (operation["status"], operation["phase"], operation["attempt"]) == (
+        "fail",
+        "post_deploy",
+        1,
+    )
+    assert operation["artifact_id"] == "artifact-example-abc123"
+    assert operation["started_at"] == "2026-10-01T02:14:05Z"
+    assert operation["error_code"] == "post_deploy_failed"
+    assert "error_message" not in operation
+    result = payload["result"]["result"]
+    assert result["post_deploy_status"] == "fail"
+    assert result["image_digest"] == "sha256:" + "e" * 64
+    assert "error_message" not in result
+    paths = payload["result"]["dropped_field_paths"]
+    for path in (
+        "operation.error_message",
+        "result.error_message",
+        "operation.idempotency_key",
+        "operation.authorization",
+        "operation.lease_owner",
+        "operation.poll_url",
+        "operation.<unlisted field>",
+        "operation.request.confirmation",
+        "result.health_url",
+        "result.target_name",
+        "result.runtime_source",
+        "result.image_reference",
+    ):
+        assert path in paths, path
+    rendered = json.dumps(payload)
+    for private in (
+        "private-target-name",
+        "provider-target-id-77",
+        "private-image",
+        "private-key",
+        "private-worker-host",
+        "private confirmation phrase",
+        "private extension value",
+        "private-override-value",
+        "private-runtime-value",
+        "private verification detail",
+        "db.internal.example",
+        "battery staple",
+        "example.invalid",
+    ):
+        assert private not in rendered, private
+
+
+def test_target_replacement_operation_read_tolerates_a_pending_operation() -> None:
+    response = _target_replacement_operation_response()
+    operation = response["operation"]
+    operation.update(status="pending", phase="created", error_code="", error_message="")
+    operation.update(result=None, started_at="", finished_at="", heartbeat_at="")
+    response["result"] = None
+    argv = ["target-replacement-operation-read", "--operation-id", operation["operation_id"]]
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    assert payload["result"]["result"] is None
+    assert payload["result"]["operation"]["status"] == "pending"
+    assert "operation.error_message" not in payload["result"]["dropped_field_paths"]
+
+
+def test_target_replacement_operation_read_refuses_bad_ids_and_unsafe_values() -> None:
+    for operation_id in ("../admin", "a/b", "x?y=1"):
+        status, payload, calls = _run_product_read(
+            ["target-replacement-operation-read", "--operation-id", operation_id],
+            _target_replacement_operation_response(),
+        )
+        assert status == 2
+        assert calls == []
+        assert payload["warnings"][0]["code"] == "invalid_operation_id"
+
+    response = _target_replacement_operation_response()
+    argv = ["target-replacement-operation-read", "--operation-id", response["operation"]["operation_id"]]
+    for mutate in (
+        lambda body: body.update(extra="x"),
+        lambda body: body["operation"].update(deployment_record_id="Bearer abcdefghijklmnop"),
+        lambda body: body["operation"].update(product=None),
+    ):
+        mutated = _target_replacement_operation_response()
+        mutate(mutated)
+        status, payload, _calls = _run_product_read(argv, mutated)
+        assert status == 1
+        assert payload["status"] == "invalid"
+        assert not payload["result"]
+
+
 def _testing_hold_args(**overrides: object) -> argparse.Namespace:
     values: dict[str, object] = {
         "product": "example-product",
@@ -4544,6 +4771,11 @@ def main() -> int:
         test_preview_history_read_derives_launchplanes_preview_id,
         test_preview_history_read_projects_newest_generation_first,
         test_preview_history_read_needs_exactly_one_selector,
+        test_reconcile_requests_read_keeps_the_decision_and_drops_the_rest,
+        test_reconcile_requests_read_keeps_testing_operation_ids,
+        test_target_replacement_operation_read_keeps_progress_and_drops_error_text,
+        test_target_replacement_operation_read_tolerates_a_pending_operation,
+        test_target_replacement_operation_read_refuses_bad_ids_and_unsafe_values,
         test_testing_hold_body_binds_apply_to_saved_dry_run,
         test_testing_hold_cli_dispatches_local_extension_route,
         test_product_repository_identity_projection_is_bounded_and_fail_closed,
