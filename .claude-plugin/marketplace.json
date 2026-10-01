@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "shared",
-      "source": ".",
+      "source": "./",
       "description": "Shared agent skills catalog."
     }
   ]
