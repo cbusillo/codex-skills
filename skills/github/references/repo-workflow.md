@@ -318,7 +318,7 @@ superseded PR body:
 ```sh
 <skill-dir>/scripts/gh-pr.py --repo OWNER/REPO supersede 70 \
   --by 71 \
-  --reason 'PR #71 matches the agreed taxonomy and includes the missing tests.'
+  --reason '[REPO#71](https://github.com/OWNER/REPO/pull/71) taxonomy and missing tests match the agreed scope.'
 ```
 
 Use `--dry-run` first when validating the comment, closure, and body rewrite

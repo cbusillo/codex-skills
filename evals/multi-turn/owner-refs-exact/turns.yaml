@@ -1,0 +1,15 @@
+name: owner-refs-exact
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Use shared:github and read the full talking-with-the-owner reference
+      linked from it. Then return exactly PR #481 with no Markdown or other
+      content. This is an explicit exact-output request; do not query GitHub
+      or run operational commands.
+    expect:
+      owner: github
+      read: talking-with-the-owner\.md
+      forbid: gh\b|gh-pr\.py
+      final: '\APR #[0-9]+\Z'
