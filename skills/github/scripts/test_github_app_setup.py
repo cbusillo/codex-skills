@@ -122,14 +122,14 @@ def fixture_server():
     return server, f"http://127.0.0.1:{server.server_port}"
 
 
-def configured_fixture(session, home, api, **options):
+def configured_fixture(session, home, api, *, extra_env=None, **options):
     real_config = identity.github_app_config
 
     def routed_config(env):
         return real_config(dict(env, GITHUB_APP_API_URL=api))
 
     with patch.object(identity, "github_app_config", side_effect=routed_config):
-        return setup.configure(session, environ={"HOME": str(home)}, **options)
+        return setup.configure(session, environ={"HOME": str(home), **(extra_env or {})}, **options)
 
 
 def test_manifest_callback_and_private_recovery():
@@ -299,10 +299,15 @@ def test_wrong_registration_owner_retains_key_and_missing_record_points_to_impor
             assert (session / "app.pem").exists()
             assert json.loads((session / "registration.json").read_text())["registered_owner"] != OWNER
         missing = session / "missing"
-        setup.private_directory(missing)
         try:
             setup.configure(missing, environ={"HOME": str(session / "home")})
             raise AssertionError("missing registration accepted")
+        except setup.Error as error:
+            assert "--session" in str(error) and not missing.exists()
+        setup.private_directory(missing)
+        try:
+            setup.configure(missing, environ={"HOME": str(session / "home")})
+            raise AssertionError("empty registration accepted")
         except setup.Error as error:
             assert "import" in str(error)
 
@@ -326,10 +331,11 @@ def test_cli_preflight_resume_and_import_routes():
                 return real_config(dict(values, GITHUB_APP_API_URL=api))
 
             with patch.dict(os.environ, env, clear=True), patch.object(identity, "github_app_config", side_effect=routed_config):
-                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                with contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()):
                     code = setup.main(["import", "--owner", OWNER, "--app-id", "7", "--slug", SLUG, "--key", str(source)])
                     assert code == 0
                     session = next((home / ".config/codex-skills/github-app").glob("setup-*"))
+                    assert json.loads(output.getvalue())["session"] == str(session)
                     assert setup.main(["resume", "--session", str(session), "--replace-identity"]) == 0
                     with patch.object(setup, "register", side_effect=AssertionError("browser reached despite identity conflict")):
                         assert setup.main(["start", "--owner", OWNER, "--name", "Fixture"]) == 1
@@ -337,6 +343,14 @@ def test_cli_preflight_resume_and_import_routes():
                     before_sessions = set((home / ".config/codex-skills/github-app").glob("setup-*"))
                     assert setup.main(["import", "--owner", OWNER, "--app-id", "7", "--slug", SLUG, "--key", str(source), "--replace-identity"]) == 1
                     assert set((home / ".config/codex-skills/github-app").glob("setup-*")) == before_sessions
+                    with patch.object(setup, "register", side_effect=AssertionError("invalid previous bot reached browser")), patch.object(setup, "validate_owner_type", side_effect=AssertionError("invalid previous bot reached API")):
+                        for previous in (OWNER, "old bot"):
+                            assert setup.main(["start", "--owner", OWNER, "--name", "Fixture", "--previous-bot", previous, "--replace-identity"]) == 1
+                    assert set((home / ".config/codex-skills/github-app").glob("setup-*")) == before_sessions
+                server.suspended = True
+                with contextlib.redirect_stdout(io.StringIO()) as failed, contextlib.redirect_stderr(io.StringIO()):
+                    assert setup.main(["resume", "--session", str(session), "--replace-identity"]) == 1
+                    assert json.loads(failed.getvalue())["session"] == str(session)
     finally:
         server.shutdown()
         server.server_close()
@@ -370,14 +384,15 @@ def test_explicit_previous_bot_retains_history_without_trusting_personal_owner()
             home = root / "home"
             target = home / ".code/local.env"
             target.parent.mkdir(parents=True)
-            old = "CODEX_AUTOMATION_LOGIN=old-machine\nCODEX_AUTOMATION_BOT_LOGINS=already-trusted\n"
+            old = "GH_WITH_ENV_TOKEN_EXPECTED_LOGIN=old-machine\nCODEX_AUTOMATION_BOT_LOGINS=already-trusted\n"
             target.write_text(old)
             try:
                 configured_fixture(session, home, api, replace_identity=True, previous_bots=(OWNER,))
                 raise AssertionError("personal owner trusted as previous bot")
             except setup.Error:
                 assert target.read_text() == old
-            result = configured_fixture(session, home, api, replace_identity=True, previous_bots=("old-machine",))
+            result = configured_fixture(session, home, api, replace_identity=True,
+                previous_bots=("old-machine",), extra_env={"CODEX_AUTOMATION_BOT_LOGINS": "temporary-trust"})
             assert result["replaced_login"] == "old-machine"
             assert set(identity.configured_bot_logins({"HOME": str(home)})) == {"already-trusted", "old-machine"}
             assert result["configuration_path"] == str(target)

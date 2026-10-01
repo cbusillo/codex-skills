@@ -175,6 +175,8 @@ def validate_owner_type(owner: str, *, organization: bool, api_url="https://api.
 
 def configure(session: Path, *, installation_id: str | None = None,
               replace_identity: bool = False, previous_bots: tuple[str, ...] = (), environ=None) -> dict:
+    if not session.exists():
+        raise Error("saved setup session does not exist; check --session")
     private_directory(session)
     record_path = session / "registration.json"
     if not record_path.exists():
@@ -186,10 +188,8 @@ def configure(session: Path, *, installation_id: str | None = None,
     target = identity.env_file_path(env)
     if target is None:
         raise Error("cannot locate the wrapper's local.env")
-    previous_login = identity.configured_value("CODEX_AUTOMATION_LOGIN", environ=env)
-    for previous in previous_bots:
-        if not re.fullmatch(r"[A-Za-z0-9-]+(?:\[bot\])?", previous) or previous.casefold() == record["owner"].casefold():
-            raise Error("--previous-bot must name an owner-controlled automation account, never the personal owner login")
+    previous_login = identity.automation_login(env)
+    validate_previous_bots(previous_bots, record["owner"])
     config_env = {"HOME": env.get("HOME", str(Path.home())),
                   "CODEX_SKILLS_ENV_FILE": str(session / "no-env"),
                   "GITHUB_APP_ID": record["app_id"],
@@ -242,7 +242,8 @@ def configure(session: Path, *, installation_id: str | None = None,
               "CODEX_AUTOMATION_LOGIN": login,
               "CODEX_AUTOMATION_EMAIL": f'{user["id"]}+{login}@users.noreply.github.com'}
     if previous_bots:
-        known = identity.configured_bot_logins(env)
+        local = identity.load_local_env(env)
+        known = tuple(item for item in local.get("CODEX_AUTOMATION_BOT_LOGINS", "").replace(",", " ").split() if item)
         values["CODEX_AUTOMATION_BOT_LOGINS"] = " ".join(dict.fromkeys((*known, *previous_bots)))
     write_configuration(target, values, backup_directory=session, replace_identity=replace_identity)
     limits = ([{"kind": "all_repositories", "detail": "App installation covers all repositories, including future repositories. Review its settings if only adopted repositories were intended."}]
@@ -252,6 +253,12 @@ def configure(session: Path, *, installation_id: str | None = None,
             "limits": limits, "write_proof": "not_exercised", "configuration_written": True,
             "configuration_path": str(target.expanduser().absolute()),
             "replaced_login": previous_login if previous_login != login else None}
+
+
+def validate_previous_bots(previous_bots, owner: str) -> None:
+    for previous in previous_bots:
+        if not re.fullmatch(r"[A-Za-z0-9-]+(?:\[bot\])?", previous) or previous.casefold() == owner.casefold():
+            raise Error("--previous-bot must name an owner-controlled automation account, not the App owner; for organizations, you must also exclude every personal owner login")
 
 
 def configuration_before(target: Path, *, replace_identity: bool) -> bytes:
@@ -264,7 +271,7 @@ def configuration_before(target: Path, *, replace_identity: bool) -> bytes:
     existing = [line for line in before.decode().splitlines()
                 if (match := ASSIGNMENT.match(line)) and match[1] in MANAGED_IDENTITY_KEYS]
     if existing and not replace_identity:
-        raise Error("identity variables already exist; inspect them or add --replace-identity before setup (private backup kept)")
+        raise Error("managed identity or host variables already exist; inspect them or add --replace-identity before setup (private backup kept)")
     return before
 
 
@@ -325,7 +332,7 @@ def main(argv=None) -> int:
     existing.add_argument("--installation-id")
     for command in (start, finish, existing):
         command.add_argument("--replace-identity", action="store_true")
-        command.add_argument("--previous-bot", action="append", default=[], help="Keep an explicitly owner-controlled previous bot trusted for historical plans; never the personal owner")
+        command.add_argument("--previous-bot", action="append", default=[], help="Keep an explicitly owner-controlled previous bot trusted for historical plans; excludes the App owner, and you must exclude all personal owners")
     args = parser.parse_args(argv)
     session = None
     try:
@@ -336,6 +343,7 @@ def main(argv=None) -> int:
             if target is None:
                 raise Error("cannot locate the wrapper's local.env")
             configuration_before(target, replace_identity=args.replace_identity)
+            validate_previous_bots(args.previous_bot, args.owner)
             if args.command == "start":
                 validate_owner_type(args.owner, organization=args.organization)
             imported_key = None
@@ -370,7 +378,7 @@ def main(argv=None) -> int:
             session = args.session.expanduser().absolute()
         result = configure(session, installation_id=getattr(args, "installation_id", None),
                            replace_identity=args.replace_identity, previous_bots=tuple(args.previous_bot))
-        result.update(operation="github.app.setup", exit_code=0)
+        result.update(operation="github.app.setup", exit_code=0, session=str(session))
         print(f"Configured {result['actor']} in {result['configuration_path']}", file=sys.stderr)
         if result["replaced_login"]:
             print("Previous primary login is reported in the result. Retain it with --previous-bot only if it is your automation account; never trust the personal owner as a bot.", file=sys.stderr)
@@ -385,7 +393,7 @@ def main(argv=None) -> int:
             message = "no completed registration is saved; inspect GitHub's App settings and import its key if it exists, or start again if no App was created"
         print(message, file=sys.stderr)
         print(json.dumps({"schema_version": 1, "operation": "github.app.setup", "ok": False,
-                          "exit_code": 1, "error": message}))
+                          "exit_code": 1, "error": message, "session": str(session) if session else None}))
         return 1
 
 

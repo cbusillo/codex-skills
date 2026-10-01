@@ -582,7 +582,7 @@ adopted repositories were intended. The helper preserves the owner's existing
 ability to choose all repositories.
 
 If setup stops after registration, keep the private directory printed by the
-helper, finish the installation in GitHub, then resume:
+helper (also reported as `session` in its JSON result), finish the installation in GitHub, then resume:
 
 ```sh
 uv run skills/github/scripts/github_app_setup.py resume --session /private/setup-directory
@@ -601,8 +601,10 @@ Replacement reports the previous primary login but does not automatically trust
 it as a bot. When it is an **owner-controlled automation account**, add
 `--previous-bot OLD-BOT` to preserve historical managed-plan and milestone
 authorship through the existing `CODEX_AUTOMATION_BOT_LOGINS` setting. Existing
-trusted bots are retained. Never pass the personal owner's login or a
-third-party bot; old human-authored requests stay protected.
+trusted bots from `local.env` are retained; temporary shell exports are not saved
+as permanent trust. The helper rejects the App owner's login. For an organization,
+you must also exclude every personal owner's login. Never pass a personal owner
+or a third-party bot; old human-authored requests stay protected.
 
 If the callback failed or the browser cannot reach this machine's loopback
 address, use the App's GitHub settings to download/generate a private key,
@@ -612,6 +614,10 @@ configuration:
 ```sh
 uv run skills/github/scripts/github_app_setup.py import --owner OWNER --app-id ID --slug APP-SLUG --key /private/downloaded-key.pem
 ```
+
+After a successful import, keep the reported private session (it contains the
+configured key). You may remove the redundant downloaded copy once you have
+verified the new configuration.
 
 If GitHub created the App under the wrong account, its key is still saved
 privately. Correct or transfer the App ownership in GitHub before resuming;
