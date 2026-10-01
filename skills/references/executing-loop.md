@@ -1,7 +1,9 @@
 # Executing loop
 
-Use this loop when a repository has a root `DIRECTION.md`. The session-start
-hook prints this reference on both supported harnesses. The owning skills hold
+Use this loop when a repository has a root `DIRECTION.md`, or has none and its
+owner keeps an overall direction in `OWNER/direction`. The session-start hook
+prints this reference on both supported harnesses, after the overall stop
+boundaries in the second case. The owning skills hold
 the detailed procedures and [task scope and authorization](execution-scope.md)
 still governs every action.
 
