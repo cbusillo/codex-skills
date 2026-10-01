@@ -155,6 +155,21 @@ class InstallTests(unittest.TestCase):
         self.assertFalse((self.catalog / ".local").exists())
         self.assertFalse((self.home / ".agents").exists())
 
+    def test_legacy_binding_to_another_catalog_is_reported_before_writes(self):
+        other = self.root / "other-catalog"
+        (other / "skills").mkdir(parents=True)
+        (other / "instructions").mkdir()
+        (other / "instructions" / "global.md").write_text("Other source.\n")
+        (other / "scripts").mkdir()
+        (other / "scripts" / "sync-global-instructions.py").write_text("# Catalog synchronizer\n")
+        legacy = self.codex / "skills"
+        legacy.symlink_to(other / "skills", target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "Existing binding preserved"):
+            self.install()
+        self.assertEqual(legacy.resolve(), (other / "skills").resolve())
+        self.assertFalse((self.catalog / ".local").exists())
+        self.assertFalse((self.home / ".agents").exists())
+
     def test_new_host_generated_edits_are_preserved_on_reconfiguration(self):
         self.install()
         other = self.home / "other-codex"

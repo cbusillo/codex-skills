@@ -155,6 +155,8 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             raise ValueError(f"Existing catalog folder preserved: {claude / 'skills'}; use a personal skills directory before adding the namespaced binding")
         links = [(codex_skills, ROOT / "skills"), (claude / "skills" / "shared", ROOT)]
         legacy = codex / "skills"
+        if legacy.is_symlink() and catalog_skills_directory(legacy) and legacy.resolve() != (ROOT / "skills").resolve():
+            raise ValueError(f"Existing binding preserved: {legacy}; inspect the other catalog and rebind deliberately before installing this checkout")
         if legacy.is_symlink() and legacy.resolve() == (ROOT / "skills").resolve():
             if codex_skills.name == "shared" and (codex_skills.exists() or codex_skills.is_symlink()):
                 raise ValueError("Legacy and nested catalog bindings coexist; preserve the legacy binding and inspect the nested shared link before moving it aside and rerunning")
