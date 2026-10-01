@@ -132,6 +132,9 @@ name. `claude plugin list` shows the binding as `shared@skills-dir`, and
 The same install rule applies: inspect an existing destination first and do
 not replace a directory or link automatically.
 
+**Note:** The Cowork marketplace install was retired (#957). To remove an existing Cowork install: in Cowork, remove it under **Customize → Plugins**. If it was accidentally installed into Claude Code via the marketplace, remove it with `claude plugin uninstall shared@codex-skills` so it does not outrank the checkout link.
+
+
 On invocation Claude Code gives the model the skill's base directory and the
 Markdown body only; frontmatter, including command-policy metadata, is never
 shown. The plugin therefore ships a `PreToolUse` hook ([`hooks`](hooks)) that
@@ -157,55 +160,6 @@ or `$skill-name` when a preserved legacy binding lists an unprefixed name.
 Claude's field requires an actual user slash-command invocation.
 The registered hook uses a JSON deny decision and an exit-zero launcher fallback,
 so missing source or a uv startup failure cannot masquerade as a policy denial.
-
-### Claude Cowork
-
-Cowork in the Claude desktop app does not read `~/.claude/skills`; it installs
-plugins from a marketplace. This repository is one:
-`.claude-plugin/marketplace.json` lists the repository root as the `shared`
-plugin. In the desktop app:
-
-1. Switch the app to **Cowork** first. The **Customize** page belongs to the
-   mode it was opened from; opened from **Code**, it installs into Claude Code
-   instead and Cowork sees nothing.
-2. Open **Customize**, then **Plugins**.
-3. Select **Add**, then **Add marketplace**, and enter `OWNER/codex-skills`.
-4. Install **shared** from that marketplace, then start a new Cowork task.
-
-Turn on **Sync automatically** on the marketplace, or use **Check for
-updates**, to pick up new commits. The plugin has no pinned version, so each
-commit on the default branch is a new version. Cowork reads only the default
-branch.
-
-Cowork keeps its plugins apart from Claude Code's. Do not install the
-marketplace plugin into Claude Code, from the Code mode's **Customize** page or
-the command line, on a machine where the repository is linked into
-`~/.claude/skills`: an installed plugin named `shared` outranks the link, even
-while disabled, and Claude Code then reads a cached copy instead of the
-checkout. To undo such an install, run
-`claude plugin uninstall shared@codex-skills`.
-
-#### What does not work in Cowork
-
-A Cowork task runs in a Linux VM with `uv`, `git`, and `python3`, and loads the
-skills from the synced plugin. Tested on 2026-10-01, these parts of the catalog
-do not carry over:
-
-- **No `gh`.** The VM has no GitHub CLI, so the `github`, `github-plan`,
-  `babysit-pr`, and other GitHub helpers cannot run there.
-- **No hook takes effect.** Command policies are not enforced, so a raw
-  `gh pr merge` is not redirected to its helper, and the session-start skills
-  reminder and executing-loop reference never appear. Both hooks fail silently
-  by design, so this test cannot tell whether they never ran or ran and failed.
-
-Run a skill's helper through the base directory Cowork shows when the skill
-loads. `CLAUDE_PLUGIN_ROOT` is empty in the task's shell, as it is in Claude
-Code's.
-
-Cowork lists 24 of the 27 skills. The three missing ones, `memory-distillation`,
-`plan`, and `rollout-friction`, are manual-only (`disable-model-invocation:
-true`), which keeps them out of the model's skill list on Claude Code as well.
-Invoking them by name in Cowork has not been tested.
 
 ### Shared global instructions and Codex hooks
 
