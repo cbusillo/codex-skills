@@ -23,9 +23,9 @@ elif "claim" in argv and any("gh-plan.py" in part for part in argv):
                       "completed_steps": ["ownership_preflight", "post_claim", "claim_readback",
                                           "update_current_status", "update_labels", "metadata_readback"],
                       "session_coverage": {"codex": {"status": "unavailable"}}, "simulation": True}))
-elif "worktree" in argv or any("dev-worktree" in part for part in argv):
+elif ("worktree" in argv and "add" in argv) or any("dev-worktree" in part for part in argv):
     print(json.dumps({"ok": True, "simulation": True, "operation": "worktree_create"}))
-elif "status" in argv or "branch" in argv or "remote" in argv:
+elif "status" in argv or "branch" in argv or "remote" in argv or "list" in argv:
     print(json.dumps({"ok": True, "branch": "main", "default_branch": "main", "simulation": True}))
 else:
     print(json.dumps({"ok": False, "error": "unsupported simulated operation", "argv": argv}))
