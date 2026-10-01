@@ -319,6 +319,12 @@ class ClaimTests(unittest.TestCase):
             self.run_claim()
         self.assert_no_writes()
 
+    def test_legacy_own_claim_is_upgraded_to_a_structured_comment(self):
+        self.comments = [{"id": 1, "body": "Claimed by trial-a\nSession: session-a\nBranch: work/issue-42"}]
+        self.run_claim()
+        self.assertEqual(len(self.comments), 2)
+        self.assertEqual(len(CLAIM.records(self.comments[-1]["body"])), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

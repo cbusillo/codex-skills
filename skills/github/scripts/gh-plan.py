@@ -1913,7 +1913,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         if conflicts:
             refuse(conflicts)
         if owned:
-            claim = owned[0]
+            claim = {key: owned[0][key] for key in claim}
         retained = github_plan_claim.retained_branch(comments, args.resume_from) if args.resume_from else None
         _, blockers = collect_paged_rest_items(
             f"/repos/{issue_repo}/issues/{number}/dependencies/blocked_by",
@@ -1938,7 +1938,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
             + github_plan_claim.marker(claim)
         )
         _, comment_owners = github_plan_claim.discussion_evidence("", comments, claim)
-        comment_recorded = bool(comment_owners)
+        comment_recorded = any(record.get("_legacy") != "yes" for record in comment_owners)
         if not comment_recorded:
             claim_comment = github_comment_core.comment(
                 "issue", number, text, repo=issue_repo, gh_cmd=gh_cmd,

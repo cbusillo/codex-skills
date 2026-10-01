@@ -94,7 +94,7 @@ def discussion_evidence(
                 conflicts.append({"source": "comment", "id": comment.get("id"), "text": text,
                                   "certainty": "current_or_stale"})
             else:
-                owned.append({**claim, "claimed_at": comment.get("created_at") or claim["claimed_at"]})
+                owned.append({**claim, "claimed_at": comment.get("created_at") or claim["claimed_at"], "_legacy": "yes"})
         for record in parsed:
             if released.get((record["worker"], author), -1) > index:
                 continue
