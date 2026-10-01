@@ -132,6 +132,9 @@ name. `claude plugin list` shows the binding as `shared@skills-dir`, and
 The same install rule applies: inspect an existing destination first and do
 not replace a directory or link automatically.
 
+**Note:** The Cowork marketplace install was retired (#957). To remove an existing Cowork install: in Cowork, remove it under **Customize → Plugins**. If it was accidentally installed into Claude Code via the marketplace, remove it with `claude plugin uninstall shared@codex-skills` so it does not outrank the checkout link.
+
+
 On invocation Claude Code gives the model the skill's base directory and the
 Markdown body only; frontmatter, including command-policy metadata, is never
 shown. The plugin therefore ships a `PreToolUse` hook ([`hooks`](hooks)) that

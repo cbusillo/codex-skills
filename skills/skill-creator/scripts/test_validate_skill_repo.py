@@ -15,9 +15,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-
 SCRIPT = Path(__file__).with_name("validate-skill-repo.py")
-
 
 def load_module() -> Any:
     spec = importlib.util.spec_from_file_location("validate_skill_repo", SCRIPT)
@@ -28,11 +26,9 @@ def load_module() -> Any:
     spec.loader.exec_module(module)
     return module
 
-
 def put_text(path: Path, value: str) -> None:
     with path.open("w", encoding="utf-8") as handle:
         handle.write(value)
-
 
 def write_openai_yaml(root: Path, body: str) -> Path:
     skill_dir = root / "demo-skill"
@@ -43,7 +39,6 @@ def write_openai_yaml(root: Path, body: str) -> Path:
     put_text(assets_dir / "small.svg", "<svg />")
     put_text(agents_dir / "openai.yaml", body)
     return skill_dir
-
 
 def test_openai_yaml_accepts_documented_shape() -> None:
     module = load_module()
@@ -73,7 +68,6 @@ policy:
         errors = module.validate_openai_yaml(skill_dir)
     if errors:
         raise AssertionError(f"documented openai.yaml shape should pass: {errors}")
-
 
 def test_openai_yaml_rejects_schema_drift() -> None:
     module = load_module()
@@ -113,7 +107,6 @@ policy:
         if not any(fragment in error for error in errors):
             raise AssertionError(f"missing expected error {fragment!r}: {errors}")
 
-
 def write_skill_with_sibling_reference(root: Path, referenced_path: str) -> Path:
     skill_dir = root / "demo-skill"
     sibling_scripts_dir = root / "sibling-skill" / "scripts"
@@ -133,7 +126,6 @@ Use `{referenced_path}` when sibling context is needed.
     )
     return skill_dir
 
-
 def test_referenced_paths_validate_sibling_skill_paths() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
@@ -144,7 +136,6 @@ def test_referenced_paths_validate_sibling_skill_paths() -> None:
     if errors:
         raise AssertionError(f"valid sibling path should pass: {errors}")
 
-
 def test_referenced_paths_reject_missing_sibling_skill_paths() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
@@ -154,7 +145,6 @@ def test_referenced_paths_reject_missing_sibling_skill_paths() -> None:
         errors = module.validate_referenced_paths(skill_dir)
     if len(errors) != 1 or "references missing ../sibling-skill/scripts/missing.py" not in errors[0]:
         raise AssertionError(f"missing sibling path should fail: {errors}")
-
 
 def test_markdown_links_validate_relative_targets() -> None:
     module = load_module()
@@ -170,7 +160,6 @@ def test_markdown_links_validate_relative_targets() -> None:
     if errors:
         raise AssertionError(f"valid markdown link should pass: {errors}")
 
-
 def test_markdown_links_reject_missing_relative_targets() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
@@ -182,7 +171,6 @@ def test_markdown_links_reject_missing_relative_targets() -> None:
         errors = module.validate_markdown_links(skill_dir)
     if len(errors) != 1 or "markdown link target missing: references/missing.md" not in errors[0]:
         raise AssertionError(f"missing markdown link should fail: {errors}")
-
 
 def test_markdown_links_ignore_fenced_examples_and_root_relative_docs() -> None:
     module = load_module()
@@ -207,7 +195,6 @@ See [example-only](EXAMPLE.md).
         errors = module.validate_markdown_links(skill_dir)
     if errors:
         raise AssertionError(f"fenced/root-relative markdown links should pass: {errors}")
-
 
 def write_skill_with_shell_helper(root: Path, example_argv: str) -> Path:
     skill_dir = root / "demo-skill"
@@ -247,7 +234,6 @@ policy:
     put_text(skill_dir / "scripts" / "helper", "#!/usr/bin/env bash\necho ok\n")
     return skill_dir
 
-
 def write_skill_with_pep723_helper(root: Path, example_argv: str) -> Path:
     skill_dir = root / "demo-skill"
     scripts_dir = skill_dir / "scripts"
@@ -285,7 +271,6 @@ print("ok")
     )
     return skill_dir
 
-
 def test_shell_helper_examples_reject_python_and_uv() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
@@ -314,7 +299,6 @@ def test_shell_helper_examples_reject_python_and_uv() -> None:
     if len(errors) != 2 or not all("not Python" in error for error in errors):
         raise AssertionError(f"shell helper bare Python examples should fail: {errors}")
 
-
 def test_shell_helper_examples_allow_direct_invocation() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
@@ -334,7 +318,6 @@ def test_shell_helper_examples_allow_direct_invocation() -> None:
     if errors:
         raise AssertionError(f"bash shell helper examples should pass: {errors}")
 
-
 def test_pep723_helper_examples_reject_python() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
@@ -344,7 +327,6 @@ def test_pep723_helper_examples_reject_python() -> None:
         errors = module.validate_command_example_invocations(skill_dir)
     if len(errors) != 1 or "PEP 723 helper" not in errors[0]:
         raise AssertionError(f"PEP 723 Python examples should fail: {errors}")
-
 
 def test_command_policy_portability_rejects_installation_identity() -> None:
     module = load_module()
@@ -377,7 +359,6 @@ policy:
     if len(errors) != 2 or not all("installation-specific identity" in error for error in errors):
         raise AssertionError(f"installation identity should fail portability: {errors}")
 
-
 def test_pep723_metadata_rejects_invalid_toml() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
@@ -398,7 +379,6 @@ print("ok")
         errors = module.validate_pep723_metadata(script, script.read_text())
     if len(errors) != 1 or "invalid PEP 723 TOML" not in errors[0]:
         raise AssertionError(f"invalid PEP 723 TOML should fail: {errors}")
-
 
 def test_pep723_metadata_rejects_multiple_blocks() -> None:
     module = load_module()
@@ -426,7 +406,6 @@ print("ok")
         errors = module.validate_pep723_metadata(script, script.read_text())
     if len(errors) != 1 or "expected exactly one" not in errors[0]:
         raise AssertionError(f"multiple PEP 723 blocks should fail: {errors}")
-
 
 def test_pep723_helper_examples_allow_uv_and_direct_invocation() -> None:
     module = load_module()
@@ -492,7 +471,6 @@ print("ok")
     if errors:
         raise AssertionError(f"uv run sibling PEP 723 examples should pass: {errors}")
 
-
 def write_command_label_catalog(root: Path, owner_body: str, caller_body: str) -> list[Path]:
     owner, caller = root / "owner-skill", root / "caller-skill"
     (owner / "scripts").mkdir(parents=True)
@@ -508,7 +486,6 @@ def write_command_label_catalog(root: Path, owner_body: str, caller_body: str) -
     )
     put_text(caller / "SKILL.md", f"---\nname: caller-skill\ndescription: Demo.\n---\n\n# Caller\n\n{caller_body}\n")
     return [caller, owner]
-
 
 def test_command_labels_reject_bodies_that_name_no_runnable_script() -> None:
     module = load_module()
@@ -527,7 +504,6 @@ def test_command_labels_reject_bodies_that_name_no_runnable_script() -> None:
     if "../owner-skill/scripts/scan_things.py" not in errors[0] or "give the runnable path scripts/scan_things.py" not in errors[1]:
         raise AssertionError(f"each error should give the path that resolves from that skill: {errors}")
 
-
 def test_command_labels_allow_runnable_paths_and_real_executables() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
@@ -542,13 +518,11 @@ def test_command_labels_allow_runnable_paths_and_real_executables() -> None:
     if errors:
         raise AssertionError(f"runnable paths and real script names should pass: {errors}")
 
-
 def write_skill_with_body(root: Path, body: str) -> Path:
     skill_dir = root / "demo-skill"
     (skill_dir / "references").mkdir(parents=True)
     put_text(skill_dir / "SKILL.md", f"---\nname: demo-skill\ndescription: Demo.\n---\n\n# Demo\n\n{body}\n")
     return skill_dir
-
 
 def test_install_paths_to_catalog_files_are_rejected_wherever_they_appear() -> None:
     module = load_module()
@@ -566,7 +540,6 @@ def test_install_paths_to_catalog_files_are_rejected_wherever_they_appear() -> N
     if len(errors) != 3 or not any("references/more.md" in error for error in errors):
         raise AssertionError(f"each install path should be reported, in references too: {errors}")
 
-
 def test_skill_relative_paths_and_state_locations_are_not_install_paths() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
@@ -581,7 +554,6 @@ def test_skill_relative_paths_and_state_locations_are_not_install_paths() -> Non
         errors = module.validate_no_install_paths(skill_dir)
     if errors:
         raise AssertionError(f"skill-relative paths and state homes are not install paths: {errors}")
-
 
 def test_invocation_policy_matches_on_both_hosts() -> None:
     module = load_module()
@@ -600,8 +572,6 @@ def test_invocation_policy_matches_on_both_hosts() -> None:
         metadata.unlink()
         skill_md.write_text("---\nname: demo\ndescription: Demo\n---\n")
         assert not module.validate_invocation_parity(skill_dir)
-
-
 
 def main() -> int:
     test_invocation_policy_matches_on_both_hosts()
@@ -625,7 +595,6 @@ def main() -> int:
     test_skill_relative_paths_and_state_locations_are_not_install_paths()
     print("ok test-validate-skill-repo")
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
