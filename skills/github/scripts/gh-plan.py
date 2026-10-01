@@ -1937,9 +1937,8 @@ def cmd_claim(args: argparse.Namespace) -> None:
             f"Claimed at: {claim['claimed_at']}\nNext action: {args.next_action}\n\n"
             + github_plan_claim.marker(claim)
         )
-        comment_recorded = any(github_plan_claim.same_owner(record, claim)
-                               for comment in comments
-                               for record in github_plan_claim.records(comment.get("body") or ""))
+        _, comment_owners = github_plan_claim.discussion_evidence("", comments, claim)
+        comment_recorded = bool(comment_owners)
         if not comment_recorded:
             claim_comment = github_comment_core.comment(
                 "issue", number, text, repo=issue_repo, gh_cmd=gh_cmd,

@@ -198,7 +198,7 @@ def artifact_evidence(
         title = pull.get("title") or ""
         body = pull.get("body") or ""
         explicit_url = bool(repo and re.search(rf"https://github\.com/{re.escape(repo)}/issues/{number}(?!\d)", title + "\n" + body))
-        linked = bool(re.search(rf"(?im)^\s*(?:refs?|fix(?:es)?|clos(?:e|es)|resolv(?:e|es))\s+(?:#{number}|{re.escape(repo)}#{number})(?!\d)", body))
+        linked = bool(re.search(rf"(?i)\b(?:refs?|fix(?:es|ed)?|clos(?:e|es|ed)|resolv(?:e|es|ed))\s+(?:#{number}|{re.escape(repo)}#{number})(?!\d)", body))
         titled = bool(re.search(rf"(?<![\w/])#{number}(?!\d)", title))
         if explicit_url or linked or titled or references_issue(branch, number):
             if not permitted(branch):

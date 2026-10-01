@@ -306,6 +306,19 @@ class ClaimTests(unittest.TestCase):
             inventory = CLAIM.local_inventory("owner/repo", 42)
         self.assertEqual(inventory["session_coverage"]["claude"]["status"], "unavailable")
 
+    def test_reclaim_after_exact_release_posts_a_new_claim(self):
+        self.comments = [{"id": 1, "body": CLAIM.marker(OWNER), "user": {"login": "bot"}},
+                         {"id": 2, "body": "Released claim 1", "user": {"login": "bot"}}]
+        self.run_claim()
+        self.assertEqual(len(self.comments), 3)
+        self.assertIn("post", self.events)
+
+    def test_mid_sentence_closing_reference_refuses(self):
+        self.pulls = [{"number": 99, "body": "This change fixes #42 by repairing it", "head": {"ref": "work/repair"}}]
+        with self.assertRaises(PLAN.ClassifiedPlanError):
+            self.run_claim()
+        self.assert_no_writes()
+
 
 if __name__ == "__main__":
     unittest.main()
