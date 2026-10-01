@@ -55,9 +55,10 @@ class ClaimTests(unittest.TestCase):
 
     def post(self, _kind, _number, body, **_):
         self.events.append("post")
-        self.comments.append({"id": len(self.comments) + 1, "body": body, "user": {"login": PLAN.EXPECTED_ACTOR}})
+        comment_id = len(self.comments) + 1
+        self.comments.append({"id": comment_id, "body": body, "user": {"login": PLAN.EXPECTED_ACTOR}})
         self.after_post()
-        return {"ok": True, "comment": {"id": self.comments[-1]["id"]}}
+        return {"ok": True, "comment": {"id": comment_id}}
 
     def edit(self, _repo, _number, *, body):
         self.events.append("status")
@@ -160,6 +161,7 @@ class ClaimTests(unittest.TestCase):
         self.assertIn("post_claim", caught.exception.payload["completed_steps"])
         self.assertNotIn("status", self.events)
         self.assertNotIn("labels", self.events)
+        self.assertEqual(caught.exception.payload["claim_recovery"]["release_own_claim"]["body"], "Released claim 1")
 
     def test_final_readback_race_does_not_report_success(self):
         self.after_status = self.compete
@@ -244,6 +246,28 @@ class ClaimTests(unittest.TestCase):
     def test_issue_number_does_not_match_another_issue(self):
         self.inventory["local_branches"] = ["work/issue-142"]
         self.run_claim()
+
+    def test_template_active_state_is_not_ownership(self):
+        self.issue["body"] = PLAN.template_body("Repair")
+        self.run_claim()
+
+    def test_version_branches_are_not_issue_claims(self):
+        self.args.issue = "2"
+        self.issue["number"] = 2
+        self.inventory["remote_branches"] = ["release/v2", "dependabot/package-1.2.3", "renovate/node-2"]
+        self.run_claim()
+
+    def test_marker_discussion_and_code_examples_are_not_claims(self):
+        self.comments = [{"body": "Discuss github-plan:claim format here.\n```html\n<!-- github-plan:claim nope -->\n```"}]
+        self.run_claim()
+
+    def test_exact_comment_release_preserves_other_claim_by_same_worker(self):
+        self.compete()
+        self.compete({**OTHER, "session": "another-session"})
+        self.comments.append({"body": "Released claim 2"})
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual([e["id"] for e in caught.exception.payload["competing_evidence"]], [1])
 
 
 if __name__ == "__main__":

@@ -357,6 +357,10 @@ competing evidence. Age never expires a claim. Do not bypass a refusal by
 changing the worker, tool, or identity; ask the owner about ambiguous ownership
 and continue independent work.
 
+Use the actual native session ID, not a made-up label. On Claude Code, use
+session metadata or `claude agents --json` to identify this session by its
+directory, name, and process; if ambiguous, resolve that identity before claim.
+
 Success posts and reads back a claim, updates owned Current Status (or leaves
 the contributor's body intact and uses the claim comment), sets `plan:active`,
 and reads the metadata back. Check `ok`, `outcome_certainty`, and
@@ -372,6 +376,13 @@ Current Status and post `Released by <worker-token>` through the same bot
 identity. Release affects that worker's earlier comments, not another worker's
 record or retained branch/worktree evidence; those still need ordinary
 ownership and preservation review.
+
+A refused write/readback race includes `claim_recovery.release_own_claim` when
+this invocation posted a claim. Post its exact `Released claim <comment-id>`
+body through the same bot to release only that comment, then preserve the
+competing worker's state and recheck before any retry. If an owned Current
+Status was already updated, reconcile only that record too; never rewrite a
+competitor's record.
 
 ### Planning: Management
 

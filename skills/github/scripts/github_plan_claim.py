@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 """Ownership evidence for the planning claim command; no GitHub writes."""
 
 from __future__ import annotations
@@ -19,7 +23,14 @@ def marker(claim: dict[str, str]) -> str:
 
 def records(text: str) -> list[dict[str, str]]:
     found = []
-    for raw in re.findall(r"<!-- github-plan:claim (.*?) -->", text):
+    # Format examples and incidental prose are not live ownership records.
+    text = re.sub(r"(?ms)^```[^\n]*\n.*?^```[^\n]*$", "", text)
+    lines = [line.strip() for line in text.splitlines() if line.strip().startswith("<!-- " + MARKER)]
+    for line in lines:
+        match = re.fullmatch(r"<!-- github-plan:claim (.*?) -->", line)
+        if not match:
+            raise ValueError("Malformed claim marker; preserve ownership for owner review")
+        raw = match.group(1)
         record = json.loads(raw)
         if not isinstance(record, dict) or not all(
             isinstance(record.get(key), str) and record[key]
@@ -27,8 +38,6 @@ def records(text: str) -> list[dict[str, str]]:
         ):
             raise ValueError("Malformed claim record; preserve ownership for owner review")
         found.append(record)
-    if text.count(MARKER) != len(found):
-        raise ValueError("Malformed claim marker; preserve ownership for owner review")
     return found
 
 
@@ -37,7 +46,8 @@ def same_owner(record: dict[str, str], claim: dict[str, str]) -> bool:
 
 
 def references_issue(text: str, number: int) -> bool:
-    return bool(re.search(rf"(?<!\d){number}(?!\d)", text))
+    return bool(re.search(rf"(?i)(?:\bissue[-_ /#]?|\bgo[-_ ]?|\bagy[-_]|#|/issues/){number}(?!\d)", text)
+                or re.search(rf"(?:^|/){number}[-_]", text))
 
 
 def discussion_evidence(
@@ -53,21 +63,28 @@ def discussion_evidence(
         else:
             conflicts.append({"source": "current_status", "record": record})
     if not status_records and re.search(
-        r"(?im)owned by|claimed by|\bworker\s*:|\bsession\s*:|\bbranch\s*:|\bstate:\s*active",
+        r"(?im)owned by|claimed by|\bworker\s*:|\bsession\s*:",
         status,
     ):
         if any(claim[key] not in status for key in ("worker", "session", "branch")):
             conflicts.append({"source": "current_status", "text": status, "certainty": "ambiguous"})
     released: dict[tuple[str, str], int] = {}
+    released_ids: dict[tuple[int, str], int] = {}
     for index, comment in enumerate(comments):
         match = re.match(r"Released by (\S+)", comment.get("body") or "")
         if match:
             author = (comment.get("user") or {}).get("login", "")
             released[match.group(1), author] = index
+        match_id = re.match(r"Released claim (\d+)(?:\s|$)", comment.get("body") or "")
+        if match_id:
+            author = (comment.get("user") or {}).get("login", "")
+            released_ids[int(match_id.group(1)), author] = index
     for index, comment in enumerate(comments):
         text = comment.get("body") or ""
         parsed = records(text)
         author = (comment.get("user") or {}).get("login", "")
+        if released_ids.get((comment.get("id"), author), -1) > index:
+            continue
         legacy = re.match(r"Claimed by (\S+)", text)
         if legacy and not parsed:
             worker = legacy.group(1)

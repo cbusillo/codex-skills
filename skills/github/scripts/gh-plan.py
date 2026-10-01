@@ -1896,9 +1896,15 @@ def cmd_claim(args: argparse.Namespace) -> None:
     inventory: dict[str, Any] = {}
 
     def refuse(conflicts: list[dict[str, Any]]) -> None:
+        recovery = {}
+        comment_id = (claim_comment.get("comment") or {}).get("id")
+        if "post_claim" in completed and comment_id:
+            recovery = {"release_own_claim": {"comment_id": comment_id,
+                                             "body": f"Released claim {comment_id}"},
+                        "then": "Post this exact release through the same bot, preserve competing ownership, and recheck before any retry"}
         raise ClassifiedPlanError(
             "claim_conflict", "Another worker or ambiguous ownership evidence holds this issue; preserve it for owner review",
-            payload={"competing_evidence": conflicts},
+            payload={"competing_evidence": conflicts, "claim_recovery": recovery},
         )
 
     try:
@@ -1975,9 +1981,13 @@ def cmd_claim(args: argparse.Namespace) -> None:
             raise PlanError("Current Status claim changed during readback")
         completed.append("metadata_readback")
     except github_comment_core.CommentError as exc:
-        raise plan_error_from_comment(exc, completed_steps=completed) from exc
+        error = plan_error_from_comment(exc, completed_steps=completed)
+        error.payload.update({"claim": claim, "claim_comment": claim_comment})
+        raise error from exc
     except github_issue_core.IssueError as exc:
-        raise plan_error_from_issue(exc, completed_steps=completed) from exc
+        error = plan_error_from_issue(exc, completed_steps=completed)
+        error.payload.update({"claim": claim, "claim_comment": claim_comment})
+        raise error from exc
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         raise PlanError(str(exc), payload={"completed_steps": completed, "claim": claim,
                                           "claim_comment": claim_comment,
@@ -1985,7 +1995,9 @@ def cmd_claim(args: argparse.Namespace) -> None:
     except PlanError as exc:
         exc.payload.update({"completed_steps": completed, "claim": claim, "claim_comment": claim_comment,
                             "session_coverage": inventory.get("session_coverage", {})})
-        if completed:
+        if exc.failure is not None:
+            exc.failure.completed_steps = merge_completed_steps(completed, exc.failure.completed_steps)
+        elif completed:
             exc.failure = github_api_core.FailureDetail(
                 cause=getattr(exc, "code", "claim_incomplete"), message=str(exc),
                 retryable=False, fallback_eligible=False, disposition="stop",
