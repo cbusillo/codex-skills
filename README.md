@@ -486,7 +486,11 @@ uv run skills/github/scripts/gh-rulesets.py apply \
 ```
 
 Use `--all-owned --owner OWNER` for a complete non-archived inventory. Plan and
-pilot first; do not use a broad apply as a discovery command. A repository where
+pilot first; do not use a broad apply as a discovery command. Multi-repository
+apply is sequential: a later refusal can leave earlier repositories updated,
+with completed-repository receipts in the error. A fresh plan across the full
+set catches predictable refusals, including an existing App bypass without
+configuration, before any write. A repository where
 the configured App is not installed will reject the App bypass actor; treat that
 as a pilot finding, install or deliberately exclude the repository, and rerun
 the idempotent plan before continuing. The direction audit reports
@@ -494,7 +498,9 @@ the idempotent plan before continuing. The direction audit reports
 branch ruleset. When the owner also acts as automation, the audit reports
 `owner_acts_as_automation` in `limits` and treats that login's milestone admissions
 as owner decisions. This known attribution limit does not make coverage incomplete
-or hide other findings; `ok` and `counts` still describe the findings.
+or hide other findings; `ok` and `counts` still describe the findings. A reader
+returning the owner instead of a separately configured automation login still
+reports incomplete identity coverage.
 With only the owner's own `gh` login, explicitly select it for the read-only audit:
 
 ```sh

@@ -180,6 +180,8 @@ and writes nothing. When the owner also acts as automation, `limits` names
 `owner_acts_as_automation`: admissions by that login are treated as owner
 decisions because the audit cannot tell who used it. This is a known attribution
 limit, not incomplete coverage; `ok` and `counts` still reflect all findings.
+A reader returning the owner instead of a separately configured automation login
+still reports incomplete identity coverage.
 An owner with only their own `gh` login selects it explicitly with
 `direction_audit.py --repo OWNER/REPO --gh gh`; the default reader remains the
 automation wrapper. This read-only selection authorizes no GitHub writes.

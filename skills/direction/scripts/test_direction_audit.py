@@ -90,6 +90,11 @@ def test_owner_as_automation_is_a_limit_and_preserves_real_findings() -> None:
     assert clean["counts"] == {}
     assert [item["kind"] for item in clean["limits"]] == ["owner_acts_as_automation"]
     assert run(module)["limits"] == [], "distinct automation retains the existing audit behavior"
+    fallback = run(module, automation="owner", expected_automation="app[bot]")
+    assert fallback["ok"] is False
+    assert kinds(fallback) == ["coverage_incomplete"]
+    assert fallback["limits"] == []
+    assert run(module, automation="owner", expected_automation="OWNER")["ok"] is True
     assert "coverage_incomplete" in kinds(run(module, automation=None))
     foreign = {**issue(10, "Foreign admission"), "milestone": {"title": "Thin fork decision"},
                "_milestone_admitted_by": "other"}
@@ -123,11 +128,16 @@ def test_owner_only_cli_audit_uses_explicit_reader_and_returns_known_limit() -> 
         raise AssertionError(endpoint)
 
     output = StringIO()
-    with patch.object(module, "gh_json", side_effect=read), \
-         patch.object(module, "previous_audit_stamp", return_value=None), \
-         patch.object(module, "record_audit", return_value=None), \
-         patch.object(module.github_identity, "configured_bot_logins", return_value=()), \
-         redirect_stdout(output):
+    with (patch.dict(vars(module), {
+              "gh_json": read,
+              "previous_audit_stamp": lambda *_: None,
+              "record_audit": lambda *_: None,
+          }),
+          patch.dict(vars(module.github_identity), {
+              "configured_bot_logins": lambda: (),
+              "automation_login": lambda: None,
+          }),
+          redirect_stdout(output)):
         assert module.main(["--repo", "owner/repo", "--gh", "owner-gh"]) == 0
     result = json.loads(output.getvalue())
     assert result["ok"] is True
