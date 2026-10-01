@@ -64,8 +64,8 @@ def load_simulator() -> ModuleType:
     return module
 
 
-def simple_commands(shell: str, nested: bool = False) -> list[list[str]]:
-    """Split a shell line into the argv of each simple command it runs."""
+def shell_commands(shell: str) -> list[list[str]]:
+    """Split with shell operators and comments using one shared lexer."""
     lexer = shlex.shlex(shell, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     commands: list[list[str]] = [[]]
@@ -74,7 +74,13 @@ def simple_commands(shell: str, nested: bool = False) -> list[list[str]]:
             commands.append([])
         else:
             commands[-1].append(token)
+    return [argv for argv in commands if argv]
+
+
+def simple_commands(shell: str, nested: bool = False) -> list[list[str]]:
+    """Split a shell line into the argv of each simple command it runs."""
     unwrapped: list[list[str]] = []
+    commands = shell_commands(shell)
     for argv in commands:
         unwrapped.extend(unwrap(argv, nested))
     return unwrapped
@@ -158,11 +164,15 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
     block. Callers can use the tool's working-directory option instead; guessing
     a compound shell's effective directory would widen repository exceptions.
     """
-    tokens = shlex.split(shell)
+    try:
+        commands = shell_commands(shell)
+    except ValueError:
+        return None
+    tokens = [token for argv in commands for token in argv]
     if tokens and Path(tokens[0]).name in SHELLS:
         for index, token in enumerate(tokens[1:-1], start=1):
             if SHELL_COMMAND_FLAG.match(token):
-                if index + 2 != len(tokens):
+                if len(commands) != 1 or index + 2 != len(tokens):
                     return None
                 return exception_cwd(tokens[index + 1], cwd)
         return None
@@ -172,6 +182,11 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
         if token.startswith("-C") or ASSIGNMENT.match(token) or token.split("=", 1)[0] in {"-C", "--chdir", "--directory", "--project", "--with", "--with-editable", "--with-requirements"}:
             return None
         if Path(token).name == "launchplane" and token != "launchplane":
+            return None
+    for argv in commands:
+        while argv and argv[0] in TRANSPARENT:
+            argv = argv[1:]
+        if "launchplane" in argv and argv[:2] != ["uv", "run"]:
             return None
     return cwd if cwd.is_absolute() else None
 

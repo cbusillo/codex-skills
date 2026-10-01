@@ -148,10 +148,15 @@ def verified_repository(cwd: Path) -> str | None:
 
 def simulate(argv: list[str], shell: str | None = None, *, cwd: Path | None = None) -> list[PolicyMatch]:
     shell_text = shell if shell is not None else shlex.join(argv)
-    repository = verified_repository(cwd) if cwd is not None else None
+    policies = iter_policies()
+    needs_repository = any(
+        argv[:len(exception["argv_prefix"])] == exception["argv_prefix"]
+        for _, _, _, policy in policies for exception in policy.get("exceptions", [])
+    )
+    repository = verified_repository(cwd) if cwd is not None and needs_repository else None
     matches = [
         match
-        for skill_order, skill, index, policy in iter_policies()
+        for skill_order, skill, index, policy in policies
         if (match := match_policy(skill_order, skill, index, policy, argv, shell_text, repository)) is not None
     ]
     return sorted(matches, key=lambda match: match.score, reverse=True)

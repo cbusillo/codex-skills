@@ -84,7 +84,7 @@ class CommandPolicyHookTests(unittest.TestCase):
             self.assertEqual(bash("pnpm --dir frontend generate:openapi", checkout).returncode, 0)
             self.assertEqual(bash("launchplane merge-train run-once", checkout).returncode, 2)
             self.assertEqual(bash("launchplane service start", checkout).returncode, 2)
-            self.assertEqual(bash(commands[0] + " && launchplane service start", checkout).returncode, 2)
+            self.assertEqual(bash("uv run " + commands[0] + " && launchplane service start", checkout).returncode, 2)
             # A real linked worktree, not a mocked directory name or host runtime.
             subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], check=True)
             linked = root / "linked"
@@ -96,7 +96,7 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "https://github.com/cbusillo/launchplane",
             ):
                 subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", origin], check=True)
-                self.assertEqual(bash(commands[0], checkout).returncode, 0)
+                self.assertEqual(bash("uv run " + commands[0], checkout).returncode, 0)
             for origin in (
                 "https://github.com/other/launchplane.git",
                 "https://github.com/cbusillo/launchplane-other.git",
@@ -104,9 +104,9 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "https://evil.invalid/cbusillo/launchplane.git",
             ):
                 subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", origin], check=True)
-                self.assertEqual(bash(commands[0], checkout).returncode, 2)
+                self.assertEqual(bash("uv run " + commands[0], checkout).returncode, 2)
             subprocess.run(["git", "-C", str(checkout), "config", "--unset", "remote.origin.url"], check=True)
-            self.assertEqual(bash(commands[0], checkout).returncode, 2)
+            self.assertEqual(bash("uv run " + commands[0], checkout).returncode, 2)
 
     def test_repository_exception_cannot_follow_unverified_command_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -128,16 +128,29 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "true && bash -lc 'cd /other && " + command + "'",
                 "bash -lc 'true' && cd /other && " + command,
                 "uv run --with=other-package " + command,
+                "(cd /other && uv run " + command + ")",
+                "true&&cd /other&&uv run " + command,
+                "true&&bash -lc 'cd /other && uv run " + command + "'",
+                command,
             ):
                 with self.subTest(line=line):
                     self.assertEqual(bash(line, checkout).returncode, 2)
             self.assertEqual(bash("bash -lc 'uv run " + command + "'", checkout).returncode, 0)
             with mock.patch("subprocess.run", side_effect=OSError("git unavailable")):
-                self.assertEqual(bash(command, checkout).returncode, 2)
+                self.assertEqual(bash("uv run " + command, checkout).returncode, 2)
             with mock.patch.dict(os.environ, {"GIT_DIR": "/other", "GIT_WORK_TREE": "/other"}):
-                self.assertEqual(bash(command, checkout).returncode, 0)
+                self.assertEqual(bash("uv run " + command, checkout).returncode, 0)
             payload = json.dumps({"tool_name": "Bash", "cwd": str(checkout), "tool_input": {"command": "uv run " + command}})
             self.assertEqual(run_hook(payload).returncode, 0)
+
+    def test_shell_comments_preserve_existing_blocks(self) -> None:
+        for line in ("gh pr merge 17 # it's green", "# don't bypass\ngh pr merge 17"):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 2)
+
+    def test_unrelated_commands_do_not_read_repository_identity(self) -> None:
+        with mock.patch.dict(vars(SIMULATOR), {"verified_repository": mock.Mock(side_effect=AssertionError("unexpected Git read"))}):
+            self.assertIsNone(command_policy_hook.blocking_policy("git status && printf ok"))
 
     def test_repository_exception_metadata_rejects_ambiguous_or_empty_scopes(self) -> None:
         policy = {"id": "fixture", "match": {"argv_prefix": ["demo"]}, "action": "reject"}
@@ -147,6 +160,7 @@ class CommandPolicyHookTests(unittest.TestCase):
         for exceptions in (
             "owner/repo", [{}], [{**scoped, "repository": "https://github.com/owner/repo"}],
             [{**scoped, "argv_prefix": []}], [{**scoped, "shell_regex": ".*"}],
+            [{**scoped, "argv_prefix": ["demo"]}], [{**scoped, "argv_prefix": ["other", "export"]}],
         ):
             with self.subTest(exceptions=exceptions):
                 self.assertIsNotNone(quick_validate.validate_command_policies([{**policy, "exceptions": exceptions}]))

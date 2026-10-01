@@ -364,6 +364,10 @@ def validate_command_policies(command_policies, skill_dir=None):
             error = validate_argv_tokens(exception["argv_prefix"], f"{path}.exceptions.argv_prefix")
             if error:
                 return error
+            prefix = command_policy["match"].get("argv_prefix")
+            exception_prefix = exception["argv_prefix"]
+            if prefix is None or len(exception_prefix) <= len(prefix) or exception_prefix[:len(prefix)] != prefix:
+                return f"{path}.exceptions argv_prefix must strictly extend the policy argv_prefix"
         action = command_policy.get("action")
         if not isinstance(action, str) or action not in ALLOWED_COMMAND_POLICY_ACTIONS:
             allowed = ", ".join(sorted(ALLOWED_COMMAND_POLICY_ACTIONS))

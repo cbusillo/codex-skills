@@ -39,7 +39,10 @@ They may describe stable command ownership, risk, and safe routes:
 
 Frontmatter must not encode installation-specific runtime state such as concrete
 bot logins, token names beyond helper documentation, enterprise host allowlists,
-fallback permissions, enforcement modes, or per-repo/per-install overrides.
+fallback permissions, enforcement modes, or per-install overrides. A source-only
+exception may identify the command's owning repository; this is distinct from
+an installation's runtime override. Its prefix must strictly extend the policy's
+`argv_prefix`; exact and regex policies do not accept exceptions.
 Prefer role language such as "configured automation identity" over a concrete
 account name in portable policy messages and preferred-route purposes.
 
