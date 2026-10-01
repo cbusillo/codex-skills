@@ -722,7 +722,8 @@ operation map rather than adding duplicate literals.
 The merge-train policy import, repository inventory, product expected configuration,
 generic-web deploy-recovery, Odoo addon-settings, integration-allowances,
 testing-hold, product-repository-identity, product-environment-read,
-product-activity-read, preview-history-read, reconcile-requests-read, and
+product-activity-read, product-profile-read, preview-history-read,
+reconcile-requests-read, and
 target-replacement-operation-read commands are explicit bounded local
 extensions because the vendored public
 operation projection does not contain their routes. Do not describe them as contract-backed. If a later artifact adds those
@@ -1064,6 +1065,12 @@ verification.
   runtime identity with its deployment record id, health status, and recent
   deployment, promotion and backup-gate events with their record ids. Settings,
   secrets, actions, URLs and provider target names are dropped.
+- `GET /v1/product-profiles/{product}`: Bounded local-extension read
+  (`product-profile-read --product`) for who a product's Owner is and its
+  `production_use`: `prelaunch` skips Owner release review, while `live` and
+  `unknown` require it. It also returns the display name, driver, repository,
+  lifecycle state and lane contexts and instances. Images, URLs, workflows and
+  expected configuration are dropped.
 - `GET /v1/previews/{preview_id}/history`: Bounded local-extension read
   (`preview-history-read`, by `--preview-id` or by `--context`, `--repository`
   and `--pr`) for confirming what a preview serves: its state, serving

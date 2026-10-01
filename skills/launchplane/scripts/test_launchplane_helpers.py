@@ -2753,11 +2753,76 @@ def test_product_environment_read_uses_path_route_and_projects_deploy_identity()
         assert dropped not in rendered, dropped
 
 
+def _product_profile_response() -> dict[str, object]:
+    return {
+        "status": "ok",
+        "trace_id": "launchplane_req_product_profile",
+        "profile": {
+            "schema_version": 1,
+            "product": "example-product",
+            "display_name": "Example Site",
+            "driver_id": "odoo",
+            "repository": "example/site",
+            "production_use": "unknown",
+            "lifecycle_state": "active",
+            "owner": {"github_login": "example-owner", "github_id": "123", "review_label": "owner-review"},
+            "lanes": [
+                {"context": "example", "instance": "testing", "base_url": "https://testing.example.invalid"},
+                {"context": "example", "instance": "prod", "base_url": "https://prod.example.invalid"},
+            ],
+            "image": {"repository": "ghcr.io/example/private-image"},
+            "expected_config": {"runtime_environment_keys": [{"key": "PRIVATE_KEY_NAME"}]},
+            "promotion_workflow": {"workflow_file": "private-workflow.yml"},
+            "updated_at": "2026-09-26T20:28:34Z",
+        },
+    }
+
+
+def test_product_profile_read_returns_owner_and_production_use_only() -> None:
+    argv = ["product-profile-read", "--product", "example-product"]
+    status, payload, calls = _run_product_read(argv, _product_profile_response())
+    assert status == 0
+    assert contract.LOCAL_EXTENSION_ROUTES["product-profile-read"]["method"] == "GET"
+    assert calls[0]["path"] == "/v1/product-profiles/example-product"
+    assert payload["result"] == {
+        "product": "example-product",
+        "display_name": "Example Site",
+        "driver_id": "odoo",
+        "repository": "example/site",
+        "production_use": "unknown",
+        "lifecycle_state": "active",
+        "owner_github_login": "example-owner",
+        "owner_review_label": "owner-review",
+        "lanes": [
+            {"context": "example", "instance": "testing"},
+            {"context": "example", "instance": "prod"},
+        ],
+        "lanes_truncated": False,
+        "updated_at": "2026-09-26T20:28:34Z",
+    }
+    rendered = json.dumps(payload)
+    for dropped in ("example.invalid", "private-image", "PRIVATE_KEY_NAME", "private-workflow", "123"):
+        assert dropped not in rendered, dropped
+
+    for mutate in (
+        lambda body: body.update(extra="x"),
+        lambda body: body["profile"].update(production_use="not a code"),
+        lambda body: body["profile"]["owner"].update(github_login="Bearer abcdefghijklmnop"),
+    ):
+        mutated = _product_profile_response()
+        mutate(mutated)
+        status, payload, _calls = _run_product_read(argv, mutated)
+        assert status == 1
+        assert payload["status"] == "invalid"
+        assert not payload["result"]
+
+
 def test_product_environment_read_refuses_bad_segments_and_unsafe_values() -> None:
     for argv, code in (
         (["product-environment-read", "--product", "../admin", "--environment", "testing"], "invalid_product"),
         (["product-environment-read", "--product", "example", "--environment", "a/b"], "invalid_environment"),
         (["product-activity-read", "--product", "example?x=1"], "invalid_product"),
+        (["product-profile-read", "--product", "../admin"], "invalid_product"),
     ):
         status, payload, calls = _run_product_read(argv, _product_environment_response())
         assert status == 2

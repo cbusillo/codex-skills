@@ -314,6 +314,11 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/products/{product}/environments/{environment}",
         "mode": "read",
     },
+    "product-profile-read": {
+        "method": "GET",
+        "path": "/v1/product-profiles/{product}",
+        "mode": "read",
+    },
     "product-activity-read": {
         "method": "GET",
         "path": "/v1/products/{product}/activity",
