@@ -329,6 +329,11 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/product-profiles/{product}/reconcile-requests",
         "mode": "read",
     },
+    "target-replacement-operation-read": {
+        "method": "GET",
+        "path": "/v1/drivers/odoo/target-replacement/operations/{operation_id}",
+        "mode": "read",
+    },
     "product-repository-identity-dry-run": {
         "method": "POST",
         "path": "/v1/product-profiles/repository-identity/apply",
