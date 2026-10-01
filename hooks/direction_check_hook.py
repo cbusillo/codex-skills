@@ -135,6 +135,15 @@ def main(*, skills_only: bool = False) -> int:
                 pass  # A missing protocol must not hide the loop or reminder.
         if skills_only:
             return 0
+        # Resolve the runtime catalog from this registered hook, never the task cwd.
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        try:
+            from scripts.catalog_runtime import status_line
+            catalog_line = status_line(Path(__file__).resolve().parents[1])
+            if catalog_line:
+                print(catalog_line)
+        except (ImportError, OSError):
+            pass
         path = marker_path()
         root = direction_root(Path.cwd())
         if root is not None:
