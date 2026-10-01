@@ -48,6 +48,7 @@ CODE_HOME_SKILLS = "$CODE_HOME/skills/"
 OPERATORS = re.compile(r"^[;&|()\n]+$")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 TRANSPARENT = {"command", "exec", "time", "nohup"}
+SHELL_KEYWORDS = {"{", "!", "if", "then", "elif", "else", "do", "while", "until"}
 SHELLS = {"sh", "bash", "zsh"}
 SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
 GH_WRAPPER_FLAGS = {"--print-auth-account", "--require-automation-auth"}
@@ -120,7 +121,7 @@ def unwrap(argv: list[str], nested: bool) -> list[list[str]]:
     """Return the command or commands an argv really runs, per the module docstring."""
     while argv:
         head = Path(argv[0]).name
-        if ASSIGNMENT.match(argv[0]) or head in TRANSPARENT:
+        if ASSIGNMENT.match(argv[0]) or head in TRANSPARENT | SHELL_KEYWORDS:
             argv = argv[1:]
         elif head == "env":
             argv = drop_flags(argv[1:], ENV_VALUE_FLAGS)
@@ -192,7 +193,10 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
         shell,
     )
     if prefix:
-        path_text = shlex.split(prefix["path"])[0]
+        try:
+            path_text = shlex.split(prefix["path"])[0]
+        except ValueError:
+            return None
         # No expansion, CDPATH lookup, or guessing after a failed cd.
         if any(character in path_text for character in "$`\\~*?["):
             return None
@@ -225,8 +229,13 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
     for argv in commands:
         while argv and argv[0] in TRANSPARENT | {"builtin"}:
             argv = argv[1:]
-        if argv[:1] == ["."]:
-            return None
+        normalized = unwrap(argv, nested=True)
+        for index, token in enumerate(argv):
+            if token == "." and not (
+                index > 0 and argv[index - 1] == "--control-plane-root"
+                and normalized and normalized[0][:3] == ["launchplane", "service", "audit-config-authority"]
+            ):
+                return None
         if "launchplane" in argv and argv[:2] != ["uv", "run"]:
             return None
     return cwd if cwd.is_absolute() else None

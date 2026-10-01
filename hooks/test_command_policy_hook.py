@@ -128,6 +128,9 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "cd /other && " + command,
                 ". /other/setup && uv run " + command,
                 "builtin . /other/setup && uv run " + command,
+                "{ . /other/setup; uv run " + command + "; }",
+                "if . /other/setup; then uv run " + command + "; fi",
+                "! . /other/setup; uv run " + command,
                 "uv run --directory /other " + command,
                 "uv run --project=/other " + command,
                 "env -C /other " + command,
@@ -241,6 +244,9 @@ class CommandPolicyHookTests(unittest.TestCase):
             subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True)
             line = "uv run launchplane service export-openapi --output artifact.json && cat <<'EOF'\ntext\nEOF"
             self.assertEqual(bash(line, checkout).returncode, 2)
+
+    def test_cd_path_partial_quotes_do_not_skip_other_policies(self) -> None:
+        self.assertEqual(bash("cd /tmp/a'b && x' || gh pr merge 17").returncode, 2)
 
     def test_shell_comments_preserve_existing_blocks(self) -> None:
         for line in ("gh pr merge 17 # it's green", "# don't bypass\ngh pr merge 17"):
