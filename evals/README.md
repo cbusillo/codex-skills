@@ -101,7 +101,9 @@ judge: inspect actual finals when the answer falls outside the qualified rubric.
 
 Cases under `github-execution/` grade the `github` workflow the same way: a
 train landing and its exact-SHA runtime refresh, an adjacent planning request,
-missing merge and identity authority, and an unknown merge outcome. They may
+missing merge and identity authority, an unknown merge outcome, and an
+approval request for a deploy path whose blockers sit in different files, which
+must name every blocker at once. They may
 also set `read`, a pattern that some file read before the turn's first
 operation must match, so a case can require the reference that holds the
 contract it tests.
