@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shlex
 import stat
 import sys
@@ -22,7 +23,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Iterator
 
@@ -31,6 +32,16 @@ import fcntl
 
 class GitHubAppError(RuntimeError):
     """A safe-to-display GitHub App configuration or token error."""
+
+
+class GitHubAppHTTPError(GitHubAppError):
+    def __init__(self, message: str, status: int, location: str | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.location = location
+
+
+REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/(?!\.\.?$)[A-Za-z0-9._-]{1,100}")
 
 
 @dataclass(frozen=True)
@@ -298,14 +309,15 @@ def _parse_expiry(value: str) -> int:
         raise GitHubAppError("GitHub App token response has an invalid expiry") from error
 
 
-def _cache_key(config: GitHubAppConfig) -> str:
+def _cache_key(config: GitHubAppConfig, repository: str | None = None) -> str:
     key_fingerprint = hashlib.sha256(config.private_key_path.read_bytes()).hexdigest()
-    material = "\0".join((config.api_url, config.app_id, config.installation_id, key_fingerprint))
+    installation = f"repository:{repository.casefold()}" if repository else config.installation_id
+    material = "\0".join((config.api_url, config.app_id, installation, key_fingerprint))
     return hashlib.sha256(material.encode()).hexdigest()
 
 
 @contextmanager
-def _locked_cache(config: GitHubAppConfig) -> Iterator[pathlib.Path]:
+def _locked_cache(config: GitHubAppConfig, repository: str | None = None) -> Iterator[pathlib.Path]:
     try:
         cache_stat = config.cache_dir.lstat()
     except FileNotFoundError:
@@ -314,7 +326,7 @@ def _locked_cache(config: GitHubAppConfig) -> Iterator[pathlib.Path]:
     if not stat.S_ISDIR(cache_stat.st_mode) or cache_stat.st_uid != os.getuid():
         raise GitHubAppError("GitHub App token cache must be an owner-controlled directory")
     os.chmod(config.cache_dir, 0o700)
-    cache_path = config.cache_dir / f"{_cache_key(config)}.json"
+    cache_path = config.cache_dir / f"{_cache_key(config, repository)}.json"
     lock_path = cache_path.with_suffix(".lock")
     descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
     os.fchmod(descriptor, 0o600)
@@ -387,7 +399,10 @@ def _request_json(request: urllib.request.Request, *, operation: str) -> object:
         with urllib.request.build_opener(_NoRedirectHandler()).open(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
-        raise GitHubAppError(f"GitHub App {operation} failed with HTTP {error.code}") from error
+        location = error.headers.get("Location") if error.headers else None
+        raise GitHubAppHTTPError(
+            f"GitHub App {operation} failed with HTTP {error.code}", error.code, location
+        ) from error
     except (urllib.error.URLError, TimeoutError) as error:
         raise GitHubAppError(f"GitHub App {operation} failed") from error
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
@@ -496,20 +511,95 @@ def _request_installation_token(config: GitHubAppConfig, *, now: int) -> tuple[s
     return token, _parse_expiry(expires_at)
 
 
-def github_app_auth(
-    config: GitHubAppConfig, *, now: int | None = None, refresh: bool = False
-) -> tuple[str, str]:
+def repository_installation_config(
+    config: GitHubAppConfig, repository: str, *, now: int | None = None, required: bool = True
+) -> GitHubAppConfig | None:
+    """The App configuration for whichever installation covers the repository.
+
+    Each owner installs the App separately, so a repository outside the
+    configured installation's account needs that owner's installation. When
+    none covers it, return None, or refuse when one is required (writes). There
+    is never a fallback to another identity.
+    """
+    if not REPOSITORY_PATTERN.fullmatch(repository):
+        raise GitHubAppError(f"invalid repository {repository!r}; expected OWNER/REPO")
     current_time = int(time.time() if now is None else now)
+    url = f"{config.api_url}/repos/{repository}/installation"
+    for attempt in range(2):
+        request = urllib.request.Request(url, method="GET", headers=_app_headers(config, now=current_time))
+        try:
+            payload = _request_json(request, operation="repository installation lookup")
+            break
+        except GitHubAppHTTPError as error:
+            if error.status == 404 and not required:
+                return None
+            if error.status == 404:
+                raise GitHubAppError(
+                    f"the GitHub App is not installed on {repository}; "
+                    "its owner must install the App there before automation can use it"
+                ) from error
+            # A renamed or transferred repository redirects to its ID; follow
+            # that once, and only to the same API's repository installation.
+            moved = _renamed_repository_installation_url(config, error.location)
+            if attempt or error.status not in (301, 302, 307, 308) or moved is None:
+                raise
+            url = moved
+    installation_id = payload.get("id") if isinstance(payload, dict) else None
+    app_id = payload.get("app_id") if isinstance(payload, dict) else None
+    if not isinstance(installation_id, int) or str(app_id) != config.app_id:
+        raise GitHubAppError("GitHub App repository installation lookup returned the wrong installation")
+    return replace(config, installation_id=str(installation_id))
+
+
+def _renamed_repository_installation_url(config: GitHubAppConfig, location: str | None) -> str | None:
+    if not location:
+        return None
+    api = urllib.parse.urlsplit(config.api_url)
+    target = urllib.parse.urlsplit(urllib.parse.urljoin(f"{config.api_url}/", location))
+    expected_path = re.fullmatch(rf"{re.escape(api.path)}/repositories/[0-9]+/installation", target.path)
+    if (target.scheme, target.netloc) != (api.scheme, api.netloc) or not expected_path or target.query or target.fragment:
+        return None
+    return urllib.parse.urlunsplit(target)
+
+
+def github_app_auth(
+    config: GitHubAppConfig,
+    *,
+    now: int | None = None,
+    refresh: bool = False,
+    repository: str | None = None,
+    require_installation: bool = False,
+) -> tuple[str, str]:
+    """Mint or reuse an installation token, for the repository's owner when given.
+
+    Without an installation on the repository, reads use the configured
+    installation (public repositories stay readable); writes are refused.
+    """
+    current_time = int(time.time() if now is None else now)
+    if repository:
+        with _locked_cache(config, repository) as cache_path:
+            cached = None if refresh else _read_cached_token(cache_path, now=current_time)
+            if cached:
+                return cached
+            repository_config = repository_installation_config(
+                config, repository, now=current_time, required=require_installation
+            )
+            if repository_config is not None:
+                return _mint_and_cache(repository_config, cache_path, current_time)
     with _locked_cache(config) as cache_path:
         cached = None if refresh else _read_cached_token(cache_path, now=current_time)
         if cached:
             return cached
-        login = _request_app_login(config, now=current_time)
-        token, expires_at = _request_installation_token(config, now=current_time)
-        if expires_at <= current_time + 300:
-            raise GitHubAppError("GitHub App token response expires too soon")
-        _write_cached_token(cache_path, token, login, expires_at)
-        return token, login
+        return _mint_and_cache(config, cache_path, current_time)
+
+
+def _mint_and_cache(config: GitHubAppConfig, cache_path: pathlib.Path, current_time: int) -> tuple[str, str]:
+    login = _request_app_login(config, now=current_time)
+    token, expires_at = _request_installation_token(config, now=current_time)
+    if expires_at <= current_time + 300:
+        raise GitHubAppError("GitHub App token response expires too soon")
+    _write_cached_token(cache_path, token, login, expires_at)
+    return token, login
 
 
 def github_app_installation_token(config: GitHubAppConfig, *, now: int | None = None) -> str:
@@ -525,7 +615,16 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description="Resolve shared GitHub automation identity.")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("app-auth", help="Resolve the App bot login and installation token.")
+    app_auth = subparsers.add_parser("app-auth", help="Resolve the App bot login and installation token.")
+    app_auth.add_argument(
+        "--repo",
+        help="OWNER/REPO whose installation to use; defaults to the configured installation.",
+    )
+    app_auth.add_argument(
+        "--require-installation",
+        action="store_true",
+        help="Refuse when no installation covers --repo instead of using the configured one (writes).",
+    )
     subparsers.add_parser("app-check", help="Verify the configured App installation and print its bot login.")
     subparsers.add_parser("app-token", help="Mint or reuse a GitHub App installation token.")
     args = parser.parse_args()
@@ -537,7 +636,11 @@ def main() -> int:
             if args.command == "app-check":
                 print(check_github_app_installation(config))
                 return 0
-            token, login = github_app_auth(config)
+            token, login = github_app_auth(
+                config,
+                repository=getattr(args, "repo", None) or None,
+                require_installation=getattr(args, "require_installation", False),
+            )
             if args.command == "app-auth":
                 print(login)
             print(token)

@@ -109,6 +109,24 @@ class TokenHandler(BaseHTTPRequestHandler):
             payload = json.dumps({"slug": "catalog-app"}).encode()
         elif self.path == "/app/installations/67890":
             payload = json.dumps({"id": 67890, "app_id": 12345, "app_slug": "catalog-app"}).encode()
+        elif self.path == "/repos/first-owner/tools/installation":
+            payload = json.dumps({"id": 67890, "app_id": 12345}).encode()
+        elif self.path == "/repos/second-owner/site/installation":
+            payload = json.dumps({"id": 11111, "app_id": 12345}).encode()
+        elif self.path == "/repos/other-app/site/installation":
+            payload = json.dumps({"id": 22222, "app_id": 99999}).encode()
+        elif self.path in ("/repos/second-owner/old-name/installation", "/repos/moved-owner/site/installation"):
+            target = "/repositories/42/installation"
+            if self.path.startswith("/repos/moved-owner/"):
+                target = "https://elsewhere.invalid/repositories/42/installation"
+            else:
+                target = f"http://127.0.0.1:{self.server.server_port}{target}"
+            self.send_response(301)
+            self.send_header("Location", target)
+            self.end_headers()
+            return
+        elif self.path == "/repositories/42/installation":
+            payload = json.dumps({"id": 11111, "app_id": 12345}).encode()
         else:
             self.send_response(404)
             self.end_headers()
@@ -126,8 +144,9 @@ class TokenHandler(BaseHTTPRequestHandler):
         })
         index = len(type(self).requests)
         expires_at = type(self).expiries[min(index - 1, len(type(self).expiries) - 1)]
+        installation = self.path.split("/")[3]
         payload = json.dumps({
-            "token": f"installation-token-{index}",
+            "token": f"installation-{installation}-token-{index}",
             "expires_at": datetime.fromtimestamp(expires_at, tz=UTC).isoformat().replace("+00:00", "Z"),
         }).encode()
         self.send_response(201)
@@ -291,8 +310,8 @@ def test_github_app_token_is_minted_cached_and_refreshed() -> None:
             cached = github_identity.github_app_installation_token(config, now=initial + 600)
             refreshed = github_identity.github_app_installation_token(config, now=initial + 3_301)
 
-            assert first == cached == "installation-token-1"
-            assert refreshed == "installation-token-2"
+            assert first == cached == "installation-67890-token-1"
+            assert refreshed == "installation-67890-token-2"
             assert len(TokenHandler.requests) == 2
             assert len(TokenHandler.identity_requests) == 2
             assert all(item["path"] == "/app" for item in TokenHandler.identity_requests)
@@ -302,6 +321,67 @@ def test_github_app_token_is_minted_cached_and_refreshed() -> None:
             assert len(cache_files) == 1
             assert stat.S_IMODE(cache_files[0].stat().st_mode) == 0o600
             assert stat.S_IMODE((root / "cache").stat().st_mode) == 0o700
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def test_github_app_token_follows_the_repository_installation() -> None:
+    now = 1_700_000_000
+    TokenHandler.requests = []
+    TokenHandler.identity_requests = []
+    TokenHandler.expiries = [now + 3_600]
+    server = ThreadingHTTPServer(("127.0.0.1", 0), TokenHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            values = app_environment(root, f"http://127.0.0.1:{server.server_port}")
+            config = github_identity.github_app_config(values)
+            assert config is not None
+
+            first = github_identity.github_app_auth(config, now=now, repository="first-owner/tools")
+            second = github_identity.github_app_auth(config, now=now, repository="second-owner/site")
+            cached = github_identity.github_app_auth(config, now=now + 60, repository="Second-Owner/site")
+
+            assert first == ("installation-67890-token-1", "catalog-app[bot]")
+            assert second == cached == ("installation-11111-token-2", "catalog-app[bot]")
+            assert [item["path"] for item in TokenHandler.requests] == [
+                "/app/installations/67890/access_tokens",
+                "/app/installations/11111/access_tokens",
+            ]
+            lookups = [item["path"] for item in TokenHandler.identity_requests if item["path"].startswith("/repos/")]
+            assert lookups == ["/repos/first-owner/tools/installation", "/repos/second-owner/site/installation"]
+
+            # A renamed repository redirects to its ID on the same API.
+            renamed = github_identity.github_app_auth(config, now=now, repository="second-owner/old-name")
+            assert renamed[0].startswith("installation-11111-token-")
+
+            # Reads of a repository without an installation use the configured
+            # one, so public repositories stay readable; writes are refused.
+            TokenHandler.requests = []
+            default = github_identity.github_app_auth(config, now=now, repository="third-owner/site")
+            assert default[1] == "catalog-app[bot]"
+            assert [item["path"] for item in TokenHandler.requests] == ["/app/installations/67890/access_tokens"]
+            TokenHandler.requests = []
+            for repository, message in (
+                ("third-owner/site", "not installed on third-owner/site"),
+                ("other-app/site", "wrong installation"),
+                ("third-owner/..", "invalid repository"),
+                ("moved-owner/site", "HTTP 301"),
+            ):
+                try:
+                    github_identity.github_app_auth(
+                        config, now=now, repository=repository, require_installation=True
+                    )
+                except github_identity.GitHubAppError as error:
+                    assert message in str(error), error
+                else:
+                    raise AssertionError(f"{repository} did not stop before minting a token")
+            assert TokenHandler.requests == []
+            assert not any(".." in item["path"] for item in TokenHandler.identity_requests)
     finally:
         server.shutdown()
         thread.join()
@@ -455,6 +535,7 @@ def main() -> None:
         test_shell_expansion_values_are_ignored_in_python_parser,
         test_configured_bot_logins_support_quoted_space_separated_values,
         test_github_app_token_is_minted_cached_and_refreshed,
+        test_github_app_token_follows_the_repository_installation,
         test_github_app_configuration_is_all_or_nothing,
         test_github_app_private_key_rejects_group_or_world_access,
         test_github_app_jwt_has_a_valid_pkcs1_signature,

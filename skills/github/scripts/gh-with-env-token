@@ -88,37 +88,6 @@ readonly require_automation_auth
 
 expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-${CODEX_AUTOMATION_LOGIN:-}}
 
-app_variable_count=0
-for app_variable in GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH; do
-	eval "app_variable_value=\${$app_variable:-}"
-	if [ -n "$app_variable_value" ]; then
-		app_variable_count=$((app_variable_count + 1))
-	fi
-done
-auth_source=user_token
-if [ "$app_variable_count" -gt 0 ]; then
-	if [ "$app_variable_count" -ne 3 ]; then
-		echo "error: incomplete GitHub App configuration; set GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, and GITHUB_APP_PRIVATE_KEY_PATH" >&2
-		exit 1
-	fi
-	if [ -n "$python_command" ]; then
-		app_auth_output=$($python_command "$identity_helper" app-auth)
-	else
-		app_auth_output=$(uv run --no-project --no-config --python 3.12 "$identity_helper" app-auth)
-	fi
-	app_login=$(printf '%s\n' "$app_auth_output" | sed -n '1p')
-	GH_TOKEN=$(printf '%s\n' "$app_auth_output" | sed -n '2p')
-	if [ -z "$app_login" ] || [ -z "$GH_TOKEN" ] || [ "$(printf '%s\n' "$app_auth_output" | sed -n '3p')" != "" ]; then
-		echo "error: GitHub App authentication helper returned an invalid response; refusing GitHub command" >&2
-		exit 1
-	fi
-	auth_source=github_app
-elif [ -n "${CODEX_GITHUB_TOKEN:-}" ]; then
-	GH_TOKEN=$CODEX_GITHUB_TOKEN
-elif [ -z "${GH_TOKEN:-}" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
-	GH_TOKEN=$GITHUB_TOKEN
-fi
-
 # Capture stdin only when the command is going to read it, so the same body can
 # be replayed to the actor check and to the real call. Agent hosts leave stdin
 # open and idle; reading it unconditionally would wait forever for an end of
@@ -675,6 +644,154 @@ print_app_actor_probe() {
 		printf '{"login":"%s","type":"Bot"}\n' "$app_login"
 	fi
 }
+
+# The repository a gh command targets, as gh resolves it: an issue or pull
+# request URL argument, then the last -R/--repo, then the endpoint of `gh api`
+# when it is under repos/, then GH_REPO. Commands that name none (GraphQL by
+# node ID, for example) use the configured installation.
+target_repository() {
+	previous=
+	url_repository=
+	flag_repository=
+	for argument in "$@"; do
+		case $previous in
+		-R | --repo)
+			flag_repository=$(repository_from_reference "$argument")
+			previous=
+			continue
+			;;
+		esac
+		case $argument in
+		https://github.com/*/*/issues/* | https://github.com/*/*/pull/*)
+			path=${argument#https://github.com/}
+			owner=${path%%/*}
+			rest=${path#*/}
+			url_repository=$owner/${rest%%/*}
+			;;
+		--repo=*)
+			flag_repository=$(repository_from_reference "${argument#--repo=}")
+			;;
+		-R?*)
+			value=${argument#-R}
+			flag_repository=$(repository_from_reference "${value#=}")
+			;;
+		esac
+		previous=$argument
+	done
+	if [ -n "$url_repository" ]; then
+		printf '%s\n' "$url_repository"
+		return 0
+	fi
+	if [ -n "$flag_repository" ]; then
+		printf '%s\n' "$flag_repository"
+		return 0
+	fi
+	if [ "${1:-}" = api ]; then
+		shift
+		api_endpoint "$@" && return 0
+	fi
+	if [ -n "${GH_REPO:-}" ]; then
+		repository_from_reference "$GH_REPO"
+	fi
+}
+
+# The repository in the endpoint of `gh api`: its first argument that is not an
+# option or an option's value.
+api_endpoint() {
+	skip_value=0
+	for argument in "$@"; do
+		if [ "$skip_value" -eq 1 ]; then
+			skip_value=0
+			continue
+		fi
+		case $argument in
+		-X | --method | -f | --raw-field | -F | --field | -H | --header | --input | -q | --jq | -t | --template | -p | --preview | --hostname | --cache)
+			skip_value=1
+			;;
+		-*) ;;
+		*)
+			path=${argument#/}
+			case $path in
+			repos/*/*) ;;
+			*) return 1 ;;
+			esac
+			path=${path#repos/}
+			owner=${path%%/*}
+			rest=${path#*/}
+			name=${rest%%[/?#]*}
+			case "$owner/$name" in
+			*'{'* | *'}'* | /* | */) return 1 ;;
+			esac
+			printf '%s/%s\n' "$owner" "$name"
+			return 0
+			;;
+		esac
+	done
+	return 1
+}
+
+# gh accepts OWNER/REPO, HOST/OWNER/REPO, and repository URLs.
+repository_from_reference() {
+	reference=${1%/}
+	reference=${reference%.git}
+	case $reference in
+	git@*:*) reference=${reference#*:} ;;
+	esac
+	name=${reference##*/}
+	rest=${reference%/*}
+	owner=${rest##*/}
+	printf '%s/%s\n' "$owner" "$name"
+}
+
+# Each repository owner installs the App separately; use the installation on
+# the repository the command names. A write to a repository without one is
+# refused rather than sent with another identity.
+app_auth_for_command() {
+	target_repo=$(target_repository "$@")
+	require_installation=
+	if [ -n "$target_repo" ] && is_write_command "$@"; then
+		require_installation=1
+	fi
+	set -- app-auth
+	if [ -n "$target_repo" ]; then
+		set -- "$@" --repo "$target_repo"
+	fi
+	if [ -n "$require_installation" ]; then
+		set -- "$@" --require-installation
+	fi
+	if [ -n "$python_command" ]; then
+		$python_command "$identity_helper" "$@"
+	else
+		uv run --no-project --no-config --python 3.12 "$identity_helper" "$@"
+	fi
+}
+
+app_variable_count=0
+for app_variable in GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH; do
+	eval "app_variable_value=\${$app_variable:-}"
+	if [ -n "$app_variable_value" ]; then
+		app_variable_count=$((app_variable_count + 1))
+	fi
+done
+auth_source=user_token
+if [ "$app_variable_count" -gt 0 ]; then
+	if [ "$app_variable_count" -ne 3 ]; then
+		echo "error: incomplete GitHub App configuration; set GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, and GITHUB_APP_PRIVATE_KEY_PATH" >&2
+		exit 1
+	fi
+	app_auth_output=$(app_auth_for_command "$@")
+	app_login=$(printf '%s\n' "$app_auth_output" | sed -n '1p')
+	GH_TOKEN=$(printf '%s\n' "$app_auth_output" | sed -n '2p')
+	if [ -z "$app_login" ] || [ -z "$GH_TOKEN" ] || [ "$(printf '%s\n' "$app_auth_output" | sed -n '3p')" != "" ]; then
+		echo "error: GitHub App authentication helper returned an invalid response; refusing GitHub command" >&2
+		exit 1
+	fi
+	auth_source=github_app
+elif [ -n "${CODEX_GITHUB_TOKEN:-}" ]; then
+	GH_TOKEN=$CODEX_GITHUB_TOKEN
+elif [ -z "${GH_TOKEN:-}" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
+	GH_TOKEN=$GITHUB_TOKEN
+fi
 
 if ! validate_sensitive_read_policy "$@"; then
 	exit 2

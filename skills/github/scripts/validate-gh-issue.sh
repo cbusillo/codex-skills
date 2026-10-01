@@ -401,7 +401,7 @@ cat >"$tmpdir/fake-app-identity.py" <<'EOF'
 import os
 import sys
 
-assert sys.argv[1:] == ["app-auth"], sys.argv
+assert sys.argv[1:] == ["app-auth", "--repo", "owner/repo", "--require-installation"], sys.argv
 if os.environ.get("FAKE_APP_IDENTITY_FAIL"):
     print("error: GitHub App authentication failed before gh invocation: fixture", file=sys.stderr)
     raise SystemExit(1)

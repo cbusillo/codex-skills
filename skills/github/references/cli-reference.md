@@ -761,7 +761,13 @@ loads `$CODE_HOME/local.env` by default, falling back to
 `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, and
 `GITHUB_APP_PRIVATE_KEY_PATH` are all configured, it verifies the App identity,
 mints and caches an owner-only installation token, and uses the App for every
-command. Otherwise it prefers `CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and
+command. Each account that installs the App has its own installation, so when a
+command names a repository (`-R`/`--repo`, an `api` path under `repos/`, or
+`GH_REPO`), the wrapper uses the installation on that repository. A write to a
+repository where the App is not installed is refused with that reason; ask the
+repository's owner to install the App. Reads there, and commands that name no
+repository such as GraphQL by node ID, use the configured installation.
+`GITHUB_APP_INSTALLATION_ID` stays the default. Otherwise it prefers `CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and
 `GITHUB_TOKEN` in that order. `--check` reports the selected credential source
 and verifies the current App installation and actor without performing a write.
 For a non-`github.com` `GH_HOST`, configure the matching

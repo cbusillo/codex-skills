@@ -58,8 +58,32 @@ same_login() {
 	[ "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" ]
 }
 
+origin_url=$("$git_bin" remote get-url origin)
+case "$origin_url" in
+git@github.com:*)
+	repo=${origin_url#git@github.com:}
+	;;
+ssh://git@github.com/*)
+	repo=${origin_url#ssh://git@github.com/}
+	;;
+https://github.com/*)
+	repo=${origin_url#https://github.com/}
+	;;
+https://*@github.com/*)
+	repo=${origin_url#https://*@github.com/}
+	;;
+*)
+	echo "error: origin remote is not a github.com URL supported by git-push-as-bot: $origin_url" >&2
+	exit 1
+	;;
+esac
+
+repo=${repo%.git}
+https_url="https://github.com/$repo.git"
+
 # Select credentials the way the GitHub CLI wrapper does, so pushes and API writes
-# run as the same automation identity: a configured GitHub App comes first.
+# run as the same automation identity: a configured GitHub App comes first, with
+# the installation on origin's repository (each owner installs it separately).
 app_variable_count=0
 for app_variable in GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH; do
 	eval "app_variable_value=\${$app_variable:-}"
@@ -74,9 +98,9 @@ if [ "$app_variable_count" -gt 0 ]; then
 		exit 1
 	fi
 	if [ -n "$python_command" ]; then
-		app_auth_output=$($python_command "$identity_helper" app-auth) || exit 1
+		app_auth_output=$($python_command "$identity_helper" app-auth --repo "$repo" --require-installation) || exit 1
 	elif command -v uv >/dev/null 2>&1; then
-		app_auth_output=$(uv run --no-project --no-config --python 3.12 "$identity_helper" app-auth) || exit 1
+		app_auth_output=$(uv run --no-project --no-config --python 3.12 "$identity_helper" app-auth --repo "$repo" --require-installation) || exit 1
 	else
 		echo "error: git-push-as-bot requires uv or GIT_PUSH_AS_BOT_PYTHON for GitHub App authentication" >&2
 		exit 127
@@ -120,28 +144,6 @@ if [ "$app_variable_count" -eq 0 ]; then
 	fi
 fi
 
-origin_url=$("$git_bin" remote get-url origin)
-case "$origin_url" in
-git@github.com:*)
-	repo=${origin_url#git@github.com:}
-	;;
-ssh://git@github.com/*)
-	repo=${origin_url#ssh://git@github.com/}
-	;;
-https://github.com/*)
-	repo=${origin_url#https://github.com/}
-	;;
-https://*@github.com/*)
-	repo=${origin_url#https://*@github.com/}
-	;;
-*)
-	echo "error: origin remote is not a github.com URL supported by git-push-as-bot: $origin_url" >&2
-	exit 1
-	;;
-esac
-
-repo=${repo%.git}
-https_url="https://github.com/$repo.git"
 askpass_dir=$(mktemp -d "${TMPDIR:-/tmp}/git-push-as-bot.XXXXXX")
 askpass=$askpass_dir/askpass
 
