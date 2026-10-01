@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -382,7 +383,7 @@ def merged_direction(repo: str, *, fetch: Callable[[list[str]], Any]) -> str | N
     try:
         body = fetch(["api", f"repos/{repo}/contents/DIRECTION.md", "--method", "GET"])
     except AuditError as exc:
-        if "404" in str(exc) or "Not Found" in str(exc):
+        if re.search(r"\bHTTP 404\b", str(exc)):
             return None
         raise
     if isinstance(body, dict) and isinstance(body.get("content"), str):
@@ -415,12 +416,14 @@ def git_root(start: pathlib.Path) -> pathlib.Path:
     return pathlib.Path(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else start
 
 
-def record_audit(repo: str, started_at: dt.datetime) -> str | None:
+def record_audit(repo: str, started_at: dt.datetime, direction_text: str | None) -> str | None:
     """Stamp this repository's audit in the local marker the session-start hook reads.
 
     The stamp is written here, not by hand, so an audit stamp means an audit ran.
     GitHub is untouched; the marker is local state under the catalog home.
     """
+    if direction_text is None:
+        return None
     try:
         import importlib.util
 
@@ -452,6 +455,53 @@ def previous_audit_stamp(repo: str) -> dt.datetime | None:
         return _parse_time(audits.get(repo)) if isinstance(audits, dict) else None
     except (AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError):
         return None
+
+
+def prune_unadopted(path: pathlib.Path, *, fetch: Callable[[list[str]], Any], apply: bool = False) -> dict[str, Any]:
+    """Preview confirmed missing direction files; preserve unreadable repositories."""
+    original = path.read_bytes()
+    current = json.loads(original)
+    if not isinstance(current, dict) or not isinstance(current.get("audits"), dict):
+        raise AuditError("marker must contain an audits object; no changes made")
+    removed: list[str] = []
+    retained: list[str] = []
+    unknown: dict[str, str] = {}
+    for repo in current["audits"]:
+        if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+            unknown[repo] = "invalid repository name"
+            continue
+        try:
+            # Contents 404 alone can also mean an inaccessible private repo.
+            visible = fetch(["api", f"repos/{repo}", "--method", "GET"])
+            if not isinstance(visible, dict) or str(visible.get("full_name", "")).casefold() != repo.casefold():
+                raise AuditError("repository visibility could not be confirmed")
+            try:
+                body = fetch(["api", f"repos/{repo}/contents/DIRECTION.md", "--method", "GET"])
+            except AuditError as exc:
+                if not re.search(r"\bHTTP 404\b", str(exc)):
+                    raise
+                removed.append(repo)
+            else:
+                if not isinstance(body, dict) or body.get("type") != "file" or not isinstance(body.get("content"), str):
+                    raise AuditError("direction response is not a readable file")
+                retained.append(repo)
+        except AuditError as exc:
+            unknown[repo] = str(exc)
+    backup = None
+    if apply and removed:
+        if path.read_bytes() != original:
+            raise AuditError("marker changed during preview; rerun before applying")
+        import tempfile
+
+        descriptor, backup_name = tempfile.mkstemp(prefix=path.name + ".backup-", dir=path.parent)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(original)
+        backup = backup_name
+        for repo in removed:
+            del current["audits"][repo]
+        path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
+    return {"ok": not unknown, "applied": apply and bool(removed), "removed": removed,
+            "retained": retained, "unknown": unknown, "backup": backup}
 
 
 def enrich_waiting_inbound_blockers(
@@ -546,7 +596,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--owner", help="login treated as the owner; defaults to the repo owner")
     parser.add_argument("--automation", help="automation login allowed to create milestones; defaults to the wrapper's account")
     parser.add_argument("--gh", default=str(WRAPPER), help="gh-compatible command used for reads")
+    parser.add_argument("--prune-unadopted", action="store_true", help="preview removal of unadopted repositories from the local marker")
+    parser.add_argument("--apply-prune", action="store_true", help="apply the pruning preview with a recoverable backup")
     args = parser.parse_args(argv)
+
+    if args.apply_prune and not args.prune_unadopted:
+        parser.error("--apply-prune requires --prune-unadopted")
+    if args.prune_unadopted:
+        import direction_mark
+
+        try:
+            result = prune_unadopted(direction_mark.marker_path(), fetch=lambda a: gh_json(a, gh=args.gh), apply=args.apply_prune)
+        except (AuditError, OSError, ValueError) as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+            return 1
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result["ok"] else 3
 
     repo = args.repo or default_repo(git_root(pathlib.Path.cwd()))
     if not repo:
@@ -612,7 +677,7 @@ def main(argv: list[str] | None = None) -> int:
     result["audit_since"] = audit_since.isoformat().replace("+00:00", "Z")
     # Preserve unseen labeled closures without letting unrelated listing/event
     # caps keep already-judged work and stale reminders recurring indefinitely.
-    result["marked"] = None if "recent_closed_audit_issues" in truncated else record_audit(repo, now)
+    result["marked"] = None if "recent_closed_audit_issues" in truncated else record_audit(repo, now, direction_text)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["ok"] else 3
 
