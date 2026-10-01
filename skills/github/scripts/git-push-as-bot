@@ -19,6 +19,29 @@ else
 	env_file=
 fi
 
+# The helper rewrites and checks origin only, so it pushes only there; another
+# remote or a URL could use the person's own SSH key or credentials.
+repository_argument=
+next_is=
+for argument in "$@"; do
+	case $next_is in
+	value) next_is= ; continue ;;
+	repository) repository_argument=$argument; break ;;
+	esac
+	case $argument in
+	--repo=*) repository_argument=${argument#--repo=}; break ;;
+	--repo | --) next_is=repository ;;
+	-o | --push-option | --receive-pack | --exec) next_is=value ;;
+	-*) ;;
+	*) repository_argument=$argument; break ;;
+	esac
+done
+if [ "$repository_argument" != origin ]; then
+	echo "error: git-push-as-bot pushes only to origin; got '${repository_argument:-<none>}'" >&2
+	echo "hint: run git-push-as-bot [options] origin <refspec>" >&2
+	exit 1
+fi
+
 if [ -f "$env_file" ]; then
 	# Read private configuration without exporting it to git and its hooks.
 	# shellcheck disable=SC1090
@@ -118,24 +141,24 @@ esac
 
 repo=${repo%.git}
 https_url="https://github.com/$repo.git"
-askpass=$(mktemp "${TMPDIR:-/tmp}/git-push-as-bot.XXXXXX")
-token_file=$(mktemp "${TMPDIR:-/tmp}/git-push-as-bot-token.XXXXXX")
+askpass_dir=$(mktemp -d "${TMPDIR:-/tmp}/git-push-as-bot.XXXXXX")
+askpass=$askpass_dir/askpass
 
 cleanup() {
 	"$git_bin" remote set-url origin "$origin_url" >/dev/null 2>&1 || true
-	rm -f "$askpass" "$token_file"
+	rm -rf "$askpass_dir"
 }
 trap cleanup EXIT INT HUP TERM
 
-# Hand the token to git through a private file, not the environment that git
-# passes on to repository hooks.
-chmod 600 "$token_file"
-printf '%s\n' "$GIT_PUSH_AS_BOT_TOKEN" >"$token_file"
-cat >"$askpass" <<EOF
+# Hand the token to git through a file in a private directory, not through
+# the environment that git passes on to repository hooks.
+chmod 700 "$askpass_dir"
+(umask 077 && printf '%s\n' "$GIT_PUSH_AS_BOT_TOKEN" >"$askpass_dir/token")
+cat >"$askpass" <<'EOF'
 #!/bin/sh
-case "\$1" in
-*Username*) printf '%s\\n' x-access-token ;;
-*) cat '$token_file' ;;
+case "$1" in
+*Username*) printf '%s\n' x-access-token ;;
+*) cat "$(dirname "$0")/token" ;;
 esac
 EOF
 chmod 700 "$askpass"
@@ -143,16 +166,17 @@ chmod 700 "$askpass"
 "$git_bin" remote set-url origin "$https_url"
 # A pushurl or an insteadOf rewrite (to SSH, for example) would push with
 # credentials other than the automation token.
-push_url=$("$git_bin" remote get-url --push origin)
-if [ "$push_url" != "$https_url" ]; then
-	echo "error: origin pushes to '$push_url', not '$https_url'; refusing to push without the automation token" >&2
+push_urls=$("$git_bin" remote get-url --push --all origin)
+if [ "$push_urls" != "$https_url" ]; then
+	echo "error: origin pushes to '$(printf '%s' "$push_urls" | tr '\n' ' ')', not only '$https_url'; refusing to push without the automation token" >&2
 	echo "hint: remove remote.origin.pushurl or the url.*.insteadOf rule that rewrites github.com HTTPS URLs" >&2
 	exit 1
 fi
 # Git asks configured credential helpers before GIT_ASKPASS, and a helper such
-# as the GitHub CLI's answers with the active human account. Clear the helper
-# list so the push can only use the automation token.
+# as the GitHub CLI's answers with the active human account; an extraHeader
+# (actions/checkout persists one) would authenticate before either. Clear both
+# for this URL so the push can only use the automation token.
 GIT_ASKPASS=$askpass \
 	GIT_TERMINAL_PROMPT=0 \
-	env -u CODEX_GITHUB_TOKEN -u GH_TOKEN -u GITHUB_TOKEN \
-	"$git_bin" -c credential.helper= push "$@"
+	env -u CODEX_GITHUB_TOKEN -u GH_TOKEN -u GITHUB_TOKEN -u GIT_PUSH_AS_BOT_TOKEN \
+	"$git_bin" -c credential.helper= -c "http.$https_url.extraHeader=" push "$@"

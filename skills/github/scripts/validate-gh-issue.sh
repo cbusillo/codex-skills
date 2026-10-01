@@ -328,20 +328,20 @@ if [[ "$1" == "commit" ]]; then
 		>>"$GH_ISSUE_ENV_LOG"
 elif [[ "$1 $2 $3" == "remote get-url origin" ]]; then
 	printf 'git@github.com:owner/repo.git\n'
-elif [[ "$1 $2 $3 ${4:-}" == "remote get-url --push origin" ]]; then
+elif [[ "$1 $2 $3 ${4:-} ${5:-}" == "remote get-url --push --all origin" ]]; then
 	printf '%s\n' "${FAKE_PUSH_URL:-$(cat "$GH_ISSUE_ENV_LOG.remote")}"
 elif [[ "$1 $2 $3" == "remote set-url origin" ]]; then
 	printf 'remote=%s\n' "$4" >>"$GH_ISSUE_ENV_LOG"
 	printf '%s\n' "$4" >"$GH_ISSUE_ENV_LOG.remote"
-elif [[ "$1" == "push" ]]; then
-	printf 'push-with-credential-helpers\n' >>"$GH_ISSUE_ENV_LOG"
-elif [[ "$1 $2 $3" == "-c credential.helper= push" ]]; then
+elif [[ "$*" == "-c credential.helper= -c http.https://github.com/owner/repo.git.extraHeader= push "* ]]; then
 	printf 'askpass=%s prompt=%s token=%s\n' \
 		"${GIT_ASKPASS:-}" "${GIT_TERMINAL_PROMPT:-}" \
 		"$("$GIT_ASKPASS" 'Password for https://github.com: ')" >>"$GH_ISSUE_ENV_LOG"
 	printf 'push_env=%s|%s|%s|%s|%s\n' \
 		"${CODEX_GITHUB_TOKEN:-}" "${GH_TOKEN:-}" "${GITHUB_TOKEN:-}" \
 		"${GIT_PUSH_AS_BOT_TOKEN:-}" "${UNRELATED_SECRET:-}" >>"$GH_ISSUE_ENV_LOG"
+elif [[ " $* " == *" push "* ]]; then
+	printf 'push-with-other-config\n' >>"$GH_ISSUE_ENV_LOG"
 fi
 EOF
 chmod +x "$tmpdir/record-git"
@@ -386,7 +386,7 @@ chmod +x "$tmpdir/login-gh"
 printf 'CODEX_GITHUB_TOKEN=codex-token\nUNRELATED_SECRET=from-local-env\n' >"$tmpdir/token.env"
 PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/token.env" \
 	GIT_PUSH_AS_BOT_GIT="$tmpdir/record-git" GIT_PUSH_AS_BOT_GH="$tmpdir/login-gh" \
-	GH_TOKEN=inherited-token GH_ISSUE_TEST_LOG="$log" \
+	GH_TOKEN=inherited-token GIT_PUSH_AS_BOT_TOKEN=exported-by-caller GH_ISSUE_TEST_LOG="$log" \
 	GH_ISSUE_ENV_LOG="$env_log" \
 	"$repo_root/github/scripts/git-push-as-bot" -u origin branch >/dev/null
 
@@ -423,6 +423,7 @@ grep -q '^askpass=.* prompt=0 token=app-installation-token$' "$env_log"
 grep -q '^push_env=||||$' "$env_log"
 grep -q '^remote=git@github.com:owner/repo.git$' "$env_log"
 
+refused_push_args=(-u origin branch)
 assert_push_refused() {
 	local message="$1"
 	shift
@@ -431,12 +432,12 @@ assert_push_refused() {
 		GIT_PUSH_AS_BOT_GH="$tmpdir/login-gh" \
 		GIT_PUSH_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
 		GH_ISSUE_ENV_LOG="$env_log" "$@" \
-		"$repo_root/github/scripts/git-push-as-bot" -u origin branch >/dev/null 2>"$stderr_log"; then
+		"$repo_root/github/scripts/git-push-as-bot" "${refused_push_args[@]}" >/dev/null 2>"$stderr_log"; then
 		echo "error: git-push-as-bot must refuse: $message" >&2
 		exit 1
 	fi
 	grep -q "$message" "$stderr_log"
-	if grep -qE '^(askpass=|push-with-credential-helpers)' "$env_log"; then
+	if grep -qE '^(askpass=|push-with-other-config)' "$env_log"; then
 		echo "error: git-push-as-bot pushed after refusing: $message" >&2
 		exit 1
 	fi
@@ -456,6 +457,14 @@ assert_push_refused "unable to verify the push token's GitHub account" \
 	CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" GH_TOKEN=revoked-token
 assert_push_refused "origin pushes to 'git@github.com:owner/repo.git'" \
 	CODEX_SKILLS_ENV_FILE="$tmpdir/token.env" FAKE_PUSH_URL=git@github.com:owner/repo.git
+assert_push_refused "origin pushes to 'https://github.com/owner/repo.git git@github.com:owner/repo.git'" \
+	CODEX_SKILLS_ENV_FILE="$tmpdir/token.env" \
+	FAKE_PUSH_URL=$'https://github.com/owner/repo.git\ngit@github.com:owner/repo.git'
+for refused_destination in "git@github.com:owner/repo.git HEAD" "upstream branch" "--repo=upstream branch" "--repo upstream" "-u branch"; do
+	read -r -a refused_push_args <<<"$refused_destination"
+	assert_push_refused 'pushes only to origin' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
+done
+refused_push_args=(-u origin branch)
 printf 'GITHUB_APP_ID=1\nCODEX_GITHUB_TOKEN=codex-token\n' >"$tmpdir/partial-app.env"
 assert_push_refused 'incomplete GitHub App configuration' \
 	CODEX_SKILLS_ENV_FILE="$tmpdir/partial-app.env"
