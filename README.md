@@ -48,6 +48,8 @@ then run it with `--write` and rerun the installer. Older manual-sync output
 is adopted when it matches committed catalog history and that private source;
 unrecognized output is preserved for inspection. A session hook pointing at
 another checkout is also reported; inspect and update its path before rerunning.
+If the private source is missing after installation, restore it before refreshing;
+use an empty source file when you intend to remove its instructions.
 
 On macOS, opt into the guarded six-hour updater in the same install run:
 
@@ -59,7 +61,8 @@ It installs `~/Library/LaunchAgents/com.codex-skills.catalog-update.plist`.
 The updater fetches and fast-forwards only a clean `main` with no local commits;
 it never switches, resets, stashes, cleans, or merges divergence. A pull makes
 new skills visible without adding links and refreshes installed global instructions
-through the same installer, preserving the private supplement. The existing session-start hook prints
+through its instruction-only refresh, preserving the private supplement and
+leaving current bindings and hooks alone. The existing session-start hook prints
 one catalog line for a stale or blocked checkout, a failed update, or a scheduled
 check older than twelve hours. Session start performs no network calls. State
 and logs live in the checkout's ignored `.local/` directory.

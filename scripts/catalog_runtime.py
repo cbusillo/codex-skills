@@ -44,18 +44,22 @@ def checkout_state(root: Path) -> dict[str, str]:
 def status_line(root: Path) -> str:
     """No network or writes at session start; task worktrees are not runtime installs."""
     try:
-        if git(root, "rev-parse", "--git-dir") != git(root, "rev-parse", "--git-common-dir"):
+        installation_path = root / ".local" / "catalog-install.json"
+        if git(root, "rev-parse", "--git-dir") != git(root, "rev-parse", "--git-common-dir") and not installation_path.is_file():
             return ""
+        installation = json.loads(installation_path.read_text()) if installation_path.is_file() else {}
+        scheduled = installation.get("scheduled_updater", False) and bool(installation.get("updater_plist")) and Path(installation["updater_plist"]).is_file()
         state = checkout_state(root)
         if state["state"] == "current":
             receipt = root / ".local" / "catalog-update.json"
+            stamp = installation.get("scheduled_at")
             if receipt.exists():
                 recorded = json.loads(receipt.read_text())
-                stamp = dt.datetime.fromisoformat(recorded["checked_at"])
+                stamp = recorded["checked_at"]
                 if recorded.get("state") == "error":
-                    state = {"state": "blocked", "reason": "last catalog update failed; run scripts/catalog_runtime.py --update"}
-                elif dt.datetime.now(dt.timezone.utc) - stamp > dt.timedelta(hours=12) and (root / ".local" / "catalog-install.json").is_file() and json.loads((root / ".local" / "catalog-install.json").read_text()).get("scheduled_updater", False):
-                    state = {"state": "stale", "reason": "scheduled update has not checked origin in over 12 hours"}
+                    state = {"state": "blocked", "reason": "last catalog update failed; preview scripts/install-catalog.py --refresh-instructions to diagnose"}
+            if scheduled and stamp and dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(stamp) > dt.timedelta(hours=12) and state["state"] == "current":
+                state = {"state": "stale", "reason": "scheduled update has not checked origin in over 12 hours"}
         if state["state"] == "current":
             return ""
         return f"Catalog {state['state']}: {state['reason']} ({root})."
@@ -84,15 +88,15 @@ def update(root: Path) -> dict[str, str]:
                     if state["state"] == "stale":
                         git(root, "merge", "--ff-only", "--no-edit", "origin/main")
                         state = checkout_state(root)
-                if state["state"] == "current" and (root / ".local" / "catalog-global-source.md").is_file():
+                if state["state"] == "current" and (root / ".local" / "catalog-install.json").is_file():
                     # Refresh installed global instructions through the same installer;
-                    # stable hook entries retain their trust and unrelated settings.
+                    # Bindings and hooks are left as the user configured them.
                     installation = json.loads((root / ".local" / "catalog-install.json").read_text())
-                    result = subprocess.run([sys.executable, str(root / "scripts" / "install-catalog.py"), "--write",
+                    result = subprocess.run([sys.executable, str(root / "scripts" / "install-catalog.py"), "--write", "--refresh-instructions",
                                              "--home-dir", installation["home"], "--codex-dir", installation["codex"], "--claude-dir", installation["claude"]],
                                             capture_output=True, text=True, timeout=60)
                     if result.returncode:
-                        raise ValueError("catalog pulled but install refresh failed; rerun scripts/install-catalog.py --write")
+                        raise ValueError("catalog is current but instruction refresh failed; preview scripts/install-catalog.py --refresh-instructions to diagnose and reconcile")
         except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
             state = {"state": "error", "reason": str(error)}
         state["checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat()

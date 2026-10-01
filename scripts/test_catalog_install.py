@@ -131,6 +131,10 @@ class InstallTests(unittest.TestCase):
         self.assertNotIn("Use the catalog.", content)
         self.assertEqual(local.read_text(), "Private replacement.\n")
         local.unlink()
+        with self.assertRaisesRegex(ValueError, "Private instruction source is missing"):
+            self.install()
+        self.assertIn("Private replacement.", (self.codex / "AGENTS.md").read_text())
+        local.write_text("")
         self.install()
         self.assertNotIn("Private replacement.", (self.codex / "AGENTS.md").read_text())
 
@@ -150,7 +154,7 @@ class InstallTests(unittest.TestCase):
             if kwargs.get("write") and self.codex / "AGENTS.md" in destinations:
                 raise OSError("fixture host write failed")
             return original(content, destinations, **kwargs)
-        with mock.patch.object(self.sync, "synchronize", side_effect=fail_host):
+        with mock.patch.dict(vars(self.sync), {"synchronize": fail_host}):
             with self.assertRaises(OSError):
                 self.install()
         self.assertEqual(receipt.read_bytes(), previous)
@@ -246,6 +250,26 @@ class InstallTests(unittest.TestCase):
         self.assertIn("Current shared instructions.", content)
         self.assertIn("Private instruction.", content)
         self.assertNotIn("Use the catalog.", content)
+
+    def test_refresh_keeps_removed_bindings_and_hooks_removed(self):
+        self.install()
+        (self.claude / "skills" / "shared").unlink()
+        (self.home / ".agents" / "skills" / "shared").unlink()
+        (self.codex / "hooks.json").write_text('{"hooks": {}}\n')
+        (self.catalog / "instructions" / "global.md").write_text("Updated instructions.\n")
+        installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertFalse((self.claude / "skills" / "shared").exists())
+        self.assertFalse((self.home / ".agents" / "skills" / "shared").exists())
+        self.assertEqual((self.codex / "hooks.json").read_text(), '{"hooks": {}}\n')
+        self.assertIn("Updated instructions.", (self.codex / "AGENTS.md").read_text())
+
+    def test_existing_hook_expands_home_and_shell_variables(self):
+        for token in ("~", "$HOME"):
+            with self.subTest(token=token), mock.patch.dict(os.environ, {"HOME": str(self.root)}):
+                entry = {"hooks": {"SessionStart": [{"hooks": [{"command": f"uv run {token}/catalog/hooks/direction_check_hook.py"}]}]}}
+                (self.codex / "hooks.json").write_text(json.dumps(entry))
+                self.install()
+                self.assertEqual(json.loads((self.codex / "hooks.json").read_text())["hooks"]["SessionStart"], entry["hooks"]["SessionStart"])
 
     def test_launchd_install_bootstraps_once_and_preserves_a_conflicting_job(self):
         def run(*, write=True):
@@ -345,11 +369,16 @@ class UpdateTests(unittest.TestCase):
             command("git", "add", ".", cwd=self.seed)
             command("git", "commit", "-qm", "catalog update", cwd=self.seed)
             command("git", "push", "-q", "origin", "main", cwd=self.seed)
+            (fixture_home / ".claude" / "skills" / "shared").unlink()
+            hooks = fixture_home / ".codex" / "hooks.json"
+            hooks.write_text('{"hooks": {}}\n')
             with mock.patch.dict(os.environ, {"HOME": str(self.base / "other-home"), "CODEX_HOME": "", "CLAUDE_CONFIG_DIR": ""}):
                 self.assertEqual(runtime.update(self.checkout)["state"], "current")
             self.assertFalse((self.base / "other-home" / ".codex").exists())
             self.assertIn("Updated shared instructions", (fixture_home / ".codex" / "AGENTS.md").read_text())
             self.assertTrue((fixture_home / ".agents" / "skills" / "shared" / "new").is_file())
+            self.assertFalse((fixture_home / ".claude" / "skills" / "shared").exists())
+            self.assertEqual(hooks.read_text(), '{"hooks": {}}\n')
 
     def test_dirty_untracked_off_main_detached_ahead_and_diverged_are_preserved(self):
         scenarios = ("dirty", "untracked", "branch", "detached", "ahead", "diverged")
@@ -397,8 +426,35 @@ class UpdateTests(unittest.TestCase):
         install = self.checkout / ".local" / "catalog-install.json"
         install.write_text(json.dumps({"scheduled_updater": False}))
         self.assertEqual(runtime.status_line(self.checkout), "")
-        install.write_text(json.dumps({"scheduled_updater": True}))
+        job = self.base / "job.plist"
+        job.write_text("fixture")
+        install.write_text(json.dumps({"scheduled_updater": True, "updater_plist": str(job)}))
         self.assertIn("Catalog stale", runtime.status_line(self.checkout))
+        job.unlink()
+        self.assertEqual(runtime.status_line(self.checkout), "")
+
+    def test_scheduled_update_that_never_ran_becomes_visible(self):
+        local = self.checkout / ".local"
+        local.mkdir()
+        job = self.base / "job.plist"
+        job.write_text("fixture")
+        installed = {"scheduled_updater": True, "updater_plist": str(job), "scheduled_at": (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1)).isoformat()}
+        (local / "catalog-install.json").write_text(json.dumps(installed))
+        self.assertIn("Catalog stale", runtime.status_line(self.checkout))
+        installed["scheduled_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        (local / "catalog-install.json").write_text(json.dumps(installed))
+        self.assertEqual(runtime.status_line(self.checkout), "")
+
+    def test_installed_linked_worktree_reports_stale_state(self):
+        command("git", "switch", "-qc", "task", cwd=self.checkout)
+        linked = self.base / "linked"
+        command("git", "worktree", "add", "-q", str(linked), "main", cwd=self.checkout)
+        self.advance()
+        command("git", "fetch", "-q", "origin", cwd=self.checkout)
+        self.assertEqual(runtime.status_line(linked), "")
+        (linked / ".local").mkdir()
+        (linked / ".local" / "catalog-install.json").write_text("{}")
+        self.assertIn("Catalog stale", runtime.status_line(linked))
 
     def test_hook_emits_one_catalog_line_on_both_harnesses_only_when_needed(self):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
@@ -414,6 +470,8 @@ class UpdateTests(unittest.TestCase):
                 with contextlib.redirect_stdout(output):
                     self.assertEqual(hook.main(catalog_root=self.checkout), 0)
                 self.assertEqual(output.getvalue().count("Catalog stale:"), 1)
+        # This receipt was only a hook-gating fixture, not a real installation.
+        (self.checkout / ".local" / "catalog-install.json").unlink()
         runtime.update(self.checkout)
         self.assertEqual(runtime.status_line(self.checkout), "")
 
