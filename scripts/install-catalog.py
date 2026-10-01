@@ -219,7 +219,8 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                 if not isinstance(groups.get(event, []), list):
                     raise ValueError(f"Invalid {event} configuration")
             # Add/update alerts only for an installation still bound to catalog
-            # hooks. Removing catalog hooks opts out; never restore deleted bindings.
+            # hooks. Removing all catalog hooks opts out; alerts follow any remaining
+                # catalog binding. Independent suppression uses native /hooks trust.
             managed = any(
                 isinstance(group, dict) and isinstance(group.get("hooks"), list)
                 and any(isinstance(handler, dict) and handler.get("statusMessage") in (

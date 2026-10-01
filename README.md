@@ -384,7 +384,8 @@ is granted or copied by the installer. To suppress Codex alerts independently,
 leave their entries untrusted in `/hooks` while retaining other approved hooks.
 If an instruction refresh cannot safely update a hook destination, it leaves
 that destination untouched, reports the skipped alert refresh in its output
-and updater receipt, and still refreshes instructions.
+and updater receipt, and still refreshes instructions. The next session-start
+status line names the skipped alert refresh and its recovery command.
 The stream appears on the first alert;
 once it exists a local supervisor can use:
 

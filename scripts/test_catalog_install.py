@@ -714,6 +714,23 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(runtime.update(self.checkout)["state"], "current")
         self.assertEqual(runtime.status_line(self.checkout), "")
 
+    def test_skipped_alert_refresh_is_visible_without_changing_checkout(self):
+        self.assertEqual(runtime.update(self.checkout)["state"], "current")
+        receipt = self.checkout / ".local" / "catalog-update.json"
+        status = json.loads(receipt.read_text())
+        status["alert_refresh"] = "skipped"
+        receipt.write_text(json.dumps(status))
+        install = self.checkout / ".local" / "catalog-install.json"
+        install.write_text(json.dumps({"scheduled_updater": False}))
+        head = command("git", "rev-parse", "HEAD", cwd=self.checkout)
+        line = runtime.status_line(self.checkout)
+        self.assertIn("alert refresh was skipped", line)
+        self.assertIn("--refresh-instructions", line)
+        self.assertEqual(command("git", "rev-parse", "HEAD", cwd=self.checkout), head)
+        status.pop("alert_refresh")
+        receipt.write_text(json.dumps(status))
+        self.assertEqual(runtime.status_line(self.checkout), "")
+
     def test_manual_update_does_not_imply_an_overdue_schedule(self):
         self.assertEqual(runtime.update(self.checkout)["state"], "current")
         receipt = self.checkout / ".local" / "catalog-update.json"
