@@ -495,7 +495,8 @@ the configured App is not installed will reject the App bypass actor; treat that
 as a pilot finding, install or deliberately exclude the repository, and rerun
 the idempotent plan before continuing. The direction audit reports
 `ruleset_missing` when an adopted repository lacks either active standard
-branch ruleset. When the owner also acts as automation, the audit reports
+branch ruleset. When the owner explicitly selects their own reader with
+`--gh gh` (or declares their own login with `--automation`), the audit reports
 `owner_acts_as_automation` in `limits` and treats that login's milestone admissions
 as owner decisions. This known attribution limit does not make coverage incomplete
 or hide other findings; `ok` and `counts` still describe the findings. A reader
