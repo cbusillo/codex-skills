@@ -343,15 +343,17 @@ def overall_milestone_context(
     parent_keys = {(p["repo"].casefold(), p["number"]) for p in (item.get("discussion") or {}).get("parents", [])}
     blocking_keys = {(p["repo"].casefold(), p["number"]) for p in item.get("blocking", []) if p.get("state") == "open"}
     tracking_keys = {(p["repo"].casefold(), p["number"]) for p in graph.get("tracking_milestones", [])}
-    linked = {
-        entry["milestone"]["title"]
+    linked_entries = [
+        entry
         for entry in [*graph.get("candidates", []), *graph.get("excluded", []), *graph.get("tracking_milestones", [])]
         if (entry.get("milestone") or {}).get("title") in milestone_titles
         and (entry.get("via") or (entry["repo"].casefold(), entry["number"]) in tracking_keys)
         and (entry["repo"].casefold(), entry["number"]) in parent_keys | blocking_keys
-    }
-    if linked:
-        return {"state": "matched", "titles": [title for title in milestone_titles if title in linked], "source": "native_track_links" if blocking_keys else "native_track_ancestry"}
+    ]
+    if linked_entries:
+        linked = {entry["milestone"]["title"] for entry in linked_entries}
+        blocked_match = any((entry["repo"].casefold(), entry["number"]) in blocking_keys for entry in linked_entries)
+        return {"state": "matched", "titles": [title for title in milestone_titles if title in linked], "source": "native_track_links" if blocked_match else "native_track_ancestry"}
     repo = item["repo"]
     repository_titles = next((value for key, value in repository_milestones.items() if key.casefold() == repo.casefold()), None)
     local_title = (item.get("milestone") or {}).get("title")

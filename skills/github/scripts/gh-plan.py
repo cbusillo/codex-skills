@@ -2551,7 +2551,7 @@ def discover_direction_work(
 
 def repository_direction_milestones(source: dict[str, Any]) -> list[str] | None:
     """Keep absent/empty waypoints distinct from an unread or unparsed source."""
-    if source.get("error"):
+    if source.get("error") or "direction" not in source:
         return None
     text = source.get("direction")
     if text is None:

@@ -1614,6 +1614,7 @@ def test_unvisited_track_ancestry_and_unparsed_repository_direction_context() ->
         assert read({"direction": "## Other waypoints\n- `First`"}) is None
         assert read({"direction": "## Milestones\n"}) == []
         assert read({"direction": None}) == []
+        assert read({"exclusion": "repository_held"}) is None
         assert read({"error": "not accessible", "direction": None}) is None
         assert read({"direction": "## Milestones\n- `First`"}) == ["First"]
 
@@ -1665,6 +1666,10 @@ def test_overall_waypoint_context_requires_native_or_listed_direction_evidence()
     candidate["discussion"]["parents"] = [ancestor]
     matched = context(candidate, graph, ["First"], {})
     assert matched["titles"] == ["First"] and matched["source"] == "native_track_ancestry"
+    candidate["blocking"] = [{"repo": "someone/unrelated", "number": 99, "state": "open"}]
+    assert context(candidate, graph, ["First"], {})["source"] == "native_track_ancestry"
+    candidate["blocking"].append({**ancestor, "state": "open"})
+    assert context(candidate, graph, ["First"], {})["source"] == "native_track_links"
     candidate["via"] = ancestor["via"]
     assert context(candidate, graph, ["First"], {})["source"] == "native_track_path"
 
