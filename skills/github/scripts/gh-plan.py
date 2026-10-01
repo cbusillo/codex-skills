@@ -1887,6 +1887,8 @@ def cmd_claim(args: argparse.Namespace) -> None:
             raise PlanError(f"Claim {key} must be a nonempty single-line token")
     if not args.next_action.strip() or any(c in args.next_action for c in "\n\r"):
         raise PlanError("Claim next action must be a nonempty single line")
+    if args.wait_resolved is not None and (not args.wait_resolved.strip() or any(c in args.wait_resolved for c in "\n\r")):
+        raise PlanError("Wait resolution must record existing evidence on one line")
     if subprocess.run(["git", "check-ref-format", "--branch", args.branch],
                       capture_output=True).returncode:
         raise PlanError("Claim branch is not a valid Git branch")
@@ -1894,6 +1896,22 @@ def cmd_claim(args: argparse.Namespace) -> None:
     completed: list[str] = []
     claim_comment: dict[str, Any] = {}
     inventory: dict[str, Any] = {}
+    previous_status = ""
+    config = load_config(repo)
+
+    def check_wait(issue: dict[str, Any], status: str) -> None:
+        status_state = next_plan_status(issue, config)
+        reports = github_direction_next.waiting_records(compact_issue(issue), status)
+        blocked_text = any(
+            (match := re.match(r"\s*(?:[-*]\s+)?Blocked by:\s*(.+)", line, re.I))
+            and match.group(1).casefold().rstrip(" .") not in {"none", "n/a", "nothing", "-"}
+            for line in status.splitlines()
+        )
+        if (status_state in {"waiting", "blocked", "stale", "done"} or reports or blocked_text
+                or re.search(r"(?im)^\s*(?:[-*]\s+)?State:\s*(?:waiting|parked|blocked|stale|done)\b", status)):
+            if not args.wait_resolved:
+                raise ClassifiedPlanError("claim_wait_unresolved", "Verify the recorded wait or hold, then pass --wait-resolved with existing resolution evidence",
+                                          payload={"previous_current_status": status})
 
     def refuse(conflicts: list[dict[str, Any]]) -> None:
         recovery = {}
@@ -1913,6 +1931,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         conflicts, owned = github_plan_claim.discussion_evidence(status, comments, claim)
         if conflicts:
             refuse(conflicts)
+        check_wait(issue, status)
         if owned:
             claim = {key: owned[0][key] for key in claim}
         retained = github_plan_claim.retained_branch(comments, args.resume_from) if args.resume_from else None
@@ -1937,6 +1956,8 @@ def cmd_claim(args: argparse.Namespace) -> None:
             f"Claimed by {claim['worker']}\n\nSession: {claim['session']}\nBranch: {claim['branch']}\n"
             f"Claimed at: {claim['claimed_at']}\nNext action: {args.next_action}\n\n"
             + github_plan_claim.marker(claim)
+            + (f"\n\nWait resolution: {args.wait_resolved}" if args.wait_resolved else "")
+            + "\n\nPrevious Current Status:\n" + "\n".join("> " + line for line in previous_status.splitlines())
         )
         _, comment_owners = github_plan_claim.discussion_evidence("", comments, claim)
         comment_recorded = any(record.get("_legacy") != "yes" for record in comment_owners)
@@ -1952,22 +1973,20 @@ def cmd_claim(args: argparse.Namespace) -> None:
         conflicts, observed = github_plan_claim.discussion_evidence(status, comments, claim)
         if conflicts:
             refuse(conflicts)
+        check_wait(issue, status)
         if not any(github_plan_claim.same_owner(record, claim) for record in observed):
             raise PlanError("Claim was not visible on readback; do not create a worktree")
         completed.append("claim_readback")
-        waits = "\n".join(line for line in status.splitlines()
-                          if re.match(r"(?i)^(?:Blocked by|Waiting for|Parked until):", line))
         status_text = (
             f"State: Active; owned by {claim['worker']}.\nSession: {claim['session']}\n"
             f"Branch: {claim['branch']}\nNext action: {args.next_action}\n"
-            f"{waits or 'Blocked by: None.'}\nLast verified: {claim['claimed_at']}\n\n"
+            f"Blocked by: None.\nWaiting for: Nothing.\nLast verified: {claim['claimed_at']}\n\n"
             + github_plan_claim.marker(claim)
         )
         if can_update:
             body = replace_issue_plan_section(issue, "Current Status", status_text)
             rest_edit_issue(issue_repo, number, body=body)
             completed.append("update_current_status")
-        config = load_config(repo)
         label_map = config["labels"]
         label_result = github_issue_core.edit_issue(
             number, repo=issue_repo, add_labels=[label_map["active"]],
@@ -1989,18 +2008,20 @@ def cmd_claim(args: argparse.Namespace) -> None:
         completed.append("metadata_readback")
     except github_comment_core.CommentError as exc:
         error = plan_error_from_comment(exc, completed_steps=completed)
-        error.payload.update({"claim": claim, "claim_comment": claim_comment})
+        error.payload.update({"claim": claim, "claim_comment": claim_comment, "previous_current_status": previous_status})
         raise error from exc
     except github_issue_core.IssueError as exc:
         error = plan_error_from_issue(exc, completed_steps=completed)
-        error.payload.update({"claim": claim, "claim_comment": claim_comment})
+        error.payload.update({"claim": claim, "claim_comment": claim_comment, "previous_current_status": previous_status})
         raise error from exc
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         raise PlanError(str(exc), payload={"completed_steps": completed, "claim": claim,
+                                          "previous_current_status": previous_status,
                                           "claim_comment": claim_comment,
                                           "session_coverage": inventory.get("session_coverage", {})}) from exc
     except PlanError as exc:
         exc.payload.update({"completed_steps": completed, "claim": claim, "claim_comment": claim_comment,
+                            "previous_current_status": previous_status,
                             "session_coverage": inventory.get("session_coverage", {})})
         if exc.failure is not None:
             exc.failure.completed_steps = merge_completed_steps(completed, exc.failure.completed_steps)
@@ -3888,6 +3909,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--branch", required=True, help="Exact task branch the worktree helper will create; create it only after claim succeeds")
     p.add_argument("--next-action", required=True)
     p.add_argument("--resume-from", type=int, help="Released structured claim comment ID for verified retained-work handoff")
+    p.add_argument("--wait-resolved", help="Existing resolution evidence for a recorded wait/hold; grants no new authority")
     p.set_defaults(func=cmd_claim)
 
     p = sub.add_parser("create", help="Create a durable plan issue")

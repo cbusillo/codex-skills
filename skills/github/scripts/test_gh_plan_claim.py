@@ -30,9 +30,9 @@ OTHER = {**OWNER, "worker": "trial-b", "session": "session-b", "branch": "work/o
 class ClaimTests(unittest.TestCase):
     def setUp(self):
         self.args = Namespace(repo="owner/repo", issue="42", worker=OWNER["worker"], session=OWNER["session"],
-                              branch=OWNER["branch"], next_action="Implement the repair", resume_from=None)
+                              branch=OWNER["branch"], next_action="Implement the repair", resume_from=None, wait_resolved=None)
         self.issue = {"repo": "owner/repo", "number": 42, "title": "Repair", "state": "open",
-                      "user": {"login": PLAN.EXPECTED_ACTOR}, "labels": [{"name": "plan:waiting"}],
+                      "user": {"login": PLAN.EXPECTED_ACTOR}, "labels": [],
                       "body": PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n\n## Objective\n\nKeep me\n\n## Current Status\n\nState: Open, not started.\n"}
         self.comments = []
         self.inventory = {"worktrees": [], "local_branches": [], "remote_branches": [], "sessions": [],
@@ -327,8 +327,9 @@ class ClaimTests(unittest.TestCase):
 
     def test_claim_preserves_owner_wait_and_returns_original_status(self):
         self.issue["body"] += "Waiting for: owner choice between A and B\n"
+        self.args.wait_resolved = "Owner selected A in the recorded decision"
         self.run_claim()
-        self.assertIn("Waiting for: owner choice between A and B", self.issue["body"])
+        self.assertIn("Waiting for: owner choice between A and B", self.comments[-1]["body"])
         self.assertIn("owner choice", self.emitted.call_args.args[0]["previous_current_status"])
 
     def test_reused_worker_token_release_does_not_release_another_session(self):
@@ -343,6 +344,30 @@ class ClaimTests(unittest.TestCase):
         replies = ["git@github.com:OWNER/Repo.git\n", "worktree /fixture/repo\nbranch refs/heads/main\n", "main\n", ""]
         with patch.object(CLAIM, "run_read", side_effect=replies), patch.object(CLAIM.shutil, "which", return_value=None):
             self.assertEqual(CLAIM.local_inventory("owner/repo", 42)["local_branches"], ["main"])
+
+    def test_wait_formats_refuse_before_writes(self):
+        for status in ("State: Waiting\nNext action: owner chooses A or B", "State: Open\n- Waiting for: owner choice",
+                       "State: Open\nBlocked by: No native issue blocker;\n  waiting for an owner decision"):
+            with self.subTest(status=status):
+                self.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n## Current Status\n" + status
+                with self.assertRaises(PLAN.ClassifiedPlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+
+    def test_wait_labels_refuse_until_existing_resolution_recorded(self):
+        self.issue["labels"] = [{"name": "plan:waiting"}]
+        with self.assertRaises(PLAN.ClassifiedPlanError):
+            self.run_claim()
+        self.assert_no_writes()
+        self.args.wait_resolved = "Recorded owner release on this issue"
+        self.run_claim()
+        self.assertEqual(PLAN.normalize_labels(self.issue["labels"]), ["plan:active"])
+
+    def test_failed_final_readback_returns_prior_status_for_recovery(self):
+        self.after_status = self.compete
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertIn("State: Open, not started.", caught.exception.payload["previous_current_status"])
 
 
 if __name__ == "__main__":

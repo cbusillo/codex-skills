@@ -349,10 +349,13 @@ uv run <skill-dir>/scripts/gh-plan.py claim <issue> \
 
 Claim the exact branch that the worktree helper will create. For
 `dev-worktree <repo> <task-slug> <start>`, that is `work/<task-slug>`.
-Verify holds and recorded waits under Choose Work before invoking claim:
-claim records ownership, not an owner decision or permission to lift a hold.
-It preserves existing wait/blocker lines and returns the previous Current
-Status; reconcile satisfied waits separately under the existing authority.
+Verify holds and recorded waits under Choose Work before invoking claim.
+For a recorded wait or parked/blocked/stale/done state, pass
+`--wait-resolved "<existing resolution evidence>"` only after verifying its
+condition or recorded owner release. Without that evidence the command refuses
+before writing. It records the resolution and previous Current Status in the
+claim comment and returns the previous status for recovery. Claim and this
+argument grant no owner decision or permission to lift a repository hold.
 
 The command checks Current Status and the complete discussion, unresolved
 native blockers, registered worktrees, local branches, live remote heads, open
