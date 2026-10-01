@@ -406,6 +406,32 @@ class InstallTests(unittest.TestCase):
         installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
         self.assertEqual(hook_path.read_bytes(), first)
 
+    def test_concurrent_hook_edit_is_preserved_and_refresh_reports_skip(self):
+        self.install()
+        hook_path = self.codex / "hooks.json"
+        original = json.loads(hook_path.read_text())
+        original["hooks"].pop("Stop")
+        original["hooks"].pop("Interrupt")
+        hook_path.write_text(json.dumps(original))
+        user_hook = {"hooks": [{"type": "command", "command": "new-user-stop"}]}
+        changed = {**original, "hooks": {**original["hooks"], "Stop": [user_hook]}}
+        real_sync = self.sync.synchronize
+        edited = False
+
+        def synchronize(content, destinations, **kwargs):
+            nonlocal edited
+            if kwargs.get("write") and self.codex / "AGENTS.md" in destinations and not edited:
+                hook_path.write_text(json.dumps(changed))
+                edited = True
+            return real_sync(content, destinations, **kwargs)
+
+        with mock.patch.object(self.sync, "synchronize", side_effect=synchronize):
+            receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertTrue(edited)
+        self.assertEqual(json.loads(hook_path.read_text()), changed)
+        self.assertTrue(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
+        self.assertTrue((self.codex / "AGENTS.md").is_file())
+
     def test_current_dotfiles_alert_binding_clears_skip_without_writes(self):
         self.install()
         hook_path = self.codex / "hooks.json"

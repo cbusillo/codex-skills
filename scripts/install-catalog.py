@@ -193,6 +193,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
     instruction_preview = sync.synchronize(content, destinations, write=False)
     hooks, hook_preview = None, []
     hook_path = codex / "hooks.json"
+    hook_previous = None
     if not refresh_instructions:
         config_path = codex / "config.toml"
         config = tomllib.loads(config_path.read_text() if config_path.exists() or config_path.is_symlink() else "")
@@ -200,6 +201,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         if not isinstance(config_hooks, dict) or not isinstance(config_hooks.get("SessionStart", []), list):
             raise ValueError("Invalid hooks configuration in config.toml")
         legacy_session = existing_session_hook(config_hooks.get("SessionStart", []))
+        hook_previous = hook_path.read_bytes() if hook_path.is_file() and not hook_path.is_symlink() else None
         existing_hooks = json.loads(safe_file(hook_path) or "{}")
         if not isinstance(existing_hooks, dict) or not isinstance(existing_hooks.get("hooks", {}), dict):
             raise ValueError("Invalid hooks.json configuration")
@@ -216,7 +218,8 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             # still refuses symlink/non-file destinations when bound.
             if not hook_path.is_file():
                 raise ValueError("Hook destination is not a regular file")
-            existing = json.loads(hook_path.read_text())
+            hook_previous = hook_path.read_bytes()
+            existing = json.loads(hook_previous)
             groups = existing.get("hooks", {}) if isinstance(existing, dict) else None
             if not isinstance(groups, dict):
                 raise ValueError("Invalid hooks.json configuration")
@@ -307,7 +310,12 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                                    "instruction_hashes": {str(path): hashlib.sha256(content.encode()).hexdigest() for path in destinations}}, indent=2) + "\n"
         sync.synchronize(installation, [installation_path], write=True)
         if hooks is not None:
-            outputs += sync.synchronize(hooks, [hook_path], write=True)
+            try:
+                outputs += sync.synchronize(hooks, [hook_path], write=True, expected_previous={hook_path: hook_previous})
+            except (OSError, ValueError) as error:
+                if not refresh_instructions:
+                    raise
+                outputs.append({"path": str(hook_path), "state": "skipped", "reason": str(error)})
         else:
             outputs += hook_preview
         if launch_content is not None:

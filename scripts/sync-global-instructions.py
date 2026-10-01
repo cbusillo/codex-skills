@@ -90,7 +90,7 @@ def render_codex_hook_content(config: dict, destination: Path, catalog: Path = R
     return json.dumps(config, indent=2) + "\n"
 
 
-def synchronize(content: str, destinations: list[Path], *, write: bool, local_source_missing: bool = False, allow_missing_local: bool = False) -> list[dict[str, str]]:
+def synchronize(content: str, destinations: list[Path], *, write: bool, local_source_missing: bool = False, allow_missing_local: bool = False, expected_previous: dict[Path, bytes | None] | None = None) -> list[dict[str, str]]:
     desired = content.encode()
     # Inspect every destination before writing either one.
     previous: dict[Path, bytes | None] = {}
@@ -98,6 +98,8 @@ def synchronize(content: str, destinations: list[Path], *, write: bool, local_so
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise ValueError(f"Refusing a symlink or non-file destination: {path}")
         old = path.read_bytes() if path.exists() else None
+        if expected_previous is not None and path in expected_previous and old != expected_previous[path]:
+            raise ValueError(f"Destination changed since hook preview: {path}")
         previous[path] = old
         if old is not None and old != desired and local_source_missing and not allow_missing_local:
             msg = f"Local source is missing and {path.name} would change. Use --allow-missing-local to overwrite and drop any private instructions."

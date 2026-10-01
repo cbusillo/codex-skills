@@ -343,7 +343,8 @@ Claude Code with `SESSION_ALERTS_DISABLED=1 claude` or Codex with
 `SESSION_ALERTS_DISABLED=1 codex`. Removing the variable resumes alerts.
 If an instruction refresh cannot safely update a hook destination, it leaves
 that destination untouched, reports the skipped alert refresh in its output
-and updater receipt, and still refreshes instructions. The next session-start
+and updater receipt, and still refreshes instructions. Concurrent edits observed
+since the hook preview are preserved and reported as skipped. The next session-start
 status line names the skipped alert refresh and its recovery command. Hook writes
 require a regular hooks.json file. A readable symlink with no catalog labels
 is recognized as unbound and left alone. A bound symlink whose alert entries already match the catalog is current and
