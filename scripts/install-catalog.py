@@ -51,7 +51,7 @@ def catalog_skills_directory(path: Path) -> bool:
     return resolved.name == "skills" and (resolved.parent / "instructions" / "global.md").is_file() and (resolved.parent / "scripts" / "sync-global-instructions.py").is_file()
 
 
-def personal_source(sync, destinations: list[Path], local: Path) -> str:
+def personal_source(sync, destinations: list[Path], local: Path, *, new_destinations: set[Path] | None = None) -> str:
     """Import unmanaged text; generated documents require their known catalog prefix."""
     content = safe_file(local).strip()
     base = sync.render(ROOT / "instructions" / "global.md", ROOT / ".absent-personal-source")
@@ -82,7 +82,7 @@ def personal_source(sync, destinations: list[Path], local: Path) -> str:
             matched = matches[0] if matches else None
             if matched is None:
                 raise ValueError(f"Generated instructions differ from known catalog source: {path}; reconcile personal text in {local}, preview scripts/sync-global-instructions.py, then write and rerun")
-            if local.exists() and not previous_base:
+            if local.exists() and (not previous_base or path in (new_destinations or set())):
                 if text[len(matched):].strip() != initial_private:
                     raise ValueError(f"Generated instructions differ from the private source: {path}; reconcile the host edits in {local}, preview scripts/sync-global-instructions.py, then write and rerun")
                 continue
@@ -136,6 +136,10 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
     sync = load_sync()
     if refresh_instructions and updater:
         raise ValueError("Instruction refresh does not configure an updater")
+    installation_path = ROOT / ".local" / "catalog-install.json"
+    previous_installation = json.loads(safe_file(installation_path) or "{}")
+    if not isinstance(previous_installation, dict):
+        raise ValueError("Invalid catalog installation receipt")
     links, pending = [], []
     if not refresh_instructions:
         codex_skills = home / ".agents" / "skills"
@@ -150,6 +154,13 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         if catalog_skills_directory(claude / "skills"):
             raise ValueError(f"Existing catalog folder preserved: {claude / 'skills'}; use a personal skills directory before adding the namespaced binding")
         links = [(codex_skills, ROOT / "skills"), (claude / "skills" / "shared", ROOT)]
+        legacy = codex / "skills"
+        if legacy.is_symlink() and legacy.resolve() == (ROOT / "skills").resolve():
+            if codex_skills.name == "shared" and (codex_skills.exists() or codex_skills.is_symlink()):
+                raise ValueError("Legacy and nested catalog bindings coexist; preserve the legacy binding and inspect the nested shared link before moving it aside and rerunning")
+            links = links[1:]  # Preserve the existing discovery and system-skill names.
+        elif codex_skills.name == "shared" and (ROOT / "skills" / ".system").exists():
+            raise ValueError("Catalog system cache conflicts with namespaced discovery; inspect skills/.system and move the old cache outside the catalog before rerunning, or retain a legacy whole-catalog binding")
         if len({path.resolve() for path, _ in links}) != len(links):
             raise ValueError("Host skills bindings collide; use separate personal skills directories for Codex and Claude")
         if (claude / "skills").resolve().is_relative_to(ROOT.resolve()):
@@ -157,14 +168,10 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         pending = [(path, target) for path, target in links if binding(path, target)]
     destinations = [claude / "CLAUDE.md", codex / "AGENTS.md"]
     local = ROOT / ".local" / "global-instructions.md"
-    personal = personal_source(sync, destinations, local)
+    personal = personal_source(sync, destinations, local, new_destinations={path for path in destinations if str(path) not in previous_installation.get("instruction_hashes", {})})
     shared_source = (ROOT / "instructions" / "global.md").read_text()
     base = "\n\n".join(filter(None, (sync.HEADER, shared_source.strip()))) + "\n"
     content = "\n\n".join(filter(None, (base.strip(), personal.strip()))) + "\n"
-    installation_path = ROOT / ".local" / "catalog-install.json"
-    previous_installation = json.loads(safe_file(installation_path) or "{}")
-    if not isinstance(previous_installation, dict):
-        raise ValueError("Invalid catalog installation receipt")
     requested = {"codex": str(codex), "claude": str(claude)}
     previous = {key: previous_installation.get(key) for key in requested}
     configuration_change = {"previous": previous, "requested": requested} if previous_installation and previous != requested else None

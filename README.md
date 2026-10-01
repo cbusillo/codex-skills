@@ -39,6 +39,11 @@ path before moving it aside or restoring its private source, then rerun. Working
 legacy catalog bindings and other host settings are preserved. Personal skills
 in `~/.agents/skills` coexist with the nested catalog binding; an existing link
 from that whole directory to this catalog remains in place.
+An existing whole-catalog link in `CODEX_HOME/skills` is also kept without adding
+a second binding. If both forms already coexist, inspect the reported nested
+link before moving it aside. A leftover `skills/.system` cache without a legacy
+binding is reported: inspect and move that cache outside the checkout before
+using the namespaced binding, so system skills keep their own discovery names.
 
 The output names unmanaged instruction sources that will be combined. Review
 `--show-diff` when those sources need tidying; the installer preserves their text

@@ -139,6 +139,33 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(path.read_text(), text)
         self.assertFalse((self.catalog / ".local").exists())
 
+    def test_legacy_codex_home_binding_keeps_discovery_without_a_nested_link(self):
+        (self.codex / "skills").symlink_to(self.catalog / "skills", target_is_directory=True)
+        (self.catalog / "skills" / ".system").mkdir()
+        self.install()
+        self.install()
+        self.assertFalse((self.home / ".agents").exists())
+        self.assertEqual((self.codex / "skills").resolve(), (self.catalog / "skills").resolve())
+        self.assertEqual((self.claude / "skills" / "shared").resolve(), self.catalog.resolve())
+
+    def test_system_cache_without_legacy_binding_is_reported_before_writes(self):
+        (self.catalog / "skills" / ".system").mkdir()
+        with self.assertRaisesRegex(ValueError, "system cache conflicts"):
+            self.install()
+        self.assertFalse((self.catalog / ".local").exists())
+        self.assertFalse((self.home / ".agents").exists())
+
+    def test_new_host_generated_edits_are_preserved_on_reconfiguration(self):
+        self.install()
+        other = self.home / "other-codex"
+        other.mkdir()
+        text = (self.codex / "AGENTS.md").read_text() + "\nPrivate host edit.\n"
+        (other / "AGENTS.md").write_text(text)
+        with self.assertRaisesRegex(ValueError, "differ from the private source"):
+            installer.install(self.home, other, self.claude, write=True, updater=False)
+        self.assertEqual((other / "AGENTS.md").read_text(), text)
+        self.assertFalse((other / "hooks.json").exists())
+
     def test_source_update_preserves_personal_instructions_without_a_manual_merge(self):
         (self.codex / "AGENTS.md").write_text("Keep private instructions.\n")
         self.install()
