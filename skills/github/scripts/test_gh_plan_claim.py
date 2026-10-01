@@ -373,6 +373,12 @@ class ClaimTests(unittest.TestCase):
             self.run_claim()
         self.assertIn("State: Open, not started.", caught.exception.payload["previous_current_status"])
 
+    def test_malformed_comment_after_post_still_has_exact_release_recovery(self):
+        self.after_post = lambda: self.comments.append({"id": 2, "body": "<!-- github-plan:claim invalid -->"})
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.payload["claim_recovery"]["release_own_claim"]["body"], "Released claim 1")
+
 
 if __name__ == "__main__":
     unittest.main()

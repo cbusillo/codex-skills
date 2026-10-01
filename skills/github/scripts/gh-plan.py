@@ -1913,16 +1913,19 @@ def cmd_claim(args: argparse.Namespace) -> None:
                 raise ClassifiedPlanError("claim_wait_unresolved", "Verify the recorded wait or hold, then pass --wait-resolved with existing resolution evidence",
                                           payload={"previous_current_status": status})
 
-    def refuse(conflicts: list[dict[str, Any]]) -> None:
+    def claim_recovery() -> dict[str, Any]:
         recovery = {}
         comment_id = (claim_comment.get("comment") or {}).get("id")
         if "post_claim" in completed and comment_id:
             recovery = {"release_own_claim": {"comment_id": comment_id,
                                              "body": f"Released claim {comment_id}"},
                         "then": "Post this exact release through the same bot, preserve competing ownership, and recheck before any retry"}
+        return recovery
+
+    def refuse(conflicts: list[dict[str, Any]]) -> None:
         raise ClassifiedPlanError(
             "claim_conflict", "Another worker or ambiguous ownership evidence holds this issue; preserve it for owner review",
-            payload={"competing_evidence": conflicts, "claim_recovery": recovery},
+            payload={"competing_evidence": conflicts, "claim_recovery": claim_recovery()},
         )
 
     try:
@@ -2008,20 +2011,24 @@ def cmd_claim(args: argparse.Namespace) -> None:
         completed.append("metadata_readback")
     except github_comment_core.CommentError as exc:
         error = plan_error_from_comment(exc, completed_steps=completed)
-        error.payload.update({"claim": claim, "claim_comment": claim_comment, "previous_current_status": previous_status})
+        error.payload.update({"claim": claim, "claim_comment": claim_comment, "previous_current_status": previous_status,
+                              "claim_recovery": claim_recovery()})
         raise error from exc
     except github_issue_core.IssueError as exc:
         error = plan_error_from_issue(exc, completed_steps=completed)
-        error.payload.update({"claim": claim, "claim_comment": claim_comment, "previous_current_status": previous_status})
+        error.payload.update({"claim": claim, "claim_comment": claim_comment, "previous_current_status": previous_status,
+                              "claim_recovery": claim_recovery()})
         raise error from exc
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         raise PlanError(str(exc), payload={"completed_steps": completed, "claim": claim,
                                           "previous_current_status": previous_status,
+                                          "claim_recovery": claim_recovery(),
                                           "claim_comment": claim_comment,
                                           "session_coverage": inventory.get("session_coverage", {})}) from exc
     except PlanError as exc:
         exc.payload.update({"completed_steps": completed, "claim": claim, "claim_comment": claim_comment,
                             "previous_current_status": previous_status,
+                            "claim_recovery": claim_recovery(),
                             "session_coverage": inventory.get("session_coverage", {})})
         if exc.failure is not None:
             exc.failure.completed_steps = merge_completed_steps(completed, exc.failure.completed_steps)
