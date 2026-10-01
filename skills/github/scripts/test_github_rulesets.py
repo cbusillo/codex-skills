@@ -115,6 +115,32 @@ def test_no_app_plan_and_confirmed_apply_converge_without_integration_bypass() -
         assert len(client.writes) == 2
 
 
+def test_no_app_never_removes_an_existing_app_bypass() -> None:
+    cli = load_cli()
+    specs = github_rulesets.standard_specs(77)
+    for name in (specs[0].name, *specs[0].aliases):
+        current = [response_ruleset(spec, index) for index, spec in enumerate(specs, 1)]
+        current[0]["name"] = name
+        client = FakeClient({"owner/repo": current})
+        with patch.object(github_rulesets.github_identity, "github_app_config", return_value=None):
+            for command in ("plan", "apply"):
+                try:
+                    cli.run(args(command, confirm_owner_admin_write=True), client=client)
+                except github_rulesets.RulesetError as exc:
+                    assert exc.cause == "unconfigured_identity"
+                    assert exc.payload["existing_app_ids"] == [77]
+                    assert exc.payload["ruleset_id"] == current[0]["id"]
+                else:
+                    raise AssertionError("missing configuration must not remove an existing App bypass")
+        assert client.writes == []
+        assert client.repos["owner/repo"] == current
+        restored = cli.run(args("apply", confirm_owner_admin_write=True), client=client, app_id=77)
+        assert restored["app_id"] == 77
+        assert restored["limits"] == []
+        assert restored["repositories"][0]["verified"] is True
+        assert not cli.run(args("plan"), client=client, app_id=77)["changed"]
+
+
 def test_no_app_keeps_owner_and_apply_confirmations() -> None:
     cli = load_cli()
     scenarios = [

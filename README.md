@@ -461,7 +461,10 @@ printed in every plan so the operator can verify the intended bypass actor.
 A GitHub App is optional: with no App configured, the landing ruleset retains
 only the administrator bypass, and the result names the `no_app_bypass` limit.
 Only administrators can then update the default branch. Incomplete or invalid
-App configuration still fails rather than silently removing its bypass.
+App configuration still fails rather than silently removing its bypass. If an
+existing landing ruleset already has an App bypass, an unconfigured shell also
+refuses: restore that App configuration and rerun the plan. The standard landing
+ruleset name stays the same in both modes so the audit can recognize it.
 
 Plan one or more repositories without changing GitHub:
 

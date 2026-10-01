@@ -255,6 +255,17 @@ def plan_changes(
             continue
         current = matches[0]
         ruleset_id = positive_int(current.get("id"), f"{spec.key} ruleset id")
+        current_apps = [actor.get("actor_id") for actor in current.get("bypass_actors") or []
+                        if actor.get("actor_type") == "Integration"]
+        desired_apps = [actor for actor in spec.payload.get("bypass_actors") or []
+                        if actor.get("actor_type") == "Integration"]
+        if spec.key == "landing" and current_apps and not desired_apps:
+            raise RulesetError(
+                "the landing ruleset already has an App bypass; restore the GitHub App configuration "
+                "and rerun plan before applying, so the existing bypass is not removed",
+                cause="unconfigured_identity",
+                payload={"key": spec.key, "ruleset_id": ruleset_id, "existing_app_ids": current_apps},
+            )
         action = "none" if ruleset_matches(current, spec) else "update"
         changes.append(
             RulesetChange(
