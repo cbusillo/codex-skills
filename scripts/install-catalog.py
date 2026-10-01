@@ -46,6 +46,11 @@ def binding(path: Path, target: Path) -> bool:
     return True
 
 
+def catalog_skills_directory(path: Path) -> bool:
+    resolved = path.resolve()
+    return resolved.name == "skills" and (resolved.parent / "instructions" / "global.md").is_file() and (resolved.parent / "scripts" / "sync-global-instructions.py").is_file()
+
+
 def personal_source(sync, destinations: list[Path], local: Path) -> str:
     """Import unmanaged text; generated documents require their known catalog prefix."""
     content = safe_file(local).strip()
@@ -69,9 +74,12 @@ def personal_source(sync, destinations: list[Path], local: Path) -> str:
         if not text or text == known:
             continue
         if text.startswith(sync.HEADER):
-            matched = next((prefix.rstrip() for prefix in sorted(bases, key=len, reverse=True) if prefix and (
+            matches = [prefix.rstrip() for prefix in sorted(set(bases), key=len, reverse=True) if prefix and (
                 text.startswith(prefix.rstrip() + "\n") or text.strip() == prefix.strip()
-            )), None)
+            )]
+            if not local.exists() and not previous_base and len({text[len(prefix):].strip() for prefix in matches}) > 1:
+                raise ValueError(f"Ambiguous generated instructions: {path}; restore the authoritative private source in {local} before rerunning")
+            matched = matches[0] if matches else None
             if matched is None:
                 raise ValueError(f"Generated instructions differ from known catalog source: {path}; reconcile personal text in {local}, preview scripts/sync-global-instructions.py, then write and rerun")
             if local.exists() and not previous_base:
@@ -125,6 +133,8 @@ def existing_session_hook(groups: list) -> bool:
 
 
 def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool, show_diff: bool = False, refresh_instructions: bool = False) -> dict:
+    if codex.resolve().is_relative_to(ROOT.resolve()) or claude.resolve().is_relative_to(ROOT.resolve()):
+        raise ValueError("Host configuration overlaps the catalog checkout; use separate host configuration directories and clone the catalog outside them as in README")
     sync = load_sync()
     if refresh_instructions and updater:
         raise ValueError("Instruction refresh does not configure an updater")
@@ -134,15 +144,19 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         # Keep an existing whole-catalog binding; otherwise share the discovery
         # directory with personal skills through Codex's recursive discovery.
         if not (codex_skills.is_symlink() and codex_skills.resolve() == (ROOT / "skills").resolve()):
-            if codex_skills.is_symlink() or (codex_skills.exists() and not codex_skills.is_dir()):
+            if (codex_skills.exists() or codex_skills.is_symlink()) and (not codex_skills.is_dir() or catalog_skills_directory(codex_skills)):
                 raise ValueError(f"Existing binding preserved: {codex_skills}; inspect it before rerunning")
             codex_skills /= "shared"
+        if catalog_skills_directory(claude / "skills"):
+            raise ValueError(f"Existing catalog folder preserved: {claude / 'skills'}; use a personal skills directory before adding the namespaced binding")
         links = [(codex_skills, ROOT / "skills"), (claude / "skills" / "shared", ROOT)]
         pending = [(path, target) for path, target in links if binding(path, target)]
     destinations = [claude / "CLAUDE.md", codex / "AGENTS.md"]
     local = ROOT / ".local" / "global-instructions.md"
     personal = personal_source(sync, destinations, local)
-    content = "\n\n".join(filter(None, (sync.HEADER, (ROOT / "instructions" / "global.md").read_text().strip(), personal.strip()))) + "\n"
+    shared_source = (ROOT / "instructions" / "global.md").read_text()
+    base = "\n\n".join(filter(None, (sync.HEADER, shared_source.strip()))) + "\n"
+    content = "\n\n".join(filter(None, (base.strip(), personal.strip()))) + "\n"
     installation_path = ROOT / ".local" / "catalog-install.json"
     previous_installation = json.loads(safe_file(installation_path) or "{}")
     if not isinstance(previous_installation, dict):
@@ -180,7 +194,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         if not isinstance(sessions, list):
             raise ValueError("Invalid SessionStart configuration")
         existing_session = existing_session_hook(sessions)
-        hooks = sync.render_codex_hook(hook_path, include_session_start=not (legacy_session or existing_session))
+        hooks = sync.render_codex_hook(hook_path, catalog=ROOT, include_session_start=not (legacy_session or existing_session))
         hook_preview = sync.synchronize(hooks, [hook_path], write=False)
     launch_path = home / "Library" / "LaunchAgents" / f"{LABEL}.plist"
     launch_content = None
@@ -225,7 +239,6 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         if not local.exists() or personal != safe_file(local):
             local.parent.mkdir(parents=True, exist_ok=True)
             sync.synchronize(personal, [local], write=True)
-        base = sync.render(ROOT / "instructions" / "global.md", ROOT / ".absent-personal-source")
         for path, target in pending:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.symlink_to(target, target_is_directory=True)
@@ -238,6 +251,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         installation = json.dumps({"home": str(home), "codex": str(codex), "claude": str(claude),
                                    "scheduled_updater": scheduled, "scheduled_at": scheduled_at,
                                    "updater_plist": str(launch_path) if scheduled else None,
+                                   "shared_source_sha256": hashlib.sha256(shared_source.encode()).hexdigest(),
                                    "instruction_hashes": {str(path): hashlib.sha256(content.encode()).hexdigest() for path in destinations}}, indent=2) + "\n"
         sync.synchronize(installation, [installation_path], write=True)
         if hooks is not None:

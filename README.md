@@ -58,9 +58,17 @@ unrecognized output is preserved for inspection. A session hook pointing at
 another checkout is also reported; inspect and update its path before rerunning.
 If the private source is missing after installation, restore it before refreshing;
 use an empty source file when you intend to remove its instructions.
+When a missing private source leaves several historical interpretations of a
+generated file, the installer preserves the file and asks you to restore that
+source. It does not guess whether a formerly shared paragraph is now private.
 Use an isolated catalog checkout for fixture homes: the installer stores the
 private source and installation destinations in that checkout and refuses to
 redirect an existing installation to a different home.
+Keep host configuration directories outside the catalog checkout so installation
+cannot overwrite repository instructions or dirty its source. Personal skills
+directory symlinks are preserved and support the nested binding; links into
+another catalog are reported instead of modifying that checkout. Use the
+maintained catalog or inspect and rebind the destination before rerunning.
 
 On macOS, opt into the guarded six-hour updater in the same install run:
 
@@ -83,7 +91,9 @@ new skills visible without adding links and refreshes installed global instructi
 through its instruction-only refresh, preserving the private supplement and
 leaving current bindings and hooks alone. The existing session-start hook prints
 one catalog line for a stale or blocked checkout, a failed update, or a scheduled
-check older than twelve hours. Session start performs no network calls. State
+check older than twelve hours. A manual pull that changes shared instructions
+also reports a stale installation until the instruction refresh runs. Session
+start performs no network calls. State
 and logs live in the checkout's ignored `.local/` directory.
 Run `uv run scripts/catalog_runtime.py --update` for a manual guarded update on
 macOS or Linux. To stop scheduled updates, run

@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import fcntl
+import hashlib
 import json
 import subprocess
 import sys
@@ -69,6 +70,8 @@ def status_line(root: Path) -> str:
                 raise ValueError("update timestamp has no timezone")
             if scheduled and checked_at and dt.datetime.now(dt.timezone.utc) - checked_at > dt.timedelta(hours=12) and state["state"] == "current":
                 state = {"state": "stale", "reason": "scheduled update has not checked origin in over 12 hours"}
+            if state["state"] == "current" and installation.get("shared_source_sha256") and hashlib.sha256((root / "instructions" / "global.md").read_text().encode()).hexdigest() != installation["shared_source_sha256"]:
+                state = {"state": "stale", "reason": "shared instructions changed; run scripts/catalog_runtime.py --update to refresh installed instructions"}
         if state["state"] == "current":
             return ""
         return f"Catalog {state['state']}: {state['reason']} ({root})."

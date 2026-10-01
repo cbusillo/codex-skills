@@ -260,6 +260,12 @@ class InstallTests(unittest.TestCase):
         (self.codex / "AGENTS.md").write_text(original + "Private rule.\n")
         (self.catalog / "instructions" / "global.md").write_text("# Shared\n")
         command("git", "commit", "-qam", "trim shared instructions", cwd=self.catalog)
+        with self.assertRaisesRegex(ValueError, "Ambiguous generated instructions"):
+            self.install()
+        self.assertEqual((self.codex / "AGENTS.md").read_text(), original + "Private rule.\n")
+        local = self.catalog / ".local" / "global-instructions.md"
+        local.parent.mkdir()
+        local.write_text("Private rule.\n")
         self.install()
         content = (self.codex / "AGENTS.md").read_text()
         self.assertIn("Private rule.", content)
@@ -281,6 +287,27 @@ class InstallTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Generated instructions differ"):
             self.install()
         self.assertEqual(host.read_text(), original)
+
+    def test_shared_text_moved_to_private_source_is_not_guessed_on_a_fresh_clone(self):
+        shared = self.catalog / "instructions" / "global.md"
+        shared.write_text("# Shared\n\nMoved rule.\n")
+        command("git", "init", "-q", str(self.catalog))
+        UpdateTests.configure(self.catalog)
+        command("git", "add", "instructions/global.md", cwd=self.catalog)
+        command("git", "commit", "-qm", "old shared source", cwd=self.catalog)
+        original = self.sync.render(shared, self.root / "absent")
+        shared.write_text("# Shared\n")
+        command("git", "commit", "-qam", "move shared rule to private", cwd=self.catalog)
+        host = self.codex / "AGENTS.md"
+        host.write_text(original)
+        with self.assertRaisesRegex(ValueError, "Ambiguous generated instructions"):
+            self.install()
+        self.assertEqual(host.read_text(), original)
+        local = self.catalog / ".local" / "global-instructions.md"
+        local.parent.mkdir()
+        local.write_text("Moved rule.\n")
+        self.install()
+        self.assertIn("Moved rule.", host.read_text())
 
     def test_refresh_keeps_removed_bindings_and_hooks_removed(self):
         self.install()
@@ -386,6 +413,47 @@ class InstallTests(unittest.TestCase):
             self.assertTrue(all(call.args[0][1] == "print" for call in launchctl.call_args_list))
             self.assertFalse((self.codex / "AGENTS.md").exists())
 
+    def test_personal_skills_directory_symlink_is_kept(self):
+        skills = self.home / ".agents" / "skills"
+        skills.parent.mkdir()
+        personal = self.root / "personal-skills"
+        personal.mkdir()
+        (personal / "SKILL.md").write_text("Personal skill.\n")
+        skills.symlink_to(personal, target_is_directory=True)
+        self.install()
+        self.assertTrue(skills.is_symlink())
+        self.assertEqual((personal / "SKILL.md").read_text(), "Personal skill.\n")
+        self.assertEqual((personal / "shared").resolve(), (self.catalog / "skills").resolve())
+
+    def test_another_catalog_directory_is_not_changed_through_a_host_link(self):
+        other = self.root / "another-catalog"
+        shutil.copytree(self.catalog, other)
+        (other / "scripts").mkdir()
+        shutil.copyfile(Path(__file__).with_name("sync-global-instructions.py"), other / "scripts" / "sync-global-instructions.py")
+        skills = self.home / ".agents" / "skills"
+        skills.parent.mkdir()
+        skills.symlink_to(other / "skills", target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "Existing binding preserved"):
+            self.install()
+        self.assertFalse((other / "skills" / "shared").exists())
+
+    def test_claude_whole_catalog_directory_is_not_modified(self):
+        (self.catalog / "scripts").mkdir()
+        shutil.copyfile(Path(__file__).with_name("sync-global-instructions.py"), self.catalog / "scripts" / "sync-global-instructions.py")
+        (self.claude / "skills").symlink_to(self.catalog / "skills", target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "Existing catalog folder preserved"):
+            self.install()
+        self.assertFalse((self.catalog / "skills" / "shared").exists())
+
+    def test_catalog_source_cannot_be_used_as_a_host_configuration_home(self):
+        source = self.catalog / "AGENTS.md"
+        source.write_text("Preserve repository instructions.\n")
+        previous = source.read_bytes()
+        with self.assertRaisesRegex(ValueError, "Host configuration overlaps"):
+            installer.install(self.home, self.catalog, self.claude, write=True, updater=False)
+        self.assertEqual(source.read_bytes(), previous)
+        self.assertFalse((self.catalog / ".local").exists())
+
     def test_launchd_install_bootstraps_once_and_preserves_a_conflicting_job(self):
         def run(*, write=True):
             return installer.install(self.home, self.codex, self.claude, write=write, updater=True)
@@ -487,6 +555,9 @@ class UpdateTests(unittest.TestCase):
             (fixture_home / ".claude" / "skills" / "shared").unlink()
             hooks = fixture_home / ".codex" / "hooks.json"
             hooks.write_text('{"hooks": {}}\n')
+            command("git", "fetch", "-q", "origin", cwd=self.checkout)
+            command("git", "merge", "--ff-only", "origin/main", cwd=self.checkout)
+            self.assertIn("Catalog stale", runtime.status_line(self.checkout))
             with mock.patch.dict(os.environ, {"HOME": str(self.base / "other-home"), "CODEX_HOME": "", "CLAUDE_CONFIG_DIR": ""}):
                 self.assertEqual(runtime.update(self.checkout)["state"], "current")
             self.assertFalse((self.base / "other-home" / ".codex").exists())
@@ -494,6 +565,7 @@ class UpdateTests(unittest.TestCase):
             self.assertTrue((fixture_home / ".agents" / "skills" / "shared" / "new").is_file())
             self.assertFalse((fixture_home / ".claude" / "skills" / "shared").exists())
             self.assertEqual(hooks.read_text(), '{"hooks": {}}\n')
+            self.assertEqual(runtime.status_line(self.checkout), "")
 
     def test_dirty_untracked_off_main_detached_ahead_and_diverged_are_preserved(self):
         scenarios = ("dirty", "untracked", "branch", "detached", "ahead", "diverged")
