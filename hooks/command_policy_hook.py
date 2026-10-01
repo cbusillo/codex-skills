@@ -77,8 +77,12 @@ class ShellStream(io.StringIO):
 
 
 def shell_tokens(shell: str) -> list[str]:
-    lexer = shlex.shlex(ShellStream(shell), posix=True, punctuation_chars="();<>|&\n")
-    lexer.whitespace = " \t\r"
+    # Preserve existing heredoc handling until #671 supplies command/data parsing.
+    # Such ambiguous scripts cannot qualify for repository exceptions below.
+    heredoc = "<<" in shell
+    lexer = shlex.shlex(ShellStream(shell), posix=True, punctuation_chars="();<>|&" if heredoc else "();<>|&\n")
+    if not heredoc:
+        lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     return list(lexer)
 
@@ -181,7 +185,7 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
     The simulator independently verifies the resulting checkout's Git identity.
     """
     shell = shell.strip()
-    if "$(" in shell or "`" in shell:
+    if "$(" in shell or "`" in shell or "<<" in shell:
         return None
     prefix = re.fullmatch(
         r"\s*cd\s+(?:--\s+)?(?P<path>'[^']*'|\"[^\"]*\"|[^\s;&|()<>]+)\s*&&(?P<command>[\s\S]+)",
@@ -219,7 +223,7 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
         if Path(token).name == "launchplane" and token != "launchplane":
             return None
     for argv in commands:
-        while argv and argv[0] in TRANSPARENT:
+        while argv and argv[0] in TRANSPARENT | {"builtin"}:
             argv = argv[1:]
         if argv[:1] == ["."]:
             return None

@@ -127,6 +127,7 @@ class CommandPolicyHookTests(unittest.TestCase):
             for line in (
                 "cd /other && " + command,
                 ". /other/setup && uv run " + command,
+                "builtin . /other/setup && uv run " + command,
                 "uv run --directory /other " + command,
                 "uv run --project=/other " + command,
                 "env -C /other " + command,
@@ -231,6 +232,15 @@ class CommandPolicyHookTests(unittest.TestCase):
                     self.assertEqual(bash(line, checkout).returncode, 2)
             self.assertEqual(bash(gate + "\n", checkout).returncode, 0)
             self.assertEqual(bash("printf '%s' 'literal\ntext'\n" + gate, checkout).returncode, 0)
+
+    def test_newline_parsing_preserves_heredoc_baseline_without_gate_exceptions(self) -> None:
+        self.assertEqual(bash("cat > release.sh <<'EOF'\ngit push origin main\nEOF").returncode, 0)
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True)
+            line = "uv run launchplane service export-openapi --output artifact.json && cat <<'EOF'\ntext\nEOF"
+            self.assertEqual(bash(line, checkout).returncode, 2)
 
     def test_shell_comments_preserve_existing_blocks(self) -> None:
         for line in ("gh pr merge 17 # it's green", "# don't bypass\ngh pr merge 17"):
