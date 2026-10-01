@@ -133,7 +133,10 @@ def local_inventory(repo: str, number: int) -> dict[str, Any]:
     if shutil.which("claude"):
         try:
             sessions = json.loads(run_read(["claude", "agents", "--json"], cwd=pathlib.Path.home()))
-            if not isinstance(sessions, list) or any(not isinstance(s, dict) for s in sessions):
+            if not isinstance(sessions, list) or any(
+                not isinstance(s, dict) or not isinstance(s.get("sessionId"), str)
+                or not isinstance(s.get("cwd"), str) for s in sessions
+            ):
                 raise ValueError("Invalid Claude session inventory")
             coverage["claude"] = {"status": "available", "source": "claude agents --json",
                                   "scope": "native local active-session registry"}
@@ -146,18 +149,41 @@ def local_inventory(repo: str, number: int) -> dict[str, Any]:
             "sessions": sessions, "session_coverage": coverage, "issue": number}
 
 
+def retained_branch(comments: list[dict[str, Any]], comment_id: int) -> str:
+    original = next((c for c in comments if c.get("id") == comment_id), None)
+    if original is None:
+        raise ValueError("Resume source claim comment is missing")
+    parsed = records(original.get("body") or "")
+    if len(parsed) != 1:
+        raise ValueError("Resume source must contain one structured claim record")
+    author = (original.get("user") or {}).get("login")
+    if not author:
+        raise ValueError("Resume source author is unavailable")
+    source_index = comments.index(original)
+    for comment in comments[source_index + 1:]:
+        if (comment.get("user") or {}).get("login") != author:
+            continue
+        first = (comment.get("body") or "").splitlines()[0:1]
+        if first in ([f"Released claim {comment_id}"], [f"Released by {parsed[0]['worker']}"]):
+            return parsed[0]["branch"]
+    raise ValueError("Resume source claim has not been released by its author")
+
+
 def artifact_evidence(
     inventory: dict[str, Any], pulls: list[dict[str, Any]], number: int,
-    claim: dict[str, str], *, own_record: bool,
+    claim: dict[str, str], *, own_record: bool, retained: str | None = None, repo: str = "",
 ) -> list[dict[str, Any]]:
     conflicts = []
+    def permitted(branch: str) -> bool:
+        return (own_record and branch == claim["branch"]) or branch == retained
+
     for source in ("local_branches", "remote_branches"):
         for branch in inventory[source]:
-            if references_issue(branch, number) and not (own_record and branch == claim["branch"]):
+            if references_issue(branch, number) and not permitted(branch):
                 conflicts.append({"source": source, "branch": branch, "certainty": "current_or_stale"})
     for tree in inventory["worktrees"]:
         if references_issue(tree["branch"] + "/" + pathlib.Path(tree["path"]).name, number):
-            if not (own_record and tree["branch"] == claim["branch"]):
+            if not permitted(tree["branch"]):
                 conflicts.append({"source": "worktree", **tree, "certainty": "current_or_stale"})
     paths = {str(pathlib.Path(t["path"]).resolve()) for t in inventory["worktrees"]}
     for session in inventory["sessions"]:
@@ -169,8 +195,12 @@ def artifact_evidence(
                               "state": session.get("state") or session.get("status")})
     for pull in pulls:
         branch = (pull.get("head") or {}).get("ref", "")
-        text = "\n".join([pull.get("title") or "", pull.get("body") or "", branch])
-        if re.search(rf"(?:#|/issues/){number}(?!\d)", text) or references_issue(branch, number):
-            if not (own_record and branch == claim["branch"]):
+        title = pull.get("title") or ""
+        body = pull.get("body") or ""
+        explicit_url = bool(repo and re.search(rf"https://github\.com/{re.escape(repo)}/issues/{number}(?!\d)", title + "\n" + body))
+        linked = bool(re.search(rf"(?im)^\s*(?:refs?|fix(?:es)?|clos(?:e|es)|resolv(?:e|es))\s+(?:#{number}|{re.escape(repo)}#{number})(?!\d)", body))
+        titled = bool(re.search(rf"(?<![\w/])#{number}(?!\d)", title))
+        if explicit_url or linked or titled or references_issue(branch, number):
+            if not permitted(branch):
                 conflicts.append({"source": "open_pr", "number": pull["number"], "branch": branch})
     return conflicts

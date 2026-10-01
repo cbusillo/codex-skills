@@ -30,7 +30,7 @@ OTHER = {**OWNER, "worker": "trial-b", "session": "session-b", "branch": "work/o
 class ClaimTests(unittest.TestCase):
     def setUp(self):
         self.args = Namespace(repo="owner/repo", issue="42", worker=OWNER["worker"], session=OWNER["session"],
-                              branch=OWNER["branch"], next_action="Implement the repair")
+                              branch=OWNER["branch"], next_action="Implement the repair", resume_from=None)
         self.issue = {"repo": "owner/repo", "number": 42, "title": "Repair", "state": "open",
                       "user": {"login": PLAN.EXPECTED_ACTOR}, "labels": [{"name": "plan:waiting"}],
                       "body": PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n\n## Objective\n\nKeep me\n\n## Current Status\n\nState: Open, not started.\n"}
@@ -268,6 +268,43 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
         self.assertEqual([e["id"] for e in caught.exception.payload["competing_evidence"]], [1])
+
+    def test_verified_released_handoff_accepts_only_retained_branch(self):
+        self.comments = [{"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": "bot"}},
+                         {"id": 2, "body": "Released claim 1", "user": {"login": "bot"}}]
+        self.args.resume_from = 1
+        self.inventory["local_branches"] = [OTHER["branch"]]
+        self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": OTHER["branch"]}]
+        self.run_claim()
+
+    def test_resume_cannot_override_current_owner(self):
+        self.comments = [{"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": "bot"}}]
+        self.args.resume_from = 1
+        with self.assertRaises(PLAN.ClassifiedPlanError):
+            self.run_claim()
+        self.assert_no_writes()
+
+    def test_upstream_release_notes_and_cross_repo_pr_refs_do_not_claim_local_issue(self):
+        self.pulls = [{"number": 99, "title": "Update dependency", "body": "Changes (#42)\nhttps://github.com/other/repo/issues/42\nRefs other/repo#42", "head": {"ref": "dependabot/pkg-2.0"}}]
+        self.run_claim()
+
+    def test_local_inventory_uses_native_sessions_and_live_remote_heads(self):
+        session = {"sessionId": "peer", "cwd": "/fixture/repo", "name": "go 42"}
+        replies = ["git@github.com:owner/repo.git\n", "worktree /fixture/repo\nbranch refs/heads/main\n",
+                   "main\n", "abc\trefs/heads/work/go42-repair\n", __import__("json").dumps([session])]
+        with patch.object(CLAIM, "run_read", side_effect=replies) as read, patch.object(CLAIM.shutil, "which", return_value="claude"):
+            inventory = CLAIM.local_inventory("owner/repo", 42)
+        self.assertEqual(inventory["sessions"], [session])
+        self.assertEqual(inventory["remote_branches"], ["work/go42-repair"])
+        self.assertIn(["git", "ls-remote", "--heads", "origin"], [c.args[0] for c in read.call_args_list])
+        self.assertEqual(inventory["session_coverage"]["codex"]["status"], "unavailable")
+
+    def test_unknown_native_session_schema_reports_unavailable(self):
+        replies = ["git@github.com:owner/repo.git\n", "worktree /fixture/repo\nbranch refs/heads/main\n",
+                   "main\n", "", '[{"name":"an agent definition"}]']
+        with patch.object(CLAIM, "run_read", side_effect=replies), patch.object(CLAIM.shutil, "which", return_value="claude"):
+            inventory = CLAIM.local_inventory("owner/repo", 42)
+        self.assertEqual(inventory["session_coverage"]["claude"]["status"], "unavailable")
 
 
 if __name__ == "__main__":

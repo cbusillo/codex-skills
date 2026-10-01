@@ -377,6 +377,13 @@ identity. Release affects that worker's earlier comments, not another worker's
 record or retained branch/worktree evidence; those still need ordinary
 ownership and preservation review.
 
+After a verified retained-work handoff, use `--resume-from <claim-comment-id>`.
+The source must be one structured claim explicitly released by its author.
+Only its exact branch, worktree, and PR evidence is accepted; competing Current
+Status, unreleased comments, other artifacts, and visible peer sessions still
+refuse. This flag supplies no cleanup or takeover authority: apply Choose Work's
+verified-handoff and preservation rules before passing it.
+
 A refused write/readback race includes `claim_recovery.release_own_claim` when
 this invocation posted a claim. Post its exact `Released claim <comment-id>`
 body through the same bot to release only that comment, then preserve the

@@ -1914,6 +1914,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
             refuse(conflicts)
         if owned:
             claim = owned[0]
+        retained = github_plan_claim.retained_branch(comments, args.resume_from) if args.resume_from else None
         _, blockers = collect_paged_rest_items(
             f"/repos/{issue_repo}/issues/{number}/dependencies/blocked_by",
             query={}, bucket="rest_core", step_prefix="claim_blockers",
@@ -1925,7 +1926,8 @@ def cmd_claim(args: argparse.Namespace) -> None:
             f"/repos/{issue_repo}/pulls", query={"state": "open"},
             bucket="rest_core", step_prefix="claim_open_prs",
         )
-        conflicts = github_plan_claim.artifact_evidence(inventory, pulls, number, claim, own_record=bool(owned))
+        conflicts = github_plan_claim.artifact_evidence(inventory, pulls, number, claim,
+                                                       own_record=bool(owned), retained=retained, repo=issue_repo)
         if conflicts:
             refuse(conflicts)
         completed.append("ownership_preflight")
@@ -1935,7 +1937,10 @@ def cmd_claim(args: argparse.Namespace) -> None:
             f"Claimed at: {claim['claimed_at']}\nNext action: {args.next_action}\n\n"
             + github_plan_claim.marker(claim)
         )
-        if not owned:
+        comment_recorded = any(github_plan_claim.same_owner(record, claim)
+                               for comment in comments
+                               for record in github_plan_claim.records(comment.get("body") or ""))
+        if not comment_recorded:
             claim_comment = github_comment_core.comment(
                 "issue", number, text, repo=issue_repo, gh_cmd=gh_cmd,
                 expected_actor=expected_actor, operation=CURRENT_OPERATION,
@@ -3879,6 +3884,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--session", required=True)
     p.add_argument("--branch", required=True, help="Intended task branch; create it only after claim succeeds")
     p.add_argument("--next-action", required=True)
+    p.add_argument("--resume-from", type=int, help="Released structured claim comment ID for verified retained-work handoff")
     p.set_defaults(func=cmd_claim)
 
     p = sub.add_parser("create", help="Create a durable plan issue")
