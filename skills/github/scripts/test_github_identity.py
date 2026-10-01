@@ -120,7 +120,7 @@ class TokenHandler(BaseHTTPRequestHandler):
             if self.path.startswith("/repos/moved-owner/"):
                 target = "https://elsewhere.invalid/repositories/42/installation"
             else:
-                target = f"http://{self.headers['Host']}{target}"
+                target = f"http://127.0.0.1:{self.server.server_port}{target}"
             self.send_response(301)
             self.send_header("Location", target)
             self.end_headers()
