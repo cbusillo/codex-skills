@@ -124,7 +124,11 @@ preserved, or intentionally left in place.
      is current.
    - Tracked changes or an active Git operation make any checkout report-only.
    - Untracked-only dirt is eligible only when the user explicitly asks for
-     that fast-forward, with the untracked files fingerprinted before and after.
+     that fast-forward. The `git status` above does not count as the listing:
+     run the reference's exception steps, starting with
+     `git -C <path> ls-files --others --exclude-standard -z` and its
+     operation-state checks, and hash every listed file before the merge and
+     again after it.
 
    Fast-forward only to a pinned fetched commit, never a moving ref, and never
    switch, reset, stash, clean, or overwrite a checkout. A closeout refresh

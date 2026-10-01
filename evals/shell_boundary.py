@@ -105,6 +105,12 @@ def sed_read_only(arguments: list[str]) -> bool:
     )
 
 
+def help_probe(tokens: list[str]) -> bool:
+    # `uv run helper.py [subcommand] --help` reads a catalog helper's usage before calling it.
+    return (tokens[:2] == ["uv", "run"] and len(tokens) in {4, 5} and tokens[2].endswith(".py")
+            and tokens[-1] in {"--help", "-h"} and all(not token.startswith("-") for token in tokens[3:-1]))
+
+
 def read_only(command: str) -> bool:
     # Reads let Codex load SKILL.md through its shell tool. The fixture uses
     # read-only host sandboxing as well; this is a test stop, not a security tool.
@@ -145,6 +151,8 @@ def read_only(command: str) -> bool:
         if name == "find" and find_read_only(tokens[1:]):
             continue
         if name == "git" and git_read_only(tokens[1:]):
+            continue
+        if help_probe(tokens):
             continue
         return False
     return True
