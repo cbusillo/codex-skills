@@ -100,7 +100,7 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(self.events[-2:], ["read_issue", "read_comments"])
         self.assertIn("Keep me", self.issue["body"])
         self.assertEqual(CLAIM.records(self.issue["body"])[0]["session"], self.args.session)
-        self.assertEqual(PLAN.normalize_labels(self.issue["labels"]), ["plan:active"])
+        self.assertEqual(PLAN.normalize_labels(self.issue["labels"]), [PLAN.DEFAULT_CONFIG["labels"]["active"]])
         output = self.emitted.call_args.args[0]
         self.assertFalse(output["exclusive_lock"])
         self.assertEqual(output["session_coverage"]["codex"]["status"], "unavailable")
@@ -359,13 +359,13 @@ class ClaimTests(unittest.TestCase):
                 self.assert_no_writes()
 
     def test_wait_labels_refuse_until_existing_resolution_recorded(self):
-        self.issue["labels"] = [{"name": "plan:waiting"}]
+        self.issue["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
         with self.assertRaises(PLAN.ClassifiedPlanError):
             self.run_claim()
         self.assert_no_writes()
         self.args.wait_resolved = "Recorded owner release on this issue"
         self.run_claim()
-        self.assertEqual(PLAN.normalize_labels(self.issue["labels"]), ["plan:active"])
+        self.assertEqual(PLAN.normalize_labels(self.issue["labels"]), [PLAN.DEFAULT_CONFIG["labels"]["active"]])
 
     def test_failed_final_readback_returns_prior_status_for_recovery(self):
         self.after_status = self.compete
