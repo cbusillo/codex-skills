@@ -12,6 +12,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -274,6 +275,10 @@ class OverallDirectionTests(unittest.TestCase):
         self.assertIn(str(local.resolve()), text)
         self.assertNotIn("uncommitted draft", text)
         self.assertNotIn("committed proposal", text)
+        shown = re.search(r"`git -C (.+?) show (\S+)`", text)
+        assert shown is not None, "the fallback names a local command for the full file"
+        read = subprocess.run(["git", "-C", shown.group(1), "show", shown.group(2)], capture_output=True, text=True, check=True)
+        self.assertEqual(read.stdout, OVERALL)
 
     def test_a_sibling_checkout_counts_as_set_up_without_an_audit(self) -> None:
         self.sibling_checkout()

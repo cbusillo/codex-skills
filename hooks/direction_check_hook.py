@@ -183,6 +183,7 @@ def overall_direction(repo: str | None, root: Path | None, marker: dict[str, obj
     if not audited and local is None:
         return ""
     url = f"https://github.com/{owner}/{OVERALL_REPO}/blob/HEAD/DIRECTION.md"
+    where = url
     text, source = read_merged_overall(owner)
     if text is None:
         text, local_reason = read_local_overall(local)
@@ -192,10 +193,11 @@ def overall_direction(repo: str | None, root: Path | None, marker: dict[str, obj
                 f"{url} applies, but it could not be read at session start ({source}; {local_reason})."
             )
         source = local_reason
+        where = f"`git -C {local} show refs/remotes/origin/HEAD:DIRECTION.md` (on GitHub: {url})"
     boundaries = section(text, "Stop Boundaries") or "(the file has no Stop Boundaries section; read it in full)"
     return (
         f"Overall direction: this repository has no DIRECTION.md of its own, so {owner}'s overall direction applies. "
-        f"Read {url} before acting. Its stop boundaries, from {source}:\n\n{boundaries}"
+        f"Read {where} before acting. Its stop boundaries, from {source}:\n\n{boundaries}"
         + (f"\n\n{loop}" if loop else "")
     )
 
