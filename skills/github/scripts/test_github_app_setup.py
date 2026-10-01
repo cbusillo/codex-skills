@@ -347,7 +347,7 @@ def test_cli_preflight_resume_and_import_routes():
                         for previous in (OWNER, "old bot"):
                             assert setup.main(["start", "--owner", OWNER, "--name", "Fixture", "--previous-bot", previous, "--replace-identity"]) == 1
                     assert set((home / ".config/codex-skills/github-app").glob("setup-*")) == before_sessions
-                server.suspended = True
+                server.suspended = "today"
                 with contextlib.redirect_stdout(io.StringIO()) as failed, contextlib.redirect_stderr(io.StringIO()):
                     assert setup.main(["resume", "--session", str(session), "--replace-identity"]) == 1
                     assert json.loads(failed.getvalue())["session"] == str(session)

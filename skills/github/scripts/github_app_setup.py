@@ -200,7 +200,7 @@ def configure(session: Path, *, installation_id: str | None = None,
     headers = identity.github_app_headers(config)
     app = identity.github_app_request(urllib.request.Request(
         f"{config.api_url}/app", method="GET", headers=headers), operation="setup App ownership")
-    if not isinstance(app, dict) or str(app.get("id")) != record["app_id"] or app.get("slug") != record["slug"] or app.get("owner", {}).get("login", "").casefold() != record["owner"].casefold():
+    if not isinstance(app, dict) or not isinstance(app.get("id"), int) or app["id"] != int(record["app_id"]) or app.get("slug") != record["slug"] or app.get("owner", {}).get("login", "").casefold() != record["owner"].casefold():
         raise Error("App ownership does not match the intended account; correct it in GitHub before resuming")
     if installation_id is None:
         matches = []
@@ -257,7 +257,7 @@ def configure(session: Path, *, installation_id: str | None = None,
 
 def validate_previous_bots(previous_bots, owner: str) -> None:
     for previous in previous_bots:
-        if not re.fullmatch(r"[A-Za-z0-9-]+(?:\[bot\])?", previous) or previous.casefold() == owner.casefold():
+        if not re.fullmatch(r"[A-Za-z0-9-]+(?:\[bot])?", previous) or previous.casefold() == owner.casefold():
             raise Error("--previous-bot must name an owner-controlled automation account, not the App owner; for organizations, you must also exclude every personal owner login")
 
 
