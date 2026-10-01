@@ -144,7 +144,7 @@ that explicitly prefers that wrapper stays allowed; a wrapped `gh pr merge`
 still requires the `github` helper. Blocking messages name the skill to load.
 Manual-only skills mirror Codex's `agents/openai.yaml` policy in Claude's
 `disable-model-invocation` frontmatter, checked by the catalog validator.
-Invoke those workflows with `/shared:skill-name` on Claude and `$skill-name`
+Invoke those workflows with `/shared:skill-name` on Claude and `$shared:skill-name`
 on Codex; Claude's field requires an actual user slash-command invocation.
 The registered hook uses a JSON deny decision and an exit-zero launcher fallback,
 so missing source or a uv startup failure cannot masquerade as a policy denial.

@@ -77,7 +77,7 @@ def personal_source(sync, destinations: list[Path], local: Path) -> str:
             matches = [prefix.rstrip() for prefix in sorted(set(bases), key=len, reverse=True) if prefix and (
                 text.startswith(prefix.rstrip() + "\n") or text.strip() == prefix.strip()
             )]
-            if not local.exists() and not previous_base and len({text[len(prefix):].strip() for prefix in matches}) > 1:
+            if matches and not local.exists() and not previous_base:
                 raise ValueError(f"Ambiguous generated instructions: {path}; restore the authoritative private source in {local} before rerunning")
             matched = matches[0] if matches else None
             if matched is None:
@@ -144,12 +144,18 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         # Keep an existing whole-catalog binding; otherwise share the discovery
         # directory with personal skills through Codex's recursive discovery.
         if not (codex_skills.is_symlink() and codex_skills.resolve() == (ROOT / "skills").resolve()):
+            if codex_skills.resolve().is_relative_to(ROOT.resolve()):
+                raise ValueError(f"Personal skills directory overlaps the catalog checkout: {codex_skills}; use a separate personal skills directory")
             if (codex_skills.exists() or codex_skills.is_symlink()) and (not codex_skills.is_dir() or catalog_skills_directory(codex_skills)):
                 raise ValueError(f"Existing binding preserved: {codex_skills}; inspect it before rerunning")
             codex_skills /= "shared"
         if catalog_skills_directory(claude / "skills"):
             raise ValueError(f"Existing catalog folder preserved: {claude / 'skills'}; use a personal skills directory before adding the namespaced binding")
         links = [(codex_skills, ROOT / "skills"), (claude / "skills" / "shared", ROOT)]
+        if len({path.resolve() for path, _ in links}) != len(links):
+            raise ValueError("Host skills bindings collide; use separate personal skills directories for Codex and Claude")
+        if (claude / "skills").resolve().is_relative_to(ROOT.resolve()):
+            raise ValueError("Claude personal skills directory overlaps the catalog checkout; use a separate personal skills directory")
         pending = [(path, target) for path, target in links if binding(path, target)]
     destinations = [claude / "CLAUDE.md", codex / "AGENTS.md"]
     local = ROOT / ".local" / "global-instructions.md"

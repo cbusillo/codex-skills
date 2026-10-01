@@ -108,6 +108,37 @@ class InstallTests(unittest.TestCase):
         self.assertEqual((shared / "SKILL.md").read_text(), "Unrelated skill.\n")
         self.assertFalse((self.claude / "CLAUDE.md").exists())
 
+    def test_shared_personal_directory_collision_is_reported_before_writes(self):
+        skills = self.home / ".agents" / "skills"
+        skills.mkdir(parents=True)
+        (self.claude / "skills").symlink_to(skills, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "bindings collide"):
+            self.install()
+        self.assertFalse((skills / "shared").exists())
+        self.assertFalse((self.catalog / ".local").exists())
+        self.assertFalse((self.codex / "AGENTS.md").exists())
+
+    def test_personal_directory_inside_checkout_is_preserved_without_writes(self):
+        skills = self.home / ".agents" / "skills"
+        skills.parent.mkdir(parents=True)
+        for target in (self.catalog, self.catalog / "hooks"):
+            with self.subTest(target=target):
+                skills.symlink_to(target, target_is_directory=True)
+                with self.assertRaisesRegex(ValueError, "overlaps the catalog"):
+                    self.install()
+                self.assertFalse((target / "shared").exists())
+                self.assertFalse((self.catalog / ".local").exists())
+                skills.unlink()
+
+    def test_generated_tail_with_no_private_source_is_never_guessed(self):
+        path = self.codex / "AGENTS.md"
+        text = self.sync.render(self.catalog / "instructions" / "global.md", self.catalog / "missing") + "\nRemoved shared paragraph.\n"
+        path.write_text(text)
+        with self.assertRaisesRegex(ValueError, "Ambiguous generated instructions"):
+            self.install()
+        self.assertEqual(path.read_text(), text)
+        self.assertFalse((self.catalog / ".local").exists())
+
     def test_source_update_preserves_personal_instructions_without_a_manual_merge(self):
         (self.codex / "AGENTS.md").write_text("Keep private instructions.\n")
         self.install()
