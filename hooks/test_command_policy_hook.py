@@ -59,6 +59,12 @@ def bash(command: str, cwd: Path | None = None) -> subprocess.CompletedProcess[s
     return subprocess.CompletedProcess([str(HOOK)], returncode, "", stderr.getvalue())
 
 
+def linked_worktree(checkout: Path, linked: Path) -> Path:
+    subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], check=True)
+    subprocess.run(["git", "-C", str(checkout), "worktree", "add", "--detach", str(linked)], check=True, capture_output=True)
+    return linked
+
+
 class CommandPolicyHookTests(unittest.TestCase):
     def test_repository_exports_are_scoped_to_real_checkouts_and_worktrees(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -92,9 +98,7 @@ class CommandPolicyHookTests(unittest.TestCase):
             self.assertEqual(bash("launchplane service start", checkout).returncode, 2)
             self.assertEqual(bash("uv run " + commands[0] + " && launchplane service start", checkout).returncode, 2)
             # A real linked worktree, not a mocked directory name or host runtime.
-            subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], check=True)
-            linked = root / "linked"
-            subprocess.run(["git", "-C", str(checkout), "worktree", "add", "--detach", str(linked)], check=True, capture_output=True)
+            linked = linked_worktree(checkout, root / "linked")
             self.assertEqual(bash("uv run " + commands[0], linked).returncode, 0)
             for origin in (
                 "https://github.com/cbusillo/launchplane.git",
@@ -157,9 +161,7 @@ class CommandPolicyHookTests(unittest.TestCase):
             checkout.mkdir()
             subprocess.run(["git", "init", "-q", str(checkout)], check=True)
             subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True)
-            subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], check=True)
-            linked = root / "linked"
-            subprocess.run(["git", "-C", str(checkout), "worktree", "add", "--detach", str(linked)], check=True, capture_output=True)
+            linked = linked_worktree(checkout, root / "linked")
             gate = "uv run --extra dev launchplane ci unittest-shard local"
             export = "uv run launchplane service export-openapi --output artifact.json"
             for target in (checkout, linked):
@@ -208,6 +210,27 @@ class CommandPolicyHookTests(unittest.TestCase):
                     self.assertEqual(bash("uv run --extra dev " + command, checkout).returncode, 2)
             self.assertEqual(bash("launchplane ci unittest-shard local", checkout).returncode, 2)
             self.assertEqual(bash("uv run --project /other launchplane ci unittest-shard local", checkout).returncode, 2)
+
+    def test_gate_batches_keep_newline_and_substitution_live_commands_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True)
+            gate = "uv run --extra dev launchplane ci unittest-shard local"
+            live = "uv run launchplane merge-train run-once"
+            for line in (
+                gate + "\n" + live,
+                gate + " # it's fine\n" + live,
+                "ls\n" + gate + "\n" + live,
+                "cd " + shlex.quote(str(checkout)) + " && " + gate + "\n" + live,
+                "cd " + shlex.quote(str(checkout)) + " && " + gate + " # fine\n" + live,
+                'uv run launchplane service export-openapi --output "$(' + live + ')"',
+                'uv run launchplane service export-openapi --output "`' + live + '`"',
+            ):
+                with self.subTest(line=line):
+                    self.assertEqual(bash(line, checkout).returncode, 2)
+            self.assertEqual(bash(gate + "\n", checkout).returncode, 0)
+            self.assertEqual(bash("printf '%s' 'literal\ntext'\n" + gate, checkout).returncode, 0)
 
     def test_shell_comments_preserve_existing_blocks(self) -> None:
         for line in ("gh pr merge 17 # it's green", "# don't bypass\ngh pr merge 17"):

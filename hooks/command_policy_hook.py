@@ -31,6 +31,7 @@ parsing to unwrap, such as `xargs` and `sudo`, are deliberately left alone.
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import re
 import shlex
@@ -44,7 +45,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "skills"
 SIMULATOR = CATALOG / "skill-creator" / "scripts" / "validate-command-policy-simulator.py"
 CODE_HOME_SKILLS = "$CODE_HOME/skills/"
-OPERATORS = re.compile(r"^[;&|()]+$")
+OPERATORS = re.compile(r"^[;&|()\n]+$")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 TRANSPARENT = {"command", "exec", "time", "nohup"}
 SHELLS = {"sh", "bash", "zsh"}
@@ -64,12 +65,28 @@ def load_simulator() -> ModuleType:
     return module
 
 
+class ShellStream(io.StringIO):
+    """Keep comment-ending newlines available as shell command separators."""
+
+    def readline(self, size: int = -1) -> str:
+        line = super().readline(size)
+        if line.endswith("\n"):
+            self.seek(self.tell() - 1)
+            return line[:-1]
+        return line
+
+
+def shell_tokens(shell: str) -> list[str]:
+    lexer = shlex.shlex(ShellStream(shell), posix=True, punctuation_chars="();<>|&\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
 def shell_commands(shell: str) -> list[list[str]]:
     """Split with shell operators and comments using one shared lexer."""
-    lexer = shlex.shlex(shell, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
     commands: list[list[str]] = [[]]
-    for token in lexer:
+    for token in shell_tokens(shell):
         if OPERATORS.match(token):
             commands.append([])
         else:
@@ -163,6 +180,9 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
     Other directory/project switches and executable overrides retain the block.
     The simulator independently verifies the resulting checkout's Git identity.
     """
+    shell = shell.strip()
+    if "$(" in shell or "`" in shell:
+        return None
     prefix = re.fullmatch(
         r"\s*cd\s+(?:--\s+)?(?P<path>'[^']*'|\"[^\"]*\"|[^\s;&|()<>]+)\s*&&(?P<command>[\s\S]+)",
         shell,
@@ -175,9 +195,7 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
         target = Path(path_text)
         if not target.is_absolute() or not target.is_dir():
             return None
-        lexer = shlex.shlex(prefix["command"], posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        if any(OPERATORS.match(token) and token != "&&" for token in lexer):
+        if any(OPERATORS.match(token) and token != "&&" for token in shell_tokens(prefix["command"])):
             return None
         cwd = target
         shell = prefix["command"]
