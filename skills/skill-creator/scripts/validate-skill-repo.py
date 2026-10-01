@@ -61,6 +61,7 @@ SHELL_INTERPRETER_NAMES = {"bash", "dash", "ksh", "sh", "zsh"}
 COMMAND_POLICY_PORTABLE_IDENTITY_RE = re.compile(r"\bshiny-code-bot\b", re.IGNORECASE)
 COMMAND_POLICY_TEXT_FIELDS = {"message"}
 
+
 def load_quick_validate() -> Any:
     path = Path(__file__).with_name("quick_validate.py")
     spec = importlib.util.spec_from_file_location("quick_validate_under_test", path)
@@ -70,7 +71,9 @@ def load_quick_validate() -> Any:
     spec.loader.exec_module(module)
     return module
 
+
 quick_validate = load_quick_validate()
+
 
 def active_skill_dirs() -> list[Path]:
     dirs: list[Path] = []
@@ -79,6 +82,7 @@ def active_skill_dirs() -> list[Path]:
             continue
         dirs.append(skill_md.parent)
     return dirs
+
 
 def validate_system_override_paths(skill_dirs: list[Path]) -> list[str]:
     errors: list[str] = []
@@ -89,6 +93,7 @@ def validate_system_override_paths(skill_dirs: list[Path]) -> list[str]:
             errors.append(f"{name}: override skill is missing {local_skill.relative_to(ROOT)}")
     return errors
 
+
 def read_frontmatter(skill_md: Path) -> dict[str, Any]:
     contents = skill_md.read_text()
     match = re.match(r"^---\n(.*?)\n---", contents, re.DOTALL)
@@ -96,6 +101,7 @@ def read_frontmatter(skill_md: Path) -> dict[str, Any]:
         return {}
     parsed = yaml.safe_load(match.group(1))
     return parsed if isinstance(parsed, dict) else {}
+
 
 def validate_openai_yaml(skill_dir: Path) -> list[str]:
     path = skill_dir / "agents" / "openai.yaml"
@@ -173,6 +179,7 @@ def validate_openai_yaml(skill_dir: Path) -> list[str]:
 
     return errors
 
+
 def validate_openai_dependencies(path: Path, dependencies: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     for key in dependencies:
@@ -204,10 +211,12 @@ def validate_openai_dependencies(path: Path, dependencies: dict[str, Any]) -> li
                 errors.append(f"{prefix}.{key} must be a non-empty string when present")
     return errors
 
+
 def frontmatter_command_policies(frontmatter: dict[str, Any]) -> list[Any]:
     policy = frontmatter.get("policy")
     policies = policy.get("command_policies") if isinstance(policy, dict) else None
     return policies if isinstance(policies, list) else []
+
 
 def validate_skill_command_policy_paths(skill_dir: Path) -> list[str]:
     frontmatter = read_frontmatter(skill_dir / "SKILL.md")
@@ -249,6 +258,7 @@ def validate_skill_command_policy_paths(skill_dir: Path) -> list[str]:
                 )
     return errors
 
+
 def validate_skill_command_policy_command_coverage(skill_dir: Path) -> list[str]:
     frontmatter = read_frontmatter(skill_dir / "SKILL.md")
     commands = frontmatter.get("commands")
@@ -287,6 +297,7 @@ def validate_skill_command_policy_command_coverage(skill_dir: Path) -> list[str]
                 f"{', '.join(preferred_skill_paths)} should be represented in commands[].resource_path"
             )
     return errors
+
 
 def validate_command_example_invocations(skill_dir: Path) -> list[str]:
     frontmatter = read_frontmatter(skill_dir / "SKILL.md")
@@ -338,6 +349,7 @@ def validate_command_example_invocations(skill_dir: Path) -> list[str]:
             )
     return errors
 
+
 def validate_script_example_argv(
     skill_dir: Path,
     resource_path: str,
@@ -373,6 +385,7 @@ def validate_script_example_argv(
         ]
     return []
 
+
 def validate_command_policy_portability(skill_dir: Path) -> list[str]:
     frontmatter = read_frontmatter(skill_dir / "SKILL.md")
     command_policies = frontmatter_command_policies(frontmatter)
@@ -403,6 +416,7 @@ def validate_command_policy_portability(skill_dir: Path) -> list[str]:
                 )
     return errors
 
+
 def has_shell_shebang(path: Path) -> bool:
     try:
         first_line = path.read_text(errors="ignore").splitlines()[0]
@@ -413,11 +427,13 @@ def has_shell_shebang(path: Path) -> bool:
     tokens = {token for token in re.split(r"[/\s]+", first_line[2:]) if token}
     return bool(tokens & SHELL_INTERPRETER_NAMES)
 
+
 def has_pep723_script_metadata(path: Path) -> bool:
     try:
         return "# /// script" in path.read_text(errors="ignore")
     except OSError:
         return False
+
 
 def validate_referenced_paths(skill_dir: Path) -> list[str]:
     skill_md = skill_dir / "SKILL.md"
@@ -462,6 +478,7 @@ def validate_referenced_paths(skill_dir: Path) -> list[str]:
 
     return errors
 
+
 def declared_command_labels(skill_dirs: list[Path]) -> dict[str, tuple[Path, str]]:
     """Map each skill-owned command name to its owning skill and script path."""
     labels: dict[str, tuple[Path, str]] = {}
@@ -474,6 +491,7 @@ def declared_command_labels(skill_dirs: list[Path]) -> dict[str, tuple[Path, str
             if isinstance(name, str) and isinstance(resource_path, str):
                 labels[name] = (skill_dir, resource_path)
     return labels
+
 
 def validate_command_label_invocations(skill_dirs: list[Path]) -> list[str]:
     """A command's frontmatter name is a label, not something on PATH.
@@ -504,6 +522,7 @@ def validate_command_label_invocations(skill_dirs: list[Path]) -> list[str]:
                 )
     return errors
 
+
 def validate_no_install_paths(skill_dir: Path) -> list[str]:
     """Catalog files are named relative to the skill, never through one host's install location.
 
@@ -522,6 +541,7 @@ def validate_no_install_paths(skill_dir: Path) -> list[str]:
                     f"({match.group()}); name it from the skill's base directory instead"
                 )
     return errors
+
 
 def validate_markdown_links(skill_dir: Path) -> list[str]:
     errors: list[str] = []
@@ -555,6 +575,7 @@ def validate_markdown_links(skill_dir: Path) -> list[str]:
                     )
     return errors
 
+
 def should_skip_markdown_link(raw: str) -> bool:
     lowered = raw.lower()
     return (
@@ -565,6 +586,7 @@ def should_skip_markdown_link(raw: str) -> bool:
         or re.match(r"^[a-z][a-z0-9+.-]*:", lowered) is not None
         or raw.startswith("mailto:")
     )
+
 
 def validate_python_script_metadata(skill_dir: Path) -> list[str]:
     errors: list[str] = []
@@ -579,6 +601,7 @@ def validate_python_script_metadata(skill_dir: Path) -> list[str]:
             continue
         errors.extend(validate_pep723_metadata(script, text))
     return errors
+
 
 def validate_pep723_metadata(script: Path, text: str) -> list[str]:
     starts = [match.start() for match in re.finditer(r"(?m)^# /// script$", text)]
@@ -615,6 +638,7 @@ def validate_pep723_metadata(script: Path, text: str) -> list[str]:
         return [f"{script.relative_to(ROOT)}: PEP 723 dependencies must be strings"]
     return []
 
+
 def validate_invocation_parity(skill_dir: Path) -> list[str]:
     """Codex owns implicit-invocation policy; Claude's frontmatter must agree."""
     path = skill_dir / "agents" / "openai.yaml"
@@ -630,6 +654,7 @@ def validate_invocation_parity(skill_dir: Path) -> list[str]:
     if disabled != explicit_only:
         return [f"{skill_dir.name}/SKILL.md: disable-model-invocation must equal the inverse of agents/openai.yaml policy.allow_implicit_invocation (default true)"]
     return []
+
 
 def validate_skill_dir(skill_dir: Path) -> list[str]:
     errors: list[str] = []
@@ -656,6 +681,7 @@ def validate_skill_dir(skill_dir: Path) -> list[str]:
     errors.extend(validate_python_script_metadata(skill_dir))
     return errors
 
+
 def main() -> int:
     errors: list[str] = []
     skill_dirs = active_skill_dirs()
@@ -674,6 +700,7 @@ def main() -> int:
 
     print(f"ok validate-skill-repo ({len(skill_dirs)} active skills)")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
