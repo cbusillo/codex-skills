@@ -467,6 +467,17 @@ coverage. `candidate_coverage` accompanies the ranked list with a warning when
 graph or discovery coverage is incomplete; its counts are not an availability
 claim. Its `scope` distinguishes a portfolio scan from an explicit milestone
 scan; complete milestone coverage says nothing about incidents outside it.
+`candidate_coverage.unevaluated_repositories` lists named repositories and counts
+of inventoried issues omitted by the evaluation allowance, after graph overlap
+and marked-incident reads. Source truncation/access failures remain explicit in
+`discovery_context.repositories`, so these counts do not claim full inventory.
+Every candidate has `overall_milestone_context` with `matched`, `none_found` or
+`unknown`, titles and its evidence source. Matches require a native Track
+path/ancestry or an issue milestone listed in both repository and overall
+direction. Context does not alter eligibility, availability or ranking.
+Relationship endpoints are skipped only when the already-read native issue
+summary explicitly reports an integer-zero total for that relationship; missing,
+malformed or nonzero totals keep the bounded reads, including closed history.
 Mark only current incidents: every marked issue gets normal relationship,
 discussion and ancestry reads outside the ordinary scan allowance, so API cost
 increases with the marked inventory. Explicit milestone scope remains narrow.

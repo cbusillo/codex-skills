@@ -333,6 +333,33 @@ def include_parent_context(
     return result
 
 
+def overall_milestone_context(
+    item: dict[str, Any], graph: dict[str, Any], milestone_titles: list[str],
+    repository_milestones: dict[str, list[str] | None],
+) -> dict[str, Any]:
+    """Explain established waypoint links without changing eligibility or rank."""
+    if item.get("via") and (item.get("milestone") or {}).get("title") in milestone_titles:
+        return {"state": "matched", "titles": [item["milestone"]["title"]], "source": "native_track_path"}
+    parent_keys = {(p["repo"].casefold(), p["number"]) for p in (item.get("discussion") or {}).get("parents", [])}
+    linked = {
+        entry["milestone"]["title"]
+        for entry in [*graph.get("candidates", []), *graph.get("excluded", [])]
+        if entry.get("via") and (entry.get("milestone") or {}).get("title") in milestone_titles
+        and (entry["repo"].casefold(), entry["number"]) in parent_keys
+    }
+    if linked:
+        return {"state": "matched", "titles": [title for title in milestone_titles if title in linked], "source": "native_track_ancestry"}
+    repo = item["repo"]
+    repository_titles = next((value for key, value in repository_milestones.items() if key.casefold() == repo.casefold()), None)
+    local_title = (item.get("milestone") or {}).get("title")
+    if local_title in milestone_titles and local_title in (repository_titles or []):
+        return {"state": "matched", "titles": [local_title], "source": f"{repo}:DIRECTION.md"}
+    known_repo = any(key.casefold() == repo.casefold() for key in repository_milestones)
+    ancestry_complete = (item.get("discussion") or {}).get("ancestry_complete")
+    complete = known_repo and ancestry_complete and graph.get("dependency_context", {}).get("complete", False)
+    return {"state": "none_found" if complete else "unknown", "titles": [], "source": "checked_native_ancestry_and_repository_direction" if complete else "incomplete_context"}
+
+
 def rank_portfolio_work(
     graph: dict[str, Any], discoveries: list[dict[str, Any]], *,
     milestone_titles: list[str], selection_context: dict[str, Any] | None = None,
@@ -358,6 +385,7 @@ def rank_portfolio_work(
             continue
         seen.add(key)
         item = {**raw, "availability": "needs_review"}
+        item["overall_milestone_context"] = overall_milestone_context(item, graph, milestone_titles, repository_milestones or {})
         hold = repository_hold(context, item["repo"])
         if hold:
             excluded.append({**item, "exclusion": "repository_held", "review": hold})
