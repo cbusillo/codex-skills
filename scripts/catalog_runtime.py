@@ -48,6 +48,8 @@ def status_line(root: Path) -> str:
         if git(root, "rev-parse", "--git-dir") != git(root, "rev-parse", "--git-common-dir") and not installation_path.is_file():
             return ""
         installation = json.loads(installation_path.read_text()) if installation_path.is_file() else {}
+        if not isinstance(installation, dict):
+            raise ValueError("invalid installation receipt")
         scheduled = installation.get("scheduled_updater", False) and bool(installation.get("updater_plist")) and Path(installation["updater_plist"]).is_file()
         state = checkout_state(root)
         if state["state"] == "current":
@@ -55,15 +57,22 @@ def status_line(root: Path) -> str:
             stamp = installation.get("scheduled_at")
             if receipt.exists():
                 recorded = json.loads(receipt.read_text())
+                if not isinstance(recorded, dict):
+                    raise ValueError("invalid update receipt")
                 stamp = recorded["checked_at"]
                 if recorded.get("state") == "error":
-                    state = {"state": "blocked", "reason": "last catalog update failed; preview scripts/install-catalog.py --refresh-instructions to diagnose"}
-            if scheduled and stamp and dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(stamp) > dt.timedelta(hours=12) and state["state"] == "current":
+                    step = recorded.get("failure_step", "catalog update")
+                    recovery = "preview scripts/install-catalog.py --refresh-instructions, reconcile, then run scripts/catalog_runtime.py --update" if step == "instruction refresh" else "run scripts/catalog_runtime.py --update"
+                    state = {"state": "blocked", "reason": f"last {step} failed; {recovery}"}
+            checked_at = dt.datetime.fromisoformat(stamp) if stamp else None
+            if checked_at is not None and checked_at.tzinfo is None:
+                raise ValueError("update timestamp has no timezone")
+            if scheduled and checked_at and dt.datetime.now(dt.timezone.utc) - checked_at > dt.timedelta(hours=12) and state["state"] == "current":
                 state = {"state": "stale", "reason": "scheduled update has not checked origin in over 12 hours"}
         if state["state"] == "current":
             return ""
         return f"Catalog {state['state']}: {state['reason']} ({root})."
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
         return f"Catalog blocked: could not read checkout/update state ({root})."
 
 
@@ -77,28 +86,34 @@ def update(root: Path) -> dict[str, str]:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {"state": "blocked", "reason": "another catalog update is running"}
+        failure_step = "catalog checkout check"
         try:
             state = checkout_state(root)
             if state["state"] != "blocked":
+                failure_step = "origin fetch"
                 git(root, "fetch", "--quiet", "origin", "main")
                 state = checkout_state(root)
                 if state["state"] == "stale":
                     # Repeat the clean/branch/ancestor gate immediately before mutation.
                     state = checkout_state(root)
                     if state["state"] == "stale":
+                        failure_step = "catalog fast-forward"
                         git(root, "merge", "--ff-only", "--no-edit", "origin/main")
                         state = checkout_state(root)
                 if state["state"] == "current" and (root / ".local" / "catalog-install.json").is_file():
+                    failure_step = "instruction refresh"
                     # Refresh installed global instructions through the same installer;
                     # Bindings and hooks are left as the user configured them.
                     installation = json.loads((root / ".local" / "catalog-install.json").read_text())
+                    if not isinstance(installation, dict):
+                        raise ValueError("invalid installation receipt")
                     result = subprocess.run([sys.executable, str(root / "scripts" / "install-catalog.py"), "--write", "--refresh-instructions",
                                              "--home-dir", installation["home"], "--codex-dir", installation["codex"], "--claude-dir", installation["claude"]],
                                             capture_output=True, text=True, timeout=60)
                     if result.returncode:
                         raise ValueError("catalog is current but instruction refresh failed; preview scripts/install-catalog.py --refresh-instructions to diagnose and reconcile")
-        except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-            state = {"state": "error", "reason": str(error)}
+        except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
+            state = {"state": "error", "reason": str(error), "failure_step": failure_step}
         state["checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
         receipt = root / ".local" / "catalog-update.json"
         receipt.parent.mkdir(parents=True, exist_ok=True)

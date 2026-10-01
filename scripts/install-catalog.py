@@ -76,6 +76,8 @@ def personal_source(sync, destinations: list[Path], local: Path) -> str:
                         raise ValueError(f"Generated instructions differ from known catalog history: {path}; inspect and reconcile personal text in {local}, then preview scripts/sync-global-instructions.py before writing and rerunning")
                     continue
                 raise ValueError(f"Generated instructions differ from current source: {path}; inspect and restore their private supplement in {local} before rerunning")
+            if local.exists() and not previous_base:
+                raise ValueError(f"Generated instructions differ from the private source: {path}; reconcile the host edits in {local}, preview scripts/sync-global-instructions.py, then write and rerun")
             if local.exists() or previous_base:
                 continue  # The private source is authoritative after adoption.
             text = text[len(matched):].strip()

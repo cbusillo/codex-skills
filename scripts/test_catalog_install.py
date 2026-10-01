@@ -251,6 +251,22 @@ class InstallTests(unittest.TestCase):
         self.assertIn("Private instruction.", content)
         self.assertNotIn("Use the catalog.", content)
 
+    def test_first_adoption_preserves_unsynchronized_manual_instruction_edits(self):
+        local = self.catalog / ".local" / "global-instructions.md"
+        local.parent.mkdir()
+        local.write_text("Existing private instruction.\n")
+        host = self.codex / "AGENTS.md"
+        original = self.sync.render(self.catalog / "instructions" / "global.md", local)
+        host.write_text(original + "Hand-added rule.\n")
+        with self.assertRaisesRegex(ValueError, "Generated instructions differ"):
+            self.install()
+        self.assertEqual(host.read_text(), original + "Hand-added rule.\n")
+        host.write_text(original)
+        local.write_text("Changed private instruction.\n")
+        with self.assertRaisesRegex(ValueError, "Generated instructions differ"):
+            self.install()
+        self.assertEqual(host.read_text(), original)
+
     def test_refresh_keeps_removed_bindings_and_hooks_removed(self):
         self.install()
         (self.claude / "skills" / "shared").unlink()
@@ -455,6 +471,29 @@ class UpdateTests(unittest.TestCase):
         (linked / ".local").mkdir()
         (linked / ".local" / "catalog-install.json").write_text("{}")
         self.assertIn("Catalog stale", runtime.status_line(linked))
+
+    def test_malformed_status_reports_blocked_without_hiding_other_hook_output(self):
+        from hooks import direction_check_hook as hook
+        local = self.checkout / ".local"
+        local.mkdir()
+        installation = local / "catalog-install.json"
+        update = local / "catalog-update.json"
+        cases = (("[]", None), ("null", None), ("{}", "[]"), ("{}", "null"), ("{}", '{"checked_at": "2026-01-01T00:00:00"}'))
+        for install_text, update_text in cases:
+            with self.subTest(install=install_text, update=update_text):
+                installation.write_text(install_text)
+                if update_text is None:
+                    update.unlink(missing_ok=True)
+                else:
+                    update.write_text(update_text)
+                self.assertIn("Catalog blocked", runtime.status_line(self.checkout))
+                with mock.patch.object(hook, "direction_root", return_value=self.checkout), mock.patch.object(hook, "reminder", return_value="Fixture overdue reminder."):
+                    output = io.StringIO()
+                    with contextlib.redirect_stdout(output):
+                        self.assertEqual(hook.main(catalog_root=self.checkout), 0)
+                    self.assertIn("Catalog blocked", output.getvalue())
+                    self.assertIn(hook.LOOP_PATH.read_text().strip(), output.getvalue())
+                    self.assertIn("Fixture overdue reminder.", output.getvalue())
 
     def test_hook_emits_one_catalog_line_on_both_harnesses_only_when_needed(self):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
