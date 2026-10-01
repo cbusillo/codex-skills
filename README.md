@@ -19,6 +19,7 @@ Clone this repository somewhere durable, then install once on each machine:
 ```sh
 git clone https://github.com/OWNER/codex-skills.git ~/Developer/codex-skills
 cd ~/Developer/codex-skills
+uv run scripts/install-catalog.py
 uv run scripts/install-catalog.py --write
 ```
 
@@ -27,6 +28,8 @@ The installer binds the entire catalog at `~/.agents/skills/shared` for Codex an
 instructions, and registers the existing Codex command-policy and session-start
 hooks. It respects `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Approve newly registered
 hooks through Codex's `/hooks` interface once; installing never grants trust.
+Existing inline hooks are migrated to JSON and may stop running until reviewed
+again through `/hooks`, including policies that previously blocked commands.
 Restart the harness to discover the bindings.
 
 Run without `--write` to preview; add `--show-diff` to inspect instruction changes
@@ -191,9 +194,57 @@ Codex 0.157.0 supports a blocking `PreToolUse` hook, exposes shell calls as
 It also accepts the JSON deny decision used by the registered launcher. Hooks
 are enabled by default in that version; if the host explicitly disabled them,
 restore its `features.hooks` setting before expecting enforcement.
-`--codex-hook` renders the existing `hooks/hooks.json` PreToolUse declaration
-into `~/.codex/hooks.json`, retaining other hooks. It does not grant hook trust;
-review the new entry through Codex's `/hooks` interface. Once registered and
+`--codex-hook` maintains the catalog's `PreToolUse` and `SessionStart` hooks in
+`~/.codex/hooks.json`, retaining other hooks. It also moves existing inline
+event declarations from `config.toml` into JSON, preserving their commands,
+matchers, timeouts, unrelated settings, and Codex-managed `[hooks.state]`.
+An existing catalog direction hook is retained rather than registered twice.
+Both the installer and sync helper use this same migration path. Unsupported
+or conflicting definitions stop with an actionable error before writing.
+
+For an existing installation, migrate hooks alone from the maintained runtime
+checkout, reviewing the preview before applying it:
+
+```sh
+uv run scripts/sync-global-instructions.py --codex-hook --hooks-only
+uv run scripts/sync-global-instructions.py --codex-hook --hooks-only --write
+```
+
+Full diffs are opt-in with `--show-diff` for a person's local review because TOML
+context may contain private settings. Changed files receive private sibling backups. To undo migration, restore both
+the `hooks.json` and `config.toml` backups reported by the helper; if JSON was
+newly created, remove only that newly created file after restoring TOML.
+Restore whole backups only if the files have not changed since migration.
+Otherwise restore just the hook declarations while retaining newer settings
+and Codex-managed trust state.
+Repeating synchronization produces no changes once consolidated. Migrating a
+hook changes its definition source, so review any untrusted entries through
+Codex's `/hooks` interface before expecting them to run. The helper never grants,
+copies, or invents hook trust. See the [official hook guidance](https://learn.chatgpt.com/docs/hooks).
+Existing JSON entries can also require review when definitions or positions
+change; the renderer retains existing policy positions when consolidating.
+Standalone TOML comments attached to removed hook tables are retained at the
+end of the remaining TOML. An interrupted migration reports completed-file
+backups; preview again to reconcile identical declarations and finish migration.
+Inline comments on migrated values remain recoverable in the TOML backup.
+If `config.toml` is a symlink with inline hooks, install with
+`--skip-codex-hooks` or use instruction-only sync without `--codex-hook` to keep
+the existing hooks working. The installer reports skipped hook setup and leaves
+its definitions and trust alone; a mixed-source warning may remain until migration.
+To migrate, preserve the link
+target's contents in a regular `config.toml`, then preview again.
+Migration does not copy disabled choices from old source keys. The preview and
+receipt identify recognized disabled handlers by event, their old TOML position,
+and their destination JSON position. Keep those destination handlers disabled
+when reviewing them through `/hooks`. A `deduplicated` entry has no destination:
+its TOML copy was removed. Compare the existing JSON copy's independently
+reviewed settings before changing it. If it came from an interrupted migration,
+keep the original disabled choice when reviewing that copy. Other null
+destinations mean the managed declaration replaced the source definition. Removing
+a redundant managed `SessionStart` group can shift later JSON positions; review
+those remaining handlers through `/hooks` too. Full commands
+are available only in the person's local `--show-diff` review.
+Once registered and
 trusted, a catalog pull updates the same policy script on both hosts. The
 Claude-only skills protocol is not added to Codex's base instructions.
 
@@ -295,6 +346,13 @@ In a repository with a root `DIRECTION.md`, it prints the shared
 [executing loop](skills/references/executing-loop.md) at session start. The loop
 defines `next`, `go`, escalation, landing, and closeout for either harness
 when its session-start hook is registered.
+In a repository without one, when its origin owner's `OWNER/direction`
+repository is in the marker's audited repositories or is checked out as
+`direction` beside the repository's main checkout, it prints that overall
+direction's stop boundaries, read from the merged default branch (or from that
+checkout's last-fetched default branch when GitHub cannot be read), with the
+file's link and the executing loop. When neither can be read
+it says so in one line. Other owners' repositories print nothing extra.
 It reads a local marker that `direction_mark.py` writes at the end of a daily
 turn and that the audit script writes per repository when an audit completes,
 and it also prints a reminder line while the turn is more than a
@@ -302,8 +360,10 @@ day old or the current repository's audit more than a week old. It never
 reads stdin, always exits 0, runs only on `startup`, `resume`, and `clear`
 (not after a compaction), and is bounded to 15 seconds with Python downloads
 disabled. The marker is `~/.code/direction-last-check.json` on every host
-unless `DIRECTION_MARKER` names another file. For Codex, register the same
-script as a session-start command hook in its hooks configuration.
+unless `DIRECTION_MARKER` names another file. For Codex, the installer or
+`scripts/sync-global-instructions.py --codex-hook` registers this hook in
+`hooks.json`; review it through `/hooks` once. Keep user-layer event definitions
+in JSON so later setup does not recreate inline TOML declarations.
 Claude's separate `compact` handler uses `--skills-only` to restore the protocol
 without repeating the executing loop or overdue-audit reminder.
 

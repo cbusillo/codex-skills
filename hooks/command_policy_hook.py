@@ -31,6 +31,7 @@ parsing to unwrap, such as `xargs` and `sudo`, are deliberately left alone.
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import re
 import shlex
@@ -44,14 +45,15 @@ ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "skills"
 SIMULATOR = CATALOG / "skill-creator" / "scripts" / "validate-command-policy-simulator.py"
 CODE_HOME_SKILLS = "$CODE_HOME/skills/"
-OPERATORS = re.compile(r"^[;&|()]+$")
+OPERATORS = re.compile(r"^[;&|()\n]+$")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 TRANSPARENT = {"command", "exec", "time", "nohup"}
+SHELL_KEYWORDS = {"{", "!", "if", "then", "elif", "else", "do", "while", "until"}
 SHELLS = {"sh", "bash", "zsh"}
 SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
 GH_WRAPPER_FLAGS = {"--print-auth-account", "--require-automation-auth"}
 ENV_VALUE_FLAGS = {"-u", "--unset", "-C", "--chdir"}
-UV_VALUE_FLAGS = {"--python", "-p", "--project", "--directory", "--with", "--with-editable", "--with-requirements"}
+UV_VALUE_FLAGS = {"--python", "-p", "--extra", "--group", "--project", "--directory", "--with", "--with-editable", "--with-requirements"}
 
 
 def load_simulator() -> ModuleType:
@@ -64,12 +66,32 @@ def load_simulator() -> ModuleType:
     return module
 
 
+class ShellStream(io.StringIO):
+    """Keep comment-ending newlines available as shell command separators."""
+
+    def readline(self, size: int = -1) -> str:
+        line = super().readline(size)
+        if line.endswith("\n"):
+            self.seek(self.tell() - 1)
+            return line[:-1]
+        return line
+
+
+def shell_tokens(shell: str) -> list[str]:
+    # Preserve existing heredoc handling until #671 supplies command/data parsing.
+    # Such ambiguous scripts cannot qualify for repository exceptions below.
+    heredoc = "<<" in shell
+    lexer = shlex.shlex(ShellStream(shell), posix=True, punctuation_chars="();<>|&" if heredoc else "();<>|&\n")
+    if not heredoc:
+        lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
 def shell_commands(shell: str) -> list[list[str]]:
     """Split with shell operators and comments using one shared lexer."""
-    lexer = shlex.shlex(shell, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
     commands: list[list[str]] = [[]]
-    for token in lexer:
+    for token in shell_tokens(shell):
         if OPERATORS.match(token):
             commands.append([])
         else:
@@ -99,7 +121,7 @@ def unwrap(argv: list[str], nested: bool) -> list[list[str]]:
     """Return the command or commands an argv really runs, per the module docstring."""
     while argv:
         head = Path(argv[0]).name
-        if ASSIGNMENT.match(argv[0]) or head in TRANSPARENT:
+        if ASSIGNMENT.match(argv[0]) or head in TRANSPARENT | SHELL_KEYWORDS:
             argv = argv[1:]
         elif head == "env":
             argv = drop_flags(argv[1:], ENV_VALUE_FLAGS)
@@ -158,12 +180,33 @@ def describe(policy: dict[str, Any], skill: str) -> str:
 
 
 def exception_cwd(shell: str, cwd: Path) -> Path | None:
-    """Use the tool's cwd only when the shell cannot redirect command resolution.
+    """Accept the tool cwd or one literal leading cd joined by success-only &&.
 
-    Directory/project switches and explicit executable paths keep the original
-    block. Callers can use the tool's working-directory option instead; guessing
-    a compound shell's effective directory would widen repository exceptions.
+    Other directory/project switches and executable overrides retain the block.
+    The simulator independently verifies the resulting checkout's Git identity.
     """
+    shell = shell.strip()
+    if "$(" in shell or "`" in shell or "<<" in shell:
+        return None
+    prefix = re.fullmatch(
+        r"\s*cd\s+(?:--\s+)?(?P<path>'[^']*'|\"[^\"]*\"|[^\s;&|()<>]+)\s*&&(?P<command>[\s\S]+)",
+        shell,
+    )
+    if prefix:
+        try:
+            path_text = shlex.split(prefix["path"])[0]
+        except ValueError:
+            return None
+        # No expansion, CDPATH lookup, or guessing after a failed cd.
+        if any(character in path_text for character in "$`\\~*?["):
+            return None
+        target = Path(path_text)
+        if not target.is_absolute() or not target.is_dir():
+            return None
+        if any(OPERATORS.match(token) and token != "&&" for token in shell_tokens(prefix["command"])):
+            return None
+        cwd = target
+        shell = prefix["command"]
     try:
         commands = shell_commands(shell)
     except ValueError:
@@ -177,15 +220,22 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
                 return exception_cwd(tokens[index + 1], cwd)
         return None
     for token in tokens:
-        if token in {"cd", "pushd", "popd", "eval", "source", ".", "--active", "--no-project"} or Path(token).name in SHELLS:
+        if token in {"cd", "pushd", "popd", "eval", "source", "--active", "--no-project"} or Path(token).name in SHELLS:
             return None
         if token.startswith("-C") or ASSIGNMENT.match(token) or token.split("=", 1)[0] in {"-C", "--chdir", "--directory", "--project", "--with", "--with-editable", "--with-requirements"}:
             return None
         if Path(token).name == "launchplane" and token != "launchplane":
             return None
     for argv in commands:
-        while argv and argv[0] in TRANSPARENT:
+        while argv and argv[0] in TRANSPARENT | {"builtin"}:
             argv = argv[1:]
+        normalized = unwrap(argv, nested=True)
+        for index, token in enumerate(argv):
+            if token == "." and not (
+                index > 0 and argv[index - 1] == "--control-plane-root"
+                and normalized and normalized[0][:3] == ["launchplane", "service", "audit-config-authority"]
+            ):
+                return None
         if "launchplane" in argv and argv[:2] != ["uv", "run"]:
             return None
     return cwd if cwd.is_absolute() else None
