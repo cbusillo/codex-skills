@@ -402,6 +402,152 @@ class InstallTests(unittest.TestCase):
         self.install()
         self.assertIn("Moved rule.", host.read_text())
 
+    def test_refresh_upgrades_bound_alerts_preserving_other_hooks_and_trust(self):
+        self.install()
+        hook_path = self.codex / "hooks.json"
+        existing = json.loads(hook_path.read_text())
+        # Emulate an older installed catalog without alert registrations.
+        existing["hooks"].pop("Stop")
+        existing["hooks"].pop("Interrupt")
+        other = {"hooks": [{"type": "command", "command": "my-stop-hook"}]}
+        existing["hooks"]["Stop"] = [other]
+        hook_path.write_text(json.dumps(existing))
+        config = self.codex / "config.toml"
+        config.write_text('[hooks.state]\nopaque_trust = "preserve"\n')
+        installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        upgraded = json.loads(hook_path.read_text())
+        self.assertEqual(upgraded["hooks"]["Stop"][0], other)
+        self.assertEqual(upgraded["hooks"]["PreToolUse"], existing["hooks"]["PreToolUse"])
+        self.assertEqual(upgraded["hooks"]["SessionStart"], existing["hooks"]["SessionStart"])
+        self.assertEqual(len(upgraded["hooks"]["Stop"]), 2)
+        self.assertEqual(len(upgraded["hooks"]["Interrupt"]), 1)
+        self.assertEqual(config.read_text(), '[hooks.state]\nopaque_trust = "preserve"\n')
+        first = hook_path.read_bytes()
+        installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertEqual(hook_path.read_bytes(), first)
+
+    def test_inline_catalog_binding_reports_migration_without_changing_trust(self):
+        self.install()
+        (self.codex / "hooks.json").unlink()
+        config = self.codex / "config.toml"
+        original = f'[[hooks.PreToolUse]]\n[[hooks.PreToolUse.hooks]]\ncommand="uv run {installer.ROOT / "hooks" / "command_policy_hook.py"}"\n[hooks.state]\nopaque_trust="preserve"\n'
+        config.write_text(original)
+        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertTrue(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
+        self.assertEqual(config.read_text(), original)
+        self.assertFalse((self.codex / "hooks.json").exists())
+
+    def test_inline_dotfiles_alert_preview_can_clear_notice_preserving_trust(self):
+        self.install()
+        (self.codex / "hooks.json").unlink()
+        config = self.codex / "config.toml"
+        target = self.root / "dotfiles-config.toml"
+        original = f'[[hooks.PreToolUse]]\n[[hooks.PreToolUse.hooks]]\ncommand="uv run {installer.ROOT / "hooks" / "command_policy_hook.py"}"\n[hooks.state]\nopaque_trust="preserve"\n'
+        target.write_text(original)
+        config.symlink_to(target)
+        preview = installer.install(self.home, self.codex, self.claude, write=False, updater=False, refresh_instructions=True, show_diff=True)
+        generated = next(entry["catalog_alert_toml"] for entry in preview["outputs"] if "catalog_alert_toml" in entry)
+        self.assertEqual(target.read_text(), original)
+        target.write_text(original + generated)
+        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertFalse(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
+        self.assertEqual(target.read_text(), original + generated)
+        self.assertTrue(config.is_symlink())
+        self.assertFalse((self.codex / "hooks.json").exists())
+
+    def test_malformed_alert_group_does_not_stop_instruction_refresh(self):
+        self.install()
+        path = self.codex / "hooks.json"
+        config = json.loads(path.read_text())
+        config["hooks"]["Stop"].append({"hooks": None})
+        path.write_text(json.dumps(config))
+        installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertIn({"hooks": None}, json.loads(path.read_text())["hooks"]["Stop"])
+
+    def test_concurrent_hook_edit_is_preserved_and_refresh_reports_skip(self):
+        self.install()
+        hook_path = self.codex / "hooks.json"
+        original = json.loads(hook_path.read_text())
+        original["hooks"].pop("Stop")
+        original["hooks"].pop("Interrupt")
+        hook_path.write_text(json.dumps(original))
+        user_hook = {"hooks": [{"type": "command", "command": "new-user-stop"}]}
+        changed = {**original, "hooks": {**original["hooks"], "Stop": [user_hook]}}
+        real_sync = self.sync.synchronize
+        edited = False
+
+        def synchronize(content, destinations, **kwargs):
+            nonlocal edited
+            if kwargs.get("write") and self.codex / "AGENTS.md" in destinations and not edited:
+                hook_path.write_text(json.dumps(changed))
+                edited = True
+            return real_sync(content, destinations, **kwargs)
+
+        with mock.patch.object(self.sync, "synchronize", side_effect=synchronize):
+            receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertTrue(edited)
+        self.assertEqual(json.loads(hook_path.read_text()), changed)
+        self.assertTrue(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
+        self.assertTrue((self.codex / "AGENTS.md").is_file())
+
+    def test_current_dotfiles_alert_binding_clears_skip_without_writes(self):
+        self.install()
+        hook_path = self.codex / "hooks.json"
+        original = hook_path.read_text()
+        target = self.root / "dotfiles-hooks"
+        hook_path.unlink()
+        target.write_text(original)
+        hook_path.symlink_to(target)
+        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertFalse(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
+        self.assertEqual(target.read_text(), original)
+        self.assertTrue(hook_path.is_symlink())
+        modified = json.loads(original)
+        user_stop = {"hooks": [{"command": "personal-stop"}]}
+        modified["hooks"]["Stop"].insert(0, user_stop)
+        modified["hooks"]["Stop"][-1]["hooks"][0]["command"] = "old-alert-command"
+        target.write_text(json.dumps(modified))
+        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertTrue(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
+        self.assertEqual(json.loads(target.read_text()), modified)
+        preview = installer.install(self.home, self.codex, self.claude, write=False, updater=False, refresh_instructions=True, show_diff=True)
+        entries = next(entry["catalog_alert_entries"] for entry in preview["outputs"] if "catalog_alert_entries" in entry)
+        self.assertEqual(json.loads(target.read_text()), modified)
+        # A dotfiles manager can apply this preview without hand-writing command
+        # strings. Unrelated existing events stay in its authoritative source.
+        for event, generated in entries.items():
+            modified["hooks"][event] = [group for group in modified["hooks"].get(event, []) if group == user_stop] + generated
+        target.write_text(json.dumps(modified))
+        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertFalse(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
+        self.assertEqual(json.loads(target.read_text())["hooks"]["Stop"][0], user_stop)
+
+    def test_removed_binding_in_dotfiles_symlink_is_not_refreshed(self):
+        self.install()
+        hook_path = self.codex / "hooks.json"
+        hook_path.unlink()
+        target = self.root / "dotfiles-hooks"
+        target.write_text('{"hooks": {}}\n')
+        hook_path.symlink_to(target)
+        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertFalse(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
+        self.assertTrue(hook_path.is_symlink())
+        self.assertEqual(target.read_text(), '{"hooks": {}}\n')
+
+    def test_unsafe_alert_destination_does_not_block_instruction_refresh(self):
+        self.install()
+        hook_path = self.codex / "hooks.json"
+        hook_path.unlink()
+        target = self.root / "dotfiles-hooks"
+        target.write_text("preserve")
+        hook_path.symlink_to(target)
+        (self.catalog / "instructions" / "global.md").write_text("Updated instructions.\n")
+        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertEqual(target.read_text(), "preserve")
+        self.assertTrue(hook_path.is_symlink())
+        self.assertTrue(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
+        self.assertIn("Updated instructions.", (self.codex / "AGENTS.md").read_text())
+
     def test_refresh_keeps_removed_bindings_and_hooks_removed(self):
         self.install()
         (self.claude / "skills" / "shared").unlink()
@@ -659,6 +805,19 @@ class UpdateTests(unittest.TestCase):
             self.assertFalse((fixture_home / ".claude" / "skills" / "shared").exists())
             self.assertEqual(hooks.read_text(), '{"hooks": {}}\n')
             self.assertEqual(runtime.status_line(self.checkout), "")
+            # Exercise the real subprocess output -> update receipt -> status
+            # path, including clearing the diagnostic after reconciliation.
+            hooks.write_text("invalid JSON")
+            skipped = runtime.update(self.checkout)
+            self.assertEqual(skipped["state"], "current")
+            self.assertIn("alert_refresh", skipped)
+            self.assertIn("alert refresh was skipped", runtime.status_line(self.checkout))
+            self.assertIn("Catalog notice", runtime.status_line(self.checkout))
+            hooks.write_text('{"hooks": {}}\n')
+            fixed = runtime.update(self.checkout)
+            self.assertNotIn("alert_refresh", fixed)
+            self.assertEqual(runtime.status_line(self.checkout), "")
+
 
     def test_dirty_untracked_off_main_detached_ahead_and_diverged_are_preserved(self):
         scenarios = ("dirty", "untracked", "branch", "detached", "ahead", "diverged")
@@ -694,6 +853,30 @@ class UpdateTests(unittest.TestCase):
         self.assertIn("Catalog blocked", runtime.status_line(self.checkout))
         command("git", "remote", "set-url", "origin", str(self.origin), cwd=self.checkout)
         self.assertEqual(runtime.update(self.checkout)["state"], "current")
+        self.assertEqual(runtime.status_line(self.checkout), "")
+
+    def test_skipped_alert_refresh_is_visible_without_changing_checkout(self):
+        self.assertEqual(runtime.update(self.checkout)["state"], "current")
+        receipt = self.checkout / ".local" / "catalog-update.json"
+        status = json.loads(receipt.read_text())
+        status["alert_refresh"] = "skipped"
+        receipt.write_text(json.dumps(status))
+        install = self.checkout / ".local" / "catalog-install.json"
+        install.write_text(json.dumps({"scheduled_updater": False}))
+        head = command("git", "rev-parse", "HEAD", cwd=self.checkout)
+        line = runtime.status_line(self.checkout)
+        self.assertIn("alert refresh was skipped", line)
+        self.assertIn("--refresh-instructions", line)
+        self.assertEqual(command("git", "rev-parse", "HEAD", cwd=self.checkout), head)
+        job = self.base / "job.plist"
+        job.write_text("fixture")
+        install.write_text(json.dumps({"scheduled_updater": True, "updater_plist": str(job)}))
+        status["checked_at"] = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1)).isoformat()
+        receipt.write_text(json.dumps(status))
+        self.assertIn("Catalog stale", runtime.status_line(self.checkout))
+        install.write_text(json.dumps({"scheduled_updater": False}))
+        status.pop("alert_refresh")
+        receipt.write_text(json.dumps(status))
         self.assertEqual(runtime.status_line(self.checkout), "")
 
     def test_manual_update_does_not_imply_an_overdue_schedule(self):
