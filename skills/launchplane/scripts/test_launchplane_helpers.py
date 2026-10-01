@@ -4368,10 +4368,10 @@ def test_expected_config_removal_shape_is_bound_to_the_request() -> None:
         payload_path = Path(directory) / "metadata.json"
         evidence_path = Path(directory) / "review.json"
         removal = {"key": "ODOO_VERSION", "context": "example-site", "instance": ""}
-        secret_removal = {"integration": "runtime_environment", "binding_key": "EXAMPLE_BINDING", "context": "example-site", "instance": ""}
+        binding_removal = {"integration": "runtime_environment", "binding_key": "EXAMPLE_BINDING", "context": "example-site", "instance": ""}
         body = {
             "schema_version": 1, "product": "example-site", "reason": "Sites build their own images.",
-            "remove_runtime_environment_keys": [removal], "remove_managed_secret_bindings": [secret_removal],
+            "remove_runtime_environment_keys": [removal], "remove_managed_secret_bindings": [binding_removal],
         }
         payload_path.write_text(json.dumps(body))
         removal_summary = {
@@ -4382,7 +4382,7 @@ def test_expected_config_removal_shape_is_bound_to_the_request() -> None:
         result: dict[str, Any] = {
             "status": "ok", "mode": "dry-run", "product": "example-site", "source_label": "operator", "changed": True,
             "runtime_environment_keys": {"added": [], "unchanged": [], "removed": [removal], "absent": []},
-            "managed_secret_bindings": {"added": [], "unchanged": [], "removed": [], "absent": [secret_removal], "still_bound": []},
+            "managed_secret_bindings": {"added": [], "unchanged": [], "removed": [], "absent": [binding_removal], "still_bound": []},
             "summary": removal_summary,
         }
         calls: list[dict[str, Any]] = []
@@ -4437,23 +4437,23 @@ def test_expected_config_removal_shape_is_bound_to_the_request() -> None:
 
 def test_expected_config_removal_items_are_plain_identities() -> None:
     valid_runtime = {"key": "ODOO_VERSION", "context": "example-site", "instance": ""}
-    valid_secret = {"integration": "runtime_environment", "binding_key": "EXAMPLE_BINDING", "context": "example-site", "instance": "testing"}
+    valid_binding = {"integration": "runtime_environment", "binding_key": "EXAMPLE_BINDING", "context": "example-site", "instance": "testing"}
     refused = [
         ("remove_runtime_environment_keys", {**valid_runtime, "key": " "}),
         ("remove_runtime_environment_keys", {"context": "example-site"}),
         ("remove_runtime_environment_keys", {**valid_runtime, "context": "", "instance": "testing"}),
         ("remove_runtime_environment_keys", {**valid_runtime, "key": ["ODOO_VERSION"]}),
-        ("remove_managed_secret_bindings", {**valid_secret, "binding_key": {"value": "nested"}}),
-        ("remove_managed_secret_bindings", {**valid_secret, "integration": ""}),
-        ("remove_managed_secret_bindings", {**valid_secret, "context": None}),
-        ("remove_managed_secret_bindings", {**valid_secret, "owner_input": {"label": "Mail"}}),
+        ("remove_managed_secret_bindings", {**valid_binding, "binding_key": {"value": "nested"}}),
+        ("remove_managed_secret_bindings", {**valid_binding, "integration": ""}),
+        ("remove_managed_secret_bindings", {**valid_binding, "context": None}),
+        ("remove_managed_secret_bindings", {**valid_binding, "owner_input": {"label": "Mail"}}),
     ]
     with TemporaryDirectory() as directory:
         payload_path = Path(directory) / "metadata.json"
         args = argparse.Namespace(payload_file=str(payload_path))
         base = {"schema_version": 1, "product": "example-site", "reason": "Sites build their own images."}
-        payload_path.write_text(json.dumps({**base, "remove_runtime_environment_keys": [valid_runtime], "remove_managed_secret_bindings": [valid_secret]}))
-        assert write_action.product_expected_config_payload_body(args, mode="dry-run")["remove_managed_secret_bindings"] == [valid_secret]
+        payload_path.write_text(json.dumps({**base, "remove_runtime_environment_keys": [valid_runtime], "remove_managed_secret_bindings": [valid_binding]}))
+        assert write_action.product_expected_config_payload_body(args, mode="dry-run")["remove_managed_secret_bindings"] == [valid_binding]
         for kind, item in refused:
             payload_path.write_text(json.dumps({**base, kind: [item]}))
             try:
