@@ -336,6 +336,7 @@ def test_cmd_next_is_bounded_read_only_and_explainable() -> None:
     def fake_relationships(
         _repo: str,
         number: int,
+        _issue: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, list[dict[str, Any]]], list[str]]:
         if number == 1:
             return "automation-gh", relationships(blocked_by=[related(10)]), []
@@ -435,7 +436,7 @@ def test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions() -
         {"available": False, "reason": "project_not_configured"},
     )
 
-    def fake_relationships(_repo: str, number: int) -> Any:
+    def fake_relationships(_repo: str, number: int, _issue: dict[str, Any] | None = None) -> Any:
         relationship_calls.append(number)
         raise module.PlanError("dependency endpoint unavailable")
 
@@ -655,6 +656,7 @@ def global_fixture(
     repo: str = "someone/direction",
     discovered: list[dict[str, Any]] | None = None,
     comments: dict[tuple[str, int], list[dict[str, Any]]] | None = None,
+    relationship_requests: list[str] | None = None,
 ) -> Any:
     module = load_module()
     captured: dict[str, Any] = {}
@@ -672,6 +674,11 @@ def global_fixture(
         return "automation-gh", by_key[key]
 
     def collect(path: str, **kwargs: Any) -> Any:
+        if relationship_requests is not None and any(path.endswith("/" + name) for name in ("blocked_by", "blocking", "sub_issues")):
+            relationship_requests.append(path)
+            parts = path.split("/")
+            key = ("/".join(parts[2:4]), int(parts[5]))
+            return "automation-gh", edges.get(key, relationships())[parts[-1]]
         if path.endswith("/comments"):
             parts = path.split("/")
             return "automation-gh", (comments or {}).get(("/".join(parts[2:4]), int(parts[5])), [])
@@ -681,12 +688,13 @@ def global_fixture(
         assert kwargs["limit"] == module.NEXT_PLAN_INVENTORY_LIMIT + 1
         return "automation-gh", roots
 
-    def read_relationships(target_repo: str, number: int) -> Any:
+    def read_relationships(target_repo: str, number: int, _issue: dict[str, Any] | None = None) -> Any:
         return "automation-gh", {
             name: [module.compact_relationship_issue(node, name) for node in values]
             for name, values in edges.get((target_repo, number), relationships()).items()
         }, []
 
+    native_reader = module.read_next_issue_relationships
     with patch.multiple(
         module,
         default_repo=lambda explicit: explicit or repo,
@@ -695,7 +703,7 @@ def global_fixture(
         collect_paged_rest_items=collect,
         discover_direction_work=lambda *_args, **_kwargs: (discovered or [], {"complete": True, "repositories": []}),
         next_focus_context=lambda *_: (None, {}, {"available": False, "reason": "project_not_configured"}),
-        read_next_issue_relationships=read_relationships,
+        read_next_issue_relationships=native_reader if relationship_requests is not None else read_relationships,
         read_next_parent=lambda target, number: parent_map.get((target.casefold(), number)),
         get_issue=get_node,
         milestone_route=lambda: ("gh", "automation-gh"),
@@ -1526,7 +1534,176 @@ def test_milestone_candidate_coverage_is_scoped_to_graph() -> None:
         assert result["candidate_coverage"]["complete"]
         assert result["candidate_coverage"]["warning"] is None
 
+def test_discovered_blocker_explains_its_native_link_to_waiting_track_work() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    waiting = global_issue("someone/direction", 7, labels=["plan", "plan:waiting"])
+    blocker = global_issue("someone/product", 12)
+    edges = {(roots[0]["repo"], 1): relationships(sub_issues=[waiting]), (waiting["repo"], 7): relationships(blocked_by=[blocker]), (blocker["repo"], 12): relationships(blocking=[waiting])}
+    with global_fixture(roots, [waiting, blocker], edges, discovered=[blocker]) as (module, result, _reads):
+        module.discover_direction_work = lambda *_a, **_kw: ([blocker], {"complete": True, "repositories": [{"repo": blocker["repo"], "direction": DIRECTION}]})
+        module.cmd_next(next_args())
+        candidate = result["candidates"][0]
+        assert candidate["overall_milestone_context"]["state"] == "matched"
+        assert candidate["overall_milestone_context"]["titles"] == ["First"]
+        assert candidate["availability"] == "needs_review" and not candidate.get("via")
+
+
+def test_service_waypoint_evidence_cannot_be_inferred_from_ranking_map() -> None:
+    shared = load_module().github_direction_next
+    raw = global_issue("someone/product", 1)
+    candidate = {**raw, "url": raw["html_url"], "discussion": shared.discussion_snapshot(raw, [], complete=True)}
+    candidate = shared.include_parent_context(candidate, [], complete=True, tracking_roots=[])
+    graph = {"candidates": [], "dependency_context": {"complete": True}}
+    kwargs = {"milestone_titles": [], "repository_milestones": {raw["repo"]: []}}
+    result = shared.rank_portfolio_work(graph, [candidate], **kwargs)
+    assert result["candidates"][0]["overall_milestone_context"]["state"] == "unknown"
+    for evidence, expected in ((None, "unknown"), ([], "none_found")):
+        result = shared.rank_portfolio_work(graph, [candidate], **kwargs, repository_waypoints={raw["repo"]: evidence})
+        assert result["candidates"][0]["overall_milestone_context"]["state"] == expected
+
+
+def test_waypoint_evidence_does_not_change_repository_ranking_fallback() -> None:
+    older = global_issue("someone/tool", 20, created_at="2026-07-01T00:00:00Z")
+    newer = global_issue("someone/tool", 10, created_at="2026-02-01T00:00:00Z")
+    older["milestone"] = milestone_data(1, "v1", created_at="2026-01-01T00:00:00Z")
+    newer["milestone"] = milestone_data(2, "v2", created_at="2026-06-01T00:00:00Z")
+    inventory = [newer, older]
+    for direction, expected in ((None, [20, 10]), ("# Direction\n## Purpose\nUseful tools", [10, 20])):
+        with global_fixture([], [], {}, discovered=inventory) as (module, result, _reads):
+            source = {"complete": True, "repositories": [{"repo": "someone/tool", "direction": direction}]}
+            module.discover_direction_work = lambda *_a, **_kw: (inventory, source)
+            module.cmd_next(next_args())
+            assert [item["number"] for item in result["candidates"]] == expected
+
+
+def test_global_native_summary_savings_reach_real_reader() -> None:
+    root = track("someone/direction", 1, "First")
+    leaf = global_issue("someone/product", 2)
+    for item in (root, leaf):
+        item["issue_dependencies_summary"] = {"total_blocked_by": 0, "total_blocking": 0}
+        item["sub_issues_summary"] = {"total": 0}
+    root["sub_issues_summary"]["total"] = 1
+    calls: list[str] = []
+    with global_fixture([root], [leaf], {(root["repo"], 1): relationships(sub_issues=[leaf])}, relationship_requests=calls) as (module, result, _reads):
+        module.cmd_next(next_args())
+        assert [item["number"] for item in result["candidates"]] == [2]
+        assert calls == ["/repos/someone/direction/issues/1/sub_issues"]
+    calls.clear()
+    # Outside the tracking inventory this is an ordinary active parent;
+    # a waiting parent must continue to exclude its discovered child.
+    root["labels"] = ["plan", "plan:active"]
+    with global_fixture([], [root], {(root["repo"], 1): relationships(sub_issues=[leaf])}, discovered=[leaf], relationship_requests=calls) as (module, result, _reads):
+        module.cmd_next(next_args())
+        assert [item["number"] for item in result["candidates"]] == [2]
+        assert calls == ["/repos/someone/direction/issues/1/sub_issues"]
+
+
+def test_unvisited_track_ancestry_and_unparsed_repository_direction_context() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    first = global_issue("someone/product", 3)
+    later = global_issue("someone/product", 4)
+    edges = {(roots[0]["repo"], 1): relationships(sub_issues=[first]), (roots[1]["repo"], 2): relationships(sub_issues=[later])}
+    with global_fixture(roots, [first, later], edges, discovered=[later]) as (module, result, _reads):
+        module.cmd_next(next_args(scan_limit=2))
+        candidate = next(item for item in result["candidates"] if item["number"] == 4)
+        assert candidate["overall_milestone_context"]["titles"] == ["Second"]
+        assert candidate["overall_milestone_context"]["source"] == "native_track_ancestry"
+        assert result["graph_context"]["truncated"]
+        read = module.repository_direction_milestones
+        assert read({"direction": "## Milestones\n- First without supported formatting"}) is None
+        assert read({"direction": "## Other waypoints\n- `First`"}) is None
+        assert read({"direction": "## Milestones\n"}) == []
+        assert read({"direction": None}) == []
+        assert read({"exclusion": "repository_held"}) is None
+        assert read({"error": "not accessible", "direction": None}) is None
+        assert read({"direction": "## Milestones\n- `First`"}) == ["First"]
+
+
+def test_native_zero_totals_skip_reads_but_closed_history_and_unknowns_do_not() -> None:
+    module = load_module()
+    raw = issue(1)
+    raw["issue_dependencies_summary"] = {"blocked_by": 0, "total_blocked_by": 0, "blocking": 0, "total_blocking": 1}
+    raw["sub_issues_summary"] = {"total": 0}
+    calls: list[str] = []
+
+    def collect(path: str, **_kwargs: Any) -> Any:
+        calls.append(path)
+        return "automation-gh", [{**related(2), "state": "closed"}]
+
+    with patch.multiple(module, collect_paged_rest_items=collect):
+        actor, values, truncated = module.read_next_issue_relationships("owner/repo", 1, raw)
+        assert actor == "automation-gh" and not truncated
+        assert calls == ["/repos/owner/repo/issues/1/dependencies/blocking"]
+        assert values["blocked_by"] == values["sub_issues"] == []
+        assert values["blocking"][0]["state"] == "closed"
+        for unknown in (None, False, "0", 0.0, -1):
+            calls.clear()
+            raw["issue_dependencies_summary"] = {"blocked_by": 0, "blocking": 0, "total_blocked_by": unknown, "total_blocking": unknown}
+            raw["sub_issues_summary"] = {"total": unknown}
+            module.read_next_issue_relationships("owner/repo", 1, raw)
+            assert len(calls) == 3
+        calls.clear()
+        module.read_next_issue_relationships("owner/repo", 1, {"issue_dependencies_summary": [], "sub_issues_summary": None})
+        assert len(calls) == 3
+
+
+def test_overall_waypoint_context_requires_native_or_listed_direction_evidence() -> None:
+    shared = load_module().github_direction_next
+    candidate = global_issue("someone/product", 3)
+    candidate["discussion"] = {"ancestry_complete": True, "parents": []}
+    graph = {"candidates": [], "excluded": [], "dependency_context": {"complete": True}}
+    context = shared.overall_milestone_context
+    assert context(candidate, graph, ["First"], {"someone/product": []})["state"] == "none_found"
+    assert context(candidate, graph, ["First"], {})["state"] == "unknown"
+    graph["dependency_context"]["complete"] = False
+    assert context(candidate, graph, ["First"], {"someone/product": []})["state"] == "unknown"
+    candidate["milestone"] = milestone_data(1, "First", created_at="2026-07-01")
+    assert context(candidate, graph, ["First"], {"someone/product": []})["state"] == "unknown"
+    matched = context(candidate, graph, ["First"], {"someone/product": ["First"]})
+    assert matched["titles"] == ["First"] and matched["source"] == "someone/product:DIRECTION.md"
+    ancestor = {"repo": "someone/direction", "number": 1, "milestone": candidate["milestone"], "via": [{"repo": "someone/direction", "number": 1}]}
+    graph["excluded"] = [ancestor]
+    candidate["discussion"]["parents"] = [ancestor]
+    matched = context(candidate, graph, ["First"], {})
+    assert matched["titles"] == ["First"] and matched["source"] == "native_track_ancestry"
+    candidate["blocking"] = [{"repo": "someone/unrelated", "number": 99, "state": "open"}]
+    assert context(candidate, graph, ["First"], {})["source"] == "native_track_ancestry"
+    candidate["blocking"].append({**ancestor, "state": "open"})
+    assert context(candidate, graph, ["First"], {})["source"] == "native_track_links"
+    candidate["via"] = ancestor["via"]
+    assert context(candidate, graph, ["First"], {})["source"] == "native_track_path"
+
+
+def test_skipped_repository_counts_exclude_graph_overlap_and_marked_incidents() -> None:
+    root = track("someone/direction", 1, "First")
+    linked = global_issue("someone/a", 2)
+    ordinary = global_issue("someone/a", 3)
+    omitted = global_issue("someone/b", 4)
+    incident = global_issue("someone/b", 5, labels=["live-breakage"])
+    inventory = [linked, ordinary, omitted, incident]
+    with global_fixture([root], [linked], {(root["repo"], 1): relationships(sub_issues=[linked])}, discovered=inventory) as (module, result, _reads):
+        module.cmd_next(next_args(scan_limit=2))
+        # Two graph reads; ordinary discovery gets its own allowance of two.
+        assert result["discovery_context"]["unevaluated_repositories"] == []
+        module.cmd_next(next_args(scan_limit=1))
+        # The graph bound leaves linked work to discovery; the incident is
+        # still evaluated outside the one ordinary slot.
+        counts = result["candidate_coverage"]["unevaluated_repositories"]
+        assert counts == [{"repo": "someone/a", "issue_count": 1}, {"repo": "someone/b", "issue_count": 1}]
+        assert sum(item["issue_count"] for item in counts) == result["discovery_context"]["unevaluated_count"]
+        assert not result["candidate_coverage"]["complete"]
+        assert all(item["number"] != incident["number"] for item in result["excluded"] if item.get("exclusion") == "outside_direction_tracks")
+
+
 TESTS = [
+    test_discovered_blocker_explains_its_native_link_to_waiting_track_work,
+    test_service_waypoint_evidence_cannot_be_inferred_from_ranking_map,
+    test_waypoint_evidence_does_not_change_repository_ranking_fallback,
+    test_global_native_summary_savings_reach_real_reader,
+    test_unvisited_track_ancestry_and_unparsed_repository_direction_context,
+    test_native_zero_totals_skip_reads_but_closed_history_and_unknowns_do_not,
+    test_overall_waypoint_context_requires_native_or_listed_direction_evidence,
+    test_skipped_repository_counts_exclude_graph_overlap_and_marked_incidents,
     test_live_breakage_label_inventory_failure_preserves_ordinary_work_and_reports_bounds,
     test_live_breakage_label_query_to_direction_ranking_end_to_end,
     test_milestone_candidate_coverage_is_scoped_to_graph,
