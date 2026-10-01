@@ -249,17 +249,23 @@ For an existing installation, migrate hooks alone from the maintained runtime
 checkout, reviewing the preview before applying it:
 
 ```sh
-uv run scripts/sync-global-instructions.py --codex-hook --hooks-only
+uv run scripts/sync-global-instructions.py --codex-hook --hooks-only --show-diff
 uv run scripts/sync-global-instructions.py --codex-hook --hooks-only --write
 ```
 
-Changed files receive private sibling backups. To undo migration, restore both
+Full diffs are opt-in with `--show-diff`; review them locally because TOML
+context may contain private settings. Changed files receive private sibling backups. To undo migration, restore both
 the `hooks.json` and `config.toml` backups reported by the helper; if JSON was
 newly created, remove only that newly created file after restoring TOML.
 Repeating synchronization produces no changes once consolidated. Migrating a
 hook changes its definition source, so review any untrusted entries through
 Codex's `/hooks` interface before expecting them to run. The helper never grants,
 copies, or invents hook trust. See the [official hook guidance](https://learn.chatgpt.com/docs/hooks).
+Existing JSON entries can also require review when definitions or positions
+change; the renderer retains existing policy positions when consolidating.
+Standalone TOML comments attached to removed hook tables are retained at the
+end of the remaining TOML. An interrupted migration reports completed-file
+backups; preview again to reconcile identical declarations and finish migration.
 Once registered and
 trusted, a catalog pull updates the same policy script on both hosts. The
 Claude-only skills protocol is not added to Codex's base instructions.
