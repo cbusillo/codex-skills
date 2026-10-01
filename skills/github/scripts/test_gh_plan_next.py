@@ -1534,6 +1534,20 @@ def test_milestone_candidate_coverage_is_scoped_to_graph() -> None:
         assert result["candidate_coverage"]["complete"]
         assert result["candidate_coverage"]["warning"] is None
 
+def test_waypoint_evidence_does_not_change_repository_ranking_fallback() -> None:
+    older = global_issue("someone/tool", 20, created_at="2026-07-01T00:00:00Z")
+    newer = global_issue("someone/tool", 10, created_at="2026-02-01T00:00:00Z")
+    older["milestone"] = milestone_data(1, "v1", created_at="2026-01-01T00:00:00Z")
+    newer["milestone"] = milestone_data(2, "v2", created_at="2026-06-01T00:00:00Z")
+    inventory = [newer, older]
+    for direction, expected in ((None, [20, 10]), ("# Direction\n## Purpose\nUseful tools", [10, 20])):
+        with global_fixture([], [], {}, discovered=inventory) as (module, result, _reads):
+            source = {"complete": True, "repositories": [{"repo": "someone/tool", "direction": direction}]}
+            module.discover_direction_work = lambda *_a, **_kw: (inventory, source)
+            module.cmd_next(next_args())
+            assert [item["number"] for item in result["candidates"]] == expected
+
+
 def test_global_native_summary_savings_reach_real_reader() -> None:
     root = track("someone/direction", 1, "First")
     leaf = global_issue("someone/product", 2)
@@ -1641,6 +1655,7 @@ def test_skipped_repository_counts_exclude_graph_overlap_and_marked_incidents() 
 
 
 TESTS = [
+    test_waypoint_evidence_does_not_change_repository_ranking_fallback,
     test_global_native_summary_savings_reach_real_reader,
     test_unvisited_track_ancestry_and_unparsed_repository_direction_context,
     test_native_zero_totals_skip_reads_but_closed_history_and_unknowns_do_not,

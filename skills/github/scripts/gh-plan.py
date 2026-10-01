@@ -2756,7 +2756,8 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                 discoveries.append(item)
     portfolio = github_direction_next.rank_portfolio_work(
         ranked, discoveries, milestone_titles=titles, selection_context=selection_context,
-        repository_milestones={source["repo"]: repository_direction_milestones(source) for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
+        repository_milestones={source["repo"]: direction_milestone_titles(source["direction"]) if source.get("direction") else None for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
+        repository_waypoints={source["repo"]: repository_direction_milestones(source) for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
     )
     ranked.update(portfolio)
     ranked["candidates"] = ranked["candidates"][:args.limit]

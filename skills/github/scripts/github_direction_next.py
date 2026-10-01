@@ -366,6 +366,7 @@ def rank_portfolio_work(
     graph: dict[str, Any], discoveries: list[dict[str, Any]], *,
     milestone_titles: list[str], selection_context: dict[str, Any] | None = None,
     repository_milestones: dict[str, list[str] | None] | None = None,
+    repository_waypoints: dict[str, list[str] | None] | None = None,
 ) -> dict[str, Any]:
     """Share final evidence handling across adapters without inferring permission.
 
@@ -387,7 +388,10 @@ def rank_portfolio_work(
             continue
         seen.add(key)
         item = {**raw, "availability": "needs_review"}
-        item["overall_milestone_context"] = overall_milestone_context(item, graph, milestone_titles, repository_milestones or {})
+        item["overall_milestone_context"] = overall_milestone_context(
+            item, graph, milestone_titles,
+            repository_waypoints if repository_waypoints is not None else repository_milestones or {},
+        )
         hold = repository_hold(context, item["repo"])
         if hold:
             excluded.append({**item, "exclusion": "repository_held", "review": hold})
