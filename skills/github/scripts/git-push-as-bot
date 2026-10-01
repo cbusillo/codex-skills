@@ -113,7 +113,10 @@ EOF
 chmod 700 "$askpass"
 
 "$git_bin" remote set-url origin "$https_url"
+# Git asks configured credential helpers before GIT_ASKPASS, and a helper such
+# as the GitHub CLI's answers with the active human account. Clear the helper
+# list so the push can only use the automation token.
 GIT_ASKPASS=$askpass \
 	GIT_TERMINAL_PROMPT=0 \
 	GIT_PUSH_AS_BOT_TOKEN=$GIT_PUSH_AS_BOT_TOKEN \
-	"$git_bin" push "$@"
+	"$git_bin" -c credential.helper= push "$@"

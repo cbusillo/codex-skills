@@ -331,6 +331,8 @@ elif [[ "$1 $2 $3" == "remote get-url origin" ]]; then
 elif [[ "$1 $2 $3" == "remote set-url origin" ]]; then
 	printf 'remote=%s\n' "$4" >>"$GH_ISSUE_ENV_LOG"
 elif [[ "$1" == "push" ]]; then
+	printf 'push-with-credential-helpers\n' >>"$GH_ISSUE_ENV_LOG"
+elif [[ "$1 $2 $3" == "-c credential.helper= push" ]]; then
 	printf 'askpass=%s prompt=%s token=%s\n' \
 		"${GIT_ASKPASS:-}" "${GIT_TERMINAL_PROMPT:-}" \
 		"${GIT_PUSH_AS_BOT_TOKEN:-}" >>"$GH_ISSUE_ENV_LOG"
@@ -412,7 +414,7 @@ assert_push_refused() {
 		exit 1
 	fi
 	grep -q "$message" "$stderr_log"
-	if grep -q '^askpass=' "$env_log"; then
+	if grep -qE '^(askpass=|push-with-credential-helpers)' "$env_log"; then
 		echo "error: git-push-as-bot pushed after refusing: $message" >&2
 		exit 1
 	fi
