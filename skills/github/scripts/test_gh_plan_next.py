@@ -1125,6 +1125,9 @@ def test_portfolio_inventory_sources_exclusions_round_robin_and_read_bounds() ->
         if path in {"/installation/repositories", "/user/repos"}:
             assert kwargs["limit"] == 101
             return "automation-gh", repositories
+        if kwargs["query"].get("labels") == module.github_direction_next.LIVE_BREAKAGE_LABEL:
+            assert kwargs["limit"] == module.NEXT_PLAN_INVENTORY_LIMIT + 1
+            return "automation-gh", []
         assert kwargs["query"]["state"] == "open" and "labels" not in kwargs["query"]
         assert kwargs["issue_only"] is True and kwargs["limit"] == 3
         if path == "/repos/someone/direction/issues":
@@ -1145,7 +1148,7 @@ def test_portfolio_inventory_sources_exclusions_round_robin_and_read_bounds() ->
             assert calls[0] == ("/installation/repositories" if configured else "/user/repos")
             assert [(item["repo"], item["number"]) for item in found] == [("someone/a", 1), ("someone/b", 1), ("someone/a", 2), ("someone/b", 2)]
             assert coverage["complete"] is False
-            assert len(calls) == 5
+            assert len(calls) == 7
             reasons = {source.get("exclusion") for source in coverage["repositories"]}
             assert reasons >= {"repository_held", "source_unavailable", "other_owner", "archived_or_disabled", "empty_without_open_issues", "issues_disabled"}
 
@@ -1392,7 +1395,75 @@ def test_inbound_unclassified_failure_degrades_report_but_quota_stops() -> None:
             raise AssertionError("quota stop policy must remain authoritative")
 
 
+
+def test_live_breakage_beyond_scan_window_ranks_first_without_granting_availability() -> None:
+    marker = load_module().github_direction_next.LIVE_BREAKAGE_LABEL
+    root = track("someone/direction", 1, "First")
+    leaf = global_issue("someone/product", 2)
+    ordinary = [global_issue("someone/project", number) for number in range(10, 13)]
+    incident = global_issue("someone/quiet", 243, labels=["plan", "plan:active", marker])
+    edges = {(root["repo"], 1): relationships(sub_issues=[leaf])}
+    with global_fixture([root], [leaf], edges, discovered=[*ordinary, incident]) as (module, result, _reads):
+        module.cmd_next(next_args(scan_limit=2))
+        assert result["candidates"][0]["number"] == incident["number"]
+        assert result["candidates"][0]["availability"] == "needs_review"
+        assert result["available_candidates"] == []
+        assert {item["number"] for item in result["candidates"]} == {2, 10, 11, 243}
+        coverage = result["discovery_context"]
+        assert coverage["evaluated"] == 3 and coverage["live_breakage_evaluated"] == 1
+        assert coverage["unevaluated_count"] == 1
+        assert not result["candidate_coverage"]["complete"]
+        assert result["candidate_coverage"]["warning"]
+
+
+def test_live_breakage_marker_preserves_holds_dependencies_waits_and_review() -> None:
+    marker = load_module().github_direction_next.LIVE_BREAKAGE_LABEL
+    incidents = [global_issue(f"someone/p{number}", number, labels=["plan", "plan:active", marker]) for number in range(1, 6)]
+    incidents[2]["labels"].append({"name": "plan:waiting"})
+    edges = {(incidents[1]["repo"], 2): relationships(blocked_by=[global_issue("someone/gate", 99)])}
+    with global_fixture([], [], edges, discovered=incidents) as (module, result, _reads):
+        module.cmd_next(next_args(scan_limit=1))
+        reviews = {f"{item['repo']}#{item['number']}": reviewed(item) for item in result["candidates"]}
+        reviews["someone/p4#4"]["state"] = "underway"
+        context = {"issues": reviews, "repository_holds": {"someone/p1": {"reason": "Owner hold", "evidence": ["owner decision"]}}}
+        with patch.multiple(module, next_selection_context=lambda _args: context,
+                            load_direction=lambda *_: "# Direction\n## Milestones\n"):
+            module.cmd_next(next_args(scan_limit=1))
+        assert [item["number"] for item in result["available_candidates"]] == [5]
+        assert {item["exclusion"] for item in result["excluded"]} >= {"repository_held", "blocked_by_open_dependency", "waiting"}
+        assert result["underway"][0]["number"] == 4
+        assert result["candidate_coverage"]["complete"]
+        assert result["candidate_coverage"]["warning"] is None
+
+
+def test_live_breakage_inventory_finds_incident_beyond_repository_issue_bound() -> None:
+    module = load_module()
+    marker = module.github_direction_next.LIVE_BREAKAGE_LABEL
+    incident = global_issue("someone/quiet", 243, labels=[marker])
+    calls = []
+
+    def collect(path: str, **kwargs: Any) -> Any:
+        calls.append((path, kwargs))
+        if path == "/installation/repositories":
+            return "automation-gh", [{"full_name": "someone/quiet"}]
+        if kwargs["query"].get("labels") == marker:
+            assert kwargs["limit"] == module.NEXT_PLAN_INVENTORY_LIMIT + 1
+            return "automation-gh", [incident]
+        return "automation-gh", [global_issue("someone/quiet", 1), global_issue("someone/quiet", 2)]
+
+    args = next_args()
+    args.repository_issue_limit = 1
+    with patch.multiple(module.github_identity, github_app_config=lambda: {}), patch.multiple(module, collect_paged_rest_items=collect, load_direction=lambda *_: DIRECTION):
+        inventory, coverage = module.discover_direction_work("someone/direction", args, selection_context={})
+    assert {item["number"] for item in inventory} == {1, 243}
+    assert coverage["repositories"][0]["live_breakage_inventory"]["complete"]
+    assert not coverage["complete"]  # Ordinary issue inventory remains bounded.
+    assert len(calls) == 3
+
 TESTS = [
+    test_live_breakage_beyond_scan_window_ranks_first_without_granting_availability,
+    test_live_breakage_marker_preserves_holds_dependencies_waits_and_review,
+    test_live_breakage_inventory_finds_incident_beyond_repository_issue_bound,
     test_local_next_inbound_scan_preserves_plan_budget_and_waits,
     test_inbound_scan_bounds_and_partial_reads_are_explicit,
     test_inbound_unclassified_failure_degrades_report_but_quota_stops,

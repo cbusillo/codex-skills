@@ -2499,6 +2499,23 @@ def discover_direction_work(
             source.update(issue_count=min(len(issues), issue_limit), truncated=len(issues) > issue_limit)
             coverage["complete"] &= not source["truncated"]
             listed: list[dict[str, Any]] = [{**issue, "repo": name} for issue in issues[:issue_limit]]
+            if source["truncated"]:
+                # A quiet incident can lie beyond even the per-repository list.
+                # Keep a separate bounded label inventory, independent of scan_limit.
+                _, incidents = collect_paged_rest_items(
+                    f"/repos/{name}/issues",
+                    query={"state": "open", "labels": github_direction_next.LIVE_BREAKAGE_LABEL},
+                    bucket="rest_core", step_prefix="next_live_breakage_issues",
+                    limit=NEXT_PLAN_INVENTORY_LIMIT + 1, issue_only=True,
+                )
+                source["live_breakage_inventory"] = {
+                    "count": min(len(incidents), NEXT_PLAN_INVENTORY_LIMIT),
+                    "limit": NEXT_PLAN_INVENTORY_LIMIT,
+                    "complete": len(incidents) <= NEXT_PLAN_INVENTORY_LIMIT,
+                }
+                listed_by_number = {issue["number"]: issue for issue in listed}
+                listed_by_number.update({issue["number"]: {**issue, "repo": name} for issue in incidents[:NEXT_PLAN_INVENTORY_LIMIT]})
+                listed = list(listed_by_number.values())
             prioritized: list[dict[str, Any]] = [{**compact_list_issue(name, issue), "milestone": next_milestone_context(issue)} for issue in listed]
             rank_next_candidates(prioritized, direction_milestones=direction_milestone_titles(source["direction"]) if source["direction"] else None)
             ranks: dict[int, int] = {int(item["number"]): int(item["rank"]) for item in prioritized}
@@ -2667,10 +2684,15 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         inventory, discovery = discover_direction_work(repo, args, selection_context=selection_context)
         seen = {(item["repo"].casefold(), item["number"]) for item in [*ranked["candidates"], *ranked["excluded"]] if item.get("exclusion") != "outside_direction_tracks"}
         inventory = [item for item in inventory if (item["repo"].casefold(), item["number"]) not in seen]
-        discovery.update(evaluated=min(len(inventory), args.scan_limit), scan_limit=args.scan_limit, unevaluated_count=max(0, len(inventory) - args.scan_limit))
+        scanned = github_direction_next.discovery_scan(inventory, args.scan_limit)
+        discovery.update(
+            evaluated=len(scanned), scan_limit=args.scan_limit,
+            live_breakage_evaluated=sum(github_direction_next.is_live_breakage(item) for item in scanned),
+            unevaluated_count=len(inventory) - len(scanned),
+        )
         discovery["parent_limit_per_issue"] = 10
         discovery["complete"] &= not discovery["unevaluated_count"]
-        for raw in inventory[:args.scan_limit]:
+        for raw in scanned:
             ranked["excluded"] = [item for item in ranked["excluded"] if not (item.get("exclusion") == "outside_direction_tracks" and item["repo"].casefold() == raw["repo"].casefold() and item["number"] == raw["number"])]
             seeds[(raw["repo"].casefold(), raw["number"])] = raw
             node = read_node(raw["repo"], raw["number"])
@@ -2702,6 +2724,12 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     ranked["available_candidates"] = ranked["available_candidates"][:args.limit]
     ranked["graph_context"] = graph_coverage
     ranked["discovery_context"] = discovery
+    ranked["candidate_coverage"] = {
+        "complete": bool(graph_coverage["complete"] and discovery.get("complete")),
+        "warning": None if graph_coverage["complete"] and discovery.get("complete") else
+        "Partial ranked list: graph or portfolio discovery is incomplete; unseen work may outrank these candidates.",
+        "unevaluated_discovery_count": discovery.get("unevaluated_count"),
+    }
     ranked["truncated"] |= bool(discovery.get("inventory_truncated") or discovery.get("unevaluated_count") or any(source.get("truncated") for source in discovery.get("repositories", [])))
     sections = section_map(direction_text or "")
     emit({

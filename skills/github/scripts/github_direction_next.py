@@ -20,6 +20,9 @@ from typing import Any
 import github_milestone as github_milestone_core
 
 
+LIVE_BREAKAGE_LABEL = "live-breakage"
+
+
 def normalize_labels(items: Any) -> list[str]:
     if not isinstance(items, list):
         return []
@@ -30,6 +33,17 @@ def normalize_labels(items: Any) -> list[str]:
         elif isinstance(item, dict) and isinstance(item.get("name"), str):
             names.append(item["name"])
     return names
+
+
+def is_live_breakage(issue: dict[str, Any]) -> bool:
+    return LIVE_BREAKAGE_LABEL in {name.casefold() for name in normalize_labels(issue.get("labels"))}
+
+
+def discovery_scan(inventory: list[dict[str, Any]], scan_limit: int) -> list[dict[str, Any]]:
+    """Owner-marked incidents do not consume the ordinary discovery allowance."""
+    incidents = [item for item in inventory if is_live_breakage(item)]
+    ordinary = [item for item in inventory if not is_live_breakage(item)]
+    return incidents + ordinary[:scan_limit]
 
 
 def compact_list_issue(repo: str, issue: dict[str, Any]) -> dict[str, Any]:
@@ -401,7 +415,7 @@ def rank_portfolio_work(
     rank_next_candidates(candidates, direction_milestones=milestone_titles)
     priority = {"live_incident": 0, "milestone": 1, "repeated_stop_tooling": 2, "own_project": 3}
     candidates.sort(key=lambda candidate: (
-        priority.get(candidate.get("category"), 1 if candidate.get("via") else 4),
+        0 if is_live_breakage(candidate) else priority.get(candidate.get("category"), 1 if candidate.get("via") else 4),
         candidate["rank"] if candidate.get("via") else candidate.get("repository_rank", candidate["rank"]),
         str(candidate.get("created_at") or ""), candidate["repo"].casefold(), candidate["number"],
     ))

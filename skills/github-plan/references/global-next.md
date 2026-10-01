@@ -20,7 +20,13 @@ Read for `next` in an owner's direction repository, including explicit
    whole-plan parent wait remains excluded, and changes to parent discussion
    invalidate the child's review digest. Comments can reveal a wait or completed implementation despite
    active labels. A partial ownership inventory never proves freedom to start.
-4. Select under the owner's direction: live incidents first, listed milestones
+4. When the owner identifies live-system breakage, record the decision on the
+   issue and apply the `live-breakage` label (create that label in the target
+   repository if needed under the owner's issue authority). Remove it when the
+   incident is resolved. Use the GitHub automation wrapper for these label
+   writes; keep human-authored issue text intact. The marker puts possible work
+   first; it does not establish ownership, lift a hold, or override blockers.
+   Select under the owner's direction: live incidents first, listed milestones
    in order, other tooling only with two linked occurrences of the stop it fixes,
    and eligible own projects from their share. Read each repository's direction;
    discovery does not adopt direction or grant execution permission. Do not infer
@@ -31,6 +37,12 @@ Read for `next` in an owner's direction repository, including explicit
    direction eligibility, or ownership remain unknown, name that missing evidence
    instead of inventing available work. Widen bounded reads when needed, and stop
    after the answer without changing planning state or starting implementation.
+
+Owner-marked issues are evaluated outside the ordinary discovery scan allowance.
+A separate label inventory covers marked issues beyond a repository's ordinary
+issue-list bound. Repository access/inventory limits and failed reads remain
+explicit coverage limits. Inspect `candidate_coverage` beside the ranked list:
+a partial list cannot establish that no higher-priority work exists.
 
 The helper's `candidates` are possible work and may need review;
 `available_candidates` contains only current caller-reviewed work. An empty
