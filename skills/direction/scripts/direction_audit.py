@@ -140,6 +140,7 @@ def audit(
     now: dt.datetime,
     bot_logins: tuple[str, ...] = (),
     expected_automation: str | None = None,
+    owner_identity_explicit: bool = True,
     direction_pulls: list[dict[str, Any]] | None = None,
     truncated: list[str] | None = None,
     rulesets: list[dict[str, Any]] | None = None,
@@ -171,12 +172,14 @@ def audit(
     # The owner's automation can span identities, such as a bot user and a later App.
     bots = {login.lower() for login in (automation, *bot_logins) if login} - {owner.lower()}
     trusted = {owner.lower()} | bots
-    if (direction_text is not None and listed and automation and expected_automation
+    if (direction_text is not None and listed and automation
             and automation.casefold() == owner.casefold()
-            and expected_automation.casefold() != owner.casefold()):
+            and (not owner_identity_explicit or (expected_automation
+                 and expected_automation.casefold() != owner.casefold()))):
         findings.append({
             "kind": "coverage_incomplete",
-            "detail": "the audit reader returned the owner instead of the configured automation login",
+            "detail": "the audit reader returned the owner without an explicit owner reader, "
+                      "or instead of the configured automation login",
             "listings": ["milestone_admission_identity"],
         })
     elif direction_text is not None and listed and automation and automation.casefold() == owner.casefold():
@@ -596,6 +599,7 @@ def main(argv: list[str] | None = None) -> int:
         rulesets=rulesets,
         bot_logins=github_identity.configured_bot_logins(),
         expected_automation=github_identity.automation_login(),
+        owner_identity_explicit=args.gh != str(WRAPPER) or args.automation is not None,
     )
     result.update({"repo": repo, "direction_source": f"{repo}:DIRECTION.md@default-branch", "read_only": True})
     result["audit_since"] = audit_since.isoformat().replace("+00:00", "Z")

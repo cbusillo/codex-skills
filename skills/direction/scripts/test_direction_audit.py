@@ -111,7 +111,7 @@ def test_owner_only_cli_audit_uses_explicit_reader_and_returns_known_limit() -> 
     calls: list[list[str]] = []
 
     def read(request: list[str], *, gh: str) -> Any:
-        assert gh == "owner-gh"
+        assert gh == reader
         calls.append(request)
         endpoint = request[1]
         if endpoint.endswith("/contents/DIRECTION.md"):
@@ -127,24 +127,32 @@ def test_owner_only_cli_audit_uses_explicit_reader_and_returns_known_limit() -> 
             return []
         raise AssertionError(endpoint)
 
-    output = StringIO()
-    with (patch.dict(vars(module), {
-              "gh_json": read,
-              "previous_audit_stamp": lambda *_: None,
-              "record_audit": lambda *_: None,
-          }),
-          patch.dict(vars(module.github_identity), {
-              "configured_bot_logins": lambda: (),
-              "automation_login": lambda: None,
-          }),
-          redirect_stdout(output)):
-        assert module.main(["--repo", "owner/repo", "--gh", "owner-gh"]) == 0
-    result = json.loads(output.getvalue())
-    assert result["ok"] is True
-    assert result["read_only"] is True
-    assert result["findings"] == []
-    assert [item["kind"] for item in result["limits"]] == ["owner_acts_as_automation"]
-    assert calls and all(request[0] == "api" and request[-2:] == ["--method", "GET"] for request in calls)
+    for reader in ("owner-gh", str(module.WRAPPER)):
+        calls.clear()
+        output = StringIO()
+        with (patch.dict(vars(module), {
+                  "gh_json": read,
+                  "previous_audit_stamp": lambda *_: None,
+                  "record_audit": lambda *_: None,
+              }),
+              patch.dict(vars(module.github_identity), {
+                  "configured_bot_logins": lambda: (),
+                  "automation_login": lambda: None,
+              }),
+              redirect_stdout(output)):
+            code = module.main(["--repo", "owner/repo", "--gh", reader])
+        result = json.loads(output.getvalue())
+        explicit = reader == "owner-gh"
+        assert code == (0 if explicit else 3)
+        assert result["ok"] is explicit
+        assert result["read_only"] is True
+        if explicit:
+            assert result["findings"] == []
+            assert [item["kind"] for item in result["limits"]] == ["owner_acts_as_automation"]
+        else:
+            assert kinds(result) == ["coverage_incomplete"]
+            assert result["limits"] == []
+        assert calls and all(request[0] == "api" and request[-2:] == ["--method", "GET"] for request in calls)
 
 
 def test_audit_questions_are_ordinary_open_issues_not_pull_requests() -> None:

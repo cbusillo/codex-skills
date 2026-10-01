@@ -183,7 +183,9 @@ limit, not incomplete coverage; `ok` and `counts` still reflect all findings.
 A reader returning the owner instead of a separately configured automation login
 still reports incomplete identity coverage. For a bot token, configure its expected
 automation login so the audit can detect a fallback; a token alone cannot identify
-which account it belongs to.
+which account it belongs to. An implicit automation-wrapper reader returning the
+owner without an expected login still reports incomplete coverage; use the
+explicit owner reader below for owner-only adoption.
 An owner with only their own `gh` login selects it explicitly with
 `direction_audit.py --repo OWNER/REPO --gh gh`; the default reader remains the
 automation wrapper. This read-only selection authorizes no GitHub writes.
