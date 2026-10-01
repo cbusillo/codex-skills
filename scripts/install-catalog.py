@@ -69,7 +69,7 @@ def personal_source(sync, destinations: list[Path], local: Path) -> str:
     return content + "\n" if content else ""
 
 
-def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool) -> dict:
+def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool, show_diff: bool = False) -> dict:
     sync = load_sync()
     links = [(home / ".agents" / "skills", ROOT / "skills"), (claude / "skills" / "shared", ROOT)]
     pending = [(path, target) for path, target in links if binding(path, target)]
@@ -154,7 +154,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         outputs = instruction_preview + hook_preview
     # Avoid printing private instruction text/diffs in the normal install output.
     return {"bindings": [{"path": str(path), "target": str(target), "state": "create" if (path, target) in pending else "current"} for path, target in links],
-            "outputs": [{key: value for key, value in entry.items() if key != "diff"} for entry in outputs],
+            "outputs": [{key: value for key, value in entry.items() if key != "diff" or show_diff} for entry in outputs],
             "private_source": str(local), "updater": "enabled" if updater and write else "requested" if updater else "off",
             "hook_trust": "unchanged; approve new entries through Codex /hooks once"}
 
@@ -162,6 +162,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--write", action="store_true", help="Apply; default is a read-only preview")
+    parser.add_argument("--show-diff", action="store_true", help="Include private instruction diffs in preview output")
     parser.add_argument("--updater", action="store_true", help="Also enable a guarded six-hour launchd updater")
     parser.add_argument("--home-dir", type=Path, help="Fixture home; overrides host environment directories")
     parser.add_argument("--codex-dir", type=Path, help="Explicit Codex destination")
@@ -173,7 +174,7 @@ def main() -> int:
     codex = (args.codex_dir or codex).resolve()
     claude = (args.claude_dir or claude).resolve()
     try:
-        print(json.dumps(install(home, codex, claude, write=args.write, updater=args.updater), indent=2))
+        print(json.dumps(install(home, codex, claude, write=args.write, updater=args.updater, show_diff=args.show_diff), indent=2))
         return 0
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"Catalog not installed: {error}", file=sys.stderr)

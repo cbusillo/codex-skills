@@ -29,7 +29,8 @@ hooks. It respects `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Approve newly registere
 hooks through Codex's `/hooks` interface once; installing never grants trust.
 Restart the harness to discover the bindings.
 
-Run without `--write` to preview. Existing personal instructions are preserved
+Run without `--write` to preview; add `--show-diff` to inspect instruction changes
+locally (these may include private text). Existing personal instructions are preserved
 in the ignored `.local/global-instructions.md` and included in both outputs;
 changed instruction files are backed up. Existing unrelated bindings, symlink
 instruction files, malformed settings, or generated instructions whose private

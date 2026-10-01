@@ -167,16 +167,16 @@ class InstallTests(unittest.TestCase):
     def test_launchd_install_bootstraps_once_and_preserves_a_conflicting_job(self):
         def run(*, write=True):
             return installer.install(self.home, self.codex, self.claude, write=write, updater=True)
-        with mock.patch.object(installer.sys, "platform", "darwin"), mock.patch.object(installer.shutil, "which", return_value="/fixture/uv"), mock.patch.object(runtime, "checkout_state", return_value={"state": "current"}), mock.patch.object(installer.subprocess, "run") as launchctl:
+        with mock.patch.object(sys, "platform", "darwin"), mock.patch.object(shutil, "which", return_value="/fixture/uv"), mock.patch.object(runtime, "checkout_state", return_value={"state": "current"}), mock.patch.object(subprocess, "run") as launchctl:
             launchctl.return_value.returncode = 1
             run()
             job = self.home / "Library" / "LaunchAgents" / f"{installer.LABEL}.plist"
-            spec = plistlib.loads(job.read_bytes())
-            self.assertEqual(spec["WorkingDirectory"], str(self.catalog))
-            self.assertEqual(spec["ProgramArguments"][-1], "--update")
+            job_spec = plistlib.loads(job.read_bytes())
+            self.assertEqual(job_spec["WorkingDirectory"], str(self.catalog))
+            self.assertEqual(job_spec["ProgramArguments"][-1], "--update")
             self.assertTrue(any(call.args[0][1] == "bootstrap" for call in launchctl.call_args_list))
-            self.assertEqual(spec["EnvironmentVariables"]["CODEX_HOME"], str(self.codex))
-            self.assertEqual(spec["EnvironmentVariables"]["CLAUDE_CONFIG_DIR"], str(self.claude))
+            self.assertEqual(job_spec["EnvironmentVariables"]["CODEX_HOME"], str(self.codex))
+            self.assertEqual(job_spec["EnvironmentVariables"]["CLAUDE_CONFIG_DIR"], str(self.claude))
             launchctl.reset_mock()
             launchctl.return_value.returncode = 0
             before = job.read_bytes()
