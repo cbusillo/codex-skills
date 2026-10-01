@@ -96,7 +96,8 @@ The updater fetches and fast-forwards only a clean `main` with no local commits;
 it never switches, resets, stashes, cleans, or merges divergence. A pull makes
 new skills visible without adding links and refreshes installed global instructions
 through its instruction-only refresh, preserving the private supplement and
-preserving bindings and unrelated hooks. Bound catalog hooks receive session-alert updates; removing all catalog hooks opts out of that refresh. The existing session-start hook prints
+preserving bindings and unrelated hooks. Bound catalog hooks receive session-alert
+updates; removing all catalog hooks opts out of that refresh. The existing session-start hook prints
 one catalog line for a stale or blocked checkout, a failed update, or a scheduled
 check older than twelve hours. A manual pull that changes shared instructions
 also reports a stale installation until the instruction refresh runs. Session
@@ -356,7 +357,7 @@ without repeating the executing loop or overdue-audit reminder.
 ### Session alerts
 
 The same catalog hook source registers advisory `Stop` alerts on both harnesses
-and `Interrupt` alerts on Codex. Claude Code has no native Interrupt event, and
+and `Interrupt` alerts on Codex (verified against 0.159.2). Claude Code has no native Interrupt event, and
 its Stop event does not run for user interruptions or API errors. These notices
 are prompts for a supervisor to check session state, not completion records:
 a Stop hook can run again when another hook continues the turn. The hook never
@@ -385,7 +386,13 @@ leave their entries untrusted in `/hooks` while retaining other approved hooks.
 If an instruction refresh cannot safely update a hook destination, it leaves
 that destination untouched, reports the skipped alert refresh in its output
 and updater receipt, and still refreshes instructions. The next session-start
-status line names the skipped alert refresh and its recovery command.
+status line names the skipped alert refresh and its recovery command. Hook writes
+require a regular hooks.json file; a symlink or malformed destination remains
+unverified rather than being treated as opt-out. Reconcile that destination
+through the documented installer preview, then run
+`scripts/catalog_runtime.py --update` to clear the old skipped-refresh receipt.
+Supervisors own local retention of the events file; truncating it discards old
+notices and subsequent invocations append new ones.
 The stream appears on the first alert;
 once it exists a local supervisor can use:
 
