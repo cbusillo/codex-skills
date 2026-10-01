@@ -874,7 +874,11 @@ Mutate runtime environments, managed secrets, and product config.
   checked-in examples, workflow defaults, provider observations, or local
   files, and do not close the gap with a workflow.
 - **Workflow**:
-  1. Inspect Context to identify the target and change needed.
+  1. Inspect Context to identify the target and change needed. Before asking
+     the operator to approve a dry run, apply, recovery, or onboarding, check
+     the whole path read-only as [task scope](../references/execution-scope.md)
+     describes, including earlier refusals of the same operation in run
+     history, and ask once with every blocker found.
   2. Run operator config diagnostics before a write-capable helper call when
      target URL, token source, or authority is unclear.
   3. If diagnostics report `missing_service_url`, fix local operator routing
