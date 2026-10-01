@@ -176,7 +176,25 @@ uv run <skill-dir>/scripts/direction_audit.py --repo OWNER/REPO
 ```
 
 It reads the merged `DIRECTION.md` from the default branch, never a checkout,
-and writes nothing. For each finding:
+and writes nothing. When the owner explicitly selects `--gh gh` or declares
+their own login with `--automation`, `limits` names
+`owner_acts_as_automation`: admissions by that login are treated as owner
+decisions because the audit cannot tell who used it. This is a known attribution
+limit, not incomplete coverage; `ok` and `counts` still reflect all findings.
+A reader returning the owner instead of a separately configured automation login
+still reports incomplete identity coverage. For a bot token, configure its expected
+automation login so the audit can detect a fallback; a token alone cannot identify
+which account it belongs to. An implicit automation-wrapper reader returning the
+owner still reports incomplete coverage; use the
+explicit owner reader below for owner-only adoption.
+An owner with only their own `gh` login selects it explicitly with
+`direction_audit.py --repo OWNER/REPO --gh gh`; the default reader remains the
+automation wrapper. This read-only selection authorizes no GitHub writes. If a
+separate automation login is configured and the owner deliberately supplies the
+reads, pass `--automation BOT-LOGIN` to retain that bot's admission classification.
+`owner_reader_identity` in incomplete coverage means the explicit reader could
+not establish the owner login; check the active account and token overrides.
+For each finding:
 
 - `coverage_incomplete`: a bounded read was truncated or unavailable, or
   actor classification was unavailable. Name the affected listings and the

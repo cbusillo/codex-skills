@@ -82,6 +82,94 @@ def test_clean_state_has_no_findings() -> None:
     assert result["listed_milestones"] == ["Thin fork decision", "Dogfood week"]
 
 
+def test_owner_as_automation_is_a_limit_and_preserves_real_findings() -> None:
+    module = load()
+    clean = run(module, automation="OWNER")
+    assert clean["ok"] is True
+    assert clean["findings"] == []
+    assert clean["counts"] == {}
+    assert [item["kind"] for item in clean["limits"]] == ["owner_acts_as_automation"]
+    assert run(module)["limits"] == [], "distinct automation retains the existing audit behavior"
+    fallback = run(module, automation="owner", expected_automation="app[bot]")
+    assert fallback["ok"] is False
+    assert kinds(fallback) == ["coverage_incomplete"]
+    assert fallback["limits"] == []
+    assert run(module, automation="owner", expected_automation="OWNER")["ok"] is True
+    assert "coverage_incomplete" in kinds(run(module, automation=None))
+    foreign = {**issue(10, "Foreign admission"), "milestone": {"title": "Thin fork decision"},
+               "_milestone_admitted_by": "other"}
+    dirty = run(module, automation="owner", issues=[foreign], truncated=["issues"], rulesets=[])
+    assert dirty["ok"] is False
+    assert set(kinds(dirty)) == {"coverage_incomplete", "ruleset_missing", "milestone_issue_quote_missing"}
+    assert dirty["limits"] == clean["limits"]
+
+
+def test_owner_only_cli_audit_uses_explicit_reader_and_returns_known_limit() -> None:
+    import base64
+
+    module = load()
+    calls: list[list[str]] = []
+
+    def read(request: list[str], *, gh: str) -> Any:
+        assert gh == reader
+        calls.append(request)
+        endpoint = request[1]
+        if endpoint.endswith("/contents/DIRECTION.md"):
+            return {"content": base64.b64encode(DIRECTION.encode()).decode()}
+        if endpoint == "user":
+            return {"login": login}
+        if "/milestones?" in endpoint:
+            return [milestone(1, "Thin fork decision"), milestone(2, "Dogfood week")]
+        if "/rulesets?" in endpoint:
+            return [{"name": name, "target": "branch", "enforcement": "active"}
+                    for name in module.github_rulesets.required_ruleset_names()]
+        if "/issues?" in endpoint or "/pulls?" in endpoint:
+            return []
+        raise AssertionError(endpoint)
+
+    for reader, login in (("gh", "owner"), ("gh", "other"), (str(module.WRAPPER), "owner"),
+                          ("skills/github/scripts/gh-with-env-token", "owner")):
+        calls.clear()
+        output = StringIO()
+        with (patch.dict(vars(module), {
+                  "gh_json": read,
+                  "previous_audit_stamp": lambda *_: None,
+                  "record_audit": lambda *_: None,
+              }),
+              patch.dict(vars(module.github_identity), {
+                  "configured_bot_logins": lambda: (),
+                  "automation_login": lambda: None,
+              }),
+              redirect_stdout(output)):
+            code = module.main(["--repo", "owner/repo", "--gh", reader])
+        result = json.loads(output.getvalue())
+        explicit = reader == "gh" and login == "owner"
+        assert code == (0 if explicit else 3)
+        assert result["ok"] is explicit
+        assert result["read_only"] is True
+        if explicit:
+            assert result["findings"] == []
+            assert [item["kind"] for item in result["limits"]] == ["owner_acts_as_automation"]
+        else:
+            assert kinds(result) == ["coverage_incomplete"]
+            assert not result["ok"]
+        assert calls and all(request[0] == "api" and request[-2:] == ["--method", "GET"] for request in calls)
+
+
+def test_default_reader_error_exposes_read_only_owner_remedy() -> None:
+    module = load()
+    output = StringIO()
+
+    def fail(*_args: Any, **_kwargs: Any) -> Any:
+        raise module.AuditError("fixture reader refusal")
+
+    with patch.dict(vars(module), {"gh_json": fail}), redirect_stdout(output):
+        assert module.main(["--repo", "owner/repo"]) == 1
+    result = json.loads(output.getvalue())
+    assert result["ok"] is False
+    assert result["owner_reader_hint"]
+
+
 def test_audit_questions_are_ordinary_open_issues_not_pull_requests() -> None:
     module = load()
     result = run(module, issues=[
@@ -157,7 +245,8 @@ def test_automation_milestone_admission_needs_a_quote_from_the_merged_line() -> 
     owner_admitted = run(module, issues=[{**base, "_milestone_admitted_by": "owner"}])
     assert owner_admitted["ok"] is True
     owner_fallback = run(module, automation="owner", issues=[{**base, "_milestone_admitted_by": "owner"}])
-    assert "coverage_incomplete" in kinds(owner_fallback)
+    assert owner_fallback["ok"] is True
+    assert [item["kind"] for item in owner_fallback["limits"]] == ["owner_acts_as_automation"]
     assert "milestone_issue_quote_missing" not in kinds(owner_fallback)
     closed = run(module, issues=[{**base, "state": "closed"}])
     assert "milestone_issue_quote_missing" in kinds(closed)

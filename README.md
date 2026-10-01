@@ -456,11 +456,21 @@ tokens.
 
 `skills/github/scripts/gh-rulesets.py` maintains two repository rulesets on the
 default branch: one reserves updates for the repository owner and the configured
-automation App, and the other requires code-owner review for `DIRECTION.md` and
+automation App when configured, and the other requires code-owner review for `DIRECTION.md` and
 `CODEOWNERS` without an App bypass. The helper clears automation-token variables
 and verifies that the active `gh` account is the repository owner before reading
 the full bypass configuration or writing anything. The configured App ID is
 printed in every plan so the operator can verify the intended bypass actor.
+A GitHub App is optional: with no App configured, the landing ruleset retains
+only the administrator bypass, and the result names the `no_app_bypass` limit.
+Only administrators can then update the default branch. Incomplete or invalid
+App configuration still fails rather than silently removing its bypass. If an
+existing landing ruleset already has an App bypass, an unconfigured shell also
+refuses: restore that App configuration and rerun the plan. The standard landing
+ruleset name stays the same in both modes so the audit can recognize it. If the
+App has deliberately been retired, the owner removes that obsolete bypass in
+GitHub's repository ruleset settings before rerunning plan; missing configuration
+alone is not treated as authority to retire a bypass.
 
 Plan one or more repositories without changing GitHub:
 
@@ -479,12 +489,30 @@ uv run skills/github/scripts/gh-rulesets.py apply \
 ```
 
 Use `--all-owned --owner OWNER` for a complete non-archived inventory. Plan and
-pilot first; do not use a broad apply as a discovery command. A repository where
+pilot first; do not use a broad apply as a discovery command. Multi-repository
+apply is sequential: a later refusal can leave earlier repositories updated,
+with completed-repository receipts in the error. A fresh plan across the full
+set catches predictable refusals, including an existing App bypass without
+configuration, before any write. A repository where
 the configured App is not installed will reject the App bypass actor; treat that
 as a pilot finding, install or deliberately exclude the repository, and rerun
 the idempotent plan before continuing. The direction audit reports
 `ruleset_missing` when an adopted repository lacks either active standard
-branch ruleset.
+branch ruleset. When the owner explicitly selects their own reader with
+`--gh gh` (or declares their own login with `--automation`), the audit reports
+`owner_acts_as_automation` in `limits` and treats that login's milestone admissions
+as owner decisions. This known attribution limit does not make coverage incomplete
+or hide other findings; `ok` and `counts` still describe the findings. A reader
+returning the owner instead of a separately configured automation login still
+reports incomplete identity coverage.
+With only the owner's own `gh` login, explicitly select it for the read-only audit:
+
+```sh
+uv run skills/direction/scripts/direction_audit.py --repo OWNER/REPO --gh gh
+```
+
+The default audit reader remains the automation wrapper; this explicit read-only
+selection does not enable fallback for other helpers or authorize any write.
 
 The direction rule intentionally has no bypass. An owner who is the sole code
 owner cannot approve their own pull request, so direction changes should normally
