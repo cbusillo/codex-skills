@@ -1561,6 +1561,9 @@ def test_global_native_summary_savings_reach_real_reader() -> None:
         assert [item["number"] for item in result["candidates"]] == [2]
         assert calls == ["/repos/someone/direction/issues/1/sub_issues"]
     calls.clear()
+    # Outside the tracking inventory this is an ordinary active parent;
+    # a waiting parent must continue to exclude its discovered child.
+    root["labels"] = ["plan", "plan:active"]
     with global_fixture([], [root], {(root["repo"], 1): relationships(sub_issues=[leaf])}, discovered=[leaf], relationship_requests=calls) as (module, result, _reads):
         module.cmd_next(next_args())
         assert [item["number"] for item in result["candidates"]] == [2]
