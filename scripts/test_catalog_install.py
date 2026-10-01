@@ -450,7 +450,13 @@ class InstallTests(unittest.TestCase):
         receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
         self.assertTrue(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
         self.assertEqual(json.loads(target.read_text()), modified)
-        target.write_text(original)
+        preview = installer.install(self.home, self.codex, self.claude, write=False, updater=False, refresh_instructions=True, show_diff=True)
+        entries = next(entry["catalog_alert_entries"] for entry in preview["outputs"] if "catalog_alert_entries" in entry)
+        self.assertEqual(json.loads(target.read_text()), modified)
+        # A dotfiles manager can apply this preview without hand-writing command
+        # strings. Unrelated existing events stay in its authoritative source.
+        modified["hooks"].update(entries)
+        target.write_text(json.dumps(modified))
         receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
         self.assertFalse(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
 

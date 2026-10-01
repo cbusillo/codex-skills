@@ -351,8 +351,12 @@ is recognized as unbound and left alone. A bound symlink whose alert entries alr
 needs no write. A stale bound symlink or malformed destination remains unverified
 and produces a notice, while checkout/instruction updates continue. Catalog
 staleness and instruction drift take priority over this advisory notice. Reconcile that destination
-through the documented installer preview, then run
-`scripts/catalog_runtime.py --update` to clear the old skipped-refresh receipt.
+through the documented installer preview. For a stale dotfiles symlink, use
+`scripts/install-catalog.py --refresh-instructions --show-diff`: its skipped
+entry includes `catalog_alert_entries` with the generated Stop/Interrupt groups
+for your dotfiles source; apply those groups there, preserving their positions
+and unrelated hooks. Then run `scripts/catalog_runtime.py --update` to clear
+the old skipped-refresh receipt. This preview contains no trust state.
 Supervisors own local retention of the events file; truncating it discards old
 notices and subsequent invocations append new ones. Readers should skip malformed
 lines, which can result from interrupted or partial storage writes.

@@ -239,10 +239,19 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             )
             if managed:
                 expected = sync.render_codex_hook_content(existing, hook_path, ROOT, alerts_only=True)
-                if hook_path.is_symlink() and json.loads(expected) == existing:
-                    # An already-current dotfiles binding needs no write. Trust
-                    # remains native and no symlink destination is mutated.
-                    hook_preview = [{"path": str(hook_path), "state": "current"}]
+                if hook_path.is_symlink():
+                    # Dotfiles remain read-only. A current binding needs no
+                    # write; a stale one can be reconciled from an explicit
+                    # preview containing only generated catalog alert entries.
+                    if json.loads(expected) == existing:
+                        hook_preview = [{"path": str(hook_path), "state": "current"}]
+                    else:
+                        entry = {"path": str(hook_path), "state": "skipped",
+                                 "reason": "Dotfiles hook binding needs reconciliation; preview --refresh-instructions --show-diff and apply catalog_alert_entries to its source, then run catalog_runtime.py --update"}
+                        if show_diff:
+                            generated = sync.render_codex_hook_content({}, hook_path, ROOT, alerts_only=True)
+                            entry["catalog_alert_entries"] = json.loads(generated)["hooks"]
+                        hook_preview = [entry]
                 else:
                     hooks = sync.render_codex_hook(hook_path, catalog=ROOT, alerts_only=True)
                     hook_preview = sync.synchronize(hooks, [hook_path], write=False)
@@ -342,7 +351,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--write", action="store_true", help="Apply; default is a read-only preview")
-    parser.add_argument("--show-diff", action="store_true", help="Include private instruction diffs in preview output")
+    parser.add_argument("--show-diff", action="store_true", help="Include private instruction diffs and generated dotfiles alert entries in preview output")
     parser.add_argument("--updater", action="store_true", help="Also enable a guarded six-hour launchd updater")
     parser.add_argument("--refresh-instructions", action="store_true", help="Refresh global instructions and bound catalog alerts; preserve bindings and unrelated hooks")
     parser.add_argument("--home-dir", type=Path, help="Fixture home in an isolated catalog checkout; overrides host environment directories")
