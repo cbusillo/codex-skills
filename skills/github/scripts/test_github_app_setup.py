@@ -6,6 +6,9 @@
 """Isolated setup/credential and no-bypass repository protocol fixtures."""
 
 import json
+import contextlib
+import io
+import socket
 import os
 import stat
 import subprocess
@@ -42,27 +45,30 @@ class FixtureServer(ThreadingHTTPServer):
     author: str
     approved: bool
     direction: dict
+    selection: str
 
 
 class FixtureHandler(BaseHTTPRequestHandler):
     server: FixtureServer
 
-    def log_message(self, format: str, *args: object) -> None:
+    def log_message(self, _format: str, *args: object) -> None:
         pass
 
     def reply(self, status, payload):
+        body = json.dumps(payload).encode()
         self.send_response(status)
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(json.dumps(payload).encode())
+        self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
         if self.path == "/app":
-            self.reply(200, {"slug": SLUG})
+            self.reply(200, {"id": 7, "slug": SLUG, "owner": {"login": OWNER}})
         elif self.path.startswith("/app/installations"):
             item = {"id": 31, "app_id": 7, "app_slug": SLUG,
                     "account": {"login": self.server.owner, "type": "User"},
                     "permissions": self.server.permissions,
-                    "repository_selection": "selected", "suspended_at": self.server.suspended}
+                    "repository_selection": self.server.selection, "suspended_at": self.server.suspended}
             self.reply(200, [item] if "?" in self.path else item)
         elif self.path.startswith("/users/"):
             self.reply(200, {"id": 99, "login": SLUG + "[bot]"})
@@ -70,6 +76,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.reply(404, {})
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
         if self.path.endswith("/access_tokens"):
             self.reply(201, {"token": "fixture-app-token", "expires_at": "2099-01-01T00:00:00Z"})
             return
@@ -105,6 +112,7 @@ def fixture_server():
     server.permissions = setup.manifest("fixture", "http://127.0.0.1/callback")["default_permissions"]
     server.suspended = None
     server.approved = False
+    server.selection = "selected"
     server.direction = github_rulesets.standard_specs(7)[1].payload
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}"
@@ -126,8 +134,11 @@ def test_manifest_callback_and_private_recovery():
         session.chmod(0o700)
         exchanges = []
         workers = []
+        idle_connections = []
 
         def browser(url):
+            parsed = urllib.parse.urlsplit(url)
+            idle_connections.append(socket.create_connection((parsed.hostname, parsed.port)))
             def visit():
                 page = urllib.request.urlopen(url).read().decode()
                 import html
@@ -157,6 +168,8 @@ def test_manifest_callback_and_private_recovery():
         result = setup.register(session, OWNER, "Fixture", timeout=10, open_browser=browser, exchange=exchange)
         for worker in workers:
             worker.join()
+        for connection in idle_connections:
+            connection.close()
         assert result["slug"] == SLUG and exchanges == ["fakecode"]
         assert stat.S_IMODE((session / "app.pem").stat().st_mode) == 0o600
         assert "unused-secret" not in (session / "registration.json").read_text()
@@ -266,6 +279,75 @@ def test_existing_identity_requires_explicit_replacement_and_keeps_backup():
         assert local["GIT_COMMIT_AS_BOT_NAME"] == local["GH_WITH_ENV_TOKEN_EXPECTED_LOGIN"] == "new[bot]"
         backup = next(backups.glob("local-env-before-*"))
         assert backup.read_text() == old and stat.S_IMODE(backup.stat().st_mode) == 0o600
+
+
+def test_wrong_registration_owner_retains_key_and_missing_record_points_to_import():
+    with tempfile.TemporaryDirectory() as directory:
+        session = Path(directory)
+        try:
+            setup.save_registration(session, OWNER, {"id": 7, "slug": SLUG,
+                "owner": {"login": "different-owner"}, "pem": test_private_key()})
+            raise AssertionError("wrong registration owner accepted")
+        except setup.Error:
+            assert (session / "app.pem").exists()
+            assert json.loads((session / "registration.json").read_text())["registered_owner"] != OWNER
+        missing = session / "missing"
+        setup.private_directory(missing)
+        try:
+            setup.configure(missing, environ={"HOME": str(session / "home")})
+            raise AssertionError("missing registration accepted")
+        except setup.Error as error:
+            assert "import" in str(error)
+
+
+def test_cli_preflight_resume_and_import_routes():
+    server, api = fixture_server()
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = root / "home"
+            home.mkdir()
+            env = {key: value for key, value in os.environ.items() if not key.startswith(
+                ("GITHUB_", "GH_", "CODEX_", "CODE_HOME", "GIT_"))}
+            env["HOME"] = str(home)
+            source = root / "key.pem"
+            source.write_text(test_private_key())
+            source.chmod(0o600)
+            real_config = identity.github_app_config
+
+            def routed_config(values):
+                return real_config(dict(values, GITHUB_APP_API_URL=api))
+
+            with patch.dict(os.environ, env, clear=True), patch.object(identity, "github_app_config", side_effect=routed_config):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    code = setup.main(["import", "--owner", OWNER, "--app-id", "7", "--slug", SLUG, "--key", str(source)])
+                    assert code == 0
+                    session = next((home / ".config/codex-skills/github-app").glob("setup-*"))
+                    assert setup.main(["resume", "--session", str(session), "--replace-identity"]) == 0
+                    with patch.object(setup, "register", side_effect=AssertionError("browser reached despite identity conflict")):
+                        assert setup.main(["start", "--owner", OWNER, "--name", "Fixture"]) == 1
+                    source.chmod(0o644)
+                    assert setup.main(["import", "--owner", OWNER, "--app-id", "7", "--slug", SLUG, "--key", str(source), "--replace-identity"]) == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_all_repository_scope_is_reported_without_changing_owner_choice():
+    server, api = fixture_server()
+    server.selection = "all"
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = root / "session"
+            setup.private_directory(session)
+            registration(session)
+            result = configured_fixture(session, root / "home", api)
+            assert result["configuration_written"] and result["repository_selection"] == server.selection
+            assert result["limits"][0]["kind"] == "all_repositories"
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 if __name__ == "__main__":

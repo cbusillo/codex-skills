@@ -571,6 +571,12 @@ and permissions, and writes the App IDs, key path, bot login and commit email
 to the same `local.env` location the wrappers resolve. There is no config file
 to hand-edit and no key or token to paste into chat.
 
+Existing identity conflicts are reported before the browser steps. An **All
+repositories** installation produces a visible scope notice, including its
+access to future repositories; change the installation settings if only the
+adopted repositories were intended. The helper preserves the owner's existing
+ability to choose all repositories.
+
 If setup stops after registration, keep the private directory printed by the
 helper, finish the installation in GitHub, then resume:
 
@@ -595,6 +601,11 @@ configuration:
 ```sh
 uv run skills/github/scripts/github_app_setup.py import --owner OWNER --app-id ID --slug APP-SLUG --key /private/downloaded-key.pem
 ```
+
+If GitHub created the App under the wrong account, its key is still saved
+privately. Correct or transfer the App ownership in GitHub before resuming;
+the helper verifies the current registration owner as well as the installation
+account before writing configuration.
 
 Check the separate author before writing:
 

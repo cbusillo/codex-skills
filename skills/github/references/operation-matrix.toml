@@ -23,7 +23,7 @@ entrypoint = "github/scripts/github_app_setup.py start|resume|import"
 intent = "Guide separate automation identity registration, installation verification and private wrapper configuration."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "Owner form POST https://github.com/settings/apps/new (or organization equivalent); POST /app-manifests/{code}/conversions once; GET /app/installations pages; GET /app/installations/{id}; GET /users/{bot}; private key/registration/local.env writes"
+endpoint_or_command = "Owner form POST https://github.com/settings/apps/new (or organization equivalent); POST /app-manifests/{code}/conversions once; GET /app; GET /app/installations pages; GET /app/installations/{id}; GET /users/{bot}; private key/registration/local.env writes"
 quota_bucket = "mixed"
 actor_policy = "split_identity_required"
 mutation_class = "mixed"
@@ -31,7 +31,7 @@ idempotency = "non_idempotent"
 retry_eligibility = "manual"
 reconciliation_strategy = "fail_closed_write"
 retained_graphql_rationale = "No GraphQL. Registration conversion is not retried after an unknown outcome; owner can recover from GitHub settings with the import route. Saved successful registrations resume installation/configuration without recreating the App."
-source_refs = ["github/scripts/github_app_setup.py:register", "github/scripts/github_app_setup.py:configure", "github/scripts/github_app_setup.py:write_configuration", "github/scripts/github_app_setup.py:main"]
+source_refs = ["github/scripts/github_app_setup.py:register", "github/scripts/github_app_setup.py:configure", "github/scripts/github_app_setup.py:write_configuration", "github/scripts/github_app_setup.py:main", "github/scripts/github_identity.py:github_app_headers", "github/scripts/github_identity.py:github_app_request"]
 test_refs = ["github/scripts/test_github_app_setup.py:test_manifest_callback_and_private_recovery", "github/scripts/test_github_app_setup.py:test_fixture_repository_setup_and_direction_review", "github/scripts/test_github_app_setup.py:test_wrong_installation_and_missing_permissions_preserve_configuration", "github/scripts/test_github_app_setup.py:test_existing_identity_requires_explicit_replacement_and_keeps_backup"]
 
 [[operations]]
@@ -1945,7 +1945,7 @@ degraded_behavior = "Only the owner creates/installs the App in their browser. C
 documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest"
 
 [api_surface_fingerprints]
-"github/scripts/github_app_setup.py" = "f2535630ac5d9311a9d0a2dd2417a83a65d7e273b520072b532b41f932c6c044"
+"github/scripts/github_app_setup.py" = "b87ad3c4ea1d62ce9859fd4b051680fdbbea873e239b82d8ad7a854e6aaf5725"
 "github/scripts/gh-comment" = "21ecb30d4d60b61c760f1df630fd6b56347873709bba2d05b7f32f9222fa4656"
 "github/scripts/gh-issue" = "2589d7e258872b5dc2609ceb581053b2daae205156ac360d1a84a2f49eb0f01f"
 "github/scripts/gh-plan.py" = "54d213cd33402204ff0db51216deb542a787a21e8221484ef0a85b2f7c79f54b"
@@ -1960,7 +1960,7 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github/scripts/github_capabilities.py" = "bfd1a0a155a783feca5735b870a78709032e878a9011a07034b000e41be97901"
 "github/scripts/github_comment.py" = "c3dce97902b5052184d37e70d7a9f119aa9cffa82c94da01e774f10da51dbd1d"
 "github/scripts/github_direction_next.py" = "ec587fc078bb843c70ef91a102abb7dec2509167ec2316d004d5a8fd02891a4a"
-"github/scripts/github_identity.py" = "0120a675854458d4c832d68661800138f32b93c35136c89d4a9be0587ee79ff4"
+"github/scripts/github_identity.py" = "12ffc85b30a31d95fa6329e427953e372d54eed42328a45e8854ba0e25747f1f"
 "github/scripts/github_issue.py" = "d3abe027034d589ec78f91f20466f7a482980b00c34817128302204404f0e026"
 "github/scripts/github_milestone.py" = "08cf5da1e6e93bf6d577b572ea508e71da9e1e0224ef0ebfb588c403bf8f5598"
 "github/scripts/github_read.py" = "3188ef35440d2870b403a6c039af98e9901bf2dd5aff7fe7772a3aed4334f58b"

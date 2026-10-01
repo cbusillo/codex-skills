@@ -28,6 +28,12 @@ import github_capabilities
 import github_identity as identity
 
 Error = identity.GitHubAppError
+MANAGED_IDENTITY_KEYS = frozenset({
+    "GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
+    "GITHUB_APP_API_URL", "GH_HOST", "CODEX_AUTOMATION_LOGIN", "CODEX_AUTOMATION_EMAIL",
+    "GH_WITH_ENV_TOKEN_EXPECTED_LOGIN", "GIT_COMMIT_AS_BOT_NAME", "GIT_COMMIT_AS_BOT_EMAIL",
+})
+ASSIGNMENT = re.compile(r"^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=")
 
 
 def private_directory(path: Path) -> None:
@@ -64,17 +70,19 @@ def register(session: Path, owner: str, name: str, *, organization: bool = False
     result = {}
     failure = []
     deadline = time.monotonic() + timeout
+    request_timeout = min(1.0, timeout)
     if exchange is None:
         def exchange(code):
             request = urllib.request.Request(
                 f"https://api.github.com/app-manifests/{code}/conversions",
                 data=b"", method="POST", headers={"Accept": "application/vnd.github+json"})
-            return identity._request_json(request, operation="manifest conversion (not retried)")
+            return identity.github_app_request(request, operation="manifest conversion (not retried)")
 
     class Handler(BaseHTTPRequestHandler):
         server: HTTPServer
+        timeout = request_timeout
 
-        def log_message(self, format: str, *args: object) -> None:
+        def log_message(self, _format: str, *args: object) -> None:
             pass  # Callback codes and private response bodies never enter access logs.
 
         def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
@@ -141,14 +149,17 @@ def save_registration(session: Path, owner: str, payload: dict) -> dict:
     if not isinstance(payload, dict) or not isinstance(payload.get("id"), int) or payload["id"] <= 0:
         raise Error("manifest conversion returned an invalid App ID")
     slug = payload.get("slug", "")
-    if not re.fullmatch(r"[a-zA-Z0-9-]+", slug) or payload.get("owner", {}).get("login", "").casefold() != owner.casefold():
-        raise Error("registered App owner or slug did not match; inspect it on GitHub")
+    observed_owner = payload.get("owner", {}).get("login", "")
+    if not isinstance(slug, str) or not re.fullmatch(r"[a-zA-Z0-9-]+", slug) or not isinstance(observed_owner, str) or not observed_owner:
+        raise Error("registered App owner or slug is invalid; inspect it on GitHub")
     key = payload.get("pem", "")
     if not isinstance(key, str) or "PRIVATE KEY" not in key:
         raise Error("manifest conversion did not return a private key")
     private_write(session / "app.pem", key)
-    record = {"app_id": str(payload["id"]), "slug": slug, "owner": owner}
+    record = {"app_id": str(payload["id"]), "slug": slug, "owner": owner, "registered_owner": observed_owner}
     private_write(session / "registration.json", json.dumps(record) + "\n")
+    if observed_owner.casefold() != owner.casefold():
+        raise Error("registered App owner did not match; key saved privately. Correct the App ownership in GitHub, then resume, or import the intended App")
     return record  # OAuth client secret and webhook secret are unused and never persisted.
 
 
@@ -156,6 +167,8 @@ def configure(session: Path, *, installation_id: str | None = None,
               replace_identity: bool = False, environ=None) -> dict:
     private_directory(session)
     record_path = session / "registration.json"
+    if not record_path.exists():
+        raise Error("no completed registration is saved; inspect GitHub's App settings and use import with its private key, or start again if no App was created")
     if record_path.is_symlink():
         raise Error("registration record must not be a symlink")
     record = json.loads(record_path.read_text())
@@ -170,12 +183,16 @@ def configure(session: Path, *, installation_id: str | None = None,
                   "GITHUB_APP_PRIVATE_KEY_PATH": str(session / "app.pem")}
     # The public CLI always verifies against GitHub; loopback is injectable only in fixtures.
     config = identity.github_app_config(config_env)
-    headers = identity._app_headers(config, now=int(time.time()))
+    headers = identity.github_app_headers(config)
+    app = identity.github_app_request(urllib.request.Request(
+        f"{config.api_url}/app", method="GET", headers=headers), operation="setup App ownership")
+    if not isinstance(app, dict) or str(app.get("id")) != record["app_id"] or app.get("slug") != record["slug"] or app.get("owner", {}).get("login", "").casefold() != record["owner"].casefold():
+        raise Error("App ownership does not match the intended account; correct it in GitHub before resuming")
     if installation_id is None:
         matches = []
         page = 1
         while True:
-            data = identity._request_json(urllib.request.Request(
+            data = identity.github_app_request(urllib.request.Request(
                 f"{config.api_url}/app/installations?per_page=100&page={page}", method="GET", headers=headers),
                 operation="setup installation discovery")
             if not isinstance(data, list):
@@ -200,7 +217,7 @@ def configure(session: Path, *, installation_id: str | None = None,
     if github_capabilities.permission_gaps(required, observed.get("permissions", {})):
         raise Error("installation lacks the catalog permissions; accept its update, then resume")
     login = record["slug"] + "[bot]"
-    user = identity._request_json(urllib.request.Request(
+    user = identity.github_app_request(urllib.request.Request(
         f"{config.api_url}/users/{urllib.parse.quote(login)}",
         method="GET", headers={"Accept": "application/vnd.github+json"}), operation="public bot identity")
     if not isinstance(user, dict) or user.get("login") != login or not isinstance(user.get("id"), int) or user["id"] <= 0:
@@ -211,9 +228,25 @@ def configure(session: Path, *, installation_id: str | None = None,
               "CODEX_AUTOMATION_LOGIN": login,
               "CODEX_AUTOMATION_EMAIL": f'{user["id"]}+{login}@users.noreply.github.com'}
     write_configuration(target, values, backup_directory=session, replace_identity=replace_identity)
+    limits = ([{"kind": "all_repositories", "detail": "App installation covers all repositories, including future repositories. Review its settings if only adopted repositories were intended."}]
+              if observed.get("repository_selection") == "all" else [])
     return {"schema_version": 1, "ok": True, "actor": login, "installation_verified": True,
             "repository_selection": observed.get("repository_selection"),
-            "write_proof": "not_exercised", "configuration_written": True}
+            "limits": limits, "write_proof": "not_exercised", "configuration_written": True}
+
+
+def configuration_before(target: Path, *, replace_identity: bool) -> bytes:
+    before = b""
+    if target.exists() or target.is_symlink():
+        info = target.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise Error("local.env must be a regular file owned by you")
+        before = target.read_bytes()
+    existing = [line for line in before.decode().splitlines()
+                if (match := ASSIGNMENT.match(line)) and match[1] in MANAGED_IDENTITY_KEYS]
+    if existing and not replace_identity:
+        raise Error("identity variables already exist; inspect them or add --replace-identity before setup (private backup kept)")
+    return before
 
 
 def write_configuration(target: Path, values: dict, *, backup_directory: Path, replace_identity: bool) -> None:
@@ -222,24 +255,15 @@ def write_configuration(target: Path, values: dict, *, backup_directory: Path, r
     parent = target.parent.stat()
     if parent.st_uid != os.getuid() or parent.st_mode & 0o022:
         raise Error("local.env parent must be owned by you and not writable by others")
-    before = b""
-    if target.exists() or target.is_symlink():
-        info = target.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
-            raise Error("local.env must be a regular file owned by you")
-        before = target.read_bytes()
+    before = configuration_before(target, replace_identity=replace_identity)
     text = before.decode()
-    pattern = re.compile(r"^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=")
     overrides = {"GH_WITH_ENV_TOKEN_EXPECTED_LOGIN": values["CODEX_AUTOMATION_LOGIN"],
                  "GIT_COMMIT_AS_BOT_NAME": values["CODEX_AUTOMATION_LOGIN"],
                  "GIT_COMMIT_AS_BOT_EMAIL": values["CODEX_AUTOMATION_EMAIL"]}
     managed = set(values) | set(overrides)
-    existing = [line for line in text.splitlines() if (match := pattern.match(line)) and match[1] in managed]
-    if existing and not replace_identity:
-        raise Error("identity variables already exist; inspect them or resume with --replace-identity (private backup kept)")
     output = []
     for line in text.splitlines():
-        match = pattern.match(line)
+        match = ASSIGNMENT.match(line)
         if match and match[1] in managed:
             if match[1] in overrides:
                 values[match[1]] = overrides[match[1]]
@@ -284,10 +308,15 @@ def main(argv=None) -> int:
     for command in (start, finish, existing):
         command.add_argument("--replace-identity", action="store_true")
     args = parser.parse_args(argv)
+    session = None
     try:
         if args.command in ("start", "import"):
             if not re.fullmatch(r"[A-Za-z0-9-]+", args.owner) or not 1 <= getattr(args, "timeout", 900) <= 3600:
                 raise Error("use a GitHub owner name and a timeout from 1 to 3600 seconds")
+            target = identity.env_file_path()
+            if target is None:
+                raise Error("cannot locate the wrapper's local.env")
+            configuration_before(target, replace_identity=args.replace_identity)
             root = Path.home() / ".config" / "codex-skills" / "github-app"
             private_directory(root)
             session = Path(tempfile.mkdtemp(prefix="setup-", dir=root))
@@ -311,11 +340,15 @@ def main(argv=None) -> int:
             session = args.session.expanduser().absolute()
         result = configure(session, installation_id=getattr(args, "installation_id", None),
                            replace_identity=args.replace_identity)
+        for limit in result["limits"]:
+            print("Scope notice: " + limit["detail"], file=sys.stderr)
         print(json.dumps(result))
         return 0
     except (Error, OSError, ValueError, KeyError, TypeError, EOFError, KeyboardInterrupt) as error:
         # OSError/parse text can contain private paths or provider payloads.
         message = str(error) if isinstance(error, Error) else "setup interrupted or local state unreadable; inspect the saved session and resume"
+        if session is not None and not (session / "registration.json").exists():
+            message = "no completed registration is saved; inspect GitHub's App settings and import its key if it exists, or start again if no App was created"
         print(json.dumps({"schema_version": 1, "ok": False, "error": message}), file=sys.stderr)
         return 1
 
