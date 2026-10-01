@@ -183,6 +183,55 @@ def test_app_auth_takes_precedence_and_runs_write_as_verified_app() -> None:
         assert result.stdout == "write-ran-as-app\n"
 
 
+def test_app_installation_follows_the_target_repository() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        env_file = root / "local.env"
+        env_file.write_text(
+            "GITHUB_APP_ID=12345\n"
+            "GITHUB_APP_INSTALLATION_ID=67890\n"
+            "GITHUB_APP_PRIVATE_KEY_PATH=/fake/app.pem\n"
+            "CODEX_AUTOMATION_LOGIN='catalog-app[bot]'\n",
+            encoding="utf-8",
+        )
+        identity = root / "identity.py"
+        write(
+            identity,
+            "import sys\n"
+            "args = sys.argv[1:]\n"
+            "if args == ['app-auth', '--repo', 'other-owner/uncovered', '--require-installation']:\n"
+            "    raise SystemExit('the GitHub App is not installed on other-owner/uncovered')\n"
+            "print('catalog-app[bot]')\n"
+            "print('token:' + ' '.join(args[1:]))\n",
+        )
+        unused = root / "unused.py"
+        write(unused, "raise AssertionError('classifier should not run')\n")
+        fake_gh = root / "gh"
+        write(fake_gh, "#!/bin/sh\nprintf '%s\\n' \"$GH_TOKEN\"\n")
+
+        cases = {
+            ("api", "repos/second-owner/site/issues/1/comments", "--method", "POST", "-f", "body=x"):
+                "token:--repo second-owner/site --require-installation",
+            ("issue", "comment", "1", "-R", "github.com/second-owner/site", "--body", "x"):
+                "token:--repo second-owner/site --require-installation",
+            ("api", "/repos/third-party/library/contents/README.md"): "token:--repo third-party/library",
+            ("api", "repos/{owner}/{repo}/pulls"): "token:",
+            ("api", "graphql", "-f", "query=query { viewer { login } }"): "token:",
+        }
+        for args, token in cases.items():
+            result = run_wrapper(env_file, unused, identity, *args, gh_command=fake_gh)
+            assert result.returncode == 0, (args, result.stderr)
+            assert result.stdout == f"{token}\n", (args, result.stdout)
+
+        refused = run_wrapper(
+            env_file, unused, identity,
+            "api", "repos/other-owner/uncovered/issues/1/comments", "--method", "POST", "-f", "body=x",
+            gh_command=unused,
+        )
+        assert refused.returncode != 0
+        assert "not installed on other-owner/uncovered" in refused.stderr
+
+
 def test_app_actor_probe_synthesizes_include_response_without_user_endpoint() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -349,6 +398,7 @@ def main() -> None:
         test_app_auth_failure_never_falls_back_to_active_user,
         test_empty_app_auth_response_fails_closed,
         test_app_auth_takes_precedence_and_runs_write_as_verified_app,
+        test_app_installation_follows_the_target_repository,
         test_app_actor_probe_synthesizes_include_response_without_user_endpoint,
         test_app_login_mismatch_fails_closed_for_write_and_check,
         test_app_login_comparison_is_case_insensitive,
