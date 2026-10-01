@@ -128,9 +128,11 @@ def existing_session_hook(groups: list, catalog: Path) -> bool:
                             candidates.extend(shlex.split(tokens[flag_index + 1]))
                             break
             candidates = [token.replace("${CLAUDE_PLUGIN_ROOT}", plugin_root).replace("$CLAUDE_PLUGIN_ROOT", plugin_root) for token in candidates]
+            if "--skills-only" in candidates:
+                continue  # A compact-only check does not provide startup reminders.
             paths = [Path(os.path.expandvars(token)).expanduser() for token in candidates]
             if not any(path.is_absolute() and path.resolve() == (catalog / "hooks" / "direction_check_hook.py").resolve() for path in paths):
-                raise ValueError("Existing session hook preserved: direction_check_hook.py does not unambiguously resolve to this catalog; inspect the entry and use an absolute catalog script path before rerunning")
+                raise ValueError("Existing session hook preserved: direction_check_hook.py does not unambiguously resolve to this catalog; inspect the entry and use an absolute catalog script path before rerunning. Install with --skip-codex-hooks, or synchronize instructions without --codex-hook, to keep working with existing hooks.")
             found = True
     return found
 
@@ -174,6 +176,7 @@ def prepare_codex_hooks(codex: Path, catalog: Path = ROOT) -> HookOutputs:
         if not isinstance(groups, list) or any(not isinstance(group, dict) or not isinstance(group.get("hooks"), list)
                                               or any(not isinstance(handler, dict) for handler in group["hooks"]) for group in groups):
             raise ValueError(f"Invalid {event} hook definition; inspect hooks.json and config.toml before rerunning")
+    original_json_hooks = {event: list(groups) for event, groups in hooks.items()}
     for event, groups in events.items():
         existing = hooks.get(event, [])
         for group in groups:
@@ -195,7 +198,15 @@ def prepare_codex_hooks(codex: Path, catalog: Path = ROOT) -> HookOutputs:
         event = disabled["event"]
         original_group = events[event][disabled["source_group"]]
         destination_groups = rendered_hooks.get(event, [])
-        destination = next((index for index, group in enumerate(destination_groups) if group == original_group), None)
+        if original_group in original_json_hooks.get(event, []):
+            # The TOML duplicate was removed; its disabled choice must not be
+            # attributed to the independently configured JSON copy.
+            destination = None
+            disabled["deduplicated"] = True
+        else:
+            occurrence = sum(group == original_group for group in events[event][:disabled["source_group"]])
+            matches = [index for index, group in enumerate(destination_groups) if group == original_group]
+            destination = matches[occurrence] if occurrence < len(matches) else None
         disabled["destination_group"] = destination
         disabled["destination_handler"] = disabled["source_handler"] if destination is not None else None
     if events:

@@ -22,6 +22,38 @@ SPEC.loader.exec_module(sync)
 
 
 class GlobalInstructionsTests(unittest.TestCase):
+    def test_compact_only_direction_hook_keeps_managed_startup_reminder(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex = Path(directory)
+            command = f"uv run {sync.ROOT / 'hooks' / 'direction_check_hook.py'} --skills-only"
+            group = {"matcher": "compact", "hooks": [{"command": command}]}
+            (codex / "hooks.json").write_text(json.dumps({"hooks": {"SessionStart": [group]}}))
+            outputs = sync.prepare_codex_hooks(codex)
+            groups = json.loads(outputs[codex / "hooks.json"])["hooks"]["SessionStart"]
+            self.assertIn(group, groups)
+            self.assertTrue(any(handler.get("statusMessage") == "codex-skills session start" for group in groups for handler in group["hooks"]))
+
+    def test_disabled_toml_duplicate_does_not_disable_existing_json_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex = Path(directory)
+            config = codex / "config.toml"
+            group = {"hooks": [{"command": "existing-stop"}]}
+            (codex / "hooks.json").write_text(json.dumps({"hooks": {"Stop": [group]}}))
+            state_key = f"{config}:stop:0:0"
+            config.write_text(f'[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ncommand="existing-stop"\n[hooks.state."{state_key}"]\nenabled=false\n')
+            outputs = sync.prepare_codex_hooks(codex)
+            self.assertEqual(json.loads(outputs[codex / "hooks.json"])["hooks"]["Stop"], [group])
+            self.assertEqual(outputs.disabled_migrated_handlers, [{"event": "Stop", "source_group": 0, "source_handler": 0, "deduplicated": True, "destination_group": None, "destination_handler": None}])
+
+    def test_identical_inline_groups_report_the_correct_disabled_occurrence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex = Path(directory)
+            config = codex / "config.toml"
+            state_key = f"{config}:stop:1:0"
+            config.write_text('[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ncommand="same-stop"\n' * 2 + f'[hooks.state."{state_key}"]\nenabled=false\n')
+            outputs = sync.prepare_codex_hooks(codex)
+            self.assertEqual(outputs.disabled_migrated_handlers[0]["destination_group"], 1)
+
     def test_disabled_migrated_hook_is_reported_without_copying_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             codex = Path(directory)

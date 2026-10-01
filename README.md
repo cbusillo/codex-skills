@@ -236,8 +236,12 @@ target's contents in a regular `config.toml`, then preview again.
 Migration does not copy disabled choices from old source keys. The preview and
 receipt identify recognized disabled handlers by event, their old TOML position,
 and their destination JSON position. Keep those destination handlers disabled
-when reviewing them through `/hooks`; a null destination means that duplicate
-was removed and needs comparison with the remaining definitions. Full commands
+when reviewing them through `/hooks`. A `deduplicated` entry has no destination:
+its TOML copy was removed, and the existing JSON copy retains its own settings;
+do not disable that existing copy based on the removed copy's state. Other null
+destinations mean the managed declaration replaced the source definition. Removing
+a redundant managed `SessionStart` group can shift later JSON positions; review
+those remaining handlers through `/hooks` too. Full commands
 are available only in the person's local `--show-diff` review.
 Once registered and
 trusted, a catalog pull updates the same policy script on both hosts. The
