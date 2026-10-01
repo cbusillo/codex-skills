@@ -645,9 +645,9 @@ print_app_actor_probe() {
 	fi
 }
 
-# The repository a gh command targets: -R/--repo, an api path under repos/, or
-# GH_REPO. Commands that name none (GraphQL by node ID, for example) use the
-# configured installation.
+# The repository a gh command targets: -R/--repo, the endpoint of `gh api`
+# when it is under repos/, or GH_REPO. Commands that name none (GraphQL by node
+# ID, for example) use the configured installation.
 target_repository() {
 	previous=
 	for argument in "$@"; do
@@ -662,32 +662,64 @@ target_repository() {
 			repository_from_reference "${argument#--repo=}"
 			return 0
 			;;
-		repos/*/* | /repos/*/*)
+		-R?*)
+			repository_from_reference "${argument#-R}"
+			return 0
+			;;
+		esac
+		previous=$argument
+	done
+	if [ "${1:-}" = api ]; then
+		shift
+		api_endpoint "$@" && return 0
+	fi
+	if [ -n "${GH_REPO:-}" ]; then
+		repository_from_reference "$GH_REPO"
+	fi
+}
+
+# The repository in the endpoint of `gh api`: its first argument that is not an
+# option or an option's value.
+api_endpoint() {
+	skip_value=0
+	for argument in "$@"; do
+		if [ "$skip_value" -eq 1 ]; then
+			skip_value=0
+			continue
+		fi
+		case $argument in
+		-X | --method | -f | --raw-field | -F | --field | -H | --header | --input | -q | --jq | -t | --template | -p | --preview | --hostname | --cache)
+			skip_value=1
+			;;
+		-*) ;;
+		*)
 			path=${argument#/}
+			case $path in
+			repos/*/*) ;;
+			*) return 1 ;;
+			esac
 			path=${path#repos/}
 			owner=${path%%/*}
 			rest=${path#*/}
 			name=${rest%%[/?#]*}
 			case "$owner/$name" in
-			*'{'* | *'}'* | /* | */) ;;
-			*)
-				printf '%s/%s\n' "$owner" "$name"
-				return 0
-				;;
+			*'{'* | *'}'* | /* | */) return 1 ;;
 			esac
+			printf '%s/%s\n' "$owner" "$name"
+			return 0
 			;;
 		esac
-		previous=$argument
 	done
-	if [ -n "${GH_REPO:-}" ]; then
-		repository_from_reference "$GH_REPO"
-	fi
+	return 1
 }
 
 # gh accepts OWNER/REPO, HOST/OWNER/REPO, and repository URLs.
 repository_from_reference() {
 	reference=${1%/}
 	reference=${reference%.git}
+	case $reference in
+	git@*:*) reference=${reference#*:} ;;
+	esac
 	name=${reference##*/}
 	rest=${reference%/*}
 	owner=${rest##*/}

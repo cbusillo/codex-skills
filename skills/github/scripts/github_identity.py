@@ -35,9 +35,10 @@ class GitHubAppError(RuntimeError):
 
 
 class GitHubAppHTTPError(GitHubAppError):
-    def __init__(self, message: str, status: int) -> None:
+    def __init__(self, message: str, status: int, location: str | None = None) -> None:
         super().__init__(message)
         self.status = status
+        self.location = location
 
 
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/(?!\.\.?$)[A-Za-z0-9._-]{1,100}")
@@ -398,7 +399,10 @@ def _request_json(request: urllib.request.Request, *, operation: str) -> object:
         with urllib.request.build_opener(_NoRedirectHandler()).open(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
-        raise GitHubAppHTTPError(f"GitHub App {operation} failed with HTTP {error.code}", error.code) from error
+        location = error.headers.get("Location") if error.headers else None
+        raise GitHubAppHTTPError(
+            f"GitHub App {operation} failed with HTTP {error.code}", error.code, location
+        ) from error
     except (urllib.error.URLError, TimeoutError) as error:
         raise GitHubAppError(f"GitHub App {operation} failed") from error
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
@@ -519,27 +523,43 @@ def repository_installation_config(
     """
     if not REPOSITORY_PATTERN.fullmatch(repository):
         raise GitHubAppError(f"invalid repository {repository!r}; expected OWNER/REPO")
-    request = urllib.request.Request(
-        f"{config.api_url}/repos/{repository}/installation",
-        method="GET",
-        headers=_app_headers(config, now=int(time.time() if now is None else now)),
-    )
-    try:
-        payload = _request_json(request, operation="repository installation lookup")
-    except GitHubAppHTTPError as error:
-        if error.status == 404 and not required:
-            return None
-        if error.status == 404:
-            raise GitHubAppError(
-                f"the GitHub App is not installed on {repository}; "
-                "its owner must install the App there before automation can use it"
-            ) from error
-        raise
+    current_time = int(time.time() if now is None else now)
+    url = f"{config.api_url}/repos/{repository}/installation"
+    for attempt in range(2):
+        request = urllib.request.Request(url, method="GET", headers=_app_headers(config, now=current_time))
+        try:
+            payload = _request_json(request, operation="repository installation lookup")
+            break
+        except GitHubAppHTTPError as error:
+            if error.status == 404 and not required:
+                return None
+            if error.status == 404:
+                raise GitHubAppError(
+                    f"the GitHub App is not installed on {repository}; "
+                    "its owner must install the App there before automation can use it"
+                ) from error
+            # A renamed or transferred repository redirects to its ID; follow
+            # that once, and only to the same API's repository installation.
+            moved = _renamed_repository_installation_url(config, error.location)
+            if attempt or error.status not in (301, 302, 307, 308) or moved is None:
+                raise
+            url = moved
     installation_id = payload.get("id") if isinstance(payload, dict) else None
     app_id = payload.get("app_id") if isinstance(payload, dict) else None
     if not isinstance(installation_id, int) or str(app_id) != config.app_id:
         raise GitHubAppError("GitHub App repository installation lookup returned the wrong installation")
     return replace(config, installation_id=str(installation_id))
+
+
+def _renamed_repository_installation_url(config: GitHubAppConfig, location: str | None) -> str | None:
+    if not location:
+        return None
+    api = urllib.parse.urlsplit(config.api_url)
+    target = urllib.parse.urlsplit(urllib.parse.urljoin(f"{config.api_url}/", location))
+    expected_path = re.fullmatch(rf"{re.escape(api.path)}/repositories/[0-9]+/installation", target.path)
+    if (target.scheme, target.netloc) != (api.scheme, api.netloc) or not expected_path or target.query or target.fragment:
+        return None
+    return urllib.parse.urlunsplit(target)
 
 
 def github_app_auth(

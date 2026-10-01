@@ -216,6 +216,13 @@ def test_app_installation_follows_the_target_repository() -> None:
                 "token:--repo second-owner/site --require-installation",
             ("api", "/repos/third-party/library/contents/README.md"): "token:--repo third-party/library",
             ("api", "repos/{owner}/{repo}/pulls"): "token:",
+            ("issue", "comment", "1", "--body", "repos/alice/tools", "-R", "bob/site"):
+                "token:--repo bob/site --require-installation",
+            ("issue", "comment", "1", "-Rbob/site", "--body", "hello"):
+                "token:--repo bob/site --require-installation",
+            ("issue", "comment", "1", "--body", "repos/alice/tools"): "token:",
+            ("api", "--jq", "repos/x/y", "repos/second-owner/site"): "token:--repo second-owner/site",
+            ("pr", "view", "1", "-R", "git@github.com:second-owner/site.git"): "token:--repo second-owner/site",
             ("api", "graphql", "-f", "query=query { viewer { login } }"): "token:",
         }
         for args, token in cases.items():

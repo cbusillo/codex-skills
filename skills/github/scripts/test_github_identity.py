@@ -115,6 +115,18 @@ class TokenHandler(BaseHTTPRequestHandler):
             payload = json.dumps({"id": 11111, "app_id": 12345}).encode()
         elif self.path == "/repos/other-app/site/installation":
             payload = json.dumps({"id": 22222, "app_id": 99999}).encode()
+        elif self.path in ("/repos/second-owner/old-name/installation", "/repos/moved-owner/site/installation"):
+            target = "/repositories/42/installation"
+            if self.path.startswith("/repos/moved-owner/"):
+                target = "https://elsewhere.invalid/repositories/42/installation"
+            else:
+                target = f"http://{self.headers['Host']}{target}"
+            self.send_response(301)
+            self.send_header("Location", target)
+            self.end_headers()
+            return
+        elif self.path == "/repositories/42/installation":
+            payload = json.dumps({"id": 11111, "app_id": 12345}).encode()
         else:
             self.send_response(404)
             self.end_headers()
@@ -343,6 +355,10 @@ def test_github_app_token_follows_the_repository_installation() -> None:
             lookups = [item["path"] for item in TokenHandler.identity_requests if item["path"].startswith("/repos/")]
             assert lookups == ["/repos/first-owner/tools/installation", "/repos/second-owner/site/installation"]
 
+            # A renamed repository redirects to its ID on the same API.
+            renamed = github_identity.github_app_auth(config, now=now, repository="second-owner/old-name")
+            assert renamed[0].startswith("installation-11111-token-")
+
             # Reads of a repository without an installation use the configured
             # one, so public repositories stay readable; writes are refused.
             TokenHandler.requests = []
@@ -354,6 +370,7 @@ def test_github_app_token_follows_the_repository_installation() -> None:
                 ("third-owner/site", "not installed on third-owner/site"),
                 ("other-app/site", "wrong installation"),
                 ("third-owner/..", "invalid repository"),
+                ("moved-owner/site", "HTTP 301"),
             ):
                 try:
                     github_identity.github_app_auth(
