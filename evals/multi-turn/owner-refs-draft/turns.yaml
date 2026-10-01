@@ -6,7 +6,8 @@ turns:
   - prompt: >-
       Use shared:github and read the full talking-with-the-owner reference
       linked from it. Draft a concise GitHub PR comment for me; do not post it
-      or run commands. My namespace is sample-owner. Verified facts:
+      or run operational commands. Read-only file commands are allowed.
+      My namespace is sample-owner. Verified facts:
       sample-owner/catalog PR 914 "Routing repair" implements
       sample-owner/catalog issue 812 "Helper selection"; its tests pass.
       another-owner/gateway issue 812 "Retry limits" remains with that maintainer.
