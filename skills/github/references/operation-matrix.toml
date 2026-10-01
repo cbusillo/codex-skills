@@ -895,6 +895,26 @@ source_refs = ["github/scripts/gh-plan.py:load_direction", "github/scripts/gh-pl
 test_refs = ["github/scripts/test_gh_plan_direction.py:test_gate_reads_the_target_repo_not_the_checkout", "github/scripts/test_gh_plan_next.py:test_cmd_next_degrades_when_direction_is_unavailable_or_unparsed", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
+id = "github.direction.prune_unadopted"
+capabilities = ["metadata_read", "contents_read"]
+permission_mode = "fixed"
+permission_note = "Uses existing repository metadata and Contents read grants and their safe probes; no profile expansion. Repository visibility must be confirmed before a contents HTTP 404 permits local removal. Denied or ambiguous reads retain entries and report unknown. The documented owner-only reader is read-only; this operation never writes GitHub."
+entrypoint = "direction/scripts/direction_audit.py --prune-unadopted [--apply-prune]"
+intent = "Preview or clean legacy local audit-marker entries only after confirming that merged direction is missing, with a private backup on apply."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}; GET /repos/{repo}/contents/DIRECTION.md for each existing local marker entry"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "manual"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No GraphQL transport; repository visibility and direction use REST. Local marker cleanup is backed up and does not alter GitHub."
+source_refs = ["direction/scripts/direction_audit.py:prune_unadopted", "direction/scripts/direction_audit.py:merged_direction"]
+test_refs = ["direction/scripts/test_direction_audit.py:test_prune_preserves_adopted_unknown_and_other_marker_state", "direction/scripts/test_direction_audit.py:test_prune_rejects_malformed_input_and_concurrent_marker_edits", "direction/scripts/test_direction_audit.py:test_prune_does_not_confuse_repository_digits_with_http_status"]
+
+[[operations]]
 id = "github.plan.next"
 capabilities = ["issues_read", "contents_read", "projects_read", "metadata_read"]
 permission_mode = "input_dependent"
@@ -1991,6 +2011,10 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github-work-rollup/scripts/github_work_rollup.py" = "060d94372bd3f94bda5eba59ad2e984da14e69aa8a8e687df36807d0147296d6"
 "github-work-rollup/scripts/verify_work_brief.py" = "379cfec37182c96c01ac5ae2b930ca7cdd9fc34a1bacba5f5f3510d918f9074c"
 "babysit-pr/scripts/gh_pr_watch.py" = "4866268db9cb15da6ab4dac9ef189c784cfee9f5a9efcc1d7d16996c256580a1"
+<<<<<<< HEAD
 "direction/scripts/direction_audit.py" = "3a428120fd599f39c50be697b34272621bec4445c924b5aadc4d137e099b6bb8"
 
 "github/scripts/github_plan_claim.py" = "5c83a4586298a75d2c0b026a86e04bd0ef2119dceaaac43333749fe7e9466cc9"
+=======
+"direction/scripts/direction_audit.py" = "87d2b87be58e2ba181f5266c1c11242fdea970324645b07800e70ed125c1172b"
+>>>>>>> origin/main

@@ -410,6 +410,111 @@ def test_main_preserves_closed_audit_cutoff_and_stamps_scan_start() -> None:
             assert any(f"labels=audit&since={previous}" in path for path in calls)
 
 
+def test_unadopted_audit_leaves_marker_untouched() -> None:
+    module = load()
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        original = '{"turn":"earlier","audits":{"o/adopted":"earlier"},"other":true}\n'
+        for exists in (True, False):
+            if exists:
+                marker.write_text(original)
+            else:
+                marker.unlink()
+            output = StringIO()
+            with (patch.dict("os.environ", {"DIRECTION_MARKER": str(marker)}),
+                  patch.dict(vars(module), {
+                      "merged_direction": lambda *_args, **_kwargs: None,
+                      "gh_json": lambda *_args, **_kwargs: [],
+                  }), redirect_stdout(output)):
+                assert module.main(["--repo", "o/unadopted", "--automation", "bot", "--gh", "fixture-gh"]) == 3
+            result = json.loads(output.getvalue())
+            assert any(item["kind"] == "direction_missing" for item in result["findings"])
+            assert result["marked"] is None
+            assert marker.exists() == exists
+            if exists:
+                assert marker.read_text() == original
+
+
+def test_prune_preserves_adopted_unknown_and_other_marker_state() -> None:
+    module = load()
+    original = {"turn": "earlier", "audits": {"o/adopted": "a", "o/missing": "b", "o/private": "c"}, "other": True}
+    def fetch(args: list[str]) -> dict[str, Any]:
+        endpoint = args[1]
+        if endpoint == "repos/o/private":
+            raise module.AuditError("HTTP 404")
+        if endpoint.endswith("/contents/DIRECTION.md"):
+            if "/missing/" in endpoint:
+                raise module.AuditError("HTTP 404")
+            return {"type": "file", "content": "direction"}
+        return {"full_name": endpoint.removeprefix("repos/")}
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        marker.write_text(json.dumps(original))
+        before = marker.read_bytes()
+        preview = module.prune_unadopted(marker, fetch=fetch)
+        assert preview["removed"] == ["o/missing"]
+        assert preview["retained"] == ["o/adopted"]
+        assert list(preview["unknown"]) == ["o/private"]
+        assert not preview["applied"] and preview["backup"] is None
+        assert marker.read_bytes() == before
+        applied = module.prune_unadopted(marker, fetch=fetch, apply=True)
+        assert Path(applied["backup"]).read_bytes() == before
+        assert Path(applied["backup"]).stat().st_mode & 0o777 == 0o600
+        assert json.loads(marker.read_text()) == {**original, "audits": {"o/adopted": "a", "o/private": "c"}}
+        again = marker.read_bytes()
+        repeated = module.prune_unadopted(marker, fetch=fetch, apply=True)
+        assert repeated["backup"] is None and not repeated["applied"]
+        assert marker.read_bytes() == again
+
+
+def test_prune_rejects_malformed_input_and_concurrent_marker_edits() -> None:
+    module = load()
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        marker.write_text('{"audits":[]}')
+        try:
+            module.prune_unadopted(marker, fetch=lambda _: {}, apply=True)
+        except module.AuditError:
+            pass
+        else:
+            raise AssertionError("malformed marker was accepted")
+        marker.write_text('{"audits":{"o/missing":"a"}}')
+        changed = '{"turn":"new","audits":{"o/missing":"a"}}'
+        def fetch(args: list[str]) -> dict[str, Any]:
+            if args[1].endswith("/contents/DIRECTION.md"):
+                marker.write_text(changed)
+                raise module.AuditError("HTTP 404")
+            return {"full_name": "o/missing"}
+        try:
+            module.prune_unadopted(marker, fetch=fetch, apply=True)
+        except module.AuditError:
+            pass
+        else:
+            raise AssertionError("concurrent change was overwritten")
+        assert marker.read_text() == changed
+
+
+def test_prune_does_not_confuse_repository_digits_with_http_status() -> None:
+    module = load()
+    def fetch(args: list[str]) -> dict[str, Any]:
+        if args[1].endswith("/contents/DIRECTION.md"):
+            raise module.AuditError(f"wrapper/go404 {args[1]} failed: HTTP 502")
+        return {"full_name": "o/app404"}
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        marker.write_text('{"audits":{"o/app404":"a"}}')
+        original = marker.read_bytes()
+        result = module.prune_unadopted(marker, fetch=fetch, apply=True)
+        assert result["removed"] == [] and "o/app404" in result["unknown"]
+        assert marker.read_bytes() == original
+        try:
+            module.merged_direction("o/app404", fetch=fetch)
+        except module.AuditError:
+            pass
+        else:
+            raise AssertionError("repository digits were mistaken for a missing direction file")
+
+
 def test_open_audit_questions_beyond_the_general_issue_cap_are_still_reported() -> None:
     module = load()
     question = issue(1, "Old audit question", labels=("audit",))
