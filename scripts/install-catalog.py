@@ -189,7 +189,9 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             )
             if managed:
                 expected = sync.render_codex_hook_content(existing, hook_path, ROOT, alerts_only=True)
-                if hook_path.is_symlink():
+                if json.loads(expected) == existing:
+                    hook_preview = [{"path": str(hook_path), "state": "current"}]
+                elif hook_path.is_symlink():
                     # Dotfiles remain read-only. A current binding needs no
                     # write; a stale one can be reconciled from an explicit
                     # preview containing only generated catalog alert entries.
@@ -228,8 +230,18 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                 for group in groups
             ) if isinstance(inline, dict) else False
             if bound:
-                hook_preview = [{"path": str(hook_path), "state": "skipped",
-                                 "reason": "Inline catalog hooks need migration before alerts can be refreshed; preview scripts/sync-global-instructions.py --codex-hook --hooks-only, then apply with --write and review through /hooks"}]
+                generated = json.loads(sync.render_codex_hook_content({}, hook_path, ROOT, alerts_only=True))["hooks"]
+                current = all(isinstance(inline.get(event), list) and all(group in inline[event] for group in groups)
+                              for event, groups in generated.items())
+                if current:
+                    hook_preview = [{"path": str(config_path), "state": "current"}]
+                else:
+                    entry = {"path": str(config_path), "state": "skipped",
+                             "reason": "Inline catalog alerts need reconciliation; preview --refresh-instructions --show-diff and merge catalog_alert_toml into the config.toml source, preserving unrelated hooks and trust, then review through /hooks and run catalog_runtime.py --update. Regular configurations can instead migrate with scripts/sync-global-instructions.py --codex-hook --hooks-only"}
+                    if show_diff:
+                        import tomlkit
+                        entry["catalog_alert_toml"] = tomlkit.dumps({"hooks": generated})
+                    hook_preview = [entry]
         except (OSError, ValueError) as error:
             hook_preview = [{"path": str(config_path), "state": "skipped", "reason": str(error)}]
     launch_path = home / "Library" / "LaunchAgents" / f"{LABEL}.plist"

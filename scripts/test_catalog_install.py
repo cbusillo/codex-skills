@@ -433,9 +433,36 @@ class InstallTests(unittest.TestCase):
         original = f'[[hooks.PreToolUse]]\n[[hooks.PreToolUse.hooks]]\ncommand="uv run {installer.ROOT / "hooks" / "command_policy_hook.py"}"\n[hooks.state]\nopaque_trust="preserve"\n'
         config.write_text(original)
         receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
-        self.assertTrue(any(entry["state"] == "skipped" and "migration" in entry.get("reason", "") for entry in receipt["outputs"]))
+        self.assertTrue(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
         self.assertEqual(config.read_text(), original)
         self.assertFalse((self.codex / "hooks.json").exists())
+
+    def test_inline_dotfiles_alert_preview_can_clear_notice_preserving_trust(self):
+        self.install()
+        (self.codex / "hooks.json").unlink()
+        config = self.codex / "config.toml"
+        target = self.root / "dotfiles-config.toml"
+        original = f'[[hooks.PreToolUse]]\n[[hooks.PreToolUse.hooks]]\ncommand="uv run {installer.ROOT / "hooks" / "command_policy_hook.py"}"\n[hooks.state]\nopaque_trust="preserve"\n'
+        target.write_text(original)
+        config.symlink_to(target)
+        preview = installer.install(self.home, self.codex, self.claude, write=False, updater=False, refresh_instructions=True, show_diff=True)
+        generated = next(entry["catalog_alert_toml"] for entry in preview["outputs"] if "catalog_alert_toml" in entry)
+        self.assertEqual(target.read_text(), original)
+        target.write_text(original + generated)
+        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertFalse(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
+        self.assertEqual(target.read_text(), original + generated)
+        self.assertTrue(config.is_symlink())
+        self.assertFalse((self.codex / "hooks.json").exists())
+
+    def test_malformed_alert_group_does_not_stop_instruction_refresh(self):
+        self.install()
+        path = self.codex / "hooks.json"
+        config = json.loads(path.read_text())
+        config["hooks"]["Stop"].append({"hooks": None})
+        path.write_text(json.dumps(config))
+        installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertIn({"hooks": None}, json.loads(path.read_text())["hooks"]["Stop"])
 
     def test_concurrent_hook_edit_is_preserved_and_refresh_reports_skip(self):
         self.install()

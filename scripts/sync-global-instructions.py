@@ -93,7 +93,7 @@ def render_codex_hook_content(config: dict, destination: Path, catalog: Path = R
             if positions and len(positions) != len(declarations):
                 raise ValueError(f"Conflicting catalog {event} entries; inspect {destination} before rerunning. Install with --skip-codex-hooks, or synchronize instructions without --codex-hook, to preserve hooks and keep working")
         def managed(group):
-            return (isinstance(group, dict) and len(group.get("hooks", [])) == 1
+            return (isinstance(group, dict) and isinstance(group.get("hooks"), list) and len(group["hooks"]) == 1
                     and isinstance(group["hooks"][0], dict) and group["hooks"][0].get("statusMessage") == label)
         updated = []
         inserted = False
