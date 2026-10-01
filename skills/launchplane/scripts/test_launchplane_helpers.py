@@ -4586,6 +4586,106 @@ def test_expected_config_review_binds_metadata_and_never_prints_owner_instructio
             assert "must-never-be-metadata" not in output.getvalue()
 
 
+def test_expected_config_removal_shape_is_bound_to_the_request() -> None:
+    with TemporaryDirectory() as directory:
+        payload_path = Path(directory) / "metadata.json"
+        evidence_path = Path(directory) / "review.json"
+        removal = {"key": "ODOO_VERSION", "context": "example-site", "instance": ""}
+        binding_removal = {"integration": "runtime_environment", "binding_key": "EXAMPLE_BINDING", "context": "example-site", "instance": ""}
+        body = {
+            "schema_version": 1, "product": "example-site", "reason": "Sites build their own images.",
+            "remove_runtime_environment_keys": [removal], "remove_managed_secret_bindings": [binding_removal],
+        }
+        payload_path.write_text(json.dumps(body))
+        removal_summary = {
+            "runtime_environment_key_remove_count": 1, "managed_secret_binding_remove_count": 0,
+            "runtime_environment_key_absent_count": 0, "managed_secret_binding_absent_count": 1,
+            "managed_secret_binding_still_bound_count": 0,
+        }
+        result: dict[str, Any] = {
+            "status": "ok", "mode": "dry-run", "product": "example-site", "source_label": "operator", "changed": True,
+            "runtime_environment_keys": {"added": [], "unchanged": [], "removed": [removal], "absent": []},
+            "managed_secret_bindings": {"added": [], "unchanged": [], "removed": [], "absent": [binding_removal], "still_bound": []},
+            "summary": removal_summary,
+        }
+        calls: list[dict[str, Any]] = []
+
+        def post(**kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return {
+                "status": "accepted", "trace_id": "launchplane_req_expected_config",
+                "records": {"product_profile": "example-site"},
+                "result": {**result, "mode": kwargs["body"]["mode"]},
+            }
+
+        def dry_run() -> tuple[int, str]:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = write_action.main(["product-expected-config-dry-run", "--payload-file", str(payload_path)])
+            return exit_code, output.getvalue()
+
+        with (
+            temporary_attribute(write_action, "prepare_operator_settings", lambda **_kwargs: {"service_url": "https://launchplane.example.invalid", "token": "fixture-only"}),
+            temporary_attribute(write_action, "request_launchplane", post),
+        ):
+            exit_code, output = dry_run()
+            assert exit_code == 0
+            projected = json.loads(output)["result"]
+            assert calls[-1]["body"]["remove_runtime_environment_keys"] == [removal]
+            assert projected["runtime_environment_keys_removed_count"] == 1
+            assert projected["managed_secret_bindings_absent_count"] == 1
+            assert projected["managed_secret_bindings_still_bound_count"] == 0
+
+            # An older service ignores removals and answers with the add-only shape.
+            result["runtime_environment_keys"] = {"added": [], "unchanged": []}
+            result["managed_secret_bindings"] = {"added": [], "unchanged": []}
+            result["summary"] = {key: 0 for key in ("runtime_environment_key_add_count", "managed_secret_binding_add_count", "runtime_environment_key_unchanged_count", "managed_secret_binding_unchanged_count")}
+            exit_code, output = dry_run()
+            assert exit_code != 0
+            evidence_path.write_text(output)
+            with redirect_stdout(io.StringIO()):
+                assert write_action.main([
+                    "product-expected-config-apply", "--payload-file", str(payload_path),
+                    "--dry-run-evidence-file", str(evidence_path), "--reviewed-dry-run", "--idempotency-key", "example-remove",
+                ]) == 2
+            assert all(call["body"]["mode"] == "dry-run" for call in calls), "Unverified removal evidence must not apply"
+
+            # An add-only request still requires exactly added/unchanged.
+            del body["remove_runtime_environment_keys"], body["remove_managed_secret_bindings"]
+            body["runtime_environment_keys"] = [removal]
+            payload_path.write_text(json.dumps(body))
+            result["runtime_environment_keys"] = {"added": [removal], "unchanged": [], "removed": [], "absent": []}
+            assert dry_run()[0] != 0
+
+
+def test_expected_config_removal_items_are_plain_identities() -> None:
+    valid_runtime = {"key": "ODOO_VERSION", "context": "example-site", "instance": ""}
+    valid_binding = {"integration": "runtime_environment", "binding_key": "EXAMPLE_BINDING", "context": "example-site", "instance": "testing"}
+    refused = [
+        ("remove_runtime_environment_keys", {**valid_runtime, "key": " "}),
+        ("remove_runtime_environment_keys", {"context": "example-site"}),
+        ("remove_runtime_environment_keys", {**valid_runtime, "context": "", "instance": "testing"}),
+        ("remove_runtime_environment_keys", {**valid_runtime, "key": ["ODOO_VERSION"]}),
+        ("remove_managed_secret_bindings", {**valid_binding, "binding_key": {"value": "nested"}}),
+        ("remove_managed_secret_bindings", {**valid_binding, "integration": ""}),
+        ("remove_managed_secret_bindings", {**valid_binding, "context": None}),
+        ("remove_managed_secret_bindings", {**valid_binding, "owner_input": {"label": "Mail"}}),
+    ]
+    with TemporaryDirectory() as directory:
+        payload_path = Path(directory) / "metadata.json"
+        args = argparse.Namespace(payload_file=str(payload_path))
+        base = {"schema_version": 1, "product": "example-site", "reason": "Sites build their own images."}
+        payload_path.write_text(json.dumps({**base, "remove_runtime_environment_keys": [valid_runtime], "remove_managed_secret_bindings": [valid_binding]}))
+        assert write_action.product_expected_config_payload_body(args, mode="dry-run")["remove_managed_secret_bindings"] == [valid_binding]
+        for kind, item in refused:
+            payload_path.write_text(json.dumps({**base, kind: [item]}))
+            try:
+                write_action.product_expected_config_payload_body(args, mode="dry-run")
+            except ValueError:
+                continue
+            raise AssertionError(f"{kind} accepted {item!r}")
+
+
 def test_owner_review_reader_keeps_full_prose_and_uses_only_the_private_route() -> None:
     decision = {
         "record_id": "decision-one", "product": "example-site", "repository": "example/site",
@@ -4645,6 +4745,8 @@ def main() -> int:
         test_owner_review_reader_rejects_wrong_subject_or_selected_record,
         test_owner_review_reader_surfaces_denial_without_credentials_or_provider_text,
         test_expected_config_review_binds_metadata_and_never_prints_owner_instructions,
+        test_expected_config_removal_shape_is_bound_to_the_request,
+        test_expected_config_removal_items_are_plain_identities,
         test_agent_operator_contract_identity_and_provenance_semantics,
         test_agent_operator_contract_rejects_drift_and_unsafe_content,
         test_agent_operator_contract_routes_every_local_consumer,

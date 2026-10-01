@@ -195,7 +195,7 @@ commands:
     source: skill
     resource_path: scripts/launchplane-write-action.py
     example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "product-expected-config-dry-run", "--payload-file", "<file>"]
-    purpose: Reviews additive product configuration metadata without accepting credential values.
+    purpose: Reviews product configuration metadata additions and removals without accepting credential values.
   - name: launchplane-product-expected-config-apply
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -524,7 +524,7 @@ policy:
         - kind: script
           path: scripts/launchplane-write-action.py
           example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "product-expected-config-dry-run", "--payload-file", "<private-file>"]
-          purpose: Reviews additive product configuration metadata before any apply.
+          purpose: Reviews product configuration metadata additions and removals before any apply.
     - id: prefer-launchplane-write-helper-for-product-config-api
       match:
         shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/(product-config/apply|agent/write-intents/evaluate)\\b"
