@@ -125,9 +125,29 @@ local extensions until the vendored artifact is refreshed.
   targets, each with state, times, counts, delivery id, last error and the
   plan fields the reconciler is known to write: action, reason, hold, commits,
   artifact ids, digests, operation and plan ids, the preview URL's scheme and
-  host only, and the names of omitted integration keys (as
-  `omitted_integration_keys`). Any other plan field is dropped and counted under
+  host only, the owner-review flag, and the names of omitted or missing
+  integration keys (as `omitted_integration_keys` and `missing_keys`). Operation
+  ids include `queued_operation_id`, `active_operation_id`,
+  `deployed_operation_id` and `last_failed_operation_id`. Any other plan field,
+  such as rejected-build error text or PR feedback, is dropped and counted under
   `requests[].last_plan.<unlisted field>`; the same drop and omit rules apply.
+- `target-replacement-operation-read --operation-id` calls
+  `GET /v1/drivers/odoo/target-replacement/operations/{operation_id}` with no
+  query. The service authorizes it as `odoo_target_replacement_apply.execute`
+  on the operation's product, context and instance, so a caller without that
+  grant gets `authorization_denied`. It returns the operation's id, product,
+  context, instance, status, phase, attempt, deployment record id, the
+  requested artifact id, created, updated, started, heartbeat and finished
+  times, and `error_code` and `error_message`; and, once a result exists, the
+  deploy, post-deploy, health, canonical and logo statuses, the deployment and
+  release tuple ids, artifact id and image digest, and the result's error
+  message. Error messages are redacted: URLs, token-like values, sensitive
+  `name=value` pairs and the provider target name and id become `[redacted]`,
+  cut to 400 characters. Request settings, idempotency material, lease holder,
+  authorization and cancellation evidence, verification and override evidence,
+  URLs, the image repository and provider target names are dropped and listed
+  in `dropped_field_paths`; an unknown field is listed as
+  `<unlisted field>`. A secret-looking value in a kept field fails the read.
 - Path segments must be plain identifiers; anything else is refused before a
   request is sent. Runtime settings, managed secrets, available actions, URLs,
   provider target names and driver extensions are dropped from the output.

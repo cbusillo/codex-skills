@@ -35,6 +35,7 @@ from launchplane_safety import (  # noqa: E402
     public_timestamp,
     public_trace_id,
     public_url,
+    redacted_summary_string,
     safe_urlopen,
     validate_service_url,
 )
@@ -61,6 +62,7 @@ READ_ONLY_OPERATIONS = {
     "product-activity-read",
     "preview-history-read",
     "reconcile-requests-read",
+    "target-replacement-operation-read",
 }
 MERGE_TRAIN_POLICY_IMPORT_ENVELOPE_FIELDS = {
     "schema_version",
@@ -2668,6 +2670,11 @@ def _reconcile_plan_validators() -> dict[str, Any]:
 
 
 RECONCILE_PLAN_VALIDATORS = _reconcile_plan_validators()
+# Plan lists of setting key names (never values), by the name they are output under.
+RECONCILE_PLAN_KEY_NAME_LISTS = {
+    "omitted_integration_credential_keys": "omitted_integration_keys",
+    "missing_keys": "missing_keys",
+}
 
 
 def _project_reconcile_plan(plan_value: object, drops: _FieldDrops) -> dict[str, object]:
@@ -2679,17 +2686,18 @@ def _project_reconcile_plan(plan_value: object, drops: _FieldDrops) -> dict[str,
         validate = RECONCILE_PLAN_VALIDATORS.get(key)
         if validate is not None:
             projected[key] = drops.keep(f"requests[].last_plan.{key}", validate, value)
-        elif key == "held":
+        elif key in {"held", "owner_review_requested"}:
             projected[key] = value if isinstance(value, bool) else None
         elif key == "pull_request_number":
             projected[key] = value if type(value) is int else None
-        elif key == "omitted_integration_credential_keys" and isinstance(value, list):
+        elif key in RECONCILE_PLAN_KEY_NAME_LISTS and isinstance(value, list):
             # Key names only; the output name avoids the sensitive-key denylist.
+            output_key = RECONCILE_PLAN_KEY_NAME_LISTS[key]
             items = [
-                drops.keep("requests[].last_plan.omitted_integration_keys[]", public_identifier, item)
+                drops.keep(f"requests[].last_plan.{output_key}[]", public_identifier, item)
                 for item in value[:RECONCILE_MAX_PLAN_LIST_ITEMS]
             ]
-            projected["omitted_integration_keys"] = [item for item in items if item]
+            projected[output_key] = [item for item in items if item]
         else:
             drops.drop("requests[].last_plan.<unlisted field>")
     return projected
@@ -2751,6 +2759,219 @@ def _project_reconcile_requests(provider_payload: dict[str, Any]) -> dict[str, o
         "requests": projected_requests,
         "requests_truncated": len(requests) > RECONCILE_MAX_REQUESTS,
         "omitted_request_count": omitted_request_count,
+        "dropped_field_count": drops.count,
+        "dropped_field_paths": sorted(drops.paths),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+TARGET_REPLACEMENT_OPERATION_TIMESTAMPS = (
+    "created_at",
+    "updated_at",
+    "started_at",
+    "heartbeat_at",
+    "finished_at",
+)
+# Record fields the service writes that the read leaves out by design: request settings,
+# idempotency material, lease holders, authorization and cancellation evidence, the poll URL.
+TARGET_REPLACEMENT_OPERATION_OMITTED_FIELDS = frozenset(
+    {
+        "schema_version",
+        "idempotency_key",
+        "idempotency_scope",
+        "request_fingerprint",
+        "authorization",
+        "lease_owner",
+        "lease_expires_at",
+        "cancellation",
+        "runner_trace_id",
+        "poll_url",
+    }
+)
+TARGET_REPLACEMENT_REQUEST_FIELDS = frozenset(
+    {
+        "schema_version",
+        "product",
+        "instance",
+        "strategy",
+        "allow_empty_data",
+        "data_source_mode",
+        "confirmation",
+        "artifact_id",
+        "source_git_ref",
+        "expected_current_artifact_id",
+        "verify_health",
+        "verify_canonical",
+        "verify_logo",
+        "no_cache",
+        "timeout_seconds",
+        "health_timeout_seconds",
+    }
+)
+TARGET_REPLACEMENT_RESULT_STATUSES = (
+    "deploy_status",
+    "post_deploy_status",
+    "health_status",
+    "canonical_status",
+    "logo_status",
+)
+TARGET_REPLACEMENT_RESULT_IDS = ("deployment_record_id", "release_tuple_id", "artifact_id")
+TARGET_REPLACEMENT_RESULT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "product",
+        "context",
+        "instance",
+        "strategy",
+        "post_deploy_override_status",
+        "post_deploy_override_record_found",
+        "post_deploy_override_payload_rendered",
+        "post_deploy_override_count",
+        "post_deploy_website_bootstrap_included",
+        "post_deploy_override_evidence",
+        "health_url",
+        "canonical_url",
+        "logo_urls",
+        "verification_evidence",
+        "runtime_identity_injected",
+        "target_id",
+        "target_name",
+        "image_reference",
+        "runtime_source",
+        "error_message",
+        *TARGET_REPLACEMENT_RESULT_STATUSES,
+        *TARGET_REPLACEMENT_RESULT_IDS,
+    }
+)
+
+
+def _report_dropped_fields(
+    source: dict[str, Any], *, prefix: str, kept: set[str], known: frozenset[str], drops: _FieldDrops
+) -> None:
+    """Count every field the projection leaves out. Known record fields are named; any other
+    key is reported as ``<unlisted field>`` so a key name from the service is never echoed."""
+    for key in source:
+        if key in kept:
+            continue
+        drops.drop(f"{prefix}.{key}" if key in known else f"{prefix}.<unlisted field>")
+
+
+def _redacted_error_message(
+    path: str, value: object, drops: _FieldDrops, *, hide: tuple[str, ...]
+) -> str:
+    if value is None or value == "":
+        return ""
+    try:
+        return redacted_summary_string(value, max_length=400, hide=hide)
+    except LaunchplaneSafetyError:
+        drops.drop(path)
+        return ""
+
+
+def _project_target_replacement_result(
+    value: object, drops: _FieldDrops, *, hide: tuple[str, ...]
+) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        drops.drop("result")
+        return None
+    result = cast(dict[str, Any], value)
+    projected: dict[str, object] = {
+        name: drops.keep(f"result.{name}", _public_dotted_code, result.get(name))
+        for name in TARGET_REPLACEMENT_RESULT_STATUSES
+    }
+    for name in TARGET_REPLACEMENT_RESULT_IDS:
+        projected[name] = drops.keep(f"result.{name}", public_identifier, result.get(name))
+    image_reference = result.get("image_reference")
+    projected["image_digest"] = drops.keep(
+        "result.image_reference", public_identifier, _image_digest(image_reference)
+    )
+    projected["error_message"] = _redacted_error_message(
+        "result.error_message", result.get("error_message"), drops, hide=hide
+    )
+    _report_dropped_fields(
+        result,
+        prefix="result",
+        kept={*TARGET_REPLACEMENT_RESULT_STATUSES, *TARGET_REPLACEMENT_RESULT_IDS, "image_reference"},
+        known=TARGET_REPLACEMENT_RESULT_FIELDS,
+        drops=drops,
+    )
+    if image_reference not in {None, ""}:
+        # The repository part of the reference is dropped; only the digest is kept.
+        drops.drop("result.image_reference")
+    return projected
+
+
+def _project_target_replacement_operation(provider_payload: dict[str, Any]) -> dict[str, object]:
+    """One Odoo target-replacement operation's progress and redacted error. Settings,
+    URLs, provider target names and evidence payloads are dropped and listed by path; a
+    secret-looking value in a kept field fails the read."""
+    operation = _require_dict(provider_payload.get("operation"))
+    drops = _FieldDrops()
+    raw_result = provider_payload.get("result")
+    if raw_result is None:
+        raw_result = operation.get("result")
+    result_source = raw_result if isinstance(raw_result, dict) else {}
+    # Provider target names never appear in the output, even inside an error message.
+    hide = tuple(
+        str(result_source.get(name))
+        for name in ("target_name", "target_id")
+        if isinstance(result_source.get(name), str)
+    )
+
+    def field(name: str, validate: Any) -> object:
+        return drops.keep(f"operation.{name}", validate, operation.get(name))
+
+    attempt = operation.get("attempt")
+    if isinstance(attempt, bool) or not isinstance(attempt, int):
+        if attempt is not None:
+            drops.drop("operation.attempt")
+        attempt = None
+    request_value = operation.get("request")
+    request = request_value if isinstance(request_value, dict) else {}
+    projected_operation: dict[str, object] = {
+        "operation_id": public_identifier(operation.get("operation_id")),
+        "product": public_identifier(operation.get("product")),
+        "context": public_identifier(operation.get("context")),
+        "instance": public_identifier(operation.get("instance")),
+        "status": field("status", _public_dotted_code),
+        "phase": field("phase", _public_dotted_code),
+        "attempt": attempt,
+        "deployment_record_id": field("deployment_record_id", public_identifier),
+        "artifact_id": drops.keep(
+            "operation.request.artifact_id", public_identifier, request.get("artifact_id")
+        ),
+        "error_code": field("error_code", _public_dotted_code),
+        "error_message": _redacted_error_message(
+            "operation.error_message", operation.get("error_message"), drops, hide=hide
+        ),
+    }
+    for name in TARGET_REPLACEMENT_OPERATION_TIMESTAMPS:
+        projected_operation[name] = field(
+            name, lambda value: public_summary_string(value, max_length=64)
+        )
+    # The operation's own copy of the result is read below, from the response's result.
+    kept = {*projected_operation, "request", "result"}
+    kept.discard("artifact_id")
+    _report_dropped_fields(
+        operation,
+        prefix="operation",
+        kept=kept,
+        known=TARGET_REPLACEMENT_OPERATION_OMITTED_FIELDS,
+        drops=drops,
+    )
+    _report_dropped_fields(
+        request,
+        prefix="operation.request",
+        kept={"artifact_id"},
+        known=TARGET_REPLACEMENT_REQUEST_FIELDS,
+        drops=drops,
+    )
+    projected: dict[str, object] = {
+        "operation": projected_operation,
+        "result": _project_target_replacement_result(raw_result, drops, hide=hide),
         "dropped_field_count": drops.count,
         "dropped_field_paths": sorted(drops.paths),
     }
@@ -3937,11 +4158,34 @@ def summarize_reconcile_requests_read(
     return payload
 
 
+def summarize_target_replacement_operation_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    if any(str(key) not in {"status", "trace_id", "operation", "result"} for key in provider_payload):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    status = public_code(provider_payload.get("status"), default="ok")
+    payload = base_payload(
+        status=status, operation="target-replacement-operation-read", request=request
+    )
+    payload["result"] = _project_target_replacement_operation(provider_payload)
+    payload["summary"] = {
+        "launchplane_status": status,
+        "trace_id": public_trace_id(provider_payload.get("trace_id")),
+        "recommendation": (
+            "Read operation.status, phase and error_code first; the result statuses say "
+            "which deploy or verification step failed."
+        ),
+    }
+    assert_public_safe_shape(payload["summary"])
+    return payload
+
+
 PRODUCT_READ_SUMMARIZERS = {
     "product-environment-read": summarize_product_environment_read,
     "product-activity-read": summarize_product_activity_read,
     "preview-history-read": summarize_preview_history_read,
     "reconcile-requests-read": summarize_reconcile_requests_read,
+    "target-replacement-operation-read": summarize_target_replacement_operation_read,
 }
 
 
@@ -5102,6 +5346,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     reconcile_requests_read.add_argument("--product", required=True)
 
+    target_replacement_operation_read = subparsers.add_parser(
+        "target-replacement-operation-read",
+        help=(
+            "Read one Odoo target-replacement (testing or stable deploy) operation's "
+            "status, phase, times and redacted error."
+        ),
+    )
+    target_replacement_operation_read.add_argument("--operation-id", required=True)
+
     for command, help_text in (
         ("testing-hold-dry-run", "Dry-run setting or lifting a testing lane's staff-testing hold."),
         ("testing-hold-apply", "Apply a reviewed testing hold change bound to the saved dry-run digest."),
@@ -5450,6 +5703,15 @@ def main(argv: list[str]) -> int:
             path = _product_read_path(args.command, product=args.product)
             request = {
                 "product": public_identifier(args.product),
+                "payload_source": "operator_argument",
+            }
+            return execute_product_read(
+                args=args, operation=args.command, request=request, path=path
+            )
+        if args.command == "target-replacement-operation-read":
+            path = _product_read_path(args.command, operation_id=args.operation_id)
+            request = {
+                "operation_id": public_identifier(args.operation_id),
                 "payload_source": "operator_argument",
             }
             return execute_product_read(
