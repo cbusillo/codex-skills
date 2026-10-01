@@ -1560,6 +1560,11 @@ def test_global_native_summary_savings_reach_real_reader() -> None:
         module.cmd_next(next_args())
         assert [item["number"] for item in result["candidates"]] == [2]
         assert calls == ["/repos/someone/direction/issues/1/sub_issues"]
+    calls.clear()
+    with global_fixture([], [root], {(root["repo"], 1): relationships(sub_issues=[leaf])}, discovered=[leaf], relationship_requests=calls) as (module, result, _reads):
+        module.cmd_next(next_args())
+        assert [item["number"] for item in result["candidates"]] == [2]
+        assert calls == ["/repos/someone/direction/issues/1/sub_issues"]
 
 
 def test_unvisited_track_ancestry_and_unparsed_repository_direction_context() -> None:
