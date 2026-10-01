@@ -8,7 +8,9 @@
 The `direction` skill records the end of every daily turn in a small local
 marker, and the audit script records each weekly audit there per repository.
 At session start this hook prints the skills protocol on Claude Code and the executing loop for repositories with a
-root DIRECTION.md. It reads the marker and prints one line when the last
+root DIRECTION.md. In a repository without one, whose origin owner keeps an overall direction in OWNER/direction
+that has been audited on this machine or is checked out beside it, it prints that file's stop boundaries, where the file lives, and the loop.
+It reads the marker and prints one line when the last
 turn is older than a day, or when the repository the session opened in has a
 `DIRECTION.md` and its last audit is older than a week. Outside a direction
 repository it prints nothing when checks are current. It never reads stdin,
@@ -33,6 +35,9 @@ TURN_STALE = dt.timedelta(hours=24)
 AUDIT_STALE = dt.timedelta(days=7)
 LOOP_PATH = Path(__file__).resolve().parents[1] / "skills" / "references" / "executing-loop.md"
 SKILLS_PROTOCOL_PATH = LOOP_PATH.with_name("using-skills.md")
+GH_READER = Path(__file__).resolve().parents[1] / "skills" / "github" / "scripts" / "gh-with-env-token"
+OVERALL_REPO = "direction"
+OVERALL_READ_TIMEOUT = 6
 
 
 def marker_path(env: Mapping[str, str] | None = None) -> Path:
@@ -75,20 +80,29 @@ def read_marker(path: Path) -> dict[str, object]:
     return {"turn": parse_stamp(raw.get("turn")), "audits": audits}
 
 
-def direction_root(cwd: Path) -> Path | None:
-    """Checkout root when cwd belongs to a repository with DIRECTION.md."""
+def git_line(cwd: Path, *args: str) -> str | None:
     try:
-        top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, text=True, capture_output=True, timeout=5)
-        if top.returncode != 0 or not top.stdout.strip():
-            return None
-        root = Path(top.stdout.strip())
-        return root if (root / "DIRECTION.md").is_file() else None
+        result = subprocess.run(["git", *args], cwd=cwd, text=True, capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
 
 
-def adopted_repo(root: Path | None) -> str | None:
-    """OWNER/REPO for a direction checkout with a GitHub origin, if available."""
+def checkout_root(cwd: Path) -> Path | None:
+    top = git_line(cwd, "rev-parse", "--show-toplevel")
+    return Path(top) if top else None
+
+
+def direction_root(cwd: Path) -> Path | None:
+    """Checkout root when cwd belongs to a repository with DIRECTION.md."""
+    root = checkout_root(cwd)
+    return root if root is not None and (root / "DIRECTION.md").is_file() else None
+
+
+def origin_repo(root: Path | None) -> str | None:
+    """OWNER/REPO for a checkout with a GitHub origin, if available."""
     if root is None:
         return None
     try:
@@ -97,6 +111,95 @@ def adopted_repo(root: Path | None) -> str | None:
         return None
     match = re.search(r"github\.com[:/]([^/]+)/([^/.]+)(?:\.git)?$", remote.stdout.strip()) if remote.returncode == 0 else None
     return f"{match.group(1)}/{match.group(2)}" if match else None
+
+
+def section(text: str, heading: str) -> str | None:
+    """One `## heading` section of a Markdown file, heading included."""
+    lines: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            if lines:
+                break
+            if line[3:].strip().lower() == heading.lower():
+                lines.append(line)
+        elif lines:
+            lines.append(line)
+    return "\n".join(lines).strip() or None
+
+
+def read_merged_overall(owner: str) -> tuple[str | None, str]:
+    """The merged overall DIRECTION.md from GitHub, or None and why it could not be read."""
+    try:
+        result = subprocess.run(
+            [str(GH_READER), "api", f"repos/{owner}/{OVERALL_REPO}/contents/DIRECTION.md", "--method", "GET", "-H", "Accept: application/vnd.github.raw"],
+            text=True, capture_output=True, timeout=OVERALL_READ_TIMEOUT, stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        return None, "GitHub did not answer in time"
+    except OSError as exc:
+        return None, f"the GitHub reader could not run ({exc.strerror or exc})"
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout, "the merged default branch"
+    detail = (result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}").splitlines()[-1]
+    return None, f"GitHub read failed: {detail[:160]}"
+
+
+def local_overall_checkout(owner: str, root: Path) -> Path | None:
+    """A `direction` checkout of OWNER/direction beside this repository's main checkout."""
+    common = git_line(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if not common:
+        return None
+    local = Path(common).parent.parent / OVERALL_REPO
+    return local if (origin_repo(local) or "").lower() == f"{owner}/{OVERALL_REPO}".lower() else None
+
+
+def read_local_overall(local: Path | None) -> tuple[str | None, str]:
+    """DIRECTION.md as last fetched from the remote default branch, never a local branch or draft."""
+    if local is None:
+        return None, "no local checkout beside this repository"
+    try:
+        result = subprocess.run(["git", "show", "refs/remotes/origin/HEAD:DIRECTION.md"], cwd=local, text=True, capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None, f"could not read {local}"
+    if result.returncode != 0 or not result.stdout.strip():
+        return None, f"{local} has no fetched default branch with a DIRECTION.md"
+    return result.stdout, f"the default branch last fetched into {local}, which may be behind GitHub"
+
+
+def overall_direction(repo: str | None, root: Path | None, marker: dict[str, object], loop: str) -> str:
+    """Overall direction for a checkout without its own DIRECTION.md, empty when its owner keeps none here.
+
+    Only an owner who set up OWNER/direction on this machine counts: it has been audited here, or
+    it is checked out beside this repository. That keeps another person's repository from putting
+    its text into the session, and it keeps owners who never set up an overall direction from
+    paying for a network read at every start.
+    """
+    if not repo or root is None:
+        return ""
+    owner = repo.split("/", 1)[0]
+    audits = marker.get("audits")
+    audited = isinstance(audits, dict) and any(str(key).lower() == f"{owner}/{OVERALL_REPO}".lower() for key in audits)
+    local = local_overall_checkout(owner, root)
+    if not audited and local is None:
+        return ""
+    url = f"https://github.com/{owner}/{OVERALL_REPO}/blob/HEAD/DIRECTION.md"
+    where = url
+    text, source = read_merged_overall(owner)
+    if text is None:
+        text, local_reason = read_local_overall(local)
+        if text is None:
+            return (
+                f"Overall direction: this repository has no DIRECTION.md of its own, so {owner}'s overall direction in "
+                f"{url} applies, but it could not be read at session start ({source}; {local_reason})."
+            )
+        source = local_reason
+        where = f"`git -C {local} show refs/remotes/origin/HEAD:DIRECTION.md` (on GitHub: {url})"
+    boundaries = section(text, "Stop Boundaries") or "(the file has no Stop Boundaries section; read it in full)"
+    return (
+        f"Overall direction: this repository has no DIRECTION.md of its own, so {owner}'s overall direction applies. "
+        f"Read {where} before acting. Its stop boundaries, from {source}:\n\n{boundaries}"
+        + (f"\n\n{loop}" if loop else "")
+    )
 
 
 def reminder(marker: dict[str, object], now: dt.datetime, repo: str | None, path: Path) -> str:
@@ -146,13 +249,21 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None) -> int:
         except (ImportError, OSError):
             pass
         path = marker_path()
+        marker = read_marker(path)
         root = direction_root(Path.cwd())
+        try:
+            loop = LOOP_PATH.read_text().strip()
+        except OSError:
+            loop = ""  # A missing loop reference must not hide an overdue reminder.
         if root is not None:
-            try:
-                print(LOOP_PATH.read_text().strip())
-            except OSError:
-                pass  # A missing loop reference must not hide an overdue reminder.
-        reminder_text = reminder(read_marker(path), dt.datetime.now(dt.timezone.utc), adopted_repo(root), path)
+            if loop:
+                print(loop)
+        else:
+            checkout = checkout_root(Path.cwd())
+            overall = overall_direction(origin_repo(checkout), checkout, marker, loop)
+            if overall:
+                print(overall)
+        reminder_text = reminder(marker, dt.datetime.now(dt.timezone.utc), origin_repo(root), path)
         if reminder_text:
             print(reminder_text)
     except Exception:  # noqa: BLE001 - a reminder must never break a session start
