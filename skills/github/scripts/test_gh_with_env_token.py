@@ -223,6 +223,12 @@ def test_app_installation_follows_the_target_repository() -> None:
             ("issue", "comment", "1", "--body", "repos/alice/tools"): "token:",
             ("api", "--jq", "repos/x/y", "repos/second-owner/site"): "token:--repo second-owner/site",
             ("pr", "view", "1", "-R", "git@github.com:second-owner/site.git"): "token:--repo second-owner/site",
+            ("issue", "comment", "1", "-R", "first/tools", "-R", "second-owner/site", "--body", "x"):
+                "token:--repo second-owner/site --require-installation",
+            ("issue", "comment", "1", "-R=second-owner/site", "--body", "x"):
+                "token:--repo second-owner/site --require-installation",
+            ("issue", "comment", "https://github.com/second-owner/site/issues/1", "-R", "first/tools", "--body", "x"):
+                "token:--repo second-owner/site --require-installation",
             ("api", "graphql", "-f", "query=query { viewer { login } }"): "token:",
         }
         for args, token in cases.items():

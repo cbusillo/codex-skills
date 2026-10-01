@@ -645,30 +645,47 @@ print_app_actor_probe() {
 	fi
 }
 
-# The repository a gh command targets: -R/--repo, the endpoint of `gh api`
-# when it is under repos/, or GH_REPO. Commands that name none (GraphQL by node
-# ID, for example) use the configured installation.
+# The repository a gh command targets, as gh resolves it: an issue or pull
+# request URL argument, then the last -R/--repo, then the endpoint of `gh api`
+# when it is under repos/, then GH_REPO. Commands that name none (GraphQL by
+# node ID, for example) use the configured installation.
 target_repository() {
 	previous=
+	url_repository=
+	flag_repository=
 	for argument in "$@"; do
 		case $previous in
 		-R | --repo)
-			repository_from_reference "$argument"
-			return 0
+			flag_repository=$(repository_from_reference "$argument")
+			previous=
+			continue
 			;;
 		esac
 		case $argument in
+		https://github.com/*/*/issues/* | https://github.com/*/*/pull/*)
+			path=${argument#https://github.com/}
+			owner=${path%%/*}
+			rest=${path#*/}
+			url_repository=$owner/${rest%%/*}
+			;;
 		--repo=*)
-			repository_from_reference "${argument#--repo=}"
-			return 0
+			flag_repository=$(repository_from_reference "${argument#--repo=}")
 			;;
 		-R?*)
-			repository_from_reference "${argument#-R}"
-			return 0
+			value=${argument#-R}
+			flag_repository=$(repository_from_reference "${value#=}")
 			;;
 		esac
 		previous=$argument
 	done
+	if [ -n "$url_repository" ]; then
+		printf '%s\n' "$url_repository"
+		return 0
+	fi
+	if [ -n "$flag_repository" ]; then
+		printf '%s\n' "$flag_repository"
+		return 0
+	fi
 	if [ "${1:-}" = api ]; then
 		shift
 		api_endpoint "$@" && return 0
