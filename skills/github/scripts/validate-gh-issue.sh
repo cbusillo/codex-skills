@@ -328,14 +328,20 @@ if [[ "$1" == "commit" ]]; then
 		>>"$GH_ISSUE_ENV_LOG"
 elif [[ "$1 $2 $3" == "remote get-url origin" ]]; then
 	printf 'git@github.com:owner/repo.git\n'
+elif [[ "$1 $2 $3 ${4:-}" == "remote get-url --push origin" ]]; then
+	printf '%s\n' "${FAKE_PUSH_URL:-$(cat "$GH_ISSUE_ENV_LOG.remote")}"
 elif [[ "$1 $2 $3" == "remote set-url origin" ]]; then
 	printf 'remote=%s\n' "$4" >>"$GH_ISSUE_ENV_LOG"
+	printf '%s\n' "$4" >"$GH_ISSUE_ENV_LOG.remote"
 elif [[ "$1" == "push" ]]; then
 	printf 'push-with-credential-helpers\n' >>"$GH_ISSUE_ENV_LOG"
 elif [[ "$1 $2 $3" == "-c credential.helper= push" ]]; then
 	printf 'askpass=%s prompt=%s token=%s\n' \
 		"${GIT_ASKPASS:-}" "${GIT_TERMINAL_PROMPT:-}" \
-		"${GIT_PUSH_AS_BOT_TOKEN:-}" >>"$GH_ISSUE_ENV_LOG"
+		"$("$GIT_ASKPASS" 'Password for https://github.com: ')" >>"$GH_ISSUE_ENV_LOG"
+	printf 'push_env=%s|%s|%s|%s|%s\n' \
+		"${CODEX_GITHUB_TOKEN:-}" "${GH_TOKEN:-}" "${GITHUB_TOKEN:-}" \
+		"${GIT_PUSH_AS_BOT_TOKEN:-}" "${UNRELATED_SECRET:-}" >>"$GH_ISSUE_ENV_LOG"
 fi
 EOF
 chmod +x "$tmpdir/record-git"
@@ -366,14 +372,28 @@ if [[ -s "$env_log" ]]; then
 fi
 
 : >"$env_log"
-PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
-	CODEX_GITHUB_TOKEN=codex-token GIT_PUSH_AS_BOT_GIT="$tmpdir/record-git" \
-	GH_ISSUE_TEST_LOG="$log" \
+# A user token must belong to the configured automation login.
+cat >"$tmpdir/login-gh" <<'EOF'
+#!/usr/bin/env bash
+[[ "$*" == "api user --jq .login" ]] || exit 2
+case "${GH_TOKEN:-}" in
+codex-token) echo fixture-automation ;;
+human-token) echo human-user ;;
+*) exit 1 ;;
+esac
+EOF
+chmod +x "$tmpdir/login-gh"
+printf 'CODEX_GITHUB_TOKEN=codex-token\nUNRELATED_SECRET=from-local-env\n' >"$tmpdir/token.env"
+PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/token.env" \
+	GIT_PUSH_AS_BOT_GIT="$tmpdir/record-git" GIT_PUSH_AS_BOT_GH="$tmpdir/login-gh" \
+	GH_TOKEN=inherited-token GH_ISSUE_TEST_LOG="$log" \
 	GH_ISSUE_ENV_LOG="$env_log" \
 	"$repo_root/github/scripts/git-push-as-bot" -u origin branch >/dev/null
 
 grep -q '^remote=https://github.com/owner/repo.git$' "$env_log"
 grep -q '^askpass=.* prompt=0 token=codex-token$' "$env_log"
+# Neither the token nor unrelated local.env values reach git and its hooks.
+grep -q '^push_env=||||$' "$env_log"
 grep -q '^remote=git@github.com:owner/repo.git$' "$env_log"
 
 # A configured GitHub App wins over a user token, as in gh-with-env-token.
@@ -400,6 +420,7 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" \
 	"$repo_root/github/scripts/git-push-as-bot" -u origin branch >/dev/null
 
 grep -q '^askpass=.* prompt=0 token=app-installation-token$' "$env_log"
+grep -q '^push_env=||||$' "$env_log"
 grep -q '^remote=git@github.com:owner/repo.git$' "$env_log"
 
 assert_push_refused() {
@@ -407,6 +428,7 @@ assert_push_refused() {
 	shift
 	: >"$env_log"
 	if env PATH="$tmpdir:$PATH" GIT_PUSH_AS_BOT_IDENTITY_HELPER="$tmpdir/fake-app-identity.py" \
+		GIT_PUSH_AS_BOT_GH="$tmpdir/login-gh" \
 		GIT_PUSH_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
 		GH_ISSUE_ENV_LOG="$env_log" "$@" \
 		"$repo_root/github/scripts/git-push-as-bot" -u origin branch >/dev/null 2>"$stderr_log"; then
@@ -426,6 +448,14 @@ assert_push_refused 'GitHub App authentication failed' \
 	CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" FAKE_APP_IDENTITY_FAIL=1
 assert_push_refused 'invalid response' \
 	CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" FAKE_APP_LOGIN=
+assert_push_refused "push would run as 'human-user', expected 'fixture-automation'" \
+	CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" GH_TOKEN=human-token
+assert_push_refused 'requires the configured automation login' \
+	CODEX_SKILLS_ENV_FILE="$tmpdir/token.env" CODEX_AUTOMATION_LOGIN=
+assert_push_refused "unable to verify the push token's GitHub account" \
+	CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" GH_TOKEN=revoked-token
+assert_push_refused "origin pushes to 'git@github.com:owner/repo.git'" \
+	CODEX_SKILLS_ENV_FILE="$tmpdir/token.env" FAKE_PUSH_URL=git@github.com:owner/repo.git
 printf 'GITHUB_APP_ID=1\nCODEX_GITHUB_TOKEN=codex-token\n' >"$tmpdir/partial-app.env"
 assert_push_refused 'incomplete GitHub App configuration' \
 	CODEX_SKILLS_ENV_FILE="$tmpdir/partial-app.env"
