@@ -99,6 +99,44 @@ def test_owner_as_automation_is_a_limit_and_preserves_real_findings() -> None:
     assert dirty["limits"] == clean["limits"]
 
 
+def test_owner_only_cli_audit_uses_explicit_reader_and_returns_known_limit() -> None:
+    import base64
+
+    module = load()
+    calls: list[list[str]] = []
+
+    def read(request: list[str], *, gh: str) -> Any:
+        assert gh == "owner-gh"
+        calls.append(request)
+        endpoint = request[1]
+        if endpoint.endswith("/contents/DIRECTION.md"):
+            return {"content": base64.b64encode(DIRECTION.encode()).decode()}
+        if endpoint == "user":
+            return {"login": "owner"}
+        if "/milestones?" in endpoint:
+            return [milestone(1, "Thin fork decision"), milestone(2, "Dogfood week")]
+        if "/rulesets?" in endpoint:
+            return [{"name": name, "target": "branch", "enforcement": "active"}
+                    for name in module.github_rulesets.required_ruleset_names()]
+        if "/issues?" in endpoint or "/pulls?" in endpoint:
+            return []
+        raise AssertionError(endpoint)
+
+    output = StringIO()
+    with patch.object(module, "gh_json", side_effect=read), \
+         patch.object(module, "previous_audit_stamp", return_value=None), \
+         patch.object(module, "record_audit", return_value=None), \
+         patch.object(module.github_identity, "configured_bot_logins", return_value=()), \
+         redirect_stdout(output):
+        assert module.main(["--repo", "owner/repo", "--gh", "owner-gh"]) == 0
+    result = json.loads(output.getvalue())
+    assert result["ok"] is True
+    assert result["read_only"] is True
+    assert result["findings"] == []
+    assert [item["kind"] for item in result["limits"]] == ["owner_acts_as_automation"]
+    assert calls and all(request[0] == "api" and request[-2:] == ["--method", "GET"] for request in calls)
+
+
 def test_audit_questions_are_ordinary_open_issues_not_pull_requests() -> None:
     module = load()
     result = run(module, issues=[

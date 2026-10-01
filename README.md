@@ -453,7 +453,7 @@ tokens.
 
 `skills/github/scripts/gh-rulesets.py` maintains two repository rulesets on the
 default branch: one reserves updates for the repository owner and the configured
-automation App, and the other requires code-owner review for `DIRECTION.md` and
+automation App when configured, and the other requires code-owner review for `DIRECTION.md` and
 `CODEOWNERS` without an App bypass. The helper clears automation-token variables
 and verifies that the active `gh` account is the repository owner before reading
 the full bypass configuration or writing anything. The configured App ID is
@@ -464,7 +464,10 @@ Only administrators can then update the default branch. Incomplete or invalid
 App configuration still fails rather than silently removing its bypass. If an
 existing landing ruleset already has an App bypass, an unconfigured shell also
 refuses: restore that App configuration and rerun the plan. The standard landing
-ruleset name stays the same in both modes so the audit can recognize it.
+ruleset name stays the same in both modes so the audit can recognize it. If the
+App has deliberately been retired, the owner removes that obsolete bypass in
+GitHub's repository ruleset settings before rerunning plan; missing configuration
+alone is not treated as authority to retire a bypass.
 
 Plan one or more repositories without changing GitHub:
 
@@ -492,6 +495,14 @@ branch ruleset. When the owner also acts as automation, the audit reports
 `owner_acts_as_automation` in `limits` and treats that login's milestone admissions
 as owner decisions. This known attribution limit does not make coverage incomplete
 or hide other findings; `ok` and `counts` still describe the findings.
+With only the owner's own `gh` login, explicitly select it for the read-only audit:
+
+```sh
+uv run skills/direction/scripts/direction_audit.py --repo OWNER/REPO --gh gh
+```
+
+The default audit reader remains the automation wrapper; this explicit read-only
+selection does not enable fallback for other helpers or authorize any write.
 
 The direction rule intentionally has no bypass. An owner who is the sole code
 owner cannot approve their own pull request, so direction changes should normally
