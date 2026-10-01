@@ -4367,7 +4367,7 @@ def test_expected_config_removal_reports_dispositions_and_refuses_partial_shapes
     with TemporaryDirectory() as directory:
         payload_path = Path(directory) / "metadata.json"
         removal = {"key": "ODOO_VERSION", "context": "example-site", "instance": ""}
-        secret_removal = {"integration": "runtime_environment", "binding_key": "SMTP_PASSWORD", "context": "example-site", "instance": ""}
+        secret_removal = {"integration": "runtime_environment", "binding_key": "EXAMPLE_BINDING", "context": "example-site", "instance": ""}
         body = {
             "schema_version": 1, "product": "example-site", "reason": "Sites build their own images.",
             "remove_runtime_environment_keys": [removal], "remove_managed_secret_bindings": [secret_removal],
