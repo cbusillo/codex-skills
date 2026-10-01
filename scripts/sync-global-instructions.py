@@ -43,6 +43,12 @@ def render_codex_hook(destination: Path, catalog: Path = ROOT, *, include_sessio
     if destination.is_symlink() or (destination.exists() and not destination.is_file()):
         raise ValueError(f"Refusing a symlink or non-file destination: {destination}")
     config = json.loads(destination.read_text()) if destination.exists() else {}
+    return render_codex_hook_content(config, destination, catalog, include_session_start=include_session_start, alerts_only=alerts_only)
+
+
+def render_codex_hook_content(config: dict, destination: Path, catalog: Path = ROOT, *, include_session_start: bool = False, alerts_only: bool = False) -> str:
+    """Render already-read definitions without writing or resolving the destination."""
+    config = copy.deepcopy(config)
     if not isinstance(config, dict) or not isinstance(config.get("hooks", {}), dict):
         raise ValueError(f"Invalid hooks configuration: {destination}")
     hooks = config.setdefault("hooks", {})

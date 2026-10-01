@@ -406,6 +406,28 @@ class InstallTests(unittest.TestCase):
         installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
         self.assertEqual(hook_path.read_bytes(), first)
 
+    def test_current_dotfiles_alert_binding_clears_skip_without_writes(self):
+        self.install()
+        hook_path = self.codex / "hooks.json"
+        original = hook_path.read_text()
+        target = self.root / "dotfiles-hooks"
+        hook_path.unlink()
+        target.write_text(original)
+        hook_path.symlink_to(target)
+        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertFalse(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
+        self.assertEqual(target.read_text(), original)
+        self.assertTrue(hook_path.is_symlink())
+        modified = json.loads(original)
+        modified["hooks"]["Stop"][-1]["hooks"][0]["command"] = "old-alert-command"
+        target.write_text(json.dumps(modified))
+        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertTrue(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
+        self.assertEqual(json.loads(target.read_text()), modified)
+        target.write_text(original)
+        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertFalse(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
+
     def test_removed_binding_in_dotfiles_symlink_is_not_refreshed(self):
         self.install()
         hook_path = self.codex / "hooks.json"
@@ -752,6 +774,13 @@ class UpdateTests(unittest.TestCase):
         self.assertIn("alert refresh was skipped", line)
         self.assertIn("--refresh-instructions", line)
         self.assertEqual(command("git", "rev-parse", "HEAD", cwd=self.checkout), head)
+        job = self.base / "job.plist"
+        job.write_text("fixture")
+        install.write_text(json.dumps({"scheduled_updater": True, "updater_plist": str(job)}))
+        status["checked_at"] = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1)).isoformat()
+        receipt.write_text(json.dumps(status))
+        self.assertIn("Catalog stale", runtime.status_line(self.checkout))
+        install.write_text(json.dumps({"scheduled_updater": False}))
         status.pop("alert_refresh")
         receipt.write_text(json.dumps(status))
         self.assertEqual(runtime.status_line(self.checkout), "")

@@ -346,9 +346,10 @@ that destination untouched, reports the skipped alert refresh in its output
 and updater receipt, and still refreshes instructions. The next session-start
 status line names the skipped alert refresh and its recovery command. Hook writes
 require a regular hooks.json file. A readable symlink with no catalog labels
-is recognized as unbound and left alone. A bound symlink or malformed destination
-remains unverified and produces a notice, while checkout/instruction updates
-continue. Reconcile that destination
+is recognized as unbound and left alone. A bound symlink whose alert entries already match the catalog is current and
+needs no write. A stale bound symlink or malformed destination remains unverified
+and produces a notice, while checkout/instruction updates continue. Catalog
+staleness and instruction drift take priority over this advisory notice. Reconcile that destination
 through the documented installer preview, then run
 `scripts/catalog_runtime.py --update` to clear the old skipped-refresh receipt.
 Supervisors own local retention of the events file; truncating it discards old

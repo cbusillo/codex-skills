@@ -235,8 +235,14 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                 for group in groups.get(event, [])
             )
             if managed:
-                hooks = sync.render_codex_hook(hook_path, catalog=ROOT, alerts_only=True)
-                hook_preview = sync.synchronize(hooks, [hook_path], write=False)
+                expected = sync.render_codex_hook_content(existing, hook_path, ROOT, alerts_only=True)
+                if hook_path.is_symlink() and json.loads(expected) == existing:
+                    # An already-current dotfiles binding needs no write. Trust
+                    # remains native and no symlink destination is mutated.
+                    hook_preview = [{"path": str(hook_path), "state": "current"}]
+                else:
+                    hooks = sync.render_codex_hook(hook_path, catalog=ROOT, alerts_only=True)
+                    hook_preview = sync.synchronize(hooks, [hook_path], write=False)
         except (OSError, ValueError) as error:
             # Alert setup must not stop an existing instruction-only refresh.
             # Keep the unsafe/unmanaged destination untouched and report the gap.

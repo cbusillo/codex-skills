@@ -56,6 +56,7 @@ def status_line(root: Path) -> str:
         if state["state"] == "current":
             receipt = root / ".local" / "catalog-update.json"
             stamp = installation.get("scheduled_at")
+            recorded = {}
             if receipt.exists():
                 recorded = json.loads(receipt.read_text())
                 if not isinstance(recorded, dict):
@@ -65,8 +66,7 @@ def status_line(root: Path) -> str:
                     step = recorded.get("failure_step", "catalog update")
                     recovery = "preview scripts/install-catalog.py --refresh-instructions, reconcile, then run scripts/catalog_runtime.py --update" if step == "instruction refresh" else "run scripts/catalog_runtime.py --update"
                     state = {"state": "blocked", "reason": f"last {step} failed; {recovery}"}
-                elif recorded.get("alert_refresh"):
-                    state = {"state": "notice", "reason": "catalog checkout is current but alert refresh was skipped; preview scripts/install-catalog.py --refresh-instructions, reconcile hooks.json, then run scripts/catalog_runtime.py --update"}
+
             checked_at = dt.datetime.fromisoformat(stamp) if stamp else None
             if checked_at is not None and checked_at.tzinfo is None:
                 raise ValueError("update timestamp has no timezone")
@@ -74,6 +74,8 @@ def status_line(root: Path) -> str:
                 state = {"state": "stale", "reason": "scheduled update has not checked origin in over 12 hours"}
             if state["state"] == "current" and installation.get("shared_source_sha256") and hashlib.sha256((root / "instructions" / "global.md").read_text().encode()).hexdigest() != installation["shared_source_sha256"]:
                 state = {"state": "stale", "reason": "shared instructions changed; run scripts/catalog_runtime.py --update to refresh installed instructions"}
+            if state["state"] == "current" and receipt.exists() and recorded.get("alert_refresh"):
+                state = {"state": "notice", "reason": "catalog checkout is current but alert refresh was skipped; preview scripts/install-catalog.py --refresh-instructions, reconcile hooks.json, then run scripts/catalog_runtime.py --update"}
         if state["state"] == "current":
             return ""
         return f"Catalog {state['state']}: {state['reason']} ({root})."
