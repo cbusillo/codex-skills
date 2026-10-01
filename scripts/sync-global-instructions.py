@@ -8,6 +8,8 @@
 Preview by default. --write preserves each changed destination in a sibling
 backup before replacing it. Private host instructions stay in the ignored
 source .local/global-instructions.md, shared by both outputs.
+If run without a local source, writing is refused to prevent dropping private
+instructions unless --allow-missing-local is given.
 """
 
 from __future__ import annotations
@@ -60,26 +62,38 @@ def render_codex_hook(destination: Path, catalog: Path = ROOT) -> str:
     return json.dumps(config, indent=2) + "\n"
 
 
-def synchronize(content: str, destinations: list[Path], *, write: bool) -> list[dict[str, str]]:
+def synchronize(content: str, destinations: list[Path], *, write: bool, local_source_missing: bool = False, allow_missing_local: bool = False) -> list[dict[str, str]]:
+    desired = content.encode()
     # Inspect every destination before writing either one.
     previous: dict[Path, bytes | None] = {}
     for path in destinations:
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise ValueError(f"Refusing a symlink or non-file destination: {path}")
-        previous[path] = path.read_bytes() if path.exists() else None
-    desired = content.encode()
+        old = path.read_bytes() if path.exists() else None
+        previous[path] = old
+        if old is not None and old != desired and local_source_missing and not allow_missing_local:
+            msg = f"Local source is missing and {path.name} would change. Use --allow-missing-local to overwrite and drop any private instructions."
+            if write:
+                raise ValueError(f"Refusing to write {path}: {msg}")
+
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     results = []
     for path, old in previous.items():
         entry = {"path": str(path), "sha256": hashlib.sha256(desired).hexdigest(), "state": "current"}
         if old != desired:
-            entry["state"] = "written" if write else "would_write"
-            if not write:
+            if local_source_missing and not allow_missing_local and old is not None:
+                msg = f"Local source is missing and {path.name} would change. Use --allow-missing-local to overwrite and drop any private instructions."
+                entry["refusal"] = msg
+                entry["state"] = "refused"
+            else:
+                entry["state"] = "written" if write else "would_write"
+                
+            if entry["state"] in ("would_write", "refused"):
                 entry["diff"] = "".join(difflib.unified_diff(
                     (old or b"").decode().splitlines(keepends=True), content.splitlines(keepends=True),
                     fromfile=str(path), tofile=f"{path} (generated)",
                 ))
-            else:
+            elif entry["state"] == "written":
                 path.parent.mkdir(parents=True, exist_ok=True)
                 if path.is_symlink() or (path.read_bytes() if path.exists() else None) != old:
                     raise ValueError(f"Destination changed during preparation: {path}")
@@ -108,6 +122,7 @@ def main() -> int:
     parser.add_argument("--codex-dir", type=Path, help="Codex configuration directory (default CODEX_HOME, then ~/.codex)")
     parser.add_argument("--claude-dir", type=Path, help="Claude configuration directory (default CLAUDE_CONFIG_DIR, then ~/.claude)")
     parser.add_argument("--write", action="store_true")
+    parser.add_argument("--allow-missing-local", action="store_true", help="Proceed with write even if the local source is missing")
     parser.add_argument("--codex-hook", action="store_true", help="Also register the catalog's PreToolUse hook in .codex/hooks.json; host hook trust is unchanged")
     args = parser.parse_args()
     if args.home_dir and (args.codex_dir or args.claude_dir):
@@ -120,9 +135,10 @@ def main() -> int:
     try:
         hook_destination = codex_dir / "hooks.json"
         hook_content = render_codex_hook(hook_destination) if args.codex_hook else None
+        local_missing = not args.local_source.exists()
         outputs = synchronize(render(args.source, args.local_source), [
             claude_dir / "CLAUDE.md", codex_dir / "AGENTS.md",
-        ], write=args.write)
+        ], write=args.write, local_source_missing=local_missing, allow_missing_local=args.allow_missing_local)
         if hook_content is not None:
             outputs.extend(synchronize(hook_content, [hook_destination], write=args.write))
     except (OSError, ValueError) as error:

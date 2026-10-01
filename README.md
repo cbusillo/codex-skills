@@ -79,6 +79,30 @@ on Codex; Claude's field requires an actual user slash-command invocation.
 The registered hook uses a JSON deny decision and an exit-zero launcher fallback,
 so missing source or a uv startup failure cannot masquerade as a policy denial.
 
+### Claude Cowork
+
+Cowork in the Claude desktop app does not read `~/.claude/skills`; it installs
+plugins from a marketplace. This repository is one:
+`.claude-plugin/marketplace.json` lists the repository root as the `shared`
+plugin. In the desktop app or on claude.ai:
+
+1. Open **Customize**, then **Plugins**.
+2. Select **Add**, then **Add marketplace**, and enter `OWNER/codex-skills`.
+3. Install **shared** from that marketplace, then start a new Cowork task.
+
+Turn on **Sync automatically** on the marketplace, or use **Check for
+updates**, to pick up new commits. The plugin has no pinned version, so each
+commit on the default branch is a new version. Cowork reads only the default
+branch.
+
+The install belongs to your claude.ai account, so Claude Code on the same
+account also receives it as `shared@synced`. Where the repository is already
+linked into `~/.claude/skills`, that link wins and the synced copy is reported
+as not loaded; nothing changes for that machine. Do not also install the
+marketplace plugin from the Claude Code command line on such a machine: an
+installed marketplace plugin outranks the link and would replace the in-place
+checkout with a cached copy.
+
 ### Shared global instructions and Codex hooks
 
 [`instructions/global.md`](instructions/global.md) is the common source for
@@ -92,6 +116,8 @@ uv run scripts/sync-global-instructions.py --codex-hook
 uv run scripts/sync-global-instructions.py --codex-hook --write
 ```
 
+If you are intentionally updating global instructions from a task worktree (where `.local` is missing) and want to overwrite the existing files, append `--allow-missing-local` to proceed without private instructions.
+
 Run from the maintained runtime checkout after landing the source. The helper
 generates `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, backs up changed files,
 and refuses symlink destinations. `--home-dir` selects a fixture home for tests.
@@ -99,6 +125,7 @@ Native `CODEX_HOME` and `CLAUDE_CONFIG_DIR` overrides are respected; use
 `--codex-dir` or `--claude-dir` for explicit host destinations. `CODE_HOME`
 continues to locate shared catalog state, not either host's global instructions.
 Omit `--codex-hook` to synchronize instructions alone.
+If run from a task worktree where the local source is missing, the script refuses to overwrite existing files to prevent dropping private instructions. Use `--allow-missing-local` to override this and proceed.
 
 Codex 0.157.0 supports a blocking `PreToolUse` hook, exposes shell calls as
 `Bash` with `tool_input.command`, and honors exit 2 with a stderr reason.
@@ -163,6 +190,8 @@ diff removes nothing you want, and write:
 uv run scripts/sync-global-instructions.py --codex-hook
 uv run scripts/sync-global-instructions.py --codex-hook --write
 ```
+
+If you are intentionally updating global instructions from a task worktree (where `.local` is missing) and want to overwrite the existing files, append `--allow-missing-local` to proceed without private instructions.
 
 ## Execution Environment
 
