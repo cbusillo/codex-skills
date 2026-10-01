@@ -154,24 +154,49 @@ so missing source or a uv startup failure cannot masquerade as a policy denial.
 Cowork in the Claude desktop app does not read `~/.claude/skills`; it installs
 plugins from a marketplace. This repository is one:
 `.claude-plugin/marketplace.json` lists the repository root as the `shared`
-plugin. In the desktop app or on claude.ai:
+plugin. In the desktop app:
 
-1. Open **Customize**, then **Plugins**.
-2. Select **Add**, then **Add marketplace**, and enter `OWNER/codex-skills`.
-3. Install **shared** from that marketplace, then start a new Cowork task.
+1. Switch the app to **Cowork** first. The **Customize** page belongs to the
+   mode it was opened from; opened from **Code**, it installs into Claude Code
+   instead and Cowork sees nothing.
+2. Open **Customize**, then **Plugins**.
+3. Select **Add**, then **Add marketplace**, and enter `OWNER/codex-skills`.
+4. Install **shared** from that marketplace, then start a new Cowork task.
 
 Turn on **Sync automatically** on the marketplace, or use **Check for
 updates**, to pick up new commits. The plugin has no pinned version, so each
 commit on the default branch is a new version. Cowork reads only the default
 branch.
 
-The install belongs to your claude.ai account, so Claude Code on the same
-account also receives it as `shared@synced`. Where the repository is already
-linked into `~/.claude/skills`, that link wins and the synced copy is reported
-as not loaded; nothing changes for that machine. Do not also install the
-marketplace plugin from the Claude Code command line on such a machine: an
-installed marketplace plugin outranks the link and would replace the in-place
-checkout with a cached copy.
+Cowork keeps its plugins apart from Claude Code's. Do not install the
+marketplace plugin into Claude Code, from the Code mode's **Customize** page or
+the command line, on a machine where the repository is linked into
+`~/.claude/skills`: an installed plugin named `shared` outranks the link, even
+while disabled, and Claude Code then reads a cached copy instead of the
+checkout. To undo such an install, run
+`claude plugin uninstall shared@codex-skills`.
+
+#### What does not work in Cowork
+
+A Cowork task runs in a Linux VM with `uv`, `git`, and `python3`, and loads the
+skills from the synced plugin. Tested on 2026-10-01, these parts of the catalog
+do not carry over:
+
+- **No `gh`.** The VM has no GitHub CLI, so the `github`, `github-plan`,
+  `babysit-pr`, and other GitHub helpers cannot run there.
+- **No hook takes effect.** Command policies are not enforced, so a raw
+  `gh pr merge` is not redirected to its helper, and the session-start skills
+  reminder and executing-loop reference never appear. Both hooks fail silently
+  by design, so this test cannot tell whether they never ran or ran and failed.
+
+Run a skill's helper through the base directory Cowork shows when the skill
+loads. `CLAUDE_PLUGIN_ROOT` is empty in the task's shell, as it is in Claude
+Code's.
+
+Cowork lists 24 of the 27 skills. The three missing ones, `memory-distillation`,
+`plan`, and `rollout-friction`, are manual-only (`disable-model-invocation:
+true`), which keeps them out of the model's skill list on Claude Code as well.
+Invoking them by name in Cowork has not been tested.
 
 ### Shared global instructions and Codex hooks
 
@@ -507,11 +532,21 @@ tokens.
 
 `skills/github/scripts/gh-rulesets.py` maintains two repository rulesets on the
 default branch: one reserves updates for the repository owner and the configured
-automation App, and the other requires code-owner review for `DIRECTION.md` and
+automation App when configured, and the other requires code-owner review for `DIRECTION.md` and
 `CODEOWNERS` without an App bypass. The helper clears automation-token variables
 and verifies that the active `gh` account is the repository owner before reading
 the full bypass configuration or writing anything. The configured App ID is
 printed in every plan so the operator can verify the intended bypass actor.
+A GitHub App is optional: with no App configured, the landing ruleset retains
+only the administrator bypass, and the result names the `no_app_bypass` limit.
+Only administrators can then update the default branch. Incomplete or invalid
+App configuration still fails rather than silently removing its bypass. If an
+existing landing ruleset already has an App bypass, an unconfigured shell also
+refuses: restore that App configuration and rerun the plan. The standard landing
+ruleset name stays the same in both modes so the audit can recognize it. If the
+App has deliberately been retired, the owner removes that obsolete bypass in
+GitHub's repository ruleset settings before rerunning plan; missing configuration
+alone is not treated as authority to retire a bypass.
 
 Plan one or more repositories without changing GitHub:
 
@@ -530,12 +565,30 @@ uv run skills/github/scripts/gh-rulesets.py apply \
 ```
 
 Use `--all-owned --owner OWNER` for a complete non-archived inventory. Plan and
-pilot first; do not use a broad apply as a discovery command. A repository where
+pilot first; do not use a broad apply as a discovery command. Multi-repository
+apply is sequential: a later refusal can leave earlier repositories updated,
+with completed-repository receipts in the error. A fresh plan across the full
+set catches predictable refusals, including an existing App bypass without
+configuration, before any write. A repository where
 the configured App is not installed will reject the App bypass actor; treat that
 as a pilot finding, install or deliberately exclude the repository, and rerun
 the idempotent plan before continuing. The direction audit reports
 `ruleset_missing` when an adopted repository lacks either active standard
-branch ruleset.
+branch ruleset. When the owner explicitly selects their own reader with
+`--gh gh` (or declares their own login with `--automation`), the audit reports
+`owner_acts_as_automation` in `limits` and treats that login's milestone admissions
+as owner decisions. This known attribution limit does not make coverage incomplete
+or hide other findings; `ok` and `counts` still describe the findings. A reader
+returning the owner instead of a separately configured automation login still
+reports incomplete identity coverage.
+With only the owner's own `gh` login, explicitly select it for the read-only audit:
+
+```sh
+uv run skills/direction/scripts/direction_audit.py --repo OWNER/REPO --gh gh
+```
+
+The default audit reader remains the automation wrapper; this explicit read-only
+selection does not enable fallback for other helpers or authorize any write.
 
 The direction rule intentionally has no bypass. An owner who is the sole code
 owner cannot approve their own pull request, so direction changes should normally

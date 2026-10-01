@@ -89,16 +89,13 @@ def positive_int(value: Any, label: str) -> int:
     return parsed
 
 
-def configured_app_id(environ: Mapping[str, str] | None = None) -> int:
+def configured_app_id(environ: Mapping[str, str] | None = None) -> int | None:
     try:
         config = github_identity.github_app_config(environ)
     except github_identity.GitHubAppError as exc:
         raise RulesetError(str(exc), cause="unconfigured_identity") from exc
     if config is None:
-        raise RulesetError(
-            "standard rulesets require configured GitHub App authentication",
-            cause="unconfigured_identity",
-        )
+        return None
     return positive_int(config.app_id, "GitHub App id")
 
 
@@ -117,8 +114,9 @@ def _pull_request_parameters(*, code_owner_review: bool, dismiss_stale: bool) ->
     }
 
 
-def standard_specs(app_id: int) -> tuple[RulesetSpec, RulesetSpec]:
-    app_id = positive_int(app_id, "GitHub App id")
+def standard_specs(app_id: int | None) -> tuple[RulesetSpec, RulesetSpec]:
+    if app_id is not None:
+        app_id = positive_int(app_id, "GitHub App id")
     conditions = {"ref_name": {"include": [DEFAULT_REF], "exclude": []}}
     landing = RulesetSpec(
         key="landing",
@@ -134,7 +132,8 @@ def standard_specs(app_id: int) -> tuple[RulesetSpec, RulesetSpec]:
                     "actor_type": "RepositoryRole",
                     "bypass_mode": "always",
                 },
-                {"actor_id": app_id, "actor_type": "Integration", "bypass_mode": "always"},
+                *([{"actor_id": app_id, "actor_type": "Integration", "bypass_mode": "always"}]
+                  if app_id is not None else []),
             ],
             "conditions": conditions,
             "rules": [
@@ -256,6 +255,18 @@ def plan_changes(
             continue
         current = matches[0]
         ruleset_id = positive_int(current.get("id"), f"{spec.key} ruleset id")
+        current_apps = [actor.get("actor_id") for actor in current.get("bypass_actors") or []
+                        if actor.get("actor_type") == "Integration"]
+        desired_apps = [actor for actor in spec.payload.get("bypass_actors") or []
+                        if actor.get("actor_type") == "Integration"]
+        if spec.key == "landing" and current_apps and not desired_apps:
+            raise RulesetError(
+                "the landing ruleset already has an App bypass; restore the GitHub App configuration "
+                "and rerun plan before applying, so the existing bypass is not removed",
+                cause="unconfigured_identity",
+                payload={"key": spec.key, "ruleset_id": ruleset_id, "existing_app_ids": current_apps,
+                         "failed_step": "existing_app_bypass", "write_attempted": False},
+            )
         action = "none" if ruleset_matches(current, spec) else "update"
         changes.append(
             RulesetChange(
@@ -456,8 +467,12 @@ def plan_repository(
     repo: str,
     specs: Sequence[RulesetSpec],
 ) -> dict[str, Any]:
-    rulesets = client.list_rulesets(repo)
-    changes = plan_changes(rulesets, specs)
+    try:
+        rulesets = client.list_rulesets(repo)
+        changes = plan_changes(rulesets, specs)
+    except RulesetError as exc:
+        raise RulesetError(str(exc), cause=exc.cause,
+                           payload={**exc.payload, "failed_repository": repo}) from exc
     return {
         "repo": repo,
         "changed": any(change.action != "none" for change in changes),

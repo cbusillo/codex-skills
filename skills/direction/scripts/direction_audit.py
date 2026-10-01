@@ -16,6 +16,7 @@ import datetime as dt
 import json
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 from typing import Any, Callable
@@ -139,12 +140,15 @@ def audit(
     automation: str | None,
     now: dt.datetime,
     bot_logins: tuple[str, ...] = (),
+    expected_automation: str | None = None,
+    owner_identity_explicit: bool = True,
     direction_pulls: list[dict[str, Any]] | None = None,
     truncated: list[str] | None = None,
     rulesets: list[dict[str, Any]] | None = None,
     audit_since: dt.datetime | None = None,
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
+    limits: list[dict[str, Any]] = []
     audit_since = audit_since or now - dt.timedelta(days=7)
     if truncated:
         findings.append({"kind": "coverage_incomplete", "detail": "a bounded read was truncated or unavailable; drift beyond verified coverage is unreported", "listings": sorted(truncated)})
@@ -169,7 +173,23 @@ def audit(
     # The owner's automation can span identities, such as a bot user and a later App.
     bots = {login.lower() for login in (automation, *bot_logins) if login} - {owner.lower()}
     trusted = {owner.lower()} | bots
-    if direction_text is not None and listed and not bots:
+    if (direction_text is not None and listed and automation
+            and automation.casefold() == owner.casefold()
+            and (not owner_identity_explicit or (expected_automation
+                 and expected_automation.casefold() != owner.casefold()))):
+        findings.append({
+            "kind": "coverage_incomplete",
+            "detail": "the audit reader returned the owner without an explicit owner reader, "
+                      "or instead of the configured automation login",
+            "listings": ["milestone_admission_identity"],
+        })
+    elif direction_text is not None and listed and automation and automation.casefold() == owner.casefold():
+        limits.append({
+            "kind": "owner_acts_as_automation",
+            "detail": "Owner and automation use the same login; owner-authored milestone admissions "
+                      "cannot be distinguished from automation-authored admissions and are treated as owner decisions.",
+        })
+    elif direction_text is not None and listed and not bots:
         findings.append({
             "kind": "coverage_incomplete",
             "detail": "automation identity is indistinguishable from the owner; milestone admission audit cannot classify actors",
@@ -276,6 +296,7 @@ def audit(
         "listed_milestones": listed,
         "open_milestones": sorted(open_titles),
         "findings": findings,
+        "limits": limits,
         "counts": _counts(findings),
     }
 
@@ -532,6 +553,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"ok": False, "error": "could not resolve a repository; pass --repo OWNER/REPO"}))
         return 2
 
+    owner_reader = pathlib.Path(shutil.which(args.gh) or args.gh).resolve() == pathlib.Path(shutil.which("gh") or "gh").resolve()
     fetch = lambda a: gh_json(a, gh=args.gh)  # noqa: E731
     try:
         # The merged default-branch file is the owner-approved one; a checkout may hold an unapproved edit.
@@ -542,6 +564,8 @@ def main(argv: list[str] | None = None) -> int:
             login = me.get("login") if isinstance(me, dict) else None
             automation = login if isinstance(login, str) else None
         truncated: list[str] = []
+        if owner_reader and args.automation is None and (not automation or automation.casefold() != (args.owner or repo.split("/")[0]).casefold()):
+            truncated.append("owner_reader_identity")
         milestones, cut = fetch_paginated(f"repos/{repo}/milestones?state=all", fetch=fetch)
         truncated += ["milestones"] if cut else []
         milestone_lines = parse_direction(direction_text)["milestone_lines"] if direction_text else {}
@@ -563,7 +587,10 @@ def main(argv: list[str] | None = None) -> int:
         truncated += ["rulesets"] if cut else []
         direction_pulls = direction_pull_requests(repo, pulls, fetch=fetch)
     except AuditError as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}))
+        error: dict[str, Any] = {"ok": False, "error": str(exc)}
+        if args.gh == str(WRAPPER):
+            error["owner_reader_hint"] = "For an owner-only audit, pass --gh gh for read-only GitHub reads; no global fallback setting is needed."
+        print(json.dumps(error))
         return 1
 
     result = audit(
@@ -578,6 +605,8 @@ def main(argv: list[str] | None = None) -> int:
         truncated=truncated,
         rulesets=rulesets,
         bot_logins=github_identity.configured_bot_logins(),
+        expected_automation=github_identity.automation_login(),
+        owner_identity_explicit=owner_reader or args.automation is not None,
     )
     result.update({"repo": repo, "direction_source": f"{repo}:DIRECTION.md@default-branch", "read_only": True})
     result["audit_since"] = audit_since.isoformat().replace("+00:00", "Z")
