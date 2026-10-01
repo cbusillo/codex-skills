@@ -32,6 +32,20 @@ Read for `next` in an owner's direction repository, including explicit
    instead of inventing available work. Widen bounded reads when needed, and stop
    after the answer without changing planning state or starting implementation.
 
+Outside the read-only `next` answer, an explicit owner incident decision may
+be recorded on the issue with the `live-breakage` label under existing write
+authority. Create the label if needed in the owner's repository using the
+GitHub automation wrapper; preserve human-authored issue text. Writes to another
+person's repository need that owner's authorization under execution-scope.
+Remove the marker when the incident is resolved. The marker only prioritizes
+possible work; it never establishes ownership, lifts holds, or overrides blockers.
+
+Owner-marked issues are evaluated outside the ordinary discovery scan allowance.
+A separate label inventory covers marked issues beyond a repository's ordinary
+issue-list bound. Repository access/inventory limits and failed reads remain
+explicit coverage limits. Inspect `candidate_coverage` beside the ranked list:
+a partial list cannot establish that no higher-priority work exists.
+
 The helper's `candidates` are possible work and may need review;
 `available_candidates` contains only current caller-reviewed work. An empty
 available list with nonzero `review_required_count` means selection is unfinished,
@@ -66,6 +80,9 @@ Categories for discovered work are `live_incident`, `repeated_stop_tooling`, and
 `own_project`; linked graph work keeps its milestone priority. Repeat-stop tooling
 also needs two distinct HTTPS links in `stop_occurrences`. These are the caller's
 evidence judgments, not classifications guessed from names, labels, or keywords.
+The owner-applied `live-breakage` marker independently puts an incident first
+among possible candidates until removed; it does not supply an availability
+review or change the caller's category.
 Set `ownership_complete` only when current evidence actually establishes the
 item's availability, never from a partial task list. A changed discussion digest
 invalidates the issue review. Recheck holds and ownership on every selection;
