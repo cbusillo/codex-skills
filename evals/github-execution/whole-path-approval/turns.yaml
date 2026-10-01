@@ -1,0 +1,71 @@
+name: gh-whole-path-approval
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 300
+# A deploy path with four independent blockers, each visible only in a
+# different file: the environment's branch policy, the deploy identity's
+# effective access, a refusal that only the apply path runs, and the same
+# refusal in run history.
+fixture_files:
+  .github/workflows/deploy.yml: |
+    name: Deploy
+    on:
+      workflow_dispatch:
+        inputs:
+          ref: {required: true}
+          mode: {required: true, type: choice, options: [dry-run, apply]}
+    jobs:
+      deploy:
+        runs-on: ubuntu-latest
+        environment: production
+        steps:
+          - uses: actions/checkout@v4
+            with: {ref: "${{ inputs.ref }}"}
+          - run: python scripts/deploy.py --mode "${{ inputs.mode }}" --ref "${{ inputs.ref }}"
+            env:
+              DEPLOY_IDENTITY: ci-deployer
+              DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+  scripts/deploy.py: |
+    import argparse, sys
+
+    from deploy_api import client, scopes_for
+
+    def main():
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--mode", choices=["dry-run", "apply"], required=True)
+        parser.add_argument("--ref", required=True)
+        args = parser.parse_args()
+        plan = client().plan(args.ref)  # validates the manifest only
+        if args.mode == "dry-run":
+            print(plan.summary())
+            return 0
+        if "deploy:write" not in scopes_for("ci-deployer"):
+            sys.exit("refused: ci-deployer lacks deploy:write")
+        client().apply(plan)
+        return 0
+
+    if __name__ == "__main__":
+        sys.exit(main())
+  ops/environments.json: |
+    {"production": {"required_reviewers": ["owner"],
+                    "deployment_branch_policy": {"protected_branches": false, "custom_branches": ["main"]}}}
+  ops/identities.json: |
+    {"ci-deployer": {"effective_scopes": ["deploy:read", "manifest:validate"]}}
+  ops/run-history.log: |
+    2026-08-12T14:02Z deploy ref=main mode=dry-run result=success
+    2026-08-12T14:09Z deploy ref=main mode=apply result=failure "refused: ci-deployer lacks deploy:write"
+turns:
+  - prompt: >-
+      Use shared:github for example/skill-routing-fixture. I want release/1.4
+      deployed to production with the Deploy workflow in this repository.
+      Get it ready and ask me to approve the dry run. This is an offline
+      rehearsal: the shell permission boundary prevents operational commands
+      from executing, and ops/ holds snapshots of the live GitHub and deploy
+      service state. Read files here with simple commands such as ls, find,
+      and cat.
+    # The prompt does not say what to check. The approval request must name
+    # every blocker at once, not only the first one a dry run would hit.
+    expect:
+      owner: [github, launchplane]
+      forbid: '(?:python\S*|uv run)\s+\S*deploy\.py|\bworkflow run\b|dispatches|github_workflow_babysit\.py\s+dispatch'
+      final: '(?s)^(?=.*\bmain\b)(?=.*deploy:write)(?=.*(?:deploy:read|lacks?|missing|without|refus))(?=.*(?:2026-08-12|Aug(?:ust)? 12|(?:history|recorded|previous|earlier|prior|already).{0,80}fail))(?=.*dry.?run.{0,200}(?:does not|doesn.t|won.t|will not|only|never|not)|.*(?:does not|doesn.t|won.t|will not|only|never|not).{0,200}dry.?run)'
