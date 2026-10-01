@@ -3097,6 +3097,31 @@ def test_reconcile_requests_read_keeps_the_decision_and_drops_the_rest() -> None
     assert not payload["result"]
 
 
+def test_reconcile_requests_read_keeps_a_summary_that_lists_many_keys() -> None:
+    keys = ", ".join(f"EXAMPLE_TUNING_SETTING_{index:02d}" for index in range(32))
+    summary = (
+        "The replacement plan was blocked before the deploy started. Blocker: The lane "
+        f"configures settings its product profile does not declare. Keys: {keys}."
+    )
+    plan = {
+        "target": "testing",
+        "action": "deploy",
+        "last_failed_error_code": "plan_not_ready.runtime_keys_undeclared",
+        "last_failed_error_summary": summary,
+    }
+    response = {
+        "status": "ok",
+        "product": "example-product",
+        "requests": [{"target_key": "example-product:testing", "last_plan": plan}],
+    }
+    argv = ["reconcile-requests-read", "--product", "example-product"]
+    status, payload, _calls = _run_product_read(argv, response)
+
+    assert status == 0
+    (request,) = payload["result"]["requests"]
+    assert request["last_plan"]["last_failed_error_summary"] == summary
+
+
 def test_reconcile_requests_read_keeps_testing_operation_ids() -> None:
     plan = {
         "target": "testing",
