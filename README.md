@@ -14,21 +14,98 @@ benefits from more than a single instruction file.
 
 ## Install
 
-Clone this repository somewhere durable. For a new personal Codex installation,
-use the current user-skill discovery location:
+Clone this repository somewhere durable, then install once on each machine:
 
 ```sh
-git clone git@github.com:OWNER/codex-skills.git ~/Developer/codex-skills
-mkdir -p ~/.agents
-ln -s ~/Developer/codex-skills/skills ~/.agents/skills
+git clone https://github.com/OWNER/codex-skills.git ~/Developer/codex-skills
+cd ~/Developer/codex-skills
+uv run scripts/install-catalog.py --write
 ```
 
-Inspect an existing destination before changing it; do not replace an existing
-directory or symlink automatically. Established installations may still resolve
-the catalog through `~/.code/skills`, `$CODE_HOME/skills`, or
-`$CODEX_HOME/skills`. Preserve working bindings. Retiring Every Code does not
-require renaming those paths or moving their data. For Codex Lab or another host,
-verify that host's current discovery rules before adding a new binding.
+The installer binds the entire catalog at `~/.agents/skills/shared` for Codex and
+`~/.claude/skills/shared` for Claude Code, installs both hosts' global
+instructions, and registers the existing Codex command-policy and session-start
+hooks. It respects `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Approve newly registered
+hooks through Codex's `/hooks` interface once; installing never grants trust.
+Restart the harness to discover the bindings.
+
+Run without `--write` to preview; add `--show-diff` to inspect instruction changes
+locally (these may include private text). Existing personal instructions are preserved
+in the ignored `.local/global-instructions.md` and included in both outputs;
+changed instruction files are backed up. Existing unrelated bindings, symlink
+instruction files, malformed settings, or generated instructions whose private
+source cannot be identified are reported and left in place. Inspect the reported
+path before moving it aside or restoring its private source, then rerun. Working
+legacy catalog bindings and other host settings are preserved. Personal skills
+in `~/.agents/skills` coexist with the nested catalog binding; an existing link
+from that whole directory to this catalog remains in place.
+An existing whole-catalog link in `CODEX_HOME/skills` is also kept without adding
+a second binding. If both forms already coexist, inspect the reported nested
+link before moving it aside. A leftover `skills/.system` cache without a legacy
+binding is reported: inspect and move that cache outside the checkout before
+using the namespaced binding, so system skills keep their own discovery names.
+
+The output names unmanaged instruction sources that will be combined. Review
+`--show-diff` when those sources need tidying; the installer preserves their text
+instead of choosing between personal rules. One checkout records one active
+pair of host destinations. Reinstalling with different native host overrides
+reconfigures that pair and reports the previous and requested directories.
+
+Edit personal instructions in `.local/global-instructions.md`. The installer
+records the generated host files and reports later hand edits instead of
+overwriting them during a scheduled refresh. To adopt a hand edit, merge it
+into that private source, preview `uv run scripts/sync-global-instructions.py`,
+then run it with `--write` and rerun the installer. Run
+`uv run scripts/catalog_runtime.py --update` to verify recovery and clear a
+recorded failed update. Older manual-sync output
+is adopted when it matches recent committed catalog history and that private source;
+unrecognized output is preserved for inspection. A session hook pointing at
+another checkout is also reported; inspect and update its path before rerunning.
+If the private source is missing after installation, restore it before refreshing;
+use an empty source file when you intend to remove its instructions.
+When the private source is missing and a generated file differs from the current
+shared output, the installer preserves it and asks you to restore that source.
+If inspection confirms there were no private instructions, create an empty
+`.local/global-instructions.md` and rerun. It does not guess whether a formerly
+shared paragraph is now private.
+Use an isolated catalog checkout for fixture homes: the installer stores the
+private source and installation destinations in that checkout and refuses to
+redirect an existing installation to a different home.
+Keep host configuration directories outside the catalog checkout so installation
+cannot overwrite repository instructions or dirty its source. Personal skills
+directory symlinks are preserved and support the nested binding; links into
+another catalog are reported instead of modifying that checkout. Use the
+maintained catalog or inspect and rebind the destination before rerunning.
+
+On macOS, opt into the guarded six-hour updater in the same install run:
+
+```sh
+uv run scripts/install-catalog.py --write --updater
+```
+
+It installs `~/Library/LaunchAgents/com.codex-skills.catalog-update.plist`.
+The remote must be readable without interaction for unattended fetches; the
+HTTPS clone above works for public catalogs. For private or SSH remotes, set up
+non-interactive read access first or use manual updates.
+If a job with the catalog label is loaded without an installer-owned plist,
+the installer preserves it and reports the conflict. Inspect it with
+`launchctl print gui/$(id -u)/com.codex-skills.catalog-update`; unload your old
+job before enabling this updater. Fixture homes support previews and mocked
+scheduler tests; `--home-dir --write --updater` cannot activate a real job.
+The updater fetches and fast-forwards only a clean `main` with no local commits;
+it never switches, resets, stashes, cleans, or merges divergence. A pull makes
+new skills visible without adding links and refreshes installed global instructions
+through its instruction-only refresh, preserving the private supplement and
+leaving current bindings and hooks alone. The existing session-start hook prints
+one catalog line for a stale or blocked checkout, a failed update, or a scheduled
+check older than twelve hours. A manual pull that changes shared instructions
+also reports a stale installation until the instruction refresh runs. Session
+start performs no network calls. State
+and logs live in the checkout's ignored `.local/` directory.
+Run `uv run scripts/catalog_runtime.py --update` for a manual guarded update on
+macOS or Linux. To stop scheduled updates, run
+`launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.codex-skills.catalog-update.plist`,
+then remove that specific plist; catalog bindings remain available.
 
 See [Codex skill discovery](https://learn.chatgpt.com/docs/build-skills) for
 current Codex locations and plugin-owned alternatives.
@@ -74,8 +151,10 @@ that explicitly prefers that wrapper stays allowed; a wrapped `gh pr merge`
 still requires the `github` helper. Blocking messages name the skill to load.
 Manual-only skills mirror Codex's `agents/openai.yaml` policy in Claude's
 `disable-model-invocation` frontmatter, checked by the catalog validator.
-Invoke those workflows with `/shared:skill-name` on Claude and `$skill-name`
-on Codex; Claude's field requires an actual user slash-command invocation.
+Invoke those workflows with `/shared:skill-name` on Claude. On Codex use the
+name shown in its skill list: `$shared:skill-name` for the new catalog binding,
+or `$skill-name` when a preserved legacy binding lists an unprefixed name.
+Claude's field requires an actual user slash-command invocation.
 The registered hook uses a JSON deny decision and an exit-zero launcher fallback,
 so missing source or a uv startup failure cannot masquerade as a policy denial.
 
@@ -131,10 +210,11 @@ Invoking them by name in Cowork has not been tested.
 ### Shared global instructions and Codex hooks
 
 [`instructions/global.md`](instructions/global.md) is the common source for
-both hosts' global instructions. Put any existing private host instructions in
-the ignored `.local/global-instructions.md` once; the renderer includes that
-same supplement in both outputs. Inspect both existing files and the preview
-before adopting them so no personal instruction is lost:
+both hosts' global instructions. Use the installer in [Install](#install) for
+initial adoption; it preserves private host instructions in the ignored
+`.local/global-instructions.md`, which the renderer includes in both outputs.
+For later instruction maintenance, edit that private source or land changes to
+the shared source, then inspect the sync preview before writing:
 
 ```sh
 uv run scripts/sync-global-instructions.py --codex-hook
@@ -200,23 +280,6 @@ it clean, on `main`, and current with `origin/main`. Use linked task worktrees
 for skill development. After a skills PR lands, reconcile the runtime checkout
 with the landed repo-local GitHub helper before relying on installed skill
 behavior or provenance-sensitive evidence.
-
-### Last step: synchronize global instructions
-
-Temporary until the installer runs this itself (#828). From the runtime
-checkout, render both hosts' global instructions as described in
-[Shared global instructions and Codex hooks](#shared-global-instructions-and-codex-hooks).
-The sync overwrites both files with the same output, so first merge the
-personal instructions from both `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`
-into the ignored `.local/global-instructions.md`. Then preview, check that the
-diff removes nothing you want, and write:
-
-```sh
-uv run scripts/sync-global-instructions.py --codex-hook
-uv run scripts/sync-global-instructions.py --codex-hook --write
-```
-
-If you are intentionally updating global instructions from a task worktree (where `.local` is missing) and want to overwrite the existing files, append `--allow-missing-local` to proceed without private instructions.
 
 ## Execution Environment
 

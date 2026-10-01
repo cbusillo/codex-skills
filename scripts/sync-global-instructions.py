@@ -37,7 +37,7 @@ def render(source: Path, local_source: Path) -> str:
     return "\n\n".join(section for section in sections if section) + "\n"
 
 
-def render_codex_hook(destination: Path, catalog: Path = ROOT) -> str:
+def render_codex_hook(destination: Path, catalog: Path = ROOT, *, include_session_start: bool = False) -> str:
     """Bind the same PreToolUse declaration without changing other host hooks."""
     if destination.is_symlink() or (destination.exists() and not destination.is_file()):
         raise ValueError(f"Refusing a symlink or non-file destination: {destination}")
@@ -45,20 +45,26 @@ def render_codex_hook(destination: Path, catalog: Path = ROOT) -> str:
     if not isinstance(config, dict) or not isinstance(config.get("hooks", {}), dict):
         raise ValueError(f"Invalid hooks configuration: {destination}")
     hooks = config.setdefault("hooks", {})
-    existing = hooks.get("PreToolUse", [])
-    if not isinstance(existing, list):
-        raise ValueError(f"Invalid PreToolUse configuration: {destination}")
-    declarations = json.loads((catalog / "hooks" / "hooks.json").read_text())["hooks"]["PreToolUse"]
-    for group in declarations:
-        for handler in group["hooks"]:
-            handler["command"] = shlex.join([
-                "env", f"CLAUDE_PLUGIN_ROOT={catalog}", "sh", "-c", handler["command"],
-            ])
-            handler["statusMessage"] = HOOK_LABEL
-    hooks["PreToolUse"] = [group for group in existing if not (
-        isinstance(group, dict) and len(group.get("hooks", [])) == 1
-        and isinstance(group["hooks"][0], dict) and group["hooks"][0].get("statusMessage") == HOOK_LABEL
-    )] + declarations
+    source = json.loads((catalog / "hooks" / "hooks.json").read_text())["hooks"]
+    events = ["PreToolUse", "SessionStart"] if include_session_start else ["PreToolUse"]
+    for event in events:
+        existing = hooks.get(event, [])
+        if not isinstance(existing, list):
+            raise ValueError(f"Invalid {event} configuration: {destination}")
+        declarations = source[event]
+        label = HOOK_LABEL if event == "PreToolUse" else "codex-skills session start"
+        if event == "SessionStart":
+            declarations = [group for group in declarations if group.get("matcher") != "compact"]
+        for group in declarations:
+            for handler in group["hooks"]:
+                handler["command"] = shlex.join([
+                    "env", f"CLAUDE_PLUGIN_ROOT={catalog}", "sh", "-c", handler["command"],
+                ])
+                handler["statusMessage"] = label
+        hooks[event] = [group for group in existing if not (
+            isinstance(group, dict) and len(group.get("hooks", [])) == 1
+            and isinstance(group["hooks"][0], dict) and group["hooks"][0].get("statusMessage") == label
+        )] + declarations
     return json.dumps(config, indent=2) + "\n"
 
 
