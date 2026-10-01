@@ -561,6 +561,10 @@ manifest is derived from the catalog's [full-operation profile](skills/github/re
 keeps webhooks inactive, and adds no organization permissions. Grants do not
 authorize actions outside your task.
 
+Setup checks the account type before opening the browser. Its success result
+names the exact `local.env` written; use the same home selection in the agent
+session if its environment differs from the setup terminal.
+
 The **owner** does two browser steps: name/create the private App under the
 intended account, then install it on that account with **Only select
 repositories**, choosing the adopted repositories. Return to the terminal and
@@ -592,6 +596,13 @@ together. To undo that replacement, restore the reviewed backup to `local.env`
 with mode `600`, leaving the App registration/installations intact until you
 decide whether to remove them. Keep the saved key directory while this identity
 is in use.
+
+Replacement reports the previous primary login but does not automatically trust
+it as a bot. When it is an **owner-controlled automation account**, add
+`--previous-bot OLD-BOT` to preserve historical managed-plan and milestone
+authorship through the existing `CODEX_AUTOMATION_BOT_LOGINS` setting. Existing
+trusted bots are retained. Never pass the personal owner's login or a
+third-party bot; old human-authored requests stay protected.
 
 If the callback failed or the browser cannot reach this machine's loopback
 address, use the App's GitHub settings to download/generate a private key,

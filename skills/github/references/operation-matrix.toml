@@ -18,12 +18,12 @@ actor_policy_semantics = "Automation-required operations use the configured bot 
 id = "github.app.setup"
 capabilities = ["app_registration"]
 permission_mode = "delegated"
-permission_note = "Owner browser creates and installs a private App; setup derives the existing full-operation repository profile. App JWT verifies the newly selected installation, public user metadata supplies its commit identity, and private local configuration is written only after verification. No added default repository grant or protection write."
+permission_note = "Owner browser creates and installs a private App; setup derives the existing full-operation repository profile. App JWT verifies the newly selected installation, public user metadata supplies its commit identity and detects the registration account type before browser creation. Explicit previous-bot options use the existing owner-controlled provenance list; no personal owner is auto-trusted. The resolved configuration path and replaced primary login are reported, and private local configuration is written only after verification. No added default repository grant or protection write."
 entrypoint = "github/scripts/github_app_setup.py start|resume|import"
 intent = "Guide separate automation identity registration, installation verification and private wrapper configuration."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "Owner form POST https://github.com/settings/apps/new (or organization equivalent); POST /app-manifests/{code}/conversions once; GET /app; GET /app/installations pages; GET /app/installations/{id}; GET /users/{bot}; private key/registration/local.env writes"
+endpoint_or_command = "Owner form POST https://github.com/settings/apps/new (or organization equivalent); POST /app-manifests/{code}/conversions once; GET /app; GET /app/installations pages; GET /app/installations/{id}; GET /users/{owner}; GET /users/{bot}; private key/registration/local.env writes"
 quota_bucket = "mixed"
 actor_policy = "split_identity_required"
 mutation_class = "mixed"
@@ -1945,7 +1945,7 @@ degraded_behavior = "Only the owner creates/installs the App in their browser. C
 documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest"
 
 [api_surface_fingerprints]
-"github/scripts/github_app_setup.py" = "b87ad3c4ea1d62ce9859fd4b051680fdbbea873e239b82d8ad7a854e6aaf5725"
+"github/scripts/github_app_setup.py" = "752a8c6d16f8117271700a616a506dabc80528544f5315a1d15d67ab141ec4c4"
 "github/scripts/gh-comment" = "21ecb30d4d60b61c760f1df630fd6b56347873709bba2d05b7f32f9222fa4656"
 "github/scripts/gh-issue" = "2589d7e258872b5dc2609ceb581053b2daae205156ac360d1a84a2f49eb0f01f"
 "github/scripts/gh-plan.py" = "54d213cd33402204ff0db51216deb542a787a21e8221484ef0a85b2f7c79f54b"

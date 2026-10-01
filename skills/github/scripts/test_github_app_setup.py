@@ -46,12 +46,13 @@ class FixtureServer(ThreadingHTTPServer):
     approved: bool
     direction: dict
     selection: str
+    account_type: str
 
 
 class FixtureHandler(BaseHTTPRequestHandler):
     server: FixtureServer
 
-    def log_message(self, _format: str, *args: object) -> None:
+    def log_message(self, *args: object, **kwargs: object) -> None:
         pass
 
     def reply(self, status, payload):
@@ -70,6 +71,8 @@ class FixtureHandler(BaseHTTPRequestHandler):
                     "permissions": self.server.permissions,
                     "repository_selection": self.server.selection, "suspended_at": self.server.suspended}
             self.reply(200, [item] if "?" in self.path else item)
+        elif self.path == "/users/" + OWNER:
+            self.reply(200, {"login": OWNER, "type": self.server.account_type})
         elif self.path.startswith("/users/"):
             self.reply(200, {"id": 99, "login": SLUG + "[bot]"})
         else:
@@ -113,6 +116,7 @@ def fixture_server():
     server.suspended = None
     server.approved = False
     server.selection = "selected"
+    server.account_type = "User"
     server.direction = github_rulesets.standard_specs(7)[1].payload
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}"
@@ -203,7 +207,10 @@ def test_fixture_repository_setup_and_direction_review():
             subprocess.run(["git", "-C", str(repo), "add", "DIRECTION.md", ".github/CODEOWNERS"], check=True)
             environ = {key: value for key, value in os.environ.items() if not key.startswith(
                 ("GITHUB_", "GH_", "CODEX_", "CODE_HOME", "GIT_"))}
-            environ.update(HOME=str(home), GH_WITH_ENV_TOKEN_PYTHON=os.sys.executable)
+            environ.update(HOME=str(home), GH_WITH_ENV_TOKEN_PYTHON=os.sys.executable,
+                           GIT_COMMIT_AS_BOT_NAME="fixture-previous-owner",
+                           GIT_COMMIT_AS_BOT_EMAIL="previous@example.test",
+                           GH_WITH_ENV_TOKEN_EXPECTED_LOGIN="fixture-previous-owner")
             commit = subprocess.run([str(SCRIPTS / "git-commit-as-bot"), "-m", "fixture direction"],
                                     cwd=repo, env=environ, capture_output=True, text=True)
             assert commit.returncode == 0, commit.stderr
@@ -327,7 +334,9 @@ def test_cli_preflight_resume_and_import_routes():
                     with patch.object(setup, "register", side_effect=AssertionError("browser reached despite identity conflict")):
                         assert setup.main(["start", "--owner", OWNER, "--name", "Fixture"]) == 1
                     source.chmod(0o644)
+                    before_sessions = set((home / ".config/codex-skills/github-app").glob("setup-*"))
                     assert setup.main(["import", "--owner", OWNER, "--app-id", "7", "--slug", SLUG, "--key", str(source), "--replace-identity"]) == 1
+                    assert set((home / ".config/codex-skills/github-app").glob("setup-*")) == before_sessions
     finally:
         server.shutdown()
         server.server_close()
@@ -345,6 +354,48 @@ def test_all_repository_scope_is_reported_without_changing_owner_choice():
             result = configured_fixture(session, root / "home", api)
             assert result["configuration_written"] and result["repository_selection"] == server.selection
             assert result["limits"][0]["kind"] == "all_repositories"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_explicit_previous_bot_retains_history_without_trusting_personal_owner():
+    server, api = fixture_server()
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = root / "session"
+            setup.private_directory(session)
+            registration(session)
+            home = root / "home"
+            target = home / ".code/local.env"
+            target.parent.mkdir(parents=True)
+            old = "CODEX_AUTOMATION_LOGIN=old-machine\nCODEX_AUTOMATION_BOT_LOGINS=already-trusted\n"
+            target.write_text(old)
+            try:
+                configured_fixture(session, home, api, replace_identity=True, previous_bots=(OWNER,))
+                raise AssertionError("personal owner trusted as previous bot")
+            except setup.Error:
+                assert target.read_text() == old
+            result = configured_fixture(session, home, api, replace_identity=True, previous_bots=("old-machine",))
+            assert result["replaced_login"] == "old-machine"
+            assert set(identity.configured_bot_logins({"HOME": str(home)})) == {"already-trusted", "old-machine"}
+            assert result["configuration_path"] == str(target)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_owner_type_catches_missing_organization_option():
+    server, api = fixture_server()
+    server.account_type = "Organization"
+    try:
+        try:
+            setup.validate_owner_type(OWNER, organization=False, api_url=api)
+            raise AssertionError("organization registered via personal-account form")
+        except setup.Error:
+            pass
+        setup.validate_owner_type(OWNER, organization=True, api_url=api)
     finally:
         server.shutdown()
         server.server_close()
