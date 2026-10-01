@@ -830,6 +830,21 @@ def test_text_logs_support_older_cli_and_preserve_failures() -> None:
     assert reader.diagnostics()["degraded"] is True
 
 
+def test_text_log_capability_probe_failure_is_visible() -> None:
+    for failure in (
+        subprocess.TimeoutExpired(["fake-gh", "api", "--help"], 60),
+        process(b"", returncode=1, stderr="private configuration detail"),
+    ):
+        reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="test.actions")
+        responses = [failure, process(include_output("plain log", content_type="text/plain"))]
+        with patch("subprocess.run", side_effect=responses):
+            assert github_read.job_log(reader, "o/r", 33) == "plain log"
+        diagnostics = reader.diagnostics()
+        assert diagnostics["degraded"] is True
+        assert "log_cli_capability" in diagnostics["degradedComponents"]
+        assert "private configuration detail" not in json.dumps(diagnostics)
+
+
 def main() -> None:
     tests = [
         test_issue_reader_paginates_and_filters_pull_requests,
@@ -866,6 +881,7 @@ def main() -> None:
         test_workflow_metadata_jobs_and_text_log_normalize,
         test_text_logs_opt_in_and_remove_terminal_commands,
         test_text_logs_support_older_cli_and_preserve_failures,
+        test_text_log_capability_probe_failure_is_visible,
     ]
     failed: list[str] = []
     for test in tests:

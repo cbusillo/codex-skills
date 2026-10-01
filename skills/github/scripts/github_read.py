@@ -334,14 +334,23 @@ class GitHubReader:
                 help_result = subprocess.run(
                     [self.gh_cmd, *self.gh_prefix_args, "api", "--help"],
                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, timeout=10,
+                    stderr=subprocess.PIPE, timeout=60,
                 )
                 self._escape_sequences_supported = (
                     help_result.returncode == 0
                     and b"--allow-escape-sequences" in help_result.stdout
                 )
-            except (OSError, subprocess.TimeoutExpired):
+                if help_result.returncode != 0:
+                    self.mark_degraded(
+                        "log_cli_capability", "cli_help_failed",
+                        "Configured CLI help probe failed; log escape opt-in support is unknown",
+                    )
+            except (OSError, subprocess.TimeoutExpired) as exc:
                 self._escape_sequences_supported = False
+                self.mark_degraded(
+                    "log_cli_capability", "cli_help_failed",
+                    f"Configured CLI help probe failed ({type(exc).__name__}); log escape opt-in support is unknown",
+                )
         # Text logs do not participate in the JSON conditional-response cache.
         result = self._transport_request(
             "GET", path, step=step,
