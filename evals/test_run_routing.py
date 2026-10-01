@@ -8,9 +8,12 @@
 
 import importlib.util
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SPEC = importlib.util.spec_from_file_location("run_routing", Path(__file__).with_name("run-routing.py"))
 assert SPEC and SPEC.loader
@@ -20,6 +23,33 @@ SPEC.loader.exec_module(runner)
 
 def call(name: str, arguments: dict[str, str]) -> dict:
     return {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": name, "input": arguments}]}}
+
+
+class RoutingSessionIsolationTests(unittest.TestCase):
+    def test_disposable_sessions_suppress_supervisor_alerts_on_both_hosts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "catalog"
+            (catalog / "hooks").mkdir(parents=True)
+            (catalog / "hooks" / "hooks.json").write_text('{"hooks":{"PreToolUse":[]}}')
+            (catalog / "skills").mkdir()
+            case = root / "case.yaml"
+            case.write_text("name: alert-isolation\nexecution:\n  prompt: test\n  timeout_seconds: 1\n")
+            captured = []
+            real_run = subprocess.run
+
+            def launch(argv, **kwargs):
+                if argv[0] in ("claude", "codex"):
+                    captured.append((argv[0], kwargs["env"]))
+                    return subprocess.CompletedProcess(argv, 0)
+                return real_run(argv, **kwargs)
+
+            with mock.patch.dict(os.environ, {"HOME": str(root), "CODEX_HOME": str(root / "config")}), mock.patch.object(runner.subprocess, "run", side_effect=launch), mock.patch.object(runner, "score_run", return_value={}):
+                for host in ("claude", "codex"):
+                    runner.run_case(host, catalog, case, root / host, None)
+            self.assertEqual([host for host, env in captured], ["claude", "codex"])
+            for host, env in captured:
+                self.assertEqual(env["SESSION_ALERTS_DISABLED"], "1")
 
 
 class RoutingScoreTests(unittest.TestCase):

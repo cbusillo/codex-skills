@@ -16,6 +16,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -153,8 +154,96 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             raise ValueError(f"Installed instructions changed: {path}; preserve the edits in {local}, preview scripts/sync-global-instructions.py, write the reconciled output and rerun")
     # All destinations are inspected before any mutation.
     instruction_preview = sync.synchronize(content, destinations, write=False)
-    hook_outputs = {} if refresh_instructions or skip_codex_hooks else sync.prepare_codex_hooks(codex, catalog=ROOT)
-    hook_preview = [entry for path, text in hook_outputs.items() for entry in sync.synchronize(text, [path], write=False)]
+    hooks, hook_preview = None, []
+    hook_path = codex / "hooks.json"
+    hook_previous = None
+    hook_outputs = {}
+    if not refresh_instructions and not skip_codex_hooks:
+        hook_outputs = sync.prepare_codex_hooks(codex, catalog=ROOT)
+        hook_preview = [entry for path, text in hook_outputs.items() for entry in sync.synchronize(text, [path], write=False)]
+    elif refresh_instructions and not skip_codex_hooks and (hook_path.exists() or hook_path.is_symlink()):
+        try:
+            # Reading a dotfiles-managed symlink does not authorize writing it.
+            # Inspect only to recognize a removed catalog binding; rendering
+            # still refuses symlink/non-file destinations when bound.
+            if not hook_path.is_file():
+                raise ValueError("Hook destination is not a regular file")
+            hook_previous = hook_path.read_bytes()
+            existing = json.loads(hook_previous)
+            groups = existing.get("hooks", {}) if isinstance(existing, dict) else None
+            if not isinstance(groups, dict):
+                raise ValueError("Invalid hooks.json configuration")
+            for event in ("PreToolUse", "SessionStart", "Stop", "Interrupt"):
+                if not isinstance(groups.get(event, []), list):
+                    raise ValueError(f"Invalid {event} configuration")
+            # Add/update alerts only for an installation still bound to catalog
+            # hooks. Removing all catalog hooks opts out; alerts follow any remaining
+            # catalog binding. Independent suppression uses SESSION_ALERTS_DISABLED.
+            managed = any(
+                isinstance(group, dict) and isinstance(group.get("hooks"), list)
+                and any(isinstance(handler, dict) and handler.get("statusMessage") in (
+                    sync.HOOK_LABEL, "codex-skills session start", "codex-skills stop alert", "codex-skills interrupt alert",
+                ) for handler in group["hooks"])
+                for event in ("PreToolUse", "SessionStart", "Stop", "Interrupt")
+                for group in groups.get(event, [])
+            )
+            if managed:
+                expected = sync.render_codex_hook_content(existing, hook_path, ROOT, alerts_only=True)
+                if json.loads(expected) == existing:
+                    hook_preview = [{"path": str(hook_path), "state": "current"}]
+                elif hook_path.is_symlink():
+                    # Dotfiles remain read-only. A current binding needs no
+                    # write; a stale one can be reconciled from an explicit
+                    # preview containing only generated catalog alert entries.
+                    if json.loads(expected) == existing:
+                        hook_preview = [{"path": str(hook_path), "state": "current"}]
+                    else:
+                        entry = {"path": str(hook_path), "state": "skipped",
+                                 "reason": "Dotfiles hook binding needs reconciliation; preview --refresh-instructions --show-diff and apply catalog_alert_entries to its source, then run catalog_runtime.py --update"}
+                        if show_diff:
+                            generated = sync.render_codex_hook_content({}, hook_path, ROOT, alerts_only=True)
+                            entry["catalog_alert_entries"] = json.loads(generated)["hooks"]
+                        hook_preview = [entry]
+                else:
+                    hooks = expected
+                    hook_preview = sync.synchronize(hooks, [hook_path], write=False)
+        except (OSError, ValueError) as error:
+            # Alert setup must not stop an existing instruction-only refresh.
+            # Keep the unsafe/unmanaged destination untouched and report the gap.
+            hooks = None
+            hook_preview = [{"path": str(hook_path), "state": "skipped", "reason": str(error)}]
+    if refresh_instructions and not skip_codex_hooks and not hook_preview:
+        # A legacy inline catalog binding needs the explicit migration path.
+        # Do not silently add a second definition source during background refresh.
+        config_path = codex / "config.toml"
+        try:
+            settings = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
+            inline = settings.get("hooks", {})
+            bound = any(
+                isinstance(group, dict) and isinstance(group.get("hooks"), list)
+                and any(isinstance(handler, dict) and (
+                    handler.get("statusMessage") in (sync.HOOK_LABEL, "codex-skills session start")
+                    or any(str(ROOT / "hooks" / script) in str(handler.get("command", ""))
+                           for script in ("command_policy_hook.py", "direction_check_hook.py"))
+                ) for handler in group["hooks"])
+                for event, groups in inline.items() if event != "state" and isinstance(groups, list)
+                for group in groups
+            ) if isinstance(inline, dict) else False
+            if bound:
+                generated = json.loads(sync.render_codex_hook_content({}, hook_path, ROOT, alerts_only=True))["hooks"]
+                current = all(isinstance(inline.get(event), list) and all(group in inline[event] for group in groups)
+                              for event, groups in generated.items())
+                if current:
+                    hook_preview = [{"path": str(config_path), "state": "current"}]
+                else:
+                    entry = {"path": str(config_path), "state": "skipped",
+                             "reason": "Inline catalog alerts need reconciliation; preview --refresh-instructions --show-diff and merge catalog_alert_toml into the config.toml source, preserving unrelated hooks and trust, then review through /hooks and run catalog_runtime.py --update. Regular configurations can instead migrate with scripts/sync-global-instructions.py --codex-hook --hooks-only"}
+                    if show_diff:
+                        import tomlkit
+                        entry["catalog_alert_toml"] = tomlkit.dumps({"hooks": generated})
+                    hook_preview = [entry]
+        except (OSError, ValueError) as error:
+            hook_preview = [{"path": str(config_path), "state": "skipped", "reason": str(error)}]
     launch_path = home / "Library" / "LaunchAgents" / f"{LABEL}.plist"
     launch_content = None
     launch_changed = False
@@ -215,6 +304,14 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         sync.synchronize(installation, [installation_path], write=True)
         if hook_outputs:
             outputs += sync.write_codex_hooks(hook_outputs, codex, catalog=ROOT)
+        elif refresh_instructions:
+            if hooks is not None:
+                try:
+                    outputs += sync.synchronize(hooks, [hook_path], write=True, expected_previous={hook_path: hook_previous})
+                except (OSError, ValueError) as error:
+                    outputs.append({"path": str(hook_path), "state": "skipped", "reason": str(error)})
+            else:
+                outputs += hook_preview
         if launch_content is not None:
             sync.synchronize(launch_content, [launch_path], write=True)
             (ROOT / ".local").mkdir(exist_ok=True)
@@ -235,7 +332,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             "private_source": str(local), "updater": "enabled" if updater and write else "requested" if updater else "unchanged" if previous_installation.get("scheduled_updater") else "off",
             "migrated_events": hook_outputs.migrated_events if hook_outputs else {},
             "disabled_migrated_handlers": hook_outputs.disabled_migrated_handlers if hook_outputs else [],
-            "codex_hook_setup": "skipped; existing definitions unchanged" if skip_codex_hooks else "unchanged" if refresh_instructions else "prepared",
+            "codex_hook_setup": "skipped; existing definitions unchanged" if skip_codex_hooks else "alert refresh evaluated" if refresh_instructions else "prepared",
             "hook_trust": sync.HOOK_TRUST_NOTICE}
 
 
@@ -245,7 +342,7 @@ def main() -> int:
     parser.add_argument("--show-diff", action="store_true", help="Include full private instruction and hook configuration diffs in preview output")
     parser.add_argument("--skip-codex-hooks", action="store_true", help="Install bindings/instructions while preserving existing Codex hook definitions, for unsupported migration inputs")
     parser.add_argument("--updater", action="store_true", help="Also enable a guarded six-hour launchd updater")
-    parser.add_argument("--refresh-instructions", action="store_true", help="Refresh installed global instructions only; leave bindings and hooks alone")
+    parser.add_argument("--refresh-instructions", action="store_true", help="Refresh global instructions and bound catalog alerts; preserve bindings and unrelated hooks")
     parser.add_argument("--home-dir", type=Path, help="Fixture home in an isolated catalog checkout; overrides host environment directories")
     parser.add_argument("--codex-dir", type=Path, help="Explicit Codex destination")
     parser.add_argument("--claude-dir", type=Path, help="Explicit Claude Code destination")
