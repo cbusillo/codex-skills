@@ -107,6 +107,7 @@ preserved, or intentionally left in place.
 
    ```bash
    git status --short --branch
+   git ls-files --others --exclude-standard -z
    git worktree list
    ```
 
@@ -119,16 +120,14 @@ preserved, or intentionally left in place.
    - A runtime-bound checkout moves only through the landed
      `skills/github/scripts/reconcile-runtime-checkout.py`, with the confirmed
      final landing SHA; when you only have the PR head, read the PR for its
-     merge commit. Do not fetch, pull, or merge there. If reconciliation is
-     blocked, the merge still succeeded, but do not claim the installed runtime
-     is current.
+     merge commit with `../github/scripts/gh-pr.py view <pr>`. Do not fetch,
+     pull, or merge there. If reconciliation is blocked, the merge still
+     succeeded, but do not claim the installed runtime is current.
    - Tracked changes or an active Git operation make any checkout report-only.
    - Untracked-only dirt is eligible only when the user explicitly asks for
-     that fast-forward. The `git status` above does not count as the listing:
-     run the reference's exception steps, starting with
-     `git -C <path> ls-files --others --exclude-standard -z` and its
-     operation-state checks, and hash every listed file before the merge and
-     again after it.
+     that fast-forward. Use the `ls-files` listing above, not `git status`,
+     follow the reference's exception steps, including its operation-state
+     checks, and hash every listed file before the merge and again after it.
 
    Fast-forward only to a pinned fetched commit, never a moving ref, and never
    switch, reset, stash, clean, or overwrite a checkout. A closeout refresh
