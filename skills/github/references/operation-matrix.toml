@@ -2011,10 +2011,5 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github-work-rollup/scripts/github_work_rollup.py" = "060d94372bd3f94bda5eba59ad2e984da14e69aa8a8e687df36807d0147296d6"
 "github-work-rollup/scripts/verify_work_brief.py" = "379cfec37182c96c01ac5ae2b930ca7cdd9fc34a1bacba5f5f3510d918f9074c"
 "babysit-pr/scripts/gh_pr_watch.py" = "4866268db9cb15da6ab4dac9ef189c784cfee9f5a9efcc1d7d16996c256580a1"
-<<<<<<< HEAD
-"direction/scripts/direction_audit.py" = "3a428120fd599f39c50be697b34272621bec4445c924b5aadc4d137e099b6bb8"
-
-"github/scripts/github_plan_claim.py" = "5c83a4586298a75d2c0b026a86e04bd0ef2119dceaaac43333749fe7e9466cc9"
-=======
 "direction/scripts/direction_audit.py" = "87d2b87be58e2ba181f5266c1c11242fdea970324645b07800e70ed125c1172b"
->>>>>>> origin/main
+"github/scripts/github_plan_claim.py" = "5c83a4586298a75d2c0b026a86e04bd0ef2119dceaaac43333749fe7e9466cc9"
