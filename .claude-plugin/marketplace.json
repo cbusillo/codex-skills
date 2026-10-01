@@ -1,0 +1,14 @@
+{
+  "name": "codex-skills",
+  "description": "The shared agent skills catalog as one plugin, for Claude Cowork and other installs that cannot link the repository.",
+  "owner": {
+    "name": "codex-skills maintainers"
+  },
+  "plugins": [
+    {
+      "name": "shared",
+      "source": ".",
+      "description": "Shared agent skills catalog."
+    }
+  ]
+}
