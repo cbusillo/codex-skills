@@ -78,6 +78,9 @@ Categories for discovered work are `live_incident`, `repeated_stop_tooling`, and
 `own_project`; linked graph work keeps its milestone priority. Repeat-stop tooling
 also needs two distinct HTTPS links in `stop_occurrences`. These are the caller's
 evidence judgments, not classifications guessed from names, labels, or keywords.
+The owner-applied `live-breakage` marker independently puts an incident first
+among possible candidates until removed; it does not supply an availability
+review or change the caller's category.
 Set `ownership_complete` only when current evidence actually establishes the
 item's availability, never from a partial task list. A changed discussion digest
 invalidates the issue review. Recheck holds and ownership on every selection;

@@ -460,7 +460,11 @@ review still apply. When an ordinary repository issue list is truncated, a
 separate label inventory reads up to the plan inventory limit and reports its
 coverage. `candidate_coverage` accompanies the ranked list with a warning when
 graph or discovery coverage is incomplete; its counts are not an availability
-claim. Explicit milestone scope remains narrow.
+claim. Its `scope` distinguishes a portfolio scan from an explicit milestone
+scan; complete milestone coverage says nothing about incidents outside it.
+Mark only current incidents: every marked issue gets normal relationship,
+discussion and ancestry reads outside the ordinary scan allowance, so API cost
+increases with the marked inventory. Explicit milestone scope remains narrow.
 Discovery visits repositories round-robin after local milestone
 ordering, so one large backlog does not consume the entire evaluation budget.
 `--limit` caps displayed candidates, not coverage. Unevaluated issues, truncated

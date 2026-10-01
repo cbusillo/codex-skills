@@ -2502,20 +2502,24 @@ def discover_direction_work(
             if source["truncated"]:
                 # A quiet incident can lie beyond even the per-repository list.
                 # Keep a separate bounded label inventory, independent of scan_limit.
-                _, incidents = collect_paged_rest_items(
-                    f"/repos/{name}/issues",
-                    query={"state": "open", "labels": github_direction_next.LIVE_BREAKAGE_LABEL},
-                    bucket="rest_core", step_prefix="next_live_breakage_issues",
-                    limit=NEXT_PLAN_INVENTORY_LIMIT + 1, issue_only=True,
-                )
-                source["live_breakage_inventory"] = {
-                    "count": min(len(incidents), NEXT_PLAN_INVENTORY_LIMIT),
-                    "limit": NEXT_PLAN_INVENTORY_LIMIT,
-                    "complete": len(incidents) <= NEXT_PLAN_INVENTORY_LIMIT,
-                }
-                listed_by_number = {issue["number"]: issue for issue in listed}
-                listed_by_number.update({issue["number"]: {**issue, "repo": name} for issue in incidents[:NEXT_PLAN_INVENTORY_LIMIT]})
-                listed = list(listed_by_number.values())
+                try:
+                    _, incidents = collect_paged_rest_items(
+                        f"/repos/{name}/issues",
+                        query={"state": "open", "labels": github_direction_next.LIVE_BREAKAGE_LABEL},
+                        bucket="rest_core", step_prefix="next_live_breakage_issues",
+                        limit=NEXT_PLAN_INVENTORY_LIMIT + 1, issue_only=True,
+                    )
+                    source["live_breakage_inventory"] = {
+                        "count": min(len(incidents), NEXT_PLAN_INVENTORY_LIMIT),
+                        "limit": NEXT_PLAN_INVENTORY_LIMIT,
+                        "complete": len(incidents) <= NEXT_PLAN_INVENTORY_LIMIT,
+                    }
+                    listed_by_number = {issue["number"]: issue for issue in listed}
+                    listed_by_number.update({issue["number"]: {**issue, "repo": name} for issue in incidents[:NEXT_PLAN_INVENTORY_LIMIT]})
+                    listed = list(listed_by_number.values())
+                except PlanError as exc:
+                    source["live_breakage_inventory"] = {"complete": False, "error": next_source_error(exc)}
+                    coverage["complete"] = False
             prioritized: list[dict[str, Any]] = [{**compact_list_issue(name, issue), "milestone": next_milestone_context(issue)} for issue in listed]
             rank_next_candidates(prioritized, direction_milestones=direction_milestone_titles(source["direction"]) if source["direction"] else None)
             ranks: dict[int, int] = {int(item["number"]): int(item["rank"]) for item in prioritized}
@@ -2724,11 +2728,13 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     ranked["available_candidates"] = ranked["available_candidates"][:args.limit]
     ranked["graph_context"] = graph_coverage
     ranked["discovery_context"] = discovery
+    candidate_coverage_complete = bool(graph_coverage["complete"] and (scope is not None or discovery.get("complete")))
     ranked["candidate_coverage"] = {
-        "complete": bool(graph_coverage["complete"] and discovery.get("complete")),
-        "warning": None if graph_coverage["complete"] and discovery.get("complete") else
-        "Partial ranked list: graph or portfolio discovery is incomplete; unseen work may outrank these candidates.",
-        "unevaluated_discovery_count": discovery.get("unevaluated_count"),
+        "scope": "milestone" if scope is not None else "portfolio",
+        "complete": candidate_coverage_complete,
+        "warning": None if candidate_coverage_complete else
+        "Partial ranked list within the requested scope: discovery is incomplete; unseen work may outrank these candidates.",
+        "unevaluated_discovery_count": discovery.get("unevaluated_count", 0),
     }
     ranked["truncated"] |= bool(discovery.get("inventory_truncated") or discovery.get("unevaluated_count") or any(source.get("truncated") for source in discovery.get("repositories", [])))
     sections = section_map(direction_text or "")

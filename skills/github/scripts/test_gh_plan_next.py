@@ -33,6 +33,7 @@ def load_module() -> Any:
         raise RuntimeError(f"Unable to load {SCRIPT}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.real_discover_direction_work = module.discover_direction_work
     module.real_read_next_inbound_blockers = module.read_next_inbound_blockers
     module.read_next_inbound_blockers = lambda *_a, **_kw: ("automation-gh", [], {"complete": True})
     return module
@@ -1460,7 +1461,75 @@ def test_live_breakage_inventory_finds_incident_beyond_repository_issue_bound() 
     assert not coverage["complete"]  # Ordinary issue inventory remains bounded.
     assert len(calls) == 3
 
+
+def test_live_breakage_label_inventory_failure_preserves_ordinary_work_and_reports_bounds() -> None:
+    module = load_module()
+    marker = module.github_direction_next.LIVE_BREAKAGE_LABEL
+    incidents = [global_issue("someone/quiet", n, labels=[marker]) for n in (243, 244)]
+
+    def collect(path: str, **kwargs: Any) -> Any:
+        if path == "/installation/repositories":
+            return "automation-gh", [{"full_name": "someone/quiet"}]
+        if kwargs["query"].get("labels") == marker:
+            raise module.PlanError("label inventory unavailable")
+        return "automation-gh", [global_issue("someone/quiet", n) for n in (1, 2)]
+
+    args = next_args()
+    args.repository_issue_limit = 1
+    with patch.multiple(module.github_identity, github_app_config=lambda: {}), patch.multiple(module, collect_paged_rest_items=collect, load_direction=lambda *_: DIRECTION):
+        inventory, coverage = module.discover_direction_work("someone/direction", args, selection_context={})
+        assert [item["number"] for item in inventory] == [1]
+        assert coverage["repositories"][0]["live_breakage_inventory"]["error"]
+        assert not coverage["complete"]
+
+        original_collect = collect
+        with patch.multiple(module, NEXT_PLAN_INVENTORY_LIMIT=1,
+                            collect_paged_rest_items=lambda path, **kw: ("automation-gh", incidents) if kw["query"].get("labels") == marker else original_collect(path, **kw)):
+            inventory, coverage = module.discover_direction_work("someone/direction", args, selection_context={})
+        assert {item["number"] for item in inventory} == {1, 243}
+        assert not coverage["repositories"][0]["live_breakage_inventory"]["complete"]
+
+
+def test_live_breakage_label_query_to_direction_ranking_end_to_end() -> None:
+    with global_fixture([], [], {}) as (module, result, _reads):
+        marker = module.github_direction_next.LIVE_BREAKAGE_LABEL
+        incident = global_issue("someone/quiet", 243, labels=[marker])
+
+        def collect(path: str, **kwargs: Any) -> Any:
+            if path.endswith("/comments") or path == "/repos/someone/direction/issues":
+                return "automation-gh", []
+            if path == "/installation/repositories":
+                return "automation-gh", [{"full_name": "someone/quiet"}]
+            if kwargs["query"].get("labels") == marker:
+                return "automation-gh", [incident]
+            return "automation-gh", [global_issue("someone/quiet", n) for n in (1, 2)]
+
+        args = next_args(scan_limit=1)
+        args.repository_issue_limit = 1
+        with patch.multiple(module.github_identity, github_app_config=lambda: {}), patch.multiple(module,
+                            discover_direction_work=module.real_discover_direction_work,
+                            collect_paged_rest_items=collect,
+                            load_direction=lambda *_: "# Direction\n## Milestones\n"):
+            module.cmd_next(args)
+        assert [item["number"] for item in result["candidates"]] == [243, 1]
+        assert result["discovery_context"]["live_breakage_evaluated"] == 1
+        assert not result["candidate_coverage"]["complete"]
+
+
+def test_milestone_candidate_coverage_is_scoped_to_graph() -> None:
+    root = track("someone/direction", 1, "First")
+    leaf = global_issue("someone/product", 2)
+    with global_fixture([root], [leaf], {(root["repo"], 1): relationships(sub_issues=[leaf])}) as (module, result, _reads):
+        with patch.multiple(module.github_milestone_core, show_milestone=lambda *_a, **_kw: {"milestone": root["milestone"]}):
+            module.cmd_next(next_args(milestone="First"))
+        assert result["candidate_coverage"]["scope"] == "milestone"
+        assert result["candidate_coverage"]["complete"]
+        assert result["candidate_coverage"]["warning"] is None
+
 TESTS = [
+    test_live_breakage_label_inventory_failure_preserves_ordinary_work_and_reports_bounds,
+    test_live_breakage_label_query_to_direction_ranking_end_to_end,
+    test_milestone_candidate_coverage_is_scoped_to_graph,
     test_live_breakage_beyond_scan_window_ranks_first_without_granting_availability,
     test_live_breakage_marker_preserves_holds_dependencies_waits_and_review,
     test_live_breakage_inventory_finds_incident_beyond_repository_issue_bound,
