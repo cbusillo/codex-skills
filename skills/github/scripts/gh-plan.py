@@ -2733,7 +2733,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         "scope": "milestone" if scope is not None else "portfolio",
         "complete": candidate_coverage_complete,
         "warning": None if candidate_coverage_complete else
-        "Partial ranked list within the requested scope: discovery is incomplete; unseen work may outrank these candidates.",
+        "Partial ranked list within the requested scope: graph or portfolio coverage is incomplete; unseen work may outrank these candidates.",
         "unevaluated_discovery_count": discovery.get("unevaluated_count", 0),
     }
     ranked["truncated"] |= bool(discovery.get("inventory_truncated") or discovery.get("unevaluated_count") or any(source.get("truncated") for source in discovery.get("repositories", [])))

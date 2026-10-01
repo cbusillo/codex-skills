@@ -449,6 +449,11 @@ and empty repos without open issues have explicit exclusions. Forks remain
 eligible for discovery. An App uses `/installation/repositories`; a configured
 non-App actor uses `/user/repos`, without switching identities on failure.
 
+Service adapters using the shared direction module must inventory marked issues
+beyond ordinary repository list bounds, pass their inventory through
+`discovery_scan` before evaluating nodes, and report graph/discovery coverage
+beside the ranked list; `rank_portfolio_work` alone cannot find omitted issues.
+
 `graph_context` covers native traversal; `discovery_context` covers repository
 inventory and issue reads; neither proves active ownership. `--repo-limit`
 (default 100), `--repository-issue-limit` (100), and `--comment-limit` (100) bound
