@@ -264,7 +264,8 @@ def plan_changes(
                 "the landing ruleset already has an App bypass; restore the GitHub App configuration "
                 "and rerun plan before applying, so the existing bypass is not removed",
                 cause="unconfigured_identity",
-                payload={"key": spec.key, "ruleset_id": ruleset_id, "existing_app_ids": current_apps},
+                payload={"key": spec.key, "ruleset_id": ruleset_id, "existing_app_ids": current_apps,
+                         "failed_step": "existing_app_bypass", "write_attempted": False},
             )
         action = "none" if ruleset_matches(current, spec) else "update"
         changes.append(

@@ -117,7 +117,7 @@ def test_owner_only_cli_audit_uses_explicit_reader_and_returns_known_limit() -> 
         if endpoint.endswith("/contents/DIRECTION.md"):
             return {"content": base64.b64encode(DIRECTION.encode()).decode()}
         if endpoint == "user":
-            return {"login": "owner"}
+            return {"login": login}
         if "/milestones?" in endpoint:
             return [milestone(1, "Thin fork decision"), milestone(2, "Dogfood week")]
         if "/rulesets?" in endpoint:
@@ -127,7 +127,8 @@ def test_owner_only_cli_audit_uses_explicit_reader_and_returns_known_limit() -> 
             return []
         raise AssertionError(endpoint)
 
-    for reader in ("owner-gh", str(module.WRAPPER)):
+    for reader, login in (("gh", "owner"), ("gh", "other"), (str(module.WRAPPER), "owner"),
+                          ("skills/github/scripts/gh-with-env-token", "owner")):
         calls.clear()
         output = StringIO()
         with (patch.dict(vars(module), {
@@ -142,7 +143,7 @@ def test_owner_only_cli_audit_uses_explicit_reader_and_returns_known_limit() -> 
               redirect_stdout(output)):
             code = module.main(["--repo", "owner/repo", "--gh", reader])
         result = json.loads(output.getvalue())
-        explicit = reader == "owner-gh"
+        explicit = reader == "gh" and login == "owner"
         assert code == (0 if explicit else 3)
         assert result["ok"] is explicit
         assert result["read_only"] is True
@@ -151,8 +152,22 @@ def test_owner_only_cli_audit_uses_explicit_reader_and_returns_known_limit() -> 
             assert [item["kind"] for item in result["limits"]] == ["owner_acts_as_automation"]
         else:
             assert kinds(result) == ["coverage_incomplete"]
-            assert result["limits"] == []
+            assert not result["ok"]
         assert calls and all(request[0] == "api" and request[-2:] == ["--method", "GET"] for request in calls)
+
+
+def test_default_reader_error_exposes_read_only_owner_remedy() -> None:
+    module = load()
+    output = StringIO()
+
+    def fail(*_args: Any, **_kwargs: Any) -> Any:
+        raise module.AuditError("fixture reader refusal")
+
+    with patch.dict(vars(module), {"gh_json": fail}), redirect_stdout(output):
+        assert module.main(["--repo", "owner/repo"]) == 1
+    result = json.loads(output.getvalue())
+    assert result["ok"] is False
+    assert result["owner_reader_hint"]
 
 
 def test_audit_questions_are_ordinary_open_issues_not_pull_requests() -> None:

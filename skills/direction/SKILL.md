@@ -188,7 +188,9 @@ owner without an expected login still reports incomplete coverage; use the
 explicit owner reader below for owner-only adoption.
 An owner with only their own `gh` login selects it explicitly with
 `direction_audit.py --repo OWNER/REPO --gh gh`; the default reader remains the
-automation wrapper. This read-only selection authorizes no GitHub writes.
+automation wrapper. This read-only selection authorizes no GitHub writes. If a
+separate automation login is configured and the owner deliberately supplies the
+reads, pass `--automation BOT-LOGIN` to retain that bot's admission classification.
 For each finding:
 
 - `coverage_incomplete`: a bounded read was truncated or unavailable, or
