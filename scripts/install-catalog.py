@@ -103,11 +103,18 @@ def existing_session_hook(groups: list) -> bool:
             plugin_root = next((token.partition("=")[2] for token in tokens if token.startswith("CLAUDE_PLUGIN_ROOT=")), os.environ.get("CLAUDE_PLUGIN_ROOT", ""))
             candidates = list(tokens)
             for index, token in enumerate(tokens):
-                if token == "-c" and index > 0 and index + 1 < len(tokens) and Path(tokens[index - 1]).name in ("sh", "bash", "zsh"):
-                    candidates.extend(shlex.split(tokens[index + 1]))
+                if Path(token).name in ("sh", "bash", "zsh"):
+                    for flag_index in range(index + 1, len(tokens) - 1):
+                        flag = tokens[flag_index]
+                        if not flag.startswith("-"):
+                            break
+                        if flag == "-c" or (not flag.startswith("--") and "c" in flag[1:]):
+                            candidates.extend(shlex.split(tokens[flag_index + 1]))
+                            break
             candidates = [token.replace("${CLAUDE_PLUGIN_ROOT}", plugin_root).replace("$CLAUDE_PLUGIN_ROOT", plugin_root) for token in candidates]
-            if not any(Path(os.path.expandvars(token)).expanduser().resolve() == (ROOT / "hooks" / "direction_check_hook.py").resolve() for token in candidates):
-                raise ValueError("Existing session hook preserved: direction_check_hook.py does not resolve to this catalog; inspect the old entry and update its path before rerunning")
+            paths = [Path(os.path.expandvars(token)).expanduser() for token in candidates]
+            if not any(path.is_absolute() and path.resolve() == (ROOT / "hooks" / "direction_check_hook.py").resolve() for path in paths):
+                raise ValueError("Existing session hook preserved: direction_check_hook.py does not unambiguously resolve to this catalog; inspect the entry and use an absolute catalog script path before rerunning")
             found = True
     return found
 
@@ -135,6 +142,10 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
     previous_installation = json.loads(safe_file(installation_path) or "{}")
     if not isinstance(previous_installation, dict):
         raise ValueError("Invalid catalog installation receipt")
+    requested = {"codex": str(codex), "claude": str(claude)}
+    previous = {key: previous_installation.get(key) for key in requested}
+    configuration_change = {"previous": previous, "requested": requested} if previous_installation and previous != requested else None
+    unmanaged_sources = [str(path) for path in destinations if safe_file(path).strip() and not safe_file(path).startswith(sync.HEADER)]
     if previous_installation.get("home") and Path(previous_installation["home"]).resolve() != home.resolve():
         raise ValueError("Installed home differs; preserve this installation and use a separate catalog checkout for fixtures or another machine")
     if refresh_instructions and not previous_installation:
@@ -234,6 +245,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         outputs = instruction_preview + hook_preview
     # Avoid printing private instruction text/diffs in the normal install output.
     return {"bindings": [{"path": str(path), "target": str(target), "state": "create" if (path, target) in pending else "current"} for path, target in links],
+            "configuration_change": configuration_change, "unmanaged_instruction_sources": unmanaged_sources,
             "outputs": [{key: value for key, value in entry.items() if key != "diff" or show_diff} for entry in outputs],
             "private_source": str(local), "updater": "enabled" if updater and write else "requested" if updater else "unchanged" if previous_installation.get("scheduled_updater") else "off",
             "hook_trust": "unchanged; approve new entries through Codex /hooks once"}

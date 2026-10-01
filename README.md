@@ -17,7 +17,7 @@ benefits from more than a single instruction file.
 Clone this repository somewhere durable, then install once on each machine:
 
 ```sh
-git clone git@github.com:OWNER/codex-skills.git ~/Developer/codex-skills
+git clone https://github.com/OWNER/codex-skills.git ~/Developer/codex-skills
 cd ~/Developer/codex-skills
 uv run scripts/install-catalog.py --write
 ```
@@ -39,6 +39,13 @@ path before moving it aside or restoring its private source, then rerun. Working
 legacy catalog bindings and other host settings are preserved. Personal skills
 in `~/.agents/skills` coexist with the nested catalog binding; an existing link
 from that whole directory to this catalog remains in place.
+
+The output names unmanaged instruction sources that will be combined. Review
+`--show-diff` when those sources need tidying; the installer preserves their text
+instead of choosing between personal rules. One checkout records one active
+pair of host destinations. Reinstalling with different native host overrides
+reconfigures that pair and reports the previous and requested directories. Use
+a separate checkout for a second independently updated configuration.
 
 Edit personal instructions in `.local/global-instructions.md`. The installer
 records the generated host files and reports later hand edits instead of
@@ -63,6 +70,9 @@ uv run scripts/install-catalog.py --write --updater
 ```
 
 It installs `~/Library/LaunchAgents/com.codex-skills.catalog-update.plist`.
+The remote must be readable without interaction for unattended fetches; the
+HTTPS clone above works for public catalogs. For private or SSH remotes, set up
+non-interactive read access first or use manual updates.
 The updater fetches and fast-forwards only a clean `main` with no local commits;
 it never switches, resets, stashes, cleans, or merges divergence. A pull makes
 new skills visible without adding links and refreshes installed global instructions
@@ -152,10 +162,11 @@ checkout with a cached copy.
 ### Shared global instructions and Codex hooks
 
 [`instructions/global.md`](instructions/global.md) is the common source for
-both hosts' global instructions. Put any existing private host instructions in
-the ignored `.local/global-instructions.md` once; the renderer includes that
-same supplement in both outputs. Inspect both existing files and the preview
-before adopting them so no personal instruction is lost:
+both hosts' global instructions. Use the installer in [Install](#install) for
+initial adoption; it preserves private host instructions in the ignored
+`.local/global-instructions.md`, which the renderer includes in both outputs.
+For later instruction maintenance, edit that private source or land changes to
+the shared source, then inspect the sync preview before writing:
 
 ```sh
 uv run scripts/sync-global-instructions.py --codex-hook

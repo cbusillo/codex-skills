@@ -308,6 +308,46 @@ class InstallTests(unittest.TestCase):
         self.install()
         self.assertEqual(json.loads((self.codex / "hooks.json").read_text())["hooks"]["SessionStart"], hook["hooks"]["SessionStart"])
 
+    def test_login_shell_and_shell_options_preserve_correct_hooks(self):
+        for shell in ("bash -lc", "zsh -lc", "bash -l -c", "bash --noprofile -c"):
+            with self.subTest(shell=shell):
+                entry = {"hooks": {"SessionStart": [{"hooks": [{"command": f"{shell} 'uv run {self.catalog}/hooks/direction_check_hook.py'"}]}]}}
+                (self.codex / "hooks.json").write_text(json.dumps(entry))
+                self.install()
+                self.assertEqual(json.loads((self.codex / "hooks.json").read_text())["hooks"]["SessionStart"], entry["hooks"]["SessionStart"])
+
+    def test_relative_hook_paths_are_not_mistaken_for_this_catalog(self):
+        previous = Path.cwd()
+        try:
+            os.chdir(self.catalog)
+            entry = {"hooks": {"SessionStart": [{"hooks": [{"command": "sh -c 'cd /old/catalog && uv run hooks/direction_check_hook.py'"}]}]}}
+            (self.codex / "hooks.json").write_text(json.dumps(entry))
+            with self.assertRaisesRegex(ValueError, "Existing session hook preserved"):
+                self.install()
+        finally:
+            os.chdir(previous)
+        self.assertFalse((self.codex / "AGENTS.md").exists())
+
+    def test_explicit_host_destination_change_is_reported_and_reconfigures_the_pair(self):
+        self.install()
+        before = (self.codex / "AGENTS.md").read_bytes()
+        other = self.home / ".codex-profile"
+        preview = installer.install(self.home, other, self.claude, write=False, updater=False)
+        self.assertEqual(preview["configuration_change"]["previous"]["codex"], str(self.codex))
+        self.assertEqual(preview["configuration_change"]["requested"]["codex"], str(other))
+        self.assertFalse(other.exists())
+        installer.install(self.home, other, self.claude, write=True, updater=False)
+        receipt = json.loads((self.catalog / ".local" / "catalog-install.json").read_text())
+        self.assertEqual(receipt["codex"], str(other))
+        self.assertEqual((self.codex / "AGENTS.md").read_bytes(), before)
+
+    def test_preview_reports_both_unmanaged_instruction_sources_without_exposing_text(self):
+        (self.claude / "CLAUDE.md").write_text("Shared rule.\nClaude rule.\n")
+        (self.codex / "AGENTS.md").write_text("Shared rule.\nCodex rule.\n")
+        result = self.install(write=False)
+        self.assertEqual(set(result["unmanaged_instruction_sources"]), {str(self.claude / "CLAUDE.md"), str(self.codex / "AGENTS.md")})
+        self.assertNotIn("Shared rule.", json.dumps(result))
+
     def test_a_different_home_does_not_redirect_an_existing_installation(self):
         self.install()
         receipt = self.catalog / ".local" / "catalog-install.json"
