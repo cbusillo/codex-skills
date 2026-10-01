@@ -99,7 +99,8 @@ The updater fetches and fast-forwards only a clean `main` with no local commits;
 it never switches, resets, stashes, cleans, or merges divergence. A pull makes
 new skills visible without adding links and refreshes installed global instructions
 through its instruction-only refresh, preserving the private supplement and
-leaving current bindings and hooks alone. The existing session-start hook prints
+preserving bindings and unrelated hooks. Bound catalog hooks receive session-alert
+updates; removing all catalog hooks opts out of that refresh. The existing session-start hook prints
 one catalog line for a stale or blocked checkout, a failed update, or a scheduled
 check older than twelve hours. A manual pull that changes shared instructions
 also reports a stale installation until the instruction refresh runs. Session
@@ -194,7 +195,7 @@ Codex 0.157.0 supports a blocking `PreToolUse` hook, exposes shell calls as
 It also accepts the JSON deny decision used by the registered launcher. Hooks
 are enabled by default in that version; if the host explicitly disabled them,
 restore its `features.hooks` setting before expecting enforcement.
-`--codex-hook` maintains the catalog's `PreToolUse` and `SessionStart` hooks in
+`--codex-hook` maintains the catalog's `PreToolUse`, `SessionStart`, `Stop`, and `Interrupt` hooks in
 `~/.codex/hooks.json`, retaining other hooks. It also moves existing inline
 event declarations from `config.toml` into JSON, preserving their commands,
 matchers, timeouts, unrelated settings, and Codex-managed `[hooks.state]`.
@@ -366,6 +367,78 @@ unless `DIRECTION_MARKER` names another file. For Codex, the installer or
 in JSON so later setup does not recreate inline TOML declarations.
 Claude's separate `compact` handler uses `--skills-only` to restore the protocol
 without repeating the executing loop or overdue-audit reminder.
+
+### Session alerts
+
+Inline dotfiles hook configurations can preview `--refresh-instructions --show-diff` and merge the generated `catalog_alert_toml` into their authoritative `config.toml` source, retaining personal hooks and native trust. Refresh recognizes current inline alerts without writing that source. Regular configurations can use the hook-only migration described above.
+
+The same catalog hook source registers advisory `Stop` alerts on both harnesses
+and `Interrupt` alerts on Codex (verified against 0.159.2). Claude Code has no native Interrupt event, and
+its Stop event does not run for user interruptions or API errors. These notices
+are prompts for a supervisor to check session state, not completion records:
+a Stop hook can run again when another hook continues the turn. The hook never
+returns a continuation, approval, or blocking decision.
+
+Each invocation appends one JSON line to `$CODE_HOME/session-events.jsonl`,
+falling back to `~/.code/session-events.jsonl` on either harness. Set `CODE_HOME`
+to the same shared directory for both harnesses when using an override.
+Records contain `schema_version`, `harness`, `session_id`, optional `turn_id`
+(null on Claude), UTC `time`, `event`, `advisory: true`, `clean: null`, and
+`stop_hook_active` (null unless a boolean is supplied for Stop). Neither event proves clean final
+completion; the supervisor must verify current session state. Messages,
+transcripts, credentials and working directories are not copied. Concurrent
+local writes append whole lines; storage errors leave the session running and
+emit a short diagnostic. Delivery is best effort, without exactly-once or
+all-outcomes coverage.
+
+The installer renders Codex alerts into its existing `hooks.json` path, leaving
+trust bookkeeping unchanged. The catalog updater refreshes only alert entries
+for installations that still have catalog-owned hook bindings. Claude's plugin
+loads Stop from the catalog hook source. Existing installations can preview
+`scripts/install-catalog.py` and rerun it with `--write`. Codex may skip changed
+or new definitions until reviewed through its supported `/hooks` flow; no trust
+is granted or copied by the installer. To suppress Codex alerts independently,
+disable their reviewed definitions with the `/hooks` toggle while retaining
+other enabled hooks. Leaving entries untrusted can prompt for review again
+on later launches.
+On either harness, set `SESSION_ALERTS_DISABLED=1` in the hook environment to
+suppress alerts independently without changing other hooks. For example, launch
+Claude Code with `SESSION_ALERTS_DISABLED=1 claude` or Codex with
+`SESSION_ALERTS_DISABLED=1 codex`. Removing the variable resumes alerts.
+If an instruction refresh cannot safely update a hook destination, it leaves
+that destination untouched, reports the skipped alert refresh in its output
+and updater receipt, and still refreshes instructions. Concurrent edits observed
+since the hook preview are preserved and reported as skipped. The next session-start
+status line names the skipped alert refresh and its recovery command. Hook writes
+require a regular hooks.json file. A readable symlink with no catalog labels
+is recognized as unbound and left alone. A bound symlink whose alert entries already match the catalog is current and
+needs no write. A stale bound symlink or malformed destination remains unverified
+and produces a notice, while checkout/instruction updates continue. Catalog
+staleness and instruction drift take priority over this advisory notice. Reconcile that destination
+through the documented installer preview. For a stale dotfiles symlink, use
+`scripts/install-catalog.py --refresh-instructions --show-diff`: its skipped
+entry includes `catalog_alert_entries` with the generated Stop/Interrupt groups
+for your dotfiles source; apply those groups there, preserving their positions
+and unrelated hooks. Then run `scripts/catalog_runtime.py --update` to clear
+the old skipped-refresh receipt. This preview contains no trust state. Dotfiles
+shared across hosts with different catalog paths need per-host rendered entries.
+Supervisors own local retention of the events file; truncating it discards old
+notices and subsequent invocations append new ones. Readers should skip malformed
+lines, which can result from interrupted or partial storage writes.
+The stream appears on the first alert;
+once it exists a local supervisor can use:
+
+```bash
+tail -f "${CODE_HOME:-$HOME/.code}/session-events.jsonl"
+```
+
+Verify session state after each notice. Do not interpret `clean: null` or a
+quiet stream as evidence that a session succeeded, failed, or is still active.
+The hook command uses a three-second timeout with Python downloads disabled,
+and launch failures return success to the harness so they cannot request Stop
+continuation. Disposable routing-eval sessions suppress these alerts.
+See the [Codex hook contract](https://learn.chatgpt.com/docs/hooks) and
+[Claude Code hook contract](https://code.claude.com/docs/en/hooks#stop).
 
 ## Instruction scope
 

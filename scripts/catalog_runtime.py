@@ -56,6 +56,7 @@ def status_line(root: Path) -> str:
         if state["state"] == "current":
             receipt = root / ".local" / "catalog-update.json"
             stamp = installation.get("scheduled_at")
+            recorded = {}
             if receipt.exists():
                 recorded = json.loads(receipt.read_text())
                 if not isinstance(recorded, dict):
@@ -65,6 +66,7 @@ def status_line(root: Path) -> str:
                     step = recorded.get("failure_step", "catalog update")
                     recovery = "preview scripts/install-catalog.py --refresh-instructions, reconcile, then run scripts/catalog_runtime.py --update" if step == "instruction refresh" else "run scripts/catalog_runtime.py --update"
                     state = {"state": "blocked", "reason": f"last {step} failed; {recovery}"}
+
             checked_at = dt.datetime.fromisoformat(stamp) if stamp else None
             if checked_at is not None and checked_at.tzinfo is None:
                 raise ValueError("update timestamp has no timezone")
@@ -72,6 +74,8 @@ def status_line(root: Path) -> str:
                 state = {"state": "stale", "reason": "scheduled update has not checked origin in over 12 hours"}
             if state["state"] == "current" and installation.get("shared_source_sha256") and hashlib.sha256((root / "instructions" / "global.md").read_text().encode()).hexdigest() != installation["shared_source_sha256"]:
                 state = {"state": "stale", "reason": "shared instructions changed; run scripts/catalog_runtime.py --update to refresh installed instructions"}
+            if state["state"] == "current" and receipt.exists() and recorded.get("alert_refresh"):
+                state = {"state": "notice", "reason": "catalog checkout is current but alert refresh was skipped; preview scripts/install-catalog.py --refresh-instructions --show-diff, reconcile the reported hook source, then run scripts/catalog_runtime.py --update"}
         if state["state"] == "current":
             return ""
         return f"Catalog {state['state']}: {state['reason']} ({root})."
@@ -106,7 +110,8 @@ def update(root: Path) -> dict[str, str]:
                 if state["state"] == "current" and (root / ".local" / "catalog-install.json").is_file():
                     failure_step = "instruction refresh"
                     # Refresh installed global instructions through the same installer;
-                    # Bindings and hooks are left as the user configured them.
+                    # Existing catalog hook bindings receive alert updates; removed
+                    # bindings and unrelated hooks remain as the user configured them.
                     installation = json.loads((root / ".local" / "catalog-install.json").read_text())
                     if not isinstance(installation, dict):
                         raise ValueError("invalid installation receipt")
@@ -115,6 +120,9 @@ def update(root: Path) -> dict[str, str]:
                                             capture_output=True, text=True, timeout=60)
                     if result.returncode:
                         raise ValueError("catalog is current but instruction refresh failed; preview scripts/install-catalog.py --refresh-instructions to diagnose and reconcile")
+                    refreshed = json.loads(result.stdout)
+                    if any(entry.get("state") == "skipped" for entry in refreshed.get("outputs", [])):
+                        state["alert_refresh"] = "skipped; preview scripts/install-catalog.py --refresh-instructions to diagnose"
         except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
             state = {"state": "error", "reason": str(error), "failure_step": failure_step}
         state["checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
