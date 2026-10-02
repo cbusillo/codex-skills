@@ -185,6 +185,8 @@ class ClaimTests(unittest.TestCase):
             {"body": context + "\n\nFixes: #42"},
             {"body": context + "; Closes <https://github.com/owner/repo/issues/42>"},
             {"body": context + "; **Fixes** https://github.com/owner/repo/issues/42"},
+            {"body": context + "; **Fixes:** https://github.com/owner/repo/issues/42"},
+            {"body": context + "; __Closes:__ https://github.com/owner/repo/issues/42"},
             {"body": context + "; Closes [repo#42](https://github.com/owner/repo/issues/42#issuecomment-1)"},
             {"body": context + '; Closes [repo#42](https://github.com/owner/repo/issues/42 "repair")'},
             {"body": "- " + context},
