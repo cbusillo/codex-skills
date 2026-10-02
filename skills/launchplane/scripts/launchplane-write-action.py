@@ -1068,6 +1068,7 @@ def _project_runtime_key_safety(value: object) -> dict[str, object]:
         "target",
         "checked_binding_keys",
         "findings",
+        "reported",
     }
     if any(str(key) not in allowed for key in source):
         raise LaunchplaneSafetyError("unsafe_response_shape")
@@ -2070,6 +2071,11 @@ INTEGRATION_ALLOWANCE_KINDS = {"dev_store", "read_only_source", "pre_live"}
 SECRET_SHARING_REASON_KINDS = INTEGRATION_ALLOWANCE_KINDS | {"site_shared"}
 SECRET_SHARING_REASON_FIELDS = {"kind", "reason", "evidence", "recorded_by", "recorded_at"}
 LANE_INTEGRATION_KEY_FIELDS = {"binding_key", "declared_secret_class", "sharing_reason"}
+# A long run of letters and digits in person-written text, such as a pasted API
+# key (rk_live_..., a hex token): redacted before a sharing reason is shown.
+CREDENTIAL_LIKE_WORD_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*[0-9])(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{20,}"
+)
 INTEGRATION_ALLOWANCES_PLAN_FIELDS = {
     "status",
     "mode",
@@ -2223,6 +2229,10 @@ def _project_integration_allowance(value: object) -> dict[str, object]:
     return projected
 
 
+def _redact_credential_like_words(text: str) -> str:
+    return CREDENTIAL_LIKE_WORD_RE.sub("[redacted]", text)
+
+
 def _project_sharing_reason(value: object) -> dict[str, object]:
     """Why a key is shared, as recorded by a person; metadata, never the value."""
     source = _require_dict(value)
@@ -2233,8 +2243,8 @@ def _project_sharing_reason(value: object) -> dict[str, object]:
         raise LaunchplaneSafetyError("invalid_response")
     projected: dict[str, object] = {
         "kind": kind,
-        "reason": public_summary_string(source.get("reason")),
-        "evidence": public_summary_string(source.get("evidence")),
+        "reason": _redact_credential_like_words(public_summary_string(source.get("reason"))),
+        "evidence": _redact_credential_like_words(public_summary_string(source.get("evidence"))),
     }
     if source.get("recorded_by"):
         projected["recorded_by"] = public_identifier(source.get("recorded_by"))

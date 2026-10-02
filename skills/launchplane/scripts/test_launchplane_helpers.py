@@ -2357,6 +2357,16 @@ def test_product_config_projection_keeps_declared_secret_class_end_to_end() -> N
                     },
                     "checked_binding_keys": ["EXAMPLE_API_TOKEN"],
                     "findings": [],
+                    "reported": [
+                        {
+                            "code": "sharing_reason_missing",
+                            "binding_key": "EXAMPLE_SYNC_API_TOKEN",
+                            "binding_id": "binding-example",
+                            "secret_id": "secret-record-example",
+                            "secret_class": "shared_safe",
+                            "detail": "Integration key is declared shared_safe with no reason.",
+                        }
+                    ],
                 },
                 "secrets": [
                     {
@@ -2378,6 +2388,9 @@ def test_product_config_projection_keeps_declared_secret_class_end_to_end() -> N
     )
 
     assert result["status"] == "accepted"
+    assert result["result"]["runtime_key_safety"]["reported"] == [
+        {"key": "EXAMPLE_SYNC_API_TOKEN", "code": "sharing_reason_missing"}
+    ]
     assert result["result"]["secrets"] == [
         {
             "action": "rotated",
@@ -2511,6 +2524,11 @@ def test_integration_allowances_read_shows_why_a_lane_key_is_shared() -> None:
             "sharing_reason": sharing_reason,
         }
     ]
+    pasted_key = "rk_live_" + "51HxQ2eZvKYlo2C0aBcDeFgH1234"
+    redacted = write_action._project_sharing_reason(
+        {**sharing_reason, "evidence": f"Verified read-only scope of {pasted_key} on 2026-10-02."}
+    )
+    assert redacted["evidence"] == "Verified read-only scope of [redacted] on 2026-10-02."
     for unsafe in ({**sharing_reason, "value": "x"}, {**sharing_reason, "kind": "borrowed"}):
         try:
             write_action._project_sharing_reason(unsafe)
