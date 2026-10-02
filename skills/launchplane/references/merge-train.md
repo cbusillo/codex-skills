@@ -50,8 +50,8 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   managed feedback to each PR. Treat this as the normal rollout path, not an
   experimental one-off.
 - **Stacked PRs**: For a same-repo linear stack, label the root PR that
-  targets the protected base branch and every child, since collapsing merges
-  each child into the root. Launchplane collapses a child only when it is
+  targets the protected base branch and every child that is ready to land,
+  since collapsing merges each child into the root. Launchplane collapses a child only when it is
   itself ready to land: open, not a draft, labeled, and from an allowed author.
   Otherwise the controller reports `stack_unsupported` with a
   `blocking_reason` naming the child. To land the root while a child stays
