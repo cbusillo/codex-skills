@@ -210,7 +210,7 @@ def artifact_evidence(
         # Other URLs, titles, branches and implementation references still hold.
         issue_reference = rf"(?:#{number}|{re.escape(repo)}#{number}|{issue_url})(?!\d)"
         ownership_reference = (
-            rf"(?i)\b(?:refs?|fix(?:es|ed)?|clos(?:e|es|ed)|resolv(?:e|es|ed)|implement(?:s|ed|ing)?)"
+            rf"(?i)(?<![\w])(?:__)?(?:refs?|fix(?:es|ed)?|clos(?:e|es|ed)|resolv(?:e|es|ed)|implement(?:s|ed|ing)?)"
             rf"(?:\*\*|__)?\s*:?(?:\*\*|__)?\s+(?:{issue_reference}|<{issue_url}(?!\d)[^>]*>|"
             rf"\[[^\]\n]+\]\({issue_url}(?!\d)[^\n)]*\))"
         )
