@@ -214,7 +214,8 @@ class SdkRetirementTests(unittest.TestCase):
             subprocess.run(["git", "-C", str(primary), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "fixture"], check=True)
             subprocess.run(["git", "-C", str(primary), "worktree", "add", "-q", "-b", "task", str(root)], check=True)
             def post(_port, _endpoint, params, **_kwargs):
-                response = self.response(root, params["dry_run"] == "true")
+                self.assertEqual(params["dry_run"], "true")
+                response = self.response(root, True)
                 response.body["status"] = "refused"
                 response.body["sdks"][0].update(status="refused", reason="not_helper_owned")
                 raise jb_inspect.InspectError("HTTP 409", 3, response.body | {"http_status": 409})
@@ -223,8 +224,58 @@ class SdkRetirementTests(unittest.TestCase):
                 result = jb_inspect.command_retire_sdks(args)
             self.assertTrue(result["worktree_removed"])
             self.assertEqual(result["preserved_unowned_sdk_count"], 1)
-            self.assertEqual(result["sdk_cleanup"][0]["result"]["sdks"][0]["reason"], "not_helper_owned")
+            self.assertEqual(result["sdk_cleanup"], [])
             self.assertFalse(root.exists())
+
+    def test_apply_skips_ides_whose_preview_has_nothing_to_remove(self):
+        # #952: an IDE with an empty preview answered the needless mutating call with sdk_lifecycle_busy or a timeout.
+        with tempfile.TemporaryDirectory() as tmp:
+            primary = Path(tmp) / "primary"
+            root = Path(tmp) / "task"
+            subprocess.run(["git", "init", "-q", str(primary)], check=True)
+            subprocess.run(["git", "-C", str(primary), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "fixture"], check=True)
+            subprocess.run(["git", "-C", str(primary), "worktree", "add", "-q", "-b", "task", str(root)], check=True)
+            owner = self.identity()
+            empty = self.identity() | {"port": 63343, "session_id": "empty"}
+            applied_ports = []
+            removed = False
+            def post(port, _endpoint, params, **_kwargs):
+                nonlocal removed
+                session = params["session_id"]
+                if params["dry_run"] == "false":
+                    applied_ports.append(port)
+                    if port == empty["port"]:
+                        raise jb_inspect.InspectError("HTTP 409", 3, {"status": "refused", "reason": "sdk_lifecycle_busy", "http_status": 409})
+                    removed = True
+                response = self.response(root, params["dry_run"] == "true")
+                response.body["session_id"] = session
+                if port == empty["port"] or removed:
+                    response.body["sdks"] = []
+                return response
+            args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
+            with patch.object(jb_inspect, "discover_identities", return_value=[owner, empty]), patch.object(jb_inspect, "http_post", side_effect=post):
+                result = jb_inspect.command_retire_sdks(args)
+            self.assertEqual(applied_ports, [owner["port"]])
+            self.assertEqual([item["port"] for item in result["sdk_apply_skipped"]], [empty["port"]])
+            self.assertTrue(result["worktree_removed"])
+            self.assertFalse(root.exists())
+
+    def test_sdk_registered_after_an_empty_preview_keeps_the_worktree(self):
+        root = Path("/fixture/task")
+        args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
+        previews = 0
+        def post(_port, _endpoint, params, **_kwargs):
+            nonlocal previews
+            self.assertEqual(params["dry_run"], "true")
+            previews += 1
+            response = self.response(root, True)
+            if previews == 1:
+                response.body["sdks"] = []
+            return response
+        with patch.object(jb_inspect, "retirement_worktree", return_value=root), patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", side_effect=post), patch.object(jb_inspect.subprocess, "run") as removal:
+            with self.assertRaisesRegex(jb_inspect.InspectError, "still needs retirement"):
+                jb_inspect.command_retire_sdks(args)
+            removal.assert_not_called()
 
     def test_busy_empty_response_never_counts_as_cleanup_success(self):
         root = Path("/fixture/task")

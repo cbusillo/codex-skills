@@ -10736,6 +10736,7 @@ def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, 
 def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
     preview: list[dict[str, Any]] = []
     applied: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
     with lifecycle_lock(args.lifecycle_lock_timeout_ms):
         try:
             root = retirement_worktree(Path(args.repo), args.dry_run) if args.command == "remove-worktree" else None
@@ -10743,7 +10744,14 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
             preview = unregister_helper_sdks(identities, root, True)
             if not args.dry_run:
                 if root is not None:
-                    applied = unregister_helper_sdks(identities, root, False)
+                    # Only IDEs with a helper-owned SDK need the mutating call; the final preview rechecks every IDE.
+                    for item in preview:
+                        if any(entry["status"] == "would_remove" for entry in item["result"]["sdks"]):
+                            identity = next(identity for identity in identities if
+                                            identity["session_id"] == item["ide"]["session_id"] and identity["port"] == item["ide"]["port"])
+                            applied.extend(unregister_helper_sdks([identity], root, False))
+                        else:
+                            skipped.append(item)
                 else:
                     # Explicit paths bind apply to the earlier reviewed dry-run.
                     selected = {str(Path(path).expanduser().resolve()) for path in (getattr(args, "worktree_path", None) or [])}
@@ -10789,10 +10797,10 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
                         raise InspectError("Git worktree removal failed; SDK cleanup may already have completed.", 3,
                                            {"git_error": completed.stderr})
             return {"status": "ok", "dry_run": args.dry_run, "worktree_path": str(root) if root else None,
-                    "sdk_preview": preview, "sdk_cleanup": applied,
+                    "sdk_preview": preview, "sdk_cleanup": applied, "sdk_apply_skipped": [item["ide"] for item in skipped],
                     "worktree_removed": root is not None and not args.dry_run,
                     "refused_preview_sdk_count": sum(entry["status"] == "refused" for item in preview for entry in item["result"]["sdks"]),
-                    "preserved_unowned_sdk_count": sum(entry["reason"] == "not_helper_owned" for item in (preview if args.dry_run else applied) for entry in item["result"]["sdks"])}
+                    "preserved_unowned_sdk_count": sum(entry["reason"] == "not_helper_owned" for item in (preview if args.dry_run else applied + skipped) for entry in item["result"]["sdks"])}
         except (subprocess.CalledProcessError, OSError) as error:
             raise InspectError("Worktree retirement failed; retain the worktree and inspect the Git/filesystem error.", 3,
                                {"sdk_preview": preview, "sdk_cleanup": applied, "error": str(error)}) from error
