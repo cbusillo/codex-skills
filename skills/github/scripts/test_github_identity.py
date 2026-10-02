@@ -223,6 +223,25 @@ def test_local_env_file_precedence_matches_shell() -> None:
         assert github_identity.automation_login(values) == "home"
 
 
+def test_local_env_file_skips_homes_without_one() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        code_home = root / "code"
+        codex_home = root / "codex"
+        home = root / "home"
+        code_home.mkdir()
+        codex_home.mkdir()
+        (home / ".code").mkdir(parents=True)
+        values = {"CODE_HOME": str(code_home), "CODEX_HOME": str(codex_home), "HOME": str(home)}
+        assert github_identity.env_file_path(values) == code_home / "local.env"
+        (home / ".code" / "local.env").write_text("CODEX_AUTOMATION_LOGIN=home\n", encoding="utf-8")
+        assert github_identity.automation_login(values) == "home"
+        (codex_home / "local.env").write_text("CODEX_AUTOMATION_LOGIN=codex\n", encoding="utf-8")
+        assert github_identity.automation_login(values) == "codex"
+        values["CODEX_SKILLS_ENV_FILE"] = str(root / "missing.env")
+        assert not github_identity.automation_login(values)
+
+
 def test_per_tool_overrides_win_over_shared_identity() -> None:
     with tempfile.TemporaryDirectory() as directory:
         env_file = Path(directory) / "local.env"
@@ -528,6 +547,7 @@ def test_github_app_requires_explicit_api_url_for_enterprise_host() -> None:
 def main() -> None:
     tests = [
         test_local_env_file_precedence_matches_shell,
+        test_local_env_file_skips_homes_without_one,
         test_per_tool_overrides_win_over_shared_identity,
         test_unconfigured_identity_is_distinct_from_fallback,
         test_local_require_automation_auth_overrides_process_fallback,

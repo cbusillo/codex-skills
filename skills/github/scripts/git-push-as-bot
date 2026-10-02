@@ -7,16 +7,19 @@ gh_bin=${GIT_PUSH_AS_BOT_GH:-gh}
 identity_helper=${GIT_PUSH_AS_BOT_IDENTITY_HELPER:-$script_dir/github_identity.py}
 python_command=${GIT_PUSH_AS_BOT_PYTHON:-}
 
+# Use the first local.env that exists under CODE_HOME, CODEX_HOME, then
+# ~/.code. An explicit CODEX_SKILLS_ENV_FILE always wins, even when missing, so
+# tests and isolated callers can load nothing.
 if [ -n "${CODEX_SKILLS_ENV_FILE:-}" ]; then
 	env_file=$CODEX_SKILLS_ENV_FILE
-elif [ -n "${CODE_HOME:-}" ]; then
-	env_file=$CODE_HOME/local.env
-elif [ -n "${CODEX_HOME:-}" ]; then
-	env_file=$CODEX_HOME/local.env
-elif [ -n "${HOME:-}" ]; then
-	env_file=$HOME/.code/local.env
 else
 	env_file=
+	for env_home in "${CODE_HOME:-}" "${CODEX_HOME:-}" "${HOME:+$HOME/.code}"; do
+		if [ -n "$env_home" ] && [ -f "$env_home/local.env" ]; then
+			env_file=$env_home/local.env
+			break
+		fi
+	done
 fi
 
 # The helper rewrites and checks origin only, so it pushes only there; another

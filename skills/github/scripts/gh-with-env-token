@@ -19,16 +19,19 @@ run_python() {
 	fi
 }
 
+# Use the first local.env that exists under CODE_HOME, CODEX_HOME, then
+# ~/.code. An explicit CODEX_SKILLS_ENV_FILE always wins, even when missing, so
+# tests and isolated callers can load nothing.
 if [ -n "${CODEX_SKILLS_ENV_FILE:-}" ]; then
 	env_file=$CODEX_SKILLS_ENV_FILE
-elif [ -n "${CODE_HOME:-}" ]; then
-	env_file=$CODE_HOME/local.env
-elif [ -n "${CODEX_HOME:-}" ]; then
-	env_file=$CODEX_HOME/local.env
-elif [ -n "${HOME:-}" ]; then
-	env_file=$HOME/.code/local.env
 else
 	env_file=
+	for env_home in "${CODE_HOME:-}" "${CODEX_HOME:-}" "${HOME:+$HOME/.code}"; do
+		if [ -n "$env_home" ] && [ -f "$env_home/local.env" ]; then
+			env_file=$env_home/local.env
+			break
+		fi
+	done
 fi
 gh_command=${GH_WITH_ENV_TOKEN_GH:-gh}
 print_auth_account=0
