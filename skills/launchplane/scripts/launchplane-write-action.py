@@ -161,6 +161,7 @@ MERGE_TRAIN_RESULT_FIELDS = {
     "base_branch",
     "batch_id",
     "blocking_reason",
+    "branch_update_result",
     "candidate",
     "candidate_record_id",
     "candidate_ref",
@@ -1401,6 +1402,7 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
         "stack_discovery",
         "error",
         "details",
+        "branch_update_result",
     ):
         if key in source:
             projected[key] = _project_merge_component(source[key])

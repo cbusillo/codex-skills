@@ -958,9 +958,10 @@ merge-train-controller-run-once` instead of open-coding the route. Mutating
   background instead of writing a loop around the run-once helper. It pauses on
   every non-terminal state, stops at a wall-clock deadline, reports every PR in
   the landing batch, and exits `landed` (0), `failed` (1), `needs_owner` (2) or
-  `error` (3) with a JSONL `stop` event in `gh_pr_watch.py`'s shape. Pass
-  `--allow-branch-update` only for your own same-repository branches, because the
-  controller does not refresh a behind-base PR. Run one driver per repository
+  `error` (3) with a JSONL `stop` event in `gh_pr_watch.py`'s shape. The
+  controller refreshes a behind-base PR itself when it can; pass
+  `--allow-branch-update` only for your own same-repository branches, for a
+  behind-base PR it reports without refreshing. Run one driver per repository
   train, and keep a watcher on it while you report "waiting on the train".
 - **Train Entry**: Put `ready-to-merge` only on the root PR that targets the
   protected base branch. Do not hand-collapse stacks in GitHub.
