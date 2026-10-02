@@ -1,4 +1,4 @@
-# Launchplane Owner Feedback
+# Launchplane Client Feedback
 
 Read this before acting on a snapshot that contains `owner_review_items`,
 `owner_review_errors`, `address_owner_review_changes`,
@@ -11,11 +11,11 @@ Read this before acting on a snapshot that contains `owner_review_items`,
 even after its comment ID was seen. A marker from any publisher is only a
 candidate: the watcher verifies every decision and its exact comment receipt
 through the private scoped Launchplane read, and never sends credentials to a
-comment-supplied URL. Bot comments without the Owner marker follow normal
+comment-supplied URL. Bot comments without the Client marker follow normal
 filtering. Failed verification is explicit, not evidence that no feedback
 exists.
 
-Once an Owner channel is known, the watcher also reads its latest saved
+Once a Client channel is known, the watcher also reads its latest saved
 decision, so a newer request with pending publication cannot hide behind an
 older acceptance.
 
@@ -39,13 +39,13 @@ older acceptance.
 
 ## Handling
 
-Read and summarize the Owner's reason before changing the product. Treat it as
+Read and summarize the Client's reason before changing the product. Treat it as
 human product feedback, including the usual limits on replying to a human.
-Owner projections are issue comments with no review thread to resolve: preserve
+Client projections are issue comments with no review thread to resolve: preserve
 the comment and report how the work addressed it; do not reply automatically.
 
 A projected acceptance never grants merge or deployment authority. The existing
-Owner-review status on marked PRs continues to govern the need for a fresh
-Owner decision. If Launchplane's status or review page says delivery is
-pending, use the `launchplane` skill's Owner-review reader to inspect the saved
+Client-review status on marked PRs continues to govern the need for a fresh
+Client decision. If Launchplane's status or review page says delivery is
+pending, use the `launchplane` skill's Client-review reader to inspect the saved
 decision; a short status alone is insufficient.

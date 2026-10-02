@@ -58,7 +58,7 @@ A finding is a hypothesis, not a task.
 - When reviewers disagree, or you disagree with one, test it rather than
   averaging the opinions.
 - The rules above cover findings that add something. A finding that would
-  delete, retire, stop, or redirect work is the owner's to decide: escalate it
+  delete, retire, stop, or redirect work is the Director's to decide: escalate it
   under the `direction` skill instead of acting on it or declining it. An
   author judging a challenge to its own plan is how a wrong direction survives
   review.

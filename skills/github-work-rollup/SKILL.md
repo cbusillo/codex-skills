@@ -1,6 +1,6 @@
 ---
 name: github-work-rollup
-description: Produce read-only GitHub work rollups and external-comment attention reports. Use for activity summaries, work digests, or finding issue/PR comments the owner may not have seen or answered.
+description: Produce read-only GitHub work rollups and external-comment attention reports. Use for activity summaries, work digests, or finding issue/PR comments the Director may not have seen or answered.
 metadata:
   short-description: Roll up work and external comments
 resources:
@@ -9,7 +9,7 @@ resources:
     description: Read-only GitHub work collector and Markdown/JSON renderer.
   - path: scripts/github_unanswered_comments.py
     kind: script
-    description: Reports whether external comments were seen by the owner and publicly addressed.
+    description: Reports whether external comments were seen by the Director and publicly addressed.
   - path: references/github-work-rollup.local.example.yaml
     kind: reference
     description: Public-safe example local config for routine rollup defaults.
@@ -50,7 +50,7 @@ commands:
         "--repo-owner",
         "example-user",
       ]
-    purpose: Report external comments that still need the owner's attention.
+    purpose: Report external comments that still need the Director's attention.
   - name: synthesize-work-brief
     source: skill
     resource_path: scripts/synthesize_work_brief.py
@@ -98,7 +98,7 @@ authorization rather than acting on report findings here.
 
 ## Scope And Report Choices
 
-Resolve repositories, owners, subjects, window, timezone, format, mode, layout,
+Resolve repositories, repository owners, subjects, window, timezone, format, mode, layout,
 and summary level from the request. User instructions override local config;
 local config overrides defaults. Optional private defaults live in ignored
 `.local/github-work-rollup.yaml`; absent config is normal, so continue with
@@ -137,7 +137,7 @@ organization, technical depth, framing, and report guidance; missing/unmatched
 data is non-fatal. Keep people notes private. For a tailored manager/executive
 brief without usable context, ask only for the missing recipient/relationship,
 organization/product/customer context, technical depth, decision/risk lens, or
-repository/owner scope and must-include work. Use answers for this report;
+repository or repository-owner scope and must-include work. Use answers for this report;
 suggest private config updates only for recurring reports. One-off reports do
 not require local files.
 
@@ -188,12 +188,12 @@ not require local files.
 ## External Comment Radar
 
 Run `uv run scripts/github_unanswered_comments.py` for missed external comments;
-use `--thread OWNER/REPO#NUMBER` for a full-history merge/closeout gate. Owner
-acknowledgement and public response are separate: awareness requires an owner
-reaction after the latest edit, an owner reply with the exact comment permalink,
-or an owner inline-review reply when only one eligible external comment exists.
-A targeted owner or bot reply is a public response; bot activity never proves
-owner awareness or clears attention alone. Unrelated later comments, generic
+use `--thread OWNER/REPO#NUMBER` for a full-history merge/closeout gate. Director
+acknowledgement and public response are separate: awareness requires a Director
+reaction after the latest edit, a Director reply with the exact comment
+permalink, or a Director inline-review reply when only one eligible external
+comment exists. A targeted Director or bot reply is a public response; bot
+activity never proves Director awareness or clears attention alone. Unrelated later comments, generic
 closeout posts, closure, labels, and notifications prove neither. Edits/new
 comments reopen attention; incomplete coverage is never an all-clear.
 

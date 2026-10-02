@@ -38,7 +38,7 @@ falling back to `$CODEX_HOME/local-context.toml` and then
 `~/.code/local-context.toml`, and use `[docs].local_infra` as the local docs
 path. Route by source of truth, not provider name: public docs answer generic
 behavior, while local context answers this environment's setup, access path, or
-operator source of truth. Treat the local docs path as private local context:
+operations source of truth. Treat the local docs path as private local context:
 
 - start read-only unless the user explicitly approves mutation
 - do not copy private hostnames, paths, secrets, or topology into public issues,
@@ -55,7 +55,7 @@ for live record inspection, mutation, rollback, and verification.
 
 Credential, API token, and secret location requests are local-infrastructure
 routes too. Use `[docs].local_infra` to find that environment's credentials
-index, which records the owner, each storage location, a read-only validation
+index, which records each credential's holder, each storage location, a read-only validation
 check, and the rotation path. Then read the owning repo's declared key names in
 its checked-in `.env.example` and the `env` block of its `.github/github.json`.
 Read a value only from the location the index names, never print it, and pass

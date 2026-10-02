@@ -1,4 +1,4 @@
-# Vendored Agent/Operator Contract
+# Vendored Agent/Admin Contract
 
 `agent-operator-contract.json` is the public-safe Launchplane contract consumed
 by this skill. Its current identity is:
@@ -16,7 +16,7 @@ and finite-job operations. The embedded source provenance records the exporter
 checkout; the published commit above identifies this retrieved artifact. Neither
 provenance nor a matching contract grants runtime authority. Private claims are
 consumed only by the private ordinary-agent adapter, outside the generic
-agent-visible operator helper.
+agent-visible admin helper.
 
 Relative to the previously vendored 12-operation artifact, this published
 artifact adds eight ordinary-agent operations: enrollment proposal and status,
@@ -31,7 +31,7 @@ dependencies. Five existing schema fingerprints also changed:
 `write_merge_train_controller_run_once`. For those existing operations, the
 route, method, modes, idempotency, reviewed evidence, supported surface, and
 identity dependency fields are unchanged. The invariants and protected
-workflow bindings are unchanged. Existing operator consumers remain covered by
+workflow bindings are unchanged. Existing admin-surface consumers remain covered by
 their helper and contract tests. The bearer-identity contract for
 `reconcile_managed_authz_policy` remains unchanged.
 
@@ -76,7 +76,7 @@ does not grant runtime authority or change helper permissions, and it must not
 block ordinary Launchplane helper reads.
 
 The merge-train policy import, repository inventory, product expected configuration,
-generic-web deploy-recovery, and Odoo addon-settings commands, plus the private Owner-review reader,
+generic-web deploy-recovery, and Odoo addon-settings commands, plus the private Client-review reader,
 are currently bounded local extensions because they are consumed by local helpers but are not present
 in the upstream public operation projection. The validator keeps these explicit
 and fails if an upstream artifact later projects the same routes, forcing a

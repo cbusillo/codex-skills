@@ -24,7 +24,7 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   missing grant, inspect the remaining capabilities needed by the intended
   workflow and collect verified gaps into one concrete decision. When asked for
   cross-repository coverage, or when the same setup gap recurs in another
-  repository, compare the live owner-authorized repository inventory with active
+  repository, compare the live authorized repository inventory with active
   train targets and intended automation authors. The
   configured targets are not the whole fleet: report unenrolled repositories
   separately, and keep archived or intentionally excluded repositories visible.
@@ -32,11 +32,11 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   runtime enrollment. Preserve existing authorization for unchanged
   scope; additional identities or repositories remain explicit grant decisions.
   Keep real target lists and numeric identities in runtime records or reviewed
-  operator input. This preflight uses reads only and adds no approval gate.
+  admin input. This preflight uses reads only and adds no approval gate.
 - **Automation Roles**: Inventory PR authors separately from check publishers,
   reviewers, and merge actors. A bot that only reports checks or reviews needs no
   enqueue-author grant. A shared provider identity such as `github-actions[bot]`
-  does not identify one owner-controlled workflow. When reviewing an author
+  does not identify one specific controlled workflow. When reviewing an author
   grant, state whether the policy can constrain the intended repository and
   workflow provenance; an author-ID allowlist alone cannot express the latter.
 - **Controller Semantics**: Each call advances one safe phase at a time:

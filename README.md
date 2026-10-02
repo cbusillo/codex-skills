@@ -324,7 +324,7 @@ grants you added for your own sessions, it refuses to touch.
 
 ## Direction
 
-The `direction` skill holds a repository's direction in one owner-approved
+The `direction` skill holds a repository's direction in one Director-approved
 `DIRECTION.md` at the root, keeps milestones as waypoints that must be listed
 there, and tells an executing agent to escalate a reviewer finding that would
 delete, retire, or redirect work instead of judging it. Its read-only audit
@@ -347,13 +347,14 @@ In a repository with a root `DIRECTION.md`, it prints the shared
 [executing loop](skills/references/executing-loop.md) at session start. The loop
 defines `next`, `go`, escalation, landing, and closeout for either harness
 when its session-start hook is registered.
-In a repository without one, when its origin owner's `OWNER/direction`
-repository is in the marker's audited repositories or is checked out as
+In a repository without one, when its origin repository owner's
+`OWNER/direction` repository is in the marker's audited repositories or is checked out as
 `direction` beside the repository's main checkout, it prints that overall
 direction's stop boundaries, read from the merged default branch (or from that
 checkout's last-fetched default branch when GitHub cannot be read), with the
 file's link and the executing loop. When neither can be read
-it says so in one line. Other owners' repositories print nothing extra.
+it says so in one line. Repositories under other repository owners print
+nothing extra.
 It reads a local marker that `direction_mark.py` writes at the end of a daily
 turn and that the audit script writes per repository when an audit completes,
 and it also prints a reminder line while the turn is more than a
@@ -443,6 +444,8 @@ See the [Codex hook contract](https://learn.chatgpt.com/docs/hooks) and
 ## Instruction scope
 
 Execution skills share [task scope and authorization](skills/references/execution-scope.md).
+They name people and permissions with the shared [role words](skills/references/role-words.md):
+Director, Client, and admin.
 Existing authorization is reused within its scope; exact-action approvals and
 configured review, quality, delegation, and output requirements remain in force.
 Detailed lifecycle and handoff procedures load only through the relevant skill's
@@ -583,7 +586,7 @@ Configure the automation role separately from the token:
 - `CODEX_AUTOMATION_LOGIN`
 - `CODEX_AUTOMATION_EMAIL`
 - `CODEX_AUTOMATION_BOT_LOGINS` for an optional quoted, space-separated list
-  of additional owner-controlled automation accounts used for bot
+  of additional Director-controlled automation accounts used for bot
   classification, trusted managed-plan authorship, and trusted creators of open
   milestones in the direction audit; do not list third-party bots
 
@@ -628,9 +631,10 @@ tokens.
 
 ### Guided Separate Automation Identity
 
-A sole owner can adopt and audit without an App. Later direction changes need
-a different PR author so the owner can approve them; the direction rule keeps
-code-owner review with **no bypass**. Use a private GitHub App for that author.
+A Director who is the sole code owner can adopt and audit without an App.
+Later direction changes need a different PR author so the Director can approve
+them; the direction rule keeps code-owner review with **no bypass**. Use a
+private GitHub App for that author.
 Unlike a separate machine-user account with a fine-grained token, it needs no
 second account or manually renewed user token. Existing machine-user token
 configuration above remains supported.
@@ -652,7 +656,7 @@ Setup checks the account type before opening the browser. Its success result
 names the exact `local.env` written; use the same home selection in the agent
 session if its environment differs from the setup terminal.
 
-The **owner** does two browser steps: name/create the private App under the
+The **Director** does two browser steps: name/create the private App under the
 intended account, then install it on that account with **Only select
 repositories**, choosing the adopted repositories. Return to the terminal and
 press Enter. No new human collaborator or repository seat is needed. The helper
@@ -665,7 +669,7 @@ to hand-edit and no key or token to paste into chat.
 Existing identity conflicts are reported before the browser steps. An **All
 repositories** installation produces a visible scope notice, including its
 access to future repositories; change the installation settings if only the
-adopted repositories were intended. The helper preserves the owner's existing
+adopted repositories were intended. The helper preserves the Director's existing
 ability to choose all repositories.
 
 If setup stops after registration, keep the private directory printed by the
@@ -685,13 +689,14 @@ decide whether to remove them. Keep the saved key directory while this identity
 is in use.
 
 Replacement reports the previous primary login but does not automatically trust
-it as a bot. When it is an **owner-controlled automation account**, add
+it as a bot. When it is a **Director-controlled automation account**, add
 `--previous-bot OLD-BOT` to preserve historical managed-plan and milestone
 authorship through the existing `CODEX_AUTOMATION_BOT_LOGINS` setting. Existing
 trusted bots from `local.env` are retained; temporary shell exports are not saved
-as permanent trust. The helper rejects the App owner's login. For an organization,
-you must also exclude every personal owner's login. Never pass a personal owner
-or a third-party bot; old human-authored requests stay protected.
+as permanent trust. The helper rejects the login of the account that owns the App. For an
+organization, you must also exclude every organization owner's personal login.
+Never pass an organization owner's personal login or a third-party bot; old
+human-authored requests stay protected.
 
 If the callback failed or the browser cannot reach this machine's loopback
 address, use the App's GitHub settings to download/generate a private key,
@@ -708,8 +713,8 @@ verified the new configuration.
 
 If GitHub created the App under the wrong account, its key is still saved
 privately. Correct or transfer the App ownership in GitHub before resuming;
-the helper verifies the current registration owner as well as the installation
-account before writing configuration.
+the helper verifies the account that currently owns the registration as well as
+the installation account before writing configuration.
 
 Check the separate author before writing:
 
@@ -718,20 +723,20 @@ skills/github/scripts/gh-with-env-token --check
 uv run skills/github/scripts/github-capabilities.py audit --repo OWNER/REPO
 ```
 
-The reported actor must be your App's `APP-SLUG[bot]`, distinct from the owner's
+The reported actor must be your App's `APP-SLUG[bot]`, distinct from the Director's
 login. Audit each selected adopted repository; permission declarations and a
 successful identity check alone do not prove private repository access. On an
 already adopted repository, the agent opens a normal direction PR using the
-bot commit/push and PR helpers, the owner reviews and approves it as the eligible
+bot commit/push and PR helpers, the Director reviews and approves it as the eligible
 code owner, then the authorized merge follows green CI. A self-approval or
 unreviewed direction merge remains refused. Owner-only ruleset plan/apply stays
-with the owner through the standard helper below; setup never applies rulesets,
+with the Director through the standard helper below; setup never applies rulesets,
 changes `CODEOWNERS`, or approves/merges a PR.
 
 The automated setup acceptance uses an isolated Git repository and a fake
 GitHub endpoint to exercise registration, private credential discovery, bot
-commits/PR authorship and distinct owner approval under the current no-bypass
-ruleset payload. It does not claim a real App was registered or a real owner's
+commits/PR authorship and distinct Director approval under the current no-bypass
+ruleset payload. It does not claim a real App was registered or a real Director's
 browser completed the flow. Primary references:
 [manifest registration](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest)
 and [App versus machine-user accounts](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/differences-between-github-apps-and-oauth-apps).
@@ -744,7 +749,7 @@ automation App when configured, and the other requires code-owner review for `DI
 `CODEOWNERS` without an App bypass. The helper clears automation-token variables
 and verifies that the active `gh` account is the repository owner before reading
 the full bypass configuration or writing anything. The configured App ID is
-printed in every plan so the operator can verify the intended bypass actor.
+printed in every plan so the Director can verify the intended bypass actor.
 A GitHub App is optional: with no App configured, the landing ruleset retains
 only the administrator bypass, and the result names the `no_app_bypass` limit.
 Only administrators can then update the default branch. Incomplete or invalid
@@ -752,7 +757,7 @@ App configuration still fails rather than silently removing its bypass. If an
 existing landing ruleset already has an App bypass, an unconfigured shell also
 refuses: restore that App configuration and rerun the plan. The standard landing
 ruleset name stays the same in both modes so the audit can recognize it. If the
-App has deliberately been retired, the owner removes that obsolete bypass in
+App has deliberately been retired, the Director removes that obsolete bypass in
 GitHub's repository ruleset settings before rerunning plan; missing configuration
 alone is not treated as authority to retire a bypass.
 
@@ -762,7 +767,7 @@ Plan one or more repositories without changing GitHub:
 uv run skills/github/scripts/gh-rulesets.py plan --repo OWNER/REPO
 ```
 
-Apply requires an explicit acknowledgement of the owner-admin mutation. Applying
+Apply requires an explicit acknowledgement of the admin mutation. Applying
 to more than one resolved repository also requires the exact count printed by a
 fresh plan:
 
@@ -782,14 +787,14 @@ the configured App is not installed will reject the App bypass actor; treat that
 as a pilot finding, install or deliberately exclude the repository, and rerun
 the idempotent plan before continuing. The direction audit reports
 `ruleset_missing` when an adopted repository lacks either active standard
-branch ruleset. When the owner explicitly selects their own reader with
+branch ruleset. When the Director explicitly selects their own reader with
 `--gh gh` (or declares their own login with `--automation`), the audit reports
 `owner_acts_as_automation` in `limits` and treats that login's milestone admissions
-as owner decisions. This known attribution limit does not make coverage incomplete
+as Director decisions. This known attribution limit does not make coverage incomplete
 or hide other findings; `ok` and `counts` still describe the findings. A reader
-returning the owner instead of a separately configured automation login still
+returning the Director's login instead of a separately configured automation login still
 reports incomplete identity coverage.
-With only the owner's own `gh` login, explicitly select it for the read-only audit:
+With only the Director's own `gh` login, explicitly select it for the read-only audit:
 
 ```sh
 uv run skills/direction/scripts/direction_audit.py --repo OWNER/REPO --gh gh
@@ -798,14 +803,14 @@ uv run skills/direction/scripts/direction_audit.py --repo OWNER/REPO --gh gh
 The default audit reader remains the automation wrapper; this explicit read-only
 selection does not enable fallback for other helpers or authorize any write.
 
-The direction rule intentionally has no bypass. An owner who is the sole code
-owner cannot approve their own pull request, so direction changes should normally
-arrive on an automation-authored branch for owner approval. An owner-authored
+The direction rule intentionally has no bypass. A Director who is the sole
+code owner cannot approve their own pull request, so direction changes should
+normally arrive on an automation-authored branch for Director approval. A Director-authored
 direction pull request requires a distinct eligible code owner to review it.
 
 ### Protected Workflow Review
 
-Protected operator workflows should use
+Protected admin workflows should use
 `skills/github/scripts/github_workflow_babysit.py`. The helper dispatches with the
 configured automation token, captures GitHub's exact returned run ID, diagnoses
 `waiting` runs through `pending_deployments`, and stops on a bounded timeout.

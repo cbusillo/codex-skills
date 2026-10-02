@@ -6,8 +6,8 @@ grounding.
 
 ## Synthesis Prompt
 
-Create the most useful GitHub work brief for this reader and purpose. For an
-owner or executive, write it as a human conversation brief whose raw material
+Create the most useful GitHub work brief for this reader and purpose. For the
+Director or an executive, write it as a human conversation brief whose raw material
 happens to be GitHub evidence, not as a GitHub status report. Optimize for
 helping the reader know what to ask about, react to, redirect, trust, sequence,
 pause, or ask us to prove next.
@@ -90,7 +90,8 @@ signal instead of padding the brief.
 
 Audience changes altitude and emphasis, not the factual boundary.
 
-- Peer/operator: queue movement, exact blockers, owners, links, and next steps.
+- Peer (`operator` audience): queue movement, exact blockers, who holds each
+  item, links, and next steps.
 - Manager: focus, sequencing, risk, confidence, decisions, plan fit, and the
   smallest useful guidance request.
 - Executive/customer: bottom line, trajectory, confidence, recommendation, and
@@ -102,14 +103,14 @@ Audience changes altitude and emphasis, not the factual boundary.
   engineering-manager filler such as velocity, CI health, delivery cadence, or
   component progress unless it changes a product, cost, trust, customer, or
   staff-time decision.
-- Owner conversation brief: tell the human story of what the team built or
+- Director conversation brief: tell the human story of what the team built or
   changed, why it matters, and what the reader can talk about with the team.
   Prefer concrete handles such as "Codex Lab is becoming the agent harness" over
   status phrasing such as "the Codex Lab workstream has active items." Use a
   light spine, not a rigid template: short version, things worth talking about,
   where guidance would help, and receipts when those sections are useful.
 
-When evidence was collected in standup or operator mode but the reader is a
+When evidence was collected in standup or `operator` mode but the reader is a
 manager or executive, translate open backlog into what is not done and why it
 matters, translate completed items into what the team delivered and what it
 enables, and omit counts unless volume itself is the decision.

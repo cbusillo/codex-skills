@@ -15,7 +15,7 @@ validator does not recognize every branch-shaped tag. Never use `latest`, a
 branch name, an environment name, or another floating tag as
 `deploy_reference`. This two-reference requirement is specific to application
 targets; resolve the target category from Launchplane context or the supported
-operator surface rather than product workflow inputs or checked-in metadata.
+admin surface rather than product workflow inputs or checked-in metadata.
 
 If the SHA tag was not published or the deploy payload omitted
 `deploy_reference`, repair the product repository's build/deploy workflow and

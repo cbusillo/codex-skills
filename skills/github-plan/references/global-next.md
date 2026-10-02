@@ -1,9 +1,9 @@
 # Global Next
 
-Read for `next` in an owner's direction repository, including explicit
+Read for `next` in a repository owner's direction repository, including explicit
 `gh-plan.py --repo OWNER/direction next` calls from elsewhere.
 
-1. Read the owner's current direction and known repository-wide holds from the
+1. Read the Director's current direction and known repository-wide holds from the
    conversation and durable issue discussions. A hold overrides individual
    active labels, missing blockers, and apparent worker availability. Continuing
    an encode or another background job does not resume engineering in that repo.
@@ -20,7 +20,7 @@ Read for `next` in an owner's direction repository, including explicit
    whole-plan parent wait remains excluded, and changes to parent discussion
    invalidate the child's review digest. Comments can reveal a wait or completed implementation despite
    active labels. A partial ownership inventory never proves freedom to start.
-4. Select under the owner's direction: live incidents first, listed milestones
+4. Select under the Director's direction: live incidents first, listed milestones
    in order, other tooling only with two linked occurrences of the stop it fixes,
    and eligible own projects from their share. Read each repository's direction;
    discovery does not adopt direction or grant execution permission. Do not infer
@@ -32,15 +32,16 @@ Read for `next` in an owner's direction repository, including explicit
    instead of inventing available work. Widen bounded reads when needed, and stop
    after the answer without changing planning state or starting implementation.
 
-Outside the read-only `next` answer, an explicit owner incident decision may
+Outside the read-only `next` answer, an explicit Director incident decision may
 be recorded on the issue with the `live-breakage` label under existing write
-authority. Create the label if needed in the owner's repository using the
+authority. Create the label if needed in the repository owner's repository using the
 GitHub automation wrapper; preserve human-authored issue text. Writes to another
-person's repository need that owner's authorization under execution-scope.
+person's repository need that repository owner's authorization under
+execution-scope.
 Remove the marker when the incident is resolved. The marker only prioritizes
 possible work; it never establishes ownership, lifts holds, or overrides blockers.
 
-Owner-marked issues are evaluated outside the ordinary discovery scan allowance.
+Director-marked issues are evaluated outside the ordinary discovery scan allowance.
 A separate label inventory covers marked issues beyond a repository's ordinary
 issue-list bound. Repository access/inventory limits and failed reads remain
 explicit coverage limits. Inspect `candidate_coverage` beside the ranked list:
@@ -65,7 +66,7 @@ available list with nonzero `review_required_count` means selection is unfinishe
 not that the portfolio has no work. The agent can finish that review in its answer;
 a service or caller needing the same classification in JSON may pass a temporary
 `--selection-context FILE` on the next read. It is an evidence snapshot, never a
-second plan or a reason to ask the owner for permission to inspect work.
+second plan or a reason to ask the Director for permission to inspect work.
 
 ```json
 {
@@ -93,7 +94,7 @@ Categories for discovered work are `live_incident`, `repeated_stop_tooling`, and
 `own_project`; linked graph work keeps its milestone priority. Repeat-stop tooling
 also needs two distinct HTTPS links in `stop_occurrences`. These are the caller's
 evidence judgments, not classifications guessed from names, labels, or keywords.
-The owner-applied `live-breakage` marker independently puts an incident first
+The Director-applied `live-breakage` marker independently puts an incident first
 among possible candidates until removed; it does not supply an availability
 review or change the caller's category.
 Set `ownership_complete` only when current evidence actually establishes the
