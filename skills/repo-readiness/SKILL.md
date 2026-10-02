@@ -156,7 +156,7 @@ Launchplane routing when present. Readiness uses those fields to decide what
 must be verified; closeout uses the same fields to decide what final evidence,
 metadata updates, and cleanup remain.
 
-Use `../references/talking-with-the-owner.md` for readiness reports and durable
+Use `../references/talking-with-the-director.md` for readiness reports and durable
 readiness comments: lead with status, cite concrete evidence, and keep skipped
 or pending checks explicit without copying large logs. Use
 `../references/background-review-reporting.md` for Background Review state.
@@ -220,7 +220,7 @@ settle or the later assessment remains `UNKNOWN`, keep the original or later
 Record the scope, reason, and any findings in the PR and final report. Readiness
 stays not fully ready. Open a focused follow-up outside the milestone unless
 one already owns the IDE failure. Continue the already authorized landing
-under this exception without turning the tool failure into an owner question.
+under this exception without turning the tool failure into a Director question.
 Handle findings under the normal RED policy. Failing or missing executable
 checks, an unsafe worktree, unresolved lifecycle cleanup, or a different
 inspection failure disqualifies this exception. Resolve deferred cleanup through

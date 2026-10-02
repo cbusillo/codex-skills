@@ -65,7 +65,7 @@ cover a later step. A quiet turn must load nothing, and `/compact` as a turn
 compacts a Claude Code session before the next step. Claude Code turns run in
 one stream-json process without session persistence. Codex turns resume a
 session recorded in a per-run `CODEX_HOME` that links only `auth.json`, so the
-owner's session history is untouched. Every Codex run gets that home and an
+Director's session history is untouched. Every Codex run gets that home and an
 empty `HOME`, because Codex always scans `$HOME/.agents/skills` and an installed
 catalog there would compete with the tested one. Claude Code does not inject a skill's
 text again while it is still in context, so a repeated `Skill` call counts
@@ -88,7 +88,7 @@ an upstream one commit ahead and a dirty or untracked file, with a fixed
 identity and clock so commit IDs are reproducible.
 
 The quiet expectation grades routing only, not task completion. For a quiet
-local-fact task, use an empty owner list, quiet: true, a required read, and
+local-fact task, use an empty `owner` list, quiet: true, a required read, and
 answer_from_fixture with file, a capture pattern containing one value group,
 and accepted full-answer forms containing {value}. The expected value comes
 from the fixture itself; a refusal, a guessed value without a delivered read,

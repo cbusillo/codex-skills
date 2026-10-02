@@ -16,8 +16,8 @@ checked-in facts do not need this skill. For OpenAI questions, use
 
 This skill discovers docs and access paths. Once the request needs live
 tenant/account identity, record/runtime inventory, health or production evidence,
-rollback/snapshot decisions, operator workflows, or any mutation, switch to the
-owning operator skill such as `infra-ops` or `launchplane` after discovering
+rollback/snapshot decisions, admin workflows, or any mutation, switch to the
+owning operations skill such as `infra-ops` or `launchplane` after discovering
 docs and authority. Route by source of truth, not provider name.
 
 ## Find And Use Sources

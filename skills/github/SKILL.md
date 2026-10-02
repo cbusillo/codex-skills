@@ -6,7 +6,7 @@ metadata:
 resources:
   - path: scripts/github_app_setup.py
     kind: script
-    description: Owner-operated manifest registration and private configuration for a separate automation App.
+    description: Director-run manifest registration and private configuration for a separate automation App.
   - path: scripts/github-capabilities.py
     kind: script
     description: Derives the supported permission profile and safely audits the configured App across installed repositories.
@@ -54,7 +54,7 @@ resources:
     description: Collect bounded read-only cross-repo GitHub work evidence as JSON for planning, readiness, closeout, or LLM-led reporting.
   - path: scripts/gh-rulesets.py
     kind: script
-    description: Plans or explicitly applies the standard owner, automation, and direction ruleset pair with active-owner verification.
+    description: Plans or explicitly applies the standard repository owner, automation, and direction ruleset pair with active repository owner verification.
   - path: scripts/gh-plan.py
     kind: script
     description: Shared planning issue, milestone, Project, and next-work helper used by GitHub planning workflows.
@@ -87,7 +87,7 @@ commands:
     source: skill
     resource_path: scripts/github_app_setup.py
     example_argv: ["uv", "run", "scripts/github_app_setup.py", "start", "--owner", "OWNER", "--name", "Repository automation"]
-    purpose: Guides owner browser creation/installation and writes verified private automation configuration without applying rulesets.
+    purpose: Guides repository-owner browser creation/installation and writes verified private automation configuration without applying rulesets.
   - name: github-plan-milestone-list
     source: skill
     resource_path: scripts/gh-plan.py
@@ -268,12 +268,12 @@ commands:
     source: skill
     resource_path: scripts/gh-rulesets.py
     example_argv: ["uv", "run", "scripts/gh-rulesets.py", "plan", "--repo", "OWNER/REPO"]
-    purpose: Reads the active owner's full ruleset state and reports the idempotent standard-pair changes without writing.
+    purpose: Reads the active repository owner's full ruleset state and reports the idempotent standard-pair changes without writing.
   - name: github-rulesets-apply
     source: skill
     resource_path: scripts/gh-rulesets.py
     example_argv: ["uv", "run", "scripts/gh-rulesets.py", "apply", "--repo", "OWNER/REPO", "--confirm-owner-admin-write"]
-    purpose: Applies the standard pair only after active-owner verification and an explicit repository-admin write acknowledgement.
+    purpose: Applies the standard pair only after active repository-owner verification and an explicit repository-admin write acknowledgement.
 policy:
   command_policies:
     - id: prefer-gh-pr-create-helper
@@ -434,7 +434,7 @@ policy:
       match:
         argv_prefix: ["gh", "run", "watch"]
       action: require_preferred
-      message: Raw `gh run watch` does not diagnose protected-environment waits and can poll without an operator timeout. Use the exact-run workflow babysitter.
+      message: Raw `gh run watch` does not diagnose protected-environment waits and can poll without a caller timeout. Use the exact-run workflow babysitter.
       preferred:
         - kind: script
           path: scripts/github_workflow_babysit.py
@@ -700,7 +700,7 @@ policy:
       match:
         shell_regex: "\\bgh(?:-with-env-token)?\\s+api\\b(?=[\\s\\S]*(?:(?:-X|--method)(?:=|\\s+)(?:POST|PUT|PATCH|DELETE)\\b|-X(?:POST|PUT|PATCH|DELETE)\\b|(?:--input|-f|-F|--field|--raw-field)(?:=|\\s+)))[\\s\\S]*\\brepos/[^/\\s]+/[^/\\s]+/rulesets(?:/[^\\s]+)?\\b"
       action: require_preferred
-      message: Direct ruleset operations bypass active-owner verification, standard-pair drift checks, explicit admin-write confirmation, and post-write idempotence verification. Use the maintained ruleset helper.
+      message: Direct ruleset operations bypass active repository-owner verification, standard-pair drift checks, explicit admin-write confirmation, and post-write idempotence verification. Use the maintained ruleset helper.
       preferred:
         - kind: script
           path: scripts/gh-rulesets.py
@@ -815,8 +815,11 @@ Use PRs for all non-trivial changes.
   abandoned attempts, and include purposeful verification rather than routine
   CI steps. Preserve existing screenshots, images, and links. Use repo-relative
   paths or GitHub links and no self-references. Follow
-  [talking with the owner](../references/talking-with-the-owner.md) for durable
+  [talking with the Director](../references/talking-with-the-director.md) for durable
   PR, issue, review, and closeout text.
+  For context-only follow-up issues whose implementation has not started, use
+  one unwrapped body line starting `Code follow-ups recorded without starting
+  implementation:` followed by their links. Keep implemented work elsewhere.
 - **Labels**: Planning labels are only for durable planning issues. PR labels
   follow the [label taxonomy](references/repo-workflow.md#label-taxonomy):
   `preview-ready`, the optional `awaiting-qa` handoff, and `ready-to-merge`,
@@ -828,7 +831,7 @@ Use PRs for all non-trivial changes.
   of closing keywords, comment with the winner, and close them with
   `scripts/gh-pr.py supersede`. Remove their branches and worktrees only under
   [repository cleanup](../references/repo-cleanup.md), after confirming no
-  issue, PR, owner, or runtime depends on them.
+  issue, PR, session, or runtime depends on them.
 - **Handoffs**: Put recovery-critical handoff content in the owning issue or
   PR. Local handoff files are scratch unless intentionally committed.
 
@@ -862,7 +865,7 @@ Before a merge:
 - **Human comments**: Before a merge or close settles an issue or PR, run
   `uv run ../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
   An attention result or degraded coverage needs a response or explicit
-  handoff first; a bot response never proves owner acknowledgement.
+  handoff first; a bot response never proves Director acknowledgement.
 
 When the user does not name a method, say you are using a normal merge commit
 and run `scripts/gh-pr.py merge <pr> --method merge`. Use `--squash` or

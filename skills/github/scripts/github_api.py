@@ -66,6 +66,8 @@ REQUIRED_STATUS_CHECKS_EXPECTED_PATTERN = re.compile(
     r'(?:\s+"[^"\r\n]{1,100}")?\s+(?:is|are)\s+expected\.?',
     re.IGNORECASE,
 )
+# GitHub's rulesets wrap the same single message in this heading; one wrapped message still matches.
+REPOSITORY_RULE_VIOLATIONS_WRAPPER = re.compile(r"\ARepository rule violations found[ \t]*\r?\n\s*", re.IGNORECASE)
 
 GraphQLOperation = Literal["query", "mutation", "subscription", "unknown"]
 ReconciliationOutcome = Literal["matched", "no_match", "ambiguous", "failed"]
@@ -1153,7 +1155,9 @@ def classify_error(
     if (
         status == 405
         and isinstance(body, dict)
-        and REQUIRED_STATUS_CHECKS_EXPECTED_PATTERN.fullmatch(msg.strip())
+        and REQUIRED_STATUS_CHECKS_EXPECTED_PATTERN.fullmatch(
+            REPOSITORY_RULE_VIOLATIONS_WRAPPER.sub("", msg.strip(), count=1)
+        )
     ):
         return FailureDetail(
             cause="required_status_checks_expected",

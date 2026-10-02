@@ -1,12 +1,12 @@
 # Parking and handoff procedures
 
-Read when leaving unfinished work, choosing its durable owner, or migrating
+Read when leaving unfinished work, choosing its durable home, or migrating
 local handoff files. The closeout verdict and required Love Gate remain in
 the parent skill.
 
 ## Parking Work
 
-Use one durable place as the primary owner for intentionally parked work, and
+Use one durable place as the primary home for intentionally parked work, and
 link related artifacts when useful:
 
 - PR: current branch scope, verification state, review/CI/deploy status, and
@@ -30,13 +30,13 @@ does not require a parking issue or remote publication.
 
 Before publishing cleanup recovery state, preflight live Issues capability and
 the destination's applicable access permissions, and identify the canonical
-owner. Reuse current scoped identity/permission evidence; a known denial remains
-a blocker. Create or update that owner only
+home. Reuse current scoped identity/permission evidence; a known denial remains
+a blocker. Create or update that home only
 when the valuable work needs the durable parking surface and the same action and
 publication scope are already authorized.
-If Issues are disabled, use an already authorized owner or consumer tracker when
+If Issues are disabled, use an already authorized owning or consumer tracker when
 one exists. Ask only when the scope or publication surface would expand, or when
-no authorized durable owner can be selected.
+no authorized durable home can be selected.
 
 A cleanup request or local cleanup authority does not authorize pushing a branch,
 opening a PR, merging, deleting a remote branch, or archiving or deleting a
@@ -48,7 +48,7 @@ intent, review and validation status, why the work was excluded from cleanup or
 how another implementation superseded it, and the next adopt-or-discard action.
 Before calling it parked, verify the pushed SHA at the remote and verify the
 durable issue link that owns the recovery state; link any related PR from that
-owner.
+issue.
 
 A local-only route is valid when it uses a known, already approved durable
 location outside the removal target and verification shows the Git state, dirty

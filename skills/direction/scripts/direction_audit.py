@@ -146,6 +146,7 @@ def audit(
     direction_pulls: list[dict[str, Any]] | None = None,
     truncated: list[str] | None = None,
     rulesets: list[dict[str, Any]] | None = None,
+    rulesets_unavailable: bool = False,
     audit_since: dt.datetime | None = None,
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
@@ -163,7 +164,13 @@ def audit(
         milestone_lines = parsed["milestone_lines"]
         if parsed["missing_headings"]:
             findings.append({"kind": "direction_shape", "detail": "missing headings", "headings": parsed["missing_headings"]})
-        if rulesets is not None:
+        if rulesets_unavailable:
+            findings.append({
+                "kind": "ruleset_unavailable",
+                "detail": "GitHub's plan for this private repository does not offer rulesets; "
+                          "nothing enforces owner review of DIRECTION.md",
+            })
+        elif rulesets is not None:
             for name in github_rulesets.missing_standard_rulesets(rulesets):
                 findings.append({
                     "kind": "ruleset_missing",
@@ -279,6 +286,7 @@ def audit(
         "direction_missing": 0,
         "direction_shape": 1,
         "ruleset_missing": 2,
+        "ruleset_unavailable": 2,
         "escalation_open": 3,
         "audit_question": 3,
         "audit_judge": 3,
@@ -326,6 +334,20 @@ def gh_json(args: list[str], *, gh: str) -> Any:
         return json.loads(proc.stdout or "null")
     except json.JSONDecodeError as exc:
         raise AuditError(f"non-JSON output from {gh} {' '.join(args[:3])}") from exc
+
+
+# GitHub Free refuses rulesets on private repositories with this 403; other 403s stay errors.
+RULESET_PLAN_LIMIT_RE = re.compile(r"\bHTTP 403\b.*Upgrade to GitHub (?:Pro|Team)|Upgrade to GitHub (?:Pro|Team).*\bHTTP 403\b", re.S)
+
+
+def fetch_rulesets(repo: str, *, fetch: Callable[[list[str]], Any]) -> tuple[list[dict[str, Any]] | None, bool]:
+    """Branch rulesets and whether the page cap cut them short; None when the plan lacks rulesets."""
+    try:
+        return fetch_paginated(f"repos/{repo}/rulesets?includes_parents=false&targets=branch", fetch=fetch)
+    except AuditError as exc:
+        if RULESET_PLAN_LIMIT_RE.search(str(exc)):
+            return None, False
+        raise
 
 
 MAX_PAGES = 20
@@ -645,10 +667,7 @@ def main(argv: list[str] | None = None) -> int:
         truncated.extend(issue_truncation)
         pulls, cut = fetch_paginated(f"repos/{repo}/pulls?state=open", fetch=fetch)
         truncated += ["pulls"] if cut else []
-        rulesets, cut = fetch_paginated(
-            f"repos/{repo}/rulesets?includes_parents=false&targets=branch",
-            fetch=fetch,
-        )
+        rulesets, cut = fetch_rulesets(repo, fetch=fetch)
         truncated += ["rulesets"] if cut else []
         direction_pulls = direction_pull_requests(repo, pulls, fetch=fetch)
     except AuditError as exc:
@@ -669,6 +688,7 @@ def main(argv: list[str] | None = None) -> int:
         direction_pulls=direction_pulls,
         truncated=truncated,
         rulesets=rulesets,
+        rulesets_unavailable=rulesets is None,
         bot_logins=github_identity.configured_bot_logins(),
         expected_automation=github_identity.automation_login(),
         owner_identity_explicit=owner_reader or args.automation is not None,

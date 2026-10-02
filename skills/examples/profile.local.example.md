@@ -6,7 +6,7 @@ normally when it is absent.
 
 Use this for preferences such as:
 
-- default GitHub owner or organization
+- default GitHub repository owner or organization
 - preferred automation identity
 - private repository aliases
 - local filesystem paths

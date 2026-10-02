@@ -10,10 +10,15 @@ Each pass calls `launchplane-write-action.py merge-train-controller-run-once
 
 - landed:      the PR merged (by this train run or another one); every other
                PR seen in the batch is reported too
-- failed:      the controller blocked, or a train candidate failed its checks
+- failed:      the controller blocked, or a train candidate failed its checks; a block
+               only because the batch candidate's checks are still running waits
 - needs_owner: the PR was closed, stays ineligible, or needs a branch update
                this command may not make
-- error:       the helper kept failing, or the wall-clock deadline passed
+- error:       no response kept coming back, the controller kept refusing, or
+               the wall-clock deadline passed
+
+A controller lease held by another driver is a wait, not a failure; if it is
+still held at the deadline the outcome is needs_owner.
 
 Output is JSONL in `gh_pr_watch.py`'s shape: {"event": ..., "payload": ...}.
 """
@@ -36,6 +41,7 @@ WRITE_ACTION = SCRIPT_DIR / "launchplane-write-action.py"
 GH_WITH_ENV_TOKEN = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-with-env-token"
 
 EXIT_CODES = {"landed": 0, "failed": 1, "needs_owner": 2, "error": 3}
+LEASE_HELD_CODE = "merge_train_controller_lease_held"
 FAILING_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
 
 
@@ -78,6 +84,7 @@ class DriveState:
     empty_candidate_failures: int = 0
     last_action: str = ""
     stack_seen: bool = False
+    lease_held: dict[str, Any] | None = None
 
 
 def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, Any]], None]) -> str:
@@ -92,19 +99,41 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
         if outcome is not None:
             return _stop(settings, state, emit, outcome)
         if io.now() >= settings.deadline:
+            if state.lease_held is not None:
+                return _stop(settings, state, emit, "needs_owner", reason="another driver held the merge-train controller lease",
+                             trace_id=state.lease_held.get("trace_id"))
             return _stop(settings, state, emit, "error", reason="deadline reached", last_action=state.last_action)
 
         pass_number += 1
         key = f"train-drive-{settings.repository.replace('/', '-')}-{settings.number}-{pass_number}-{int(io.now())}"
         response = io.controller(settings.repository, settings.base_branch, key)
-        if response is None or response.get("status") not in {"accepted", "ok"}:
+        if response is None or response.get("status") == "no_response":
             state.helper_failures += 1
+            state.lease_held = None
             emit("snapshot", _snapshot(settings, state, "helper_unavailable", response))
             if state.helper_failures >= settings.max_helper_failures:
                 return _stop(settings, state, emit, "error", reason="merge-train helper kept failing")
             io.sleep(settings.poll_seconds)
             continue
+        if response.get("status") not in {"accepted", "ok"}:
+            snapshot = _snapshot(settings, state, "controller_refused", response)
+            if snapshot["error_code"] == LEASE_HELD_CODE:
+                # Another driver is running the controller; keep polling until its lease is released or expires.
+                snapshot["controller_action"] = "controller_lease_held"
+                state.lease_held = snapshot
+                emit("snapshot", snapshot)
+                io.sleep(settings.poll_seconds)
+                continue
+            state.helper_failures += 1
+            state.lease_held = None
+            emit("snapshot", snapshot)
+            if state.helper_failures >= settings.max_helper_failures:
+                return _stop(settings, state, emit, "error", reason="merge-train controller kept refusing",
+                             **{key: snapshot[key] for key in ("status", "error_code", "http_status", "trace_id")})
+            io.sleep(settings.poll_seconds)
+            continue
         state.helper_failures = 0
+        state.lease_held = None
         result = response.get("result") or {}
         action = str(result.get("controller_action") or "")
         _remember_batch(result, state)
@@ -125,11 +154,18 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
         io.sleep(settings.poll_seconds)
 
 
+# Blocks Launchplane raises while a candidate's checks are still running; the deadline bounds the wait.
+WAITING_BLOCK_CODES = frozenset({"batch_pull_request_checks_not_ready"})
+
+
 def _judge(
     settings: DriveSettings, io: DriveIO, state: DriveState, result: dict[str, Any], action: str
 ) -> tuple[str, dict[str, Any]] | None:
+    blocking_reason = result.get("blocking_reason")
+    if action == "block" and isinstance(blocking_reason, dict) and blocking_reason.get("code") in WAITING_BLOCK_CODES:
+        return None
     if action in {"block", "stack_unsupported"}:
-        return "failed", {"reason": action, "blocking_reason": result.get("blocking_reason")}
+        return "failed", {"reason": action, "blocking_reason": blocking_reason}
     if action == "candidate_failed":
         candidate = result.get("candidate") or {}
         candidate_sha = str(candidate.get("candidate_sha") or result.get("candidate_sha") or "")
@@ -142,6 +178,9 @@ def _judge(
             return "failed", {"reason": "candidate_failed without a failing check", "candidate_sha": candidate_sha}
         return None
     if action == "update_branch":
+        if (result.get("branch_update_result") or {}).get("status") == "updated":
+            # The controller already refreshed a queued branch, possibly another PR's; the deadline bounds repeats.
+            return None
         return _update_branch(settings, io, state, result)
     entry = _queue_entry(result, settings.number)
     reasons = list(entry.get("ineligible_reasons") or []) if entry else []
@@ -157,7 +196,7 @@ def _judge(
 def _update_branch(
     settings: DriveSettings, io: DriveIO, state: DriveState, result: dict[str, Any]
 ) -> tuple[str, dict[str, Any]] | None:
-    # The controller reports a behind-base PR but does not refresh it (launchplane#2590).
+    # The controller reported a behind-base PR without refreshing it.
     selected = ((result.get("dry_run_result") or {}).get("selected_pr") or {}).get("number")
     if selected is not None and selected != settings.number:
         return "needs_owner", {"reason": f"pull request #{selected} is ahead in the queue and behind its base"}
@@ -237,10 +276,19 @@ def _queue_entry(result: dict[str, Any], number: int) -> dict[str, Any] | None:
 
 
 def _snapshot(settings: DriveSettings, state: DriveState, action: str, response: dict[str, Any] | None) -> dict[str, Any]:
-    summary = (response or {}).get("summary") or {}
+    response = response or {}
+    summary = response.get("summary") or {}
+    warnings = response.get("warnings") or [{}]
+    first_warning = warnings[0] if isinstance(warnings[0], dict) else {}
     return {
         "pr": {"repo": settings.repository, "number": settings.number},
         "controller_action": action,
+        "status": response.get("status"),
+        # Rejections carry error_code in the summary; local helper failures carry it as a warning code.
+        "error_code": summary.get("error_code") or first_warning.get("code"),
+        "http_status": summary.get("http_status"),
+        "exit_code": response.get("exit_code"),
+        "failure": response.get("failure"),
         "trace_id": summary.get("trace_id"),
         "batch": sorted(state.batch),
         "landed": sorted(state.landed),
@@ -280,15 +328,23 @@ def _run_json(command: list[str], timeout: float) -> Any | None:
 
 def live_io(helper_timeout: float) -> DriveIO:
     def controller(repository: str, base_branch: str, key: str) -> dict[str, Any] | None:
-        payload = _run_json(
-            [
-                "uv", "run", str(WRITE_ACTION), "--timeout", str(helper_timeout),
-                "merge-train-controller-run-once", "--repo", repository, "--base-branch", base_branch,
-                "--mutate", "--idempotency-key", key,
-            ],
-            timeout=helper_timeout + 60,
-        )
-        return payload if isinstance(payload, dict) else None
+        command = [
+            "uv", "run", str(WRITE_ACTION), "--timeout", str(helper_timeout),
+            "merge-train-controller-run-once", "--repo", repository, "--base-branch", base_branch,
+            "--mutate", "--idempotency-key", key,
+        ]
+        try:
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=helper_timeout + 60, check=False)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return {"status": "no_response", "failure": type(error).__name__}
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            return payload
+        # Stderr can echo local configuration, so only the exit code leaves this process.
+        return {"status": "no_response", "exit_code": completed.returncode}
 
     def pull_request(repository: str, number: int) -> dict[str, Any] | None:
         payload = _run_json(

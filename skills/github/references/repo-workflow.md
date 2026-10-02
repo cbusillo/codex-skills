@@ -87,7 +87,7 @@ dedicated helper, route through `gh-with-env-token`.
 
 ## Protected Workflow Dispatch And Waiting
 
-Use `github_workflow_babysit.py` instead of dispatching a protected operator
+Use `github_workflow_babysit.py` instead of dispatching a protected admin
 workflow and then polling `gh run` by name:
 
 ```sh
@@ -103,7 +103,7 @@ uv run github/scripts/github_workflow_babysit.py dispatch \
 The helper uses the configured automation token for dispatch and ordinary run
 reads. It uses the active local `gh` account for protected-environment review,
 explicitly clearing automation-token environment variables before those calls.
-When `--approve-environment` is present, the exact name is the operator's
+When `--approve-environment` is present, the exact name is the Director's
 approval authorization; an unexpected environment stops without mutation.
 The automation and reviewer identities must differ before a protected dispatch.
 
@@ -318,8 +318,12 @@ superseded PR body:
 ```sh
 <skill-dir>/scripts/gh-pr.py --repo OWNER/REPO supersede 70 \
   --by 71 \
-  --reason '[REPO#71](https://github.com/OWNER/REPO/pull/71) taxonomy and missing tests match the agreed scope.'
+  --reason 'Its taxonomy and missing tests match the agreed scope.'
 ```
+
+The helper's comment already names the canonical PR as
+`[repo#N](https://github.com/OWNER/repo/pull/N) title`, so `--reason` only says
+why that PR was selected.
 
 Use `--dry-run` first when validating the comment, closure, and body rewrite
 that would happen. Use `--keep-open` only when a PR should remain open for
@@ -413,7 +417,7 @@ and its own diff remains within the approved change. Then use
 Re-read the PR to capture the new head SHA, then use `babysit-pr` to wait for
 checks and review evidence on that exact head. A check result for the old head
 does not qualify the updated branch. Do not update a fork or another person's
-branch without its owner's approval. `BLOCKED` alone does not identify a
+branch without approval from the account that owns it. `BLOCKED` alone does not identify a
 behind branch: inspect base/head state and required-check evidence before
 choosing an action. Treat a confirmed 405 required-check rejection as a stop
 and wait for new readiness evidence.

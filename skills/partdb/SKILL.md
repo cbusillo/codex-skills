@@ -77,7 +77,7 @@ instance's OpenAPI contract before relying on version-sensitive endpoints.
    change, or a Part-DB service operation.
 2. Route service operations to `infra-ops`. For inventory work, resolve private
    context without exposing it in public artifacts.
-3. For proposals, gather the operator's evidence and produce a reviewable
+3. For proposals, gather the Director's evidence and produce a reviewable
    draft. Keep item type, category, physical location, quantity, unit, and
    source evidence separate.
 4. Run `uv run scripts/partdb-read.py context-check`, then a schema probe before

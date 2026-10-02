@@ -1,9 +1,9 @@
 # Launchplane Write-Action Helper Contract
 
-This contract defines the public-safe wrapper for bounded Launchplane operator
+This contract defines the public-safe wrapper for bounded Launchplane admin
 actions. It is separate from `launchplane-context.py`: read-only context remains
 optional and soft-failing, explicit write actions fail closed, and bounded
-operator reads also fail closed when required configuration or authorization is
+admin reads also fail closed when required configuration or authorization is
 missing.
 
 Projected operation paths are resolved from the vendored
@@ -96,7 +96,7 @@ extensions until the vendored artifact is refreshed.
 `product-environment-read` and `product-activity-read` call
 `GET /v1/products/{product}/environments/{environment}` and
 `GET /v1/products/{product}/activity`; `preview-history-read` is below. They let an agent confirm what a
-merge-triggered deploy shipped without the operator signing in. These routes are
+merge-triggered deploy shipped without an admin signing in. These routes are
 local extensions until the vendored artifact is refreshed.
 
 - `product-environment-read --product --environment` returns the lane's
@@ -109,9 +109,9 @@ local extensions until the vendored artifact is refreshed.
   with type, lane, action, status, time, title, summary and up to 10 record
   links; `events_truncated` says when more were returned.
 - `product-profile-read --product` calls `GET /v1/product-profiles/{product}`
-  and returns the product's Owner login and review label, `production_use`,
+  and returns the product's Client GitHub login and review label, `production_use`,
   lifecycle state, display name, driver, repository and lanes (context and
-  instance only). `prelaunch` is the only value that skips Owner release
+  instance only). `prelaunch` is the only value that skips Client release
   review. A malformed or secret-looking value fails the whole read.
 - An odd value in an optional field (for example a status Launchplane added
   later) is dropped to `""` and listed by path in `dropped_field_paths`, with
@@ -130,7 +130,7 @@ local extensions until the vendored artifact is refreshed.
   targets, each with state, times, counts, delivery id, last error and the
   plan fields the reconciler is known to write: action, reason, hold, commits,
   artifact ids, digests, operation and plan ids, the preview URL's scheme and
-  host only, the owner-review flag, and the names of omitted or missing
+  host only, the Client-review flag, and the names of omitted or missing
   integration keys (as `omitted_integration_keys` and `missing_keys`). Operation
   ids include `queued_operation_id`, `active_operation_id`,
   `deployed_operation_id` and `last_failed_operation_id`. A failed testing
@@ -195,7 +195,7 @@ input, then call `product-expected-config-apply` with the same payload file,
 The helper binds the review to the exact metadata (excluding mode); changed
 input requires another dry-run. Only apply accepts an idempotency key, so a
 dry-run cannot reserve that key before the application.
-Output contains record identity and added/unchanged counts, not Owner instructions.
+Output contains record identity and added/unchanged counts, not Client instructions.
 When the request removes anything, it also reports removed and absent counts for
 both sections and `managed_secret_bindings_still_bound_count`: stored secret
 bindings that still hold a value for a removed requirement. Removal never
@@ -223,7 +223,7 @@ arbitrary marker.
 
 ## Configuration
 
-The helper uses this private operator config source order:
+The helper uses this private admin config source order:
 
 1. `--config /path/to/local-operator.json`
 2. environment variables in the current process
@@ -263,7 +263,7 @@ may load `~/.config/launchplane/local-operator.env` for these keys only:
 `LAUNCHPLANE_OPERATOR_URL`, `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN`,
 `LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT`, and
 `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL`. The helper may also notice
-`LAUNCHPLANE_PUBLIC_URL` as a diagnostic near-miss when the operator URL is
+`LAUNCHPLANE_PUBLIC_URL` as a diagnostic near-miss when the admin URL is
 missing, but it does not use that variable as write authority.
 
 For public-safe diagnostics, use:
@@ -287,12 +287,12 @@ with `status: "incomplete"` may still have a local token source; read the
 - `1`: Launchplane was reached but rejected the request, or the service was
   unavailable/invalid. For `status: "outcome_unknown"`, transport failed after
   an apply POST began; read back the active record before any retry.
-- `2`: The requested write action could not be attempted because local operator
+- `2`: The requested write action could not be attempted because local admin
   config was missing/invalid or the helper request was malformed.
 
 Missing Launchplane config is still non-fatal for skills that only need context;
 it is a fail-closed result for this helper because every command is an explicit
-operator operation.
+admin operation.
 
 ## Product Config
 
@@ -320,7 +320,7 @@ Ad hoc plaintext secret entry should use the signed-in Launchplane UI. The
 helper does not accept plaintext secrets as CLI arguments, stdin, issue text, PR
 text, or chat text.
 
-When a trusted local owner already has an explicit private payload file outside
+When a trusted local admin already has an explicit private payload file outside
 the repo, the helper can submit the documented product-config route:
 
 ```sh
@@ -336,10 +336,10 @@ uv run launchplane/scripts/launchplane-write-action.py \
   --idempotency-key example-product-config-apply-123
 ```
 
-The payload file is explicit private operator input. Do not commit it, paste it,
+The payload file is explicit private admin input. Do not commit it, paste it,
 log it, or summarize its raw contents. It must live outside the active
 repository or worktree so checked-in config and examples cannot quietly become
-write payloads. Local-operator apply still requires a prior matching dry-run
+write payloads. Local admin apply still requires a prior matching dry-run
 recorded by Launchplane.
 
 A secret stored for one exact lane (scope `context_instance`) may carry
@@ -357,14 +357,14 @@ product-config request.
 Unsupported runtime-authority shapes must also fail closed. Do not translate
 checked-in product maps, workflow defaults, copied provider route payloads,
 repository bindings, branch bindings, tenant/domain lists, lanes, provider target
-ids, authz grants, or operator identities into product-config requests unless
-they came from Launchplane records or explicit scoped operator input.
+ids, authz grants, or admin identities into product-config requests unless
+they came from Launchplane records or explicit scoped admin input.
 
 If a denied or unsupported operation concerns authz grants, private health
-endpoint records, provider targets, route records, or operator/workflow grants,
+endpoint records, provider targets, route records, or admin/workflow grants,
 do not widen the local helper and do not substitute GitHub CI authority. An
 already-sanctioned, Launchplane-owned reconciliation entrypoint may be run
-unmodified when the operator initiates it for that record. Otherwise this is a
+unmodified when an admin initiates it for that record. Otherwise this is a
 capability gap: block and escalate the affected work to the owning
 authorization-architecture issue with the denied operation, record type, and
 trace ID, then continue independent work when possible.
@@ -372,9 +372,9 @@ trace ID, then continue independent work when possible.
 ## Change-Impact Policy
 
 Change-impact policy is runtime authority. Supply it only as explicit private
-operator input in a JSON file outside the active repository or worktree. The
+admin input in a JSON file outside the active repository or worktree. The
 file contains the service envelope, including `record`, concurrency expectations,
-and the operator-owned source and reason. The helper overrides only `mode`.
+and the admin-supplied source and reason. The helper overrides only `mode`.
 
 ```sh
 uv run launchplane/scripts/launchplane-write-action.py \
@@ -393,13 +393,13 @@ uv run launchplane/scripts/launchplane-write-action.py \
   --repository-id <repository-id>
 ```
 
-For apply, the operator asserts that the private payload is the one reviewed
+For apply, the admin asserts that the private payload is the one reviewed
 during dry-run. The helper requires a non-empty reason embedded in the policy
 record, explicit `--reviewed-dry-run` acknowledgement, the policy digest emitted
 by dry-run, and a stable idempotency key. The helper refuses to send apply when
 the supplied digest differs from a digest already present in the payload. When
 the record omits its server-derived digest, the helper inserts the reviewed
-dry-run digest before apply. These are local operator controls; the current
+dry-run digest before apply. These are local admin controls; the current
 service route does not independently bind apply to a
 persisted dry-run record or consume the idempotency header. After apply, run the
 bounded read command and compare the active revision and digest before relying
@@ -418,7 +418,7 @@ the audit trace ID, and workflow identity fields are validated and omitted.
 Legacy responses without attribution fields retain their previous output shape.
 The declared optional v2 policy/rule fields are validated but not projected;
 they do not change the helper's apply authority. The helper never emits
-component rules, path prefixes, affected products, repository name, owner ID,
+component rules, path prefixes, affected products, repository name, repository owner ID,
 source, reason, raw payloads, private paths, service URLs, or authorization
 headers. The record id intentionally embeds the numeric repository ID because
 successor policy revisions must reference it. Unexpected response fields fail
@@ -453,7 +453,7 @@ Immediately before either POST, the helper reads
 `GET /v1/work-graph/merge-train/policy-targets` and refuses the import unless
 the active policy digest exactly matches `--expected-current-policy-digest`.
 This is a bounded read-before-write guard, not server-enforced compare-and-swap;
-the active policy can still change between the read and the POST. Operators must
+the active policy can still change between the read and the POST. Admins must
 therefore serialize reviewed imports and always perform active-policy read-back
 after apply.
 
@@ -519,7 +519,7 @@ dry-run output. Missing, malformed, stale, mismatched, or non-`would_apply`
 evidence fails locally before any service request. If the private record already
 embeds an inventory digest, it must match the reviewed digest exactly.
 
-Public-safe output omits repository name, owner ID, source, reason, raw payload,
+Public-safe output omits repository name, repository owner ID, source, reason, raw payload,
 payload path, query ID, raw idempotency key, service URL, and authorization
 headers. It may emit the redacted idempotency-key fingerprint, append-only record ID, inventory state/revision/digest,
 superseded record ID, timestamps, history count, and trace metadata required for
@@ -536,7 +536,7 @@ not add a grant, borrow workflow identity, or use a raw API fallback.
 
 Generic-web deploy recovery is a bounded admin operation for recovering a
 generic-web product instance from a failed deploy. Supply the private payload
-only as explicit operator input in a JSON file outside the active repository or
+only as explicit admin input in a JSON file outside the active repository or
 worktree. The file contains `schema_version`, `product`, `instance`,
 `original_deploy`, and `reason`. The apply request additionally requires
 `expected_recovery_digest`, which the helper inserts from the `--expected-recovery-digest`
@@ -562,7 +562,7 @@ uv run launchplane/scripts/launchplane-write-action.py \
   --dry-run-evidence-file /private/path/recovery-dry-run-output.json
 ```
 
-For apply, the operator asserts that the private payload is the one reviewed
+For apply, the admin asserts that the private payload is the one reviewed
 during dry-run. The helper requires:
 
 - A non-empty `reason` embedded in the payload.
@@ -620,7 +620,7 @@ to run again.
 
 When the controller returns `controller_action: block`, the helper preserves a
 public-safe `blocking_reason` code and message plus the bounded merge-readiness
-facets (`state`, reason codes, owner states, technical checks, engineering
+facets (`state`, reason codes, `owner_states`, technical checks, engineering
 review, policy, candidate, and fence). It also preserves the service's nullable
 structural-provenance summary: status, reason codes, effective base commit/tree,
 and candidate, landing-plan, and provenance digests. These are diagnostic

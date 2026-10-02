@@ -1,6 +1,6 @@
 # Native session reminders
 
-Read when the owner asks for a reminder to return to a repository or session.
+Read when the Director asks for a reminder to return to a repository or session.
 `work-closeout` owns this workflow for both Codex and Claude Code. A scheduled
 human check-in is separate from an unattended watcher or a harness queue.
 
@@ -59,22 +59,22 @@ fallback. A renamed list must be corrected in private configuration or chosen
 explicitly. The helper never requests access. If access is unavailable, use the
 visible native workflow. A terminal with no prior access request may not appear
 in System Settings: this helper does not initiate that request. If an existing
-terminal entry is disabled, the owner can enable it under System Settings >
+terminal entry is disabled, the Director can enable it under System Settings >
 Privacy & Security > Reminders. A permission prompt from an available native
-tool needs the owner's action; continue independent work while it waits. Without native verification, output says `manual_required`: verify the
+tool needs the Director's action; continue independent work while it waits. Without native verification, output says `manual_required`: verify the
 exact unique list visibly before any write. Same-name lists in different accounts
 are ambiguous, even if one looks preferable.
 
 ## Save and verify in Apple Reminders
 
 Use existing external-write authorization; otherwise prepare the concrete title,
-list, schedule, notes and URL and ask the owner before saving. An explicit reminder
+list, schedule, notes and URL and ask the Director before saving. An explicit reminder
 request supplies that authority within its stated scope. Do not automatically
 create one merely because a task is parked for several days.
 
-If this harness has no native UI controls, give the owner the prepared fields
+If this harness has no native UI controls, give the Director the prepared fields
 and the steps below; explicitly record that saving and verification await the
-owner. Do not invent UI tools or retry a hanging AppleScript writer.
+Director. Do not invent UI tools or retry a hanging AppleScript writer.
 
 1. Open the exact unique target list. Search only that list's incomplete items
    for the output marker in Notes. The marker identifies harness, canonical
@@ -87,7 +87,7 @@ owner. Do not invent UI tools or retry a hanging AppleScript writer.
    field rather than creating an application, URL handler or background service.
 3. Set an explicit first date, time and local timezone, then the requested Repeat
    interval (for example Custom > Every 2 days). Confirm ambiguous relative dates
-   with the owner. Do not invent a recurrence. For a one-off reminder set Repeat
+   with the Director. Do not invent a recurrence. For a one-off reminder set Repeat
    to Never.
 4. Leave the URL field and close Details, then reopen it to verify the saved
    title, exact list, first date/time, recurrence, notes/marker and URL. Verify
@@ -104,7 +104,7 @@ owner. Do not invent UI tools or retry a hanging AppleScript writer.
    authority. Do not sweep completed occurrences, other lists or similarly titled
    reminders. If a save is uncertain, read back before retrying. On partial save,
    correct or remove only the item created by this operation; preserve preexisting
-   reminders. Record any cleanup that needs owner help.
+   reminders. Record any cleanup that needs the Director's help.
 
 This implementation deliberately generates URLs and verifies destination lists;
 it leaves reminder mutation and recurrence in the native UI. AppleScript writes

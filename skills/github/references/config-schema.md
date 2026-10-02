@@ -229,8 +229,8 @@ Common top-level keys:
 - `healthUrls`: optional non-authoritative readiness probes for repos whose
   readiness checks are truly repo-owned. Do not use this field for
   Launchplane-managed product, lane, deploy, provider, tenant, or health-check
-  coordinates; those values belong in the Launchplane service/API, operator UI,
-  managed records, or scoped operator input.
+  coordinates; those values belong in the Launchplane service/API, admin UI,
+  managed records, or scoped admin input.
 - `relatedRepos`: repos agents should consider during cross-repo work.
 - `prWorkflow`: repo-specific PR workflow hints such as whether a green,
   mergeable PR is only readiness evidence, whether explicit user approval is
@@ -241,7 +241,7 @@ Common top-level keys:
   metadata files, immediate-release triggers, and defer/batch conditions. Do not
   put repository-specific release semantics in global skills.
 - `launchplane`: public-safe routing metadata for Launchplane context,
-  operator, and merge-train surfaces. It may name environment variable names,
+  admin, and merge-train surfaces. It may name environment variable names,
   helper paths, workflow names, labels, local config examples, and expected
   capabilities. It must not contain tokens, cookies, secret values, concrete
   Launchplane service URLs, private credential paths, provider payloads,
@@ -312,13 +312,13 @@ Rules:
 - Launchplane repo metadata is routing, not authorization. Context helpers may
   use it to discover helper paths and the names of service URL environment
   variables, while write-capable helpers still source concrete service URLs and
-  credentials only from private operator config, environment variables, GitHub
+  credentials only from private admin config, environment variables, GitHub
   Actions OIDC, or signed-in Launchplane UI sessions.
 - Launchplane-managed product, app, preview, deploy, provider, lane, tenant, and
   health-check coordinates are runtime authority. Do not commit them to
   `.github/github.json`, workflow defaults, product repos, or operations docs as
-  real values; use Launchplane service records, the API/operator UI, managed
-  secrets, or explicit scoped operator input.
+  real values; use Launchplane service records, the API/admin UI, managed
+  secrets, or explicit scoped admin input.
 - Omit `launchplane` or set `launchplane.enabled` to `false` for repos that do
   not use Launchplane. Snapshot and readiness helpers should treat missing,
   disabled, unavailable, or unauthorized Launchplane access as reportable state,

@@ -1836,6 +1836,36 @@ def test_merge_train_queue_rejects_malformed_or_sensitive_evidence() -> None:
             raise AssertionError(f"expected unsafe queue field {key} to fail closed")
 
 
+def test_controller_branch_update_result_reaches_the_caller() -> None:
+    # The controller refreshes a behind-base branch itself and says so; rejecting the field hid that pass (#883).
+    merge = write_action.summarize_success(
+        operation="merge-train-controller-run-once",
+        request={"repository": "example/repo", "base_branch": "main", "mutate": True},
+        provider_payload={
+            "status": "accepted",
+            "trace_id": "launchplane_req_update",
+            "records": {},
+            "result": {
+                "repository": "example/repo",
+                "base_branch": "main",
+                "mode": "update_branch",
+                "controller_action": "update_branch",
+                "branch_update_result": {
+                    "status": "updated",
+                    "repository": "example/repo",
+                    "base_branch": "main",
+                    "pull_request_number": 42,
+                    "expected_head_sha": "abc123",
+                    "reread_required": True,
+                    "detail": "Updated pull request branch from base.",
+                },
+            },
+        },
+    )
+    assert merge["status"] == "accepted"
+    assert merge["result"]["branch_update_result"] == {"status": "updated"}
+
+
 def test_current_launchplane_service_response_shapes() -> None:
     merge = write_action.summarize_success(
         operation="merge-train-controller-run-once",
@@ -4840,6 +4870,7 @@ def test_owner_review_reader_surfaces_denial_without_credentials_or_provider_tex
 
 def main() -> int:
     tests = [
+        test_controller_branch_update_result_reaches_the_caller,
         test_owner_review_reader_keeps_full_prose_and_uses_only_the_private_route,
         test_owner_review_reader_rejects_wrong_subject_or_selected_record,
         test_owner_review_reader_surfaces_denial_without_credentials_or_provider_text,

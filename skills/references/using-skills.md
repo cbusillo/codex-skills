@@ -22,7 +22,7 @@ work changes.
 | Inspect or operate live hosts and managed services | `infra-ops` |
 | Find unknown private access paths or source-of-truth docs | `docs-lookup` |
 | Assess readiness to review, merge, or ship | `repo-readiness` |
-| Close out, preserve work, clean up, or assess whether the owner can exit | `work-closeout` |
+| Close out, preserve work, clean up, or assess whether the Director can exit | `work-closeout` |
 
 Use the host's skill invocation tool when available (including the catalog's
 namespace, such as `shared:github`). Otherwise open the listed `SKILL.md`.

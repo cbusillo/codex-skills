@@ -3,7 +3,7 @@
 `github/scripts/github-work-evidence.py` collects bounded, read-only GitHub work
 evidence as JSON. It is an evidence source, not a report writer.
 
-Use it when another skill needs broad GitHub facts across repositories, owners,
+Use it when another skill needs broad GitHub facts across repositories, repository owners,
 subjects, releases, workflow runs, and mechanical work buckets. Downstream
 skills may interpret the evidence, but this helper must not perform writes or
 produce audience-specific prose.

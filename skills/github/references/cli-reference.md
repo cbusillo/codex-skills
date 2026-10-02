@@ -228,7 +228,8 @@ and dependency operations for data the helper cannot yet provide cleanly.
 
 Use `supersede` after a canonical PR has been selected for a duplicate or
 competing implementation. It is intentionally focused on the stale PR: it posts
-the canonical PR link, neutralizes `Closes`/`Fixes`/`Resolves` references in the
+the canonical PR as `[repo#N](https://github.com/OWNER/repo/pull/N) title`,
+neutralizes `Closes`/`Fixes`/`Resolves` references in the
 stale body, closes the PR so future agents do not treat it as mergeable, and can
 delete the unused remote task branch when `--delete-branch` is explicitly
 requested.
@@ -352,20 +353,29 @@ Claim the exact branch that the worktree helper will create. For
 Verify holds and recorded waits under Choose Work before invoking claim.
 For a recorded wait or parked/blocked/stale/done state, pass
 `--wait-resolved "<existing resolution evidence>"` only after verifying its
-condition or recorded owner release. Without that evidence the command refuses
+condition or a recorded Director release. Without that evidence the command refuses
 before writing. It records the resolution and previous Current Status in the
 claim comment and returns the previous status for recovery. Claim and this
-argument grant no owner decision or permission to lift a repository hold.
+argument grant no Director decision or permission to lift a repository hold.
 
 The command checks Current Status and the complete discussion, unresolved
 native blockers, registered worktrees, local branches, live remote heads, open
 PRs, and Claude's native `claude agents --json` session inventory when available.
 Codex CLI peer coverage is reported unavailable; a caller's supported session
 tools can add evidence but cannot turn partial coverage into a clear inventory.
-Known owners and ambiguous or stale records cause a nonzero refusal with the
+Known holders and ambiguous or stale records cause a nonzero refusal with the
 competing evidence. Age never expires a claim. Do not bypass a refusal by
-changing the worker, tool, or identity; ask the owner about ambiguous ownership
+changing the worker, tool, or identity; ask the Director about ambiguous ownership
 and continue independent work.
+
+An issue URL on a PR body line starting exactly `Code follow-ups recorded
+without starting implementation:` is context-only. Title or branch ownership,
+implementation references (`Refs`, `Fixes`, `Closes`, `Resolves`, including full
+issue URLs), and links elsewhere in the body still cause refusal. Unmarked or
+wrapped follow-up links remain uncertain ownership evidence. A context line
+containing ownership keywords such as `Fixes`, `Closes`, or `Implements` tied
+to the issue also remains evidence, including a colon or Markdown link.
+Keep implemented work out of this explicitly unstarted line.
 
 Use the actual native session ID, not a made-up label. On Claude Code, use
 session metadata or `claude agents --json` to identify this session by its
@@ -419,8 +429,9 @@ competitor's record.
   pages native `blocked_by` dependencies and sub-issues; `--reason completed`
   rejects open entries with compact references and `write_outcome=not_started`.
   Issues blocked by the plan do not prevent closure. `--reason not_planned`
-  requires owner approval for work in a milestone listed in merged `DIRECTION.md`: an
-  owner comment after the last issue-body edit, or an owner `+1` reaction after
+  requires the Director's approval, given as the repository owner, for work in a
+  milestone listed in merged `DIRECTION.md`: a repository owner comment after
+  the last issue-body edit, or a repository owner `+1` reaction after
   that edit on an unedited comment starting with the exact first line
   `Owner decision: Close #<number> as not planned.` Other accounts, comment
   types, actions, and edited decisions do not qualify; unreadable identity,
@@ -481,7 +492,7 @@ For `<owner>/direction`, `next` automatically selects global direction scope;
 no flag is needed. The target repository's merged `DIRECTION.md` is required,
 including when the command runs elsewhere with `--repo`. In milestone order,
 it walks the open `Track:` plans through native blockers and sub-issues, across
-owners as well as repositories. Waiting summary labels on these tracking
+repository owners as well as repositories. Waiting summary labels on these tracking
 containers do not hide their linked work. Ordinary waiting, stale, completed,
 Later-focus, and inconsistently blocked plans remain excluded. Tracking issues
 without open work are reported, never selected as implementation tasks.
@@ -511,9 +522,9 @@ instead of making the graph incomplete while their direction edit is pending.
 The returned `direction_context` preserves Order and Capacity for caller
 judgment: unlinked live incidents and repeat-stop tooling exceptions need their
 own evidence, and the weekly own-project share remains an audit, not a per-call
-quota. With no `--milestone`, the query also inventories accessible owner
-repositories and their open issues, including non-plan issues, and returns their
-merged direction. Other owners, archived/disabled repos, disabled issue trackers,
+quota. With no `--milestone`, the query also inventories the repository owner's
+accessible repositories and their open issues, including non-plan issues, and returns their
+merged direction. Other repository owners, archived/disabled repos, disabled issue trackers,
 and empty repos without open issues have explicit exclusions. Forks remain
 eligible for discovery. An App uses `/installation/repositories`; a configured
 non-App actor uses `/user/repos`, without switching identities on failure.
@@ -527,7 +538,7 @@ beside the ranked list; `rank_portfolio_work` alone cannot find omitted issues.
 inventory and issue reads; neither proves active ownership. `--repo-limit`
 (default 100), `--repository-issue-limit` (100), and `--comment-limit` (100) bound
 the new sources. `--scan-limit` separately bounds graph nodes and discovered issue
-evaluations of ordinary issues. Issues labeled `live-breakage` after an owner
+evaluations of ordinary issues. Issues labeled `live-breakage` after a Director
 incident decision are evaluated outside that discovery allowance and ranked
 first among possible work, while normal holds, blockers, waits, and ownership
 review still apply. When an ordinary repository issue list is truncated, a
@@ -756,8 +767,9 @@ Human warnings and progress remain on stderr, and the process exit code matches
 ## Authentication And Identity
 
 `scripts/gh-with-env-token` is automation-first when a token is configured. It
-loads `$CODE_HOME/local.env` by default, falling back to
-`$CODEX_HOME/local.env` and then `~/.code/local.env`. When
+loads the first of `$CODE_HOME/local.env`, `$CODEX_HOME/local.env`, and
+`~/.code/local.env` that exists, so a home variable without its own
+`local.env` falls through to the next. When
 `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, and
 `GITHUB_APP_PRIVATE_KEY_PATH` are all configured, it verifies the App identity,
 mints and caches an owner-only installation token, and uses the App for every
@@ -765,7 +777,7 @@ command. Each account that installs the App has its own installation, so when a
 command names a repository (`-R`/`--repo`, an `api` path under `repos/`, or
 `GH_REPO`), the wrapper uses the installation on that repository. A write to a
 repository where the App is not installed is refused with that reason; ask the
-repository's owner to install the App. Reads there, and commands that name no
+repository owner to install the App. Reads there, and commands that name no
 repository such as GraphQL by node ID, use the configured installation.
 `GITHUB_APP_INSTALLATION_ID` stays the default. Otherwise it prefers `CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and
 `GITHUB_TOKEN` in that order. `--check` reports the selected credential source
@@ -781,7 +793,7 @@ an explicitly approved one-off command whose human-owned actor is acceptable.
 it overrides the fallback setting even when an env file enables fallback.
 Set `CODEX_AUTOMATION_LOGIN` and `CODEX_AUTOMATION_EMAIL` in the ignored
 `local.env`; use a quoted `CODEX_AUTOMATION_BOT_LOGINS` value for optional
-additional owner-controlled automation accounts. Those logins are used for bot
+additional Director-controlled automation accounts. Those logins are used for bot
 classification and trusted managed-plan authorship, so do not list third-party
 bots. Values from the selected local env file override ambient values for the
 same identity key.
@@ -789,7 +801,8 @@ Automation-only Python readers use the equivalent wrapper prefix
 `--require-automation-auth`, avoiding an explicit process-environment copy while
 preserving the same fail-closed behavior.
 Set `CODEX_SKILLS_ENV_FILE` only in tests or special local cases where a
-different env file should be used.
+different env file should be used. It always wins, and a missing file then
+loads nothing, which keeps tests isolated from the real credentials.
 
 The wrapper remains a transparent transport for delegated `gh` stdout, but its
 failure decision is owned by `scripts/github_api.py classify-legacy` rather

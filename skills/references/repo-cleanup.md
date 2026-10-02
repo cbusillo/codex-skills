@@ -26,8 +26,8 @@ does not trigger a global repository scan, cache sweep, or retirement workflow.
 
 ## Establish the disposition
 
-1. Identify the exact targets and their owners. Preserve the primary/default
-   checkout, installed runtime checkouts, active worktrees, review/automation
+1. Identify the exact targets and the sessions or jobs that own them.
+   Preserve the primary/default checkout, installed runtime checkouts, active worktrees, review/automation
    worktrees, and shared caches unless a separate applicable lifecycle explicitly
    permits the intended action. A clean status, no agent session, or an old lock
    does not establish inactivity. Check current jobs, IDE leases and runtime
@@ -84,7 +84,8 @@ does not trigger a global repository scan, cache sweep, or retirement workflow.
    Unrecorded SDKs remain registered and are reported as preserved. A
    `not_helper_owned` refusal alone permits eligible worktree removal while
    preserving the SDK; other refusal reasons remain holds. A Git removal failure can follow
-   successful SDK retirement; retain and report the exact result rather than
+   successful SDK retirement; the helper finishes only a removal that Finder
+   raced with `.DS_Store` writes. Retain and report any other result rather than
    forcing removal. Use `cleanup-helper-sdks` dry-run then `--no-dry-run --worktree-path /reviewed/orphan` (repeat the path flag for each listed candidate) for
    proved helper-owned SDKs whose worktrees were already removed. Never edit
    running IDE config files or infer ownership from SDK names.
@@ -115,8 +116,8 @@ ledger, manifest or retention service is required.
 | Private configuration | Preserve; an ignored/generated name does not grant disposal authority. |
 | Ambiguous | Retain until ownership, contents and intended use are resolved. |
 
-For each retained group, record an owner, reason and review/disposal trigger
-(such as acceptance recorded or owner adopts the parked change), not an arbitrary
+For each retained group, record a holder, reason and review/disposal trigger
+(such as acceptance recorded or the Director adopts the parked change), not an arbitrary
 expiration. Use the existing issue/PR for public-safe summaries. A necessary
 private record belongs in an owner-only local location outside removal targets,
 with mode 0600; never commit or publish private paths, contents or raw manifests.
@@ -135,7 +136,7 @@ access failure; label unverified state as reported or unexamined.
 
 ## Forks
 
-Apply this standing rule to an owner's forks during closeout or a cleanup audit;
+Apply this standing rule to a repository owner's forks during closeout or a cleanup audit;
 it needs no fresh decision each time.
 
 | Disposition | When |
@@ -149,7 +150,7 @@ is the head of a merged PR is delivered even when a squash or rebase merge
 leaves it ahead. A branch with no common ancestor holds unsent commits. Code
 search finds references only in visible, indexed repositories, so confirm that
 nothing else uses a delete candidate. Deletion is irreversible: show the
-operator the exact list immediately before deleting. Archiving and deleting
+Director the exact list immediately before deleting. Archiving and deleting
 remain account-level actions under the authorization rules above.
 
 ```sh
@@ -231,7 +232,7 @@ worktree stays protected even if the lock appears stale.
 
 Two filesystem passes and Git snapshots around the scan detect observed changes.
 This is not an atomic filesystem snapshot or a deletion lease. Another process
-can change a path after the check. The action owner must revalidate the exact
+can change a path after the check. The session taking the action must revalidate the exact
 target immediately before mutation and preserve ambiguous or newly active state.
 The helper does not provide an atomic check-and-delete operation.
 

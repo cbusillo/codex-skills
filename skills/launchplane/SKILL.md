@@ -1,12 +1,12 @@
 ---
 name: launchplane
-description: Use for Launchplane-managed product/runtime state, secrets, config, deployments, rollout direction, product ownership boundaries, merge-train flow, and audited operator mutations. Use with github-plan when Launchplane work needs to stay aligned with a durable plan, issue graph, blockers, or rollout sequence. If authority is unknown or discovering private infrastructure access, use docs-lookup first.
+description: Use for Launchplane-managed product/runtime state, secrets, config, deployments, rollout direction, product ownership boundaries, merge-train flow, and audited admin mutations. Use with github-plan when Launchplane work needs to stay aligned with a durable plan, issue graph, blockers, or rollout sequence. If authority is unknown or discovering private infrastructure access, use docs-lookup first.
 metadata:
   short-description: Operate Launchplane-managed state
 resources:
   - path: scripts/launchplane-owner-review.py
     kind: script
-    description: Reads one scoped saved Owner decision with its full prose and GitHub delivery receipt.
+    description: Reads one scoped saved Client decision with its full prose and GitHub delivery receipt.
   - path: scripts/launchplane-context.py
     kind: script
     description: Read Launchplane context for a repository, branch, issue, or pull request.
@@ -15,7 +15,7 @@ resources:
     description: Perform bounded Launchplane write-action preflight, dry-run, apply, and merge-train controller calls.
   - path: scripts/check-agent-operator-contract.py
     kind: script
-    description: Validate the vendored public agent/operator contract and local consumer bindings offline.
+    description: Validate the vendored public agent/admin contract and local consumer bindings offline.
   - path: scripts/check-agent-operator-contract-freshness.py
     kind: script
     description: Compare the vendored contract with the current public upstream artifact and report semantic drift.
@@ -30,7 +30,7 @@ resources:
     description: Private client custody, connection, session, retry, and cancellation behavior.
   - path: references/agent-operator-contract.json
     kind: reference
-    description: Vendored public Launchplane agent/operator contract artifact.
+    description: Vendored public Launchplane agent/admin contract artifact.
   - path: references/agent-operator-contract.md
     kind: reference
     description: Contract identity, validation, freshness, and local-extension guidance.
@@ -39,7 +39,7 @@ resources:
     description: Contract for Launchplane context helper configuration, fallback, output, and redaction behavior.
   - path: references/operator-contract.md
     kind: reference
-    description: Operator safety contract for Launchplane private config, credentials, and runtime mutations.
+    description: Admin safety contract for Launchplane private config, credentials, and runtime mutations.
   - path: references/write-action-helper-contract.md
     kind: reference
     description: Contract for write-action helper entrypoints, exit behavior, idempotency, and redacted output.
@@ -57,14 +57,14 @@ resources:
     description: Public-safe example for private context helper configuration.
   - path: references/launchplane-operator.local.example.json
     kind: reference
-    description: Public-safe example for private operator helper configuration.
+    description: Public-safe example for private admin helper configuration.
 commands:
   - name: launchplane-owner-review
     source: skill
     resource_path: scripts/launchplane-owner-review.py
     example_argv:
       ["uv", "run", "scripts/launchplane-owner-review.py", "--repo", "OWNER/REPO", "--pr", "42"]
-    purpose: Reads private Owner feedback and its saved delivery receipt through the configured scoped service route.
+    purpose: Reads private Client feedback and its saved delivery receipt through the configured scoped service route.
   - name: launchplane-contract-validate
     source: skill
     resource_path: scripts/check-agent-operator-contract.py
@@ -226,7 +226,7 @@ commands:
         "scripts/launchplane-write-action.py",
         "operator-config-diagnostic",
       ]
-    purpose: Reports redacted operator URL/token source presence before write-capable helper calls.
+    purpose: Reports redacted admin URL/token source presence before write-capable helper calls.
   - name: launchplane-preview-feedback-remediation
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -406,7 +406,7 @@ policy:
               "--expected-current-policy-digest",
               "<active-policy-digest>",
             ]
-          purpose: Dry-runs explicit operator policy input after active-policy digest preflight.
+          purpose: Dry-runs explicit admin policy input after active-policy digest preflight.
     - id: prefer-launchplane-helper-for-repository-inventory-api
       match:
         shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/repository-inventory(?:/apply)?\\b"
@@ -477,7 +477,7 @@ policy:
               "--idempotency-key",
               "<original-deploy-key>",
             ]
-          purpose: Dry-runs explicit operator recovery input through the bounded helper.
+          purpose: Dry-runs explicit admin recovery input through the bounded helper.
         - kind: script
           path: scripts/launchplane-write-action.py
           example_argv:
@@ -514,7 +514,7 @@ policy:
               "--payload-file",
               "<private-file>",
             ]
-          purpose: Dry-runs explicit operator policy input through the bounded helper.
+          purpose: Dry-runs explicit admin policy input through the bounded helper.
     - id: prefer-launchplane-write-helper-for-product-expected-config-api
       match:
         shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/product-profiles/expected-config/apply\\b"
@@ -529,7 +529,7 @@ policy:
       match:
         shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/(product-config/apply|agent/write-intents/evaluate)\\b"
       action: require_preferred
-      message: Raw Launchplane product-config API calls bypass helper-owned dry-run/apply discipline, redaction, private config sourcing, and traceable operator output. Use the write-action helper.
+      message: Raw Launchplane product-config API calls bypass helper-owned dry-run/apply discipline, redaction, private config sourcing, and traceable admin output. Use the write-action helper.
       preferred:
         - kind: script
           path: scripts/launchplane-write-action.py
@@ -580,7 +580,7 @@ policy:
       match:
         shell_regex: "(?i)\\b(?:gh|gh-with-env-token)\\b[\\s\\S]*\\bapi\\b[\\s\\S]*(?:(?:--method|-X)\\s*(?:put|patch|post|delete)\\b[\\s\\S]*/(?:actions/(?:secrets|variables)|environments/[^\\s/]+/(?:secrets|variables))\\b|/(?:actions/(?:secrets|variables)|environments/[^\\s/]+/(?:secrets|variables))\\b[\\s\\S]*(?:--method|-X)\\s*(?:put|patch|post|delete)\\b)"
       action: reject
-      message: Raw GitHub Actions secret or variable writes can silently make GitHub an authorization authority. Use the owning product/operator contract; Launchplane auth gaps must escalate to the DB-native authorization architecture.
+      message: Raw GitHub Actions secret or variable writes can silently make GitHub an authorization authority. Use the owning product/admin contract; Launchplane auth gaps must escalate to the DB-native authorization architecture.
     - id: reject-http-github-actions-secret-writes
       match:
         shell_regex: "(?i)\\b(?:curl|wget|http)\\b[\\s\\S]*(?:(?:(?:-X|--request|--method(?:=|\\s+))\\s*(?:put|patch|post|delete)|\\b(?:put|patch|post|delete)\\b)[\\s\\S]*/(?:actions/(?:secrets|variables)|environments/[^\\s/]+/(?:secrets|variables))\\b|/(?:actions/(?:secrets|variables)|environments/[^\\s/]+/(?:secrets|variables))\\b[\\s\\S]*(?:(?:-X|--request|--method(?:=|\\s+))\\s*(?:put|patch|post|delete)|\\b(?:put|patch|post|delete)\\b))"
@@ -630,7 +630,7 @@ policy:
               "merge-train-controller-run-once",
               "--help",
             ]
-          purpose: Uses bounded Launchplane mutation entrypoints when operator action is approved.
+          purpose: Uses bounded Launchplane mutation entrypoints when an admin action is approved.
 ---
 
 # Launchplane Expert
@@ -642,7 +642,7 @@ through `uv run [--extra dev] launchplane` in a verified `cbusillo/launchplane`
 checkout or linked worktree, including frontend contract generation. Use the
 tool's working directory or a single literal absolute `cd <checkout> &&` prefix.
 Other shell directory/project overrides retain the block. PostgreSQL integration
-commands that target a database and all live/operator CLI commands retain their
+commands that target a database and all live/admin CLI commands retain their
 helper route below. Consumers without
 repository-exception support keep the original block; do not bypass it through
 an alternate entry point.
@@ -659,20 +659,20 @@ Launchplane manages that resource.
 Checked-in files are not runtime authority for Launchplane-managed state. Code
 may own schemas, validators, generic behavior, helper routing, fake examples,
 and fail-closed defaults. Launchplane service records or explicit scoped
-operator input own real product, tenant, repository, branch, domain, lane,
-provider-target, runtime-environment, authz, operator, route, health-check, and
+admin input own real product, tenant, repository, branch, domain, lane,
+provider-target, runtime-environment, authz, admin identity, route, health-check, and
 other mutable runtime values.
 
 This applies even when values are not secrets. Non-secret topology can still
 steer production behavior. Treat repo metadata, workflow variables, checked-in
 examples, and archived workstation files as hints for which Launchplane helper,
-service record, or operator surface to use; never use them as evidence of the
+service record, or admin surface to use; never use them as evidence of the
 current live value. If the needed live value is only visible in checked-in or
-workstation files, stop and obtain Launchplane context or explicit operator
+workstation files, stop and obtain Launchplane context or explicit admin
 input instead of inferring it.
 
 Favor service-backed audit trails over local ad hoc fallbacks. Use the deployed
-service/API or operator UI first for current product state; direct database
+service/API or admin UI first for current product state; direct database
 access requires an explicitly approved host-side context. Archived files under
 `~/.config/launchplane/`, including `service.env`, `dokploy.env`, and
 `runtime-environments.toml`, are historical clues only.
@@ -687,10 +687,10 @@ private credential paths, provider payloads, product/runtime endpoints, or
 plaintext runtime configuration. Treat Launchplane-managed product, app,
 preview, deploy, provider, lane, tenant, and health-check coordinates as service
 records, not checked-in repo metadata; if repo metadata and Launchplane service
-state disagree, service/operator state wins and the metadata is stale routing
+state disagree, service/admin state wins and the metadata is stale routing
 context to fix deliberately.
 
-## Agent/Operator Contract
+## Agent/Admin Contract
 
 Use `references/agent-operator-contract.json` as the checked-in public contract
 for agent/helper operation routing, protected workflow bindings, and semantic
@@ -712,7 +712,8 @@ scheduled `known-stale` result opens or updates one maintenance issue through
 the maintained GitHub helpers; repeated mismatches reuse the same open issue.
 Manual dispatch is compare-only unless issue reporting is explicitly selected.
 
-Keep durable fail-closed rules local: Owner acceptance is authoritative,
+Keep durable fail-closed rules local: Client acceptance is authoritative (see
+the [release rule](../references/role-words.md#release-rule)),
 engineering review is advisory, GitHub projection is routing/status only,
 authorization/admission/landing are independent, protected workflow dispatch
 and watching stay delegated to `github_workflow_babysit.py`, and raw protected
@@ -756,14 +757,14 @@ Fail closed when the contract does not contain one unambiguous operation and,
 when required, one unambiguous workflow binding. Report the scenario as an
 unsupported capability gap and track focused follow-up coverage; do not route it
 through a nearby helper, workflow, or endpoint. Plan or dry-run first, and do not
-apply without every contract-required reviewed-evidence field, explicit operator
+apply without every contract-required reviewed-evidence field, explicit admin
 approval, and an apply-eligible result. Detached application retirement must
 preserve zero authority writes and is complete only when candidate absence is
 proved.
 
 ## Rollout Plan Alignment
 
-For Launchplane rollout, runtime, product-boundary, merge-train, or operator
+For Launchplane rollout, runtime, product-boundary, merge-train, or admin
 work, do not continue from the latest operational finding alone. Before the next
 slice, state how it fits the active Launchplane plan, issue graph, rollout
 sequence, or product ownership boundary.
@@ -774,7 +775,7 @@ sub-issue, or related-issue edges over burying direction changes in chat.
 
 When Launchplane work turns into GitHub issue, PR, Actions, review, comment,
 commit, or push work, delegate that surface to `github` or `github-plan` before
-running commands. Launchplane owns runtime/operator authority; the GitHub skills
+running commands. Launchplane owns runtime/admin authority; the GitHub skills
 own helper-backed GitHub identity, body handling, planning state, and PR
 lifecycle behavior.
 
@@ -789,14 +790,14 @@ readiness.
 - **Contract**: See `references/context-helper-contract.md` for config,
   fallback, and redaction behavior.
 
-### Owner feedback
+### Client feedback
 
 Use `uv run scripts/launchplane-owner-review.py --repo OWNER/REPO --pr NUMBER`
-to retrieve the complete saved Owner reason; add `--decision-id ID` for a
-historical decision. This narrow read uses the existing private operator config
+to retrieve the complete saved Client reason; add `--decision-id ID` for a
+historical decision. This narrow read uses the existing private admin config
 and the product's `product_profile.read` permission. It is a bounded local
 extension of `/v1/product-review`, separate from the public-safe context output.
-The output contains Owner prose: keep it in task-private evidence unless its
+The output contains Client prose: keep it in task-private evidence unless its
 publication is authorized. A failed read means unavailable, not no feedback.
 The PR watcher uses this reader to verify its GitHub projection and receipt.
 
@@ -805,51 +806,51 @@ The PR watcher uses this reader to verify its GitHub projection and receipt.
 Before preparing or repairing an application-target deployment, read
 [stable deploy identity](references/deploy-identity.md). Publish both an
 immutable digest and immutable SHA tag before deployment; never use a floating
-tag. Resolve the target category from Launchplane context or the operator
+tag. Resolve the target category from Launchplane context or the admin
 surface. Repair missing references through the product repository's build/deploy
 workflow and delegate protected workflow dispatch and watching to `github`.
 
-## Runtime Management (Operator)
+## Runtime Management (Admin)
 
 Mutate runtime environments, managed secrets, and product config.
 
 - **Safety**: Strictly follow the `references/operator-contract.md`.
 - **Helper Contract**: Use `references/write-action-helper-contract.md` for
   bounded helper entrypoints, exit behavior, and redacted output shape.
-- **Auth**: Prefer signed-in, scoped operator sessions in the Launchplane UI or
-  service API. Source terminal/local operator credentials only through the
-  operator contract; do not paste token values into chat, issues, PRs, docs, or
+- **Auth**: Prefer signed-in, scoped admin sessions in the Launchplane UI or
+  service API. Source terminal/local admin credentials only through the
+  admin contract; do not paste token values into chat, issues, PRs, docs, or
   logs.
 - **Private Config**: For non-browser terminal execution, use the source order
-  in the operator contract. Missing private config means the write-capable path
+  in the admin contract. Missing private config means the write-capable path
   is unavailable and must fail closed; do not use `.github/github.override.json`
   for Launchplane credentials.
-- **Operator Diagnostics**: Before concluding operator access is unavailable,
+- **Admin Diagnostics**: Before concluding admin access is unavailable,
   run `scripts/launchplane-write-action.py operator-config-diagnostic`. Treat
-  `launchplane-context` availability and local operator readiness as separate
+  `launchplane-context` availability and local admin readiness as separate
   checks: context can be unavailable while the write helper is usable, and the
-  write helper can be blocked only by missing local operator config. If the
+  write helper can be blocked only by missing local admin config. If the
   diagnostic reports `missing_service_url`, token material was found but no
   write-capable Launchplane service URL source was found; configure
-  `LAUNCHPLANE_OPERATOR_URL` in the private local operator env file or pass
+  `LAUNCHPLANE_OPERATOR_URL` in the private local admin env file or pass
   `--url` before the subcommand, then rerun the diagnostic. If the active shell
   has a service URL under `LAUNCHPLANE_PUBLIC_URL` but not
   `LAUNCHPLANE_OPERATOR_URL`, treat it as an ambiguous URL source: obtain the
-  correct operator URL and pass it with `--url` before the subcommand, or copy
-  the sanctioned value into private operator config. Do not use public URL
+  correct admin URL and pass it with `--url` before the subcommand, or copy
+  the sanctioned value into private admin config. Do not use public URL
   variables as write authority.
 - **Runtime Sources**: Apply the Runtime Authority Boundary above to reads and
   writes: never add or copy product authz grants, target IDs, tenant domains, seed/import
   payloads, route batches, or live topology into deploy scripts, workflow defaults,
   or repo config or product repos. Committed examples use fake placeholders or intentionally public,
   non-authoritative sample data. Keep concrete service URLs and credentials in
-  private operator config, environment variables, GitHub Actions OIDC, or signed-in
-  Launchplane UI sessions. For shared/prod, use the deployed service, operator UI,
+  private admin config, environment variables, GitHub Actions OIDC, or signed-in
+  Launchplane UI sessions. For shared/prod, use the deployed service, admin UI,
   or bounded helper/API with the correct URL and scoped credentials.
 - **First Shot**: For product-config/runtime/secret sync, use the service API
-  path from the operator contract first. Do not start by searching for a local
+  path from the admin contract first. Do not start by searching for a local
   `launchplane` binary or by poking provider config directly.
-- **Denied Actions**: A local operator token can be present and still lack a
+- **Denied Actions**: A local admin token can be present and still lack a
   specific action. Report that as authorization denial, not missing credential.
   Before choosing a next step, classify the denial. A scope denial means an
   existing Launchplane capability does not grant this identity the requested
@@ -876,32 +877,32 @@ Mutate runtime environments, managed secrets, and product config.
   files, and do not close the gap with a workflow.
 - **Workflow**:
   1. Inspect Context to identify the target and change needed. Before asking
-     the operator to approve a dry run, apply, recovery, or onboarding, check
+     the Director to approve a dry run, apply, recovery, or onboarding, check
      the whole path read-only as [task scope](../references/execution-scope.md)
      describes, including earlier refusals of the same operation in run
      history, and ask once with every blocker found.
-  2. Run operator config diagnostics before a write-capable helper call when
+  2. Run admin config diagnostics before a write-capable helper call when
      target URL, token source, or authority is unclear.
-  3. If diagnostics report `missing_service_url`, fix local operator routing
+  3. If diagnostics report `missing_service_url`, fix local admin routing
      first. This is a workstation setup problem, not PR readiness, merge-train
      admission, or scheduler state.
   4. Preflight product-config intent with `scripts/launchplane-write-action.py
 product-config-preflight` when agent-side authorization or managed-secret
      binding evidence is useful.
-  5. Use the signed-in/scoped operator path when a human-approved runtime or
+  5. Use the signed-in, scoped admin path when a human-approved runtime or
      managed-secret mutation is required.
   6. Build a product-config request for `POST /v1/product-config/apply` only in
-     an approved operator surface. The helper may submit dry-run/apply from a
+     an approved admin surface. The helper may submit dry-run/apply from a
      private local payload file, never from chat, CLI plaintext secret args, or
      committed examples.
   7. **Dry-run** and inspect redacted results.
   8. **Apply** with a concrete reason only after the dry-run succeeds and the
-     operator intent is explicit.
+     admin's intent is explicit.
   9. Inspect returned `next_actions` and complete required follow-up actions;
      product-config apply can update Launchplane records before the live target
      runtime has been synced.
 
-Agents may guide the operator, prepare request shape, summarize redacted dry-run
+Agents may guide the admin, prepare request shape, summarize redacted dry-run
 evidence, and report trace IDs/status. Agents must not collect plaintext secret
 values in chat, issues, PRs, docs, logs, or helper output, and must not bypass
 Launchplane by editing provider configuration directly.
@@ -915,10 +916,10 @@ authorization or capability gap through the owning GitHub plan relationship:
 2. block only the affected work item on the owning architecture issue;
 3. use `github-plan next` or the existing work source to select independent
    work;
-4. notify the operator immediately only when every useful item is blocked, an
+4. notify the Director immediately only when every useful item is blocked, an
    effect is uncertain, or an active environment is unhealthy.
 
-Do not tell the operator to provision a new credential or click through a
+Do not tell the Director to provision a new credential or click through a
 GitHub Actions workaround. A future Launchplane deferred-operation record may
 replace this GitHub-plan handoff after it is present in the public contract.
 
@@ -930,15 +931,15 @@ authority merely because another identity was denied. Use it only when every
 condition holds:
 
 - the entrypoint already exists and is named in repository routing metadata,
-  the operator contract, or explicit operator instruction;
+  the admin contract, or explicit admin instruction;
 - Launchplane owns it and already sanctions it for this exact record type;
-- the operator initiated this run for the specific record;
+- an admin initiated this run for the specific record;
 - the workflow, inputs, permissions, target, and secrets are used unmodified;
 - dry-run and reviewed evidence precede apply where supported.
 
 Delegate dispatch and watching to the `github` skill. If any condition fails,
 stop and escalate architecturally. Bootstrap and break-glass are
-operator-initiated exceptions with an audit trail; they are never the routine
+admin-initiated exceptions with an audit trail; they are never the routine
 answer to `authorization_denied`.
 
 ## Merge Train (Controller)
@@ -957,13 +958,14 @@ merge-train-controller-run-once` instead of open-coding the route. Mutating
   background instead of writing a loop around the run-once helper. It pauses on
   every non-terminal state, stops at a wall-clock deadline, reports every PR in
   the landing batch, and exits `landed` (0), `failed` (1), `needs_owner` (2) or
-  `error` (3) with a JSONL `stop` event in `gh_pr_watch.py`'s shape. Pass
-  `--allow-branch-update` only for your own same-repository branches, because the
-  controller does not refresh a behind-base PR. Run one driver per repository
+  `error` (3) with a JSONL `stop` event in `gh_pr_watch.py`'s shape. The
+  controller refreshes a behind-base PR itself when it can; pass
+  `--allow-branch-update` only for your own same-repository branches, for a
+  behind-base PR it reports without refreshing. Run one driver per repository
   train, and keep a watcher on it while you report "waiting on the train".
-- **Operator Action**: Put `ready-to-merge` only on the root PR that targets the
+- **Train Entry**: Put `ready-to-merge` only on the root PR that targets the
   protected base branch. Do not hand-collapse stacks in GitHub.
-- **Mutation Gate**: Keep scheduled runners in dry-run mode until the operator
+- **Mutation Gate**: Keep scheduled runners in dry-run mode until the Director
   explicitly selects a mutation pilot. Manual `mutate=true` controller runs are
   appropriate only after dry-run evidence shows the intended queue, candidate,
   and next action. Do not leave scheduled mutation enabled as a casual default.
@@ -985,7 +987,7 @@ merge-train-controller-run-once` instead of open-coding the route. Mutating
 ## Intentionality & Safety
 
 This skill combines inspection and mutation. You must explicitly announce when
-you are transitioning from **Inspecting Context** to **Executing Operator
+you are transitioning from **Inspecting Context** to **Executing Admin
 Actions**. Never apply a mutation without a preceding dry-run and situational
 verification.
 
@@ -1001,14 +1003,14 @@ verification.
   public-safety, operation, workflow, invariant, and local-consumer conformance
   gate. A green result is not upstream freshness evidence.
 - `operator-config-diagnostic`: Redacted source-presence diagnostic for local
-  operator URL and token configuration. Global options such as `--url` must come
+  admin URL and token configuration. Global options such as `--url` must come
   before the subcommand.
 - `POST /v1/agent/write-intents/evaluate`: Product-config preflight surface for
   authorization and managed-secret binding evidence; never carries plaintext.
-- `POST /v1/product-config/apply`: Primary product-config operator path for
-  signed-in/scoped operators; dry-run before apply.
+- `POST /v1/product-config/apply`: Primary product-config admin path for
+  signed-in, scoped admins; dry-run before apply.
 - `POST /v1/change-impact/policies/apply`: Change-impact policy dry-run/apply
-  path for explicit private operator input; apply must pin the dry-run policy
+  path for explicit private admin input; apply must pin the dry-run policy
   digest and be followed by bounded read-back.
 - `GET /v1/change-impact/policy`: Bounded active policy read-back for exact
   revision and digest verification.
@@ -1066,8 +1068,8 @@ verification.
   deployment, promotion and backup-gate events with their record ids. Settings,
   secrets, actions, URLs and provider target names are dropped.
 - `GET /v1/product-profiles/{product}`: Bounded local-extension read
-  (`product-profile-read --product`) for who a product's Owner is and its
-  `production_use`: `prelaunch` skips Owner release review, while `live` and
+  (`product-profile-read --product`) for who a product's Client is and its
+  `production_use`: `prelaunch` skips Client release review, while `live` and
   `unknown` require it. It also returns the display name, driver, repository,
   lifecycle state and lane contexts and instances. Images, URLs, workflows and
   expected configuration are dropped.

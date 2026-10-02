@@ -294,6 +294,48 @@ env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN -u CODE_HOME \
 
 grep -qx 'codex-home-token' "$env_log"
 
+# A home variable whose directory has no local.env must not hide ~/.code/local.env.
+empty_code_home_dir="$tmpdir/.empty-code"
+empty_codex_home_dir="$tmpdir/.empty-codex"
+mkdir -p "$empty_code_home_dir" "$empty_codex_home_dir"
+: >"$env_log"
+env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN \
+	PATH="$tmpdir:$PATH" \
+	HOME="$tmpdir" \
+	CODE_HOME="$empty_code_home_dir" \
+	CODEX_HOME="$empty_codex_home_dir" \
+	GH_ISSUE_ENV_LOG="$env_log" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/path-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" auth status >/dev/null
+
+grep -qx 'workspace-token' "$env_log"
+
+: >"$env_log"
+env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN -u CODE_HOME \
+	PATH="$tmpdir:$PATH" \
+	HOME="$tmpdir" \
+	CODEX_HOME="$empty_codex_home_dir" \
+	GH_ISSUE_ENV_LOG="$env_log" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/path-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" auth status >/dev/null
+
+grep -qx 'workspace-token' "$env_log"
+
+# An explicit CODEX_SKILLS_ENV_FILE is authoritative even when it is missing.
+: >"$env_log"
+env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN \
+	PATH="$tmpdir:$PATH" \
+	HOME="$tmpdir" \
+	CODE_HOME="$code_home_dir" \
+	CODEX_HOME="$codex_home_dir" \
+	CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	GH_ISSUE_ENV_LOG="$env_log" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/path-gh" \
+	GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1 \
+	"$repo_root/github/scripts/gh-with-env-token" auth status >/dev/null 2>&1
+
+grep -qx '' "$env_log"
+
 : >"$env_log"
 env -u HOME -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN -u CODE_HOME -u CODEX_HOME \
 	PATH="$tmpdir:$PATH" \
@@ -354,6 +396,19 @@ PATH="$tmpdir:$PATH" GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LO
 
 grep -q 'author=fixture-automation <fixture-automation@example.invalid> committer=fixture-automation <fixture-automation@example.invalid>' "$env_log"
 grep -q '^commit_tokens=||$' "$env_log"
+
+commit_home="$tmpdir/commit-home"
+mkdir -p "$commit_home/.code"
+printf 'CODEX_AUTOMATION_LOGIN=home-bot\nCODEX_AUTOMATION_EMAIL=home-bot@example.invalid\n' \
+	>"$commit_home/.code/local.env"
+: >"$env_log"
+env -u CODEX_AUTOMATION_LOGIN -u CODEX_AUTOMATION_EMAIL -u CODE_HOME -u CODEX_SKILLS_ENV_FILE \
+	PATH="$tmpdir:$PATH" HOME="$commit_home" CODEX_HOME="$empty_codex_home_dir" \
+	GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
+	GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/git-commit-as-bot" -m "home fallback" >/dev/null
+
+grep -q 'author=home-bot <home-bot@example.invalid>' "$env_log"
 
 : >"$env_log"
 if env -u CODEX_AUTOMATION_LOGIN -u CODEX_AUTOMATION_EMAIL \

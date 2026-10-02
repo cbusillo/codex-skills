@@ -1,7 +1,7 @@
-# Launchplane Operator Contract
+# Launchplane Admin Contract
 
 This reference defines the safety rules and execution patterns for the
-Launchplane Operator.
+Launchplane admin surface.
 
 ## Vendored Public Contract
 
@@ -25,18 +25,18 @@ contract-backed.
 
 ## Execution Rules
 
-- **Auth**: Prefer signed-in, scoped operator sessions for human-approved
-  product-config dry-run/apply and other UI-backed operator mutations. Source
-  terminal/local operator credentials only from explicit private config when the
+- **Auth**: Prefer signed-in, scoped admin sessions for human-approved
+  product-config dry-run/apply and other UI-backed admin mutations. Source
+  terminal/local admin credentials only from explicit private config when the
   workflow requires non-browser execution.
 - **Targeting**: Use the deployed Launchplane service API or CLI paths. Do not
   fall back to direct provider mutation.
 - **Runtime Authority**: Checked-in config, workflow defaults, checked-in
   examples, and archived workstation files are not authoritative for real
   product, tenant, repository, branch, domain, lane, provider-target,
-  runtime-environment, authz, operator, route, or health-check values. If a live
-  value is missing from Launchplane records or explicit scoped operator input,
-  fail closed and ask for the service/operator source instead of inferring it
+  runtime-environment, authz, admin identity, route, or health-check values. If a
+  live value is missing from Launchplane records or explicit scoped admin input,
+  fail closed and ask for the service/admin source instead of inferring it
   from repo-local files.
 - **Verification**: Always perform a `dry-run` and inspect redacted evidence
   before applying changes.
@@ -49,19 +49,19 @@ contract-backed.
   train operation. Phase-specific merge-train endpoints are troubleshooting and
   recovery surfaces, not the normal skill path.
 
-## Private Operator Config
+## Private Admin Config
 
-Terminal/operator execution is optional private configuration. It is not needed
+Terminal admin execution is optional private configuration. It is not needed
 for read-only Launchplane context and it is not the default path for ad hoc
 plaintext secret entry.
 
-Source order for non-browser operator execution:
+Source order for non-browser admin execution:
 
 1. Explicit command-line JSON config path supplied by the caller.
 2. Environment variables already present in the current process.
 3. An ignored Launchplane-local `.env` file at
    `~/.config/launchplane/local-operator.env`, containing only the documented
-   Launchplane operator environment keys.
+   Launchplane admin environment keys.
 4. An ignored Launchplane-local JSON config file at
    `~/.config/launchplane/local-operator.json`, using the fake shape in
    `references/launchplane-operator.local.example.json`.
@@ -69,32 +69,32 @@ Source order for non-browser operator execution:
 Environment variable names:
 
 - `LAUNCHPLANE_OPERATOR_URL`: Launchplane service base URL for write-capable
-  operator requests.
+  admin requests.
 - `LAUNCHPLANE_PUBLIC_URL`: Not a write-authority source. Diagnostics may
   report it as a possible near-miss when `LAUNCHPLANE_OPERATOR_URL` is absent,
   but write-capable helpers must use `--url`, `LAUNCHPLANE_OPERATOR_URL`, or a
   private JSON `service_url`.
-- `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN`: operator bearer token. Never print or
+- `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN`: admin bearer token. Never print or
   copy this value.
-- `LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT`: optional operator subject header value.
-- `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL`: optional operator token-label header
+- `LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT`: optional admin subject header value.
+- `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL`: optional admin token-label header
   value.
 
 The local config file stores environment variable names and a fake/public-safe
-service URL example only. Real token values stay in the operator's private
+service URL example only. Real token values stay in the admin's private
 environment or secret manager. Missing private config is a normal unavailable
 state for terminal execution; explicit write actions must fail closed instead of
 falling back to direct provider mutation or read-only context credentials.
 
 Run `scripts/launchplane-write-action.py operator-config-diagnostic` before
-declaring terminal operator access unavailable. The diagnostic reports only
+declaring terminal admin access unavailable. The diagnostic reports only
 source presence and redacted classification; it does not prove that the token is
 authorized for every action.
 
-Treat read-only Launchplane context and local operator readiness as separate
-checks. `launchplane-context.py` can be unavailable while terminal operator
+Treat read-only Launchplane context and local admin readiness as separate
+checks. `launchplane-context.py` can be unavailable while terminal admin
 execution is configured, and a write-action diagnostic can be incomplete even
-when the only missing piece is the local operator service URL. A
+when the only missing piece is the local admin service URL. A
 `missing_service_url` classification means token material was found but no
 write-capable Launchplane service URL source was found; configure
 `LAUNCHPLANE_OPERATOR_URL`, pass `--url`, or supply a private JSON `service_url`
@@ -102,7 +102,7 @@ before retrying. It is not evidence that a PR is unready, that merge-train
 admission failed, or that scheduler pickup is disabled.
 
 Do not use `.github/github.override.json` for secrets. That file is suitable for
-repo metadata overrides only, not Launchplane operator credentials.
+repo metadata overrides only, not Launchplane admin credentials.
 
 ## Request/Response Shapes
 
@@ -119,12 +119,12 @@ name managed secret binding keys as metadata, plus a runtime destination for
 runtime key-safety evaluation. It must not carry plaintext secret values.
 
 `POST /v1/product-config/apply` accepts plaintext secret values only from an
-approval-capable operator surface that already has a private value source. The
+approval-capable admin surface that already has a private value source. The
 terminal helper may submit that route only from a private local payload file and
 must never accept plaintext secret values as CLI arguments, stdin, chat, issue
 text, PR text, or committed examples. The payload file is explicit private
-operator input, not checked-in repo config or copied provider topology.
-Local-operator apply requires a prior matching dry-run and a stable idempotency
+admin input, not checked-in repo config or copied provider topology.
+Local admin apply requires a prior matching dry-run and a stable idempotency
 key.
 
 `POST /v1/work-graph/merge-train/controller/run-once` accepts repository,
@@ -147,14 +147,14 @@ reviewed.
 
 Local bearer-token denial is not the same as missing credentials. For new or
 higher-authority runtime records, including authz grants, private health
-endpoint records, provider targets, route records, and operator/workflow grants,
+endpoint records, provider targets, route records, and admin/workflow grants,
 first classify the result as a scope denial against an existing capability or a
 capability gap. A capability gap escalates to the owning Launchplane
 authorization-architecture issue; it is not resolved by finding another
 credential. GitHub workflows, Actions secrets, and OIDC roles are transport for
 capabilities Launchplane already granted, never authorization authority for a
 denied action. Use a Launchplane-owned reconciliation entrypoint only when it
-already exists, is sanctioned for that record type, is operator-initiated, and
+already exists, is sanctioned for that record type, is admin-initiated, and
 is run unmodified. Do not open-code denied routes, infer grants from checked-in
 examples, or author a workflow to carry a denied call.
 
@@ -165,8 +165,8 @@ examples, or author a workflow to carry a denied call.
 - Dry-run and apply both evaluate runtime key-safety policy before returning
   sanitized key/count evidence.
 - Agents may prepare request shapes and summarize redacted results, but a
-  signed-in/scoped operator supplies and approves plaintext runtime or managed
-  secret values through the operator path.
+  signed-in, scoped admin supplies and approves plaintext runtime or managed
+  secret values through the admin path.
 - Runtime key-safety failures are blockers, not warnings.
 - After product-config apply, run the sanctioned live-target-runtime sync/deploy
   path when the running target needs Launchplane-owned values applied.
