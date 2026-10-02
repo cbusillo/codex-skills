@@ -318,8 +318,12 @@ superseded PR body:
 ```sh
 <skill-dir>/scripts/gh-pr.py --repo OWNER/REPO supersede 70 \
   --by 71 \
-  --reason '[REPO#71](https://github.com/OWNER/REPO/pull/71) taxonomy and missing tests match the agreed scope.'
+  --reason 'Its taxonomy and missing tests match the agreed scope.'
 ```
+
+The helper's comment already names the canonical PR as
+`[repo#N](https://github.com/OWNER/repo/pull/N) title`, so `--reason` only says
+why that PR was selected.
 
 Use `--dry-run` first when validating the comment, closure, and body rewrite
 that would happen. Use `--keep-open` only when a PR should remain open for
