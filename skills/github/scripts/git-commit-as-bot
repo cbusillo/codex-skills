@@ -1,7 +1,10 @@
 #!/bin/sh
 set -eu
 
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 git_bin=${GIT_COMMIT_AS_BOT_GIT:-git}
+identity_helper=${GIT_COMMIT_AS_BOT_IDENTITY_HELPER:-$script_dir/github_identity.py}
+python_command=${GIT_COMMIT_AS_BOT_PYTHON:-}
 
 # Use the first local.env that exists under CODE_HOME, CODEX_HOME, then
 # ~/.code. An explicit CODEX_SKILLS_ENV_FILE always wins, even when missing, so
@@ -24,20 +27,53 @@ if [ -f "$env_file" ]; then
 		# credentials never reach git commit or its hooks.
 		# shellcheck disable=SC1090
 		. "$env_file" >/dev/null
-		printf '%s\n%s\n' \
+		printf '%s\n%s\n%s\n' \
 			"${GIT_COMMIT_AS_BOT_NAME:-${CODEX_AUTOMATION_LOGIN:-}}" \
-			"${GIT_COMMIT_AS_BOT_EMAIL:-${CODEX_AUTOMATION_EMAIL:-}}"
+			"${GIT_COMMIT_AS_BOT_EMAIL:-${CODEX_AUTOMATION_EMAIL:-}}" \
+			"${GITHUB_APP_ID:+app}"
 	)
 	bot_name=$(printf '%s\n' "$identity_values" | sed -n '1p')
 	bot_email=$(printf '%s\n' "$identity_values" | sed -n '2p')
+	app_configured=$(printf '%s\n' "$identity_values" | sed -n '3p')
 else
 	bot_name=${GIT_COMMIT_AS_BOT_NAME:-${CODEX_AUTOMATION_LOGIN:-}}
 	bot_email=${GIT_COMMIT_AS_BOT_EMAIL:-${CODEX_AUTOMATION_EMAIL:-}}
+	app_configured=${GITHUB_APP_ID:+app}
 fi
 
 if [ "$#" -eq 0 ]; then
 	echo "usage: git-commit-as-bot <git commit args...>" >&2
 	exit 2
+fi
+
+# In a repository the automation's account does not own and the GitHub App is
+# not installed on, a contributor's agent works as the person: the commit keeps
+# their own git identity, as git-push-as-bot and gh-with-env-token do for the
+# push and the pull request.
+origin_repository() {
+	origin_url=$("$git_bin" remote get-url origin 2>/dev/null) || return 1
+	case "$origin_url" in
+	git@github.com:*) repo=${origin_url#git@github.com:} ;;
+	ssh://git@github.com/*) repo=${origin_url#ssh://git@github.com/} ;;
+	https://github.com/*) repo=${origin_url#https://github.com/} ;;
+	https://*@github.com/*) repo=${origin_url#https://*@github.com/} ;;
+	*) return 1 ;;
+	esac
+	printf '%s\n' "${repo%.git}"
+}
+
+if [ -n "$app_configured" ] && repo=$(origin_repository); then
+	identity_status=0
+	if [ -n "$python_command" ]; then
+		$python_command "$identity_helper" app-auth --repo "$repo" --require-installation >/dev/null 2>&1 || identity_status=$?
+	elif command -v uv >/dev/null 2>&1; then
+		uv run --no-project --no-config --python 3.12 "$identity_helper" app-auth --repo "$repo" --require-installation >/dev/null 2>&1 || identity_status=$?
+	fi
+	# github_identity.CONTRIBUTOR_EXIT_STATUS
+	if [ "$identity_status" -eq 3 ]; then
+		echo "notice: acting as your own GitHub user on $repo; committing with your git identity" >&2
+		exec env -u CODEX_GITHUB_TOKEN -u GH_TOKEN -u GITHUB_TOKEN "$git_bin" commit "$@"
+	fi
 fi
 
 if [ -z "$bot_name" ] || [ -z "$bot_email" ]; then

@@ -430,6 +430,10 @@ fi
 # A user token must belong to the configured automation login.
 cat >"$tmpdir/login-gh" <<'EOF'
 #!/usr/bin/env bash
+if [[ "$*" == "auth token" && -z "${GH_TOKEN:-}" ]]; then
+	echo human-token
+	exit 0
+fi
 [[ "$*" == "api user --jq .login" ]] || exit 2
 case "${GH_TOKEN:-}" in
 codex-token) echo fixture-automation ;;
@@ -457,6 +461,8 @@ import os
 import sys
 
 assert sys.argv[1:] == ["app-auth", "--repo", "owner/repo", "--require-installation"], sys.argv
+if os.environ.get("FAKE_APP_CONTRIBUTOR"):
+    raise SystemExit(3)  # github_identity.CONTRIBUTOR_EXIT_STATUS
 if os.environ.get("FAKE_APP_IDENTITY_FAIL"):
     print("error: GitHub App authentication failed before gh invocation: fixture", file=sys.stderr)
     raise SystemExit(1)
@@ -477,6 +483,43 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" \
 grep -q '^askpass=.* prompt=0 token=app-installation-token$' "$env_log"
 grep -q '^push_env=||||$' "$env_log"
 grep -q '^remote=git@github.com:owner/repo.git$' "$env_log"
+
+# In another owner's repository without the App, the person pushes and
+# commits as their own GitHub user, and says so.
+: >"$env_log"
+PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" \
+	CODEX_AUTOMATION_LOGIN='Fixture-App[bot]' FAKE_APP_CONTRIBUTOR=1 \
+	GIT_PUSH_AS_BOT_IDENTITY_HELPER="$tmpdir/fake-app-identity.py" \
+	GIT_PUSH_AS_BOT_GH="$tmpdir/login-gh" \
+	GIT_PUSH_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
+	GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/git-push-as-bot" -u origin branch >/dev/null 2>"$stderr_log"
+
+grep -q '^askpass=.* prompt=0 token=human-token$' "$env_log"
+grep -q '^push_env=||||$' "$env_log"
+grep -q "acting as your own GitHub user on owner/repo; pushing as 'human-user'" "$stderr_log"
+
+: >"$env_log"
+PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" \
+	CODEX_AUTOMATION_LOGIN=fixture-automation CODEX_AUTOMATION_EMAIL=fixture-automation@example.invalid \
+	FAKE_APP_CONTRIBUTOR=1 GIT_COMMIT_AS_BOT_IDENTITY_HELPER="$tmpdir/fake-app-identity.py" \
+	GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
+	GH_ISSUE_ENV_LOG="$env_log" CODEX_GITHUB_TOKEN=must-not-reach-hook \
+	"$repo_root/github/scripts/git-commit-as-bot" -m "person commit" >/dev/null 2>"$stderr_log"
+
+grep -q '^author= <> committer= <>$' "$env_log"
+grep -q '^commit_tokens=||$' "$env_log"
+grep -q 'acting as your own GitHub user on owner/repo; committing with your git identity' "$stderr_log"
+
+: >"$env_log"
+PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" \
+	CODEX_AUTOMATION_LOGIN=fixture-automation CODEX_AUTOMATION_EMAIL=fixture-automation@example.invalid \
+	GIT_COMMIT_AS_BOT_IDENTITY_HELPER="$tmpdir/fake-app-identity.py" \
+	GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
+	GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/git-commit-as-bot" -m "app commit" >/dev/null
+
+grep -q 'author=fixture-automation <fixture-automation@example.invalid>' "$env_log"
 
 refused_push_args=(-u origin branch)
 assert_push_refused() {
@@ -502,6 +545,8 @@ assert_push_refused "push would run as 'fixture-app\[bot\]', expected 'other-bot
 	CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" CODEX_AUTOMATION_LOGIN=other-bot
 assert_push_refused 'GitHub App authentication failed' \
 	CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" FAKE_APP_IDENTITY_FAIL=1
+assert_push_refused 'refusing to push as your own GitHub user' \
+	CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" FAKE_APP_CONTRIBUTOR=1 GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1
 assert_push_refused 'invalid response' \
 	CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" FAKE_APP_LOGIN=
 assert_push_refused "push would run as 'human-user', expected 'fixture-automation'" \

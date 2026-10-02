@@ -779,8 +779,22 @@ substitution inside backticks.
 
 GitHub writes belong to the configured automation account. The helpers select
 its credentials and fail closed, without changing actor, when bot auth is
-unavailable, rejected, or rate-limited. Never fall back to the active human
-`gh` account unless the user explicitly approves that one-off; then set
+unavailable, rejected, or rate-limited. Which identity writes where:
+
+- **Where the App is installed**: the App, in any account's repository.
+- **The automation's own accounts without an installation** (the account that
+  registered the App and every account it is installed on): refused; the
+  Director installs the App there.
+- **Another account's repository without an installation**: you, as your own
+  GitHub user. A Director's agent contributing to someone else's repository
+  comments, commits, pushes, and opens PRs as the active `gh` login, and the
+  helpers print `acting as your own GitHub user`. Commits keep your git
+  identity, and `gh-pr.py create` adds the AI-assistance sentence to the body
+  unless it already says so. `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1`
+  refuses instead.
+
+Otherwise never fall back to the active human `gh` account unless the user
+explicitly approves that one-off; then set
 `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` for that command only. For
 credential sources, automation-only mode, or identity configuration, read
 [Authentication And Identity](references/cli-reference.md#authentication-and-identity).
