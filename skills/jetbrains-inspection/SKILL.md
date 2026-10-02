@@ -233,8 +233,9 @@ Command model:
   lifecycle lock; unresolved identity or close failures return nonzero.
 - `remove-worktree --repo /exact/task/path`: after the repository cleanup
   checks establish disposition, dry-run SDK retirement through every discovered
-  live IDE. With `--no-dry-run`, unregister only SDKs proved helper-owned, then
-  remove the clean, unlocked linked worktree with non-force Git removal. Close
+  live IDE. With `--no-dry-run`, unregister only SDKs proved helper-owned,
+  sending the apply only to IDEs whose preview lists one (`sdk_apply_skipped`
+  names the rest), recheck every IDE, then remove the clean, unlocked linked worktree with non-force Git removal. Close
   its IDE project and reconcile its leases first. Primary checkouts, locked apply attempts,
   dirty worktrees, missing plugin support, session drift and unsafe SDK cleanup
   retain the worktree. Unrecorded SDKs remain registered and are reported as
