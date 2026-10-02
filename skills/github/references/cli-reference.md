@@ -367,6 +367,12 @@ competing evidence. Age never expires a claim. Do not bypass a refusal by
 changing the worker, tool, or identity; ask the Director about ambiguous ownership
 and continue independent work.
 
+An issue URL on a PR body line starting exactly `Code follow-ups recorded
+without starting implementation:` is context-only. Title or branch ownership,
+implementation references (`Refs`, `Fixes`, `Closes`, `Resolves`, including full
+issue URLs), and links elsewhere in the body still cause refusal. Unmarked or
+wrapped follow-up links remain uncertain ownership evidence.
+
 Use the actual native session ID, not a made-up label. On Claude Code, use
 session metadata or `claude agents --json` to identify this session by its
 directory, name, and process; if ambiguous, resolve that identity before claim.
