@@ -3597,6 +3597,12 @@ def test_target_replacement_plan_read_marks_missing_key_lists_as_unreported() ->
     assert status == 0
     plan = payload["result"]
     assert plan["delivered_runtime_keys"] is None
+    result["delivered_runtime_keys"] = None
+    _status, payload, _calls = _run_plan_read(PLAN_READ_ARGV, response)
+    assert payload["result"]["delivered_runtime_keys"] is None
+    result["delivered_runtime_keys"] = []
+    _status, payload, _calls = _run_plan_read(PLAN_READ_ARGV, response)
+    assert payload["result"]["delivered_runtime_keys"] == []
     assert plan["retired_provider_keys"] == ["EXAMPLE_RETIRED"]
     assert (plan["blocker_codes"], plan["blocker_keys"], plan["blocker_count"]) == ([], {}, 0)
 

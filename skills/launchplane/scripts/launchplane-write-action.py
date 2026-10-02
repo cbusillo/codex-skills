@@ -3077,7 +3077,7 @@ def _project_env_key_names(value: object, *, path: str, drops: _FieldDrops) -> l
         drops.keep(f"{path}[]", _public_env_key, item)
         for item in value[:TARGET_REPLACEMENT_PLAN_MAX_LIST_ITEMS]
     ]
-    return [str(name) for name in names if name]
+    return [name for name in names if isinstance(name, str) and name]
 
 
 def _project_target_replacement_current_target(
@@ -3130,6 +3130,8 @@ def _project_target_replacement_steps(value: object, drops: _FieldDrops) -> list
     if not isinstance(value, list):
         drops.drop("plan.steps")
         return []
+    if len(value) > TARGET_REPLACEMENT_PLAN_MAX_LIST_ITEMS:
+        drops.drop("plan.steps[]")
     steps: list[dict[str, object]] = []
     for step in value[:TARGET_REPLACEMENT_PLAN_MAX_LIST_ITEMS]:
         if not isinstance(step, dict):
@@ -3173,12 +3175,16 @@ def _project_target_replacement_plan(plan_value: object) -> dict[str, object]:
     for name in TARGET_REPLACEMENT_PLAN_KEY_LISTS:
         # None when the service does not report the list, as distinct from an empty one.
         projected[name] = (
-            _project_env_key_names(plan.get(name), path=f"plan.{name}", drops=drops) if name in plan else None
+            None
+            if plan.get(name) is None
+            else _project_env_key_names(plan.get(name), path=f"plan.{name}", drops=drops)
         )
     codes = plan.get("blocker_codes")
     if codes is not None and not isinstance(codes, list):
         drops.drop("plan.blocker_codes")
         codes = None
+    if codes is not None and len(codes) > TARGET_REPLACEMENT_PLAN_MAX_LIST_ITEMS:
+        drops.drop("plan.blocker_codes[]")
     kept_codes = [
         drops.keep("plan.blocker_codes[]", _public_dotted_code, item)
         for item in (codes or [])[:TARGET_REPLACEMENT_PLAN_MAX_LIST_ITEMS]
