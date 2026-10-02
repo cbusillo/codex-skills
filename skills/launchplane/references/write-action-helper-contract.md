@@ -14,7 +14,8 @@ helper bindings without network access. This is local consistency evidence, not
 proof of upstream freshness.
 
 Merge-train policy import, repository inventory, product expected configuration,
-generic-web deploy recovery, and Odoo addon settings are intentionally listed as bounded local extensions because their
+generic-web deploy recovery, Odoo addon settings, and the lane-setup and
+promotion commands below are intentionally listed as bounded local extensions because their
 routes are not in the current vendored projection. The conformance gate fails
 if those routes later appear upstream so migration cannot leave duplicate route
 authorities behind.
@@ -192,6 +193,142 @@ vendored artifact is refreshed.
   `--dry-run-evidence-file` for the same product, and `--idempotency-key`.
 - Output shows the repository, identity before and after (decimal ids only), the
   inventory record, revision and digest, and read-back.
+
+## Setting up a lane for promotion
+
+These commands record what a product needs before Launchplane can promote it
+from a testing lane: its Client, the lane's provider target and lane record, and
+the production backup policy. Their routes are local extensions until the
+vendored artifact is refreshed. Every apply follows the same safeguards:
+
+- Save the dry-run output. Apply requires `--reviewed-dry-run`,
+  `--expected-plan-digest`, `--dry-run-evidence-file` and `--idempotency-key`.
+  A payload file must be the same file the dry-run reviewed, outside the
+  repository.
+- Apply compares Launchplane's applied result and a fresh read-back with the
+  review. It exits 0 only when both match. `accepted_unverified` (exit 1)
+  means Launchplane may have written; read the record back and do not retry
+  until it explains the result. `outcome_unknown` means the exchange failed
+  after the POST began.
+
+Where Launchplane does not bind an apply to a dry-run, the helper hashes what
+the reviewer saw into `plan_sha256` and checks the record again before the
+POST. That check is not server-enforced compare-and-swap.
+
+Order for a new lane on an existing product: record the Client, create the
+provider target, add the lane record with the stable-lane repair workflow, set
+the lane's secrets with `product-config-dry-run` and `-apply`, then write the
+backup policy for production.
+
+### Client
+
+`product-owner-dry-run` and `product-owner-apply` call
+`POST /v1/product-profiles/{product}/owner`. Launchplane resolves the GitHub
+login to a user account and its immutable id, and authorizes the change as
+`product_profile.write`.
+
+- Both take `--product`, `--github-login LOGIN` or `--clear`, and `--reason`.
+  Nothing in the request is secret, so there is no payload file.
+- Output shows the operation (`set`, `clear` or `unchanged`), the Client before
+  and after (login and numeric id), and `plan_sha256` over product, operation,
+  before, after and reason.
+- Apply reads the product profile first and stops with `stale` when the
+  Client changed since the review. An `unchanged` plan has nothing to apply and
+  is refused. After the POST it reads the profile back.
+
+### Provider target
+
+`dokploy-target-create-compose-dry-run` and
+`dokploy-target-create-compose-apply` call `POST /v1/dokploy-targets/setup`
+with `operation: "create-compose"`. Launchplane creates the Dokploy compose,
+and the environment and project when the payload does not name existing ones,
+then records the target and its provider-target row. It refuses a lane that
+already has a provider target. The route authorizes `dokploy_target.plan` or
+`dokploy_target.setup` on Launchplane's own service product; a denial is an
+authorization result, not a reason to use another path.
+
+- The private payload file holds `context`, `instance`, `target_name`,
+  `server_id`, `reason`, `healthcheck_path` (starting `/`), a non-empty
+  `domains` list, and `project_id`, `project_name` or `environment_id`.
+  Optional: `schema_version`, `project_description`, `environment_name`,
+  `environment_description`, `app_name`, `description`, `source_git_ref`,
+  `source_type`, `compose_path`, `runtime_port` and `deploy_timeout_seconds`.
+  Any other field is refused before a request is sent. The helper adds the
+  operation, the service product and, on apply only, Launchplane's typed
+  confirmation.
+- Use the context of the product's existing lanes; stable-lane repair adds a
+  lane only to an existing context.
+- Output shows the plan actions for project, environment and compose, the
+  health-check path, domain and route counts, the provider kind, and
+  `plan_sha256` over the payload digest and plan actions. Provider ids, server
+  ids, project and environment names, domains, git URLs, env-key names and
+  provider requests are dropped.
+- Apply reads the target back through `GET /v1/dokploy-targets/inspect`
+  (`dokploy_target.inspect`) and checks that the provider-target record is
+  present and that every record names the created compose. The ids are compared,
+  never printed.
+
+### Lane record
+
+Adding a lane to an existing product is the contract-backed
+`apply_product_stable_lane_repair` operation. Its only supported surface for
+agents is the protected `Product Onboarding Manifest (Advanced)` workflow in
+`cbusillo/launchplane` with `operation: stable-lane-repair`: dry-run first,
+then apply with the dry-run's `reviewed_plan_sha256`. Dispatch and watch it
+through the `github` skill and `github_workflow_babysit.py`; this helper has no
+command for it. It needs the provider target first, with the lane's domain.
+
+### Production backup authority
+
+`production-backup-authority-read`, `production-backup-authority-dry-run` and
+`production-backup-authority-apply` call `GET /v1/production-backup-authority`
+and `POST /v1/production-backup-authority/apply`. They are authorized as
+`production_backup_authority.read` and `.write` on the policy's instance.
+
+- `production-backup-authority-read --product --context --instance
+  --promotion-action` returns the authority's state (`ready`, `missing`,
+  `invalid`, `stale` or `retired`), reason codes, and the policy and target
+  summaries with their record ids. Use those ids as
+  `expected_current_policy_record_id` and `expected_current_target_record_ids`
+  for the next revision.
+- The private payload file holds `policy`, `targets`,
+  `expected_current_policy_record_id`, `expected_current_target_record_ids`
+  and optional `schema_version`. The policy names `product`, `context`,
+  `instance` and `promotion_action`; a generic-web promotion's backup gate uses
+  `generic_web_prod_promotion.execute`. Leave record ids and digests blank:
+  Launchplane computes them. The helper sets `mode` and, on apply,
+  `reviewed_authority_digest`; a payload that carries either is refused.
+- Launchplane binds the apply to the dry-run's `authority_digest`; pass it as
+  `--expected-plan-digest`. The helper also refuses an apply whose payload
+  differs from the reviewed one, or whose dry-run had nothing to apply.
+- Target destinations carry the Proxmox host, account, guest id or storage
+  name. They go to Launchplane only; output never shows them.
+- After apply the helper reads the authority back and checks the policy and
+  target record ids.
+
+### Product promotion status and dry-run
+
+`product-promotion-status-read --product` calls
+`GET /v1/products/{product}/environments/prod/promotion-status`. It shows
+whether a testing-to-prod promotion could run: the lanes' deploy, health,
+runtime-identity and trust states, whether release review is required and
+approved, the number of release blockers, each operation's availability and
+disabled reasons, and the `evidence_fingerprint`. Artifact ids, commits, the
+release checklist and decision, the repository and workflow, and the live
+confirmation strings are dropped.
+
+`product-promotion-dry-run --product --evidence-fingerprint --reason
+[--bump patch|minor|major] --idempotency-key` calls
+`POST /v1/products/{product}/environments/prod/promotion/dry-run`
+(`generic_web_prod_promotion.execute`). Launchplane checks the current evidence
+against the fingerprint, creates no backup, deploys nothing, and records the
+accepted dry-run for this identity, fingerprint and bump. Output keeps the
+per-step statuses and drops artifacts, record ids, target names and error text.
+
+No helper command sends a live promotion. Launchplane's driver route refuses a
+live promotion from an admin's or agent's token, and its workflow-dispatch route
+starts a product-owned workflow that calls Launchplane under a workflow
+identity, which Launchplane's `DIRECTION.md` retires.
 
 ## Product expected configuration
 
