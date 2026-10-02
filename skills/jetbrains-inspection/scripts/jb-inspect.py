@@ -30,7 +30,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10679,43 +10679,82 @@ FINDER_METADATA_NAME = ".DS_Store"
 FINDER_RACE_ATTEMPTS = 3
 
 
-def worktree_entries(root: Path) -> dict[str, int]:
-    """Map every entry below root to its inode without following symlinks."""
-    entries: dict[str, int] = {}
+def entry_signature(status: os.stat_result, is_directory: bool) -> tuple[int, ...]:
+    # Deleting children changes a folder's mtime, so folders are matched by inode alone.
+    return (status.st_ino,) if is_directory else (status.st_ino, status.st_size, status.st_mtime_ns)
+
+
+def worktree_entries(root: Path) -> dict[str, tuple[int, ...]]:
+    """Map every entry below root to its identity and content signature without following symlinks."""
+    entries: dict[str, tuple[int, ...]] = {}
     pending = [root]
     while pending:
         directory = pending.pop()
         with os.scandir(directory) as listing:
             for entry in listing:
                 path = Path(entry.path)
-                entries[str(path.relative_to(root))] = entry.inode()
-                if entry.is_dir(follow_symlinks=False):
+                is_directory = entry.is_dir(follow_symlinks=False)
+                entries[str(path.relative_to(root))] = entry_signature(entry.stat(follow_symlinks=False), is_directory)
+                if is_directory:
                     pending.append(path)
     return entries
 
 
-def finish_raced_worktree_removal(common: Path, root: Path, before: dict[str, int], git_error: str) -> None:
+def delete_verified_entries(root: Path, directory: Path, before: dict[str, tuple[int, ...]], unexpected: list[str],
+                            delete: bool = True) -> None:
+    """Delete entries unchanged since the snapshot, and Finder metadata, unless only checking; collect every other entry."""
+    try:
+        with os.scandir(directory) as listing:
+            entries = list(listing)
+    except FileNotFoundError:
+        return
+    for entry in entries:
+        path = Path(entry.path)
+        relative = str(path.relative_to(root))
+        try:
+            # Check each entry immediately before deleting it so a file written mid-pass is kept.
+            is_directory = entry.is_dir(follow_symlinks=False)
+            status = os.lstat(path)
+            if (not is_directory and entry.name == FINDER_METADATA_NAME) or before.get(relative) == entry_signature(status, is_directory):
+                if is_directory:
+                    delete_verified_entries(root, path, before, unexpected, delete)
+                    if not delete:
+                        continue
+                    with suppress(OSError):
+                        # Finder may have refilled it; the next attempt retries.
+                        os.rmdir(path)
+                elif delete:
+                    os.unlink(path)
+            else:
+                unexpected.append(relative)
+        except FileNotFoundError:
+            continue
+
+
+def finish_raced_worktree_removal(common: Path, root: Path, before: dict[str, tuple[int, ...]], git_error: str) -> None:
     """Finish a removal Git unregistered but could not empty, keeping anything it did not verify."""
     # Git deletes the checkout before its registration, so a registered path was refused rather than raced.
     listed = subprocess.run(["git", "-C", str(common), "worktree", "list", "--porcelain"],
                             capture_output=True, text=True, check=True).stdout.splitlines()
     if any(line.startswith("worktree ") and paths_same(line.removeprefix("worktree "), root) for line in listed):
         raise InspectError("Git worktree removal failed; SDK cleanup may already have completed.", 3, {"git_error": git_error})
-    # Finder writes .DS_Store into folders while they are deleted; every other leftover must predate removal.
+    # Finder writes .DS_Store into folders while they are deleted; every other leftover must be unchanged since the snapshot.
     for _ in range(FINDER_RACE_ATTEMPTS):
         if not root.exists() and not root.is_symlink():
             return
         if root.is_symlink() or not root.is_dir():
             break
-        unexpected = sorted(relative for relative, inode in worktree_entries(root).items()
-                            if Path(relative).name != FINDER_METADATA_NAME and before.get(relative) != inode)
+        unexpected: list[str] = []
+        # Check the whole tree first so a hold keeps every leftover, then recheck each entry as it is deleted.
+        delete_verified_entries(root, root, before, unexpected, delete=False)
+        if not unexpected:
+            delete_verified_entries(root, root, before, unexpected)
         if unexpected:
+            unexpected.sort()
             raise InspectError("Worktree removal left files that were not in the verified checkout; they are kept.", 3,
                                {"git_error": git_error, "retained_entry_count": len(unexpected), "retained_entries": unexpected[:50]})
-        try:
-            shutil.rmtree(root)
-        except OSError:
-            continue
+        with suppress(OSError):
+            os.rmdir(root)
     if root.exists() or root.is_symlink():
         raise InspectError("Git unregistered the worktree but its directory could not be emptied; inspect what remains.", 3,
                            {"git_error": git_error})

@@ -228,7 +228,7 @@ class SdkRetirementTests(unittest.TestCase):
             self.assertEqual(result["sdk_cleanup"], [])
             self.assertFalse(root.exists())
 
-    def remove_racing_finder(self, root: Path, kept: list[str], written: list[str], unregister: bool = True):
+    def remove_racing_finder(self, root: Path, kept: list[str], written: list[str], unregister: bool = True, edited: tuple[str, ...] = ()):
         """Run remove-worktree while Git stops partway, as it does when Finder refills a folder (#844)."""
         primary = root.parent / "primary"
         subprocess.run(["git", "init", "-q", str(primary)], check=True)
@@ -255,6 +255,9 @@ class SdkRetirementTests(unittest.TestCase):
                         path.unlink()
                 for relative in written:
                     (root / relative).write_text("written during removal\n")
+                for relative in edited:
+                    with (root / relative).open("a") as handle:
+                        handle.write("edited during removal\n")
             return subprocess.CompletedProcess(command, 128, "", f"error: failed to delete '{root}': Directory not empty\n")
         def post(_port, _endpoint, params, **_kwargs):
             response = self.response(root, True)
@@ -287,6 +290,29 @@ class SdkRetirementTests(unittest.TestCase):
             self.assertEqual(caught.exception.payload["retained_entries"], ["pkg/notes.txt"])
             self.assertEqual((root / "pkg" / "notes.txt").read_text(), "written during removal\n")
             self.assertTrue((root / "pkg" / "module.py").exists())
+
+    def test_removal_keeps_a_verified_file_edited_in_place_during_removal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "task"
+            with self.assertRaisesRegex(jb_inspect.InspectError, "not in the verified checkout") as caught:
+                self.remove_racing_finder(root, ["pkg/module.py"], ["pkg/.DS_Store"], edited=("pkg/module.py",))
+            self.assertEqual(caught.exception.payload["retained_entries"], ["pkg/module.py"])
+            self.assertIn("edited during removal", (root / "pkg" / "module.py").read_text())
+
+    def test_removal_keeps_a_file_written_while_leftovers_are_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "task"
+            real_unlink = os.unlink
+            def unlink(path, *args, **kwargs):
+                real_unlink(path, *args, **kwargs)
+                late = root / "pkg" / "late.txt"
+                if not late.exists():
+                    late.write_text("written after the leftovers were listed\n")
+            with patch.object(jb_inspect.os, "unlink", side_effect=unlink):
+                with self.assertRaisesRegex(jb_inspect.InspectError, "not in the verified checkout") as caught:
+                    self.remove_racing_finder(root, ["pkg/module.py"], ["pkg/.DS_Store"])
+            self.assertEqual(caught.exception.payload["retained_entries"], ["pkg/late.txt"])
+            self.assertTrue((root / "pkg" / "late.txt").exists())
 
     def test_refused_removal_that_keeps_the_registration_touches_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
