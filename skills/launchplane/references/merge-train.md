@@ -49,8 +49,14 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   land the original PRs through GitHub's PR merge API in train order, and post
   managed feedback to each PR. Treat this as the normal rollout path, not an
   experimental one-off.
-- **Stacked PRs**: For a same-repo linear stack, label only the root PR that
-  targets the protected base branch. Let Launchplane collapse child branches
+- **Stacked PRs**: For a same-repo linear stack, label the root PR that
+  targets the protected base branch and every child, since collapsing merges
+  each child into the root. Launchplane collapses a child only when it is
+  itself ready to land: open, not a draft, labeled, and from an allowed author.
+  Otherwise the controller reports `stack_unsupported` with a
+  `blocking_reason` naming the child. To land the root while a child stays
+  held, retarget the held child to the protected base branch; never ready or
+  label a held child just to unblock its parent. Let Launchplane collapse child branches
   into that root, wait for the root head SHA to satisfy checks, admit only the
   root to the flat train, and resolve child PRs after the root lands according
   to policy. Treat forked, ambiguous, sibling, cyclic, stale-head, or
