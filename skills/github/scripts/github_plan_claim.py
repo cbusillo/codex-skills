@@ -205,8 +205,22 @@ def artifact_evidence(
         branch = (pull.get("head") or {}).get("ref", "")
         title = pull.get("title") or ""
         body = pull.get("body") or ""
-        explicit_url = bool(repo and re.search(rf"https://github\.com/{re.escape(repo)}/issues/{number}(?!\d)", title + "\n" + body))
-        linked = bool(re.search(rf"(?i)\b(?:refs?|fix(?:es|ed)?|clos(?:e|es|ed)|resolv(?:e|es|ed))\s+(?:#{number}|{re.escape(repo)}#{number})(?!\d)", body))
+        issue_url = rf"https://github\.com/{re.escape(repo)}/issues/{number}"
+        # Only the explicitly unstarted follow-up line is contextual.
+        # Other URLs, titles, branches and implementation references still hold.
+        issue_reference = rf"(?:#{number}|{re.escape(repo)}#{number}|{issue_url})(?!\d)"
+        ownership_reference = (
+            rf"(?i)(?<![\w])(?:__)?(?:refs?|fix(?:es|ed)?|clos(?:e|es|ed)|resolv(?:e|es|ed)|implement(?:s|ed|ing)?)"
+            rf"(?:\*\*|__)?\s*:?(?:\*\*|__)?\s+(?:{issue_reference}|<{issue_url}(?!\d)[^>]*>|"
+            rf"\[[^\]\n]+\]\({issue_url}(?!\d)[^\n)]*\))"
+        )
+        ownership_body = "\n".join(
+            line for line in body.splitlines()
+            if not (line.startswith("Code follow-ups recorded without starting implementation:")
+                    and not re.search(ownership_reference, line))
+        )
+        explicit_url = bool(repo and re.search(issue_url + r"(?!\d)", title + "\n" + ownership_body))
+        linked = bool(re.search(ownership_reference, body))
         titled = bool(re.search(rf"(?<![\w/])#{number}(?!\d)", title))
         if explicit_url or linked or titled or references_issue(branch, number):
             if not permitted(branch):
