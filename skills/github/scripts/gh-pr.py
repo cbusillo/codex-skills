@@ -736,7 +736,7 @@ def cmd_supersede(args: argparse.Namespace) -> dict[str, Any]:
     if not args.no_neutralize:
         updated_body, replacements = neutralize_issue_closing_keywords(original_body)
 
-    winner_ref = pr_reference(repo, winner_repo, winner_number, winner.get("html_url"))
+    winner_ref = pr_reference(repo, winner_repo, winner_number, winner)
     comment_body = superseded_comment_body(
         winner_ref=winner_ref,
         reason=args.reason,
@@ -882,10 +882,13 @@ def neutralize_issue_closing_keywords(body: str) -> tuple[str, list[dict[str, st
     return CLOSING_REFERENCE_RE.sub(replace, body), replacements
 
 
-def pr_reference(current_repo: str, winner_repo: str, winner_number: int, winner_url: Optional[str]) -> str:
-    if current_repo == winner_repo:
-        return f"#{winner_number}"
-    return winner_url or f"{winner_repo}#{winner_number}"
+def pr_reference(current_repo: str, winner_repo: str, winner_number: int, winner: dict[str, Any]) -> str:
+    """Format the owner-facing `[repo#N](URL) title` reference to the winning PR."""
+    owner, name = winner_repo.split("/", 1)
+    label = f"{name}#{winner_number}" if owner == current_repo.split("/", 1)[0] else f"{winner_repo}#{winner_number}"
+    url = winner.get("html_url") or f"https://github.com/{winner_repo}/pull/{winner_number}"
+    title = " ".join(str(winner.get("title") or "").split())
+    return f"[{label}]({url}) {title}".rstrip()
 
 
 def superseded_comment_body(*, winner_ref: str, reason: Optional[str], body_neutralized: bool, keep_open: bool) -> str:
