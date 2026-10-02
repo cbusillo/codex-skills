@@ -131,10 +131,10 @@ and other views display that record; use local plans only for an explicitly
 requested offline/private workflow.
 
 Apply [task scope and authorization](../references/execution-scope.md) and
-[talking with the owner](../references/talking-with-the-owner.md). Follow the
+[talking with the Director](../references/talking-with-the-director.md). Follow the
 [executing loop](../references/executing-loop.md) for `next` and `go`.
 Use `github` for PRs, Actions, and landing; use `direction` for changes to
-`DIRECTION.md` or the owner's waypoints.
+`DIRECTION.md` or the Director's waypoints.
 
 Run the maintained planning helper from the client repository, using this
 skill's base directory for the path:
@@ -153,7 +153,7 @@ identities.
 
 ## Choose Work
 
-Check known repository-wide owner holds before selection or implementation;
+Check known repository-wide Director holds before selection or implementation;
 active issue labels and continuing background jobs do not lift a hold.
 
 1. Run `gh-plan.py next`. Respect native `blocked-by` relationships and the
@@ -168,13 +168,13 @@ active issue labels and continuing background jobs do not lift a hold.
    available independent item; report work owned by another active worker as
    underway. A label, assignee, old PR, or old worktree alone does not prove
    active ownership; a partial session inventory does not prove availability.
-   When a session tool can message the apparent owner, ask it directly rather
-   than asking the owner to relay.
+   When a session tool can message the apparent owning session, ask it directly
+   rather than asking the Director to relay.
 4. Reuse preserved work only for this session's continuation or a verified
    handoff from a finished session, under the repository's worktree rules.
    Do not start duplicate implementation or take over another worker's worktree.
    If ownership remains uncertain, ask whether to resume the item or leave it
-   with its recorded owner, with a recommendation; keep this decision visible
+   with its recorded holder, with a recommendation; keep this decision visible
    while recommending independent work.
 5. For `next`, report the selected issue, why it fits the plan, and recorded
    waits, then stop without changing planning state. On authorized `go`, run
@@ -183,7 +183,7 @@ active issue labels and continuing background jobs do not lift a hold.
    branch or worktree, using exactly the branch the worktree helper will create
    (`work/<task-slug>` for `dev-worktree`). Read [Planning: Claim](../github/references/cli-reference.md#planning-claim)
    for refusal, partial recovery, or release. Continue only on confirmed success;
-   preserve competing or uncertain ownership for the owner to decide. Keep
+   preserve competing or uncertain ownership for the Director to decide. Keep
    Current Status current through handoff or completion.
 
 Also report each `blocking_work_elsewhere` pair from `gh-plan.py next`, naming
@@ -201,18 +201,20 @@ list does not establish milestone completion. Ownership checks and status
 records do not provide an exclusive lock.
 
 In an `<owner>/direction` repository, `next` follows `Track:` issues and also
-discovers open issues in the configured actor's accessible owner repositories;
+discovers open issues in the repository owner's repositories that the
+configured actor can access;
 `gh-plan.py --repo <owner>/direction next` selects the same scope elsewhere.
 Read the [global selection procedure](references/global-next.md) for this mode.
 Graph coverage, repository discovery, and active ownership are separate evidence.
-Apply repository-wide owner holds before considering any issue there, even
+Apply repository-wide Director holds before considering any issue there, even
 when labels say active or background work continues. Read full discussions and
 current ownership evidence before recommending discovered work. Raw candidates
 are possible work; `available_candidates` requires current caller review.
 Live breakage comes first, then eligible milestone work; unrelated tooling needs
 two linked repeated stops. Keep the own-project share available when business
 tracks wait. Weekly capacity is audit context, not a per-call quota. Discovery
-grants no cross-owner write, merge, deployment, or direction-adoption authority.
+grants no write, merge, deployment, or direction-adoption authority under
+another repository owner.
 For graph paths, scope, or incomplete coverage, read
 [Planning: Next Work](../github/references/cli-reference.md#planning-next-work).
 
@@ -226,7 +228,7 @@ attention is needed now; assignees name the person with a concrete next action.
 
 Search with `index` or `search` before creating or proposing an issue, helper,
 or tooling; reuse an overlapping canonical issue. Search open and closed issues
-across the owner's repositories, not only this one:
+across the repository owner's repositories, not only this one:
 `gh-plan.py search "<terms> user:<owner>" --state all`. Say what you found or
 what you searched. Read its full discussion before changing scope. Use the configured
 planning label, normally `plan`, and existing label conventions; ask before
@@ -262,7 +264,7 @@ in Relationships, not the current blocker list.
 
 Use a parent issue plus independently finishable sub-issues when any two apply:
 
-- the work touches three or more modules, repositories, systems, or owners
+- the work touches three or more modules, repositories, systems, or owning teams
 - it has independent sequencing, blockers, or parallel tracks
 - it includes research, implementation, validation, and policy/design decisions
 - parts can finish or be reviewed independently
@@ -317,7 +319,7 @@ waiting for ...`.
 
 When Projects are configured or requested, use the small set of human-facing
 fields and Focus lanes in [Projects and roadmaps](../github/references/github-projects.md).
-Prefer one `Now` item unless the owner chooses parallel work. Read that reference
+Prefer one `Now` item unless the Director chooses parallel work. Read that reference
 when using a Project or local context surface, including synchronization or
 access failures; views never replace the issue graph. If a configured context
 helper is useful, read its Local Context Views guidance before running `index`.
@@ -332,7 +334,7 @@ needs no artifact.
 
 If scope changes, reconcile the canonical issue, sub-issues, blockers, labels,
 and configured Focus before pivoting. Classify discoveries as current scope,
-sub-issue, blocker, related context, or later work. Record owner decisions so a
+sub-issue, blocker, related context, or later work. Record Director decisions so a
 future session does not ask again. Keep detailed implementation evidence in
 the PR and recovery-critical state in the issue.
 
@@ -358,30 +360,31 @@ labels, cleanup of stale `plan:active`, `plan:blocked`, `plan:waiting`, and
 `github/scripts/gh-issue close` helper is for non-plan issues, or when the plan
 helper is unavailable. Closing a durable plan with the generic issue helper can
 leave planning labels or Project fields stale.
-It also skips the relationship and owner-decision preflight; perform those
+It also skips the relationship and not-planned decision preflight; perform those
 checks below yourself before using that fallback. For reaction approval, read
 the comment's `lastEditedAt` (must be explicitly null) and all reaction pages
-to verify the owner and time; if that evidence is unavailable, require the
-owner's typed decision comment.
+to verify that the repository owner reacted and when; if that evidence is
+unavailable, require the Director's typed decision comment.
 
 Before closing a planning issue, run
 `uv run <skill-dir>/../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
 Any attention result or degraded coverage requires a response or explicit
-handoff; a bot response never proves owner acknowledgement.
+handoff; a bot response never proves Director acknowledgement.
 
 Completed closure requires all native blockers and sub-issues closed and their
 reads complete. Issues the plan blocks do not prevent its closure. Use
 `--reason not_planned` only for explicitly superseded or abandoned plans;
 retained open relationships are not completion evidence. For an issue in a
 milestone listed in merged `DIRECTION.md`, a `not_planned` close requires the
-owner's decision comment after the last Current Status update, or the owner's
-thumbs-up reaction after that update on an unedited comment whose first line is
+Director's decision comment, posted as the repository owner after the last
+Current Status update, or the repository owner's thumbs-up reaction after that
+update on an unedited comment whose first line is
 `Owner decision: Close #<number> as not planned.` Record the exact action in a
 new comment; editing a reacted-to decision invalidates it. If reaction identity,
 time, or edit history cannot be read, the helper rejects it. Never bypass a
 closure refusal through another tool.
 
-Prefer non-closing `Refs` from PRs unless the owner requests auto-close or an
+Prefer non-closing `Refs` from PRs unless the Director requests auto-close or an
 internal task is conclusively complete. After merge, inspect referenced issues:
 close only those whose finish lines are satisfied; otherwise record what
 remains. Use `gh-plan.py close --comment-file` for durable plan issues.
@@ -393,7 +396,7 @@ and the shared API contract there. Keep degraded evidence visible; do not
 manually mark an issue done while closure is uncertain or silently switch to
 human authentication.
 
-Local handoff files are scratch unless the owner requested offline/private
+Local handoff files are scratch unless the Director requested offline/private
 handoff. Migrate recovery-critical content to the owning issue or PR before
 closeout, then remove or explicitly preserve the scratch file. For valuable
 local work found during cleanup, read
@@ -401,6 +404,6 @@ local work found during cleanup, read
 [parking and handoff](../work-closeout/references/parking-and-handoff.md).
 Routine disposable artifacts do not need planning issues.
 
-Finish with the current outcome, evidence or uncertainty, next action and its
-owner, and any owner decisions still open. Use the executing loop's handoff
+Finish with the current outcome, evidence or uncertainty, next action and who
+takes it, and any Director decisions still open. Use the executing loop's handoff
 rules for its commands.

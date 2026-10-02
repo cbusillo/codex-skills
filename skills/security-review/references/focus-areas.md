@@ -36,7 +36,7 @@ technologies and project types.
 
 - **Authority**: Secret records, runtime environment authority, and promotion
   logic.
-- **Credential Separation**: Separation between deploy/operator credentials and
+- **Credential Separation**: Separation between deploy/admin credentials and
   app/runtime credentials.
 - **Resilience**: Backup gates, restore flows, and fail-closed behavior.
 - **Audit**: Auditability of sensitive changes to secrets or deployment

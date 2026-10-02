@@ -39,7 +39,7 @@ change belongs>.
 
 ## Stop Boundaries
 
-An agent asks the owner before:
+An agent asks the Director before:
 
 - <an action with real-world cost or reach>
 - <a destructive or irreversible operation>

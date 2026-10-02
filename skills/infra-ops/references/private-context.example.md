@@ -30,7 +30,7 @@ The private repo should own environment-specific material such as:
 - local helper scripts and dry-run/preflight commands
 - ignored env files and credential loading instructions
 - rollback, snapshot, and validation playbooks
-- operator notes for hosts, networks, ingress, DNS, media, monitoring, and
+- admin notes for hosts, networks, ingress, DNS, media, monitoring, and
   managed services
 
 Public skills should reference those categories, not copy their contents.

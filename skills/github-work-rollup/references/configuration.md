@@ -33,7 +33,7 @@ Supported config fields:
 - `noise_filters`
 - `priority_sections`
 - `comment_window`: external-comment lookback; defaults to `30d`
-- `comment_self_logins`: owner accounts whose reactions and targeted replies count
+- `comment_self_logins`: the Director's accounts whose reactions and targeted replies count
 - `comment_bot_logins`: automation accounts whose targeted replies count
 
 Each `priority_sections` entry may also include executive-facing metadata:

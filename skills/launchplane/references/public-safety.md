@@ -25,12 +25,12 @@ Treat these as private unless the user explicitly says they are safe to publish:
 Launchplane-managed product, app, preview, deploy, provider, lane, tenant, and
 health-check coordinates are runtime authority. Do not commit them as examples,
 repo metadata, workflow defaults, readiness endpoints, or copied provider
-payloads. Use the Launchplane service API, operator UI, managed service records,
-or scoped operator input for real values.
+payloads. Use the Launchplane service API, admin UI, managed service records,
+or scoped admin input for real values.
 
 This is not only a secret-handling rule. Non-secret topology such as domains,
 lanes, provider targets, route batches, runtime environment names, repository or
-branch bindings, authz grants, and operator identities can steer production
+branch bindings, authz grants, and admin identities can steer production
 behavior. Committed files may describe generic schemas or fake/public-safe
 examples, but they must not become the source of truth for current live values.
 
@@ -41,7 +41,7 @@ Launchplane runtime state. It may contain allow-listed operation paths,
 operation IDs, structural fingerprints, protected workflow filenames, semantic
 invariants, versions, a semantic digest, and source-SHA provenance. It must not
 contain real product, tenant, repository, branch, domain, lane, provider target,
-credential, operator, service URL, or runtime-topology values.
+credential, admin identity, service URL, or runtime-topology values.
 
 Run `../scripts/check-agent-operator-contract.py` to reject malformed or unsafe
 content and then run the repository public-safety validator. Neither check

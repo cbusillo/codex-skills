@@ -206,7 +206,7 @@ explicit runs retain the lifecycle evidence gathered before the error, including
 load verification and requested cleanup results; task usage remains available
 when a later content or cleanup check fails.
 
-The `lms` CLI is an operator fallback for local diagnostics, downloads, or
+The `lms` CLI is a manual fallback for local diagnostics, downloads, or
 manual recovery when the HTTP lifecycle path is unavailable. For non-local LM
 Studio instances, CLI commands must target the serving host explicitly, so API
 helpers are preferred for trusted LAN and remote-private endpoints.

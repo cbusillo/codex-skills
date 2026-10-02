@@ -10,7 +10,7 @@ an execution guard. The split is deliberately narrow:
 | Repo validators                | Catalog shape, path resolution, and coverage checks                     |
 | Compatible execution test      | Model routing behavior when policy context is present                   |
 | Host with an implemented command-policy consumer | Command interruption, blocking, and conflict handling |
-| Runtime/operator config        | Identity, enforcement mode, fallback, hosts, overrides, and trust roots |
+| Runtime/admin config           | Identity, enforcement mode, fallback, hosts, overrides, and trust roots |
 | Helper scripts                 | Credential mechanics, safe execution, output shape, and cleanup         |
 | Skill prose                    | Judgment, sequencing, exceptions, and human explanation                 |
 
@@ -108,7 +108,7 @@ receives already normalized argv and the consumer's verified command directory;
 
 ## Runtime Configuration
 
-Runtime/operator config decides how a portable policy is enforced. The same
+Runtime/admin config decides how a portable policy is enforced. The same
 `require_preferred` declaration might be audit-only, warning, interrupting,
 approval-gated, or blocked depending on the trusted runtime policy pack.
 

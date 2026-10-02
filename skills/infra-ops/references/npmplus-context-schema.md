@@ -87,7 +87,7 @@ The `env_file` path must be relative to the private repo and must not contain
 `..`. The public engine reads only the named env vars from that file and the
 process environment. Secrets must not be passed as command-line arguments.
 
-`refs` map public-safe operator aliases to NPMplus proxy-host ids. Ref names
+`refs` map public-safe private aliases to NPMplus proxy-host ids. Ref names
 must match `^[a-z][a-z0-9-]{0,63}$` and must not contain domains, hostnames,
 raw ids, site names, or topology. The public engine may use the ids internally,
 but public output should name only the ref, never the raw id.
@@ -109,7 +109,7 @@ the client mutator derives the id only from the validated ref.
 three values must be true before `--apply`:
 
 - `snapshot_ready`: any required snapshot or backup gate completed privately.
-- `rollback_ready`: a private rollback path and owner are ready.
+- `rollback_ready`: a private rollback path and its holder are ready.
 - `external_validation_ready`: required private preflight checks completed.
 
 The private provider owns the underlying commands, timestamps, host details,
@@ -152,7 +152,7 @@ public engine must not construct those commands or ship private defaults.
 The lifecycle helper re-reads and verifies the target immediately before its
 POST, then re-reads and verifies the same identity and requested enabled state
 afterward. NPMplus does not expose a conditional lifecycle mutation in this
-contract, so the private operator remains responsible for excluding concurrent
+contract, so the Director's private setup remains responsible for excluding concurrent
 target replacement during the short GET-to-POST interval.
 
 ## Public Leak Tests

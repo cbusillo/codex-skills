@@ -17,7 +17,7 @@ another URL needs a separate state directory. No redirect is followed.
 The host privately supplies its existing terminal identity through
 `LAUNCHPLANE_TERMINAL_CREDENTIAL` for enrollment proposal/status only. Credential
 claim uses the saved receiver proof; session/job operations use the privately
-claimed ordinary credential. The client never substitutes an owner, operator,
+claimed ordinary credential. The client never substitutes a Director, admin,
 provider, browser or Actions credential. A denial is an authority or setup
 prerequisite, not a reason to select a stronger identity.
 
@@ -97,7 +97,7 @@ status or admitting a job.
 Errors return a bounded JSON code and exit 2 without response bodies or secrets.
 Normal status output contains public service metadata, including connection
 credential IDs/versions/deadlines; these are not credential material. This
-specialized projection is separate from the generic operator helper's key filter.
+specialized projection is separate from the generic admin helper's key filter.
 Claim output contains no credential. Importing hosts must also keep
 state/proof APIs within their private boundary. Client availability and
 contract conformance do not establish live

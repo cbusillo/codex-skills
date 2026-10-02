@@ -32,13 +32,13 @@ prevents diagnosis from stopping at an unexplained 403.
 Keep these roles explicit:
 
 - Ruleset/protection writes and full bypass-actor inspection use the verified
-  owner through the existing ruleset helper. Administration read does not replace
+  repository owner through the existing ruleset helper. Administration read does not replace
   that writer evidence.
 - Protected environment approvals retain the workflow helper's active human
   reviewer and exact environment authorization.
 - Publishing authoritative Checks, Commit statuses and Deployment records uses
   the configured workflow/service identity and its declared job permissions.
-- Projects depend on the Project owner and token type. Organization Apps can
+- Projects depend on the account that owns the Project and the token type. Organization Apps can
   have organization Projects access; personal-token paths use `read:project`
   or `project`. Preserve the helper's explicit Project actor override and
   recoverable issue-first behavior; report unsupported owner/token combinations.
@@ -107,7 +107,7 @@ fingerprints` and update the matrix's fingerprint table in the same PR. The
 command never writes or blesses the catalog itself. Add a behavioral probe test
 when a new capability/probe is introduced; do not satisfy drift by copying a hash
 without inspecting the permission boundary. Keep real account/repository/App
-identities and live audit reports in ignored operator state, not this catalog.
+identities and live audit reports in ignored local state, not this catalog.
 
 Primary references: [App permissions](https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps),
 [installation token scope](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app),

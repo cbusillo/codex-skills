@@ -100,15 +100,15 @@ paper over it by pasting files into the prompt.
   and `command(rg)` grants this helper itself once told users to add and now
   refuses. Run `repair`: it backs up the settings file beside itself, removes
   only those grants, keeps every other setting, and prints the backup path.
-  During an executing-loop run, `repair` needs no owner step; it only takes
+  During an executing-loop run, `repair` needs no Director step; it only takes
   back what the helper asked for and would now refuse to start with. The helper
   cannot tell whether the user later granted those two commands for their own
   sessions, so the backup and the record are the safeguard: record the removed
-  grants and the backup path in the pull request, so the owner can put them
+  grants and the backup path in the pull request, so the Director can put them
   back with one copy if they want them. A `write_file` rule,
   a command grant with arguments, a grant for a program the user allowed for
   their own sessions such as `command(git)`, or anything else the helper calls
-  `ambiguous` is the owner's to change: `repair` refuses it and changes
+  `ambiguous` is the Director's to change: `repair` refuses it and changes
   nothing, so show the result and ask, or use another provider. Do not edit
   the settings file by any other route.
 - When no other provider can be made to work, say so and use what is available,

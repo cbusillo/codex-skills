@@ -1,6 +1,6 @@
 # Review and Handoff
 
-Use the shared formatting guidance in `../../references/talking-with-the-owner.md`
+Use the shared formatting guidance in `../../references/talking-with-the-director.md`
 for issue, PR, readiness, and final-status writing.
 
 ## Independent Review Lanes

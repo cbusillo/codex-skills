@@ -58,7 +58,7 @@ Fully managed plans created by `gh-plan` begin with:
 ```
 
 Full-body management requires authorship by the acting planning bot or an
-owner-controlled login in `CODEX_AUTOMATION_BOT_LOGINS`; unknown authors and
+Director-controlled login in `CODEX_AUTOMATION_BOT_LOGINS`; unknown authors and
 authors outside that configured set stay in preservation mode. This marker
 records provenance but does not transfer ownership of a human-authored body.
 The generic

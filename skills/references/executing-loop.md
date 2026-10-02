@@ -1,9 +1,9 @@
 # Executing loop
 
 Use this loop when a repository has a root `DIRECTION.md`, or has none and its
-owner keeps an overall direction in `OWNER/direction`. The session-start hook
-prints this reference on both supported harnesses, after the overall stop
-boundaries in the second case. The owning skills hold
+repository owner keeps an overall direction in `OWNER/direction`. The
+session-start hook prints this reference on both supported harnesses, after
+the overall stop boundaries in the second case. The owning skills hold
 the detailed procedures and [task scope and authorization](execution-scope.md)
 still governs every action.
 
@@ -38,11 +38,11 @@ independent milestone issues. Put close-out follow-ups outside the current
 milestone by default. An executing agent may admit one to a milestone listed in
 `DIRECTION.md` when its issue body blockquotes an exact phrase from that
 milestone's line that the issue proves or protects. Admission is checked by the
-direction audit afterward; it needs no owner step. Do not work an issue admitted
+direction audit afterward; it needs no Director step. Do not work an issue admitted
 during close-out in the same `go <milestone>` run.
 If `next` finds no available milestone issue, report what is underway or waiting
 and do not claim the milestone is complete until its exit criteria are met.
-List every owner decision still open at the end of any executing-loop command in the final response,
+List every Director decision still open at the end of any executing-loop command in the final response,
 each as a direct question with a recommendation and the effect of each choice.
 An earlier asynchronous question or an issue update does not replace that
 handoff.

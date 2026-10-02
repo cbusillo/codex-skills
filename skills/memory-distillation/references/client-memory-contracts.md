@@ -19,7 +19,7 @@ Inventory each distinct in-scope store:
 
 | Field | Evidence to record |
 | --- | --- |
-| Owner and location | Client, configured home/root, canonical store path, configuration source |
+| Owning client and location | Agent client, configured home/root, canonical store path, configuration source |
 | Status | Active, historical, duplicate alias, inaccessible, or unknown; say what is unproven |
 | Consumed layers | Registry, summaries, raw-memory derivatives, rollout summaries, update notes, generated skills, or other layers that this client actually consumes |
 | Mutation contract | Supported tool or documented note location, append-only/direct-edit restrictions, regeneration trigger if available |

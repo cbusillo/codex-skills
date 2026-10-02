@@ -16,7 +16,7 @@ Use the `Focus` field to indicate the current priority of a plan:
 
 ## Manager Routing
 
-The `Manager` field should hold the human owner or reviewer. Resolve this from:
+The `Manager` field should hold the responsible human or reviewer. Resolve this from:
 
 - `~/.code/github-planning.json` (`workflow.default_manager` or `workflow.repo_managers`)
 - Repository instructions or `AGENTS.md`.
@@ -54,7 +54,7 @@ fields (like `Finish Line`) compact and observable.
 
 When an issue operation succeeds with a non-blocking Project warning, report
 that split outcome and the helper's choices. Do not repeatedly retry or silently
-switch to human authentication. The owner chooses whether to grant automation
+switch to human authentication. The Director chooses whether to grant automation
 Project access, use Project-capable auth, disable synchronization, or correct
 stale configuration. Do not treat an unavailable view as missing issue data.
 
