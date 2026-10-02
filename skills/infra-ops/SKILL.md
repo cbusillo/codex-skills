@@ -1,6 +1,6 @@
 ---
 name: infra-ops
-description: Use for infrastructure operations across private docs, local automation, hosts, ingress, network, storage, media, and managed service APIs. Trigger for read-only inventory, health checks, guarded pilot writes, rollback/snapshot planning, operator helper routing, and production-impacting infra changes after docs/access paths are known.
+description: Use for infrastructure operations across private docs, local automation, hosts, ingress, network, storage, media, and managed service APIs. Trigger for read-only inventory, health checks, guarded pilot writes, rollback/snapshot planning, admin helper routing, and production-impacting infra changes after docs/access paths are known.
 metadata:
   short-description: Operate private infrastructure safely
 resources:
@@ -77,7 +77,7 @@ into this repo.
   payload review, and a rollback path before apply.
 
 When the target is ambiguous, pause mutation and keep working read-only until
-the authority, blast radius, and rollback owner are clear.
+the authority, blast radius, and who holds the rollback are clear.
 
 ## Workflow
 

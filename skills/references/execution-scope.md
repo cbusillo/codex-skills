@@ -1,7 +1,7 @@
 # Task scope and authorization
 
 Apply these rules when using the repository execution skills that link here.
-For chat and durable reports, read [talking with the owner](talking-with-the-owner.md).
+For chat and durable reports, read [talking with the Director](talking-with-the-director.md).
 
 - Follow the user's explicit instructions over skill guidelines. Infer routine
   implementation choices within the requested task and carry authorized work
@@ -11,7 +11,7 @@ For chat and durable reports, read [talking with the owner](talking-with-the-own
   being changed.
 - Also read its `DIRECTION.md` first when it has one; when it has none, keep
   working and say in the final message that it has no `DIRECTION.md` and that
-  the owner's overall direction in `OWNER/direction` applies, if one exists,
+  the Director's overall direction in `OWNER/direction` applies, if one exists,
   without suggesting that the repository adopt its own.
 - Reuse authorization already given for the same action and scope. A requirement
   for explicit approval does not imply a fresh question when that approval is

@@ -103,7 +103,7 @@ Review actual commands, outputs and final messages for each case:
   prove implicit routing.
 - Did it reuse earlier matching approval, stay within publication scope, and
   investigate ancestry, equivalence, dirty hunks and current ownership?
-- Did it preserve private/recovery state and record a useful owner and disposal
+- Did it preserve private/recovery state and record a useful holder and disposal
   trigger for retained task output?
 - Did parking record the exact pushed SHA and owning issue, meaningful intent,
   review status, retention/supersession reason and next adoption decision, with
@@ -121,7 +121,7 @@ affected cases with fresh inputs. Do not close acceptance gaps by relabeling a
 source review or another model's response as Astra execution.
 
 Retain private logs only until the useful acceptance evidence is durably recorded
-or a named owner still needs them. Follow the shared cleanup policy to remove
+or a named holder still needs them. Follow the shared cleanup policy to remove
 only the task-owned fixture/artifact group after its processes finish. There is
 no general-purpose recursive cleanup command in this suite.
 

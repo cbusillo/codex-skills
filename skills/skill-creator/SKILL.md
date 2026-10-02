@@ -117,7 +117,7 @@ patterns, helper invocation and worked progressive-disclosure examples.
 Include only files needed for the task. Do not add auxiliary README,
 INSTALLATION_GUIDE, QUICK_REFERENCE, CHANGELOG or process/setup/testing narratives.
 Skills producing reviews, handoffs, issue/PR comments, readiness reports or
-summaries should link [talking with the owner](../references/talking-with-the-owner.md)
+summaries should link [talking with the Director](../references/talking-with-the-director.md)
 instead of copying its rules.
 
 ## Create Or Update
@@ -237,7 +237,7 @@ machine-readable `policy.command_policies`. Read
 [the command-policy contract](references/command-policy-contract.md) before
 adding/changing those rules or relying on their enforcement: it owns the
 frontmatter/runtime boundary, matcher precedence, path resolution and
-execution-evidence limits. Keep one canonical owner per raw-command path and
+execution-evidence limits. Keep one canonical owning rule per raw-command path and
 the narrowest matching rule. Portable declarations and a passing catalog check
 do not prove host command interception; verify the specific runtime consumer.
 
@@ -283,5 +283,5 @@ iterations so later agents cannot infer answers from earlier work.
 
 Read [model-aware authoring](references/model-aware-authoring.md) when adapting
 for a named model or investigating model-specific behavior. Use `openai-docs`
-for current OpenAI guidance; keep shared policy in its owners, and do not turn
+for current OpenAI guidance; keep shared policy in the files that own it, and do not turn
 model-specific experiments into permanent defaults.

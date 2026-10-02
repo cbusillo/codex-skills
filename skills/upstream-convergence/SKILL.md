@@ -94,7 +94,7 @@ Read `references/repo-adapter.md` before executing that driver.
 
 1. Read applicable `AGENTS.md` files and the active GitHub plan.
 2. Identify the current branch, repository default branch, all linked worktrees,
-   dirty state, in-progress Git operations, remotes, and existing refresh owner.
+   dirty state, in-progress Git operations, remotes, and any session that already claimed the refresh.
 3. Verify the adapter schema, repository-relative paths, canonical upstream
    identity, and repository driver before executing candidate-owned code.
 4. If the repository is GitHub-backed, use `$github-plan` for durable status and

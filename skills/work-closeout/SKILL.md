@@ -15,7 +15,7 @@ resources:
     description: Performs read-only exact Reminders-list lookup with existing macOS access.
   - path: references/session-reminders.md
     kind: reference
-    description: Read when the owner requests a native reminder to return to a session or repository.
+    description: Read when the Director requests a native reminder to return to a session or repository.
 commands:
   - name: session-reminder-link
     source: skill
@@ -58,7 +58,7 @@ or a generic approval sentence; write the two entries explicitly as `Love:` and
 
 ## Requested session reminders
 
-When the owner requests a native reminder to resume an exact session or start a
+When the Director requests a native reminder to resume an exact session or start a
 fresh check-in in a repository, read [native session reminders](references/session-reminders.md).
 This skill owns that workflow for Codex and Claude Code. Prepare the link and
 verify the exact private target list; save only within existing reminder-write
@@ -161,7 +161,7 @@ preserved, or intentionally left in place.
    `uv run ../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
    Any attention result
    or degraded coverage requires a response or explicit handoff before an
-   all-clear; a bot response never proves owner acknowledgement.
+   all-clear; a bot response never proves Director acknowledgement.
    When an open PR still needs ongoing CI, review, mergeability, or
    merged/closed follow-through, transfer that loop to `babysit-pr` before
    declaring the work parked or safe to exit. For an already merged or closed PR,
@@ -252,7 +252,7 @@ preserve that original point-in-time statement and add a follow-up; the
 never-started exception cannot apply.
 
 When writing final summaries, closeout comments, or migrated handoff content,
-follow `../references/talking-with-the-owner.md`: cite point-in-time evidence,
+follow `../references/talking-with-the-director.md`: cite point-in-time evidence,
 keep recovery-critical facts in GitHub for GitHub-backed work, and avoid
 boilerplate that does not help the next session resume.
 
@@ -331,7 +331,7 @@ inferred route with `changed_files` scope and report the assumption.
 
 Before parking unfinished work or migrating a local handoff, read
 [parking and handoff procedures](references/parking-and-handoff.md). Preserve
-one current durable owner with its blocker, next action, and verification state.
+one current durable home with its blocker, next action, and verification state.
 Use an authorized owning issue or PR when available; valuable local work may use
 a known, approved, reconstructable durable location. Apply the plan hygiene
 checks below as relevant.
@@ -393,7 +393,7 @@ checks below as relevant.
   question. Eligible still means the shared policy's ownership, live-use, and
   contents checks; dirty or unpreserved state is retained. This covers the
   worktree and its merged local branch, not a remote branch. When the task's
-  record does not show that it created a registered worktree, the owner is
+  record does not show that it created a registered worktree, the owning session is
   unknown: leave it, and mention it when it bears on this closeout. Detached
   auto-review worktrees stay excluded as described below.
 - After merged PRs, include relevant post-merge Actions and GitHub

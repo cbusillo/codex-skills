@@ -16,7 +16,7 @@ Move durable facts about humans into the global/user people index by default:
 - stable relationship hints such as user, collaborator, manager, reviewer,
   client, vendor, product contact, or planning manager
 - bot aliases, service accounts, and automation usernames that should resolve to
-  a known operator or owner
+  a known person, such as the Director
 - lightweight actor trust/posture hints, such as whether to verify code extra
   carefully, whether an actor has authority for a workflow, or whether an actor
   is unknown
