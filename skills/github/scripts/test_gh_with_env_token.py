@@ -220,6 +220,8 @@ def test_app_installation_follows_the_target_repository() -> None:
                 "token:--repo bob/site --require-installation",
             ("issue", "comment", "1", "-R", "bob/site", "--body", "https://github.com/alice/tools/issues/2"):
                 "token:--repo bob/site --require-installation",
+            ("pr", "merge", "--squash", "https://github.com/second-owner/site/pull/2"):
+                "token:--repo second-owner/site --require-installation",
             ("issue", "comment", "1", "-Rbob/site", "--body", "hello"):
                 "token:--repo bob/site --require-installation",
             ("issue", "comment", "1", "--body", "repos/alice/tools"): "token:",

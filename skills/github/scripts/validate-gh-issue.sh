@@ -521,9 +521,12 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" \
 
 grep -q 'author=fixture-automation <fixture-automation@example.invalid>' "$env_log"
 
-# A failed identity lookup, or required automation auth on the person's path,
-# refuses the commit rather than guessing an author.
-for refused_commit in "FAKE_APP_IDENTITY_FAIL=1|could not tell which identity commits to owner/repo" \
+# A failed identity lookup, or required automation auth on the person's path
+# (even when local.env turns it off), refuses the commit rather than guessing.
+cp "$tmpdir/app.env" "$tmpdir/app-not-required.env"
+printf 'GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=0\n' >>"$tmpdir/app-not-required.env"
+for refused_commit in "FAKE_APP_CONTRIBUTOR=1 CODEX_SKILLS_ENV_FILE=$tmpdir/app-not-required.env GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1|refusing to commit as your own GitHub user" \
+	"FAKE_APP_IDENTITY_FAIL=1|could not tell which identity commits to owner/repo" \
 	"FAKE_APP_CONTRIBUTOR=1 GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1|refusing to commit as your own GitHub user"; do
 	: >"$env_log"
 	read -r -a refused_commit_env <<<"${refused_commit%%|*}"
@@ -569,6 +572,8 @@ assert_push_refused 'GitHub App authentication failed' \
 	CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" FAKE_APP_IDENTITY_FAIL=1
 assert_push_refused 'refusing to push as your own GitHub user' \
 	CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" FAKE_APP_CONTRIBUTOR=1 GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1
+assert_push_refused 'refusing to push as your own GitHub user' \
+	CODEX_SKILLS_ENV_FILE="$tmpdir/app-not-required.env" FAKE_APP_CONTRIBUTOR=1 GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1
 assert_push_refused 'invalid response' \
 	CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" FAKE_APP_LOGIN=
 assert_push_refused "push would run as 'human-user', expected 'fixture-automation'" \

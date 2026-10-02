@@ -666,10 +666,13 @@ target_repository() {
 		esac
 		case $argument in
 		https://github.com/*/*/issues/* | https://github.com/*/*/pull/*)
-			# Only an operand names the target; an option's value, such as
-			# a --body that links another issue, does not.
+			# Only an operand names the target; the value of a text option,
+			# such as a --body that links another issue, does not.
 			case $previous in
-			-?*) previous=$argument; continue ;;
+			-b | --body | -t | --title | --subject | -F | --body-file | -f | --field | --raw-field | -q | --jq | --template | -m | --message)
+				previous=$argument
+				continue
+				;;
 			esac
 			path=${argument#https://github.com/}
 			owner=${path%%/*}
