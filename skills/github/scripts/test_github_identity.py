@@ -132,6 +132,11 @@ class TokenHandler(BaseHTTPRequestHandler):
             self.send_header("Location", target)
             self.end_headers()
             return
+        elif self.path == "/repos/old-owner/transferred/installation":
+            self.send_response(301)
+            self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/repositories/43/installation")
+            self.end_headers()
+            return
         elif self.path == "/repositories/42/installation":
             payload = json.dumps({"id": 11111, "app_id": 12345}).encode()
         else:
@@ -444,11 +449,23 @@ def test_write_identity_by_repository_owner() -> None:
                     github_identity.github_app_auth(config, now=now, repository=repository, require_installation=True)
                 except github_identity.ContributorRepository as error:
                     raise AssertionError(f"{repository} must refuse, not act as the person") from error
-                except github_identity.GitHubAppError as error:
+                except github_identity.NotInstalledForAutomation as error:
                     assert "its owner must install the App there" in str(error), error
                 else:
                     raise AssertionError(f"{repository} did not refuse")
                 assert not github_identity.acts_as_own_user(repository, values)
+
+            # A repository that moved, whose current account is unknown here, refuses.
+            try:
+                github_identity.github_app_auth(
+                    config, now=now, repository="old-owner/transferred", require_installation=True
+                )
+            except github_identity.ContributorRepository as error:
+                raise AssertionError("a moved repository must refuse, not act as the person") from error
+            except github_identity.GitHubAppError as error:
+                assert "has moved" in str(error), error
+            else:
+                raise AssertionError("old-owner/transferred did not refuse")
 
             # Another owner's repository without an installation: the person.
             try:

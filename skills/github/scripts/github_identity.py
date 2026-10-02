@@ -48,10 +48,16 @@ class ContributorRepository(GitHubAppError):
         self.repository = repository
 
 
-# app-auth exits with this status when the caller should act as the active
-# human login (a ContributorRepository), so the shell wrappers can tell it from
-# a refusal.
+class NotInstalledForAutomation(GitHubAppError):
+    """The App is not installed on a repository of the automation's own accounts."""
+
+
+# app-auth exits with these statuses so the shell wrappers can tell the cases
+# apart: act as the active human login (a ContributorRepository), or a definite
+# refusal in the automation's own repository (NotInstalledForAutomation), as
+# opposed to a failed lookup (1).
 CONTRIBUTOR_EXIT_STATUS = 3
+NOT_INSTALLED_EXIT_STATUS = 4
 
 
 class GitHubAppHTTPError(GitHubAppError):
@@ -561,11 +567,18 @@ def repository_installation_config(
         except GitHubAppHTTPError as error:
             if error.status == 404 and not required:
                 return None
+            if error.status == 404 and attempt:
+                # The installation lookup followed a rename or transfer, so the
+                # account in the name given may no longer own the repository.
+                raise GitHubAppError(
+                    f"{repository} has moved and the GitHub App is not installed on it; "
+                    "use the repository's current OWNER/REPO"
+                ) from error
             if error.status == 404:
                 owner = repository.split("/", 1)[0].casefold()
                 if owner not in automation_accounts(config, now=current_time):
                     raise ContributorRepository(repository) from error
-                raise GitHubAppError(
+                raise NotInstalledForAutomation(
                     f"the GitHub App is not installed on {repository}; "
                     "its owner must install the App there before automation can use it"
                 ) from error
@@ -746,6 +759,9 @@ def main() -> int:
     except ContributorRepository as error:
         print(f"note: {error}", file=sys.stderr)
         return CONTRIBUTOR_EXIT_STATUS
+    except NotInstalledForAutomation as error:
+        print(f"error: GitHub App authentication failed before gh invocation: {error}", file=sys.stderr)
+        return NOT_INSTALLED_EXIT_STATUS
     except GitHubAppError as error:
         print(f"error: GitHub App authentication failed before gh invocation: {error}", file=sys.stderr)
         return 1

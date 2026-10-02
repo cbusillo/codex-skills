@@ -521,6 +521,28 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" \
 
 grep -q 'author=fixture-automation <fixture-automation@example.invalid>' "$env_log"
 
+# A failed identity lookup, or required automation auth on the person's path,
+# refuses the commit rather than guessing an author.
+for refused_commit in "FAKE_APP_IDENTITY_FAIL=1|could not tell which identity commits to owner/repo" \
+	"FAKE_APP_CONTRIBUTOR=1 GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1|refusing to commit as your own GitHub user"; do
+	: >"$env_log"
+	read -r -a refused_commit_env <<<"${refused_commit%%|*}"
+	if env PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" "${refused_commit_env[@]}" \
+		CODEX_AUTOMATION_LOGIN=fixture-automation CODEX_AUTOMATION_EMAIL=fixture-automation@example.invalid \
+		GIT_COMMIT_AS_BOT_IDENTITY_HELPER="$tmpdir/fake-app-identity.py" \
+		GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
+		GH_ISSUE_ENV_LOG="$env_log" \
+		"$repo_root/github/scripts/git-commit-as-bot" -m "refused commit" >/dev/null 2>"$stderr_log"; then
+		echo "error: git-commit-as-bot must refuse: ${refused_commit#*|}" >&2
+		exit 1
+	fi
+	grep -q "${refused_commit#*|}" "$stderr_log"
+	if grep -q '^author=' "$env_log"; then
+		echo "error: git-commit-as-bot committed after refusing: ${refused_commit#*|}" >&2
+		exit 1
+	fi
+done
+
 refused_push_args=(-u origin branch)
 assert_push_refused() {
 	local message="$1"

@@ -787,7 +787,11 @@ the active login's token, `git-commit-as-bot` keeps the person's own git
 identity, and `gh-pr.py create` requires `--body-file` and appends
 `I wrote this change with AI assistance and reviewed it.` unless the body
 already mentions AI assistance (its result carries `"identity": "own_user"`).
-`github_identity.py app-auth --require-installation` exits 3 for that case.
+`github_identity.py app-auth --require-installation` exits 3 for that case and
+4 for the refusal; a repository that moved without an installation is refused,
+since its current account is unknown under the old name. Only an operand URL
+names the target repository; a URL inside an option value such as `--body`
+does not.
 Reads there, and commands that name no
 repository such as GraphQL by node ID, use the configured installation.
 `GITHUB_APP_INSTALLATION_ID` stays the default. Otherwise it prefers `CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and
