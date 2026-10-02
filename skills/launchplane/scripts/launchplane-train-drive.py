@@ -10,7 +10,8 @@ Each pass calls `launchplane-write-action.py merge-train-controller-run-once
 
 - landed:      the PR merged (by this train run or another one); every other
                PR seen in the batch is reported too
-- failed:      the controller blocked, or a train candidate failed its checks
+- failed:      the controller blocked, or a train candidate failed its checks; a block
+               only because the batch candidate's checks are still running waits
 - needs_owner: the PR was closed, stays ineligible, or needs a branch update
                this command may not make
 - error:       the helper kept failing, or the wall-clock deadline passed
@@ -125,11 +126,18 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
         io.sleep(settings.poll_seconds)
 
 
+# Blocks Launchplane raises while a candidate's checks are still running; the deadline bounds the wait.
+WAITING_BLOCK_CODES = frozenset({"batch_pull_request_checks_not_ready"})
+
+
 def _judge(
     settings: DriveSettings, io: DriveIO, state: DriveState, result: dict[str, Any], action: str
 ) -> tuple[str, dict[str, Any]] | None:
+    blocking_reason = result.get("blocking_reason")
+    if action == "block" and isinstance(blocking_reason, dict) and blocking_reason.get("code") in WAITING_BLOCK_CODES:
+        return None
     if action in {"block", "stack_unsupported"}:
-        return "failed", {"reason": action, "blocking_reason": result.get("blocking_reason")}
+        return "failed", {"reason": action, "blocking_reason": blocking_reason}
     if action == "candidate_failed":
         candidate = result.get("candidate") or {}
         candidate_sha = str(candidate.get("candidate_sha") or result.get("candidate_sha") or "")
