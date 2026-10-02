@@ -167,16 +167,18 @@ so missing source or a uv startup failure cannot masquerade as a policy denial.
 
 #### Auto mode
 
-Claude Code reads `autoMode` only from user or managed settings and ignores a
-repository's `.claude/settings.json`, so the plugin cannot ship it. Without
-these entries, auto mode's classifier stops a brief-authorized bot merge
-because no human approved it. The Director applies them by hand in
+Claude Code reads `autoMode` from user or managed settings or a launch-time
+`--settings` value, never from a repository's `.claude/settings.json`, so the
+plugin cannot ship it. Without these entries, auto mode's classifier stops a
+brief-authorized bot merge because no human approved it. The Director applies them by hand in
 `/permissions` → Auto mode (or in their user `settings.json`) and checks the
 result with `claude auto-mode critique`. Agents never edit the Director's
 settings. Replace `OWNER` with the GitHub account and `CATALOG` with the
 checkout path.
 
-Add to `autoMode.environment`, replacing any older lines with the same labels:
+Add to `autoMode.environment`, replacing any older lines with the same labels.
+Keep `"$defaults"` in each list; a list without it replaces the built-in
+entries.
 
 ```json
 "**Repository visibility**: github.com/OWNER/* repositories are a mix of public and private; a push to a public one is publishing",
@@ -194,7 +196,8 @@ Set `autoMode.allow`, keeping the built-in rules:
 ]
 ```
 
-Production deploys, force pushes, and `git reset --hard` stay blocked.
+The exception does not cover production deploys or force pushes; the built-in
+rules still judge those.
 
 ### Shared global instructions and Codex hooks
 
