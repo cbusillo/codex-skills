@@ -211,7 +211,8 @@ def artifact_evidence(
         issue_reference = rf"(?:#{number}|{re.escape(repo)}#{number}|{issue_url})(?!\d)"
         ownership_reference = (
             rf"(?i)\b(?:refs?|fix(?:es|ed)?|clos(?:e|es|ed)|resolv(?:e|es|ed)|implement(?:s|ed|ing)?)"
-            rf"\s*:?\s+(?:{issue_reference}|\[[^\]\n]+\]\({issue_url}(?!\d)\))"
+            rf"(?:\*\*|__)?\s*:?\s+(?:{issue_reference}|<{issue_url}(?!\d)[^>]*>|"
+            rf"\[[^\]\n]+\]\({issue_url}(?!\d)[^\n)]*\))"
         )
         ownership_body = "\n".join(
             line for line in body.splitlines()
@@ -219,7 +220,7 @@ def artifact_evidence(
                     and not re.search(ownership_reference, line))
         )
         explicit_url = bool(repo and re.search(issue_url + r"(?!\d)", title + "\n" + ownership_body))
-        linked = bool(re.search(rf"(?i)\b(?:refs?|fix(?:es|ed)?|clos(?:e|es|ed)|resolv(?:e|es|ed))\s+(?:#{number}|{re.escape(repo)}#{number}|{issue_url})(?!\d)", body))
+        linked = bool(re.search(ownership_reference, body))
         titled = bool(re.search(rf"(?<![\w/])#{number}(?!\d)", title))
         if explicit_url or linked or titled or references_issue(branch, number):
             if not permitted(branch):
