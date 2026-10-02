@@ -963,8 +963,8 @@ answer to `authorization_denied`.
 
 Use Launchplane's controller route as the default merge-train workflow. Before
 advancing or diagnosing a train, read [merge-train execution](references/merge-train.md)
-for phase, stack, retry, and terminal evidence requirements. Label only the root
-PR and never hand-collapse stacks.
+for phase, stack, retry, and terminal evidence requirements. Label every PR
+in a stack that is ready to land, and never hand-collapse stacks.
 
 - **Preferred Route**: `POST /v1/work-graph/merge-train/controller/run-once`.
 - **Helper**: Use `scripts/launchplane-write-action.py
@@ -980,8 +980,10 @@ merge-train-controller-run-once` instead of open-coding the route. Mutating
   `--allow-branch-update` only for your own same-repository branches, for a
   behind-base PR it reports without refreshing. Run one driver per repository
   train, and keep a watcher on it while you report "waiting on the train".
-- **Train Entry**: Put `ready-to-merge` only on the root PR that targets the
-  protected base branch. Do not hand-collapse stacks in GitHub.
+- **Train Entry**: Put `ready-to-merge` on the root PR that targets the
+  protected base branch and on every stacked child that is ready to land with
+  it. A held child stays unlabeled or draft, and that stops the stack. Do not
+  hand-collapse stacks in GitHub.
 - **Mutation Gate**: Keep scheduled runners in dry-run mode until the Director
   explicitly selects a mutation pilot. Manual `mutate=true` controller runs are
   appropriate only after dry-run evidence shows the intended queue, candidate,
