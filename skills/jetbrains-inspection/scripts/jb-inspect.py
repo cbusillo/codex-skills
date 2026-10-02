@@ -10756,8 +10756,11 @@ def finish_raced_worktree_removal(common: Path, root: Path, before: dict[str, tu
         with suppress(OSError):
             os.rmdir(root)
     if root.exists() or root.is_symlink():
+        remaining: list[str] = []
+        if root.is_dir() and not root.is_symlink():
+            delete_verified_entries(root, root, before, remaining, delete=False)
         raise InspectError("Git unregistered the worktree but its directory could not be emptied; inspect what remains.", 3,
-                           {"git_error": git_error})
+                           {"git_error": git_error, "retained_entry_count": len(remaining), "retained_entries": sorted(remaining)[:50]})
 
 
 def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, dry_run: bool) -> list[dict[str, Any]]:
