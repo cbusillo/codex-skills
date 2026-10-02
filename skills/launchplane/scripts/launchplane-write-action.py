@@ -63,6 +63,7 @@ READ_ONLY_OPERATIONS = {
     "preview-history-read",
     "reconcile-requests-read",
     "target-replacement-operation-read",
+    "target-replacement-plan-read",
 }
 MERGE_TRAIN_POLICY_IMPORT_ENVELOPE_FIELDS = {
     "schema_version",
@@ -3007,6 +3008,222 @@ def _project_target_replacement_operation(provider_payload: dict[str, Any]) -> d
     return projected
 
 
+TARGET_REPLACEMENT_PLAN_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
+TARGET_REPLACEMENT_PLAN_MAX_LIST_ITEMS = 256
+TARGET_REPLACEMENT_PLAN_CODES = ("plan_status", "strategy", "data_source_mode")
+TARGET_REPLACEMENT_PLAN_IDS = (
+    "product",
+    "context",
+    "instance",
+    "expected_artifact_id",
+    "expected_source_git_ref",
+)
+TARGET_REPLACEMENT_PLAN_FLAGS = (
+    "target_record_found",
+    "target_id_record_found",
+    "inventory_found",
+    "allow_empty_data",
+)
+TARGET_REPLACEMENT_PLAN_KEY_LISTS = ("retired_provider_keys", "delivered_runtime_keys")
+# Plan fields the read leaves out by design: free-text blocker messages and warnings
+# (both are counted), the next target's name, its domains and the approval issue URL.
+TARGET_REPLACEMENT_PLAN_OMITTED_FIELDS = frozenset(
+    {
+        "blockers",
+        "warnings",
+        "expected_next_target_name",
+        "expected_domain_hosts",
+        "approval_issue_url",
+    }
+)
+TARGET_REPLACEMENT_CURRENT_TARGET_KEY_LISTS = ("env_keys", "required_volume_keys_missing")
+TARGET_REPLACEMENT_CURRENT_TARGET_FIELDS = frozenset(
+    {
+        "target_type",
+        "target_id",
+        "target_name",
+        "project_name",
+        "source_type",
+        "compose_path",
+        "compose_file_sha256",
+        "domain_hosts",
+        "latest_deployment_status",
+        "latest_deployment_id",
+        "required_volume_keys_present",
+        "live_volume_values",
+        "runtime_identity_present",
+        "runtime_identity_deployment_record_id",
+    }
+)
+
+
+def _public_env_key(value: object) -> str:
+    if not isinstance(value, str) or not TARGET_REPLACEMENT_PLAN_ENV_KEY_RE.fullmatch(value):
+        raise LaunchplaneSafetyError("invalid_response")
+    return value
+
+
+def _project_env_key_names(value: object, *, path: str, drops: _FieldDrops) -> list[str]:
+    """Env-key names only. A name that does not look like an env key is dropped, and a
+    secret-looking one fails the read."""
+    if value is None or value == "" or value == []:
+        return []
+    if not isinstance(value, list):
+        drops.drop(path)
+        return []
+    if len(value) > TARGET_REPLACEMENT_PLAN_MAX_LIST_ITEMS:
+        drops.drop(f"{path}[]")
+    names = [
+        drops.keep(f"{path}[]", _public_env_key, item)
+        for item in value[:TARGET_REPLACEMENT_PLAN_MAX_LIST_ITEMS]
+    ]
+    return [name for name in names if isinstance(name, str) and name]
+
+
+def _project_target_replacement_current_target(
+    value: object, drops: _FieldDrops
+) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        drops.drop("plan.current_target")
+        return None
+    target = cast(dict[str, Any], value)
+    projected: dict[str, object] = {
+        name: _project_env_key_names(target.get(name), path=f"plan.current_target.{name}", drops=drops)
+        for name in TARGET_REPLACEMENT_CURRENT_TARGET_KEY_LISTS
+    }
+    _report_dropped_fields(
+        target,
+        prefix="plan.current_target",
+        kept=set(TARGET_REPLACEMENT_CURRENT_TARGET_KEY_LISTS),
+        known=TARGET_REPLACEMENT_CURRENT_TARGET_FIELDS,
+        drops=drops,
+    )
+    return projected
+
+
+def _project_target_replacement_blocker_keys(
+    value: object, drops: _FieldDrops
+) -> dict[str, list[str]]:
+    if value is None or value == {}:
+        return {}
+    if not isinstance(value, dict):
+        drops.drop("plan.blocker_keys")
+        return {}
+    projected: dict[str, list[str]] = {}
+    for code, names in value.items():
+        if (
+            not isinstance(code, str)
+            or not PRODUCT_ACTIVITY_CODE_RE.fullmatch(code)
+            or is_denied_key(code)
+        ):
+            drops.drop("plan.blocker_keys.<unlisted field>")
+            continue
+        projected[code] = _project_env_key_names(names, path=f"plan.blocker_keys.{code}", drops=drops)
+    return projected
+
+
+def _project_target_replacement_steps(value: object, drops: _FieldDrops) -> list[dict[str, object]]:
+    if value is None or value == []:
+        return []
+    if not isinstance(value, list):
+        drops.drop("plan.steps")
+        return []
+    if len(value) > TARGET_REPLACEMENT_PLAN_MAX_LIST_ITEMS:
+        drops.drop("plan.steps[]")
+    steps: list[dict[str, object]] = []
+    for step in value[:TARGET_REPLACEMENT_PLAN_MAX_LIST_ITEMS]:
+        if not isinstance(step, dict):
+            drops.drop("plan.steps[]")
+            continue
+        step_id = drops.keep("plan.steps[].step_id", _public_dotted_code, step.get("step_id"))
+        if not step_id:
+            continue
+        steps.append(
+            {
+                "step_id": step_id,
+                "status": drops.keep("plan.steps[].status", _public_dotted_code, step.get("status")),
+            }
+        )
+        _report_dropped_fields(
+            step,
+            prefix="plan.steps[]",
+            kept={"step_id", "status"},
+            known=frozenset({"message"}),
+            drops=drops,
+        )
+    return steps
+
+
+def _project_target_replacement_plan(plan_value: object) -> dict[str, object]:
+    """An Odoo target-replacement plan's status, key names and blocker codes. Blocker,
+    step and warning text, domains, target names and ids, volume values and URLs are
+    dropped and listed by path; a secret-looking value in a kept field fails the read."""
+    plan = _require_dict(plan_value)
+    drops = _FieldDrops()
+    projected: dict[str, object] = {}
+    for name in TARGET_REPLACEMENT_PLAN_CODES:
+        projected[name] = drops.keep(f"plan.{name}", _public_dotted_code, plan.get(name))
+    for name in TARGET_REPLACEMENT_PLAN_IDS:
+        projected[name] = drops.keep(f"plan.{name}", public_identifier, plan.get(name))
+    for name in TARGET_REPLACEMENT_PLAN_FLAGS:
+        flag = plan.get(name)
+        if flag is not None and not isinstance(flag, bool):
+            drops.drop(f"plan.{name}")
+        projected[name] = flag if isinstance(flag, bool) else None
+    for name in TARGET_REPLACEMENT_PLAN_KEY_LISTS:
+        # None when the service does not report the list, as distinct from an empty one.
+        projected[name] = (
+            None
+            if plan.get(name) is None
+            else _project_env_key_names(plan.get(name), path=f"plan.{name}", drops=drops)
+        )
+    codes = plan.get("blocker_codes")
+    if codes is not None and not isinstance(codes, list):
+        drops.drop("plan.blocker_codes")
+        codes = None
+    if codes is not None and len(codes) > TARGET_REPLACEMENT_PLAN_MAX_LIST_ITEMS:
+        drops.drop("plan.blocker_codes[]")
+    kept_codes = [
+        drops.keep("plan.blocker_codes[]", _public_dotted_code, item)
+        for item in (codes or [])[:TARGET_REPLACEMENT_PLAN_MAX_LIST_ITEMS]
+    ]
+    projected["blocker_codes"] = [code for code in kept_codes if code]
+    projected["blocker_keys"] = _project_target_replacement_blocker_keys(
+        plan.get("blocker_keys"), drops
+    )
+    blockers = plan.get("blockers")
+    projected["blocker_count"] = len(blockers) if isinstance(blockers, list) else 0
+    warnings = plan.get("warnings")
+    projected["warning_count"] = len(warnings) if isinstance(warnings, list) else 0
+    projected["current_target"] = _project_target_replacement_current_target(
+        plan.get("current_target"), drops
+    )
+    projected["steps"] = _project_target_replacement_steps(plan.get("steps"), drops)
+    kept = {
+        *TARGET_REPLACEMENT_PLAN_CODES,
+        *TARGET_REPLACEMENT_PLAN_IDS,
+        *TARGET_REPLACEMENT_PLAN_FLAGS,
+        *TARGET_REPLACEMENT_PLAN_KEY_LISTS,
+        "blocker_codes",
+        "blocker_keys",
+        "current_target",
+        "steps",
+    }
+    _report_dropped_fields(
+        plan,
+        prefix="plan",
+        kept=kept,
+        known=TARGET_REPLACEMENT_PLAN_OMITTED_FIELDS,
+        drops=drops,
+    )
+    projected["dropped_field_count"] = drops.count
+    projected["dropped_field_paths"] = sorted(drops.paths)
+    assert_public_safe_shape(projected)
+    return projected
+
+
 def preview_id_for(*, context: str, repository: str, pr_number: int) -> str:
     """Launchplane's generate_preview_id, with anchor_repo being the repository's name."""
     owner, separator, repo = repository.strip().partition("/")
@@ -4245,6 +4462,75 @@ def summarize_target_replacement_operation_read(
     return payload
 
 
+TARGET_REPLACEMENT_PLAN_RESPONSE_FIELDS = frozenset(
+    {"status", "trace_id", "records", "result", "replayed", "original_trace_id"}
+)
+
+
+def summarize_target_replacement_plan_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    if any(str(key) not in TARGET_REPLACEMENT_PLAN_RESPONSE_FIELDS for key in provider_payload):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    if provider_payload.get("records") not in (None, {}):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    status = public_code(provider_payload.get("status"), default="ok")
+    payload = base_payload(status=status, operation="target-replacement-plan-read", request=request)
+    payload["result"] = _project_target_replacement_plan(provider_payload.get("result"))
+    payload["summary"] = {
+        "launchplane_status": status,
+        "trace_id": public_trace_id(provider_payload.get("trace_id")),
+        "recommendation": (
+            "Read plan_status and blocker_codes first; blocker_keys names the env keys each "
+            "key-list blocker is about. Blocker, step and warning text is not returned."
+        ),
+    }
+    assert_public_safe_shape(payload["summary"])
+    return payload
+
+
+def execute_target_replacement_plan_read(*, args: argparse.Namespace) -> int:
+    """POST the read-only plan route: it builds a plan and writes no record."""
+    product = public_identifier(_required_argument(args, "product"))
+    instance = public_identifier(_required_argument(args, "instance"))
+    for name, value in (("product", product), ("instance", instance)):
+        if not PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(value):
+            raise ValueError(f"invalid_{name}")
+    operation = "target-replacement-plan-read"
+    request: dict[str, object] = {
+        "product": product,
+        "instance": instance,
+        "payload_source": "operator_argument",
+    }
+    body: dict[str, object] = {
+        "schema_version": 1,
+        "product": product,
+        "replacement": {"product": product, "instance": instance},
+    }
+    settings = prepare_operator_settings(args=args, operation=operation, request=request)
+    if settings is None:
+        return 2
+    try:
+        provider_payload = request_launchplane(
+            service_url=settings["service_url"],
+            path=helper_command_path(operation),
+            settings=settings,
+            body=body,
+            timeout=args.timeout,
+        )
+        emit(summarize_target_replacement_plan_read(request=request, provider_payload=provider_payload))
+        return 0
+    except urllib.error.HTTPError as exc:
+        emit_http_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except LaunchplaneSafetyError as exc:
+        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except (OSError, TimeoutError, urllib.error.URLError):
+        emit_provider_unavailable(operation=operation, request=request)
+        return 1
+
+
 PRODUCT_READ_SUMMARIZERS = {
     "product-environment-read": summarize_product_environment_read,
     "product-activity-read": summarize_product_activity_read,
@@ -5447,6 +5733,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     target_replacement_operation_read.add_argument("--operation-id", required=True)
 
+    target_replacement_plan_read = subparsers.add_parser(
+        "target-replacement-plan-read",
+        help=(
+            "Read an Odoo lane's target-replacement plan (read-only): status, blocker codes "
+            "and the env-key names it would deliver or retire."
+        ),
+    )
+    target_replacement_plan_read.add_argument("--product", required=True)
+    target_replacement_plan_read.add_argument("--instance", required=True)
+
     for command, help_text in (
         ("testing-hold-dry-run", "Dry-run setting or lifting a testing lane's staff-testing hold."),
         ("testing-hold-apply", "Apply a reviewed testing hold change bound to the saved dry-run digest."),
@@ -5812,6 +6108,8 @@ def main(argv: list[str]) -> int:
             return execute_product_read(
                 args=args, operation=args.command, request=request, path=path
             )
+        if args.command == "target-replacement-plan-read":
+            return execute_target_replacement_plan_read(args=args)
         if args.command == "target-replacement-operation-read":
             path = _product_read_path(args.command, operation_id=args.operation_id)
             request = {
