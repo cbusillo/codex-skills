@@ -459,6 +459,22 @@ def summarize_checks(checks, expected_head_sha):
     }
 
 
+def apply_unfinished_workflow_runs(checks_summary, runs, head_sha):
+    # A queued run has no check runs yet, so the check counts alone cannot see it.
+    unfinished = sum(
+        1
+        for run in runs
+        if isinstance(run, dict)
+        and str(run.get("head_sha") or "") == head_sha
+        and str(run.get("status") or "") != "completed"
+    )
+    return {
+        **checks_summary,
+        "unfinished_workflow_run_count": unfinished,
+        "all_terminal": checks_summary["all_terminal"] and unfinished == 0,
+    }
+
+
 def watcher_reader():
     return github_read.GitHubReader(
         gh_cmd=GH_COMMAND,
@@ -1227,6 +1243,7 @@ def collect_snapshot(args):
     checks_diagnostic = reader.diagnostics()
     checks_summary = summarize_checks(checks, expected_head_sha=pr["head_sha"])
     workflow_runs = get_workflow_runs_for_sha(pr["repo"], pr["head_sha"], reader=reader)
+    checks_summary = apply_unfinished_workflow_runs(checks_summary, workflow_runs, pr["head_sha"])
     failed_runs = failed_runs_from_workflow_runs(workflow_runs, pr["head_sha"])
     failed_jobs = failed_jobs_from_workflow_runs(pr["repo"], workflow_runs, pr["head_sha"], reader=reader)
 

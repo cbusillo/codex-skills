@@ -692,6 +692,51 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
     assert summarize_kwargs == {"expected_head_sha": pr["head_sha"]}
 
 
+@pytest.mark.parametrize("status", ["queued", "pending", "waiting", "requested", "in_progress"])
+def test_unstarted_workflow_run_keeps_green_checks_from_becoming_ready(monkeypatch, tmp_path, status):
+    # codex-skills#970: CI queued for a runner had no check runs while finished checks were all green.
+    pr = sample_pr()
+    monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *args, **kwargs: dict(pr))
+    monkeypatch.setattr(gh_pr_watch, "load_state", lambda path: ({}, True))
+    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda reader=None: "octocat")
+    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        gh_pr_watch.github_read,
+        "pull_request_checks",
+        lambda *args, **kwargs: {
+            "headSha": pr["head_sha"],
+            "summary": {
+                "checkRunCount": 8, "statusCount": 0, "failingCount": 0, "pendingCount": 0,
+                "countsComplete": True, "countsAreLowerBounds": False, "unavailableComponents": [],
+            },
+        },
+    )
+    runs = [
+        {"id": 1, "name": "CodeQL", "head_sha": pr["head_sha"], "status": "completed", "conclusion": "success"},
+        {"id": 2, "name": "CI", "head_sha": pr["head_sha"], "status": status, "conclusion": None},
+        {"id": 3, "name": "CI", "head_sha": "older", "status": "completed", "conclusion": "success"},
+    ]
+    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *args, **kwargs: runs)
+    monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *args, **kwargs: [])
+    monkeypatch.setattr(gh_pr_watch, "save_state", lambda *args, **kwargs: None)
+
+    snapshot, _ = gh_pr_watch.collect_snapshot(argparse.Namespace(
+        pr="123", repo=None, state_file=str(tmp_path / "state.json"), max_flaky_retries=3
+    ))
+
+    assert snapshot["checks"]["all_terminal"] is False
+    assert snapshot["checks"]["unfinished_workflow_run_count"] == 1
+    assert "ready_to_merge" not in snapshot["actions"]
+
+    runs[1].update(status="completed", conclusion="success")
+    snapshot, _ = gh_pr_watch.collect_snapshot(argparse.Namespace(
+        pr="123", repo=None, state_file=str(tmp_path / "state.json"), max_flaky_retries=3
+    ))
+
+    assert snapshot["checks"]["all_terminal"] is True
+    assert snapshot["actions"] == ["ready_to_merge"]
+
+
 def test_collect_snapshot_emits_review_request_and_session_degradation(monkeypatch, tmp_path):
     pr = sample_pr()
     pr["metadata_availability"]["review_decision"] = False
