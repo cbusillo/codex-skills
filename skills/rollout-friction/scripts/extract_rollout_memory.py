@@ -98,6 +98,18 @@ TRANSIENT_RE = re.compile(
     r"commit [0-9a-f]{7,}|run \d+|job \d+|status|release v?\d)\b",
     re.I,
 )
+# A linked or repository-qualified reference is status only when a state word sits beside it;
+# a durable note may cite an issue. An Actions run or job URL always names a point in time.
+_LINKED_REF = r"(?:\b[\w.-]+/)?\b[\w.-]+#\d+\b|https?://github\.com/[\w.-]+/[\w.-]+/(?:pull|issues)/\d+"
+_STATE_WORD = (
+    r"\b(?:waiting|merged|landed|closed|pending|running|queued|blocked|passed|failed|failing|"
+    r"green|deployed|reverted|in progress|still open|is open)\b"
+)
+LINKED_STATUS_RE = re.compile(
+    rf"(?:{_LINKED_REF})[^\n]{{0,120}}?{_STATE_WORD}|{_STATE_WORD}[^\n]{{0,120}}?(?:{_LINKED_REF})|"
+    r"https?://github\.com/[\w.-]+/[\w.-]+/actions/runs/\d+",
+    re.I,
+)
 INJECTED_RE = re.compile(
     r"\b(System Status|automatic message added by system|base_instructions|Available skills|"
     r"How to use skills|token_count|model_context_window|reasoning_output_tokens)\b",
@@ -370,6 +382,10 @@ def is_relevant_tool_text(text: str) -> bool:
     return bool(PERSON_RE.search(text) or PROFILE_RE.search(text) or LOCAL_LLM_RE.search(text) or FRICTION_RE.search(text))
 
 
+def is_transient(text: str) -> bool:
+    return bool(TRANSIENT_RE.search(text) or LINKED_STATUS_RE.search(text))
+
+
 def is_noise(text: str) -> bool:
     return bool(INJECTED_RE.search(text))
 
@@ -378,19 +394,19 @@ def classify(text: str) -> tuple[str, str, str] | None:
     if is_noise(text):
         return None
     if PERSON_RE.search(text):
-        confidence = "medium" if not TRANSIENT_RE.search(text) else "low"
+        confidence = "medium" if not is_transient(text) else "low"
         return "people", confidence, "identity/contact/role/trust language"
     if LOCAL_LLM_RE.search(text):
-        confidence = "medium" if not TRANSIENT_RE.search(text) else "low"
+        confidence = "medium" if not is_transient(text) else "low"
         return "local-llm", confidence, "local model or endpoint preference"
     if PROFILE_RE.search(text):
-        confidence = "medium" if not TRANSIENT_RE.search(text) else "low"
+        confidence = "medium" if not is_transient(text) else "low"
         return "profile", confidence, "stable preference or local workflow language"
     if FRICTION_RE.search(text):
-        confidence = "low" if TRANSIENT_RE.search(text) else "medium"
+        confidence = "low" if is_transient(text) else "medium"
         return "rollout-friction", confidence, "workflow friction language"
     if REPO_SPECIFIC_RE.search(text):
-        confidence = "low" if TRANSIENT_RE.search(text) else "medium"
+        confidence = "low" if is_transient(text) else "medium"
         return "repo-specific", confidence, "repo path or implementation detail"
     return None
 
