@@ -2246,6 +2246,26 @@ def test_current_launchplane_service_response_shapes() -> None:
     assert "secret-record-example" not in json.dumps(apply)
 
 
+def test_product_config_projection_keeps_adoption_names_and_refuses_values() -> None:
+    adoption = [
+        {"key": "EXAMPLE_LABEL", "disposition": "adopted"},
+        {"key": "EXAMPLE_WORKERS", "disposition": "template_default"},
+        {"key": "EXAMPLE_CALLBACK_URL", "disposition": "refused_credential"},
+    ]
+    assert write_action._project_provider_key_adoption(adoption) == adoption
+
+    for unsafe in (
+        [{"key": "EXAMPLE_LABEL", "disposition": "adopted", "value": "private-value"}],
+        [{"key": "EXAMPLE_LABEL", "disposition": "private-value"}],
+        [{"key": "private value", "disposition": "adopted"}],
+    ):
+        try:
+            write_action._project_provider_key_adoption(unsafe)
+        except safety.LaunchplaneSafetyError:
+            continue
+        raise AssertionError(f"expected {unsafe!r} to be refused")
+
+
 def test_product_config_secret_results_keep_declared_secret_class() -> None:
     projected = write_action._project_secret_results(
         [

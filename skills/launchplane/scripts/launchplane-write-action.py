@@ -282,8 +282,16 @@ PRODUCT_CONFIG_APPLY_RESULT_FIELDS = {
     "runtime_environment",
     "runtime_key_safety",
     "secrets",
+    "provider_key_adoption",
     "summary",
     "next_actions",
+}
+PROVIDER_KEY_ADOPTION_DISPOSITIONS = {
+    "adopted",
+    "template_default",
+    "already_recorded",
+    "refused_credential",
+    "missing",
 }
 PREVIEW_FEEDBACK_REMEDIATION_RESULT_FIELDS = {
     "schema_version",
@@ -1101,6 +1109,29 @@ def _project_secret_results(value: object) -> list[dict[str, object]]:
     return projected
 
 
+def _project_provider_key_adoption(value: object) -> list[dict[str, str]]:
+    """Each adopted key's name and disposition; the service never sends a value."""
+    if not isinstance(value, list) or len(value) > 256:
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: list[dict[str, str]] = []
+    for item in value:
+        source = _require_dict(item)
+        if set(source) != {"key", "disposition"}:
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        key = source["key"]
+        disposition = source["disposition"]
+        if (
+            not isinstance(key, str)
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", key) is None
+            or disposition not in PROVIDER_KEY_ADOPTION_DISPOSITIONS
+        ):
+            raise LaunchplaneSafetyError("invalid_response")
+        projected.append({"key": key, "disposition": str(disposition)})
+    if len({item["key"] for item in projected}) != len(projected):
+        raise LaunchplaneSafetyError("invalid_response")
+    return projected
+
+
 def _project_apply_summary(value: object) -> dict[str, object]:
     source = _require_dict(value)
     allowed = {"runtime_changed_key_count", "secret_change_count"}
@@ -1193,6 +1224,7 @@ def _project_product_config_apply_result(result: object) -> dict[str, object]:
     for key, projector in (
         ("runtime_key_safety", _project_runtime_key_safety),
         ("secrets", _project_secret_results),
+        ("provider_key_adoption", _project_provider_key_adoption),
         ("summary", _project_apply_summary),
         ("next_actions", _project_next_actions),
     ):
