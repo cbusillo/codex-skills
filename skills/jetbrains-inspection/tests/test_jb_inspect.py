@@ -9,6 +9,7 @@ import json
 import os
 import plistlib
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -226,6 +227,99 @@ class SdkRetirementTests(unittest.TestCase):
             self.assertEqual(result["preserved_unowned_sdk_count"], 1)
             self.assertEqual(result["sdk_cleanup"], [])
             self.assertFalse(root.exists())
+
+    def remove_racing_finder(self, root: Path, kept: list[str], written: list[str], unregister: bool = True, edited: tuple[str, ...] = ()):
+        """Run remove-worktree while Git stops partway, as it does when Finder refills a folder (#844)."""
+        primary = root.parent / "primary"
+        subprocess.run(["git", "init", "-q", str(primary)], check=True)
+        (primary / ".gitignore").write_text(".venv/\n")
+        (primary / "pkg").mkdir()
+        (primary / "pkg" / "module.py").write_text("VALUE = 1\n")
+        subprocess.run(["git", "-C", str(primary), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(primary), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                        "commit", "-q", "-m", "fixture"], check=True)
+        subprocess.run(["git", "-C", str(primary), "worktree", "add", "-q", "-b", "task", str(root)], check=True)
+        (root / ".venv" / "lib").mkdir(parents=True)
+        (root / ".venv" / "lib" / "site.py").write_text("generated\n")
+        real_run = subprocess.run
+        def run(command, *args, **kwargs):
+            if command[3:5] != ["worktree", "remove"]:
+                return real_run(command, *args, **kwargs)
+            if unregister:
+                # Git deletes files, then drops the registration even though a folder stayed non-empty.
+                git_dir = real_run(["git", "-C", str(root), "rev-parse", "--absolute-git-dir"],
+                                   capture_output=True, text=True, check=True).stdout.strip()
+                shutil.rmtree(git_dir)
+                for path in root.rglob("*"):
+                    if path.is_file() and str(path.relative_to(root)) not in kept:
+                        path.unlink()
+                for relative in written:
+                    (root / relative).write_text("written during removal\n")
+                for relative in edited:
+                    with (root / relative).open("a") as handle:
+                        handle.write("edited during removal\n")
+            return subprocess.CompletedProcess(command, 128, "", f"error: failed to delete '{root}': Directory not empty\n")
+        def post(_port, _endpoint, params, **_kwargs):
+            response = self.response(root, True)
+            response.body["sdks"] = []
+            return response
+        args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
+        with patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), \
+                patch.object(jb_inspect, "http_post", side_effect=post), patch.object(jb_inspect.subprocess, "run", side_effect=run):
+            return jb_inspect.command_retire_sdks(args)
+
+    def test_removal_finishes_when_only_finder_metadata_refills_the_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "task"
+            result = self.remove_racing_finder(root, [], ["pkg/.DS_Store", ".DS_Store"])
+            self.assertTrue(result["worktree_removed"])
+            self.assertFalse(root.exists())
+
+    def test_removal_finishes_when_verified_checkout_files_remain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "task"
+            result = self.remove_racing_finder(root, ["pkg/module.py", ".venv/lib/site.py"], ["pkg/.DS_Store"])
+            self.assertTrue(result["worktree_removed"])
+            self.assertFalse(root.exists())
+
+    def test_removal_keeps_and_reports_a_file_written_during_removal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "task"
+            with self.assertRaisesRegex(jb_inspect.InspectError, "not in the verified checkout") as caught:
+                self.remove_racing_finder(root, ["pkg/module.py"], ["pkg/.DS_Store", "pkg/notes.txt"])
+            self.assertEqual(caught.exception.payload["retained_entries"], ["pkg/notes.txt"])
+            self.assertEqual((root / "pkg" / "notes.txt").read_text(), "written during removal\n")
+            self.assertTrue((root / "pkg" / "module.py").exists())
+
+    def test_removal_keeps_a_verified_file_edited_in_place_during_removal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "task"
+            with self.assertRaisesRegex(jb_inspect.InspectError, "not in the verified checkout") as caught:
+                self.remove_racing_finder(root, ["pkg/module.py"], ["pkg/.DS_Store"], edited=("pkg/module.py",))
+            self.assertEqual(caught.exception.payload["retained_entries"], ["pkg/module.py"])
+            self.assertIn("edited during removal", (root / "pkg" / "module.py").read_text())
+
+    def test_removal_keeps_a_file_written_while_leftovers_are_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "task"
+            real_unlink = os.unlink
+            def unlink(path, *args, **kwargs):
+                real_unlink(path, *args, **kwargs)
+                late = root / "pkg" / "late.txt"
+                if not late.exists():
+                    late.write_text("written after the leftovers were listed\n")
+            with patch.object(jb_inspect.os, "unlink", side_effect=unlink):
+                with self.assertRaisesRegex(jb_inspect.InspectError, "not in the verified checkout") as caught:
+                    self.remove_racing_finder(root, ["pkg/module.py"], ["pkg/.DS_Store"])
+            self.assertEqual(caught.exception.payload["retained_entries"], ["pkg/late.txt"])
+            self.assertTrue((root / "pkg" / "late.txt").exists())
+
+    def test_refused_removal_that_keeps_the_registration_touches_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "task"
+            with self.assertRaisesRegex(jb_inspect.InspectError, "Git worktree removal failed"):
+                self.remove_racing_finder(root, [], [], unregister=False)
+            self.assertTrue((root / ".venv" / "lib" / "site.py").exists())
 
     def test_apply_skips_ides_whose_preview_has_nothing_to_remove(self):
         # #952: an IDE with an empty preview answered the needless mutating call with sdk_lifecycle_busy or a timeout.

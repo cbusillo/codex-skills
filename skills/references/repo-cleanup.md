@@ -84,7 +84,8 @@ does not trigger a global repository scan, cache sweep, or retirement workflow.
    Unrecorded SDKs remain registered and are reported as preserved. A
    `not_helper_owned` refusal alone permits eligible worktree removal while
    preserving the SDK; other refusal reasons remain holds. A Git removal failure can follow
-   successful SDK retirement; retain and report the exact result rather than
+   successful SDK retirement; the helper finishes only a removal that Finder
+   raced with `.DS_Store` writes. Retain and report any other result rather than
    forcing removal. Use `cleanup-helper-sdks` dry-run then `--no-dry-run --worktree-path /reviewed/orphan` (repeat the path flag for each listed candidate) for
    proved helper-owned SDKs whose worktrees were already removed. Never edit
    running IDE config files or infer ownership from SDK names.

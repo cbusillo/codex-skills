@@ -30,7 +30,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10675,6 +10675,94 @@ def retirement_worktree(path: Path, dry_run: bool = False) -> Path:
     return root
 
 
+FINDER_METADATA_NAME = ".DS_Store"
+FINDER_RACE_ATTEMPTS = 3
+
+
+def entry_signature(status: os.stat_result, is_directory: bool) -> tuple[int, ...]:
+    # Deleting children changes a folder's mtime, so folders are matched by inode alone.
+    return (status.st_ino,) if is_directory else (status.st_ino, status.st_size, status.st_mtime_ns)
+
+
+def worktree_entries(root: Path) -> dict[str, tuple[int, ...]]:
+    """Map every entry below root to its identity and content signature without following symlinks."""
+    entries: dict[str, tuple[int, ...]] = {}
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as listing:
+            for entry in listing:
+                path = Path(entry.path)
+                is_directory = entry.is_dir(follow_symlinks=False)
+                entries[str(path.relative_to(root))] = entry_signature(entry.stat(follow_symlinks=False), is_directory)
+                if is_directory:
+                    pending.append(path)
+    return entries
+
+
+def delete_verified_entries(root: Path, directory: Path, before: dict[str, tuple[int, ...]], unexpected: list[str],
+                            delete: bool = True) -> None:
+    """Delete entries unchanged since the snapshot, and Finder metadata, unless only checking; collect every other entry."""
+    try:
+        with os.scandir(directory) as listing:
+            entries = list(listing)
+    except FileNotFoundError:
+        return
+    for entry in entries:
+        path = Path(entry.path)
+        relative = str(path.relative_to(root))
+        try:
+            # Check each entry immediately before deleting it so a file written mid-pass is kept.
+            is_directory = entry.is_dir(follow_symlinks=False)
+            status = os.lstat(path)
+            if (not is_directory and entry.name == FINDER_METADATA_NAME) or before.get(relative) == entry_signature(status, is_directory):
+                if is_directory:
+                    delete_verified_entries(root, path, before, unexpected, delete)
+                    if not delete:
+                        continue
+                    with suppress(OSError):
+                        # Finder may have refilled it; the next attempt retries.
+                        os.rmdir(path)
+                elif delete:
+                    os.unlink(path)
+            else:
+                unexpected.append(relative)
+        except FileNotFoundError:
+            continue
+
+
+def finish_raced_worktree_removal(common: Path, root: Path, before: dict[str, tuple[int, ...]], git_error: str) -> None:
+    """Finish a removal Git unregistered but could not empty, keeping anything it did not verify."""
+    # Git deletes the checkout before its registration, so a registered path was refused rather than raced.
+    listed = subprocess.run(["git", "-C", str(common), "worktree", "list", "--porcelain"],
+                            capture_output=True, text=True, check=True).stdout.splitlines()
+    if any(line.startswith("worktree ") and paths_same(line.removeprefix("worktree "), root) for line in listed):
+        raise InspectError("Git worktree removal failed; SDK cleanup may already have completed.", 3, {"git_error": git_error})
+    # Finder writes .DS_Store into folders while they are deleted; every other leftover must be unchanged since the snapshot.
+    for _ in range(FINDER_RACE_ATTEMPTS):
+        if not root.exists() and not root.is_symlink():
+            return
+        if root.is_symlink() or not root.is_dir():
+            break
+        unexpected: list[str] = []
+        # Check the whole tree first so a hold keeps every leftover, then recheck each entry as it is deleted.
+        delete_verified_entries(root, root, before, unexpected, delete=False)
+        if not unexpected:
+            delete_verified_entries(root, root, before, unexpected)
+        if unexpected:
+            unexpected.sort()
+            raise InspectError("Worktree removal left files that were not in the verified checkout; they are kept.", 3,
+                               {"git_error": git_error, "retained_entry_count": len(unexpected), "retained_entries": unexpected[:50]})
+        with suppress(OSError):
+            os.rmdir(root)
+    if root.exists() or root.is_symlink():
+        remaining: list[str] = []
+        if root.is_dir() and not root.is_symlink():
+            delete_verified_entries(root, root, before, remaining, delete=False)
+        raise InspectError("Git unregistered the worktree but its directory could not be emptied; inspect what remains.", 3,
+                           {"git_error": git_error, "retained_entry_count": len(remaining), "retained_entries": sorted(remaining)[:50]})
+
+
 def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, dry_run: bool) -> list[dict[str, Any]]:
     if not identities:
         raise InspectError("No live IDE is available to prove SDK cleanup; start the prepared worktree's IDE first.", 3)
@@ -10791,11 +10879,11 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
                     common = git_common_worktree(root)
                     if common is None:
                         raise InspectError("Cannot resolve the primary checkout for worktree removal.", 3)
+                    before = worktree_entries(root)
                     completed = subprocess.run(["git", "-C", str(common), "worktree", "remove", str(root)],
                                                capture_output=True, text=True)
                     if completed.returncode or root.exists():
-                        raise InspectError("Git worktree removal failed; SDK cleanup may already have completed.", 3,
-                                           {"git_error": completed.stderr})
+                        finish_raced_worktree_removal(common, root, before, completed.stderr)
             return {"status": "ok", "dry_run": args.dry_run, "worktree_path": str(root) if root else None,
                     "sdk_preview": preview, "sdk_cleanup": applied, "sdk_apply_skipped": [item["ide"] for item in skipped],
                     "worktree_removed": root is not None and not args.dry_run,
