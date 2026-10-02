@@ -1,16 +1,21 @@
 # Direction
 
-This file is the current direction for the codex-skills catalog. When an
-issue, milestone, or other document disagrees with it, this file wins and the
-other source is corrected or closed. Issues are a work list, not instructions.
+This file is the current direction for the codex-skills catalog. The
+Director's overall direction in `cbusillo/direction` comes first. When an
+issue, milestone, or other document here disagrees with this file, this file
+wins and the other source is corrected or closed. Issues are a work list, not
+instructions.
 
 ## Purpose
 
 One catalog of skills and helpers that makes a coding agent on Claude Code or
 Codex finish real repository work the same way on either harness, for the
-owner and for the other owners who install it. A harness is the program that
-runs the agent loop and its tools, such as Claude Code, Codex CLI, or
+Director and for the other Directors who install it. A harness is the program
+that runs the agent loop and its tools, such as Claude Code, Codex CLI, or
 Antigravity; a chat app is not one.
+
+A Director is the person whose `DIRECTION.md` the agents follow; see
+[role words](skills/references/role-words.md).
 
 Judge every change by one question: does this let an agent finish work on
 both harnesses with less ceremony, without adding a gate, a concept, or a
@@ -18,7 +23,7 @@ harness-specific branch?
 
 ## Stop Boundaries
 
-An agent asks the owner before:
+An agent asks the Director before:
 
 - writing to another person's repository
 - changing approval, safety, or destructive-helper guidance without a review
@@ -56,8 +61,8 @@ until they pass.
 
 ## Milestones
 
-- `Adopted beyond this repository` proves that the other owners' agents
+- `Adopted beyond this repository` proves that the other Directors' agents
   adopt direction and the review policy from the steps on GitHub alone and
   report a clean or triaged first audit; ends if adoption needs a hand edit
-  that a catalog pull should have carried, or the owners remove it as
+  that a catalog pull should have carried, or those Directors remove it as
   ceremony.
