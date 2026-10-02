@@ -5299,6 +5299,23 @@ def test_product_owner_apply_checks_the_client_reapplies_and_reads_back() -> Non
         )
         assert (status, payload["status"]) == (1, "outcome_unknown")
 
+        def http_error(http_status: int) -> urllib.error.HTTPError:
+            body = {"trace_id": "launchplane_req_error", "error": {"code": "example"}}
+            return urllib.error.HTTPError(
+                "https://launchplane.example.invalid", http_status, "error", hdrs=Message(),
+                fp=io.BytesIO(json.dumps(body).encode()),
+            )
+
+        # A gateway error after the POST may follow a completed write; a 4xx is Launchplane's refusal.
+        status, payload, _posts, _reads = _run_main(
+            apply_argv, post=http_error(502), read=_profile_response()
+        )
+        assert (status, payload["status"]) == (1, "outcome_unknown")
+        status, payload, _posts, _reads = _run_main(
+            apply_argv, post=http_error(409), read=_profile_response()
+        )
+        assert status == 1 and payload["status"] not in {"outcome_unknown", "accepted"}
+
         for overrides, code in (
             (["--clear"], "reviewed_dry_run_not_apply_eligible"),
             (["--github-login", "another-user"], "reviewed_dry_run_not_apply_eligible"),
@@ -5498,6 +5515,24 @@ def test_production_backup_authority_apply_binds_the_exact_reviewed_payload() ->
         }
         assert payload["result"]["read_back_matches"] is True
 
+        # A target the apply reported is missing from the read-back.
+        status, payload, _posts, _reads = _run_main(
+            apply_argv,
+            post=_backup_response(mode="apply", status="applied"),
+            read=_backup_read_response(targets=[], state="missing", ready=False),
+        )
+        assert (status, payload["status"]) == (1, "accepted_unverified")
+        assert payload["result"]["read_back_matches"] is False
+
+        # Launchplane reports an authority other than the reviewed one.
+        status, payload, _posts, _reads = _run_main(
+            apply_argv,
+            post=_backup_response(mode="apply", status="applied", authority_digest="e" * 64),
+            read=_backup_read_response(),
+        )
+        assert (status, payload["status"]) == (1, "accepted_unverified")
+        assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
+
         stale_read = _backup_read_response(policy={**_backup_policy_summary(), "record_id": "other-r2"})
         status, payload, _posts, _reads = _run_main(
             apply_argv, post=_backup_response(mode="apply", status="applied"), read=stale_read
@@ -5649,6 +5684,15 @@ def test_dokploy_compose_target_hides_provider_ids_and_binds_the_payload() -> No
         assert payload["result"]["read_back_matches"] is True
         assert "compose-private-9" not in json.dumps(payload)
 
+        # Launchplane applied a different plan than the reviewed one.
+        changed_plan = _compose_response("apply", "compose-private-9")
+        changed_plan["result"]["setup"]["plan"]["project"]["action"] = "create"
+        status, payload, _posts, _reads = _run_main(
+            apply_argv, post=changed_plan, read=_inspect_response()
+        )
+        assert (status, payload["status"]) == (1, "accepted_unverified")
+        assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
+
         # The records name a different target than the one created.
         status, payload, _posts, _reads = _run_main(
             apply_argv,
@@ -5749,12 +5793,22 @@ def test_product_promotion_status_keeps_the_fingerprint_and_drops_release_detail
         "required": True,
         "approved": False,
         "blocker_count": 1,
-        "unavailable_reason": "",
+        "unavailable": False,
     }
-    assert result["availability"]["workflow_dry_run"]["disabled_reasons"] == ["Needs a dry-run."]
-    assert "workflow_live.disabled_reasons[]" in result["dropped_field_paths"]
+    assert result["availability"]["workflow_dry_run"]["disabled_reason_count"] == 1
+    assert result["availability"]["direct_dry_run"]["enabled"] is True
     printed = json.dumps(payload)
-    for private in ("sha256:", "b" * 40, "private-repo", "PROMOTE", "testing.example.invalid", "free text"):
+    for private in (
+        "sha256:",
+        "b" * 40,
+        "private-repo",
+        "PROMOTE",
+        "testing.example.invalid",
+        "free text",
+        "Needs a dry-run",
+        "x.example.invalid",
+        "Client has not accepted",
+    ):
         assert private not in printed, private
 
 

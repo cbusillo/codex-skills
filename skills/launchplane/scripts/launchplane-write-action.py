@@ -5837,7 +5837,7 @@ def _project_production_backup_authority_read(value: object) -> dict[str, object
         "promotion_action": public_identifier(source.get("promotion_action")),
         "state": source["state"],
         "ready": bool(_optional_bool(source.get("ready"))),
-        "summary": _optional_text(source.get("summary"), max_length=500),
+        # The summary is free text that can name hosts; reason codes carry the state.
         # Codes such as production_backup_target_stale:<target id> carry a target id.
         "reason_codes": [public_identifier(code) for code in reason_codes],
         "policy": _project_backup_policy_summary(source.get("policy")),
@@ -6202,6 +6202,10 @@ def execute_verified_apply(
         emit(payload)
         return 0 if verified else 1
     except urllib.error.HTTPError as exc:
+        # A gateway error after the POST began may follow a write Launchplane completed.
+        if post_attempted and (exc.code >= 500 or exc.code == 408):
+            emit(_apply_outcome_unknown(operation=operation, request=request, label=label))
+            return 1
         emit_http_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except LaunchplaneSafetyError as exc:
@@ -6354,10 +6358,10 @@ def execute_production_backup_authority_apply(
                 str(target["target_id"]): str(target["record_id"])
                 for target in observed.get("targets") or []
             }
+            # A target the apply reported but the read-back lacks is a mismatch, not a skip.
             return policy_read.get("record_id") == applied_policy["record_id"] and all(
                 read_targets.get(target_id) == record_id
                 for target_id, record_id in applied_targets.items()
-                if target_id in read_targets
             )
 
         read_back_ok = attach_read_back(
@@ -6396,7 +6400,7 @@ def execute_dokploy_compose_apply(
         created_target_id = _dokploy_setup_target_id(provider_payload.get("result"))
         applied_as_reviewed = (
             result.get("applied") is True
-            and result.get("plan_sha256") is not None
+            and result.get("plan_sha256") == expected_plan_digest
             and bool(created_target_id)
         )
         if not applied_as_reviewed:
@@ -6496,7 +6500,6 @@ def execute_production_backup_authority_read(
 PRODUCT_PROMOTION_DESTINATION = "prod"
 PRODUCT_PROMOTION_BUMPS = {"patch", "minor", "major"}
 PRODUCT_PROMOTION_AVAILABILITY_KEYS = ("direct_dry_run", "workflow_dry_run", "workflow_live")
-PRODUCT_PROMOTION_MAX_REASONS = 20
 PRODUCT_PROMOTION_STATUS_FIELDS = (
     "promotion_status",
     "deployment_status",
@@ -6553,27 +6556,16 @@ def _project_promotion_evidence(value: object) -> dict[str, object]:
     }
 
 
-def _project_promotion_availability(
-    value: object, *, path: str, drops: _FieldDrops
-) -> dict[str, object]:
+def _project_promotion_availability(value: object) -> dict[str, object]:
     source = _require_dict(value)
     reasons = source.get("disabled_reasons") or []
     if not isinstance(reasons, list):
         raise LaunchplaneSafetyError("invalid_response")
-    kept: list[str] = []
-    for reason in reasons[:PRODUCT_PROMOTION_MAX_REASONS]:
-        projected_reason = drops.keep(
-            f"{path}.disabled_reasons[]",
-            lambda item: public_summary_string(item, max_length=300),
-            reason,
-        )
-        if projected_reason:
-            kept.append(cast(str, projected_reason))
     return {
         "enabled": bool(_optional_bool(source.get("enabled"))),
         "authz_action": _optional_identifier(source.get("authz_action")),
-        "disabled_reasons": kept,
-        "disabled_reasons_truncated": len(reasons) > PRODUCT_PROMOTION_MAX_REASONS,
+        # Reasons are free text that can name hosts and targets; the count says whether any apply.
+        "disabled_reason_count": len(reasons),
         "requires_matching_direct_dry_run": bool(
             _optional_bool(source.get("requires_matching_direct_dry_run"))
         ),
@@ -6583,14 +6575,13 @@ def _project_promotion_availability(
 
 def _project_product_promotion_status(provider_payload: dict[str, Any]) -> dict[str, object]:
     """Whether a testing-to-prod promotion could run and its evidence fingerprint. The
-    release checklist, artifacts, commits, repository, workflow and live confirmations
-    are dropped."""
+    release checklist, artifacts, commits, repository, workflow, live confirmations and
+    every free-text reason are dropped."""
     if any(
         str(key) not in {"status", "trace_id", "promotion_status"} for key in provider_payload
     ):
         raise LaunchplaneSafetyError("unsafe_response_shape")
     source = _require_dict(provider_payload.get("promotion_status"))
-    drops = _FieldDrops()
     release_review = _require_dict(source.get("release_review") or {})
     blockers = release_review.get("blockers") or []
     if not isinstance(blockers, list):
@@ -6599,14 +6590,9 @@ def _project_product_promotion_status(provider_payload: dict[str, Any]) -> dict[
     if default_bump not in PRODUCT_PROMOTION_BUMPS:
         raise LaunchplaneSafetyError("invalid_response")
     availability = {
-        key: _project_promotion_availability(source.get(key), path=key, drops=drops)
+        key: _project_promotion_availability(source.get(key))
         for key in PRODUCT_PROMOTION_AVAILABILITY_KEYS
     }
-    unavailable_reason = drops.keep(
-        "release_review.unavailable_reason",
-        lambda item: public_summary_string(item, max_length=300),
-        release_review.get("unavailable_reason"),
-    )
     projected: dict[str, object] = {
         "product": public_identifier(source.get("product")),
         "context": public_identifier(source.get("context")),
@@ -6624,10 +6610,9 @@ def _project_product_promotion_status(provider_payload: dict[str, Any]) -> dict[
             "required": bool(_optional_bool(release_review.get("required"))),
             "approved": bool(_optional_bool(release_review.get("approved"))),
             "blocker_count": len(blockers),
-            "unavailable_reason": unavailable_reason,
+            "unavailable": bool(release_review.get("unavailable_reason")),
         },
         "availability": availability,
-        "dropped_field_paths": sorted(drops.paths),
     }
     assert_public_safe_shape(projected)
     return projected

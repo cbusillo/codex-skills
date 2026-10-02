@@ -209,7 +209,8 @@ vendored artifact is refreshed. Every apply follows the same safeguards:
   review. It exits 0 only when both match. `accepted_unverified` (exit 1)
   means Launchplane may have written; read the record back and do not retry
   until it explains the result. `outcome_unknown` means the exchange failed
-  after the POST began.
+  after the POST began, including a gateway or server error (5xx or 408); a 4xx
+  is Launchplane's refusal.
 
 Where Launchplane does not bind an apply to a dry-run, the helper hashes what
 the reviewer saw into `plan_sha256` and checks the record again before the
@@ -287,7 +288,8 @@ and `POST /v1/production-backup-authority/apply`. They are authorized as
 
 - `production-backup-authority-read --product --context --instance
   --promotion-action` returns the authority's state (`ready`, `missing`,
-  `invalid`, `stale` or `retired`), reason codes, and the policy and target
+  `invalid`, `stale` or `retired`), reason codes (its free-text summary is
+  dropped), and the policy and target
   summaries with their record ids. Use those ids as
   `expected_current_policy_record_id` and `expected_current_target_record_ids`
   for the next revision.
@@ -313,9 +315,10 @@ and `POST /v1/production-backup-authority/apply`. They are authorized as
 whether a testing-to-prod promotion could run: the lanes' deploy, health,
 runtime-identity and trust states, whether release review is required and
 approved, the number of release blockers, each operation's availability and
-disabled reasons, and the `evidence_fingerprint`. Artifact ids, commits, the
-release checklist and decision, the repository and workflow, and the live
-confirmation strings are dropped.
+number of disabled reasons, and the `evidence_fingerprint`. Artifact ids,
+commits, the release checklist and decision, the repository and workflow, the
+live confirmation strings, and all free-text reasons are dropped; read the
+reasons in the Launchplane UI.
 
 `product-promotion-dry-run --product --evidence-fingerprint --reason
 [--bump patch|minor|major] --idempotency-key` calls
