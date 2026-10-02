@@ -262,11 +262,12 @@ authorization result, not a reason to use another path.
 - Output shows the plan actions for project, environment and compose, the
   health-check path, domain and route counts, the provider kind, and
   `plan_sha256` over the payload digest and plan actions. Provider ids, server
-  ids, project and environment names, domains, git URLs, env-key names and
-  provider requests are dropped.
+  ids, project and environment names, domains, git URLs, env-key names, the
+  payload's reason and provider requests are dropped.
 - Apply reads the target back through `GET /v1/dokploy-targets/inspect`
   (`dokploy_target.inspect`) and checks that the provider-target record is
-  present and that every record names the created compose. The ids are compared,
+  present, that every record names the created compose, and that the tracked
+  target holds the reviewed domains and health-check path. These are compared,
   never printed.
 
 ### Lane record
@@ -305,8 +306,9 @@ and `POST /v1/production-backup-authority/apply`. They are authorized as
   differs from the reviewed one, or whose dry-run had nothing to apply.
 - Target destinations carry the Proxmox host, account, guest id or storage
   name. They go to Launchplane only; output never shows them.
-- After apply the helper reads the authority back and checks the policy and
-  target record ids.
+- After apply the helper checks Launchplane's applied policy and target record
+  ids against the saved dry-run, then reads the authority back and checks them
+  again.
 
 ### Product promotion status and dry-run
 

@@ -5524,6 +5524,15 @@ def test_production_backup_authority_apply_binds_the_exact_reviewed_payload() ->
         assert (status, payload["status"]) == (1, "accepted_unverified")
         assert payload["result"]["read_back_matches"] is False
 
+        # The response leaves out a reviewed target while reporting the reviewed digest.
+        status, payload, _posts, _reads = _run_main(
+            apply_argv,
+            post=_backup_response(mode="apply", status="applied", targets=[]),
+            read=_backup_read_response(),
+        )
+        assert (status, payload["status"]) == (1, "accepted_unverified")
+        assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
+
         # Launchplane reports an authority other than the reviewed one.
         status, payload, _posts, _reads = _run_main(
             apply_argv,
@@ -5642,7 +5651,11 @@ def _inspect_response(target_id: str = "compose-private-9", status: str = "prese
             "status": "ok",
             "target_type": "compose",
             "target_id": target_id,
-            "tracked_target": {"target_id": target_id, "domains": ["testing.example.invalid"]},
+            "tracked_target": {
+                "target_id": target_id,
+                "domains": ["Testing.example.invalid"],
+                "healthcheck_path": "/health",
+            },
             "provider_target_record": {"status": status, "target_id": target_id},
         },
     }
@@ -5660,7 +5673,15 @@ def test_dokploy_compose_target_hides_provider_ids_and_binds_the_payload() -> No
         assert (body["operation"], body["product"], body["mode"]) == ("create-compose", "launchplane", "dry-run")
         assert "confirmation" not in body
         printed = json.dumps(evidence)
-        for private in ("server-private-1", "project-private-1", "testing.example.invalid", "git@", "EXAMPLE_KEY", "planned-compose-id"):
+        for private in (
+            "server-private-1",
+            "project-private-1",
+            "testing.example.invalid",
+            "git@",
+            "EXAMPLE_KEY",
+            "planned-compose-id",
+            "Create the testing lane",
+        ):
             assert private not in printed, private
         assert evidence["result"]["plan_actions"] == {"project": "reuse", "environment": "create", "compose": "create"}
         assert evidence["result"]["domain_count"] == 1
@@ -5692,6 +5713,16 @@ def test_dokploy_compose_target_hides_provider_ids_and_binds_the_payload() -> No
         )
         assert (status, payload["status"]) == (1, "accepted_unverified")
         assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
+
+        # The tracked target does not hold the reviewed domain.
+        moved_domain = _inspect_response()
+        moved_domain["inspect"]["tracked_target"]["domains"] = ["other.example.invalid"]
+        status, payload, _posts, _reads = _run_main(
+            apply_argv, post=_compose_response("apply", "compose-private-9"), read=moved_domain
+        )
+        assert (status, payload["status"]) == (1, "accepted_unverified")
+        assert payload["result"]["read_back"]["configuration_matches_review"] is False
+        assert "other.example.invalid" not in json.dumps(payload)
 
         # The records name a different target than the one created.
         status, payload, _posts, _reads = _run_main(

@@ -5895,7 +5895,7 @@ def _project_dokploy_compose_setup(
         "context": public_identifier(source.get("context")),
         "instance": public_identifier(source.get("instance")),
         "applied": bool(_optional_bool(source.get("applied"))),
-        "reason": _optional_text(source.get("reason"), max_length=500),
+        # The reason comes from the private payload and can name hosts; the digest covers it.
         "plan_actions": plan_actions,
         "healthcheck_path": healthcheck_path,
         "domain_count": len(domains),
@@ -6099,10 +6099,17 @@ def read_production_backup_authority(
     return _project_production_backup_authority_read(provider_payload.get("authority"))
 
 
+def _domain_set(value: object) -> frozenset[str]:
+    if not isinstance(value, list):
+        return frozenset()
+    return frozenset(str(domain).strip().lower() for domain in value)
+
+
 def read_dokploy_target(
     *, settings: dict[str, str], context: str, instance: str, timeout: float
-) -> tuple[dict[str, object], set[str]]:
-    """Public target state, plus the ids the records name for comparison only."""
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Public target state, plus the ids, domains and health path the records hold,
+    for comparison only."""
     provider_payload = request_launchplane_read(
         service_url=settings["service_url"],
         path=internal_helper_path("dokploy-target-inspect"),
@@ -6113,16 +6120,20 @@ def read_dokploy_target(
     inspect = _require_dict(provider_payload.get("inspect"))
     tracked = _require_dict(inspect.get("tracked_target") or {})
     provider_target = _require_dict(inspect.get("provider_target_record") or {})
-    target_ids = {
-        str(source.get("target_id") or "").strip()
-        for source in (inspect, tracked, provider_target)
+    private = {
+        "target_ids": {
+            str(source.get("target_id") or "").strip()
+            for source in (inspect, tracked, provider_target)
+        },
+        "domains": _domain_set(tracked.get("domains")),
+        "healthcheck_path": str(tracked.get("healthcheck_path") or ""),
     }
     public = {
         "status": public_code(inspect.get("status")),
         "target_type": public_code(inspect.get("target_type"), default="unknown"),
         "provider_target_record": public_code(provider_target.get("status"), default="missing"),
     }
-    return public, target_ids
+    return public, private
 
 
 def attach_read_back(
@@ -6330,15 +6341,40 @@ def execute_production_backup_authority_apply(
         "promotion_action": str(policy["promotion_action"]).strip(),
     }
     expected_digest = cast(str, body["reviewed_authority_digest"])
+    _evidence, reviewed = _load_reviewed_evidence(
+        args,
+        operation="production-backup-authority-dry-run",
+        expected_digest=expected_digest,
+        digest_field="authority_digest",
+        evidence_status="ok",
+        result_status="would_apply",
+        dry_run_mode="dry_run",
+    )
+    reviewed_policy = reviewed.get("policy") if isinstance(reviewed.get("policy"), dict) else {}
+    # The saved evidence holds projected strings; anything else simply fails to match.
+    reviewed_targets = {
+        cast(str, target.get("target_id")): cast(str, target.get("record_id"))
+        for target in reviewed.get("targets") or []
+        if isinstance(target, dict)
+    }
 
     def finish(
         settings: dict[str, str], _provider_payload: dict[str, Any], payload: dict[str, Any]
     ) -> bool:
         result = payload["result"]
         # Launchplane enforces the reviewed digest; this confirms what it reports.
-        applied_as_reviewed = result.get("authority_digest") == expected_digest and result.get(
-            "status"
-        ) in {"applied", "replayed"}
+        applied_targets = {
+            str(target["target_id"]): str(target["record_id"])
+            for target in cast(list[dict[str, Any]], result["targets"])
+        }
+        # Compare with the saved review, so a target the response omits is not skipped.
+        applied_as_reviewed = (
+            result.get("authority_digest") == expected_digest
+            and result.get("status") in {"applied", "replayed"}
+            and cast(dict[str, Any], result["policy"]).get("record_id")
+            == reviewed_policy.get("record_id")
+            and applied_targets == reviewed_targets
+        )
         if not applied_as_reviewed:
             payload["warnings"].append(
                 warning(
@@ -6346,22 +6382,16 @@ def execute_production_backup_authority_apply(
                     "Launchplane reported a different backup authority than the reviewed dry-run.",
                 )
             )
-        applied_policy = cast(dict[str, Any], result["policy"])
-        applied_targets = {
-            str(target["target_id"]): str(target["record_id"])
-            for target in cast(list[dict[str, Any]], result["targets"])
-        }
-
         def matches(observed: dict[str, Any]) -> bool:
             policy_read = observed.get("policy") or {}
             read_targets = {
                 str(target["target_id"]): str(target["record_id"])
                 for target in observed.get("targets") or []
             }
-            # A target the apply reported but the read-back lacks is a mismatch, not a skip.
-            return policy_read.get("record_id") == applied_policy["record_id"] and all(
+            # A reviewed target the read-back lacks is a mismatch, not a skip.
+            return policy_read.get("record_id") == reviewed_policy.get("record_id") and all(
                 read_targets.get(target_id) == record_id
-                for target_id, record_id in applied_targets.items()
+                for target_id, record_id in reviewed_targets.items()
             )
 
         read_back_ok = attach_read_back(
@@ -6413,17 +6443,24 @@ def execute_dokploy_compose_apply(
         result["reviewed_plan_sha256"] = expected_plan_digest
 
         def read() -> dict[str, object]:
-            public, target_ids = read_dokploy_target(
+            public, private = read_dokploy_target(
                 settings=settings, context=context, instance=instance, timeout=args.timeout
             )
-            public["target_ids_agree"] = target_ids == {created_target_id}
+            # Compared here and never printed: the records name the created compose and
+            # hold the reviewed domains and health path.
+            public["target_ids_agree"] = private["target_ids"] == {created_target_id}
+            public["configuration_matches_review"] = (
+                private["domains"] == _domain_set(body["domains"])
+                and private["healthcheck_path"] == body["healthcheck_path"]
+            )
             return public
 
         read_back_ok = attach_read_back(
             payload,
             read=read,
             matches=lambda observed: observed["provider_target_record"] == "present"
-            and observed["target_ids_agree"] is True,
+            and observed["target_ids_agree"] is True
+            and observed["configuration_matches_review"] is True,
             label="Dokploy target",
         )
         return applied_as_reviewed and read_back_ok
