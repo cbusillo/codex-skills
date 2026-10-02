@@ -72,8 +72,6 @@ class DriveSettings:
     ineligible_passes: int = 2
     empty_candidate_failures: int = 5
     max_stack_finish_passes: int = 5
-    # Launchplane's controller lease period; a held lease cannot clear sooner.
-    lease_seconds: float = 300.0
 
 
 @dataclass
@@ -120,11 +118,11 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
         if response.get("status") not in {"accepted", "ok"}:
             snapshot = _snapshot(settings, state, "controller_refused", response)
             if snapshot["error_code"] == LEASE_HELD_CODE:
-                # Another driver is running the controller; its lease lasts at least the lease period.
+                # Another driver is running the controller; keep polling until its lease is released or expires.
                 snapshot["controller_action"] = "controller_lease_held"
                 state.lease_held = snapshot
                 emit("snapshot", snapshot)
-                io.sleep(max(settings.poll_seconds, settings.lease_seconds))
+                io.sleep(settings.poll_seconds)
                 continue
             state.helper_failures += 1
             state.lease_held = None
@@ -181,10 +179,7 @@ def _judge(
         return None
     if action == "update_branch":
         if (result.get("branch_update_result") or {}).get("status") == "updated":
-            # The controller already refreshed the branch; the next pass reads the new head.
-            if state.branch_updates >= settings.max_branch_updates:
-                return "needs_owner", {"reason": "branch kept falling behind its base"}
-            state.branch_updates += 1
+            # The controller already refreshed a queued branch, possibly another PR's; the deadline bounds repeats.
             return None
         return _update_branch(settings, io, state, result)
     entry = _queue_entry(result, settings.number)
@@ -293,7 +288,7 @@ def _snapshot(settings: DriveSettings, state: DriveState, action: str, response:
         "error_code": summary.get("error_code") or first_warning.get("code"),
         "http_status": summary.get("http_status"),
         "exit_code": response.get("exit_code"),
-        "stderr": response.get("stderr"),
+        "failure": response.get("failure"),
         "trace_id": summary.get("trace_id"),
         "batch": sorted(state.batch),
         "landed": sorted(state.landed),
@@ -341,16 +336,15 @@ def live_io(helper_timeout: float) -> DriveIO:
         try:
             completed = subprocess.run(command, capture_output=True, text=True, timeout=helper_timeout + 60, check=False)
         except (OSError, subprocess.TimeoutExpired) as error:
-            return {"status": "no_response", "stderr": type(error).__name__}
+            return {"status": "no_response", "failure": type(error).__name__}
         try:
             payload = json.loads(completed.stdout)
         except json.JSONDecodeError:
             payload = None
         if isinstance(payload, dict):
             return payload
-        # Keep enough of the failure to tell an outage from a crash without logging the whole stream.
-        stderr_lines = completed.stderr.strip().splitlines()
-        return {"status": "no_response", "exit_code": completed.returncode, "stderr": stderr_lines[-1][:300] if stderr_lines else ""}
+        # Stderr can echo local configuration, so only the exit code leaves this process.
+        return {"status": "no_response", "exit_code": completed.returncode}
 
     def pull_request(repository: str, number: int) -> dict[str, Any] | None:
         payload = _run_json(
