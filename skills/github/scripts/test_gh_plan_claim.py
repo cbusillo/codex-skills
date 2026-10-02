@@ -178,6 +178,12 @@ class ClaimTests(unittest.TestCase):
             {"body": context + "\n\nhttps://github.com/owner/repo/issues/42"},
             {"body": context + "; Fixes #42"},
             {"body": context + "; Fixes https://github.com/owner/repo/issues/42"},
+            {"body": context + "; Closes [repo#42](https://github.com/owner/repo/issues/42)"},
+            {"body": context + "; Fixes: https://github.com/owner/repo/issues/42"},
+            {"body": context + "; Implements https://github.com/owner/repo/issues/42"},
+            {"body": "- " + context},
+            {"body": "> " + context},
+            {"body": context.lower()},
             {"body": "Follow-ups: https://github.com/owner/repo/issues/42"},
         ):
             with self.subTest(extra=extra):
