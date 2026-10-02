@@ -3449,6 +3449,207 @@ def test_target_replacement_operation_read_refuses_bad_ids_and_unsafe_values() -
         assert not payload["result"]
 
 
+def _target_replacement_plan_response() -> dict[str, Any]:
+    return {
+        "status": "accepted",
+        "trace_id": "launchplane_req_replacement_plan",
+        "records": {},
+        "result": {
+            "plan_status": "blocked",
+            "product": "example-product",
+            "context": "example",
+            "instance": "testing",
+            "strategy": "recreate-in-place",
+            "target_record_found": True,
+            "target_id_record_found": True,
+            "inventory_found": True,
+            "current_target": {
+                "target_type": "compose",
+                "target_id": "provider-target-id-77",
+                "target_name": "private-target-name",
+                "project_name": "private-project",
+                "domain_hosts": ["testing.example.invalid"],
+                "env_keys": ["EXAMPLE_DB_NAME", "EXAMPLE_LEFTOVER", "BAD KEY=private-env-value"],
+                "required_volume_keys_present": ["ODOO_DATA_VOLUME"],
+                "required_volume_keys_missing": ["ODOO_LOG_VOLUME"],
+                "live_volume_values": {"ODOO_DATA_VOLUME": "private-volume-value"},
+                "runtime_identity_present": False,
+            },
+            "expected_next_target_name": "private-next-target",
+            "expected_domain_hosts": ["next.example.invalid"],
+            "expected_artifact_id": "",
+            "data_source_mode": "existing",
+            "approval_issue_url": "https://github.com/example/private/issues/1",
+            "retired_provider_keys": ["EXAMPLE_RETIRED"],
+            "delivered_runtime_keys": ["EXAMPLE_DB_NAME", "EXAMPLE_SITE_FLAG"],
+            "blockers": ["Provider key EXAMPLE_LEFTOVER on private-target-name is not recorded."],
+            "blocker_codes": ["provider_keys_unrecorded"],
+            "blocker_keys": {"provider_keys_unrecorded": ["EXAMPLE_LEFTOVER"]},
+            "warnings": ["Current target does not expose a runtime identity at private-host."],
+            "steps": [
+                {"step_id": "resolve_target", "status": "ready", "message": "private-target-name"},
+                {"step_id": "deliver_env", "status": "blocked", "message": "private step text"},
+            ],
+        },
+    }
+
+
+def _run_plan_read(
+    argv: list[str], response: object
+) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+    settings = {"service_url": "https://launchplane.example.invalid", "token": "t"}
+    output = io.StringIO()
+    with (
+        temporary_attribute(write_action, "prepare_operator_settings", lambda **_kwargs: settings),
+        temporary_attribute(write_action, "request_launchplane", fake_post),
+        redirect_stdout(output),
+    ):
+        status = write_action.main(argv)
+    return status, json.loads(output.getvalue()), calls
+
+
+PLAN_READ_ARGV = [
+    "target-replacement-plan-read",
+    "--product",
+    "example-product",
+    "--instance",
+    "testing",
+]
+
+
+def test_target_replacement_plan_read_keeps_key_names_and_drops_text() -> None:
+    status, payload, calls = _run_plan_read(PLAN_READ_ARGV, _target_replacement_plan_response())
+
+    assert status == 0
+    route = contract.LOCAL_EXTENSION_ROUTES["target-replacement-plan-read"]
+    assert route["method"] == "POST"
+    assert calls[0]["path"] == route["path"]
+    assert calls[0]["body"] == {
+        "schema_version": 1,
+        "product": "example-product",
+        "replacement": {"product": "example-product", "instance": "testing"},
+    }
+    assert not calls[0].get("idempotency_key")
+    plan = payload["result"]
+    assert (plan["plan_status"], plan["instance"], plan["data_source_mode"]) == (
+        "blocked",
+        "testing",
+        "existing",
+    )
+    assert plan["delivered_runtime_keys"] == ["EXAMPLE_DB_NAME", "EXAMPLE_SITE_FLAG"]
+    assert plan["retired_provider_keys"] == ["EXAMPLE_RETIRED"]
+    assert plan["blocker_codes"] == ["provider_keys_unrecorded"]
+    assert plan["blocker_keys"] == {"provider_keys_unrecorded": ["EXAMPLE_LEFTOVER"]}
+    assert (plan["blocker_count"], plan["warning_count"]) == (1, 1)
+    assert plan["current_target"] == {
+        "env_keys": ["EXAMPLE_DB_NAME", "EXAMPLE_LEFTOVER"],
+        "required_volume_keys_missing": ["ODOO_LOG_VOLUME"],
+    }
+    assert plan["steps"] == [
+        {"step_id": "resolve_target", "status": "ready"},
+        {"step_id": "deliver_env", "status": "blocked"},
+    ]
+    paths = plan["dropped_field_paths"]
+    for path in (
+        "plan.blockers",
+        "plan.warnings",
+        "plan.expected_next_target_name",
+        "plan.expected_domain_hosts",
+        "plan.approval_issue_url",
+        "plan.current_target.target_id",
+        "plan.current_target.target_name",
+        "plan.current_target.domain_hosts",
+        "plan.current_target.live_volume_values",
+        "plan.current_target.env_keys[]",
+        "plan.steps[].message",
+    ):
+        assert path in paths, path
+    rendered = json.dumps(payload)
+    for private in (
+        "private-target-name",
+        "provider-target-id-77",
+        "private-project",
+        "private-next-target",
+        "private-volume-value",
+        "private-env-value",
+        "private step text",
+        "private-host",
+        "example.invalid",
+        "github.com",
+    ):
+        assert private not in rendered, private
+
+
+def test_target_replacement_plan_read_marks_missing_key_lists_as_unreported() -> None:
+    response = _target_replacement_plan_response()
+    result = response["result"]
+    del result["delivered_runtime_keys"]
+    result.update(plan_status="ready", blockers=[], blocker_codes=[], blocker_keys={}, warnings=[])
+    status, payload, _calls = _run_plan_read(PLAN_READ_ARGV, response)
+    assert status == 0
+    plan = payload["result"]
+    assert plan["delivered_runtime_keys"] is None
+    assert plan["retired_provider_keys"] == ["EXAMPLE_RETIRED"]
+    assert (plan["blocker_codes"], plan["blocker_keys"], plan["blocker_count"]) == ([], {}, 0)
+
+
+def test_target_replacement_plan_read_reports_denial_with_trace() -> None:
+    denial = urllib.error.HTTPError(
+        "https://launchplane.example.invalid/v1/drivers/odoo/target-replacement-plan",
+        403,
+        "Forbidden",
+        hdrs=Message(),
+        fp=io.BytesIO(
+            json.dumps(
+                {"trace_id": "launchplane_req_denied", "error": {"code": "authorization_denied"}}
+            ).encode()
+        ),
+    )
+    status, payload, _calls = _run_plan_read(PLAN_READ_ARGV, denial)
+    assert status == 1
+    assert payload["status"] == "denied"
+    assert payload["summary"]["trace_id"] == "launchplane_req_denied"
+    assert payload["summary"]["error_code"] == "authorization_denied"
+    assert "read was rejected" in payload["warnings"][0]["message"]
+
+
+def test_target_replacement_plan_read_refuses_bad_input_and_unsafe_values() -> None:
+    for instance in ("../admin", "a/b", "x y"):
+        argv = [*PLAN_READ_ARGV[:-1], instance]
+        status, payload, calls = _run_plan_read(argv, _target_replacement_plan_response())
+        assert status == 2, instance
+        assert calls == [], instance
+
+    for mutate in (
+        lambda body: body.update(extra="x"),
+        lambda body: body.update(records={"deployment": "x"}),
+        lambda body: body["result"].update(expected_artifact_id="Bearer abcdefghijklmnop"),
+        lambda body: body.update(result=None),
+    ):
+        mutated = _target_replacement_plan_response()
+        mutate(mutated)
+        status, payload, _calls = _run_plan_read(PLAN_READ_ARGV, mutated)
+        assert status == 1
+        assert payload["status"] == "invalid"
+        assert not payload["result"]
+
+    # A blocker code that reads like a secret field name is dropped by path, never echoed.
+    response = _target_replacement_plan_response()
+    response["result"]["blocker_keys"]["token_keys"] = ["EXAMPLE"]
+    status, payload, _calls = _run_plan_read(PLAN_READ_ARGV, response)
+    assert status == 0
+    assert "token_keys" not in json.dumps(payload)
+    assert "plan.blocker_keys.<unlisted field>" in payload["result"]["dropped_field_paths"]
+
+
 def _testing_hold_args(**overrides: object) -> argparse.Namespace:
     values: dict[str, object] = {
         "product": "example-product",
@@ -4902,6 +5103,10 @@ def main() -> int:
         test_target_replacement_operation_read_keeps_progress_and_drops_error_text,
         test_target_replacement_operation_read_tolerates_a_pending_operation,
         test_target_replacement_operation_read_refuses_bad_ids_and_unsafe_values,
+        test_target_replacement_plan_read_keeps_key_names_and_drops_text,
+        test_target_replacement_plan_read_marks_missing_key_lists_as_unreported,
+        test_target_replacement_plan_read_reports_denial_with_trace,
+        test_target_replacement_plan_read_refuses_bad_input_and_unsafe_values,
         test_testing_hold_body_binds_apply_to_saved_dry_run,
         test_testing_hold_cli_dispatches_local_extension_route,
         test_product_repository_identity_projection_is_bounded_and_fail_closed,

@@ -156,6 +156,23 @@ local extensions until the vendored artifact is refreshed.
   target names are also dropped. Each dropped non-empty field is listed in
   `dropped_field_paths`; an unknown field is listed as
   `<unlisted field>`. A secret-looking value in a kept field fails the read.
+- `target-replacement-plan-read --product --instance` calls
+  `POST /v1/drivers/odoo/target-replacement-plan` with
+  `{"schema_version": 1, "product": P, "replacement": {"product": P, "instance": I}}`
+  and no idempotency key. The service builds the plan read-only and authorizes
+  it as `odoo_target_replacement_plan.read` on the lane's product, context and
+  instance. It returns `plan_status`, product, context, instance, strategy,
+  expected artifact id and source ref, data source mode, the target, target-id
+  and inventory found flags, `allow_empty_data`, `retired_provider_keys`,
+  `delivered_runtime_keys` (`null` when the service does not report the list),
+  `blocker_codes`, `blocker_keys` by code, `blocker_count`, `warning_count`,
+  the current target's `env_keys` and `required_volume_keys_missing`, and each
+  step's `step_id` and `status`. Every key list keeps names that match
+  `[A-Za-z_][A-Za-z0-9_]*` only. Blocker, step and warning text, the next
+  target's name and domains, the approval issue URL, and the current target's
+  id, name, domains and live volume values are dropped and listed in
+  `dropped_field_paths`, as are names that are not env keys. A secret-looking
+  value in a kept field fails the read.
 - Path segments must be plain identifiers; anything else is refused before a
   request is sent. Runtime settings, managed secrets, available actions, URLs,
   provider target names and driver extensions are dropped from the output.

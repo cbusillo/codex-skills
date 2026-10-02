@@ -313,6 +313,21 @@ commands:
         "<operation-id>",
       ]
     purpose: Reads one Odoo deploy operation's status, phase, times and error code.
+  - name: launchplane-target-replacement-plan-read
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "target-replacement-plan-read",
+        "--product",
+        "<product>",
+        "--instance",
+        "<instance>",
+      ]
+    purpose: Reads an Odoo lane's replacement plan status, blocker codes and env-key names.
   - name: launchplane-merge-train-policy-import-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -724,8 +739,8 @@ The merge-train policy import, repository inventory, product expected configurat
 generic-web deploy-recovery, Odoo addon-settings, integration-allowances,
 testing-hold, product-repository-identity, product-environment-read,
 product-activity-read, product-profile-read, preview-history-read,
-reconcile-requests-read, and
-target-replacement-operation-read commands are explicit bounded local
+reconcile-requests-read, target-replacement-operation-read, and
+target-replacement-plan-read commands are explicit bounded local
 extensions because the vendored public
 operation projection does not contain their routes. Do not describe them as contract-backed. If a later artifact adds those
 routes, migrate them deliberately and remove the local-extension entries instead
@@ -998,7 +1013,8 @@ verification.
   product-config intent preflight, private local product-config dry-run/apply,
   change-impact policy dry-run/apply/read-back, guarded merge-train policy
   import, repository inventory read/dry-run/apply, product environment,
-  activity, preview and reconcile reads, and merge-train controller calls.
+  activity, preview and reconcile reads, Odoo target-replacement operation and
+  plan reads, and merge-train controller calls.
 - `scripts/check-agent-operator-contract.py`: Hermetic schema, digest,
   public-safety, operation, workflow, invariant, and local-consumer conformance
   gate. A green result is not upstream freshness evidence.
@@ -1094,6 +1110,17 @@ verification.
   context and instance. Without that grant, read why a reconciler testing
   deploy failed from `reconcile-requests-read` (`last_failed_error_code` and
   the service-redacted `last_failed_error_summary`).
+- `POST /v1/drivers/odoo/target-replacement-plan`: Bounded local-extension
+  read (`target-replacement-plan-read --product --instance`) for what an Odoo
+  target replacement on that lane would do, before any apply. The route builds
+  a plan and writes nothing. It returns plan status, strategy, data source
+  mode, the expected artifact, blocker codes, and env-key names only: the keys
+  it would deliver (`delivered_runtime_keys`, `null` when the service does not
+  report them yet) and retire, the keys each blocker is about, and the current
+  target's env keys and missing volume keys, plus step ids and statuses.
+  Blocker, step and warning text, domains, target names and ids, and volume
+  values are dropped and listed by path. The service authorizes it as
+  `odoo_target_replacement_plan.read` on the lane.
 - `POST /v1/work-graph/merge-train/controller/run-once`: Preferred merge-train
   controller path; call repeatedly to advance one safe phase at a time.
 - `POST /v1/previews/pr-feedback/remediation`: Contract-backed bounded preview
