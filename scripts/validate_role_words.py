@@ -44,7 +44,6 @@ FRONTMATTER_PROSE = re.compile(r"^(\s*)(?:-\s+)?(?:description|purpose|message):
 FRONTMATTER_KEY = re.compile(r"^\s*(?:-\s+)?[\w-]+:(?:\s|$)")
 INLINE_CODE = re.compile(r"(`+).*?\1")
 LINK_TARGET = re.compile(r"\]\([^)]*\)")
-HTML_COMMENT = re.compile(r"<!--.*?-->")
 URL = re.compile(r"https?://\S+")
 
 # The glossary names the retired words. Recorded evaluation evidence keeps the
@@ -55,6 +54,27 @@ EXCLUDED = re.compile(
     r"^evals/(?!README\.md$)|/evaluations/acceptance-"
     r"|^DIRECTION\.md$|^skills/references/role-words\.md$"
 )
+
+
+def strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
+    """Remove HTML comment text, carrying an open comment to the next line."""
+    kept: list[str] = []
+    while line:
+        if in_comment:
+            end = line.find("-->")
+            if end < 0:
+                return " ".join(kept), True
+            line = line[end + 3 :]
+            in_comment = False
+        else:
+            start = line.find("<!--")
+            if start < 0:
+                kept.append(line)
+                break
+            kept.append(line[:start])
+            line = line[start + 4 :]
+            in_comment = True
+    return " ".join(kept), in_comment
 
 
 def prose_lines(text: str) -> Iterable[tuple[int, str]]:
@@ -93,15 +113,7 @@ def prose_lines(text: str) -> Iterable[tuple[int, str]]:
         if opening:
             fence = opening.group(1)
             continue
-        if in_comment:
-            if "-->" not in line:
-                continue
-            line = line.split("-->", 1)[1]
-            in_comment = False
-        line = HTML_COMMENT.sub(" ", line)
-        if "<!--" in line:
-            line = line.split("<!--", 1)[0]
-            in_comment = True
+        line, in_comment = strip_comments(line, in_comment)
         line = INLINE_CODE.sub(" ", line)
         line = LINK_TARGET.sub("]", line)
         line = URL.sub(" ", line)
