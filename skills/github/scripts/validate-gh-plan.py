@@ -5277,6 +5277,16 @@ def test_pr_helper_merge_semantic_rejection_exits_nonzero() -> None:
 
 
 def test_required_check_rejection_stops_without_cooldown_until_readiness_changes() -> None:
+    required_check_rejection_stops_without_cooldown("2 of 2 required status checks are expected.")
+
+
+def test_rule_violation_wrapped_required_check_rejection_stops_without_cooldown() -> None:
+    required_check_rejection_stops_without_cooldown(
+        "Repository rule violations found\n\n2 of 2 required status checks are expected.\n"
+    )
+
+
+def required_check_rejection_stops_without_cooldown(message: str) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         log_path = tmp_path / "calls.log"
@@ -5299,7 +5309,7 @@ def test_required_check_rejection_stops_without_cooldown_until_readiness_changes
             "  if [[ -f \"$GH_PR_READY_FILE\" ]]; then\n"
             "    respond 200 '{\"merged\":true,\"message\":\"Pull Request successfully merged\",\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}'\n"
             "  else\n"
-            "    respond 405 '{\"message\":\"2 of 2 required status checks are expected.\"}'\n"
+            "    respond 405 \"$GH_PR_405_BODY\"\n"
             "    exit 1\n"
             "  fi\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
@@ -5316,6 +5326,7 @@ def test_required_check_rejection_stops_without_cooldown_until_readiness_changes
         env = dict(
             os.environ,
             GH_PR_GH=str(gh_path),
+            GH_PR_405_BODY=json.dumps({"message": message}),
             GH_PR_READY_FILE=str(ready_path),
             GH_PR_TEST_LOG=str(log_path),
             GITHUB_RETRY_MAX_ATTEMPTS="8",
@@ -6741,6 +6752,7 @@ def main() -> None:
         test_pr_helper_merge_404_includes_recovery_context,
         test_pr_helper_merge_semantic_rejection_exits_nonzero,
         test_required_check_rejection_stops_without_cooldown_until_readiness_changes,
+        test_rule_violation_wrapped_required_check_rejection_stops_without_cooldown,
         test_ambiguous_405_reconciles_same_head_before_bounded_retry,
         test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets,
         test_check_read_403_and_blocked_metadata_do_not_claim_merge_denial,
