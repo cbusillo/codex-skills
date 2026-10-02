@@ -151,6 +151,64 @@ class ClaimTests(unittest.TestCase):
             self.run_claim()
         self.assert_no_writes()
 
+    def test_explicitly_unstarted_docs_followups_allow_both_claims(self):
+        self.pulls = [{"number": 48, "title": "docs: align API guidance",
+                       "body": "Code follow-ups recorded without starting implementation: "
+                               "[repo#49](https://github.com/owner/repo/issues/49) Fix HTTP handling and "
+                               "[repo#50](https://github.com/owner/repo/issues/50) resolve printer lookup.\n\nRefs #47",
+                       "head": {"ref": "work/docs-audit"}}]
+        for number in (49, 50):
+            with self.subTest(number=number):
+                self.args.issue = str(number)
+                self.args.branch = f"work/repair-{number}"
+                self.issue["number"] = number
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                self.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER
+                self.comments = []
+
+    def test_context_line_does_not_override_other_ownership_evidence(self):
+        context = "Code follow-ups recorded without starting implementation: https://github.com/owner/repo/issues/42"
+        for extra in (
+            {"title": "Implement #42"},
+            {"title": "Implement https://github.com/owner/repo/issues/42"},
+            {"head": {"ref": "work/issue-42"}},
+            {"body": context + "\n\nRefs #42"},
+            {"body": context + "\nFixes https://github.com/owner/repo/issues/42"},
+            {"body": context + "\n\nhttps://github.com/owner/repo/issues/42"},
+            {"body": context + "; Fixes #42"},
+            {"body": context + "; Fixes https://github.com/owner/repo/issues/42"},
+            {"body": context + "; Closes [repo#42](https://github.com/owner/repo/issues/42)"},
+            {"body": context + "; Fixes: https://github.com/owner/repo/issues/42"},
+            {"body": context + "; Implements https://github.com/owner/repo/issues/42"},
+            {"body": context + "\n\nImplements #42"},
+            {"body": context + "\n\nFixes: #42"},
+            {"body": context + "; Closes <https://github.com/owner/repo/issues/42>"},
+            {"body": context + "; **Fixes** https://github.com/owner/repo/issues/42"},
+            {"body": context + "; **Fixes:** https://github.com/owner/repo/issues/42"},
+            {"body": context + "; __Closes:__ https://github.com/owner/repo/issues/42"},
+            {"body": context + "; Closes [repo#42](https://github.com/owner/repo/issues/42#issuecomment-1)"},
+            {"body": context + '; Closes [repo#42](https://github.com/owner/repo/issues/42 "repair")'},
+            {"body": "- " + context},
+            {"body": "> " + context},
+            {"body": context.lower()},
+            {"body": "Follow-ups: https://github.com/owner/repo/issues/42"},
+        ):
+            with self.subTest(extra=extra):
+                self.pulls = [{"number": 99, "title": "docs", "body": context,
+                               "head": {"ref": "work/docs"}, **extra}]
+                with self.assertRaises(PLAN.ClassifiedPlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+
+    def test_context_link_does_not_override_branch_or_claim_owner(self):
+        self.pulls = [{"number": 99, "body": "Code follow-ups recorded without starting implementation: "
+                       "https://github.com/owner/repo/issues/42", "head": {"ref": "work/docs"}}]
+        self.compete()
+        with self.assertRaises(PLAN.ClassifiedPlanError):
+            self.run_claim()
+        self.assert_no_writes()
+
     def test_peer_session_refuses(self):
         self.inventory["worktrees"] = [{"branch": "main", "path": "/artifacts/repo"}]
         self.inventory["sessions"] = [{"sessionId": "peer", "cwd": "/artifacts/repo", "name": "Fix #42", "status": "busy"}]
