@@ -33,6 +33,7 @@ def test_flags_role_words_in_prose() -> None:
         "The Site Owner approves the release.",
         "An operator grants access.",
         "Record the owner's decision.",
+        "The policy administrator approves access.",
     ):
         if not module.findings(line):
             raise AssertionError(f"expected a finding: {line}")
@@ -42,6 +43,17 @@ def test_flags_frontmatter_description_only() -> None:
     module = load_module()
     text = "---\nname: x\ndescription: Use when the owner asks.\npolicy: owner\n---\nBody.\n"
     if [number for number, _ in module.findings(text)] != [3]:
+        raise AssertionError(module.findings(text))
+
+
+def test_flags_folded_frontmatter_prose() -> None:
+    module = load_module()
+    text = (
+        "---\ndescription: >-\n  Use when the owner asks.\n"
+        "policies:\n  - id: x\n    message: Ask\n      the operator first.\n"
+        "    argv: [owner]\n---\n"
+    )
+    if [number for number, _ in module.findings(text)] != [3, 7]:
         raise AssertionError(module.findings(text))
 
 
@@ -56,6 +68,13 @@ def test_allows_github_sense_and_code() -> None:
             "```",
             "operator = owner",
             "```",
+            "````markdown",
+            "```",
+            "owner = operator",
+            "```",
+            "````",
+            "Ask the repository",
+            "owner to apply the ruleset.",
         )
     )
     if module.findings(text):
@@ -65,6 +84,7 @@ def test_allows_github_sense_and_code() -> None:
 def main() -> int:
     test_flags_role_words_in_prose()
     test_flags_frontmatter_description_only()
+    test_flags_folded_frontmatter_prose()
     test_allows_github_sense_and_code()
     print("ok test-validate-role-words")
     return 0

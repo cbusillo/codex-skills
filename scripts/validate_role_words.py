@@ -21,19 +21,27 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-RETIRED = re.compile(r"\b(?:owners?|operators?)(?:'s|s')?\b", re.IGNORECASE)
+RETIRED = re.compile(
+    r"\b(?:owners?|operators?)(?:'s|s')?\b|\bpolicy[- ]administrators?\b",
+    re.IGNORECASE,
+)
 
 # GitHub's repository-owner sense and unrelated technical senses.
+QUALIFIER = r"(?:repository|repo|organization|org|account|code)"
 ALLOWED = re.compile(
-    r"\b(?:repository|repo|organization|org|account|code)[- ]owners?(?:'s|s')?\b"
+    rf"\b{QUALIFIER}[- ]owners?(?:'s|s')?\b"
     r"|\bowner-only\b"
     r"|\bowners?/"
     r"|\bowner:"
     r"|\bowner\s+(?:or|and)\s+name\b",
     re.IGNORECASE,
 )
+# A qualifier that ends a line carries over to the wrapped next line.
+TRAILING_QUALIFIER = re.compile(rf"\b{QUALIFIER}\s*$", re.IGNORECASE)
 
-FENCE = re.compile(r"^\s*(```|~~~)")
+FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
+FRONTMATTER_PROSE = re.compile(r"^(\s*)(?:-\s+)?(?:description|purpose|message):")
+FRONTMATTER_KEY = re.compile(r"^\s*(?:-\s+)?[\w-]+:(?:\s|$)")
 INLINE_CODE = re.compile(r"(`+).*?\1")
 LINK_TARGET = re.compile(r"\]\([^)]*\)")
 HTML_COMMENT = re.compile(r"<!--.*?-->")
@@ -50,9 +58,11 @@ EXCLUDED = re.compile(
 
 
 def prose_lines(text: str) -> Iterable[tuple[int, str]]:
-    in_fence = False
+    fence = ""
     in_comment = False
     in_frontmatter = False
+    prose_indent: int | None = None
+    previous = ""
     for number, line in enumerate(text.splitlines(), start=1):
         if number == 1 and line.strip() == "---":
             in_frontmatter = True
@@ -61,14 +71,27 @@ def prose_lines(text: str) -> Iterable[tuple[int, str]]:
             if line.strip() == "---":
                 in_frontmatter = False
                 continue
-            # Descriptions, purposes, and policy messages are prose; argv,
-            # paths, and other metadata are not.
-            if not re.match(r"^\s*(?:-\s+)?(?:description|purpose|message):", line):
+            # Descriptions, purposes, and policy messages are prose, including
+            # their folded continuation lines; argv, paths, and other metadata
+            # are not.
+            indent = len(line) - len(line.lstrip())
+            key = FRONTMATTER_PROSE.match(line)
+            if key:
+                prose_indent = len(key.group(1))
+            elif (
+                prose_indent is None
+                or indent <= prose_indent
+                or FRONTMATTER_KEY.match(line)
+            ):
+                prose_indent = None
                 continue
-        if FENCE.match(line):
-            in_fence = not in_fence
+        opening = FENCE.match(line)
+        if fence:
+            if opening and opening.group(1)[0] == fence[0] and len(opening.group(1)) >= len(fence):
+                fence = ""
             continue
-        if in_fence:
+        if opening:
+            fence = opening.group(1)
             continue
         if in_comment:
             if "-->" not in line:
@@ -82,6 +105,10 @@ def prose_lines(text: str) -> Iterable[tuple[int, str]]:
         line = INLINE_CODE.sub(" ", line)
         line = LINK_TARGET.sub("]", line)
         line = URL.sub(" ", line)
+        carried = TRAILING_QUALIFIER.search(previous)
+        previous = line
+        if carried:
+            line = carried.group(0).strip() + " " + line.lstrip()
         yield number, ALLOWED.sub(" ", line)
 
 
