@@ -243,7 +243,7 @@ For each finding:
   ruleset. Plan the guarded repair with `gh-rulesets.py`; applying it remains an
   explicit admin mutation.
 - `ruleset_unavailable`: GitHub's plan does not offer rulesets on this private
-  repository, so nothing enforces owner review of `DIRECTION.md`. A paid plan
+  repository, so nothing enforces Director review of `DIRECTION.md`. A paid plan
   (Pro for a user account, Team for an organization) or a public repository
   enables them; ask the Director which, if either, they want.
 - `escalation_open`: a `direction` issue, or a pull request that changes
