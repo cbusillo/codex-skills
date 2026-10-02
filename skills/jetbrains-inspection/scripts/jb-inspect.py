@@ -10675,6 +10675,52 @@ def retirement_worktree(path: Path, dry_run: bool = False) -> Path:
     return root
 
 
+FINDER_METADATA_NAME = ".DS_Store"
+FINDER_RACE_ATTEMPTS = 3
+
+
+def worktree_entries(root: Path) -> dict[str, int]:
+    """Map every entry below root to its inode without following symlinks."""
+    entries: dict[str, int] = {}
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as listing:
+            for entry in listing:
+                path = Path(entry.path)
+                entries[str(path.relative_to(root))] = entry.inode()
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(path)
+    return entries
+
+
+def finish_raced_worktree_removal(common: Path, root: Path, before: dict[str, int], git_error: str) -> None:
+    """Finish a removal Git unregistered but could not empty, keeping anything it did not verify."""
+    # Git deletes the checkout before its registration, so a registered path was refused rather than raced.
+    listed = subprocess.run(["git", "-C", str(common), "worktree", "list", "--porcelain"],
+                            capture_output=True, text=True, check=True).stdout.splitlines()
+    if any(line.startswith("worktree ") and paths_same(line.removeprefix("worktree "), root) for line in listed):
+        raise InspectError("Git worktree removal failed; SDK cleanup may already have completed.", 3, {"git_error": git_error})
+    # Finder writes .DS_Store into folders while they are deleted; every other leftover must predate removal.
+    for _ in range(FINDER_RACE_ATTEMPTS):
+        if not root.exists() and not root.is_symlink():
+            return
+        if root.is_symlink() or not root.is_dir():
+            break
+        unexpected = sorted(relative for relative, inode in worktree_entries(root).items()
+                            if Path(relative).name != FINDER_METADATA_NAME and before.get(relative) != inode)
+        if unexpected:
+            raise InspectError("Worktree removal left files that were not in the verified checkout; they are kept.", 3,
+                               {"git_error": git_error, "retained_entry_count": len(unexpected), "retained_entries": unexpected[:50]})
+        try:
+            shutil.rmtree(root)
+        except OSError:
+            continue
+    if root.exists() or root.is_symlink():
+        raise InspectError("Git unregistered the worktree but its directory could not be emptied; inspect what remains.", 3,
+                           {"git_error": git_error})
+
+
 def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, dry_run: bool) -> list[dict[str, Any]]:
     if not identities:
         raise InspectError("No live IDE is available to prove SDK cleanup; start the prepared worktree's IDE first.", 3)
@@ -10791,11 +10837,11 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
                     common = git_common_worktree(root)
                     if common is None:
                         raise InspectError("Cannot resolve the primary checkout for worktree removal.", 3)
+                    before = worktree_entries(root)
                     completed = subprocess.run(["git", "-C", str(common), "worktree", "remove", str(root)],
                                                capture_output=True, text=True)
                     if completed.returncode or root.exists():
-                        raise InspectError("Git worktree removal failed; SDK cleanup may already have completed.", 3,
-                                           {"git_error": completed.stderr})
+                        finish_raced_worktree_removal(common, root, before, completed.stderr)
             return {"status": "ok", "dry_run": args.dry_run, "worktree_path": str(root) if root else None,
                     "sdk_preview": preview, "sdk_cleanup": applied, "sdk_apply_skipped": [item["ide"] for item in skipped],
                     "worktree_removed": root is not None and not args.dry_run,

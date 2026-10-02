@@ -240,8 +240,11 @@ Command model:
   dirty worktrees, missing plugin support, session drift and unsafe SDK cleanup
   retain the worktree. Unrecorded SDKs remain registered and are reported as
   preserved; their `not_helper_owned` refusal does not prevent eligible Git
-  removal. Other refusal reasons retain the worktree. This command preserves
-  its branch. Prior cleanup disposition must also preserve unique detached
+  removal. Other refusal reasons retain the worktree. When Git unregisters
+  the worktree but cannot empty it because Finder wrote `.DS_Store` files
+  during the delete, the command deletes what is left only if every entry
+  existed before removal or is `.DS_Store`; anything else is kept and listed
+  in `retained_entries`. This command preserves its branch. Prior cleanup disposition must also preserve unique detached
   commits and valuable ignored files; this command does not classify them.
 - `cleanup-helper-sdks`: dry-run the plugin's helper-owned removed-worktree SDK
   inventory. Review the listed entries, then use `--no-dry-run` with repeated
