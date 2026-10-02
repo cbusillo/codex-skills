@@ -372,10 +372,25 @@ def test_reads_claude_code_messages_and_tool_results() -> None:
         raise AssertionError(f"expected Claude Code message and tool result, without injected or bookkeeping records: {destinations}")
 
 
+def test_linked_status_reference_lowers_confidence_but_cited_preference_stays() -> None:
+    module = load_module()
+    link = "[catalog#753](https://github.com/OWNER/catalog/pull/753)"
+    for status in (
+        f"Next time remember {link} runtime checkout is waiting on CI.",
+        "Next time remember run https://github.com/OWNER/catalog/actions/runs/12/job/34 failed.",
+    ):
+        if module.classify(status)[1] != "low":
+            raise AssertionError(f"linked status should be low confidence: {status}")
+    durable = f"Always prefer {link} runtime checkout style in owner-facing prose."
+    if module.classify(durable)[1] != "medium":
+        raise AssertionError(f"a preference that cites a linked reference should stay medium: {durable}")
+
+
 def main() -> int:
     test_skips_session_meta_base_instructions()
     test_context_window_preserves_neighboring_turns()
     test_classifies_people_local_llm_and_friction()
+    test_linked_status_reference_lowers_confidence_but_cited_preference_stays()
     test_redact_mode_removes_paths_and_person_data_but_keeps_trusted_originals()
     test_redact_mode_records_person_data_privacy_summary()
     test_redact_mode_does_not_overmatch_public_names_or_plain_prose()

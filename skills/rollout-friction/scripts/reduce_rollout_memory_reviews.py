@@ -64,6 +64,18 @@ STALE_RE = re.compile(
     r"focused validation already passed|only file modified|cargo test|pytest|uv run|npm test)\b",
     re.I,
 )
+# A linked or repository-qualified reference is status only when a state word sits beside it;
+# a durable note may cite an issue. An Actions run or job URL always names a point in time.
+_LINKED_REF = r"(?:\b[\w.-]+/)?\b[\w.-]+#\d+\b|https?://github\.com/[\w.-]+/[\w.-]+/(?:pull|issues)/\d+"
+_STATE_WORD = (
+    r"\b(?:waiting|merged|landed|closed|pending|running|queued|blocked|passed|failed|failing|"
+    r"green|deployed|reverted|in progress|still open|is open)\b"
+)
+LINKED_STATUS_RE = re.compile(
+    rf"(?:{_LINKED_REF})[^\n]{{0,120}}?{_STATE_WORD}|{_STATE_WORD}[^\n]{{0,120}}?(?:{_LINKED_REF})|"
+    r"https?://github\.com/[\w.-]+/[\w.-]+/actions/runs/\d+",
+    re.I,
+)
 KEEPER_RE = re.compile(
     r"\b(prefers?|canonical|must|should|do not|never|always|policy|routing|belongs?|"
     r"primary|fallback|local-only|privacy|protected|non-negotiable)\b",
@@ -411,7 +423,7 @@ def keeper_score(note: dict[str, Any]) -> int:
 
 
 def is_stale_or_transient(text: str) -> bool:
-    return bool(STALE_RE.search(text))
+    return bool(STALE_RE.search(text) or LINKED_STATUS_RE.search(text))
 
 
 def topic_key(text: str) -> str:
