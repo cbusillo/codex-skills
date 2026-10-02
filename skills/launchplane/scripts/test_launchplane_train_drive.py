@@ -27,6 +27,11 @@ def _response(action: str, **result: Any) -> dict[str, Any]:
     return {"status": "accepted", "result": {"controller_action": action, **result}, "summary": {"trace_id": "t"}}
 
 
+def _refusal(error_code: str, *, status: str = "stale", http_status: int = 409) -> dict[str, Any]:
+    """The write-action helper's envelope for a controller call Launchplane rejected."""
+    return {"status": status, "result": {}, "summary": {"http_status": http_status, "trace_id": "refused", "error_code": error_code}}
+
+
 def _queue(*entries: tuple[int, list[str]]) -> dict[str, Any]:
     return {
         "dry_run_result": {
@@ -189,6 +194,33 @@ class TrainDriveTests(unittest.TestCase):
         outcome, events = _drive(FakeTrain([None]))
         self.assertEqual(outcome, "error")
         self.assertEqual(events[-1][1]["reason"], "merge-train helper kept failing")
+
+    def test_a_held_controller_lease_waits_out_the_lease_and_continues(self) -> None:
+        train = FakeTrain([_refusal(train_drive.LEASE_HELD_CODE), _response("land_batch")], merge_after={7: 2})
+        outcome, events = _drive(train, max_helper_failures=1)
+        self.assertEqual(outcome, "landed")
+        held = events[0][1]
+        self.assertEqual((held["controller_action"], held["error_code"], held["http_status"]), ("controller_lease_held", train_drive.LEASE_HELD_CODE, 409))
+
+    def test_a_lease_still_held_at_the_deadline_needs_the_owner(self) -> None:
+        outcome, events = _drive(FakeTrain([_refusal(train_drive.LEASE_HELD_CODE)]), deadline=1_000)
+        self.assertEqual(outcome, "needs_owner")
+        self.assertEqual(events[-1][1]["trace_id"], "refused")
+
+    def test_a_refusal_reports_its_code_instead_of_an_unavailable_helper(self) -> None:
+        outcome, events = _drive(FakeTrain([_refusal("merge_train_new_refusal")]))
+        snapshot = events[0][1]
+        self.assertEqual((snapshot["controller_action"], snapshot["status"], snapshot["error_code"]),
+                         ("controller_refused", "stale", "merge_train_new_refusal"))
+        self.assertEqual(outcome, "error")
+        self.assertEqual((events[-1][1]["reason"], events[-1][1]["error_code"]), ("merge-train controller kept refusing", "merge_train_new_refusal"))
+
+    def test_branches_the_controller_already_updated_are_progress(self) -> None:
+        # A busy train refreshes several queued PRs ahead of this one before it lands.
+        updated = _response("update_branch", branch_update_result={"status": "updated"})
+        train = FakeTrain([updated] * 5 + [_response("land_batch")], merge_after={7: 6})
+        outcome, _ = _drive(train)
+        self.assertEqual((outcome, train.updates), ("landed", 0))
 
     def test_the_deadline_ends_in_an_error_instead_of_waiting_forever(self) -> None:
         outcome, events = _drive(FakeTrain([_response("wait_for_checks")]), deadline=300)
