@@ -776,8 +776,23 @@ mints and caches an owner-only installation token, and uses the App for every
 command. Each account that installs the App has its own installation, so when a
 command names a repository (`-R`/`--repo`, an `api` path under `repos/`, or
 `GH_REPO`), the wrapper uses the installation on that repository. A write to a
-repository where the App is not installed is refused with that reason; ask the
-repository owner to install the App. Reads there, and commands that name no
+repository where the App is not installed is refused with that reason when the
+repository's account is the automation's (the account that registered the App
+or any account the App is installed on); ask the Director to install the App
+there. In any other account's repository the write runs as the active `gh`
+login instead, with
+`notice: acting as your own GitHub user on OWNER/REPO` on stderr; Python
+helpers report that login as the actor. `git-push-as-bot` pushes there with
+the active login's token, `git-commit-as-bot` keeps the person's own git
+identity, and `gh-pr.py create` requires `--body-file` and appends
+`I wrote this change with AI assistance and reviewed it.` unless the body
+already mentions AI assistance (its result carries `"identity": "own_user"`).
+`github_identity.py app-auth --require-installation` exits 3 for that case and
+4 for the refusal; a repository that moved without an installation is refused,
+since its current account is unknown under the old name. Only an operand URL
+names the target repository; a URL inside an option value such as `--body`
+does not.
+Reads there, and commands that name no
 repository such as GraphQL by node ID, use the configured installation.
 `GITHUB_APP_INSTALLATION_ID` stays the default. Otherwise it prefers `CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and
 `GITHUB_TOKEN` in that order. `--check` reports the selected credential source
@@ -790,7 +805,8 @@ Write-like commands also require the authenticated login to match the configured
 automation account. Set `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` only for
 an explicitly approved one-off command whose human-owned actor is acceptable.
 `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1` is the stronger helper-owned mode:
-it overrides the fallback setting even when an env file enables fallback.
+it overrides the fallback setting even when an env file enables fallback, and
+refuses the own-user path in other accounts' repositories.
 Set `CODEX_AUTOMATION_LOGIN` and `CODEX_AUTOMATION_EMAIL` in the ignored
 `local.env`; use a quoted `CODEX_AUTOMATION_BOT_LOGINS` value for optional
 additional Director-controlled automation accounts. Those logins are used for bot

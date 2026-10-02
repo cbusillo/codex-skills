@@ -12,6 +12,8 @@ import json
 import math
 import os
 import stat
+import subprocess
+import sys
 import tempfile
 import threading
 from datetime import UTC, datetime
@@ -106,7 +108,12 @@ class TokenHandler(BaseHTTPRequestHandler):
             "authorization": self.headers.get("Authorization", ""),
         })
         if self.path == "/app":
-            payload = json.dumps({"slug": "catalog-app"}).encode()
+            payload = json.dumps({"slug": "catalog-app", "owner": {"login": "app-owner"}}).encode()
+        elif self.path == "/app/installations?per_page=100&page=1":
+            payload = json.dumps([
+                {"id": 67890, "account": {"login": "first-owner"}},
+                {"id": 11111, "account": {"login": "Second-Owner"}},
+            ]).encode()
         elif self.path == "/app/installations/67890":
             payload = json.dumps({"id": 67890, "app_id": 12345, "app_slug": "catalog-app"}).encode()
         elif self.path == "/repos/first-owner/tools/installation":
@@ -123,6 +130,11 @@ class TokenHandler(BaseHTTPRequestHandler):
                 target = f"http://127.0.0.1:{self.server.server_port}{target}"
             self.send_response(301)
             self.send_header("Location", target)
+            self.end_headers()
+            return
+        elif self.path == "/repos/old-owner/transferred/installation":
+            self.send_response(301)
+            self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/repositories/43/installation")
             self.end_headers()
             return
         elif self.path == "/repositories/42/installation":
@@ -386,7 +398,7 @@ def test_github_app_token_follows_the_repository_installation() -> None:
             assert [item["path"] for item in TokenHandler.requests] == ["/app/installations/67890/access_tokens"]
             TokenHandler.requests = []
             for repository, message in (
-                ("third-owner/site", "not installed on third-owner/site"),
+                ("first-owner/uninstalled", "its owner must install the App there"),
                 ("other-app/site", "wrong installation"),
                 ("third-owner/..", "invalid repository"),
                 ("moved-owner/site", "HTTP 301"),
@@ -401,6 +413,84 @@ def test_github_app_token_follows_the_repository_installation() -> None:
                     raise AssertionError(f"{repository} did not stop before minting a token")
             assert TokenHandler.requests == []
             assert not any(".." in item["path"] for item in TokenHandler.identity_requests)
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def test_write_identity_by_repository_owner() -> None:
+    """The App where it is installed; a refusal in the automation's own
+    repositories without it; the person's own login everywhere else."""
+    now = 1_700_000_000
+    TokenHandler.requests = []
+    TokenHandler.identity_requests = []
+    TokenHandler.expiries = [now + 3_600]
+    server = ThreadingHTTPServer(("127.0.0.1", 0), TokenHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            values = app_environment(root, f"http://127.0.0.1:{server.server_port}")
+            config = github_identity.github_app_config(values)
+            assert config is not None
+
+            # Another owner's repository with an installation: the App.
+            token, login = github_identity.github_app_auth(
+                config, now=now, repository="second-owner/site", require_installation=True
+            )
+            assert (token, login) == ("installation-11111-token-1", "catalog-app[bot]")
+            assert not github_identity.acts_as_own_user("second-owner/site", values)
+
+            # The automation's own repositories without an installation: refuse.
+            for repository in ("first-owner/uninstalled", "second-owner/uninstalled", "app-owner/uninstalled"):
+                try:
+                    github_identity.github_app_auth(config, now=now, repository=repository, require_installation=True)
+                except github_identity.ContributorRepository as error:
+                    raise AssertionError(f"{repository} must refuse, not act as the person") from error
+                except github_identity.NotInstalledForAutomation as error:
+                    assert "its owner must install the App there" in str(error), error
+                else:
+                    raise AssertionError(f"{repository} did not refuse")
+                assert not github_identity.acts_as_own_user(repository, values)
+
+            # A repository that moved, whose current account is unknown here, refuses.
+            try:
+                github_identity.github_app_auth(
+                    config, now=now, repository="old-owner/transferred", require_installation=True
+                )
+            except github_identity.ContributorRepository as error:
+                raise AssertionError("a moved repository must refuse, not act as the person") from error
+            except github_identity.GitHubAppError as error:
+                assert "has moved" in str(error), error
+            else:
+                raise AssertionError("old-owner/transferred did not refuse")
+
+            # Another owner's repository without an installation: the person.
+            try:
+                github_identity.github_app_auth(config, now=now, repository="third-owner/site", require_installation=True)
+            except github_identity.ContributorRepository as error:
+                assert error.repository == "third-owner/site"
+            else:
+                raise AssertionError("third-owner/site did not select the person's own login")
+            assert github_identity.acts_as_own_user("third-owner/site", values)
+            assert not github_identity.acts_as_own_user(
+                "third-owner/site", {**values, "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "1"}
+            )
+            assert [item["path"] for item in TokenHandler.requests] == ["/app/installations/11111/access_tokens"]
+
+            command = subprocess.run(
+                [sys.executable, str(Path(github_identity.__file__)), "app-auth",
+                 "--repo", "third-owner/site", "--require-installation"],
+                env={**values, "PATH": os.environ["PATH"]},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            assert command.returncode == github_identity.CONTRIBUTOR_EXIT_STATUS, command.stderr
+            assert command.stdout == ""
+            assert "act there as your own GitHub user" in command.stderr
     finally:
         server.shutdown()
         thread.join()
@@ -556,6 +646,7 @@ def main() -> None:
         test_configured_bot_logins_support_quoted_space_separated_values,
         test_github_app_token_is_minted_cached_and_refreshed,
         test_github_app_token_follows_the_repository_installation,
+        test_write_identity_by_repository_owner,
         test_github_app_configuration_is_all_or_nothing,
         test_github_app_private_key_rejects_group_or_world_access,
         test_github_app_jwt_has_a_valid_pkcs1_signature,

@@ -7,6 +7,9 @@ gh_bin=${GIT_PUSH_AS_BOT_GH:-gh}
 identity_helper=${GIT_PUSH_AS_BOT_IDENTITY_HELPER:-$script_dir/github_identity.py}
 python_command=${GIT_PUSH_AS_BOT_PYTHON:-}
 
+# A caller's required automation auth holds even when local.env says otherwise.
+caller_require_automation_auth=${GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH:-}
+
 # Use the first local.env that exists under CODE_HOME, CODEX_HOME, then
 # ~/.code. An explicit CODEX_SKILLS_ENV_FILE always wins, even when missing, so
 # tests and isolated callers can load nothing.
@@ -100,24 +103,50 @@ if [ "$app_variable_count" -gt 0 ]; then
 		echo "error: incomplete GitHub App configuration; set GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, and GITHUB_APP_PRIVATE_KEY_PATH" >&2
 		exit 1
 	fi
+	app_auth_status=0
 	if [ -n "$python_command" ]; then
-		app_auth_output=$($python_command "$identity_helper" app-auth --repo "$repo" --require-installation) || exit 1
+		app_auth_output=$($python_command "$identity_helper" app-auth --repo "$repo" --require-installation) || app_auth_status=$?
 	elif command -v uv >/dev/null 2>&1; then
-		app_auth_output=$(uv run --no-project --no-config --python 3.12 "$identity_helper" app-auth --repo "$repo" --require-installation) || exit 1
+		app_auth_output=$(uv run --no-project --no-config --python 3.12 "$identity_helper" app-auth --repo "$repo" --require-installation) || app_auth_status=$?
 	else
 		echo "error: git-push-as-bot requires uv or GIT_PUSH_AS_BOT_PYTHON for GitHub App authentication" >&2
 		exit 127
 	fi
-	app_login=$(printf '%s\n' "$app_auth_output" | sed -n '1p')
-	GIT_PUSH_AS_BOT_TOKEN=$(printf '%s\n' "$app_auth_output" | sed -n '2p')
-	if [ -z "$app_login" ] || [ -z "$GIT_PUSH_AS_BOT_TOKEN" ] || [ "$(printf '%s\n' "$app_auth_output" | sed -n '3p')" != "" ]; then
-		echo "error: GitHub App authentication helper returned an invalid response; refusing to push" >&2
+	# github_identity.CONTRIBUTOR_EXIT_STATUS: the App is not installed on
+	# origin and the automation's account does not own it, so the person
+	# pushes as their own GitHub user, with the active gh login's token.
+	if [ "$app_auth_status" -eq 3 ]; then
+		case "$caller_require_automation_auth:${GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH:-}" in
+		1:* | true:* | TRUE:* | yes:* | YES:* | *:1 | *:true | *:TRUE | *:yes | *:YES)
+			echo "error: $repo is not the automation's repository and automation authentication is required; refusing to push as your own GitHub user" >&2
+			exit 1
+			;;
+		esac
+		GIT_PUSH_AS_BOT_TOKEN=$(env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_bin" auth token 2>/dev/null) || GIT_PUSH_AS_BOT_TOKEN=
+		own_login=
+		if [ -n "$GIT_PUSH_AS_BOT_TOKEN" ]; then
+			own_login=$(GH_TOKEN=$GIT_PUSH_AS_BOT_TOKEN "$gh_bin" api user --jq .login 2>/dev/null) || own_login=
+		fi
+		if [ -z "$own_login" ]; then
+			echo "error: pushing to $repo as your own GitHub user needs an active gh login; run gh auth login" >&2
+			exit 1
+		fi
+		echo "notice: acting as your own GitHub user on $repo; pushing as '$own_login'" >&2
+		expected_login=$own_login
+	elif [ "$app_auth_status" -ne 0 ]; then
 		exit 1
-	fi
-	if ! same_login "$app_login" "$expected_login"; then
-		echo "error: push would run as '$app_login', expected '$expected_login'" >&2
-		echo "hint: configure CODEX_AUTOMATION_LOGIN for the GitHub App bot identity" >&2
-		exit 1
+	else
+		app_login=$(printf '%s\n' "$app_auth_output" | sed -n '1p')
+		GIT_PUSH_AS_BOT_TOKEN=$(printf '%s\n' "$app_auth_output" | sed -n '2p')
+		if [ -z "$app_login" ] || [ -z "$GIT_PUSH_AS_BOT_TOKEN" ] || [ "$(printf '%s\n' "$app_auth_output" | sed -n '3p')" != "" ]; then
+			echo "error: GitHub App authentication helper returned an invalid response; refusing to push" >&2
+			exit 1
+		fi
+		if ! same_login "$app_login" "$expected_login"; then
+			echo "error: push would run as '$app_login', expected '$expected_login'" >&2
+			echo "hint: configure CODEX_AUTOMATION_LOGIN for the GitHub App bot identity" >&2
+			exit 1
+		fi
 	fi
 elif [ -n "${CODEX_GITHUB_TOKEN:-}" ]; then
 	GIT_PUSH_AS_BOT_TOKEN=$CODEX_GITHUB_TOKEN

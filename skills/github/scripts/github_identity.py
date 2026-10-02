@@ -34,6 +34,32 @@ class GitHubAppError(RuntimeError):
     """A safe-to-display GitHub App configuration or token error."""
 
 
+class ContributorRepository(GitHubAppError):
+    """The App is not installed on a repository the automation's account does not own.
+
+    There the supported identity is the person's own GitHub login, not a refusal.
+    """
+
+    def __init__(self, repository: str) -> None:
+        super().__init__(
+            f"the GitHub App is not installed on {repository}, and its owner is not "
+            "the automation's account; act there as your own GitHub user"
+        )
+        self.repository = repository
+
+
+class NotInstalledForAutomation(GitHubAppError):
+    """The App is not installed on a repository of the automation's own accounts."""
+
+
+# app-auth exits with these statuses so the shell wrappers can tell the cases
+# apart: act as the active human login (a ContributorRepository), or a definite
+# refusal in the automation's own repository (NotInstalledForAutomation), as
+# opposed to a failed lookup (1).
+CONTRIBUTOR_EXIT_STATUS = 3
+NOT_INSTALLED_EXIT_STATUS = 4
+
+
 class GitHubAppHTTPError(GitHubAppError):
     def __init__(self, message: str, status: int, location: str | None = None) -> None:
         super().__init__(message)
@@ -525,8 +551,9 @@ def repository_installation_config(
 
     Each owner installs the App separately, so a repository outside the
     configured installation's account needs that owner's installation. When
-    none covers it, return None, or refuse when one is required (writes). There
-    is never a fallback to another identity.
+    none covers it, return None; when one is required (writes), refuse on a
+    repository the automation's account owns, and raise ContributorRepository
+    elsewhere, where the person acts as their own GitHub user.
     """
     if not REPOSITORY_PATTERN.fullmatch(repository):
         raise GitHubAppError(f"invalid repository {repository!r}; expected OWNER/REPO")
@@ -540,8 +567,18 @@ def repository_installation_config(
         except GitHubAppHTTPError as error:
             if error.status == 404 and not required:
                 return None
-            if error.status == 404:
+            if error.status == 404 and attempt:
+                # The installation lookup followed a rename or transfer, so the
+                # account in the name given may no longer own the repository.
                 raise GitHubAppError(
+                    f"{repository} has moved and the GitHub App is not installed on it; "
+                    "use the repository's current OWNER/REPO"
+                ) from error
+            if error.status == 404:
+                owner = repository.split("/", 1)[0].casefold()
+                if owner not in automation_accounts(config, now=current_time):
+                    raise ContributorRepository(repository) from error
+                raise NotInstalledForAutomation(
                     f"the GitHub App is not installed on {repository}; "
                     "its owner must install the App there before automation can use it"
                 ) from error
@@ -556,6 +593,69 @@ def repository_installation_config(
     if not isinstance(installation_id, int) or str(app_id) != config.app_id:
         raise GitHubAppError("GitHub App repository installation lookup returned the wrong installation")
     return replace(config, installation_id=str(installation_id))
+
+
+def automation_accounts(config: GitHubAppConfig, *, now: int | None = None) -> frozenset[str]:
+    """The accounts the automation writes for: the App's owner and every account it is installed on.
+
+    A repository under one of them is the Director's, so a missing installation
+    there is a refusal; anywhere else it means acting as the person's own login.
+    """
+    current_time = int(time.time() if now is None else now)
+    app = _request_json(
+        urllib.request.Request(f"{config.api_url}/app", method="GET", headers=_app_headers(config, now=current_time)),
+        operation="identity request",
+    )
+    owner = app.get("owner") if isinstance(app, dict) else None
+    if not isinstance(owner, dict) or not isinstance(owner.get("login"), str) or not owner["login"]:
+        raise GitHubAppError("GitHub App identity response is missing the App owner")
+    accounts = {owner["login"].casefold()}
+    for page in range(1, 11):
+        installations = _request_json(
+            urllib.request.Request(
+                f"{config.api_url}/app/installations?per_page=100&page={page}",
+                method="GET",
+                headers=_app_headers(config, now=current_time),
+            ),
+            operation="installation list",
+        )
+        if not isinstance(installations, list):
+            raise GitHubAppError("GitHub App installation list returned an invalid response")
+        for installation in installations:
+            account = installation.get("account") if isinstance(installation, dict) else None
+            if not isinstance(account, dict) or not isinstance(account.get("login"), str) or not account["login"]:
+                raise GitHubAppError("GitHub App installation list is missing an account")
+            accounts.add(account["login"].casefold())
+        if len(installations) < 100:
+            return frozenset(accounts)
+    raise GitHubAppError("GitHub App installation list is too long to check repository ownership")
+
+
+def acts_as_own_user(repository: str, environ: Mapping[str, str] | None = None) -> bool:
+    """Whether writes to the repository run as the person's own GitHub login.
+
+    True only when a GitHub App is configured, it is not installed on the
+    repository, and the automation's account does not own it. Any other
+    outcome, including a failed lookup, is False, and the write helpers then
+    use the App or refuse as before.
+    """
+    values = os.environ if environ is None else environ
+    try:
+        if str(configured_value("GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH", environ=values) or "").casefold() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            return False
+        config = github_app_config(values)
+        if config is None:
+            return False
+        repository_installation_config(config, repository)
+    except ContributorRepository:
+        return True
+    except GitHubAppError:
+        return False
+    return False
 
 
 def _renamed_repository_installation_url(config: GitHubAppConfig, location: str | None) -> str | None:
@@ -580,7 +680,8 @@ def github_app_auth(
     """Mint or reuse an installation token, for the repository's owner when given.
 
     Without an installation on the repository, reads use the configured
-    installation (public repositories stay readable); writes are refused.
+    installation (public repositories stay readable); writes are refused, or
+    raise ContributorRepository outside the automation's accounts.
     """
     current_time = int(time.time() if now is None else now)
     if repository:
@@ -630,7 +731,10 @@ def main() -> int:
     app_auth.add_argument(
         "--require-installation",
         action="store_true",
-        help="Refuse when no installation covers --repo instead of using the configured one (writes).",
+        help=(
+            "Refuse when no installation covers --repo instead of using the configured one (writes); "
+            f"exit {CONTRIBUTOR_EXIT_STATUS} when the automation's account does not own --repo."
+        ),
     )
     subparsers.add_parser("app-check", help="Verify the configured App installation and print its bot login.")
     subparsers.add_parser("app-token", help="Mint or reuse a GitHub App installation token.")
@@ -652,6 +756,12 @@ def main() -> int:
                 print(login)
             print(token)
             return 0
+    except ContributorRepository as error:
+        print(f"note: {error}", file=sys.stderr)
+        return CONTRIBUTOR_EXIT_STATUS
+    except NotInstalledForAutomation as error:
+        print(f"error: GitHub App authentication failed before gh invocation: {error}", file=sys.stderr)
+        return NOT_INSTALLED_EXIT_STATUS
     except GitHubAppError as error:
         print(f"error: GitHub App authentication failed before gh invocation: {error}", file=sys.stderr)
         return 1

@@ -218,6 +218,10 @@ def test_app_installation_follows_the_target_repository() -> None:
             ("api", "repos/{owner}/{repo}/pulls"): "token:",
             ("issue", "comment", "1", "--body", "repos/alice/tools", "-R", "bob/site"):
                 "token:--repo bob/site --require-installation",
+            ("issue", "comment", "1", "-R", "bob/site", "--body", "https://github.com/alice/tools/issues/2"):
+                "token:--repo bob/site --require-installation",
+            ("pr", "merge", "--squash", "https://github.com/second-owner/site/pull/2"):
+                "token:--repo second-owner/site --require-installation",
             ("issue", "comment", "1", "-Rbob/site", "--body", "hello"):
                 "token:--repo bob/site --require-installation",
             ("issue", "comment", "1", "--body", "repos/alice/tools"): "token:",
@@ -243,6 +247,54 @@ def test_app_installation_follows_the_target_repository() -> None:
         )
         assert refused.returncode != 0
         assert "not installed on other-owner/uncovered" in refused.stderr
+
+
+def test_write_to_another_owners_repository_without_installation_runs_as_the_person() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        env_file = root / "local.env"
+        env_file.write_text(
+            "GITHUB_APP_ID=12345\n"
+            "GITHUB_APP_INSTALLATION_ID=67890\n"
+            "GITHUB_APP_PRIVATE_KEY_PATH=/fake/app.pem\n"
+            "CODEX_AUTOMATION_LOGIN='catalog-app[bot]'\n",
+            encoding="utf-8",
+        )
+        identity = root / "identity.py"
+        # github_identity.CONTRIBUTOR_EXIT_STATUS for the contributor repository.
+        write(
+            identity,
+            "import sys\n"
+            "if '--repo' in sys.argv and sys.argv[sys.argv.index('--repo') + 1] == 'director/catalog':\n"
+            "    raise SystemExit(3)\n"
+            "print('catalog-app[bot]')\n"
+            "print('installation-token')\n",
+        )
+        unused = root / "unused.py"
+        write(unused, "raise AssertionError('classifier should not run')\n")
+        fake_gh = root / "gh"
+        write(
+            fake_gh,
+            "#!/bin/sh\n"
+            "if [ \"$*\" = 'api user --jq .login' ]; then\n"
+            "  [ -z \"${GH_TOKEN:-}\" ] && echo contributor-login && exit 0\n"
+            "  exit 42\n"
+            "fi\n"
+            "printf 'ran-with-token:%s\\n' \"${GH_TOKEN:-active-login}\"\n",
+        )
+        write_args = ("issue", "comment", "1", "-R", "director/catalog", "--body", "x")
+
+        result = run_wrapper(env_file, unused, identity, *write_args, gh_command=fake_gh)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "ran-with-token:active-login\n"
+        assert "acting as your own GitHub user on director/catalog" in result.stderr
+        assert "'contributor-login'" in result.stderr
+
+        env_file.write_text(env_file.read_text() + "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1\n")
+        required = run_wrapper(env_file, unused, identity, *write_args, gh_command=fake_gh)
+        assert required.returncode != 0
+        assert required.stdout == ""
+        assert "refusing to act as your own GitHub user" in required.stderr
 
 
 def test_app_actor_probe_synthesizes_include_response_without_user_endpoint() -> None:
@@ -412,6 +464,7 @@ def main() -> None:
         test_empty_app_auth_response_fails_closed,
         test_app_auth_takes_precedence_and_runs_write_as_verified_app,
         test_app_installation_follows_the_target_repository,
+        test_write_to_another_owners_repository_without_installation_runs_as_the_person,
         test_app_actor_probe_synthesizes_include_response_without_user_endpoint,
         test_app_login_mismatch_fails_closed_for_write_and_check,
         test_app_login_comparison_is_case_insensitive,
