@@ -242,6 +242,10 @@ For each finding:
 - `ruleset_missing`: an adopted repository lacks either active standard branch
   ruleset. Plan the guarded repair with `gh-rulesets.py`; applying it remains an
   explicit admin mutation.
+- `ruleset_unavailable`: GitHub's plan does not offer rulesets on this private
+  repository, so nothing enforces owner review of `DIRECTION.md`. A paid plan
+  (Pro for a user account, Team for an organization) or a public repository
+  enables them; ask the Director which, if either, they want.
 - `escalation_open`: a `direction` issue, or a pull request that changes
   `DIRECTION.md`, waiting on the Director. Decide it in this session or say why
   not.
@@ -342,6 +346,8 @@ request path above.
    unprotected `CODEOWNERS` lets an ordinary pull request remove the rule
    first. Scope the requirement to these two paths, not to every pull request:
    a review required everywhere trains the Director to click through.
+   On GitHub Free, private repositories have no rulesets; enforcing this step
+   needs a paid plan, which is the Director's decision.
    The direction rule has no bypass. If the Director is the sole code owner, use an
    automation-authored pull request for the Director to approve; a Director-authored
    pull request needs a distinct eligible code owner because authors cannot

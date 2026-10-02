@@ -667,6 +667,40 @@ def test_rulesets_are_not_required_before_direction_is_adopted() -> None:
     assert kinds(result) == ["direction_missing"]
 
 
+def test_ruleset_plan_limit_is_a_finding_and_other_403s_still_fail() -> None:
+    module = load()
+    assert kinds(run(module, rulesets=None, rulesets_unavailable=True)) == ["ruleset_unavailable"]
+    assert kinds(run(module, direction_text=None, rulesets=None, rulesets_unavailable=True)) == ["direction_missing"]
+
+    plan_limit = "reader failed: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)"
+    permission = "reader failed: Resource not accessible by integration (HTTP 403)"
+    with tempfile.TemporaryDirectory() as tmp:
+        for direction_text, error, code in (
+            (DIRECTION, plan_limit, 3),
+            (None, plan_limit, 3),
+            (DIRECTION, permission, 1),
+        ):
+            def gh_json(args: list[str], _error: str = error, **_kwargs: Any) -> Any:
+                if "/rulesets" in args[1]:
+                    raise module.AuditError(_error)
+                return []
+
+            output = StringIO()
+            with (patch.dict("os.environ", {"DIRECTION_MARKER": str(Path(tmp) / "marker.json")}),
+                  patch.dict(vars(module), {
+                      "merged_direction": lambda *_args, _text=direction_text, **_kwargs: _text,
+                      "gh_json": gh_json,
+                  }), redirect_stdout(output)):
+                assert module.main(["--repo", "o/private", "--automation", "bot", "--gh", "fixture-gh"]) == code
+            result = json.loads(output.getvalue())
+            if code == 1:
+                assert result["ok"] is False and "Resource not accessible" in result["error"], result
+            else:
+                found = [item["kind"] for item in result["findings"]]
+                assert ("ruleset_unavailable" in found) is (direction_text is not None), found
+                assert "ruleset_missing" not in found, found
+
+
 def test_direction_pull_request_discovery_uses_label_or_changed_file() -> None:
     module = load()
     files = {
