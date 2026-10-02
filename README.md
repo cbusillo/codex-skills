@@ -165,6 +165,40 @@ Claude's field requires an actual user slash-command invocation.
 The registered hook uses a JSON deny decision and an exit-zero launcher fallback,
 so missing source or a uv startup failure cannot masquerade as a policy denial.
 
+#### Auto mode
+
+Claude Code reads `autoMode` from user or managed settings or a launch-time
+`--settings` value, never from a repository's `.claude/settings.json`, so the
+plugin cannot ship it. Without these entries, auto mode's classifier stops a
+brief-authorized bot merge because no human approved it. The Director applies them by hand in
+`/permissions` → Auto mode (or in their user `settings.json`) and checks the
+result with `claude auto-mode critique`. Agents never edit the Director's
+settings. Replace `OWNER` with the GitHub account and `CATALOG` with the
+checkout path.
+
+Add to `autoMode.environment`, replacing any older lines with the same labels.
+Keep `"$defaults"` in each list; a list without it replaces the built-in
+entries.
+
+```json
+"**Repository visibility**: github.com/OWNER/* repositories are a mix of public and private; a push to a public one is publishing",
+"**Source control**: github.com/OWNER/* (the owner's own repositories) — all are trusted working repositories",
+"**Trusted repos**: every github.com/OWNER/* repository; only a repository's own work belongs in its commits",
+"**Org-specific CLIs**: the codex-skills helpers in CATALOG/skills/github/scripts (gh-pr.py, gh-issue, gh-comment, git-commit-as-bot, git-push-as-bot, gh-with-env-token) act as the configured automation account. The owner does not use human PR approval as a merge gate; green CI plus another model's review is the gate."
+```
+
+Set `autoMode.allow`, keeping the built-in rules:
+
+```json
+"allow": [
+  "$defaults",
+  "Merging a pull request in a github.com/OWNER/* repository with the codex-skills gh-pr.py merge helper (--method merge) after its CI is green, when the user's message in this session authorizes the agent to merge in that repository. Not covered: repositories where a merge deploys to production or that Launchplane's merge train lands, force pushes, and any deploy or promotion."
+]
+```
+
+The exception does not cover production deploys or force pushes; the built-in
+rules still judge those.
+
 ### Shared global instructions and Codex hooks
 
 [`instructions/global.md`](instructions/global.md) is the common source for
