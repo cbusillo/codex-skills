@@ -321,8 +321,9 @@ superseded PR body:
   --reason 'Its taxonomy and missing tests match the agreed scope.'
 ```
 
-The helper's comment already names the canonical PR as `[repo#N](URL) title`,
-so `--reason` only says why that PR was selected.
+The helper's comment already names the canonical PR as
+`[repo#N](https://github.com/OWNER/repo/pull/N) title`, so `--reason` only says
+why that PR was selected.
 
 Use `--dry-run` first when validating the comment, closure, and body rewrite
 that would happen. Use `--keep-open` only when a PR should remain open for

@@ -228,7 +228,8 @@ and dependency operations for data the helper cannot yet provide cleanly.
 
 Use `supersede` after a canonical PR has been selected for a duplicate or
 competing implementation. It is intentionally focused on the stale PR: it posts
-the canonical PR as `[repo#N](URL) title`, neutralizes `Closes`/`Fixes`/`Resolves` references in the
+the canonical PR as `[repo#N](https://github.com/OWNER/repo/pull/N) title`,
+neutralizes `Closes`/`Fixes`/`Resolves` references in the
 stale body, closes the PR so future agents do not treat it as mergeable, and can
 delete the unused remote task branch when `--delete-branch` is explicitly
 requested.
