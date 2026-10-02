@@ -54,16 +54,23 @@ class GitHubAppConfig:
 
 
 def env_file_path(environ: Mapping[str, str] | None = None) -> pathlib.Path | None:
+    """Return the local.env the shell wrappers load, or where setup should create one.
+
+    An explicit CODEX_SKILLS_ENV_FILE always wins. Otherwise the first existing
+    file under CODE_HOME, CODEX_HOME, then ~/.code wins, and the first candidate
+    is returned when none exists yet.
+    """
     values = os.environ if environ is None else environ
     if values.get("CODEX_SKILLS_ENV_FILE"):
         return pathlib.Path(values["CODEX_SKILLS_ENV_FILE"]).expanduser()
-    if values.get("CODE_HOME"):
-        return pathlib.Path(values["CODE_HOME"]).expanduser() / "local.env"
-    if values.get("CODEX_HOME"):
-        return pathlib.Path(values["CODEX_HOME"]).expanduser() / "local.env"
+    candidates = [
+        pathlib.Path(values[name]).expanduser() / "local.env"
+        for name in ("CODE_HOME", "CODEX_HOME")
+        if values.get(name)
+    ]
     if values.get("HOME"):
-        return pathlib.Path(values["HOME"]).expanduser() / ".code" / "local.env"
-    return None
+        candidates.append(pathlib.Path(values["HOME"]).expanduser() / ".code" / "local.env")
+    return next((path for path in candidates if path.is_file()), candidates[0] if candidates else None)
 
 
 def load_local_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:

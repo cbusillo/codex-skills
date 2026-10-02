@@ -600,9 +600,17 @@ not renamed.
 
 `GH_WITH_ENV_TOKEN_EXPECTED_LOGIN`, `GIT_COMMIT_AS_BOT_NAME`, and
 `GIT_COMMIT_AS_BOT_EMAIL` remain supported as higher-precedence per-tool
-overrides. The same local environment precedence is used by shell and Python
-helpers: `CODEX_SKILLS_ENV_FILE`, `$CODE_HOME/local.env`,
-`$CODEX_HOME/local.env`, then `~/.code/local.env`.
+overrides. Shell and Python helpers load the same file: `CODEX_SKILLS_ENV_FILE`
+when it is set, even if that file is missing, and otherwise the first of
+`$CODE_HOME/local.env`, `$CODEX_HOME/local.env`, and `~/.code/local.env` that
+exists. A home variable whose directory has no `local.env` does not hide the
+next one.
+
+`~/.code/local.env` is the one location every harness finds without setting a
+variable; Claude Code sets neither `CODE_HOME` nor `CODEX_HOME`. On a host
+without `~/.code`, keep the file under a home directory and set the same
+`CODE_HOME` or `CODEX_HOME` for every harness, or set `CODEX_SKILLS_ENV_FILE` to
+its absolute path for every harness.
 
 Existing installations that previously configured only a GitHub token must add
 `CODEX_AUTOMATION_LOGIN` before GitHub writes will proceed. Quote values that

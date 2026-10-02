@@ -767,8 +767,9 @@ Human warnings and progress remain on stderr, and the process exit code matches
 ## Authentication And Identity
 
 `scripts/gh-with-env-token` is automation-first when a token is configured. It
-loads `$CODE_HOME/local.env` by default, falling back to
-`$CODEX_HOME/local.env` and then `~/.code/local.env`. When
+loads the first of `$CODE_HOME/local.env`, `$CODEX_HOME/local.env`, and
+`~/.code/local.env` that exists, so a home variable without its own
+`local.env` falls through to the next. When
 `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, and
 `GITHUB_APP_PRIVATE_KEY_PATH` are all configured, it verifies the App identity,
 mints and caches an owner-only installation token, and uses the App for every
@@ -800,7 +801,8 @@ Automation-only Python readers use the equivalent wrapper prefix
 `--require-automation-auth`, avoiding an explicit process-environment copy while
 preserving the same fail-closed behavior.
 Set `CODEX_SKILLS_ENV_FILE` only in tests or special local cases where a
-different env file should be used.
+different env file should be used. It always wins, and a missing file then
+loads nothing, which keeps tests isolated from the real credentials.
 
 The wrapper remains a transparent transport for delegated `gh` stdout, but its
 failure decision is owned by `scripts/github_api.py classify-legacy` rather
