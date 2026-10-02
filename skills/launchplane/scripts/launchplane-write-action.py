@@ -64,6 +64,8 @@ READ_ONLY_OPERATIONS = {
     "reconcile-requests-read",
     "target-replacement-operation-read",
     "target-replacement-plan-read",
+    "production-backup-authority-read",
+    "product-promotion-status-read",
 }
 MERGE_TRAIN_POLICY_IMPORT_ENVELOPE_FIELDS = {
     "schema_version",
@@ -3674,6 +3676,25 @@ def _project_success_output(
             provider_payload.get("records"), {"product_profile", "repository_inventory"}
         )
         return records, _project_product_repository_identity_plan(provider_payload.get("result"))
+    if operation in {"product-owner-dry-run", "product-owner-apply"}:
+        records = _project_records(provider_payload.get("records"), {"product_profile"})
+        return records, _project_product_owner_plan(provider_payload.get("result"))
+    if operation in {"production-backup-authority-dry-run", "production-backup-authority-apply"}:
+        records = _project_records(provider_payload.get("records"), set())
+        return records, _project_production_backup_authority_result(
+            provider_payload.get("result")
+        )
+    if operation in {
+        "dokploy-target-create-compose-dry-run",
+        "dokploy-target-create-compose-apply",
+    }:
+        records = _project_records(provider_payload.get("records"), set())
+        return records, _project_dokploy_compose_setup(
+            provider_payload.get("result"), request=request
+        )
+    if operation == "product-promotion-dry-run":
+        # Record ids, release URLs and target names are not projected; the result keeps statuses.
+        return {}, _project_product_promotion_dry_run(provider_payload.get("result"))
     raise LaunchplaneSafetyError("invalid_response")
 
 
@@ -3851,6 +3872,44 @@ def summarize_success(
                 "then apply the same product and reason with --expected-plan-digest."
                 if operation == "product-repository-identity-dry-run"
                 else "Check read_back_matches before relying on repository-id event routing."
+            )
+        elif operation in {"product-owner-dry-run", "product-owner-apply"}:
+            summary["plan_sha256"] = result.get("plan_sha256")
+            summary["recommendation"] = (
+                "Save this redacted dry-run output, review the Client before and after, then apply "
+                "the same product, login or --clear, and reason with --expected-plan-digest."
+                if operation == "product-owner-dry-run"
+                else "Check read_back_matches before relying on the recorded Client."
+            )
+        elif operation in {
+            "production-backup-authority-dry-run",
+            "production-backup-authority-apply",
+        }:
+            summary["authority_digest"] = result.get("authority_digest")
+            summary["recommendation"] = (
+                "Save this redacted dry-run output, review the policy and targets, then apply the "
+                "exact same private payload with --expected-plan-digest set to authority_digest."
+                if operation == "production-backup-authority-dry-run"
+                else "Check read_back_matches and the read-back state before relying on the policy."
+            )
+        elif operation in {
+            "dokploy-target-create-compose-dry-run",
+            "dokploy-target-create-compose-apply",
+        }:
+            summary["plan_sha256"] = result.get("plan_sha256")
+            summary["recommendation"] = (
+                "Save this redacted dry-run output, review the plan actions, then apply the exact "
+                "same private payload with --expected-plan-digest."
+                if operation == "dokploy-target-create-compose-dry-run"
+                else "Check read_back_matches, then add the lane record through the stable-lane "
+                "repair workflow."
+            )
+        elif operation == "product-promotion-dry-run":
+            summary["promotion_status"] = result.get("promotion_status")
+            summary["backup_status"] = result.get("backup_status")
+            summary["recommendation"] = (
+                "Launchplane recorded this dry-run for the evidence fingerprint and bump. It made "
+                "no backup and deployed nothing; a live promotion is not a helper command."
             )
         elif operation in {"odoo-addon-settings-dry-run", "odoo-addon-settings-apply"}:
             summary["plan_sha256"] = result.get("plan_sha256")
@@ -4569,10 +4628,17 @@ def execute_product_read(
         return 1
 
 
-def _load_reviewed_plan_evidence(
-    args: argparse.Namespace, *, operation: str, expected_plan_digest: str
-) -> dict[str, Any]:
-    """The saved dry-run result, when it is this operation's accepted plan with the digest."""
+def _load_reviewed_evidence(
+    args: argparse.Namespace,
+    *,
+    operation: str,
+    expected_digest: str,
+    digest_field: str = "plan_sha256",
+    evidence_status: str = "accepted",
+    result_status: str | None = "ok",
+    dry_run_mode: str = "dry-run",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The saved dry-run output and its result, when it is this operation's accepted plan with the digest."""
     evidence_path = str(getattr(args, "dry_run_evidence_file", "") or "").strip()
     if not evidence_path:
         raise ValueError("reviewed_dry_run_not_apply_eligible")
@@ -4583,14 +4649,24 @@ def _load_reviewed_plan_evidence(
     result = evidence.get("result")
     if (
         not isinstance(result, dict)
+        or not isinstance(evidence.get("request"), dict)
         or evidence.get("operation") != operation
-        or evidence.get("status") != "accepted"
-        or result.get("status") != "ok"
-        or result.get("mode") != "dry-run"
-        or result.get("plan_sha256") != expected_plan_digest
+        or evidence.get("status") != evidence_status
+        or (result_status is not None and result.get("status") != result_status)
+        or result.get("mode") != dry_run_mode
+        or result.get(digest_field) != expected_digest
     ):
         raise ValueError("reviewed_dry_run_not_apply_eligible")
-    return result
+    return evidence, result
+
+
+def _load_reviewed_plan_evidence(
+    args: argparse.Namespace, *, operation: str, expected_plan_digest: str
+) -> dict[str, Any]:
+    """The saved dry-run result, when it is this operation's accepted plan with the digest."""
+    return _load_reviewed_evidence(
+        args, operation=operation, expected_digest=expected_plan_digest
+    )[1]
 
 
 def _reviewed_apply_digest(args: argparse.Namespace) -> str:
@@ -5487,6 +5563,1182 @@ def execute_repository_inventory_read(
         return 1
 
 
+# Lane setup: a product's Client, production backup authority, and a lane's Dokploy
+# compose target. Launchplane binds only the backup-authority apply to its dry-run, so
+# for the others the helper hashes what the reviewer saw, checks the record has not
+# moved before applying, and compares the applied result and a read-back with it.
+
+PRODUCT_OWNER_PLAN_FIELDS = {
+    "status",
+    "mode",
+    "product",
+    "operation",
+    "resolved_github_login",
+    "resolved_github_id",
+    "owner_before",
+    "owner_after",
+    "changed",
+    "applied",
+    "reason",
+    "source_label",
+    "profile_updated_at_before",
+    "profile_updated_at_after",
+}
+PRODUCT_OWNER_OPERATIONS = {"set", "clear", "unchanged"}
+PRODUCT_OWNER_IDENTITY_FIELDS = {"github_login", "github_id", "review_label"}
+GITHUB_ID_RE = re.compile(r"^[1-9][0-9]{0,19}$")
+PRODUCTION_BACKUP_AUTHORITY_PAYLOAD_FIELDS = {
+    "schema_version",
+    "policy",
+    "targets",
+    "expected_current_policy_record_id",
+    "expected_current_target_record_ids",
+}
+PRODUCTION_BACKUP_AUTHORITY_RESULT_FIELDS = {
+    "schema_version",
+    "mode",
+    "status",
+    "authority_digest",
+    "policy",
+    "targets",
+}
+PRODUCTION_BACKUP_AUTHORITY_MODES = {"dry_run", "apply"}
+PRODUCTION_BACKUP_AUTHORITY_STATUSES = {"would_apply", "applied", "replayed"}
+PRODUCTION_BACKUP_POLICY_SUMMARY_FIELDS = {
+    "policy_id",
+    "record_id",
+    "policy_revision",
+    "status",
+    "promotion_action",
+    "source_target_id",
+    "destination_target_id",
+    "effective_at",
+    "review_after",
+}
+PRODUCTION_BACKUP_TARGET_SUMMARY_FIELDS = {
+    "target_id",
+    "record_id",
+    "target_revision",
+    "status",
+    "provider_type",
+    "destination_kind",
+    "effective_at",
+    "review_after",
+}
+PRODUCTION_BACKUP_RECORD_STATUSES = {"active", "superseded", "retired"}
+PRODUCTION_BACKUP_DESTINATION_KINDS = {"proxmox_guest", "proxmox_storage"}
+PRODUCTION_BACKUP_AUTHORITY_READ_FIELDS = {
+    "schema_version",
+    "product",
+    "context",
+    "instance",
+    "promotion_action",
+    "state",
+    "ready",
+    "summary",
+    "reason_codes",
+    "policy",
+    "targets",
+    "generated_at",
+}
+PRODUCTION_BACKUP_AUTHORITY_STATES = {"ready", "missing", "invalid", "stale", "retired"}
+PRODUCTION_BACKUP_MAX_TARGETS = 20
+DOKPLOY_COMPOSE_PAYLOAD_FIELDS = {
+    "schema_version",
+    "context",
+    "instance",
+    "target_name",
+    "server_id",
+    "project_id",
+    "project_name",
+    "project_description",
+    "environment_id",
+    "environment_name",
+    "environment_description",
+    "app_name",
+    "description",
+    "source_git_ref",
+    "source_type",
+    "compose_path",
+    "healthcheck_path",
+    "domains",
+    "runtime_port",
+    "deploy_timeout_seconds",
+    "reason",
+}
+DOKPLOY_COMPOSE_SETUP_RESULT_FIELDS = {
+    "mode",
+    "operation",
+    "context",
+    "instance",
+    "applied",
+    "route_domain_ids",
+    "reason",
+    "setup",
+}
+# Launchplane's typed confirmation for a target-setup apply; the reviewed dry-run
+# evidence and plan digest are what the helper checks before sending it.
+DOKPLOY_TARGET_SETUP_CONFIRMATION = "APPLY DOKPLOY TARGET SETUP"
+
+
+def _canonical_sha256(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _positive_int(value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise LaunchplaneSafetyError("invalid_response")
+    return cast(int, value)
+
+
+def _project_owner_identity(value: object) -> dict[str, str]:
+    source = {} if value is None else _require_dict(value)
+    if any(str(key) not in PRODUCT_OWNER_IDENTITY_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    login = source.get("github_login") or ""
+    github_id = source.get("github_id") or ""
+    if not isinstance(login, str) or not isinstance(github_id, str):
+        raise LaunchplaneSafetyError("invalid_response")
+    if login and not GITHUB_LOGIN_RE.fullmatch(login):
+        raise LaunchplaneSafetyError("invalid_response")
+    if github_id and not GITHUB_ID_RE.fullmatch(github_id):
+        raise LaunchplaneSafetyError("invalid_response")
+    return {"github_login": login, "github_id": github_id}
+
+
+def _project_product_owner_plan(result: object) -> dict[str, object]:
+    source = _require_dict(result)
+    if any(str(key) not in PRODUCT_OWNER_PLAN_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    operation = source.get("operation")
+    if operation not in PRODUCT_OWNER_OPERATIONS:
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "status": public_code(source.get("status")),
+        "mode": _reviewed_plan_mode(source.get("mode")),
+        "product": public_identifier(source.get("product")),
+        "operation": operation,
+        "resolved_owner": _project_owner_identity(
+            {
+                "github_login": source.get("resolved_github_login"),
+                "github_id": source.get("resolved_github_id"),
+            }
+        ),
+        "owner_before": _project_owner_identity(source.get("owner_before")),
+        "owner_after": _project_owner_identity(source.get("owner_after")),
+        "changed": bool(_optional_bool(source.get("changed"))),
+        "applied": bool(_optional_bool(source.get("applied"))),
+        "reason": public_summary_string(source.get("reason")),
+        "source_label": public_identifier(source.get("source_label")),
+    }
+    for field in ("profile_updated_at_before", "profile_updated_at_after"):
+        if source.get(field):
+            projected[field] = public_summary_string(source.get(field), max_length=64)
+    # Launchplane does not bind an owner apply to a dry-run; this digest is the helper's.
+    projected["plan_sha256"] = _canonical_sha256(
+        {
+            field: projected[field]
+            for field in ("product", "operation", "owner_before", "owner_after", "reason")
+        }
+    )
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_backup_policy_summary(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    source = _require_dict(value)
+    if any(str(key) not in PRODUCTION_BACKUP_POLICY_SUMMARY_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    if source.get("status") not in PRODUCTION_BACKUP_RECORD_STATUSES:
+        raise LaunchplaneSafetyError("invalid_response")
+    return {
+        "policy_id": public_identifier(source.get("policy_id")),
+        "record_id": public_identifier(source.get("record_id")),
+        "policy_revision": _positive_int(source.get("policy_revision")),
+        "status": source["status"],
+        "promotion_action": public_identifier(source.get("promotion_action")),
+        "source_target_id": public_identifier(source.get("source_target_id")),
+        "destination_target_id": public_identifier(source.get("destination_target_id")),
+        "effective_at": public_summary_string(source.get("effective_at"), max_length=64),
+        "review_after": public_summary_string(source.get("review_after"), max_length=64),
+    }
+
+
+def _project_backup_target_summaries(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list) or len(value) > PRODUCTION_BACKUP_MAX_TARGETS:
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: list[dict[str, object]] = []
+    for item in value:
+        source = _require_dict(item)
+        if any(str(key) not in PRODUCTION_BACKUP_TARGET_SUMMARY_FIELDS for key in source):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        if (
+            source.get("status") not in PRODUCTION_BACKUP_RECORD_STATUSES
+            or source.get("provider_type") != "proxmox"
+            or source.get("destination_kind") not in PRODUCTION_BACKUP_DESTINATION_KINDS
+        ):
+            raise LaunchplaneSafetyError("invalid_response")
+        projected.append(
+            {
+                "target_id": public_identifier(source.get("target_id")),
+                "record_id": public_identifier(source.get("record_id")),
+                "target_revision": _positive_int(source.get("target_revision")),
+                "status": source["status"],
+                "provider_type": "proxmox",
+                "destination_kind": source["destination_kind"],
+                "effective_at": public_summary_string(source.get("effective_at"), max_length=64),
+                "review_after": public_summary_string(source.get("review_after"), max_length=64),
+            }
+        )
+    return projected
+
+
+def _project_production_backup_authority_result(result: object) -> dict[str, object]:
+    source = _require_dict(result)
+    if any(str(key) not in PRODUCTION_BACKUP_AUTHORITY_RESULT_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    if (
+        source.get("mode") not in PRODUCTION_BACKUP_AUTHORITY_MODES
+        or source.get("status") not in PRODUCTION_BACKUP_AUTHORITY_STATUSES
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    policy = _project_backup_policy_summary(source.get("policy"))
+    if policy is None:
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "schema_version": _positive_int(source.get("schema_version", 1)),
+        "mode": source["mode"],
+        "status": source["status"],
+        "authority_digest": _project_sha256(source.get("authority_digest")),
+        "policy": policy,
+        "targets": _project_backup_target_summaries(source.get("targets", [])),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_production_backup_authority_read(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    if any(str(key) not in PRODUCTION_BACKUP_AUTHORITY_READ_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    if source.get("state") not in PRODUCTION_BACKUP_AUTHORITY_STATES:
+        raise LaunchplaneSafetyError("invalid_response")
+    reason_codes = source.get("reason_codes") or []
+    if not isinstance(reason_codes, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "product": public_identifier(source.get("product")),
+        "context": public_identifier(source.get("context")),
+        "instance": public_identifier(source.get("instance")),
+        "promotion_action": public_identifier(source.get("promotion_action")),
+        "state": source["state"],
+        "ready": bool(_optional_bool(source.get("ready"))),
+        # The summary is free text that can name hosts; reason codes carry the state.
+        # Codes such as production_backup_target_stale:<target id> carry a target id.
+        "reason_codes": [public_identifier(code) for code in reason_codes],
+        "policy": _project_backup_policy_summary(source.get("policy")),
+        "targets": _project_backup_target_summaries(source.get("targets") or []),
+        "generated_at": _optional_text(source.get("generated_at")),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _dokploy_setup_target_id(result: object) -> str:
+    """The created compose id, used only to compare with read-back; never printed."""
+    setup = _require_dict(_require_dict(result).get("setup"))
+    record = setup.get("target_id_record")
+    target_id = _require_dict(record).get("target_id") if record is not None else ""
+    if not isinstance(target_id, str):
+        raise LaunchplaneSafetyError("invalid_response")
+    return target_id.strip()
+
+
+def _project_dokploy_compose_setup(
+    result: object, *, request: dict[str, object] | None
+) -> dict[str, object]:
+    """Plan actions, counts and provider kinds; provider ids, server ids, project and
+    environment names, domains, git URLs, env keys and provider requests are dropped."""
+    source = _require_dict(result)
+    if any(str(key) not in DOKPLOY_COMPOSE_SETUP_RESULT_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    if source.get("operation") != "create-compose":
+        raise LaunchplaneSafetyError("invalid_response")
+    payload_digest = (request or {}).get("payload_digest")
+    if not isinstance(payload_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", payload_digest):
+        raise LaunchplaneSafetyError("invalid_response")
+    setup = _require_dict(source.get("setup"))
+    plan = _require_dict(setup.get("plan"))
+    plan_actions = {
+        part: public_code(_require_dict(plan.get(part)).get("action"))
+        for part in ("project", "environment", "compose")
+    }
+    target_record = setup.get("target_record")
+    target_record = {} if target_record is None else _require_dict(target_record)
+    domains = target_record.get("domains") or []
+    route_domain_ids = source.get("route_domain_ids") or []
+    provider_warnings = setup.get("warnings") or []
+    if not all(isinstance(item, list) for item in (domains, route_domain_ids, provider_warnings)):
+        raise LaunchplaneSafetyError("invalid_response")
+    healthcheck_path = target_record.get("healthcheck_path") or ""
+    if not isinstance(healthcheck_path, str) or (
+        healthcheck_path and not re.fullmatch(r"/[A-Za-z0-9._~/-]{0,127}", healthcheck_path)
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "mode": _reviewed_plan_mode(source.get("mode")),
+        "operation": "create-compose",
+        "context": public_identifier(source.get("context")),
+        "instance": public_identifier(source.get("instance")),
+        "applied": bool(_optional_bool(source.get("applied"))),
+        # The reason comes from the private payload and can name hosts; the digest covers it.
+        "plan_actions": plan_actions,
+        "healthcheck_path": healthcheck_path,
+        "domain_count": len(domains),
+        "route_domain_count": len(route_domain_ids),
+        "provider_warning_count": len(provider_warnings),
+    }
+    provider_target = setup.get("provider_target_record")
+    if provider_target is not None:
+        provider_target = _require_dict(provider_target)
+        projected["provider_target"] = {
+            field: public_code(provider_target.get(field))
+            for field in ("provider_id", "target_category", "provider_target_type")
+        }
+    # The route has no plan digest; bind the private payload to the reviewed plan here.
+    projected["plan_sha256"] = _canonical_sha256(
+        {
+            "payload_digest": payload_digest,
+            "context": projected["context"],
+            "instance": projected["instance"],
+            "plan_actions": plan_actions,
+        }
+    )
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def product_owner_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
+    login = str(getattr(args, "github_login", "") or "").strip().removeprefix("@")
+    clear = bool(getattr(args, "clear", False))
+    if clear == bool(login):
+        raise ValueError("owner_selection_required")
+    if login and not GITHUB_LOGIN_RE.fullmatch(login):
+        raise ValueError("invalid_github_login")
+    return {
+        "schema_version": 1,
+        "mode": mode,
+        "github_login": login,
+        "clear": clear,
+        "reason": _required_argument(args, "reason"),
+    }
+
+
+def reviewed_product_owner_plan(
+    args: argparse.Namespace, body: dict[str, object]
+) -> dict[str, Any]:
+    """The saved dry-run plan this owner apply must reproduce."""
+    expected_plan_digest = _reviewed_apply_digest(args)
+    result = _load_reviewed_plan_evidence(
+        args, operation="product-owner-dry-run", expected_plan_digest=expected_plan_digest
+    )
+    resolved = result.get("resolved_owner")
+    resolved_login = resolved.get("github_login") if isinstance(resolved, dict) else None
+    if (
+        result.get("product") != str(args.product).strip()
+        # An unchanged plan has nothing to apply.
+        or result.get("operation") != ("clear" if body["clear"] else "set")
+        or (
+            not body["clear"]
+            and str(resolved_login or "").lower() != cast(str, body["github_login"]).lower()
+        )
+        or result.get("reason") != " ".join(cast(str, body["reason"]).split())
+        or not isinstance(result.get("owner_before"), dict)
+        or not isinstance(result.get("owner_after"), dict)
+    ):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    return result
+
+
+def production_backup_authority_payload(args: argparse.Namespace) -> dict[str, object]:
+    payload = read_payload_file(args.payload_file)
+    if any(key not in PRODUCTION_BACKUP_AUTHORITY_PAYLOAD_FIELDS for key in payload):
+        raise ValueError("unsupported_backup_authority_field")
+    policy = payload.get("policy")
+    if not isinstance(policy, dict):
+        raise ValueError("backup_policy_required")
+    if not isinstance(payload.get("targets", []), list):
+        raise ValueError("invalid_backup_targets")
+    for field in ("product", "context", "instance", "promotion_action"):
+        value = policy.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"backup_policy_{field}_required")
+    return payload
+
+
+def production_backup_authority_body(
+    args: argparse.Namespace, *, mode: str
+) -> tuple[dict[str, object], dict[str, object]]:
+    """The route body and the public request summary for a private authority payload."""
+    payload = production_backup_authority_payload(args)
+    policy = cast(dict[str, object], payload["policy"])
+    request: dict[str, object] = {
+        "mode": mode,
+        "payload_source": "private_file",
+        "payload_digest": metadata_review_digest(payload),
+        "product": public_identifier(policy["product"]),
+        "context": public_identifier(policy["context"]),
+        "instance": public_identifier(policy["instance"]),
+        "promotion_action": public_identifier(policy["promotion_action"]),
+    }
+    body: dict[str, object] = {**payload, "mode": "apply" if mode == "apply" else "dry_run"}
+    if mode == "apply":
+        expected_digest = _reviewed_apply_digest(args)
+        evidence, _result = _load_reviewed_evidence(
+            args,
+            operation="production-backup-authority-dry-run",
+            expected_digest=expected_digest,
+            digest_field="authority_digest",
+            evidence_status="ok",
+            result_status="would_apply",
+            dry_run_mode="dry_run",
+        )
+        if evidence["request"].get("payload_digest") != request["payload_digest"]:
+            raise ValueError("reviewed_dry_run_not_apply_eligible")
+        body["reviewed_authority_digest"] = expected_digest
+    return body, request
+
+
+def dokploy_compose_payload(args: argparse.Namespace) -> dict[str, object]:
+    payload = read_payload_file(args.payload_file)
+    if any(key not in DOKPLOY_COMPOSE_PAYLOAD_FIELDS for key in payload):
+        raise ValueError("unsupported_dokploy_target_field")
+    for field in ("context", "instance", "target_name", "server_id", "reason"):
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field}_required")
+    if not any(payload.get(field) for field in ("project_id", "project_name", "environment_id")):
+        raise ValueError("dokploy_project_required")
+    healthcheck_path = payload.get("healthcheck_path")
+    # Stable-lane repair derives the lane's health URL from this path.
+    if not isinstance(healthcheck_path, str) or not healthcheck_path.startswith("/"):
+        raise ValueError("healthcheck_path_required")
+    domains = payload.get("domains")
+    # Stable-lane repair refuses a target without the lane's domain.
+    if (
+        not isinstance(domains, list)
+        or not domains
+        or not all(isinstance(domain, str) and domain.strip() for domain in domains)
+    ):
+        raise ValueError("domains_required")
+    return payload
+
+
+def dokploy_compose_body(
+    args: argparse.Namespace, *, mode: str
+) -> tuple[dict[str, object], dict[str, object]]:
+    payload = dokploy_compose_payload(args)
+    request: dict[str, object] = {
+        "mode": mode,
+        "payload_source": "private_file",
+        "payload_digest": metadata_review_digest(payload),
+        "context": public_identifier(payload["context"]),
+        "instance": public_identifier(payload["instance"]),
+    }
+    body: dict[str, object] = {
+        **payload,
+        "operation": "create-compose",
+        # Target setup is authorized on Launchplane's own service product.
+        "product": "launchplane",
+        "mode": mode,
+    }
+    if mode == "apply":
+        expected_plan_digest = _reviewed_apply_digest(args)
+        evidence, _result = _load_reviewed_evidence(
+            args,
+            operation="dokploy-target-create-compose-dry-run",
+            expected_digest=expected_plan_digest,
+            result_status=None,
+        )
+        if evidence["request"].get("payload_digest") != request["payload_digest"]:
+            raise ValueError("reviewed_dry_run_not_apply_eligible")
+        body["confirmation"] = DOKPLOY_TARGET_SETUP_CONFIRMATION
+    return body, request
+
+
+def read_product_owner(
+    *, settings: dict[str, str], product: str, timeout: float
+) -> dict[str, str]:
+    provider_payload = request_launchplane_read(
+        service_url=settings["service_url"],
+        path=_product_read_path("product-profile-read", product=product),
+        settings=settings,
+        query={},
+        timeout=timeout,
+    )
+    profile = _require_dict(provider_payload.get("profile"))
+    return _project_owner_identity(profile.get("owner"))
+
+
+def read_production_backup_authority(
+    *, settings: dict[str, str], query: dict[str, str], timeout: float
+) -> dict[str, object]:
+    provider_payload = request_launchplane_read(
+        service_url=settings["service_url"],
+        path=helper_command_path("production-backup-authority-read"),
+        settings=settings,
+        query=query,
+        timeout=timeout,
+    )
+    if any(str(key) not in {"status", "trace_id", "authority"} for key in provider_payload):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    return _project_production_backup_authority_read(provider_payload.get("authority"))
+
+
+def _domain_set(value: object) -> frozenset[str]:
+    if not isinstance(value, list):
+        return frozenset()
+    return frozenset(str(domain).strip().lower() for domain in value)
+
+
+def read_dokploy_target(
+    *, settings: dict[str, str], context: str, instance: str, timeout: float
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Public target state, plus the ids, domains and health path the records hold,
+    for comparison only."""
+    provider_payload = request_launchplane_read(
+        service_url=settings["service_url"],
+        path=internal_helper_path("dokploy-target-inspect"),
+        settings=settings,
+        query={"context": context, "instance": instance},
+        timeout=timeout,
+    )
+    inspect = _require_dict(provider_payload.get("inspect"))
+    tracked = _require_dict(inspect.get("tracked_target") or {})
+    provider_target = _require_dict(inspect.get("provider_target_record") or {})
+    private = {
+        "target_ids": {
+            str(source.get("target_id") or "").strip()
+            for source in (inspect, tracked, provider_target)
+        },
+        "domains": _domain_set(tracked.get("domains")),
+        "healthcheck_path": str(tracked.get("healthcheck_path") or ""),
+    }
+    public = {
+        "status": public_code(inspect.get("status")),
+        "target_type": public_code(inspect.get("target_type"), default="unknown"),
+        "provider_target_record": public_code(provider_target.get("status"), default="missing"),
+    }
+    return public, private
+
+
+def attach_read_back(
+    payload: dict[str, Any], *, read: Any, matches: Any, label: str
+) -> bool:
+    """Read the record back after an accepted apply; a failed read is never a success."""
+    try:
+        observed = read()
+    except (OSError, TimeoutError, ValueError, LaunchplaneSafetyError):
+        payload["warnings"].append(
+            warning(
+                "read_back_unavailable",
+                f"The apply was accepted, but the {label} could not be read back. "
+                "Read it again before relying on it or retrying.",
+            )
+        )
+        return False
+    payload["result"]["read_back"] = observed
+    payload["result"]["read_back_matches"] = bool(matches(observed))
+    if not payload["result"]["read_back_matches"]:
+        payload["warnings"].append(
+            warning(
+                "read_back_mismatch",
+                f"The {label} read back does not match the reviewed plan. Do not retry; "
+                "inspect the record and its trace.",
+            )
+        )
+    return payload["result"]["read_back_matches"]
+
+
+def execute_verified_apply(
+    *,
+    args: argparse.Namespace,
+    operation: str,
+    request: dict[str, object],
+    path: str,
+    body: dict[str, object],
+    preflight: Any,
+    finish: Any,
+    label: str,
+) -> int:
+    """POST a reviewed apply after `preflight` finds the record unchanged, then let
+    `finish` compare the result and a read-back with the review. Exit 0 only when both match."""
+    settings = prepare_operator_settings(args=args, operation=operation, request=request)
+    if settings is None:
+        return 2
+    post_attempted = False
+    try:
+        stale_summary = preflight(settings)
+        if stale_summary is not None:
+            payload = base_payload(status="stale", operation=operation, request=request)
+            payload["summary"] = stale_summary
+            assert_public_safe_shape(payload["summary"])
+            emit(payload)
+            return 1
+        post_attempted = True
+        provider_payload = request_launchplane(
+            service_url=settings["service_url"],
+            path=path,
+            settings=settings,
+            body=body,
+            timeout=args.timeout,
+            idempotency_key=args.idempotency_key,
+        )
+        payload = summarize_success(
+            operation=operation, request=request, provider_payload=provider_payload
+        )
+        verified = finish(settings, provider_payload, payload)
+        if not verified:
+            payload["status"] = "accepted_unverified"
+            cast(dict[str, object], payload["summary"])["recommendation"] = (
+                f"Launchplane accepted the apply, but it could not be verified against the "
+                f"reviewed plan. Read back the {label} before any retry."
+            )
+        for part in ("result", "summary", "warnings"):
+            assert_public_safe_shape(payload[part])
+        emit(payload)
+        return 0 if verified else 1
+    except urllib.error.HTTPError as exc:
+        # A gateway error after the POST began may follow a write Launchplane completed.
+        if post_attempted and (exc.code >= 500 or exc.code == 408):
+            emit(_apply_outcome_unknown(operation=operation, request=request, label=label))
+            return 1
+        emit_http_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except LaunchplaneSafetyError as exc:
+        if post_attempted and exc.code == "unsafe_redirect":
+            emit(_apply_outcome_unknown(operation=operation, request=request, label=label))
+            return 1
+        if post_attempted:
+            emit(_apply_response_unverified(operation=operation, request=request, label=label))
+            return 1
+        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except (OSError, TimeoutError, urllib.error.URLError):
+        if post_attempted:
+            emit(_apply_outcome_unknown(operation=operation, request=request, label=label))
+            return 1
+        emit_provider_unavailable(operation=operation, request=request)
+        return 1
+    except (ValueError, json.JSONDecodeError):
+        if post_attempted:
+            emit(_apply_response_unverified(operation=operation, request=request, label=label))
+            return 1
+        emit_invalid_response(operation=operation, request=request)
+        return 1
+
+
+def _apply_response_unverified(
+    *, operation: str, request: dict[str, object], label: str
+) -> dict[str, object]:
+    payload = base_payload(status="accepted_unverified", operation=operation, request=request)
+    payload["summary"] = {
+        "recommendation": (
+            f"Launchplane answered the apply with a response that could not be verified "
+            f"locally. Read back the {label} before any retry."
+        )
+    }
+    payload["warnings"] = [
+        warning(
+            "apply_response_unverified",
+            "The apply response was not safe to project; do not retry before read-back.",
+        )
+    ]
+    return payload
+
+
+def _apply_outcome_unknown(
+    *, operation: str, request: dict[str, object], label: str
+) -> dict[str, object]:
+    payload = base_payload(status="outcome_unknown", operation=operation, request=request)
+    payload["summary"] = {
+        "recommendation": (
+            f"The apply outcome is unknown because the exchange failed after the POST began. "
+            f"Read back the {label} before any retry."
+        )
+    }
+    payload["warnings"] = [
+        warning("apply_outcome_unknown", "Do not retry this apply until read-back resolves it.")
+    ]
+    return payload
+
+
+def execute_product_owner_apply(
+    *, args: argparse.Namespace, request: dict[str, object], body: dict[str, object]
+) -> int:
+    reviewed = reviewed_product_owner_plan(args, body)
+    product = str(args.product).strip()
+    path = _product_read_path("product-owner-apply", product=product)
+
+    def preflight(settings: dict[str, str]) -> dict[str, object] | None:
+        current = read_product_owner(settings=settings, product=product, timeout=args.timeout)
+        if current == reviewed["owner_before"]:
+            return None
+        return {
+            "error_code": "owner_changed_since_review",
+            "recommendation": "Stop before apply and dry-run again against the current Client.",
+        }
+
+    def finish(
+        settings: dict[str, str], _provider_payload: dict[str, Any], payload: dict[str, Any]
+    ) -> bool:
+        result = payload["result"]
+        applied_as_reviewed = result.get("applied") is True and all(
+            result.get(field) == reviewed[field]
+            for field in ("operation", "owner_before", "owner_after")
+        )
+        if not applied_as_reviewed:
+            payload["warnings"].append(
+                warning(
+                    "applied_plan_differs_from_review",
+                    "Launchplane applied a different Client change than the reviewed dry-run.",
+                )
+            )
+        read_back_ok = attach_read_back(
+            payload,
+            read=lambda: read_product_owner(
+                settings=settings, product=product, timeout=args.timeout
+            ),
+            matches=lambda observed: observed == reviewed["owner_after"],
+            label="product Client",
+        )
+        return applied_as_reviewed and read_back_ok
+
+    return execute_verified_apply(
+        args=args,
+        operation="product-owner-apply",
+        request=request,
+        path=path,
+        body=body,
+        preflight=preflight,
+        finish=finish,
+        label="product Client",
+    )
+
+
+def execute_production_backup_authority_apply(
+    *, args: argparse.Namespace, request: dict[str, object], body: dict[str, object]
+) -> int:
+    policy = cast(dict[str, Any], body["policy"])
+    query = {
+        "product": str(policy["product"]).strip().lower(),
+        "context": str(policy["context"]).strip().lower(),
+        "instance": str(policy["instance"]).strip().lower(),
+        "promotion_action": str(policy["promotion_action"]).strip(),
+    }
+    expected_digest = cast(str, body["reviewed_authority_digest"])
+    _evidence, reviewed = _load_reviewed_evidence(
+        args,
+        operation="production-backup-authority-dry-run",
+        expected_digest=expected_digest,
+        digest_field="authority_digest",
+        evidence_status="ok",
+        result_status="would_apply",
+        dry_run_mode="dry_run",
+    )
+    reviewed_policy = reviewed.get("policy") if isinstance(reviewed.get("policy"), dict) else {}
+    # The saved evidence holds projected strings; anything else simply fails to match.
+    reviewed_targets = {
+        cast(str, target.get("target_id")): cast(str, target.get("record_id"))
+        for target in reviewed.get("targets") or []
+        if isinstance(target, dict)
+    }
+
+    def finish(
+        settings: dict[str, str], _provider_payload: dict[str, Any], payload: dict[str, Any]
+    ) -> bool:
+        result = payload["result"]
+        # Launchplane enforces the reviewed digest; this confirms what it reports.
+        applied_targets = {
+            str(target["target_id"]): str(target["record_id"])
+            for target in cast(list[dict[str, Any]], result["targets"])
+        }
+        # Compare with the saved review, so a target the response omits is not skipped.
+        applied_as_reviewed = (
+            result.get("authority_digest") == expected_digest
+            and result.get("status") in {"applied", "replayed"}
+            and cast(dict[str, Any], result["policy"]).get("record_id")
+            == reviewed_policy.get("record_id")
+            and applied_targets == reviewed_targets
+        )
+        if not applied_as_reviewed:
+            payload["warnings"].append(
+                warning(
+                    "applied_plan_differs_from_review",
+                    "Launchplane reported a different backup authority than the reviewed dry-run.",
+                )
+            )
+        def matches(observed: dict[str, Any]) -> bool:
+            policy_read = observed.get("policy") or {}
+            read_targets = {
+                str(target["target_id"]): str(target["record_id"])
+                for target in observed.get("targets") or []
+            }
+            # A reviewed target the read-back lacks is a mismatch, not a skip.
+            return policy_read.get("record_id") == reviewed_policy.get("record_id") and all(
+                read_targets.get(target_id) == record_id
+                for target_id, record_id in reviewed_targets.items()
+            )
+
+        read_back_ok = attach_read_back(
+            payload,
+            read=lambda: read_production_backup_authority(
+                settings=settings, query=query, timeout=args.timeout
+            ),
+            matches=matches,
+            label="production backup authority",
+        )
+        return applied_as_reviewed and read_back_ok
+
+    return execute_verified_apply(
+        args=args,
+        operation="production-backup-authority-apply",
+        request=request,
+        path=helper_command_path("production-backup-authority-apply"),
+        body=body,
+        preflight=lambda _settings: None,
+        finish=finish,
+        label="production backup authority",
+    )
+
+
+def execute_dokploy_compose_apply(
+    *, args: argparse.Namespace, request: dict[str, object], body: dict[str, object]
+) -> int:
+    context = cast(str, body["context"]).strip()
+    instance = cast(str, body["instance"]).strip()
+    expected_plan_digest = args.expected_plan_digest.strip().lower()
+
+    def finish(
+        settings: dict[str, str], provider_payload: dict[str, Any], payload: dict[str, Any]
+    ) -> bool:
+        result = payload["result"]
+        created_target_id = _dokploy_setup_target_id(provider_payload.get("result"))
+        applied_as_reviewed = (
+            result.get("applied") is True
+            and result.get("plan_sha256") == expected_plan_digest
+            and bool(created_target_id)
+        )
+        if not applied_as_reviewed:
+            payload["warnings"].append(
+                warning(
+                    "applied_plan_differs_from_review",
+                    "Launchplane did not report a created target for the reviewed plan.",
+                )
+            )
+        result["reviewed_plan_sha256"] = expected_plan_digest
+
+        def read() -> dict[str, object]:
+            public, private = read_dokploy_target(
+                settings=settings, context=context, instance=instance, timeout=args.timeout
+            )
+            # Compared here and never printed: the records name the created compose and
+            # hold the reviewed domains and health path.
+            public["target_ids_agree"] = private["target_ids"] == {created_target_id}
+            public["configuration_matches_review"] = (
+                private["domains"] == _domain_set(body["domains"])
+                and private["healthcheck_path"] == body["healthcheck_path"]
+            )
+            return public
+
+        read_back_ok = attach_read_back(
+            payload,
+            read=read,
+            matches=lambda observed: observed["provider_target_record"] == "present"
+            and observed["target_ids_agree"] is True
+            and observed["configuration_matches_review"] is True,
+            label="Dokploy target",
+        )
+        return applied_as_reviewed and read_back_ok
+
+    return execute_verified_apply(
+        args=args,
+        operation="dokploy-target-create-compose-apply",
+        request=request,
+        path=helper_command_path("dokploy-target-create-compose-apply"),
+        body=body,
+        # Launchplane refuses a second provider target for the lane itself.
+        preflight=lambda _settings: None,
+        finish=finish,
+        label="Dokploy target",
+    )
+
+
+def execute_production_backup_authority_read(
+    *, args: argparse.Namespace, request: dict[str, object]
+) -> int:
+    operation = "production-backup-authority-read"
+    settings = prepare_operator_settings(args=args, operation=operation, request=request)
+    if settings is None:
+        return 2
+    try:
+        provider_payload = request_launchplane_read(
+            service_url=settings["service_url"],
+            path=helper_command_path(operation),
+            settings=settings,
+            query={
+                "product": args.product,
+                "context": args.context,
+                "instance": args.instance,
+                "promotion_action": args.promotion_action,
+            },
+            timeout=args.timeout,
+        )
+        if any(str(key) not in {"status", "trace_id", "authority"} for key in provider_payload):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        status = public_code(provider_payload.get("status"), default="ok")
+        payload = base_payload(status=status, operation=operation, request=request)
+        payload["result"] = _project_production_backup_authority_read(
+            provider_payload.get("authority")
+        )
+        payload["summary"] = {
+            "launchplane_status": status,
+            "trace_id": public_trace_id(provider_payload.get("trace_id")),
+            "recommendation": (
+                "Use policy.record_id and each target's record_id as the expected current "
+                "record ids in the next authority payload."
+            ),
+        }
+        assert_public_safe_shape(payload["summary"])
+        emit(payload)
+        return 0
+    except urllib.error.HTTPError as exc:
+        emit_http_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except LaunchplaneSafetyError as exc:
+        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except (OSError, TimeoutError, urllib.error.URLError):
+        emit_provider_unavailable(operation=operation, request=request)
+        return 1
+    except (ValueError, json.JSONDecodeError):
+        emit_invalid_response(operation=operation, request=request)
+        return 1
+
+
+# Product promotion: the operator status read and the direct dry-run. Launchplane
+# records an accepted dry-run for the identity, evidence fingerprint and bump; no
+# helper command sends a live promotion.
+
+PRODUCT_PROMOTION_DESTINATION = "prod"
+PRODUCT_PROMOTION_BUMPS = {"patch", "minor", "major"}
+PRODUCT_PROMOTION_AVAILABILITY_KEYS = ("direct_dry_run", "workflow_dry_run", "workflow_live")
+PRODUCT_PROMOTION_STATUS_FIELDS = (
+    "promotion_status",
+    "deployment_status",
+    "backup_status",
+    "source_health_status",
+    "destination_health_status",
+    "release_status",
+)
+PRODUCT_PROMOTION_DRY_RUN_RESULT_FIELDS = {
+    "product",
+    "context",
+    "from_instance",
+    "to_instance",
+    "artifact_id",
+    "deploy_reference",
+    "source_git_ref",
+    "backup_record_id",
+    "promotion_record_id",
+    "deployment_record_id",
+    "inventory_record_id",
+    *PRODUCT_PROMOTION_STATUS_FIELDS,
+    "release_tag",
+    "release_url",
+    "target_name",
+    "target_id",
+    "target_category",
+    "provider_id",
+    "provider_target_type",
+    "dry_run",
+    "error_message",
+    "evidence_fingerprint",
+    "bump",
+}
+PRODUCT_PROMOTION_FINGERPRINT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{15,127}$")
+
+
+def _public_promotion_fingerprint(value: object) -> str:
+    if not isinstance(value, str) or not PRODUCT_PROMOTION_FINGERPRINT_RE.fullmatch(value):
+        raise LaunchplaneSafetyError("invalid_response")
+    return value
+
+
+def _project_promotion_evidence(value: object) -> dict[str, object]:
+    """A lane's promotion trust; artifact, image, commit, record ids and detail text are dropped."""
+    source = _require_dict(value)
+    return {
+        "environment": public_identifier(source.get("environment")),
+        "deployment_status": _optional_code(source.get("deployment_status")),
+        "health_status": _optional_code(source.get("health_status")),
+        "runtime_identity_status": _optional_code(source.get("runtime_identity_status")),
+        "trust_state": _optional_code(source.get("trust_state")),
+        "inventory_updated_at": _optional_text(source.get("inventory_updated_at")),
+        "inventory_stale_after": _optional_text(source.get("inventory_stale_after")),
+    }
+
+
+def _project_promotion_availability(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    reasons = source.get("disabled_reasons") or []
+    if not isinstance(reasons, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    return {
+        "enabled": bool(_optional_bool(source.get("enabled"))),
+        "authz_action": _optional_identifier(source.get("authz_action")),
+        # Reasons are free text that can name hosts and targets; the count says whether any apply.
+        "disabled_reason_count": len(reasons),
+        "requires_matching_direct_dry_run": bool(
+            _optional_bool(source.get("requires_matching_direct_dry_run"))
+        ),
+        "requires_confirmation": bool(_optional_bool(source.get("requires_confirmation"))),
+    }
+
+
+def _project_product_promotion_status(provider_payload: dict[str, Any]) -> dict[str, object]:
+    """Whether a testing-to-prod promotion could run and its evidence fingerprint. The
+    release checklist, artifacts, commits, repository, workflow, live confirmations and
+    every free-text reason are dropped."""
+    if any(
+        str(key) not in {"status", "trace_id", "promotion_status"} for key in provider_payload
+    ):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    source = _require_dict(provider_payload.get("promotion_status"))
+    release_review = _require_dict(source.get("release_review") or {})
+    blockers = release_review.get("blockers") or []
+    if not isinstance(blockers, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    default_bump = source.get("default_bump") or "patch"
+    if default_bump not in PRODUCT_PROMOTION_BUMPS:
+        raise LaunchplaneSafetyError("invalid_response")
+    availability = {
+        key: _project_promotion_availability(source.get(key))
+        for key in PRODUCT_PROMOTION_AVAILABILITY_KEYS
+    }
+    projected: dict[str, object] = {
+        "product": public_identifier(source.get("product")),
+        "context": public_identifier(source.get("context")),
+        "base_driver_id": _optional_identifier(source.get("base_driver_id")),
+        "source_environment": public_identifier(source.get("source_environment")),
+        "destination_environment": public_identifier(source.get("destination_environment")),
+        "evidence_fingerprint": _public_promotion_fingerprint(
+            source.get("evidence_fingerprint")
+        ),
+        "default_bump": default_bump,
+        "trust_state": _optional_code(source.get("trust_state")),
+        "source": _project_promotion_evidence(source.get("source")),
+        "destination": _project_promotion_evidence(source.get("destination")),
+        "release_review": {
+            "required": bool(_optional_bool(release_review.get("required"))),
+            "approved": bool(_optional_bool(release_review.get("approved"))),
+            "blocker_count": len(blockers),
+            "unavailable": bool(release_review.get("unavailable_reason")),
+        },
+        "availability": availability,
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_product_promotion_dry_run(result: object) -> dict[str, object]:
+    """The dry-run's per-step statuses; artifacts, commits, record ids, target names and
+    ids, release URLs and error text are dropped."""
+    source = _require_dict(result)
+    if any(str(key) not in PRODUCT_PROMOTION_DRY_RUN_RESULT_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    # This command never sends a live promotion; a live result is not this route's answer.
+    dry_run = source.get("dry_run")
+    if not isinstance(dry_run, bool) or not dry_run:
+        raise LaunchplaneSafetyError("invalid_response")
+    bump = source.get("bump")
+    if bump not in PRODUCT_PROMOTION_BUMPS:
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "product": public_identifier(source.get("product")),
+        "context": public_identifier(source.get("context")),
+        "from_instance": public_identifier(source.get("from_instance")),
+        "to_instance": public_identifier(source.get("to_instance")),
+        "dry_run": True,
+        "bump": bump,
+        "evidence_fingerprint": _public_promotion_fingerprint(source.get("evidence_fingerprint")),
+        **{field: _optional_code(source.get(field)) for field in PRODUCT_PROMOTION_STATUS_FIELDS},
+        "error_reported": bool(source.get("error_message")),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def product_promotion_dry_run_body(args: argparse.Namespace) -> dict[str, object]:
+    fingerprint = _required_argument(args, "evidence_fingerprint")
+    if not PRODUCT_PROMOTION_FINGERPRINT_RE.fullmatch(fingerprint):
+        raise ValueError("invalid_evidence_fingerprint")
+    _require_idempotency(args)
+    return {
+        "schema_version": 1,
+        "reason": _required_argument(args, "reason"),
+        "evidence_fingerprint": fingerprint,
+        "bump": args.bump,
+    }
+
+
+def execute_product_promotion_status_read(
+    *, args: argparse.Namespace, request: dict[str, object], path: str
+) -> int:
+    operation = "product-promotion-status-read"
+    settings = prepare_operator_settings(args=args, operation=operation, request=request)
+    if settings is None:
+        return 2
+    try:
+        provider_payload = request_launchplane_read(
+            service_url=settings["service_url"],
+            path=path,
+            settings=settings,
+            query={},
+            timeout=args.timeout,
+        )
+        status = public_code(provider_payload.get("status"), default="ok")
+        payload = base_payload(status=status, operation=operation, request=request)
+        payload["result"] = _project_product_promotion_status(provider_payload)
+        payload["summary"] = {
+            "launchplane_status": status,
+            "trace_id": public_trace_id(provider_payload.get("trace_id")),
+            "recommendation": (
+                "Dry-run with product-promotion-dry-run and this evidence_fingerprint while "
+                "availability.direct_dry_run.enabled is true."
+            ),
+        }
+        assert_public_safe_shape(payload["summary"])
+        emit(payload)
+        return 0
+    except urllib.error.HTTPError as exc:
+        emit_http_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except LaunchplaneSafetyError as exc:
+        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except (OSError, TimeoutError, urllib.error.URLError):
+        emit_provider_unavailable(operation=operation, request=request)
+        return 1
+    except (ValueError, json.JSONDecodeError):
+        emit_invalid_response(operation=operation, request=request)
+        return 1
+
+
 def positive_decimal_id(value: str) -> str:
     normalized = value.strip()
     if not normalized.isdecimal() or int(normalized) < 1:
@@ -5774,6 +7026,73 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         repository_identity.add_argument("--product", required=True)
         repository_identity.add_argument("--reason", required=True)
         _add_reviewed_apply_arguments(repository_identity, apply=command.endswith("-apply"))
+
+    for command, help_text in (
+        ("product-owner-dry-run", "Dry-run recording or clearing a product's Client."),
+        ("product-owner-apply", "Apply a reviewed Client change bound to the saved dry-run digest."),
+    ):
+        product_owner = subparsers.add_parser(command, help=help_text)
+        product_owner.add_argument("--product", required=True)
+        selection = product_owner.add_mutually_exclusive_group(required=True)
+        selection.add_argument("--github-login", help="The Client's GitHub user login.")
+        selection.add_argument("--clear", action="store_true", help="Remove the recorded Client.")
+        product_owner.add_argument("--reason", required=True)
+        _add_reviewed_apply_arguments(product_owner, apply=command.endswith("-apply"))
+
+    production_backup_authority_read = subparsers.add_parser(
+        "production-backup-authority-read",
+        help="Read a production lane's backup policy and targets without provider coordinates.",
+    )
+    for argument in ("--product", "--context", "--instance", "--promotion-action"):
+        production_backup_authority_read.add_argument(argument, required=True)
+    for command, help_text in (
+        (
+            "production-backup-authority-dry-run",
+            "Dry-run a production backup policy and its targets from a private payload.",
+        ),
+        (
+            "production-backup-authority-apply",
+            "Apply the reviewed backup authority bound to the saved dry-run digest.",
+        ),
+    ):
+        backup_authority = subparsers.add_parser(command, help=help_text)
+        backup_authority.add_argument(
+            "--payload-file", required=True, help="Private local JSON payload file."
+        )
+        _add_reviewed_apply_arguments(backup_authority, apply=command.endswith("-apply"))
+
+    for command, help_text in (
+        (
+            "dokploy-target-create-compose-dry-run",
+            "Dry-run creating a lane's Dokploy compose target from a private payload.",
+        ),
+        (
+            "dokploy-target-create-compose-apply",
+            "Create the reviewed Dokploy compose target bound to the saved dry-run digest.",
+        ),
+    ):
+        compose_target = subparsers.add_parser(command, help=help_text)
+        compose_target.add_argument(
+            "--payload-file", required=True, help="Private local JSON payload file."
+        )
+        _add_reviewed_apply_arguments(compose_target, apply=command.endswith("-apply"))
+
+    promotion_status_read = subparsers.add_parser(
+        "product-promotion-status-read",
+        help="Read whether a product's testing-to-prod promotion could run, and its evidence fingerprint.",
+    )
+    promotion_status_read.add_argument("--product", required=True)
+    promotion_dry_run = subparsers.add_parser(
+        "product-promotion-dry-run",
+        help="Ask Launchplane to dry-run a testing-to-prod promotion; nothing is backed up or deployed.",
+    )
+    promotion_dry_run.add_argument("--product", required=True)
+    promotion_dry_run.add_argument(
+        "--evidence-fingerprint", required=True, help="From product-promotion-status-read."
+    )
+    promotion_dry_run.add_argument("--bump", choices=sorted(PRODUCT_PROMOTION_BUMPS), default="patch")
+    promotion_dry_run.add_argument("--reason", required=True)
+    promotion_dry_run.add_argument("--idempotency-key", required=True)
 
     odoo_addon_settings_dry_run = subparsers.add_parser(
         "odoo-addon-settings-dry-run",
@@ -6162,6 +7481,97 @@ def main(argv: list[str]) -> int:
                 args=args,
                 operation=args.command,
                 path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
+        if args.command in {"product-owner-dry-run", "product-owner-apply"}:
+            mode = "apply" if args.command == "product-owner-apply" else "dry-run"
+            path = _product_read_path(args.command, product=str(args.product).strip())
+            body = product_owner_body(args, mode=mode)
+            request = {
+                "mode": mode,
+                "product": public_identifier(args.product),
+                "owner_change": "clear" if body["clear"] else "set",
+                "github_login": body["github_login"],
+                "payload_source": "operator_argument",
+            }
+            if mode == "apply":
+                return execute_product_owner_apply(args=args, request=request, body=body)
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=path,
+                request=request,
+                body=body,
+            )
+        if args.command == "production-backup-authority-read":
+            request = {
+                "product": public_identifier(args.product),
+                "context": public_identifier(args.context),
+                "instance": public_identifier(args.instance),
+                "promotion_action": public_identifier(args.promotion_action),
+                "payload_source": "operator_argument",
+            }
+            return execute_production_backup_authority_read(args=args, request=request)
+        if args.command in {
+            "production-backup-authority-dry-run",
+            "production-backup-authority-apply",
+        }:
+            mode = "apply" if args.command.endswith("-apply") else "dry-run"
+            body, request = production_backup_authority_body(args, mode=mode)
+            if mode == "apply":
+                return execute_production_backup_authority_apply(
+                    args=args, request=request, body=body
+                )
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
+        if args.command in {
+            "dokploy-target-create-compose-dry-run",
+            "dokploy-target-create-compose-apply",
+        }:
+            mode = "apply" if args.command.endswith("-apply") else "dry-run"
+            body, request = dokploy_compose_body(args, mode=mode)
+            if mode == "apply":
+                return execute_dokploy_compose_apply(args=args, request=request, body=body)
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
+        if args.command == "product-promotion-status-read":
+            path = _product_read_path(
+                args.command, product=args.product, environment=PRODUCT_PROMOTION_DESTINATION
+            )
+            request = {
+                "product": public_identifier(args.product),
+                "environment": PRODUCT_PROMOTION_DESTINATION,
+                "payload_source": "operator_argument",
+            }
+            return execute_product_promotion_status_read(args=args, request=request, path=path)
+        if args.command == "product-promotion-dry-run":
+            path = _product_read_path(
+                args.command, product=args.product, environment=PRODUCT_PROMOTION_DESTINATION
+            )
+            body = product_promotion_dry_run_body(args)
+            request = {
+                "mode": "dry-run",
+                "product": public_identifier(args.product),
+                "environment": PRODUCT_PROMOTION_DESTINATION,
+                "bump": body["bump"],
+                "evidence_fingerprint": body["evidence_fingerprint"],
+                "payload_source": "operator_argument",
+            }
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=path,
                 request=request,
                 body=body,
             )

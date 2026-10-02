@@ -739,8 +739,10 @@ The merge-train policy import, repository inventory, product expected configurat
 generic-web deploy-recovery, Odoo addon-settings, integration-allowances,
 testing-hold, product-repository-identity, product-environment-read,
 product-activity-read, product-profile-read, preview-history-read,
-reconcile-requests-read, target-replacement-operation-read, and
-target-replacement-plan-read commands are explicit bounded local
+reconcile-requests-read, target-replacement-operation-read,
+target-replacement-plan-read, `product-owner-*`, `dokploy-target-create-compose-*`,
+`production-backup-authority-*`, product-promotion-status-read and
+product-promotion-dry-run commands are explicit bounded local
 extensions because the vendored public
 operation projection does not contain their routes. Do not describe them as contract-backed. If a later artifact adds those
 routes, migrate them deliberately and remove the local-extension entries instead
@@ -1016,7 +1018,9 @@ verification.
   change-impact policy dry-run/apply/read-back, guarded merge-train policy
   import, repository inventory read/dry-run/apply, product environment,
   activity, preview and reconcile reads, Odoo target-replacement operation and
-  plan reads, and merge-train controller calls.
+  plan reads, Client, Dokploy compose target and production backup authority
+  dry-run/apply with read-back, product promotion status and dry-run, and
+  merge-train controller calls.
 - `scripts/check-agent-operator-contract.py`: Hermetic schema, digest,
   public-safety, operation, workflow, invariant, and local-consumer conformance
   gate. A green result is not upstream freshness evidence.
@@ -1123,6 +1127,29 @@ verification.
   Blocker, step and warning text, domains, target names and ids, and volume
   values are dropped and listed by path. The service authorizes it as
   `odoo_target_replacement_plan.read` on the lane.
+- `POST /v1/product-profiles/{product}/owner`: Bounded local-extension path
+  that records or clears a product's Client (`product-owner-dry-run` /
+  `-apply`, with `--product`, `--github-login` or `--clear`, and `--reason`).
+  Apply checks the Client has not changed since the review, then reads the
+  profile back.
+- `POST /v1/dokploy-targets/setup`: Bounded local-extension path that creates a
+  lane's Dokploy compose target from a private payload
+  (`dokploy-target-create-compose-dry-run` / `-apply`). Provider ids, server
+  ids, domains and git URLs never reach the output; apply reads the target back.
+  Add the lane record afterwards with the contract-backed stable-lane repair
+  workflow.
+- `GET /v1/production-backup-authority` and
+  `POST /v1/production-backup-authority/apply`: Bounded local-extension paths
+  for a production lane's backup policy and targets
+  (`production-backup-authority-read` / `-dry-run` / `-apply`). The private
+  payload carries the Proxmox coordinates; output shows only record ids,
+  revisions, kinds and the `authority_digest` apply is bound to.
+- `GET .../environments/prod/promotion-status` and
+  `POST .../environments/prod/promotion/dry-run` under `/v1/products/{product}`:
+  Bounded local-extension reads and dry-runs (`product-promotion-status-read`,
+  `product-promotion-dry-run`) for whether a testing-to-prod promotion could
+  run. The dry-run takes no backup and deploys nothing. No helper command sends
+  a live promotion.
 - `POST /v1/work-graph/merge-train/controller/run-once`: Preferred merge-train
   controller path; call repeatedly to advance one safe phase at a time.
 - `POST /v1/previews/pr-feedback/remediation`: Contract-backed bounded preview

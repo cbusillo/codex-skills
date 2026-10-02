@@ -76,13 +76,15 @@ does not grant runtime authority or change helper permissions, and it must not
 block ordinary Launchplane helper reads.
 
 The merge-train policy import, repository inventory, product expected configuration,
-generic-web deploy-recovery, and Odoo addon-settings commands, plus the private Client-review reader,
+generic-web deploy-recovery, Odoo addon-settings, Client, Dokploy compose target,
+production backup authority and product promotion status and dry-run commands, plus the private Client-review reader,
 are currently bounded local extensions because they are consumed by local helpers but are not present
 in the upstream public operation projection. The validator keeps these explicit
 and fails if an upstream artifact later projects the same routes, forcing a
 deliberate migration instead of silently maintaining two sources of truth.
 
-The helper also tracks one internal read-before-write route,
-`GET /v1/work-graph/merge-train/policy-targets`, outside the projected command
-count. Contract validation checks that this route remains absent from the
+The helper also tracks two internal routes outside the projected command count:
+the read-before-write `GET /v1/work-graph/merge-train/policy-targets` and the
+read-back `GET /v1/dokploy-targets/inspect`. Contract validation checks that
+these routes remain absent from the
 upstream projection so any future adoption requires an explicit migration.

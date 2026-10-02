@@ -354,6 +354,51 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/product-profiles/repository-identity/apply",
         "mode": "apply",
     },
+    "product-owner-dry-run": {
+        "method": "POST",
+        "path": "/v1/product-profiles/{product}/owner",
+        "mode": "dry-run",
+    },
+    "product-owner-apply": {
+        "method": "POST",
+        "path": "/v1/product-profiles/{product}/owner",
+        "mode": "apply",
+    },
+    "production-backup-authority-read": {
+        "method": "GET",
+        "path": "/v1/production-backup-authority",
+        "mode": "read",
+    },
+    "production-backup-authority-dry-run": {
+        "method": "POST",
+        "path": "/v1/production-backup-authority/apply",
+        "mode": "dry-run",
+    },
+    "production-backup-authority-apply": {
+        "method": "POST",
+        "path": "/v1/production-backup-authority/apply",
+        "mode": "apply",
+    },
+    "dokploy-target-create-compose-dry-run": {
+        "method": "POST",
+        "path": "/v1/dokploy-targets/setup",
+        "mode": "dry-run",
+    },
+    "dokploy-target-create-compose-apply": {
+        "method": "POST",
+        "path": "/v1/dokploy-targets/setup",
+        "mode": "apply",
+    },
+    "product-promotion-status-read": {
+        "method": "GET",
+        "path": "/v1/products/{product}/environments/{environment}/promotion-status",
+        "mode": "read",
+    },
+    "product-promotion-dry-run": {
+        "method": "POST",
+        "path": "/v1/products/{product}/environments/{environment}/promotion/dry-run",
+        "mode": "dry-run",
+    },
     "generic-web-deploy-recovery-dry-run": {
         "method": "POST",
         "path": "/v1/admin/generic-web/deploy-recovery/dry-run",
@@ -370,6 +415,10 @@ INTERNAL_HELPER_ROUTES = {
     "merge-train-policy-targets-read": {
         "method": "GET",
         "path": "/v1/work-graph/merge-train/policy-targets",
+    },
+    "dokploy-target-inspect": {
+        "method": "GET",
+        "path": "/v1/dokploy-targets/inspect",
     },
 }
 
