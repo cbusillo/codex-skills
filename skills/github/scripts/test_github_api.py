@@ -806,6 +806,39 @@ def test_classify_405_expected_required_checks_as_rejected_readiness() -> None:
     assert singular_result.failure.cause == "required_status_checks_expected"
     assert singular_result.failure.write_outcome == "rejected"
 
+    wrapped_message = "Repository rule violations found\n\n2 of 2 required status checks are expected.\n"
+    wrapped_result = _call(
+        "PUT",
+        "/repos/owner/repo/pulls/1/merge",
+        body={},
+        fake_stdout=_include_output(405, body={"message": wrapped_message}),
+        returncode=1,
+    )
+    assert wrapped_result.failure is not None
+    assert wrapped_result.failure.cause == "required_status_checks_expected"
+    assert wrapped_result.failure.write_outcome == "rejected"
+    assert wrapped_result.failure.retryable is False
+
+    other_rule_result = _call(
+        "PUT",
+        "/repos/owner/repo/pulls/1/merge",
+        body={},
+        fake_stdout=_include_output(
+            405,
+            body={
+                "message": (
+                    "Repository rule violations found\n\n"
+                    "Changes must be made through a pull request.\n\n"
+                    "2 of 2 required status checks are expected."
+                )
+            },
+        ),
+        returncode=1,
+    )
+    assert other_rule_result.failure is not None
+    assert other_rule_result.failure.cause == "unknown_error"
+    assert other_rule_result.failure.write_outcome == "unknown"
+
     non_405_result = _call(
         "PUT",
         "/repos/owner/repo/pulls/1/merge",
