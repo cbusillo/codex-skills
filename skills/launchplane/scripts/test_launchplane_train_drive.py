@@ -119,6 +119,18 @@ class TrainDriveTests(unittest.TestCase):
         self.assertEqual(outcome, "failed")
         self.assertEqual(events[-1][1]["blocking_reason"], reason)
 
+    def test_a_block_on_batch_checks_still_running_waits_for_them(self) -> None:
+        waiting = {"code": "batch_pull_request_checks_not_ready", "message": "checks running"}
+        train = FakeTrain(
+            [_response("block", blocking_reason=waiting), _response("block", blocking_reason=waiting), _response("land_batch")],
+            merge_after={7: 3},
+        )
+        outcome, _ = _drive(train)
+        self.assertEqual((outcome, train.calls), ("landed", 3))
+
+        outcome, events = _drive(FakeTrain([_response("block", blocking_reason=waiting)]), deadline=300)
+        self.assertEqual((outcome, events[-1][1]["reason"]), ("error", "deadline reached"))
+
     def test_a_failed_candidate_names_its_failing_check(self) -> None:
         train = FakeTrain([_response("candidate_failed", candidate={"candidate_sha": "abc"})])
         train.failing = [{"name": "ci-gate", "conclusion": "failure", "url": "https://example.test/run/1"}]

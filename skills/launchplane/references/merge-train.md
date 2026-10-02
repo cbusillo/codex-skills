@@ -57,9 +57,10 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   permission-limited stacks as blocked/unsupported instead of mutating by hand.
 - **Retry Model**: Repeated controller calls are expected; let
   `scripts/launchplane-train-drive.py` make them. It pauses on every non-terminal
-  state, treats a candidate made stale by a queue change as rebuildable, and
-  stops on blocked, failed, ineligible, closed, deadline or repeated helper
-  failure, with compact evidence and trace IDs. A candidate failure reports the
+  state, treats a candidate made stale by a queue change as rebuildable, waits
+  out a block raised only because the batch candidate's checks are still
+  running, and stops on other blocks, failed, ineligible, closed, deadline or
+  repeated helper failure, with compact evidence and trace IDs. A candidate failure reports the
   failing checks and run URLs on the candidate commit.
 - **Evidence**: For stack runs, report the stack-collapse plan record id, any
   batch candidate record id, the landing-plan record id, workflow run URLs, and
