@@ -1,8 +1,10 @@
 # Direction
 
-This file is the current direction for the codex-skills catalog. When an
-issue, milestone, or other document disagrees with it, this file wins and the
-other source is corrected or closed. Issues are a work list, not instructions.
+This file is the current direction for the codex-skills catalog. The
+Director's overall direction in `cbusillo/direction` comes first. When an
+issue, milestone, or other document here disagrees with this file, this file
+wins and the other source is corrected or closed. Issues are a work list, not
+instructions.
 
 ## Purpose
 
