@@ -106,6 +106,21 @@ def test_curated_shortlist_penalizes_stale_review_history() -> None:
         raise AssertionError(f"shortlist should prefer durable facts over stale review history: {shortlist}")
 
 
+def test_linked_status_reference_is_stale_but_cited_policy_is_not() -> None:
+    module = load_module()
+    link = "[catalog#753](https://github.com/OWNER/catalog/pull/753)"
+    for status in (
+        f"{link} runtime checkout is waiting on CI.",
+        "Blocked until OWNER/catalog#753 merged.",
+        "https://github.com/OWNER/catalog/actions/runs/12/job/34 needs a rerun.",
+    ):
+        if not module.is_stale_or_transient(status):
+            raise AssertionError(f"linked status should be stale or transient: {status}")
+    durable = f"Owner-facing prose must name items like {link} runtime checkout."
+    if module.is_stale_or_transient(durable):
+        raise AssertionError(f"a policy that cites a linked reference should be kept: {durable}")
+
+
 def test_curated_shortlist_suppresses_near_duplicate_topics() -> None:
     module = load_module()
     reduced = {
@@ -354,6 +369,7 @@ def test_reduce_ignores_missing_parent_result_with_valid_child() -> None:
 def main() -> int:
     test_reduce_validated_reviews_to_apply_plan()
     test_curated_shortlist_penalizes_stale_review_history()
+    test_linked_status_reference_is_stale_but_cited_policy_is_not()
     test_curated_shortlist_suppresses_near_duplicate_topics()
     test_people_updates_preserve_resolver_smoke_queries()
     test_people_dedupe_keeps_same_note_different_people_separate()
