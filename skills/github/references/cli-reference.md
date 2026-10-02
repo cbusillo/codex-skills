@@ -372,8 +372,9 @@ without starting implementation:` is context-only. Title or branch ownership,
 implementation references (`Refs`, `Fixes`, `Closes`, `Resolves`, including full
 issue URLs), and links elsewhere in the body still cause refusal. Unmarked or
 wrapped follow-up links remain uncertain ownership evidence. A context line
-containing ownership words such as `Fixes`, `Closes`, or `Implements` also
-remains evidence, including when the keyword uses a colon or Markdown link.
+containing ownership keywords such as `Fixes`, `Closes`, or `Implements` tied
+to the issue also remains evidence, including a colon or Markdown link.
+Keep implemented work out of this explicitly unstarted line.
 
 Use the actual native session ID, not a made-up label. On Claude Code, use
 session metadata or `claude agents --json` to identify this session by its

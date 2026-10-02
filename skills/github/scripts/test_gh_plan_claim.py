@@ -154,8 +154,8 @@ class ClaimTests(unittest.TestCase):
     def test_explicitly_unstarted_docs_followups_allow_both_claims(self):
         self.pulls = [{"number": 48, "title": "docs: align API guidance",
                        "body": "Code follow-ups recorded without starting implementation: "
-                               "[repo#49](https://github.com/owner/repo/issues/49) HTTP handling and "
-                               "[repo#50](https://github.com/owner/repo/issues/50) printer lookup.\n\nRefs #47",
+                               "[repo#49](https://github.com/owner/repo/issues/49) Fix HTTP handling and "
+                               "[repo#50](https://github.com/owner/repo/issues/50) resolve printer lookup.\n\nRefs #47",
                        "head": {"ref": "work/docs-audit"}}]
         for number in (49, 50):
             with self.subTest(number=number):

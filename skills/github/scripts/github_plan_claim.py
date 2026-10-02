@@ -208,11 +208,15 @@ def artifact_evidence(
         issue_url = rf"https://github\.com/{re.escape(repo)}/issues/{number}"
         # Only the explicitly unstarted follow-up line is contextual.
         # Other URLs, titles, branches and implementation references still hold.
-        ownership_words = r"(?i)\b(?:refs?|fix(?:es|ed)?|clos(?:e|es|ed)|resolv(?:e|es|ed)|implements?)\b"
+        issue_reference = rf"(?:#{number}|{re.escape(repo)}#{number}|{issue_url})(?!\d)"
+        ownership_reference = (
+            rf"(?i)\b(?:refs?|fix(?:es|ed)?|clos(?:e|es|ed)|resolv(?:e|es|ed)|implement(?:s|ed|ing)?)"
+            rf"\s*:?\s+(?:{issue_reference}|\[[^\]\n]+\]\({issue_url}(?!\d)\))"
+        )
         ownership_body = "\n".join(
             line for line in body.splitlines()
             if not (line.startswith("Code follow-ups recorded without starting implementation:")
-                    and not re.search(ownership_words, line))
+                    and not re.search(ownership_reference, line))
         )
         explicit_url = bool(repo and re.search(issue_url + r"(?!\d)", title + "\n" + ownership_body))
         linked = bool(re.search(rf"(?i)\b(?:refs?|fix(?:es|ed)?|clos(?:e|es|ed)|resolv(?:e|es|ed))\s+(?:#{number}|{re.escape(repo)}#{number}|{issue_url})(?!\d)", body))
