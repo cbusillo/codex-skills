@@ -2279,7 +2279,22 @@ def test_product_config_secret_results_keep_declared_secret_class() -> None:
                 "instance": "testing",
                 "secret_id": "secret-record-example",
                 "secret_class": "testing",
-            }
+            },
+            {
+                "action": "created",
+                "scope": "context_instance",
+                "integration": "runtime_environment",
+                "name": "EXAMPLE_SYNC_API_TOKEN",
+                "binding_key": "EXAMPLE_SYNC_API_TOKEN",
+                "context": "example-product",
+                "instance": "testing",
+                "secret_class": "shared_safe",
+                "sharing_reason": {
+                    "kind": "read_only_source",
+                    "reason": "Testing imports from the production account.",
+                    "evidence": "The Client confirmed a read-only token on 2026-10-02.",
+                },
+            },
         ]
     )
 
@@ -2289,7 +2304,18 @@ def test_product_config_secret_results_keep_declared_secret_class() -> None:
             "integration": "runtime_environment",
             "binding_key": "EXAMPLE_API_TOKEN",
             "secret_class": "testing",
-        }
+        },
+        {
+            "action": "created",
+            "integration": "runtime_environment",
+            "binding_key": "EXAMPLE_SYNC_API_TOKEN",
+            "secret_class": "shared_safe",
+            "sharing_reason": {
+                "kind": "read_only_source",
+                "reason": "Testing imports from the production account.",
+                "evidence": "The Client confirmed a read-only token on 2026-10-02.",
+            },
+        },
     ]
 
 
@@ -2331,6 +2357,16 @@ def test_product_config_projection_keeps_declared_secret_class_end_to_end() -> N
                     },
                     "checked_binding_keys": ["EXAMPLE_API_TOKEN"],
                     "findings": [],
+                    "reported": [
+                        {
+                            "code": "sharing_reason_missing",
+                            "binding_key": "EXAMPLE_SYNC_API_TOKEN",
+                            "binding_id": "binding-example",
+                            "secret_id": "secret-record-example",
+                            "secret_class": "shared_safe",
+                            "detail": "Integration key is declared shared_safe with no reason.",
+                        }
+                    ],
                 },
                 "secrets": [
                     {
@@ -2352,6 +2388,9 @@ def test_product_config_projection_keeps_declared_secret_class_end_to_end() -> N
     )
 
     assert result["status"] == "accepted"
+    assert result["result"]["runtime_key_safety"]["reported"] == [
+        {"key": "EXAMPLE_SYNC_API_TOKEN", "code": "sharing_reason_missing"}
+    ]
     assert result["result"]["secrets"] == [
         {
             "action": "rotated",
@@ -2443,6 +2482,59 @@ def test_integration_allowances_read_summary_projects_allowances() -> None:
 
     assert result["result"]["allowances"][0]["integration"] == "fishbowl"
     assert result["result"]["allowances"][0]["recorded_by"] == "operator-example"
+
+
+def test_integration_allowances_read_shows_why_a_lane_key_is_shared() -> None:
+    sharing_reason = {
+        "kind": "read_only_source",
+        "reason": "Testing imports from the production account.",
+        "evidence": "The Client confirmed a read-only token on 2026-10-02.",
+        "recorded_by": "operator-example",
+        "recorded_at": "2026-10-02T00:00:00Z",
+    }
+    result = write_action.summarize_integration_allowances_read(
+        request={"payload_source": "operator_argument"},
+        provider_payload={
+            "status": "accepted",
+            "trace_id": "launchplane_req_allowances_read",
+            "records": {"product_profile": "example-product", "context": "example", "instance": "testing"},
+            "result": {
+                "status": "ok",
+                "product": "example-product",
+                "context": "example",
+                "instance": "testing",
+                "environment_class": "testing",
+                "allowances": [],
+                "integration_keys": [
+                    {
+                        "binding_key": "EXAMPLE_API_TOKEN",
+                        "declared_secret_class": "shared_safe",
+                        "sharing_reason": sharing_reason,
+                    }
+                ],
+                "record_sha256": "c" * 64,
+            },
+        },
+    )
+
+    assert result["result"]["integration_keys"] == [
+        {
+            "binding_key": "EXAMPLE_API_TOKEN",
+            "secret_class": "shared_safe",
+            "sharing_reason": sharing_reason,
+        }
+    ]
+    pasted_key = "rk_live_" + "51HxQ2eZvKYlo2C0aBcDeFgH1234"
+    redacted = write_action._project_sharing_reason(
+        {**sharing_reason, "evidence": f"Verified read-only scope of {pasted_key} on 2026-10-02."}
+    )
+    assert redacted["evidence"] == "Verified read-only scope of [redacted] on 2026-10-02."
+    for unsafe in ({**sharing_reason, "value": "x"}, {**sharing_reason, "kind": "borrowed"}):
+        try:
+            write_action._project_sharing_reason(unsafe)
+        except write_action.LaunchplaneSafetyError:
+            continue
+        raise AssertionError(f"expected {unsafe!r} to be refused")
 
 
 def test_integration_allowances_payload_rejects_unknown_fields_and_unreviewed_apply() -> None:
@@ -5944,6 +6036,7 @@ def main() -> int:
         test_integration_allowances_plan_projection_keeps_diff_and_digest,
         test_integration_allowances_projection_refuses_unknown_fields,
         test_integration_allowances_read_summary_projects_allowances,
+        test_integration_allowances_read_shows_why_a_lane_key_is_shared,
         test_integration_allowances_payload_rejects_unknown_fields_and_unreviewed_apply,
         test_testing_hold_plan_projection_is_bounded_and_fail_closed,
         test_testing_hold_read_sends_lane_query_and_projects_hold,
