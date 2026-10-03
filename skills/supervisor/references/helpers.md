@@ -83,7 +83,9 @@ uv run skills/supervisor/scripts/iterm_tab.py send --session-id <iterm-session-i
 Use one dedicated Supervisor window, never the window with the most tabs. The
 helper restores the previous tab after launch. Launch files contain the exact
 brief and account/model settings already authorized, without the Discord
-channels flag. Read the launched screen once for folder trust or another
+channels flag. Run one agent invocation, without restart loops or commands
+that continue after it exits; put required environment settings on that launch
+command (for example with `env`). Read the launched screen once for folder trust or another
 blocking prompt. Record the new native thread and exact transcript in the
 ledger. Prefer `codex queue` for Codex nudges with the verified thread id and
 its configured home; never queue exit commands. The terminal helper suppresses
@@ -114,7 +116,7 @@ uv run skills/supervisor/scripts/close_ttys.py --ledger <private-ledger.json> --
 The two flags attest the Supervisor checked the issue handoff and empty input
 (or recorded the Director's text). Default is a dry run. This helper never
 answers prompts or sends exit commands: it checks transcript, ownership, exact
-iTerm id and TTY, then proves the recorded PID is absent and only login/shell-profile processes
+iTerm id and TTY, then proves the recorded PID is absent and only `login` and idle login/interactive shell processes
 remain on that TTY. Other jobs, including prompt helpers and shell scripts, preserve the tab.
 Process arguments are inspected privately and never emitted. Apply rechecks activity and processes and requests
 one non-force close. An uncertain inventory or remaining/reused PID preserves
