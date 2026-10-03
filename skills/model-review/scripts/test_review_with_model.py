@@ -424,6 +424,24 @@ class ReviewWithModelTests(unittest.TestCase):
                 self.assertEqual((code, result["ok"]), (1, False))
                 self.assertEqual(result["detail"], event.get("message") or event["error"]["message"])
 
+    def test_openai_recovered_stream_error_does_not_discard_a_completed_review(self) -> None:
+        self.install("codex", FAKE_CODEX)
+        events = [
+            {"type": "error", "message": "Reconnecting... 1/5"},
+            {"type": "item.completed", "item": {"type": "command_execution", "status": "completed",
+                                                 "exit_code": 0}},
+            {"type": "turn.completed", "usage": {}},
+        ]
+        code, result = self.review("openai", FAKE_CODEX_EVENTS="\n".join(map(json.dumps, events)), FAKE_ANSWER="none")
+        self.assertEqual((code, result["ok"], result["response"]), (0, True, "none"))
+
+    def test_check_keeps_model_provenance_when_the_probe_answer_is_wrong(self) -> None:
+        self.install("codex", FAKE_CODEX)
+        (self.repo / "probe.txt").write_text("the probe line\n")
+        code, result = self.run_helper("check", "--repo", str(self.repo), "--provider", "openai", FAKE_ANSWER="none")
+        self.assertEqual((code, result["providers"][0]["state"]), (1, "not ready"))
+        self.assertEqual(result["providers"][0]["model_source"], "unknown")
+
     def test_a_planted_finding_arrives_once_inside_a_real_review_and_only_when_the_owner_set_it(self) -> None:
         self.install("codex", FAKE_CODEX)
         marker = self.home / ".code" / "model-review-fault.md"

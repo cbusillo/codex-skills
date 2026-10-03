@@ -109,11 +109,9 @@ def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scra
     if model:
         argv += ["-m", model]
     proc = run_cli([*argv, prompt], repo, timeout)
-    used = re.search(r"^model:\s*(\S+)", proc.stdout + proc.stderr, re.MULTILINE)
     response = answer.read_text() if answer.is_file() else ""
-    metadata = {"model": used.group(1) if used else model,
-                "model_source": "reported by the CLI" if used else
-                "requested, not reported by the CLI" if model else "unknown"}
+    # JSON mode does not include the model banner; a request is not proof of the model used.
+    metadata = {"model": model, "model_source": "requested, not reported by the CLI" if model else "unknown"}
     try:
         events = [json.loads(line) for line in proc.stdout.splitlines()]
         if any(not isinstance(event, dict) for event in events):
@@ -123,14 +121,17 @@ def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scra
             return failed("openai", f"codex exited {proc.returncode}", detail=proc.stderr[-400:], **metadata)
         return failed("openai", "could not read codex's JSONL tool evidence", **metadata)
     errors = []
+    turn_failed = False
     for event in events:
         if event.get("type") == "error":
             errors.append(str(event.get("message") or "codex reported an error"))
         elif event.get("type") == "turn.failed":
+            turn_failed = True
             error = event.get("error")
             errors.append(str(error.get("message") if isinstance(error, dict) else error))
-    if proc.returncode != 0 or errors:
-        return failed("openai", f"codex exited {proc.returncode}" if proc.returncode else "codex reported an error",
+    # Retry notices also use `error`. Only a nonzero exit or terminal turn failure is decisive.
+    if proc.returncode != 0 or turn_failed:
+        return failed("openai", f"codex exited {proc.returncode}" if proc.returncode else "codex turn failed",
                       detail=errors[-1][-400:] if errors else proc.stderr[-400:], **metadata)
     if not response.strip():
         return failed("openai", "the reviewer returned nothing", **metadata)
@@ -490,7 +491,8 @@ def cmd_check(args: argparse.Namespace) -> int:
     for provider in args.provider or sorted(PROVIDERS):
         result = review(provider, prompt, repo, None, args.timeout)
         if result["ok"] and expected not in result["response"]:
-            result = failed(provider, "answered without reading the file", model=result.get("model"))
+            result = {**result, "ok": False, "error": "answered without reading the file"}
+            result.pop("response")
         state = "ready" if result["ok"] else "not installed" if result.get("installed") is False else "not ready"
         report.append({key: value for key, value in {**result, "state": state}.items() if key != "response"})
     print(json.dumps({"probe": str(probe), "providers": report}, indent=2))
@@ -582,7 +584,7 @@ def main() -> int:
     run.add_argument("--provider", required=True, choices=sorted(PROVIDERS))
     run.add_argument("--repo", default=".", help="Repository the reviewer reads (default: current directory).")
     run.add_argument("--prompt-file", required=True, help="What to review and what it is for; name paths, do not paste files.")
-    run.add_argument("--model", help="Model to request; the result reports the model actually used.")
+    run.add_argument("--model", help="Model to request; model_source says whether the CLI reported it.")
     run.add_argument("--out", help="Write the review here instead of including it in the JSON.")
     run.add_argument("--timeout", type=int, default=900)
     run.set_defaults(func=cmd_run)
