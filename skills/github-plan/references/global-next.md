@@ -121,6 +121,11 @@ the milestone-wait condition, not provider usage.
 
 `tooling_capacity_context` explains whether the capacity rule is established,
 including the first unresolved issue when a milestone review or context is missing.
+Missing milestone person-wait reviews are reported before discovery context that
+the capacity-only reads have not yet gathered. Supply current reviews with
+`--selection-context` and rerun; an ordinary unreviewed `next` does not establish
+capacity admission. Unknown discovery context still prevents admission once the
+milestone reviews are complete.
 Held repositories remain excluded from selection. Capacity-only reads run only
 when current person-wait reviews leave that admission possible; available or
 underway graph work disables those extra reads. Then held repositories are
