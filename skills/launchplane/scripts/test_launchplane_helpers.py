@@ -6074,6 +6074,229 @@ def test_dokploy_compose_target_hides_provider_ids_and_binds_the_payload() -> No
             assert payload["warnings"][0]["code"] == code
 
 
+PRIVATE_ENDPOINT_URL = "http://10.0.0.106:8001/healthz"
+
+
+def _private_endpoint_payload() -> dict[str, object]:
+    return {
+        "endpoint_key": "example-testing-runtime",
+        "product": "example",
+        "context": "example",
+        "instance": "testing",
+        "url": PRIVATE_ENDPOINT_URL,
+        "source_label": "lxc-106 private host",
+    }
+
+
+def _private_endpoint_record(**overrides: object) -> dict[str, object]:
+    record: dict[str, object] = {
+        "schema_version": 1,
+        **_private_endpoint_payload(),
+        "status": "active",
+        "updated_at": "2026-10-03T12:00:00Z",
+    }
+    record.update(overrides)
+    return record
+
+
+def _private_endpoint_response(mode: str = "dry-run", **record: object) -> dict[str, object]:
+    return {
+        "status": "accepted",
+        "trace_id": "launchplane_req_private_endpoint",
+        "records": {},
+        "result": {
+            "mode": mode,
+            "endpoint_key": "example-testing-runtime",
+            "endpoint_status": "applied" if mode == "apply" else "planned",
+            "record": _private_endpoint_record(**record),
+        },
+    }
+
+
+def _private_endpoint_read(**record: object) -> dict[str, object]:
+    return {
+        "status": "ok",
+        "trace_id": "launchplane_req_private_endpoint_read",
+        "record": _private_endpoint_record(**record),
+    }
+
+
+def test_private_health_endpoint_hides_the_url_and_binds_apply_to_the_review() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = _write_json(directory, "endpoint.json", _private_endpoint_payload())
+        dry_run_argv = [
+            "private-health-endpoint-dry-run",
+            "--payload-file",
+            payload_path,
+            "--reason",
+            "Monitor the testing lane privately.",
+        ]
+        status, evidence, posts, _reads = _run_main(dry_run_argv, post=_private_endpoint_response())
+        assert status == 0, evidence
+        assert posts[0]["path"] == "/v1/private-health-endpoints/apply"
+        body = posts[0]["body"]
+        assert body["mode"] == "dry-run"
+        assert body["endpoint"]["url"] == PRIVATE_ENDPOINT_URL
+        assert body["endpoint"]["status"] == "active"
+        assert "confirmation" not in body
+        printed = json.dumps(evidence)
+        for private in ("10.0.0.106", "8001", "healthz", "lxc-106", "Monitor the testing lane"):
+            assert private not in printed, private
+        assert evidence["result"]["record"]["endpoint_key"] == "example-testing-runtime"
+        digest = evidence["result"]["plan_sha256"]
+        reviewed_at = evidence["result"]["record"]["updated_at"]
+        evidence_path = _write_json(directory, "endpoint-dry-run.json", evidence)
+        apply_argv = [
+            "private-health-endpoint-apply",
+            "--payload-file",
+            payload_path,
+            "--reason",
+            "Monitor the testing lane privately.",
+            *_reviewed_apply_argv(digest, evidence_path),
+        ]
+        status, payload, posts, reads = _run_main(
+            apply_argv, post=_private_endpoint_response("apply"), read=_private_endpoint_read()
+        )
+        assert status == 0, payload
+        body = posts[0]["body"]
+        assert body["confirmation"] == write_action.PRIVATE_HEALTH_ENDPOINT_CONFIRMATION
+        assert posts[0]["idempotency_key"] == "apply-1"
+        # A retry with the same evidence sends the same body, so Launchplane can replay it.
+        assert body["endpoint"]["updated_at"] == reviewed_at
+        assert reads[0]["path"] == contract.internal_helper_path(
+            "private-health-endpoint-record-read"
+        ).format(endpoint_key="example-testing-runtime")
+        assert reads[0]["query"] == {"product": "example", "context": "example", "instance": "testing"}
+        assert payload["result"]["read_back_matches"] is True
+        assert "10.0.0.106" not in json.dumps(payload)
+
+        # Launchplane recorded a different URL than the reviewed payload.
+        status, payload, _posts, _reads = _run_main(
+            apply_argv,
+            post=_private_endpoint_response("apply", url="http://10.0.0.107:8001/healthz"),
+            read=_private_endpoint_read(),
+        )
+        assert (status, payload["status"]) == (1, "accepted_unverified")
+        assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
+        assert "10.0.0.107" not in json.dumps(payload)
+
+        # The record read back points somewhere else.
+        status, payload, _posts, _reads = _run_main(
+            apply_argv,
+            post=_private_endpoint_response("apply"),
+            read=_private_endpoint_read(url="http://10.0.0.107:8001/healthz"),
+        )
+        assert (status, payload["status"]) == (1, "accepted_unverified")
+        assert payload["result"]["read_back"]["url_matches_review"] is False
+        assert "10.0.0.107" not in json.dumps(payload)
+
+        # The record read back is another lane's, even though the URL agrees.
+        status, payload, _posts, _reads = _run_main(
+            apply_argv,
+            post=_private_endpoint_response("apply"),
+            read=_private_endpoint_read(instance="prod"),
+        )
+        assert (status, payload["status"]) == (1, "accepted_unverified")
+        assert payload["result"]["read_back_matches"] is False
+
+        # Evidence edited to vouch for a different payload still fails the reviewed digest.
+        swapped = {**_private_endpoint_payload(), "url": "http://10.0.0.107:8001/healthz"}
+        swapped_path = _write_json(directory, "endpoint-swapped.json", swapped)
+        forged = copy.deepcopy(evidence)
+        forged["request"]["payload_digest"] = write_action.metadata_review_digest(
+            {**swapped, "status": "active", "reason": "Monitor the testing lane privately."}
+        )
+        forged_path = _write_json(directory, "endpoint-forged.json", forged)
+        status, payload, posts, _reads = _run_main(
+            [
+                "private-health-endpoint-apply",
+                "--payload-file",
+                swapped_path,
+                "--reason",
+                "Monitor the testing lane privately.",
+                *_reviewed_apply_argv(digest, forged_path),
+            ],
+            post=_private_endpoint_response("apply"),
+            read=_private_endpoint_read(),
+        )
+        assert (status, posts) == (2, [])
+        assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
+
+        # A different reason than the reviewed one is a different change.
+        status, payload, posts, _reads = _run_main(
+            [*apply_argv[:4], "Another reason.", *apply_argv[5:]],
+            post=_private_endpoint_response("apply"),
+            read=_private_endpoint_read(),
+        )
+        assert (status, posts) == (2, [])
+        assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
+
+        changed = {**_private_endpoint_payload(), "url": "http://10.0.0.107:8001/healthz"}
+        _write_json(directory, "endpoint.json", changed)
+        status, payload, posts, _reads = _run_main(
+            apply_argv, post=_private_endpoint_response("apply"), read=_private_endpoint_read()
+        )
+        assert (status, posts) == (2, [])
+        assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
+
+        for mutate, code in (
+            (lambda data: data.update(updated_at="2026-10-03T12:00:00Z"), "unsupported_private_health_endpoint_field"),
+            (lambda data: data.update(url="ftp://10.0.0.106/health"), "private_url_required"),
+            (lambda data: data.pop("url"), "private_url_required"),
+            (lambda data: data.update(endpoint_key="../other"), "endpoint_key_required"),
+            (lambda data: data.pop("instance"), "instance_required"),
+            (lambda data: data.update(status="paused"), "invalid_private_health_endpoint_status"),
+        ):
+            bad = _private_endpoint_payload()
+            mutate(bad)
+            bad_path = _write_json(directory, "endpoint-bad.json", bad)
+            status, payload, posts, _reads = _run_main(
+                ["private-health-endpoint-dry-run", "--payload-file", bad_path, "--reason", "r"],
+                post=_private_endpoint_response(),
+            )
+            assert (status, posts) == (2, []), code
+            assert payload["warnings"][0]["code"] == code
+
+
+def test_private_health_endpoint_read_lists_keys_without_urls() -> None:
+    response = {
+        "status": "ok",
+        "trace_id": "launchplane_req_private_endpoints",
+        "product": "example",
+        "context": "example",
+        "instance": "testing",
+        "limit": 25,
+        "count": 1,
+        "records": [_private_endpoint_record(status="disabled")],
+    }
+    argv = ["private-health-endpoint-read", "--product", "example", "--context", "example"]
+    status, payload, _posts, reads = _run_main([*argv, "--instance", "testing"], read=response)
+    assert status == 0, payload
+    assert reads[0]["path"] == "/v1/private-health-endpoints/records"
+    assert reads[0]["query"] == {"product": "example", "context": "example", "instance": "testing"}
+    assert payload["result"]["records"] == [
+        {
+            "endpoint_key": "example-testing-runtime",
+            "product": "example",
+            "context": "example",
+            "instance": "testing",
+            "status": "disabled",
+            "updated_at": "2026-10-03T12:00:00Z",
+        }
+    ]
+    assert "10.0.0.106" not in json.dumps(payload)
+
+    status, payload, _posts, reads = _run_main(argv, read=response)
+    assert status == 0, payload
+    assert reads[0]["query"] == {"product": "example", "context": "example"}
+
+    # A field Launchplane adds later is refused rather than passed through.
+    leaked = {**response, "records": [{**_private_endpoint_record(), "host": "lxc-106"}]}
+    status, payload, _posts, _reads = _run_main(argv, read=leaked)
+    assert status == 1
+    assert "lxc-106" not in json.dumps(payload)
+
+
 def _promotion_status_response() -> dict[str, object]:
     availability = {
         "operation": "direct_dry_run",
@@ -6225,6 +6448,8 @@ def main() -> int:
         test_production_backup_authority_apply_binds_the_exact_reviewed_payload,
         test_production_backup_authority_read_keeps_state_and_record_ids,
         test_dokploy_compose_target_hides_provider_ids_and_binds_the_payload,
+        test_private_health_endpoint_hides_the_url_and_binds_apply_to_the_review,
+        test_private_health_endpoint_read_lists_keys_without_urls,
         test_product_promotion_status_keeps_the_fingerprint_and_drops_release_detail,
         test_product_promotion_dry_run_never_accepts_a_live_result,
         test_controller_branch_update_result_reaches_the_caller,
