@@ -312,7 +312,7 @@
         "reviewed_evidence": [
           "reviewed_dry_run"
         ],
-        "schema_fingerprint_sha256": "e333fb2783fbefcc0c15c44efb40f2ceb13a60095e4e7287a04cf89c937ca6eb",
+        "schema_fingerprint_sha256": "c605d5d965037d446ffecc51911c4b574e8b6bcd7901dab9116efbc8c4d2f517",
         "supported_surfaces": [
           "agent_helper",
           "operator_ui",
@@ -320,7 +320,7 @@
         ]
       },
       {
-        "idempotency": "none",
+        "idempotency": "apply",
         "identity_dependencies": [
           "read_write_identity"
         ],
@@ -329,49 +329,27 @@
           "dry-run",
           "apply"
         ],
-        "operation_id": "apply_change_impact_policy",
-        "path": "/v1/change-impact/policies/apply",
-        "purpose": "Dry-run or apply a reviewed change-impact policy revision.",
+        "operation_id": "apply_odoo_addon_settings",
+        "path": "/v1/product-config/odoo-addon-settings/apply",
+        "purpose": "Dry-run or apply an Odoo lane's addon settings with secret-binding references.",
         "response_statuses": [
           "202",
+          "400",
+          "401",
           "403",
+          "404",
           "409",
+          "413",
           "503"
         ],
         "reviewed_evidence": [
-          "reviewed_dry_run",
-          "expected_policy_digest"
+          "reviewed_plan_digest"
         ],
-        "schema_fingerprint_sha256": "92ffceffe42ea64c829e71e69eb405fa452fb34fb7e54f469c6d5606c8eb458a",
+        "schema_fingerprint_sha256": "b8787659ca340aa29df2bde31b34beb3ad71ceffa7fb18c4c6d4f601a11c5456",
         "supported_surfaces": [
           "agent_helper",
           "operator_ui",
           "service_api"
-        ]
-      },
-      {
-        "idempotency": "none",
-        "identity_dependencies": [
-          "read_identity"
-        ],
-        "method": "GET",
-        "modes": [
-          "read"
-        ],
-        "operation_id": "read_change_impact_policy",
-        "path": "/v1/change-impact/policy",
-        "purpose": "Read active change-impact policy revision evidence.",
-        "response_statuses": [
-          "200",
-          "403",
-          "409",
-          "503"
-        ],
-        "reviewed_evidence": [],
-        "schema_fingerprint_sha256": "7626b4b974ffe0b822553785fed15acfd2acff2c89bddb7d27c2788e6336b0c7",
-        "supported_surfaces": [
-          "agent_helper",
-          "read_only_service"
         ]
       },
       {
@@ -460,7 +438,7 @@
         "reviewed_evidence": [
           "reviewed_plan_digest"
         ],
-        "schema_fingerprint_sha256": "2557624b0cdc6c8bc56f13efbe706499eb75e859a08fa12698f42287fd36ee4d",
+        "schema_fingerprint_sha256": "66d7c0b5e46c05e4f207aa5e923e3c43260c3842da72922c63dcb7f47d71661b",
         "supported_surfaces": [
           "protected_workflow",
           "operator_ui",
@@ -583,7 +561,7 @@
           "503"
         ],
         "reviewed_evidence": [],
-        "schema_fingerprint_sha256": "307d75395a629e567e20ff42c1aaf6bef158cd305433b33e574a478bac94eb0b",
+        "schema_fingerprint_sha256": "3945a90c02dc3e029b582e983d65710f02b757ac5cf9896987be92e179a4027f",
         "supported_surfaces": [
           "read_only_service",
           "operator_ui"
@@ -607,6 +585,7 @@
         "workflow_file": ".github/workflows/authz-policy-reconcile.yml"
       },
       {
+        "reusable_workflow_file": ".github/workflows/reusable-stable-lane-repair.yml",
         "route": "/v1/product-profiles/stable-lane-repair/apply",
         "workflow_file": ".github/workflows/product-onboarding-manifest.yml"
       }
@@ -614,8 +593,8 @@
   },
   "normalization_version": 1,
   "provenance": {
-    "source_commit_sha": "7aa6360486e3a20c3c5f6b052041fc90ae39cd46"
+    "source_commit_sha": "1fa6aa122374dff65ba26195f1cd3bfcf77839a7"
   },
   "schema_version": 1,
-  "semantic_digest_sha256": "6dfd9bfb019169fc2493f5304443424f4573ee7426ca52e796e11e3eacb1b693"
+  "semantic_digest_sha256": "09a2898eb22c1aa2f25054b4f5d43755b05190a35f19c63cb11e0c2a6e31fd05"
 }

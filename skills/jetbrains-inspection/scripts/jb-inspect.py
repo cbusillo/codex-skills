@@ -6553,6 +6553,10 @@ def unproven_batch_annotator_suffix(payload: dict[str, Any]) -> str:
     return " Blocking: " + "; ".join(f"{pair['tool']} on {pair['file']}" for pair in pairs) + "."
 
 
+UNKNOWN_RETRY_ACTION = "Wait for IDE/capture readiness to settle, then retry once and report helper diagnostics if it remains UNKNOWN."
+UNKNOWN_TERMINAL_ACTION = "Stop retrying this result and report the helper diagnostic payload. Resolve the reported IDE/plugin or ownership prerequisite before any further assessment."
+
+
 def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     reason = normalize_reason(reason)
     if reason in REPOSITORY_PREPARATION_TERMINAL_REASONS or reason == "repository_preparation_failure":
@@ -6694,7 +6698,7 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
         return "Inspect lifecycle cleanup output; close helper-opened IDE projects or rerun inspect-closeout after cleanup succeeds."
     if diagnostic.get("observed_non_empty_inspection_tree") is True:
         return "Treat this as a plugin/helper capture bug and include capture_diagnostic when reporting it."
-    return "Do not report GREEN or RED. Rerun inspection and include helper diagnostics if it remains UNKNOWN."
+    return UNKNOWN_TERMINAL_ACTION
 
 
 def helper_revision() -> str:
@@ -7031,6 +7035,19 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
     if diagnosis is not None:
         payload["unknown_diagnosis"] = diagnosis
     next_action = str(payload.get("verdict_next_action") or next_action_for_bucket(verdict, bucket, reason, payload))
+    if verdict == "UNKNOWN" and next_action in {UNKNOWN_RETRY_ACTION, UNKNOWN_TERMINAL_ACTION}:
+        next_action = UNKNOWN_RETRY_ACTION if retry_policy["retry"] else UNKNOWN_TERMINAL_ACTION
+        payload["verdict_next_action"] = next_action
+    if verdict == "UNKNOWN" and not retry_policy["retry"] and payload.get("retry_exhausted") is not True:
+        plugin_action_used = bool(payload.get("inspection_verdict_next_action")) and (
+            next_action == payload["inspection_verdict_next_action"]
+        )
+        reason_bucket = outcome_bucket({
+            "verdict": "UNKNOWN", "capture_diagnostic": payload.get("capture_diagnostic"),
+        }, reason)
+        if plugin_action_used or retry_policy_for("UNKNOWN", reason_bucket, reason)["retry"]:
+            next_action = UNKNOWN_TERMINAL_ACTION
+            payload["verdict_next_action"] = next_action
     next_action = guidance_for_command(next_action, payload.get("command"))
     report = agent_report_for(verdict, bucket, reason, payload, next_action)
     payload["bucket"] = bucket
@@ -7075,15 +7092,14 @@ def compact_inspection_proof(payload: dict[str, Any]) -> dict[str, Any]:
 
 def exhausted_retry_next_action(reason: str, payload: dict[str, Any]) -> str:
     retry_count = max(0, int(payload.get("internal_retry_count") or 0))
-    if reason not in {"stale_results", "inspection_inputs_changed", "project_analysis_not_ready"}:
-        return f"The helper already used {retry_count} internal retry attempt(s). Stop retrying this result and report the diagnostic payload."
     readiness = payload.get("internal_retry_readiness") if isinstance(payload.get("internal_retry_readiness"), dict) else {}
     if payload.get("internal_retry_skipped") is True:
         return (
-            "The helper withheld its internal retry because IDE readiness did not remain stable. Stop retrying this result in this run; "
-            "wait for same-worktree writers and IDE indexing/project-model updates to settle, then start a new inspection and include "
-            "internal_retry_readiness if it remains UNKNOWN."
+            "The helper withheld its internal retry because IDE readiness did not remain stable. Stop retrying this result and report "
+            "internal_retry_readiness. Resolve same-worktree writer and IDE indexing/project-model activity before any further assessment."
         )
+    if reason not in {"stale_results", "inspection_inputs_changed", "project_analysis_not_ready"}:
+        return f"The helper already used {retry_count} internal retry attempt(s). Stop retrying this result and report the diagnostic payload."
     barrier_status = str(readiness.get("status") or "unknown")
     return (
         f"The helper waited for sustained IDE readiness ({barrier_status}) and used {retry_count} internal retry attempt(s), but the result remained {reason}. "

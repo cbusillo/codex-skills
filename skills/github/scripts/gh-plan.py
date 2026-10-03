@@ -1901,10 +1901,17 @@ def cmd_claim(args: argparse.Namespace) -> None:
 
     def check_wait(waiting_issue: dict[str, Any], waiting_status: str) -> None:
         status_state = next_plan_status(waiting_issue, config)
-        reports = github_direction_next.waiting_records(compact_issue(waiting_issue), waiting_status)
+        reports = github_direction_next.waiting_records(
+            compact_issue(waiting_issue),
+            "\n".join(
+                line for line in waiting_status.splitlines()
+                if not ((match := re.match(r"\s*(?:[-*]\s+)?Waiting for:\s*(.+)", line, re.I))
+                        and github_plan_claim.no_wait_reason(match.group(1), field="Waiting for"))
+            ),
+        )
         blocked_text = any(
             (match := re.match(r"\s*(?:[-*]\s+)?Blocked by:\s*(.+)", line, re.I))
-            and match.group(1).casefold().rstrip(" .") not in {"none", "n/a", "nothing", "-"}
+            and not github_plan_claim.no_wait_reason(match.group(1), field="Blocked by")
             for line in waiting_status.splitlines()
         )
         if (status_state in {"waiting", "blocked", "stale", "done"} or reports or blocked_text

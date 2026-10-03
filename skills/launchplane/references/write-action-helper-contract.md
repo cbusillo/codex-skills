@@ -27,9 +27,7 @@ The helper lives at `scripts/launchplane-write-action.py`.
 `odoo-addon-settings-dry-run` and `odoo-addon-settings-apply` call
 `POST /v1/product-config/odoo-addon-settings/apply` to set an Odoo lane's
 Shopify addon settings on its instance-override record. The Launchplane
-operation is `apply_odoo_addon_settings`; it is a local extension here until the
-vendored artifact is refreshed, and the conformance gate then forces migration
-to a projected command.
+operation is `apply_odoo_addon_settings`, projected by the vendored contract.
 
 - The private payload file, outside the repository, holds `schema_version`,
   `product`, `context`, `instance`, `reason`, and a `shopify` block with
@@ -551,7 +549,7 @@ with `status: "incomplete"` may still have a local token source; read the
 - `0`: Launchplane accepted the request and the helper emitted a redacted
   summary. `status: "accepted_unverified"` exits 0 for the Odoo addon-settings,
   integration-allowances, testing-hold, product-repository-identity,
-  change-impact-policy, generic-web deploy-recovery, repository-inventory,
+  generic-web deploy-recovery, repository-inventory,
   product expected-config, and merge-train policy import applies; product-config
   apply does not emit it. It exits 1 for the reviewed lane-setup
   applies (product Client, product image repository, Dokploy target, production
@@ -694,63 +692,6 @@ unmodified when an admin initiates it for that record. Otherwise this is a
 capability gap: block and escalate the affected work to the owning
 authorization-architecture issue with the denied operation, record type, and
 trace ID, then continue independent work when possible.
-
-## Change-Impact Policy
-
-Change-impact policy is runtime authority. Supply it only as explicit private
-admin input in a JSON file outside the active repository or worktree. The
-file contains the service envelope, including `record`, concurrency expectations,
-and the admin-supplied source and reason. The helper overrides only `mode`.
-
-```sh
-uv run scripts/launchplane-write-action.py \
-  change-impact-policy-dry-run \
-  --payload-file /private/path/change-impact-policy.json
-
-uv run scripts/launchplane-write-action.py \
-  change-impact-policy-apply \
-  --payload-file /private/path/change-impact-policy.json \
-  --reviewed-dry-run \
-  --expected-policy-digest <digest-from-dry-run> \
-  --idempotency-key example-repository-policy-revision-1
-
-uv run scripts/launchplane-write-action.py \
-  change-impact-policy-read \
-  --repository-id <repository-id>
-```
-
-For apply, the admin asserts that the private payload is the one reviewed
-during dry-run. The helper requires a non-empty reason embedded in the policy
-record, explicit `--reviewed-dry-run` acknowledgement, the policy digest emitted
-by dry-run, and a stable idempotency key. The helper refuses to send apply when
-the supplied digest differs from a digest already present in the payload. When
-the record omits its server-derived digest, the helper inserts the reviewed
-dry-run digest before apply. These are local admin controls; the current
-service route does not independently bind apply to a
-persisted dry-run record or consume the idempotency header. After apply, run the
-bounded read command and compare the active revision and digest before relying
-on the policy.
-
-The public result contains only the apply status, policy record id, digest,
-revision, policy status, effective timestamp, and response trace metadata.
-Current read/apply responses also expose `attribution_status` and a nullable
-audit summary containing only `record_id`, `policy_digest`, `actor_kind`, and
-`recorded_at`. This display timestamp is normalized from the producer's aware
-ISO timestamp to whole-second UTC; fractional precision is omitted only in the
-public summary, without changing the immutable stored audit timestamp. Naive or
-malformed timestamps fail closed. Audit identity must match the accompanying
-policy. Actor subjects,
-the audit trace ID, and workflow identity fields are validated and omitted.
-Legacy responses without attribution fields retain their previous output shape.
-The declared optional v2 policy/rule fields are validated but not projected;
-they do not change the helper's apply authority. The helper never emits
-component rules, path prefixes, affected products, repository name, repository owner ID,
-source, reason, raw payloads, private paths, service URLs, or authorization
-headers. The record id intentionally embeds the numeric repository ID because
-successor policy revisions must reference it. Unexpected response fields fail
-closed. If apply receives HTTP success but the response cannot be safely
-projected, the helper reports `accepted_unverified` and requires read-back before
-any retry.
 
 ## Merge-Train Policy Import
 
@@ -1064,17 +1005,6 @@ provider dictionary pass-through:
   values and unknown response fields remain rejected; this response support
   does not change authorization, private-file, review, or apply requirements.
   Keep these bounds aligned with the service's runtime-retirement contract.
-- `change-impact-policy-dry-run` and `change-impact-policy-apply` may emit only
-  apply status, policy record id, digest, revision, policy status, and effective
-  timestamp, plus the bounded attribution status/audit summary described above.
-- `change-impact-policy-read` emits history count and bounded current-policy
-  metadata. Legacy `mode`, `authoritative`, and `enforcement_effect` fields are
-  validated and emitted only when supplied with non-null values; the current
-  service read model omits them. Their absence does not imply authorization or
-  enforcement status. Current attribution metadata follows the same bounded
-  read/apply projection. Policy bodies, path rules, and private writer identity
-  remain excluded. Unknown fields, including nested audit/workflow fields, fail
-  closed.
 - `merge-train-policy-import-dry-run` and
   `merge-train-policy-import-apply` may emit only active-policy identity and
   digest, candidate record identity, digest, status, target count, replay state,
@@ -1104,3 +1034,18 @@ Public timestamp projections accept UTC timestamps with optional fractional
 seconds (up to six digits), preserving their exact value. Policy preflight thus
 accepts microsecond timestamps emitted by native policy preparation and retains
 that precision in reviewed evidence.
+
+## Admin free text
+
+Every emitted admin `reason` or prose `evidence` uses the shared
+`public_operator_text` projection. It normalizes whitespace and redacts
+credential assignments (including quoted values), known token forms, long
+mixed letter/digit token-like words, and URLs of any scheme. URLs are omitted
+because admin prose can name private hosts even without credentials.
+Structural fields retain their existing strict validators; invalid types,
+empty or oversized text, and other unsafe summary shapes still fail closed.
+Apply checks that compare a reviewed reason use this projection on both sides.
+The private request keeps the original reason; redaction changes public evidence
+only. A projection is lossy and cannot distinguish changes solely inside
+redacted spans; service digests and private-payload bindings remain in force
+where supported.
