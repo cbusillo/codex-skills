@@ -1389,7 +1389,8 @@ def test_retry_cli_returns_partial_progress_with_failure_exit(monkeypatch, capsy
 
 
 @pytest.mark.parametrize("error", ["HTTP 403: denied", "HTTP 422: invalid request",
-                                   "run 1 cannot be rerun; Resource not accessible by integration"])
+                                   "run 1 cannot be rerun; Resource not accessible by integration",
+                                   "failed to get run: HTTP 503: service unavailable"])
 def test_confirmed_rejection_releases_intent_and_budget(monkeypatch, tmp_path, error):
     _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
 

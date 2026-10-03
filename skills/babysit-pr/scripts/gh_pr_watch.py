@@ -1405,7 +1405,7 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
         result["reason"] = "rerun_outcome_pending"
         return result
     current_runs = {
-        run.get("id"): run for run in get_workflow_runs_for_sha(pr["repo"], pr["head_sha"])
+        run.get("id"): run for run in get_workflow_runs_for_sha(pr["repo"], pr["head_sha"], reader=watcher_reader())
     } if eligible_runs else {}
     cycle_charged = False
     for run in eligible_runs:
@@ -1433,6 +1433,8 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
             # gh rewrites HTTP 403 into this message, dropping the status.
             rejected = bool(re.search(r"HTTP (?:400|401|403|404|410|422|429)\b", detail)) or (
                 f"run {run_id} cannot be rerun;" in detail
+                or "failed to get run:" in detail
+                or isinstance(err.__cause__, FileNotFoundError)
             )
             if rejected:
                 del pending[str(run_id)]
