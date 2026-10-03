@@ -21,9 +21,16 @@ def poll(ledger: Path, seen: dict, idle_seconds: float, now: float) -> list[dict
         try:
             status = session_status(entry)
         except (OSError, ValueError, TypeError) as error:
-            notices.append(
-                {"session_id": entry["session_id"], "error": str(error), "clean": None}
-            )
+            key = ("error", str(error))
+            if seen.get(entry["session_id"]) != key:
+                notices.append(
+                    {
+                        "session_id": entry["session_id"],
+                        "error": str(error),
+                        "clean": None,
+                    }
+                )
+                seen[entry["session_id"]] = key
             continue
         key = (status["mtime"], status["size"])
         if (

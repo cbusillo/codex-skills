@@ -113,8 +113,8 @@ uv run skills/supervisor/scripts/close_ttys.py --ledger <private-ledger.json> --
 The two flags attest the Supervisor checked the issue handoff and empty input
 (or recorded the Director's text). Default is a dry run. This helper never
 answers prompts or sends exit commands: it checks transcript, ownership, exact
-iTerm id and TTY, then proves the recorded PID is absent and no non-shell
-process remains on that TTY. Apply rechecks activity and processes and requests
+iTerm id and TTY, then proves the recorded PID is absent and only login/shell-profile processes
+remain on that TTY. Other jobs, including prompt helpers, preserve the tab. Apply rechecks activity and processes and requests
 one non-force close. An uncertain inventory or remaining/reused PID preserves
 the tab. Read back `iterm_tab.py list` to confirm closure; never force or retry
 an uncertain close. Other terminal applications use the same skill procedure

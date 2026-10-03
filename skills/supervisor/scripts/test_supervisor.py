@@ -197,7 +197,9 @@ class LedgerTests(unittest.TestCase):
             ]
         )
         with patch.object(
-            close_ttys, "inventory", return_value=[(20, "ttys001", "/bin/zsh")]
+            close_ttys,
+            "inventory",
+            return_value=[(20, "ttys001", "-zsh"), (21, "ttys001", "/usr/bin/login")],
         ):
             asyncio.run(close_ttys.close(app, entry, True, True, True))
         terminal.async_close.assert_awaited_once_with(force=False)
@@ -220,9 +222,11 @@ class LedgerTests(unittest.TestCase):
     def test_bad_watched_transcript_does_not_hide_healthy_session(self):
         bad = {**self.entry, "session_id": "bad", "transcript": "missing.jsonl"}
         self.ledger.write_text(json.dumps([bad, self.entry]))
-        notices = codex_idle_watch.poll(self.ledger, {}, 90, 1200)
+        seen = {}
+        notices = codex_idle_watch.poll(self.ledger, seen, 90, 1200)
         self.assertIn("error", notices[0])
         self.assertEqual(notices[1]["turn_end"], "task_complete")
+        self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1200), [])
 
     def test_relative_path_and_duplicate_identity(self):
         self.assertEqual(
@@ -278,7 +282,9 @@ class LedgerTests(unittest.TestCase):
             ]
         )
         with patch.object(
-            close_ttys, "inventory", return_value=[(20, "ttys001", "/bin/zsh")]
+            close_ttys,
+            "inventory",
+            return_value=[(20, "ttys001", "-zsh"), (21, "ttys001", "/usr/bin/login")],
         ):
             result = asyncio.run(close_ttys.close(app, entry, False, True, True))
             self.assertTrue(result["dry_run"])
@@ -446,6 +452,22 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(
             terminal.async_send_text.await_args_list[0].args, ("run-authorized-brief",)
         )
+
+    def test_invalid_launch_file_creates_no_tab(self):
+        window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
+        app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "launch.txt"
+            path.write_text("bad\tcommand")
+            args = argparse.Namespace(
+                command="new", window_id="chosen", command_file=path
+            )
+            with (
+                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
+                self.assertRaises(ValueError),
+            ):
+                asyncio.run(iterm_tab.operate(app, args))
+        window.async_create_tab.assert_not_awaited()
 
     def test_unverified_send_refuses_without_keys(self):
         terminal = SimpleNamespace(session_id="term", async_send_text=AsyncMock())

@@ -36,7 +36,9 @@ def process_exited(entry, rows):
     if any(row[0] == pid for row in rows):
         return False
     return not any(
-        row[1] == tty and Path(row[2]).name not in {"zsh", "bash", "sh", "fish", "dash"}
+        row[1] == tty
+        and Path(row[2]).name.lstrip("-")
+        not in {"login", "zsh", "bash", "sh", "fish", "dash"}
         for row in rows
     )
 

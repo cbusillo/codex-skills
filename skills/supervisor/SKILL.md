@@ -144,11 +144,16 @@ records that run.
 3. **A check about every 23 minutes.** Keep a ledger of session, repository,
    issue, and tab title. Nudge a stalled session with exact facts: the comment,
    the failing check, the time it last moved. Check each session's context
-   size and use the harness's built-in compaction at its next safe point,
-   with Keep instructions naming its brief, issue and current step. Codex
-   continues through automatic compaction; do not queue a request for it to
-   compact itself. For Claude Code, the Supervisor sends `/compact` with
-   those Keep instructions only at a verified idle prompt. Gather the
+   size. Let automatic compaction proceed; a routine idle check alone is not
+   a reason to compact. When a session needs manual compaction, use the
+   harness's built-in mechanism at a safe point with Keep instructions naming
+   its brief, issue and current step. For Claude Code, send `/compact` with
+   those instructions only at a verified idle prompt. Codex keeps working
+   through automatic compaction, carrying its brief's Keep instructions; never
+   queue a request for it to compact itself. If a worker's compaction fails,
+   request a durable handoff and relaunch the same brief after verified safe
+   closeout. If it cannot hand off, preserve it and bring the failure to the
+   Director. Gather the
    open Director questions. Close finished sessions using the procedure below
    on every check, including sessions that finished their item without needing
    a relaunch.
@@ -255,8 +260,9 @@ Post it on the pilot issue as one comment:
   Director's own sessions alone.
 - After launching a Codex tab, read its screen once; a folder-trust prompt
   looks like a working session from outside.
-- Compaction preserved briefs and issues on both harnesses; the previous
-  450k close-out rule lacked evidence and is replaced by the experiment above.
+- Recorded pilot compactions preserved briefs and issues on both harnesses;
+  keep recording degradation during the experiment above. The previous 450k
+  close-out rule lacked evidence.
 - Supervisor-launched sessions start without the Discord channels flag so no
   prompt blocks them; sessions the Director starts keep it.
 - Sessions never use `git stash`; it is shared across worktrees.

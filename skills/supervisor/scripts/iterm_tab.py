@@ -27,9 +27,13 @@ def select_session(app, session_id):
     return matches[0]
 
 
-async def send(session, text, submit=True):
+def validate_text(text):
     if not text or any(ord(c) < 32 and c != "\n" for c in text):
         raise ValueError("text must be nonempty with no terminal control characters")
+
+
+async def send(session, text, submit=True):
+    validate_text(text)
     if "\n" in text:
         text = "\x1b[200~" + text + "\x1b[201~"
     await session.async_send_text(text, suppress_broadcast=True)
@@ -97,13 +101,12 @@ async def operate(app, args):
         ]
         if len(windows) != 1:
             raise ValueError("window id does not identify one window")
+        command_text = args.command_file.read_text(encoding="utf-8").rstrip("\n")
+        validate_text(command_text)
         tab = await windows[0].async_create_tab()
         if not tab.current_session:
             raise ValueError("new tab has no session; inspect it before retrying")
-        await send(
-            tab.current_session,
-            args.command_file.read_text(encoding="utf-8").rstrip("\n"),
-        )
+        await send(tab.current_session, command_text)
         result = {
             "window_id": windows[0].window_id,
             "tab_id": tab.tab_id,
