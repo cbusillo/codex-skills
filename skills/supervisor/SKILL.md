@@ -3,6 +3,71 @@ name: supervisor
 description: Use when the Director asks a session to supervise other agent sessions for a night or a stretch of work, or to take over from a Supervisor handoff. The Supervisor briefs one session per item and repository, runs a check about every 23 minutes, records the Director's decisions on each item's issue, routes landings through the merge train, and hands off with the list of what needs the Director. Not for doing the item's work itself (each session's executing loop), for judging the runs it launched (direction, on another model), or for watching a single PR (babysit-pr).
 metadata:
   short-description: Brief, watch, nudge, and record agent sessions
+resources:
+  - path: scripts/iterm_tab.py
+    kind: script
+    description: List, read, launch and reach exact iTerm sessions.
+  - path: scripts/status.py
+    kind: script
+    description: Read context and activity for explicit ledger sessions.
+  - path: scripts/codex_idle_watch.py
+    kind: script
+    description: Emit bounded Codex idle notices without deciding completion.
+  - path: scripts/oq.py
+    kind: script
+    description: Read all Director questions through the paged GitHub helper.
+  - path: scripts/finished_map.py
+    kind: script
+    description: Find transcript close-out candidates for Supervisor verification.
+  - path: scripts/close_ttys.py
+    kind: script
+    description: Dry-run closing an exact tab after its agent process has exited.
+  - path: references/helpers.md
+    kind: reference
+    description: Private ledger schema, helper usage and shutdown stages.
+commands:
+  - name: supervisor-iterm-tab
+    source: skill
+    resource_path: scripts/iterm_tab.py
+    example_argv: ["uv", "run", "scripts/iterm_tab.py", "list"]
+    purpose: List exact window, tab and session identities.
+  - name: supervisor-status
+    source: skill
+    resource_path: scripts/status.py
+    example_argv: ["uv", "run", "scripts/status.py", "--ledger", "<ledger.json>"]
+    purpose: Report ledger session context and transcript activity.
+  - name: supervisor-codex-idle-watch
+    source: skill
+    resource_path: scripts/codex_idle_watch.py
+    example_argv: ["uv", "run", "scripts/codex_idle_watch.py", "--ledger", "<ledger.json>", "--once"]
+    purpose: Observe idle turn ends for verification.
+  - name: supervisor-oq
+    source: skill
+    resource_path: scripts/oq.py
+    example_argv: ["uv", "run", "scripts/oq.py", "OWNER/REPO#NUMBER", "--owner", "<owner-login>", "--decision-author", "<recording-automation-login>"]
+    purpose: Gather Director questions from the whole discussion.
+  - name: supervisor-finished-map
+    source: skill
+    resource_path: scripts/finished_map.py
+    example_argv: ["uv", "run", "scripts/finished_map.py", "--ledger", "<ledger.json>"]
+    purpose: Find close-out candidates without authorizing shutdown.
+  - name: supervisor-close-ttys
+    source: skill
+    resource_path: scripts/close_ttys.py
+    example_argv: ["uv", "run", "scripts/close_ttys.py", "--ledger", "<ledger.json>", "--session-id", "<id>", "--verified-handoff", "--verified-input"]
+    purpose: Preview closing a tab after its agent process exited.
+policy:
+  command_policies:
+    - id: prefer-session-helper-for-iterm-typing
+      match:
+        shell_regex: '(?i)\bosascript\b[^\n]*(?:write text|iTerm)'
+      action: require_preferred
+      message: Use exact session identities and separate text and Return sends through the maintained helper.
+      preferred:
+        - kind: script
+          path: scripts/iterm_tab.py
+          example_argv: ["uv", "run", "scripts/iterm_tab.py", "list"]
+          purpose: Inspect exact identities before sending or launching in the dedicated window.
 ---
 
 # Supervisor
@@ -53,29 +118,44 @@ Post each handoff on that issue, and say in it whether any lesson was new.
 
 Verified on Claude Code as the Supervisor. From there it reaches Codex sessions
 with `codex queue --thread <id> --message "<text>"` and Claude Code sessions in
-terminal tabs with the iTerm tab helper kept with the Supervisor's files,
-`iterm_tab.py send "<unique tab title>" "<text>"`. Codex as the Supervisor is
-expected to work; claim it only after a run has verified it and the pilot issue
+terminal tabs with `skills/supervisor/scripts/iterm_tab.py`, using an exact
+`--session-id` from its `list` output. Launch Codex sessions with "keep working
+through compaction" and Keep instructions naming the brief, issue and current
+step; do not hand them off at a context percentage. Codex as
+the Supervisor is expected to work; claim it only after a run has verified it and the pilot issue
 records that run.
 
 ## The Pattern
 
 1. **One brief per session and repository.** The brief says what the session
    may do, where it stops, and where it asks. Never widen a brief after
-   launch. A session that needs more scope gets a Director question. If the
+   launch. Write it from the decision record, quoting the Director's words,
+   never from a PR's wording. When a request names a visual thing, check which
+   one before writing the brief. A session that needs more scope gets a Director
+   question. If the
    Director says yes, the wider scope goes in a new brief for a fresh
    session; the running session's brief stays as it was.
 2. **Director questions live on the item's issue**, as a comment that starts
    `Owner question:`. The Director answers in chat, Discord, or on GitHub. The
    Supervisor records the answer as an `Owner decision` comment on that issue,
-   quoting the Director's words and saying where they were said, and points
+   quoting the Director's words, saying where they were said, linking the
+   question comment it answers, and points
    the session at it. It records only what the Director said. Briefs accept a decision recorded by the
    Supervisor or a direction session, not only one posted from the Director's
    own login.
 3. **A check about every 23 minutes.** Keep a ledger of session, repository,
    issue, and tab title. Nudge a stalled session with exact facts: the comment,
    the failing check, the time it last moved. Check each session's context
-   size and ask it to close out at its next safe point near 450k. Gather the
+   size. Let automatic compaction proceed; a routine idle check alone is not
+   a reason to compact. When a session needs manual compaction, use the
+   harness's built-in mechanism at a safe point with Keep instructions naming
+   its brief, issue and current step. For Claude Code, send `/compact` with
+   those instructions only at a verified idle prompt. Codex keeps working
+   through automatic compaction, carrying its brief's Keep instructions; never
+   queue a request for it to compact itself. If a worker's compaction fails or its account needs it gone,
+   request a durable handoff and relaunch the same brief after verified safe
+   closeout. If it cannot hand off, preserve it and bring the failure to the
+   Director. Gather the
    open Director questions. Close finished sessions using the procedure below
    on every check, including sessions that finished their item without needing
    a relaunch.
@@ -107,16 +187,23 @@ records that run.
 4. Rebuild the ledger. For each session the handoff names, read its tab
    screen or thread once. List running processes before you rely on a
    background driver or watcher the handoff says is running.
-5. Recreate the checks the handoff names, such as the 23-minute check and any
-   watchers, with the harness's own scheduling feature.
+5. Recreate the ~23-minute check and morning digest with the harness's own
+   scheduling feature. Arm Claude Code turn-end notices (`notify_when_idle`)
+   and the bounded `skills/supervisor/scripts/codex_idle_watch.py` watch for
+   Codex turn ends. A notice prompts verification, never a completion verdict.
+   Read [helper setup](references/helpers.md) before rebuilding the private
+   ledger or running a helper; the catalog supplies all six pilot helpers.
 6. Post a takeover comment on the pilot issue: what you found, what you
    corrected, and the "needs the Director" list.
 7. When a finding would retire, stop, or redirect work, load `direction`
    again and open an issue labeled `direction` under its escalation
    procedure. The Supervisor never acts on such a finding or declines it.
-8. Run the check until the Director asks you to close out, or your own context
-   nears 450k; then write the handoff below and close out with
-   `work-closeout`.
+8. Keep working through compaction, preserving the brief, issue and current
+   step in Keep instructions. Close out only when compaction fails, the work
+   is done, or the account needs the session gone; then write the handoff below
+   and use `work-closeout`. This is the Director's one-week experiment from
+   [codex-skills#885](https://github.com/cbusillo/codex-skills/issues/885), judged
+   at the next weekly audit by continuation, handoffs and repeated/reverted work.
 
 ## Close Finished Sessions On Every Check
 
@@ -175,8 +262,11 @@ Post it on the pilot issue as one comment:
   Director's own sessions alone.
 - After launching a Codex tab, read its screen once; a folder-trust prompt
   looks like a working session from outside.
-- Sessions past about 500k context stop compacting usefully, so close out near
-  450k and relaunch from the handoff.
+- Recorded pilot compactions preserved briefs and issues on both harnesses;
+  keep recording degradation during the experiment above. The previous 450k
+  close-out rule lacked evidence.
+- Supervisor-launched sessions start without the Discord channels flag so no
+  prompt blocks them; sessions the Director starts keep it.
 - Sessions never use `git stash`; it is shared across worktrees.
 - When a bug fits a pattern, sweep the whole path once instead of fixing it
   round by round on the train.
