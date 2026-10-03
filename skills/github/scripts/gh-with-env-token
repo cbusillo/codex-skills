@@ -52,6 +52,16 @@ case "${GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH:-}" in
 	;;
 esac
 
+# github_identity.OWN_USER_OPT_IN: only the caller's value for this command
+# counts, never one from local.env.
+own_user_opt_in=0
+case "${GH_WITH_ENV_TOKEN_OWN_USER:-}" in
+1 | true | TRUE | yes | YES)
+	own_user_opt_in=1
+	;;
+esac
+readonly own_user_opt_in
+
 while [ "$#" -gt 0 ]; do
 	case "${1:-}" in
 	--print-auth-account)
@@ -756,8 +766,9 @@ repository_from_reference() {
 
 # Each repository owner installs the App separately; use the installation on
 # the repository the command names. A write to a repository without one is
-# refused when the automation's account owns it; elsewhere the helper exits
-# with the contributor status and the person acts as their own GitHub user.
+# refused when the account that registered the App owns it; elsewhere the
+# helper exits with the contributor status, and the person may act as their
+# own GitHub user.
 app_auth_for_command() {
 	target_repo=$(target_repository "$@")
 	require_installation=
@@ -779,11 +790,12 @@ app_auth_for_command() {
 }
 
 # github_identity.CONTRIBUTOR_EXIT_STATUS: the App is not installed on the
-# target repository and the automation's account does not own it.
+# target repository and the account that registered it does not own it.
 contributor_exit_status=3
 
 # In a repository someone else owns, a contributor's agent writes as the
-# person's own GitHub login; say so, and never when automation auth is required.
+# person's own GitHub login only when the caller opted in for this command;
+# say so, and never when automation auth is required.
 act_as_own_user() {
 	own_user_repository=$1
 	shift
@@ -792,6 +804,10 @@ act_as_own_user() {
 	fi
 	if [ "$require_automation_auth" -eq 1 ]; then
 		echo "error: $own_user_repository is not the automation's repository and this command requires configured automation authentication; refusing to act as your own GitHub user" >&2
+		return 1
+	fi
+	if [ "$own_user_opt_in" -ne 1 ]; then
+		echo "error: the GitHub App is not installed on $own_user_repository and another account owns it; writing there as your own GitHub user needs your Director's approval and GH_WITH_ENV_TOKEN_OWN_USER=1 on this command" >&2
 		return 1
 	fi
 	own_login=$(active_auth_login)

@@ -779,19 +779,24 @@ substitution inside backticks.
 
 GitHub writes belong to the configured automation account. The helpers select
 its credentials and fail closed, without changing actor, when bot auth is
-unavailable, rejected, or rate-limited. Which identity writes where:
+unavailable, rejected, or rate-limited. The helpers choose the identity for
+each target repository:
 
-- **Where the App is installed**: the App, in any account's repository.
-- **The automation's own accounts without an installation** (the account that
-  registered the App and every account it is installed on): refused; the
-  Director installs the App there.
-- **Another account's repository without an installation**: you, as your own
-  GitHub user. A Director's agent contributing to someone else's repository
-  comments, commits, pushes, and opens PRs as the active `gh` login, and the
-  helpers print `acting as your own GitHub user`. Commits keep your git
-  identity, and `gh-pr.py create` adds the AI-assistance sentence to the body
-  unless it already says so. `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1`
-  refuses instead.
+- **Where the App is installed on that repository**: the App, in any
+  account's repository.
+- **The App's registering account, without an installation on that
+  repository**: refused; the Director installs the App there.
+- **Any other account's repository without an installation**: your own GitHub
+  user, only on an explicit opt-in. An installation on some of that account's
+  repositories does not change this for its others. Writing to another
+  person's repository is a stop: ask your Director first, then set
+  `GH_WITH_ENV_TOKEN_OWN_USER=1` on each command that writes there. Without
+  it the helpers refuse and name the opt-in; a value in `local.env` does not
+  count. With it, the agent comments, commits, pushes, and opens PRs as the
+  active `gh` login, and the helpers print `acting as your own GitHub user`.
+  Commits keep your git identity, and `gh-pr.py create` adds the
+  AI-assistance sentence to the body unless it already says so.
+  `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1` refuses even with the opt-in.
 
 Otherwise never fall back to the active human `gh` account unless the user
 explicitly approves that one-off; then set

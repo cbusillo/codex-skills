@@ -485,10 +485,10 @@ grep -q '^push_env=||||$' "$env_log"
 grep -q '^remote=git@github.com:owner/repo.git$' "$env_log"
 
 # In another owner's repository without the App, the person pushes and
-# commits as their own GitHub user, and says so.
+# commits as their own GitHub user when the caller opts in, and says so.
 : >"$env_log"
 PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" \
-	CODEX_AUTOMATION_LOGIN='Fixture-App[bot]' FAKE_APP_CONTRIBUTOR=1 \
+	CODEX_AUTOMATION_LOGIN='Fixture-App[bot]' FAKE_APP_CONTRIBUTOR=1 GH_WITH_ENV_TOKEN_OWN_USER=1 \
 	GIT_PUSH_AS_BOT_IDENTITY_HELPER="$tmpdir/fake-app-identity.py" \
 	GIT_PUSH_AS_BOT_GH="$tmpdir/login-gh" \
 	GIT_PUSH_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
@@ -502,7 +502,7 @@ grep -q "acting as your own GitHub user on owner/repo; pushing as 'human-user'" 
 : >"$env_log"
 PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" \
 	CODEX_AUTOMATION_LOGIN=fixture-automation CODEX_AUTOMATION_EMAIL=fixture-automation@example.invalid \
-	FAKE_APP_CONTRIBUTOR=1 GIT_COMMIT_AS_BOT_IDENTITY_HELPER="$tmpdir/fake-app-identity.py" \
+	FAKE_APP_CONTRIBUTOR=1 GH_WITH_ENV_TOKEN_OWN_USER=1 GIT_COMMIT_AS_BOT_IDENTITY_HELPER="$tmpdir/fake-app-identity.py" \
 	GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
 	GH_ISSUE_ENV_LOG="$env_log" CODEX_GITHUB_TOKEN=must-not-reach-hook \
 	"$repo_root/github/scripts/git-commit-as-bot" -m "person commit" >/dev/null 2>"$stderr_log"
@@ -521,13 +521,18 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" \
 
 grep -q 'author=fixture-automation <fixture-automation@example.invalid>' "$env_log"
 
-# A failed identity lookup, or required automation auth on the person's path
-# (even when local.env turns it off), refuses the commit rather than guessing.
+# A failed identity lookup, the person's path without the caller's opt-in
+# (an opt-in only in local.env does not count), or required automation auth on
+# it (even when local.env turns it off), refuses the commit rather than guessing.
 cp "$tmpdir/app.env" "$tmpdir/app-not-required.env"
 printf 'GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=0\n' >>"$tmpdir/app-not-required.env"
-for refused_commit in "FAKE_APP_CONTRIBUTOR=1 CODEX_SKILLS_ENV_FILE=$tmpdir/app-not-required.env GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1|refusing to commit as your own GitHub user" \
+cp "$tmpdir/app.env" "$tmpdir/app-own-user.env"
+printf 'GH_WITH_ENV_TOKEN_OWN_USER=1\n' >>"$tmpdir/app-own-user.env"
+for refused_commit in "FAKE_APP_CONTRIBUTOR=1 GH_WITH_ENV_TOKEN_OWN_USER=1 CODEX_SKILLS_ENV_FILE=$tmpdir/app-not-required.env GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1|refusing to commit as your own GitHub user" \
 	"FAKE_APP_IDENTITY_FAIL=1|could not tell which identity commits to owner/repo" \
-	"FAKE_APP_CONTRIBUTOR=1 GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1|refusing to commit as your own GitHub user"; do
+	"FAKE_APP_CONTRIBUTOR=1|needs your Director's approval and GH_WITH_ENV_TOKEN_OWN_USER=1" \
+	"FAKE_APP_CONTRIBUTOR=1 CODEX_SKILLS_ENV_FILE=$tmpdir/app-own-user.env|needs your Director's approval and GH_WITH_ENV_TOKEN_OWN_USER=1" \
+	"FAKE_APP_CONTRIBUTOR=1 GH_WITH_ENV_TOKEN_OWN_USER=1 GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1|refusing to commit as your own GitHub user"; do
 	: >"$env_log"
 	read -r -a refused_commit_env <<<"${refused_commit%%|*}"
 	if env PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" "${refused_commit_env[@]}" \
@@ -571,9 +576,13 @@ assert_push_refused "push would run as 'fixture-app\[bot\]', expected 'other-bot
 assert_push_refused 'GitHub App authentication failed' \
 	CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" FAKE_APP_IDENTITY_FAIL=1
 assert_push_refused 'refusing to push as your own GitHub user' \
-	CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" FAKE_APP_CONTRIBUTOR=1 GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1
+	CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" FAKE_APP_CONTRIBUTOR=1 GH_WITH_ENV_TOKEN_OWN_USER=1 GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1
 assert_push_refused 'refusing to push as your own GitHub user' \
-	CODEX_SKILLS_ENV_FILE="$tmpdir/app-not-required.env" FAKE_APP_CONTRIBUTOR=1 GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1
+	CODEX_SKILLS_ENV_FILE="$tmpdir/app-not-required.env" FAKE_APP_CONTRIBUTOR=1 GH_WITH_ENV_TOKEN_OWN_USER=1 GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1
+assert_push_refused "needs your Director's approval and GH_WITH_ENV_TOKEN_OWN_USER=1" \
+	CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" FAKE_APP_CONTRIBUTOR=1
+assert_push_refused "needs your Director's approval and GH_WITH_ENV_TOKEN_OWN_USER=1" \
+	CODEX_SKILLS_ENV_FILE="$tmpdir/app-own-user.env" FAKE_APP_CONTRIBUTOR=1
 assert_push_refused 'invalid response' \
 	CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" FAKE_APP_LOGIN=
 assert_push_refused "push would run as 'human-user', expected 'fixture-automation'" \
