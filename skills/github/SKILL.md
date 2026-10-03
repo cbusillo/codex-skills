@@ -763,8 +763,8 @@ and say why.
   explicit `--head BRANCH`.
 - **Commits and pushes** by Code or spawned agents: `scripts/git-commit-as-bot`
   and `scripts/git-push-as-bot`.
-- **Issue bodies and close comments**: `scripts/gh-issue`; from the repository
-  root, `github/scripts/gh-issue create "Title" --repo OWNER/REPO < body.md`.
+- **Issue bodies and close comments**: `scripts/gh-issue`; from the catalog
+  root (`skills/`), `github/scripts/gh-issue create "Title" --repo OWNER/REPO < body.md`.
 - **Comments and reviews**: `scripts/gh-pr.py comment --body-file` or
   `scripts/gh-comment` for timeline comments;
   `scripts/gh-with-env-token pr review --body-file` for review feedback.
@@ -887,8 +887,8 @@ Before a merge:
   handoff first; a bot response never proves Director acknowledgement.
 
 When the user does not name a method, say you are using a normal merge commit
-and run `scripts/gh-pr.py merge <pr> --method merge`. Use `--squash` or
-`--rebase` only when the user asks, repo policy requires it, or you ask and get
+and run `scripts/gh-pr.py merge <pr> --method merge`. Use `--method squash`
+or `--method rebase` only when the user asks, repo policy requires it, or you ask and get
 confirmation.
 
 For stacked PRs, when repo metadata or task context says Launchplane owns the

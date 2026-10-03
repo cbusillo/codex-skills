@@ -92,6 +92,8 @@ documentation and policies:
 Always prioritize the repository's own security documentation over the generic
 focus areas.
 
+### Python packages and CLIs
+
 - PyPI trusted publishing, release tags, workflow permissions, token handling,
   dependency pinning/locking, archive contents, and live-credential tests.
 - Public API clients should not require real credentials for normal tests.

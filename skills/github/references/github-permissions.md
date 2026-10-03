@@ -7,7 +7,7 @@ role, safe probe, degraded behavior, and default-profile impact. It includes
 maintained helpers and the explicitly supported families reached through the
 API/token wrappers; an arbitrary passthrough endpoint is not automatically covered.
 
-Run from the catalog root:
+Run from the repository root:
 
 ```bash
 uv run skills/github/scripts/github-capabilities.py profile

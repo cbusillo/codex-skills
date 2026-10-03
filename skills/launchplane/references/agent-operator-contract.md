@@ -35,10 +35,10 @@ workflow bindings are unchanged. Existing admin-surface consumers remain covered
 their helper and contract tests. The bearer-identity contract for
 `reconcile_managed_authz_policy` remains unchanged.
 
-Run the offline conformance gate with:
+Run the offline conformance gate from the `launchplane` skill directory with:
 
 ```bash
-uv run launchplane/scripts/check-agent-operator-contract.py
+uv run scripts/check-agent-operator-contract.py
 ```
 
 The validator recomputes the digest from `normalization_version` and `contract`
@@ -55,7 +55,7 @@ upstream.
 Run the advisory remote comparison locally with:
 
 ```bash
-uv run launchplane/scripts/check-agent-operator-contract-freshness.py compare
+uv run scripts/check-agent-operator-contract-freshness.py compare
 ```
 
 The separate `Launchplane Contract Freshness` workflow runs the same comparison
@@ -75,16 +75,17 @@ creates a drift issue. The workflow is advisory maintenance evidence only: it
 does not grant runtime authority or change helper permissions, and it must not
 block ordinary Launchplane helper reads.
 
-The merge-train policy import, repository inventory, product expected configuration,
-generic-web deploy-recovery, Odoo addon-settings, Client, Dokploy compose target,
-production backup authority, product path-check, product secret-binding metadata, and product promotion status and dry-run commands, plus the private Client-review reader,
+The commands listed under `LOCAL_EXTENSION_ROUTES` in
+`scripts/launchplane_contract.py` (named in the SKILL.md Agent/Admin Contract
+section), plus the private Client-review reader,
 are currently bounded local extensions because they are consumed by local helpers but are not present
 in the upstream public operation projection. The validator keeps these explicit
 and fails if an upstream artifact later projects the same routes, forcing a
 deliberate migration instead of silently maintaining two sources of truth.
 
-The helper also tracks two internal routes outside the projected command count:
-the read-before-write `GET /v1/work-graph/merge-train/policy-targets` and the
-read-back `GET /v1/dokploy-targets/inspect`. Contract validation checks that
+The helper also tracks three internal routes outside the projected command count:
+the read-before-write `GET /v1/work-graph/merge-train/policy-targets`, the
+read-back `GET /v1/dokploy-targets/inspect`, and the read-back
+`GET /v1/private-health-endpoints/records/{endpoint_key}`. Contract validation checks that
 these routes remain absent from the
 upstream projection so any future adoption requires an explicit migration.

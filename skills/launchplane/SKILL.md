@@ -58,6 +58,9 @@ resources:
   - path: references/launchplane-operator.local.example.json
     kind: reference
     description: Public-safe example for private admin helper configuration.
+  - path: scripts/launchplane-train-drive.py
+    kind: script
+    description: Drives one labeled pull request through the merge train to a landed, failed, needs_owner, or error outcome.
 commands:
   - name: launchplane-owner-review
     source: skill

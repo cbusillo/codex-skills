@@ -22,7 +22,7 @@ Choose the interpreter from the helper's extension and shebang before running
 - `scripts/gh-issue`, `scripts/gh-comment`, and
   `scripts/gh-with-env-token` are executable shell helpers even though they do
   not use a `.sh` suffix. Run them directly from this skill directory, or from
-  the repo root as `github/scripts/<name>`. Do not run them with `python3` or
+  the catalog root (`skills/`) as `github/scripts/<name>`. Do not run them with `python3` or
   `uv run`.
 - `.sh` helpers are shell scripts. Run them directly or with `bash`.
 - `.py` helpers that include PEP 723 inline metadata (`# /// script`) should be
@@ -422,8 +422,9 @@ competitor's record.
   the issue with reconciliation evidence for unknown write outcomes. Supports
   `--title` (flag), `--body`, `--plan-status`, `--focus`, and `--finish-line`.
 - `update-section <issue> <section>`: Patch a single markdown section.
-- `link <issue> <rel> <target>`: Manage native `blocked-by`, `blocks`, or
-  `subissue` relationships.
+- `link|unlink <issue> <rel> <target>`: Manage native `blocked-by`, `blocks`,
+  or `subissue` relationships. `related` edits a body note instead and follows
+  body-ownership rules.
 - `close <issue>`: Close a durable plan with a fail-closed relationship
   preflight and an issue-state commit point. Before any mutation, the helper
   pages native `blocked_by` dependencies and sub-issues; `--reason completed`

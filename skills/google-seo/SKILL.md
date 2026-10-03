@@ -389,7 +389,9 @@ When the user has multiple confusing Google Cloud projects:
 1. Prefer `scripts/google-cloud-inventory.sh` when `gcloud` is installed
    and authenticated. Use browser access for UI-only OAuth consent/client setup.
 2. Inventory projects, billing state, enabled APIs, OAuth clients, service
-   accounts, API keys, and recent activity.
+   accounts, API keys, and recent activity. The script covers billing, enabled
+   APIs, API keys, service accounts, and IAM binding counts; check OAuth clients
+   and recent activity in the console.
 3. Classify projects as active, likely unused, unknown, or candidate shared SEO
    tooling project.
 4. Do not delete, disable billing, rotate keys, or change IAM without explicit

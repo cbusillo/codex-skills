@@ -2,7 +2,9 @@
 
 Read when using a configured or requested Project, or another local planning
 view. GitHub issues remain the source of truth. Keep view fields limited to
-`Focus`, `Manager`, `Finish Line`, `Roadmap Start`, and `Roadmap Target`.
+`Focus`, `Manager`, and `Finish Line`, which `gh-plan.py project-set` writes.
+`Roadmap Start` and `Roadmap Target` are optional manual Project fields; the
+helper does not set them.
 
 ## Focus States
 
@@ -18,7 +20,7 @@ Use the `Focus` field to indicate the current priority of a plan:
 
 The `Manager` field should hold the responsible human or reviewer. Resolve this from:
 
-- `~/.code/github-planning.json` (`workflow.default_manager` or `workflow.repo_managers`)
+- `github-planning.json` under the runtime home (`$CODE_HOME`, then `$CODEX_HOME`, then `~/.code`, then `~/.codex`) (`workflow.default_manager` or `workflow.repo_managers`)
 - Repository instructions or `AGENTS.md`.
 
 When the optional `people` skill and `.local/people.yaml` are available,
@@ -36,7 +38,8 @@ changes should be verified before routing or state changes depend on them.
 
 ## Roadmap Dates
 
-Roadmap dates are planning anchors, not hard commitments.
+Roadmap dates are planning anchors, not hard commitments. When a Project has
+these manual fields, set them by hand:
 
 - **Now**: Set `Roadmap Start` to today (or the actual start date); set
   `Roadmap Target` to a realistic finish window.

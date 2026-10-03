@@ -1,7 +1,8 @@
 # GitHub Plan Config Schema
 
 Planning config lives in `.github/github.json` under the `planning` key for
-repo-local policy, and in `~/.code/github-planning.json` for workspace defaults.
+repo-local policy, and in `github-planning.json` under the runtime home (`$CODE_HOME`, then `$CODEX_HOME`, then `~/.code`, then `~/.codex`) for workspace
+defaults.
 Repo-local values override workspace defaults.
 
 ```json
@@ -164,8 +165,8 @@ Repo-local values override workspace defaults.
 
 ## Label Taxonomy
 
-Planning labels are the only labels created by `gh-plan.py ensure-labels` by
-default. They describe durable issue-backed plans, not transient PR execution
+Planning labels and the `audit` label are the only labels created by
+`gh-plan.py ensure-labels` by default. They describe durable issue-backed plans, not transient PR execution
 state.
 
 | Label          | Purpose                                                                                                                                                        |
@@ -176,6 +177,7 @@ state.
 | `plan:waiting` | Durable plan is parked on a decision, external event, or other non-issue condition. Do not use for ordinary PR QA, preview review, deploy, or merge readiness. |
 | `plan:stale`   | Plan needs review before it should guide work.                                                                                                                 |
 | `plan:done`    | Plan is completed or superseded.                                                                                                                               |
+| `audit`        | Question or completed work for the weekly direction audit.                                                                                                     |
 
 Workflow labels are repo-local opt-ins. Agents may recognize these names, but
 helpers should not create them unless repo metadata documents them.
@@ -205,7 +207,8 @@ Label audit checklist:
   `preview-ready`, list it in `deployLabels` or repo workflow docs. If it uses
   `ready-to-merge`, configure it as the merge-train ready label or document the
   equivalent local merge convention.
-- Run `../github/scripts/gh-plan.py ensure-labels --repo OWNER/REPO` only for
+- Run `uv run scripts/gh-plan.py --repo OWNER/REPO ensure-labels` from the
+  `github` skill directory only for
   durable planning labels. Do not use it to invent PR workflow labels.
 
 ## Workflow Metadata
@@ -217,8 +220,11 @@ closeout helpers summarize the broader repo workflow metadata.
 Common top-level keys:
 
 - `defaultBranch`: repo default branch expected by agents.
+- `projectType`: the kind of repository, shown in snapshot summaries.
 - `docs`: important repo documentation and routing references.
 - `qualityGate`: local and CI commands that establish readiness for this repo.
+  `qualityGate.docsRequiredWhen` lists changes that need a docs update; the
+  `repo-readiness` skill checks it.
 - `importantWorkflows`: GitHub Actions workflows agents should watch closely.
 - `qaLabels`: repo-local QA handoff labels such as `awaiting-qa`. These are for
   concrete implementation or bug work waiting on manual verification, not for
@@ -299,6 +305,9 @@ Common top-level keys:
   that must be migrated to the durable surface before deletion.
 - `metadataFreshness`: events that should trigger metadata review.
 
+A local `.github/github.override.json`, when present, is deep-merged over
+`.github/github.json` by `scripts/github-repo-snapshot.sh`.
+
 Rules:
 
 - Keep labels fixed and small. Do not generate dynamic labels from arbitrary
@@ -341,5 +350,5 @@ Rules:
 - Keep recovery-critical handoff content in the owning GitHub issue or PR
   comment for GitHub-backed work. Local files matching configured temporary
   handoff globs are scratch unless intentionally committed as part of a PR.
-- Live manager routing belongs in `~/.code/github-planning.json`; keep this
+- Live manager routing belongs in the workspace `github-planning.json`; keep this
   reference generic so ownership changes do not require doc edits.
