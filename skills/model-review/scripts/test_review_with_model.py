@@ -442,6 +442,19 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertEqual((code, result["providers"][0]["state"]), (1, "not ready"))
         self.assertEqual(result["providers"][0]["model_source"], "unknown")
 
+    def test_openai_reports_the_model_from_a_cli_reroute_notice(self) -> None:
+        self.install("codex", FAKE_CODEX)
+        events = [
+            {"type": "item.completed", "item": {"type": "error",
+                                                 "message": "model rerouted: requested -> replacement (Safety)"}},
+            {"type": "item.completed", "item": {"type": "command_execution", "status": "completed",
+                                                 "exit_code": 0}},
+            {"type": "turn.completed", "usage": {}},
+        ]
+        code, result = self.review("openai", FAKE_CODEX_EVENTS="\n".join(map(json.dumps, events)), FAKE_ANSWER="none")
+        self.assertEqual((code, result["model"], result["model_source"]),
+                         (0, "replacement", "reported by the CLI (rerouted)"))
+
     def test_a_planted_finding_arrives_once_inside_a_real_review_and_only_when_the_owner_set_it(self) -> None:
         self.install("codex", FAKE_CODEX)
         marker = self.home / ".code" / "model-review-fault.md"

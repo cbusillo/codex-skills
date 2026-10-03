@@ -123,6 +123,11 @@ def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scra
     errors = []
     turn_failed = False
     for event in events:
+        item = event.get("item") or {}
+        if event.get("type") == "item.completed" and isinstance(item, dict) and item.get("type") == "error":
+            reroute = re.fullmatch(r"model rerouted: \S+ -> (\S+) \(.+\)", str(item.get("message")))
+            if reroute:
+                metadata = {"model": reroute.group(1), "model_source": "reported by the CLI (rerouted)"}
         if event.get("type") == "error":
             errors.append(str(event.get("message") or "codex reported an error"))
         elif event.get("type") == "turn.failed":

@@ -6,13 +6,13 @@ metadata:
 resources:
   - path: scripts/review_with_model.py
     kind: script
-    description: Runs one provider's model read-only against a repository, reports the model used, and fails loudly when the reviewer could not read or returned nothing.
+    description: Runs one provider's model read-only against a repository, reports model provenance, and fails loudly when the reviewer could not read or returned nothing.
 commands:
   - name: model-review-run
     source: skill
     resource_path: scripts/review_with_model.py
     example_argv: ["uv", "run", "scripts/review_with_model.py", "run", "--provider", "google", "--repo", ".", "--prompt-file", "<file>"]
-    purpose: Asks one provider's model for a read-only review and returns JSON with the model used.
+    purpose: Asks one provider's model for a read-only review and returns JSON with model provenance.
   - name: model-review-check
     source: skill
     resource_path: scripts/review_with_model.py
