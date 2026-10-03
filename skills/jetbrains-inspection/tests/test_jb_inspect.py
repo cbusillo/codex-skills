@@ -1705,7 +1705,10 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
     def test_timeout_kills_descendants_that_inherit_output_pipes(self):
         temporary, root = self.make_git_worktree()
         self.addCleanup(temporary.cleanup)
-        descendant_ready = root.parent / "preparation-descendant-ready"
+        # Keep the witness unique to this fixture and remove it with the fixture.
+        # A shared parent marker can outlive an earlier run and report readiness
+        # before this descendant exists, racing SIGKILL against child creation.
+        descendant_ready = root / "preparation-descendant-ready"
         preparation_processes = []
         preparation_started = None
         preparation_witness_observed = False
