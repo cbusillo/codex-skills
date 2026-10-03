@@ -7824,7 +7824,7 @@ class AgentInspectContractTest(unittest.TestCase):
             self.assertNotRegex(advice.lower(), r"rerun|retry once|start a new inspection")
 
     def test_tool_caused_interruption_does_not_invite_assessment(self):
-        for reason in ("inspection_api_timeout", "run_changed", "inspection_still_running"):
+        for reason in ("inspection_api_timeout", "run_changed", "inspection_still_running", "timeout", "stale_results"):
             with self.subTest(reason=reason):
                 _, payload = self.emit_agent_payload({
                     "status": "error", "error_reason": reason,
@@ -7834,6 +7834,20 @@ class AgentInspectContractTest(unittest.TestCase):
                 self.assertFalse(result["retry_policy"]["retry"])
                 for advice in (result["next_action"], result["agent_report"]):
                     self.assertNotRegex(advice.lower(), r"rerun|retry once|start a new inspection")
+
+    def test_helper_specific_advice_overrides_plugin_action(self):
+        _, payload = self.emit_agent_payload({
+            "status": "clean", "clean": True, "total_problems": 0,
+            "scope": "whole_project",
+            "inspection_verdict": "GREEN",
+            "inspection_verdict_reason": "clean_confirmed",
+            "inspection_verdict_next_action": "No action required.",
+            "inspection_execution_proof_version": 1,
+        })
+        result = payload["agent_result"]
+        self.assertEqual(result["verdict"], "UNKNOWN")
+        self.assertFalse(result["retry_policy"]["retry"])
+        self.assertIn("Install a plugin", result["next_action"])
 
     def test_plugin_terminal_advice_follows_helper_contract(self):
         case = next(case for case in attribution_cases() if case["name"] == "plugin-http-500")

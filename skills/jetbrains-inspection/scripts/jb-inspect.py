@@ -7039,9 +7039,13 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
         next_action = UNKNOWN_RETRY_ACTION if retry_policy["retry"] else UNKNOWN_TERMINAL_ACTION
         payload["verdict_next_action"] = next_action
     if verdict == "UNKNOWN" and not retry_policy["retry"] and payload.get("retry_exhausted") is not True:
-        if payload.get("inspection_verdict_next_action") or reason in {
-            "inspection_api_timeout", "run_changed", "inspection_still_running",
-        }:
+        plugin_action_used = bool(payload.get("inspection_verdict_next_action")) and (
+            next_action == payload["inspection_verdict_next_action"]
+        )
+        reason_bucket = outcome_bucket({
+            "verdict": "UNKNOWN", "capture_diagnostic": payload.get("capture_diagnostic"),
+        }, reason)
+        if plugin_action_used or retry_policy_for("UNKNOWN", reason_bucket, reason)["retry"]:
             next_action = UNKNOWN_TERMINAL_ACTION
             payload["verdict_next_action"] = next_action
     next_action = guidance_for_command(next_action, payload.get("command"))
