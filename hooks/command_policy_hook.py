@@ -23,9 +23,10 @@ stop every shell command on the host.
 Policies match an argv prefix, so the hook first removes what an agent commonly
 puts in front of a tool: leading assignments, `command`/`exec`/`time`/`nohup`,
 `env` with its flags and assignments, `uv run` with its flags, a directory in
-front of the tool name, `gh-with-env-token`, and one `sh`/`bash`/`zsh -c '...'` wrapper. This is a
+front of the tool name, `gh-with-env-token`, and `sh`/`bash`/`zsh -c '...'` wrappers. This is a
 guardrail for habits, not a security boundary. Forms that need real option
-parsing to unwrap, such as `xargs` and `sudo`, are deliberately left alone.
+parsing to unwrap, such as `xargs` and `sudo`, are deliberately left alone,
+though a shell script behind one is still read.
 
 Policies match commands, not data (#671, #1014). A heredoc body is data unless
 a shell or ssh reads it; command substitutions in an unquoted-delimiter body,
@@ -169,6 +170,9 @@ class ShellScript:
             elif character == "#" and (self.index == 0 or shell[self.index - 1] in " \t\r\n;&|()"):
                 closing = shell.find("\n", self.index)
                 self.emit(len(shell) if closing < 0 else closing)
+            elif shell.startswith("((", self.index) and (self.index == 0 or shell[self.index - 1] in " \t\r\n;&|"):
+                self.stack.append(("((", None))  # An arithmetic command, as in `$((`.
+                self.emit(self.index + 2)
             elif character == "(":
                 self.stack.append(("(", None))
                 self.emit(self.index + 1)
@@ -241,33 +245,35 @@ class ShellScript:
 
 
 def reads_script_from_input(argv: list[str]) -> bool:
-    """A shell without `-c`, or ssh, may run its stdin or a file, so heredoc text may run."""
+    """A shell without `-c`, even behind a wrapper such as `sudo`, or ssh may run heredoc text."""
     if argv[0] == "ssh":
         return True
-    return argv[0] in SHELLS and not any(SHELL_COMMAND_FLAG.match(token) for token in argv[1:])
+    shells = [index for index, token in enumerate(argv) if Path(token).name in SHELLS]
+    return bool(shells) and not any(SHELL_COMMAND_FLAG.match(token) for token in argv[shells[0] + 1:])
 
 
-def simple_commands(shell: str, nested: bool = False) -> list[list[str]]:
+def simple_commands(shell: str) -> list[list[str]]:
     """Return the argv of each simple command a shell line runs, per the module docstring."""
     script = ShellScript(shell)
     unwrapped: list[list[str]] = []
     for argv in shell_commands(script.text):
-        unwrapped.extend(unwrap(argv, nested))
-    unwrapped.extend(nested_commands(script.substitutions, nested))
+        unwrapped.extend(unwrap(argv))
+    unwrapped.extend(nested_commands(script.substitutions))
     shell_reads_bodies = any(reads_script_from_input(argv) for argv in unwrapped)
     for body, expands in script.bodies:
         if shell_reads_bodies:
-            unwrapped.extend(nested_commands([body], nested))
+            unwrapped.extend(nested_commands([body]))
         elif expands:
-            unwrapped.extend(nested_commands(ShellScript(body, expanding=True).substitutions, nested))
+            unwrapped.extend(nested_commands(ShellScript(body, expanding=True).substitutions))
     return unwrapped
 
 
-def nested_commands(sources: list[str], nested: bool) -> list[list[str]]:
+def nested_commands(sources: list[str]) -> list[list[str]]:
+    """Each nested script is shorter than the text holding it, so recursion ends."""
     commands: list[list[str]] = []
     for source in sources:
         try:
-            commands.extend(simple_commands(source, nested))
+            commands.extend(simple_commands(source))
         except ValueError:
             continue  # An unreadable part must not let the rest of the line through.
     return commands
@@ -282,7 +288,7 @@ def drop_flags(argv: list[str], value_flags: set[str] | None = None) -> list[str
     return argv
 
 
-def unwrap(argv: list[str], nested: bool) -> list[list[str]]:
+def unwrap(argv: list[str]) -> list[list[str]]:
     """Return the command or commands an argv really runs, per the module docstring."""
     while argv:
         head = Path(argv[0]).name
@@ -301,28 +307,28 @@ def unwrap(argv: list[str], nested: bool) -> list[list[str]]:
             return [["gh-with-env-token", *arguments]]
         elif head == "eval":
             # Its quoted arguments are the command, not data.
-            return simple_commands(" ".join(argv[1:]), nested)
+            return simple_commands(" ".join(argv[1:]))
         else:
             break
     if not argv:
         return []
     argv = [Path(argv[0]).name, *argv[1:]]
-    if argv[0] in SHELLS and not nested:
+    if argv[0] in SHELLS:
         for index, token in enumerate(argv[1:-1], start=1):
             if SHELL_COMMAND_FLAG.match(token):  # -c, -lc, -ec ...
-                return simple_commands(argv[index + 1], nested=True)
+                return nested_commands([argv[index + 1]])
     commands = [argv]
     shells = [index for index, token in enumerate(argv[1:-1], start=1) if Path(token).name in SHELLS]
-    if shells and not nested:
+    if shells:
         # A wrapper left in place (`sudo sh -c`, `xargs bash -c`) still runs the script.
         flag = next((index for index in range(shells[0] + 1, len(argv) - 1) if SHELL_COMMAND_FLAG.match(argv[index])), None)
         if flag is not None:
-            commands += nested_commands([argv[flag + 1]], nested=True)
+            commands += nested_commands([argv[flag + 1]])
     if argv[0] == "ssh":
         # The remote command runs too; the host and option values read as harmless words.
-        commands += nested_commands([" ".join(argv[1:])], nested)
+        commands += nested_commands([" ".join(argv[1:])])
     if reads_script_from_input(argv) and "<<<" in argv[:-1]:
-        commands += nested_commands([argv[argv.index("<<<") + 1]], nested)
+        commands += nested_commands([argv[argv.index("<<<") + 1]])
     return commands
 
 
@@ -410,7 +416,7 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
     for argv in commands:
         while argv and argv[0] in TRANSPARENT | {"builtin"}:
             argv = argv[1:]
-        normalized = unwrap(argv, nested=True)
+        normalized = unwrap(argv)
         for index, token in enumerate(argv):
             if token == "." and not (
                 index > 0 and argv[index - 1] == "--control-plane-root"
