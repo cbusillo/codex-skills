@@ -865,6 +865,10 @@ def _project_key_safety_summary(source: dict[str, Any]) -> dict[str, object]:
         )
     if "findings" in source:
         projected["findings"] = _project_key_safety_findings(source["findings"])
+    # Findings Launchplane reports without refusing, such as a shared production
+    # key bound before sharing reasons existed.
+    if source.get("reported"):
+        projected["reported"] = _project_key_safety_findings(source["reported"])
     return projected
 
 
@@ -1064,6 +1068,7 @@ def _project_runtime_key_safety(value: object) -> dict[str, object]:
         "target",
         "checked_binding_keys",
         "findings",
+        "reported",
     }
     if any(str(key) not in allowed for key in source):
         raise LaunchplaneSafetyError("unsafe_response_shape")
@@ -1094,6 +1099,7 @@ def _project_secret_results(value: object) -> list[dict[str, object]]:
         "instance",
         "secret_id",
         "secret_class",
+        "sharing_reason",
     }
     for item in value:
         source = _require_dict(item)
@@ -1105,6 +1111,8 @@ def _project_secret_results(value: object) -> list[dict[str, object]]:
                 result[key] = public_identifier(source[key])
         if "secret_class" in source:
             result["secret_class"] = public_code(source["secret_class"], default="unknown")
+        if source.get("sharing_reason") is not None:
+            result["sharing_reason"] = _project_sharing_reason(source["sharing_reason"])
         projected.append(result)
     return projected
 
@@ -2058,6 +2066,16 @@ INTEGRATION_ALLOWANCE_FIELDS = {
     "recorded_at",
 }
 INTEGRATION_ALLOWANCE_KINDS = {"dev_store", "read_only_source", "pre_live"}
+# Why a production integration key may sit on a non-production lane: the
+# allowance kinds plus a key the site's stable lanes share on purpose.
+SECRET_SHARING_REASON_KINDS = INTEGRATION_ALLOWANCE_KINDS | {"site_shared"}
+SECRET_SHARING_REASON_FIELDS = {"kind", "reason", "evidence", "recorded_by", "recorded_at"}
+LANE_INTEGRATION_KEY_FIELDS = {"binding_key", "declared_secret_class", "sharing_reason"}
+# A long run of letters and digits in person-written text, such as a pasted API
+# key (rk_live_..., a hex token): redacted before a sharing reason is shown.
+CREDENTIAL_LIKE_WORD_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*[0-9])(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{20,}"
+)
 INTEGRATION_ALLOWANCES_PLAN_FIELDS = {
     "status",
     "mode",
@@ -2083,6 +2101,7 @@ INTEGRATION_ALLOWANCES_READ_FIELDS = {
     "instance",
     "environment_class",
     "allowances",
+    "integration_keys",
     "record_sha256",
 }
 INTEGRATION_ALLOWANCES_PAYLOAD_FIELDS = {
@@ -2210,6 +2229,51 @@ def _project_integration_allowance(value: object) -> dict[str, object]:
     return projected
 
 
+def _redact_credential_like_words(text: str) -> str:
+    return CREDENTIAL_LIKE_WORD_RE.sub("[redacted]", text)
+
+
+def _project_sharing_reason(value: object) -> dict[str, object]:
+    """Why a key is shared, as recorded by a person; metadata, never the value."""
+    source = _require_dict(value)
+    if any(str(key) not in SECRET_SHARING_REASON_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    kind = source.get("kind")
+    if kind not in SECRET_SHARING_REASON_KINDS:
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "kind": kind,
+        "reason": _redact_credential_like_words(public_summary_string(source.get("reason"))),
+        "evidence": _redact_credential_like_words(public_summary_string(source.get("evidence"))),
+    }
+    if source.get("recorded_by"):
+        projected["recorded_by"] = public_identifier(source.get("recorded_by"))
+    if source.get("recorded_at"):
+        projected["recorded_at"] = public_summary_string(source.get("recorded_at"), max_length=64)
+    return projected
+
+
+def _project_lane_integration_keys(value: object) -> list[dict[str, object]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: list[dict[str, object]] = []
+    for item in value:
+        source = _require_dict(item)
+        if any(str(key) not in LANE_INTEGRATION_KEY_FIELDS for key in source):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        key: dict[str, object] = {"binding_key": public_identifier(source.get("binding_key"))}
+        # Projected as secret_class: the public-safety shape check refuses other
+        # key names containing "secret".
+        if source.get("declared_secret_class"):
+            key["secret_class"] = public_code(source.get("declared_secret_class"))
+        if source.get("sharing_reason") is not None:
+            key["sharing_reason"] = _project_sharing_reason(source.get("sharing_reason"))
+        projected.append(key)
+    return projected
+
+
 def _project_integration_allowance_list(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list):
         raise LaunchplaneSafetyError("invalid_response")
@@ -2274,6 +2338,7 @@ def _project_integration_allowances_read(result: object) -> dict[str, object]:
         "instance": public_identifier(source.get("instance")),
         "environment_class": public_code(source.get("environment_class")),
         "allowances": _project_integration_allowance_list(source.get("allowances")),
+        "integration_keys": _project_lane_integration_keys(source.get("integration_keys")),
         "record_sha256": _optional_sha256(source.get("record_sha256")),
     }
     assert_public_safe_shape(projected)
