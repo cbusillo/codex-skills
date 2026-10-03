@@ -3043,7 +3043,7 @@ def _project_target_replacement_result(
 
 
 def _project_target_replacement_operation(provider_payload: dict[str, Any]) -> dict[str, object]:
-    """One Odoo target-replacement operation's progress and error code. Error messages,
+    """One Odoo target-replacement operation's progress and bounded failure details. Error messages,
     settings, URLs, provider target names and evidence payloads are dropped and listed by
     path; a secret-looking value in a kept field fails the read."""
     operation = _require_dict(provider_payload.get("operation"))
@@ -3075,6 +3075,10 @@ def _project_target_replacement_operation(provider_payload: dict[str, Any]) -> d
             "operation.request.artifact_id", public_identifier, request.get("artifact_id")
         ),
         "error_code": field("error_code", _public_dotted_code),
+        "error_description": field("error_description", public_summary_string),
+        "error_detail_keys": _project_env_key_names(
+            operation.get("error_detail_keys"), path="operation.error_detail_keys", drops=drops
+        ),
     }
     for name in TARGET_REPLACEMENT_OPERATION_TIMESTAMPS:
         projected_operation[name] = field(

@@ -3522,6 +3522,58 @@ def test_target_replacement_operation_read_keeps_progress_and_drops_error_text()
         assert private not in rendered, private
 
 
+def test_target_replacement_operation_read_projects_failure_details() -> None:
+    response = _target_replacement_operation_response()
+    source = response["operation"]
+    source.update(
+        error_code="deploy_blocked.compose_keys_missing",
+        error_description="The compose template requires settings the target does not provide.",
+        error_detail_keys=["EXAMPLE_SETTING", "EXAMPLE_FLAG"],
+    )
+    # operations.read returns a structured view with no request or embedded result.
+    source.pop("request")
+    source.pop("result")
+    source["free_text_omitted"] = True
+    response["result"] = None
+    argv = ["target-replacement-operation-read", "--operation-id", source["operation_id"]]
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    operation = payload["result"]["operation"]
+    for name in ("error_code", "error_description", "error_detail_keys"):
+        assert operation[name] == source[name]
+        assert f"operation.{name}" not in payload["result"]["dropped_field_paths"]
+    assert "error_message" not in operation
+
+
+def test_target_replacement_operation_read_bounds_failure_details() -> None:
+    response = _target_replacement_operation_response()
+    source = response["operation"]
+    source.update(
+        error_description="x" * 501,
+        error_detail_keys=["EXAMPLE_SETTING", "not a key", {"unexpected": "detail"}],
+    )
+    argv = ["target-replacement-operation-read", "--operation-id", source["operation_id"]]
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    operation = payload["result"]["operation"]
+    assert operation["error_description"] == ""
+    assert operation["error_detail_keys"] == ["EXAMPLE_SETTING"]
+    assert "operation.error_description" in payload["result"]["dropped_field_paths"]
+    assert "operation.error_detail_keys[]" in payload["result"]["dropped_field_paths"]
+    for value in (None, [], "not a list", {"unexpected": "detail"}):
+        source["error_detail_keys"] = value
+        status, payload, _calls = _run_product_read(argv, response)
+        assert status == 0
+        assert payload["result"]["operation"]["error_detail_keys"] == []
+    source["error_detail_keys"] = [f"EXAMPLE_{i}" for i in range(300)]
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    assert payload["result"]["operation"]["error_detail_keys"] == source["error_detail_keys"][
+        :write_action.TARGET_REPLACEMENT_PLAN_MAX_LIST_ITEMS
+    ]
+    assert "operation.error_detail_keys[]" in payload["result"]["dropped_field_paths"]
+
+
 def test_target_replacement_operation_read_tolerates_a_pending_operation() -> None:
     response = _target_replacement_operation_response()
     operation = response["operation"]
@@ -3533,6 +3585,8 @@ def test_target_replacement_operation_read_tolerates_a_pending_operation() -> No
     assert status == 0
     assert payload["result"]["result"] is None
     assert payload["result"]["operation"]["status"] == "pending"
+    assert payload["result"]["operation"]["error_description"] == ""
+    assert payload["result"]["operation"]["error_detail_keys"] == []
     assert "operation.error_message" not in payload["result"]["dropped_field_paths"]
 
 
@@ -3552,6 +3606,9 @@ def test_target_replacement_operation_read_refuses_bad_ids_and_unsafe_values() -
         lambda body: body.update(extra="x"),
         lambda body: body["operation"].update(deployment_record_id="Bearer abcdefghijklmnop"),
         lambda body: body["operation"].update(product=None),
+        lambda body: body["operation"].update(error_description="Bearer abcdefghijklmnop"),
+        lambda body: body["operation"].update(error_detail_keys=["ghp_planted_example"]),
+        lambda body: body["operation"].update(error_detail_keys=[{"token": "planted"}]),
     ):
         mutated = _target_replacement_operation_response()
         mutate(mutated)
@@ -6051,6 +6108,8 @@ def main() -> int:
         test_reconcile_requests_read_keeps_the_decision_and_drops_the_rest,
         test_reconcile_requests_read_keeps_testing_operation_ids,
         test_target_replacement_operation_read_keeps_progress_and_drops_error_text,
+        test_target_replacement_operation_read_projects_failure_details,
+        test_target_replacement_operation_read_bounds_failure_details,
         test_target_replacement_operation_read_tolerates_a_pending_operation,
         test_target_replacement_operation_read_refuses_bad_ids_and_unsafe_values,
         test_target_replacement_plan_read_keeps_key_names_and_drops_text,
