@@ -158,6 +158,72 @@ class LedgerTests(unittest.TestCase):
         self.ledger.write_text(json.dumps([self.entry]))
         os.utime(self.transcript, (1000, 1000))
 
+    def test_claude_local_exit_tail_allows_exited_tab_close(self):
+        self.entry["harness"] = "claude"
+        records = [
+            claude("Safe to exit: yes"),
+            {
+                "type": "user",
+                "isMeta": True,
+                "message": {
+                    "content": "<local-command-caveat>local command</local-command-caveat>"
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "content": "<command-name>/exit</command-name>\n<command-message>exit</command-message>\n<command-args></command-args>"
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "content": "<local-command-stdout>(no content)</local-command-stdout>"
+                },
+            },
+        ]
+        for record in records:
+            record["sessionId"] = self.entry["session_id"]
+        self.write(records)
+        entry = session_record.load_ledger(self.ledger)[0]
+        terminal = SimpleNamespace(
+            session_id="term1",
+            async_get_variable=AsyncMock(return_value="ttys001"),
+            async_close=AsyncMock(),
+        )
+        app = SimpleNamespace(
+            terminal_windows=[
+                SimpleNamespace(tabs=[SimpleNamespace(sessions=[terminal])])
+            ]
+        )
+        with patch.object(
+            close_ttys, "inventory", return_value=[(20, "ttys001", "/bin/zsh")]
+        ):
+            asyncio.run(close_ttys.close(app, entry, True, True, True))
+        terminal.async_close.assert_awaited_once_with(force=False)
+        for kind in ("/compact", "/clear"):
+            changed = records.copy()
+            changed[-2] = {
+                "type": "user",
+                "message": {"content": f"<command-name>{kind}</command-name>"},
+            }
+            self.assertFalse(
+                session_record.summarize(changed, "claude")["safe_verdict"]
+            )
+        self.assertFalse(
+            session_record.summarize(
+                records + [{"type": "user", "message": {"content": "continue"}}],
+                "claude",
+            )["safe_verdict"]
+        )
+
+    def test_bad_watched_transcript_does_not_hide_healthy_session(self):
+        bad = {**self.entry, "session_id": "bad", "transcript": "missing.jsonl"}
+        self.ledger.write_text(json.dumps([bad, self.entry]))
+        notices = codex_idle_watch.poll(self.ledger, {}, 90, 1200)
+        self.assertIn("error", notices[0])
+        self.assertEqual(notices[1]["turn_end"], "task_complete")
+
     def test_relative_path_and_duplicate_identity(self):
         self.assertEqual(
             session_record.load_ledger(self.ledger)[0]["transcript"],
@@ -176,8 +242,7 @@ class LedgerTests(unittest.TestCase):
         self.transcript.write_text("{unfinished")
         self.assertIn("error", status.snapshot(self.ledger)[0])
         self.assertFalse(finished_map.candidates(self.ledger)[0]["candidate"])
-        with self.assertRaises(ValueError):
-            codex_idle_watch.poll(self.ledger, {}, 90, 1200)
+        self.assertIn("error", codex_idle_watch.poll(self.ledger, {}, 90, 1200)[0])
 
     def test_owned_candidate_and_director_session(self):
         self.assertTrue(finished_map.candidates(self.ledger)[0]["candidate"])
@@ -224,6 +289,7 @@ class LedgerTests(unittest.TestCase):
             [(123, "ttys001", "claude")],
             [(456, "ttys001", "/usr/bin/codex")],
             [(123, "other", "unrelated")],
+            [(456, "ttys001", "/usr/bin/node")],
         ):
             with (
                 patch.object(close_ttys, "inventory", return_value=rows),
@@ -250,7 +316,7 @@ class LedgerTests(unittest.TestCase):
         )
         with (
             patch.object(
-                close_ttys,
+                session_record,
                 "session_status",
                 side_effect=[{"safe_verdict": True}, {"safe_verdict": False}],
             ),
@@ -293,6 +359,15 @@ class QuestionTests(unittest.TestCase):
         result = oq.questions(comments, "owner", {"bot"})
         self.assertEqual([q["status"] for q in result], ["needs_review", "answered"])
         self.assertEqual(result[1]["answers"], ["c"])
+
+    def test_bold_question_heading_is_included(self):
+        comment = {
+            "id": 1,
+            "url": "https://example.test/1",
+            "body": "**Owner question:** proceed?",
+            "author": "bot",
+        }
+        self.assertEqual(len(oq.questions([comment], "owner", {"bot"})), 1)
 
     def test_paged_helper_failure_never_means_no_questions(self):
         with (

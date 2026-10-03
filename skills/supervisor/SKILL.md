@@ -44,7 +44,7 @@ commands:
   - name: supervisor-oq
     source: skill
     resource_path: scripts/oq.py
-    example_argv: ["uv", "run", "scripts/oq.py", "OWNER/REPO#NUMBER", "--owner", "<owner-login>"]
+    example_argv: ["uv", "run", "scripts/oq.py", "OWNER/REPO#NUMBER", "--owner", "<owner-login>", "--decision-author", "<recording-automation-login>"]
     purpose: Gather Director questions from the whole discussion.
   - name: supervisor-finished-map
     source: skill
@@ -120,8 +120,8 @@ Verified on Claude Code as the Supervisor. From there it reaches Codex sessions
 with `codex queue --thread <id> --message "<text>"` and Claude Code sessions in
 terminal tabs with `skills/supervisor/scripts/iterm_tab.py`, using an exact
 `--session-id` from its `list` output. Launch Codex sessions with "keep working
-through compaction"; do not hand them off at a context percentage. Codex as the Supervisor is
-expected to work; claim it only after a run has verified it and the pilot issue
+through compaction"; do not hand them off at a context percentage. Codex as
+the Supervisor is expected to work; claim it only after a run has verified it and the pilot issue
 records that run.
 
 ## The Pattern
@@ -130,7 +130,8 @@ records that run.
    may do, where it stops, and where it asks. Never widen a brief after
    launch. Write it from the decision record, quoting the Director's words,
    never from a PR's wording. When a request names a visual thing, check which
-   one before writing the brief. A session that needs more scope gets a Director question. If the
+   one before writing the brief. A session that needs more scope gets a Director
+   question. If the
    Director says yes, the wider scope goes in a new brief for a fresh
    session; the running session's brief stays as it was.
 2. **Director questions live on the item's issue**, as a comment that starts
@@ -143,8 +144,11 @@ records that run.
 3. **A check about every 23 minutes.** Keep a ledger of session, repository,
    issue, and tab title. Nudge a stalled session with exact facts: the comment,
    the failing check, the time it last moved. Check each session's context
-   size and ask it to compact at its next safe point with Keep instructions
-   naming its brief, issue and current step. Gather the
+   size and use the harness's built-in compaction at its next safe point,
+   with Keep instructions naming its brief, issue and current step. Codex
+   continues through automatic compaction; do not queue a request for it to
+   compact itself. For Claude Code, the Supervisor sends `/compact` with
+   those Keep instructions only at a verified idle prompt. Gather the
    open Director questions. Close finished sessions using the procedure below
    on every check, including sessions that finished their item without needing
    a relaunch.

@@ -18,7 +18,7 @@ def questions(comments, owner, decision_authors):
     results = []
     for i, question in enumerate(comments):
         body = question.get("body", "").strip()
-        if not body.startswith("Owner question:"):
+        if not body.lstrip("*").startswith("Owner question:"):
             continue
         answers = []
         for answer in comments[i + 1 :]:

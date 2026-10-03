@@ -66,6 +66,31 @@ def text_content(content) -> str:
     )
 
 
+def strip_claude_exit_tail(records: list[dict]) -> list[dict]:
+    """Only the complete local /exit sequence may follow a close-out response."""
+    if len(records) < 3 or not all(r.get("type") == "user" for r in records[-3:]):
+        return records
+    caveat, command, output = records[-3:]
+    text = text_content(command.get("message", {}).get("content"))
+    exit_command = re.fullmatch(
+        r"<command-name>/exit</command-name>\s*<command-message>exit</command-message>"
+        r"\s*<command-args></command-args>",
+        text.strip(),
+    )
+    caveat_text = text_content(caveat.get("message", {}).get("content"))
+    output_text = text_content(output.get("message", {}).get("content"))
+    if (
+        caveat.get("isMeta") is True
+        and caveat_text.startswith("<local-command-caveat>")
+        and caveat_text.endswith("</local-command-caveat>")
+        and exit_command
+        and output_text.strip()
+        == "<local-command-stdout>(no content)</local-command-stdout>"
+    ):
+        return records[:-3]
+    return records
+
+
 def summarize(records: list[dict], harness: str) -> dict:
     result = {
         "last_text": "",
@@ -76,6 +101,8 @@ def summarize(records: list[dict], harness: str) -> dict:
         "at_turn_end": False,
         "safe_verdict": False,
     }
+    if harness == "claude":
+        records = strip_claude_exit_tail(records)
     for record in records:
         payload = record.get("payload") or {}
         kind = payload.get("type")

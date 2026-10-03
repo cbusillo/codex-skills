@@ -18,7 +18,13 @@ def poll(ledger: Path, seen: dict, idle_seconds: float, now: float) -> list[dict
     for entry in load_ledger(ledger):
         if entry["harness"] != "codex":
             continue
-        status = session_status(entry)
+        try:
+            status = session_status(entry)
+        except (OSError, ValueError, TypeError) as error:
+            notices.append(
+                {"session_id": entry["session_id"], "error": str(error), "clean": None}
+            )
+            continue
         key = (status["mtime"], status["size"])
         if (
             status["at_turn_end"]

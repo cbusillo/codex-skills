@@ -22,6 +22,9 @@ Exclude the Director's sessions or set `supervisor_owned` to false.
     "harness": "codex",
     "transcript": "sessions/task.jsonl",
     "supervisor_owned": true,
+    "repository": "OWNER/REPO",
+    "issue": 123,
+    "brief": "brief-task.md",
     "iterm_session_id": "exact-iterm-session-id",
     "pid": 12345,
     "tty": "ttys123",
@@ -32,7 +35,8 @@ Exclude the Director's sessions or set `supervisor_owned` to false.
 
 Each native session id is unique. Codex UUIDs have no date-prefix restriction.
 Missing/malformed or changing transcripts are errors, never idle/finished
-proof. Status output includes the latest response and can be private; keep it
+proof. The watcher reports an error for that session and keeps watching the
+other sessions; a malformed ledger itself ends the watch. Status output includes the latest response and can be private; keep it
 out of public comments. Context counts may be absent and are not a reason to
 hand off. For Claude, the count includes cached input.
 
@@ -89,7 +93,8 @@ before `--verified-target`, then read back once; do not replay an uncertain send
 ## Finished-session shutdown stages
 
 `finished_map.py` offers candidates only. Its conservative last-line parser
-rejects quoted, negated, conditional and aborted verdicts. Read the transcript
+rejects quoted, negated, conditional and aborted verdicts. A complete Claude local `/exit` record sequence preserves
+the preceding verdict; other commands or new work invalidate it. Read the transcript
 and issue handoff yourself under the skill's full shutdown procedure; an
 unrecognized format remains manual verification, never permission to close.
 
@@ -108,7 +113,7 @@ uv run skills/supervisor/scripts/close_ttys.py --ledger <private-ledger.json> --
 The two flags attest the Supervisor checked the issue handoff and empty input
 (or recorded the Director's text). Default is a dry run. This helper never
 answers prompts or sends exit commands: it checks transcript, ownership, exact
-iTerm id and TTY, then proves the recorded PID is absent and no Claude/Codex
+iTerm id and TTY, then proves the recorded PID is absent and no non-shell
 process remains on that TTY. Apply rechecks activity and processes and requests
 one non-force close. An uncertain inventory or remaining/reused PID preserves
 the tab. Read back `iterm_tab.py list` to confirm closure; never force or retry

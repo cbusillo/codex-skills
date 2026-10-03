@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 
 from iterm_tab import select_session
-from session_record import load_ledger, session_status
+import session_record
 
 
 def process_rows(output):
@@ -32,12 +32,11 @@ def process_exited(entry, rows):
     pid, tty = entry.get("pid"), entry.get("tty")
     if not isinstance(pid, int) or pid <= 0 or not isinstance(tty, str) or not tty:
         raise ValueError("ledger requires verified pid and tty")
-    # A reused PID or any remaining harness on this TTY preserves the tab.
+    # A reused PID or any non-shell job on this TTY preserves the tab.
     if any(row[0] == pid for row in rows):
         return False
     return not any(
-        row[1] == tty
-        and any(name in row[2].split()[0].lower() for name in ("claude", "codex"))
+        row[1] == tty and Path(row[2]).name not in {"zsh", "bash", "sh", "fish", "dash"}
         for row in rows
     )
 
@@ -60,7 +59,7 @@ async def close(app, entry, apply, verified_handoff, verified_input):
         raise ValueError(
             "verify issue handoff and recorded/empty Director input before closing"
         )
-    status = session_status(entry)
+    status = session_record.session_status(entry)
     if not status["safe_verdict"]:
         raise ValueError(
             "latest transcript does not contain an unqualified close-out verdict"
@@ -73,7 +72,7 @@ async def close(app, entry, apply, verified_handoff, verified_input):
         raise ValueError("agent process remains or identity is uncertain; tab kept")
     if apply:
         # Repeat both checks immediately before the one non-force close call.
-        fresh = session_status(entry)
+        fresh = session_record.session_status(entry)
         if fresh != status or not process_exited(entry, inventory()):
             raise ValueError("session activity changed; tab kept")
         await session.async_close(force=False)
@@ -90,7 +89,7 @@ def main():
     args = parser.parse_args()
     matches = [
         entry
-        for entry in load_ledger(args.ledger)
+        for entry in session_record.load_ledger(args.ledger)
         if entry["session_id"] == args.session_id
     ]
     if len(matches) != 1:
