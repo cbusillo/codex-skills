@@ -5969,6 +5969,225 @@ def test_product_owner_apply_checks_the_client_reapplies_and_reads_back() -> Non
         assert (status, posts) == (2, [])
 
 
+_OLD_IMAGE = "ghcr.io/example-owner/example-product-app"
+_NEW_IMAGE = "ghcr.io/example-owner/example-product"
+
+
+def _image_plan(**overrides: object) -> dict[str, object]:
+    plan: dict[str, object] = {
+        "status": "ok",
+        "mode": "dry-run",
+        "product": "example-product",
+        "repository": "example-owner/example-product",
+        "image_repository_before": _OLD_IMAGE,
+        "image_repository_after": _NEW_IMAGE,
+        "changed": True,
+        "applied": False,
+        "lanes": [
+            {
+                "instance": "testing",
+                "context": "example-product",
+                "current_artifact_id": f"{_OLD_IMAGE}@sha256:{'a' * 64}",
+                "in_new_repository": False,
+            }
+        ],
+        "reason": "Publish to the package named after the repository.",
+        "source_label": "service:product-image-repository",
+        "profile_updated_at_before": "2026-10-01T12:00:00Z",
+        "profile_updated_at_after": "",
+    }
+    plan.update(overrides)
+    return plan
+
+
+def _image_response(plan: dict[str, object]) -> dict[str, object]:
+    return {
+        "status": "accepted",
+        "trace_id": "launchplane_req_image",
+        "records": {"product_profile": "example-product"},
+        "result": plan,
+    }
+
+
+def _image_profile_response(repository: str = _OLD_IMAGE) -> dict[str, object]:
+    return {
+        "status": "ok",
+        "trace_id": "launchplane_req_profile",
+        "profile": {"product": "example-product", "image": {"repository": repository}},
+    }
+
+
+IMAGE_DRY_RUN_ARGV = [
+    "product-image-repository-dry-run",
+    "--product",
+    "example-product",
+    "--image-repository",
+    f"{_NEW_IMAGE}/",
+    "--reason",
+    "Publish to the package named after the repository.",
+]
+
+
+def test_product_image_repository_plan_projection_digests_the_reviewed_move() -> None:
+    result = _saved_dry_run_output("product-image-repository-dry-run", _image_response(_image_plan()))
+    projected = result["result"]
+    assert projected["image_repository_after"] == _NEW_IMAGE
+    assert projected["lanes"][0]["current_artifact_id"].startswith(f"{_OLD_IMAGE}@sha256:")
+    assert projected["plan_sha256"] == result["summary"]["plan_sha256"]
+    # A different starting repository is a different plan; a lane deploy is not.
+    other = write_action._project_product_image_repository_plan(
+        _image_plan(image_repository_before="ghcr.io/example-owner/other")
+    )
+    assert other["plan_sha256"] != projected["plan_sha256"]
+    redeployed = write_action._project_product_image_repository_plan(_image_plan(lanes=[]))
+    assert redeployed["plan_sha256"] == projected["plan_sha256"]
+    lane = cast(list[dict[str, object]], _image_plan()["lanes"])[0]
+    for candidate, code in (
+        (_image_plan(extra="x"), "unsafe_response_shape"),
+        (_image_plan(lanes=[{**lane, "domain": "example.invalid"}]), "unsafe_response_shape"),
+        (_image_plan(lanes=[{**lane, "current_artifact_id": "not an id"}]), "invalid_response"),
+        (_image_plan(image_repository_after="https://ghcr.io/x/y"), "invalid_response"),
+        (_image_plan(image_repository_after=""), "invalid_response"),
+        (_image_plan(image_repository_before="https://registry.example.invalid/x"), "invalid_response"),
+        (
+            _image_plan(lanes=[{**lane, "current_artifact_id": "https://registry.example.invalid/x"}]),
+            "invalid_response",
+        ),
+        (_image_plan(reason="Bearer abcdefghijklmnop"), "invalid_response"),
+    ):
+        _expect_error(
+            lambda value=candidate: write_action._project_product_image_repository_plan(value),
+            code,
+        )
+
+
+def test_product_image_repository_dry_run_sends_the_package_to_the_product_route() -> None:
+    status, payload, posts, _reads = _run_main(
+        IMAGE_DRY_RUN_ARGV, post=_image_response(_image_plan())
+    )
+    assert status == 0, payload
+    assert posts[0]["path"] == "/v1/product-profiles/example-product/image-repository"
+    assert posts[0]["body"] == {
+        "schema_version": 1,
+        "mode": "dry-run",
+        "image_repository": _NEW_IMAGE,
+        "reason": "Publish to the package named after the repository.",
+    }
+    assert posts[0]["idempotency_key"] == ""
+    assert payload["summary"]["changed"] is True
+    for argv, code in (
+        (
+            [*IMAGE_DRY_RUN_ARGV[:4], "ghcr.io/Example/Upper", *IMAGE_DRY_RUN_ARGV[5:]],
+            "invalid_image_repository",
+        ),
+        (
+            [*IMAGE_DRY_RUN_ARGV[:4], f"{_NEW_IMAGE}:latest", *IMAGE_DRY_RUN_ARGV[5:]],
+            "invalid_image_repository",
+        ),
+        ([*IMAGE_DRY_RUN_ARGV[:2], "../x", *IMAGE_DRY_RUN_ARGV[3:]], "invalid_product"),
+    ):
+        status, payload, posts, _reads = _run_main(argv, post=_image_response(_image_plan()))
+        assert status == 2 and posts == [], argv
+        assert payload["warnings"][0]["code"] == code
+
+
+def test_product_image_repository_apply_names_the_reviewed_start_and_reads_back() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        evidence = _saved_dry_run_output(
+            "product-image-repository-dry-run", _image_response(_image_plan())
+        )
+        evidence_path = _write_json(directory, "image-dry-run.json", evidence)
+        digest = evidence["result"]["plan_sha256"]
+        apply_argv = [
+            "product-image-repository-apply",
+            *IMAGE_DRY_RUN_ARGV[1:],
+            *_reviewed_apply_argv(digest, evidence_path),
+        ]
+        applied = _image_response(
+            _image_plan(mode="apply", applied=True, profile_updated_at_after="2026-10-02T12:00:00Z")
+        )
+        profiles = iter([_image_profile_response(), _image_profile_response(_NEW_IMAGE)])
+        status, payload, posts, reads = _run_main(
+            apply_argv, post=applied, read=lambda _kwargs: next(profiles)
+        )
+        assert status == 0, payload
+        assert payload["status"] == "accepted"
+        assert posts[0]["body"]["mode"] == "apply"
+        assert posts[0]["body"]["expected_image_repository"] == _OLD_IMAGE
+        assert posts[0]["idempotency_key"] == "apply-1"
+        assert [read["path"] for read in reads] == ["/v1/product-profiles/example-product"] * 2
+        assert payload["result"]["read_back_matches"] is True
+
+        # The profile moved after the review: stop before the POST.
+        status, payload, posts, _reads = _run_main(
+            apply_argv, post=applied, read=_image_profile_response("ghcr.io/example-owner/other")
+        )
+        assert (status, payload["status"], posts) == (1, "stale", [])
+        assert payload["summary"]["error_code"] == "image_repository_changed_since_review"
+
+        # The read-back still shows the old repository: never report success.
+        status, payload, _posts, _reads = _run_main(
+            apply_argv, post=applied, read=_image_profile_response()
+        )
+        assert (status, payload["status"]) == (1, "accepted_unverified")
+
+        # Launchplane applied a move from somewhere else: never report success.
+        moved = _image_response(
+            _image_plan(mode="apply", applied=True, image_repository_before="ghcr.io/x/y")
+        )
+        profiles = iter([_image_profile_response(), _image_profile_response(_NEW_IMAGE)])
+        status, payload, _posts, _reads = _run_main(
+            apply_argv, post=moved, read=lambda _kwargs: next(profiles)
+        )
+        assert (status, payload["status"]) == (1, "accepted_unverified")
+        assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
+
+        # The connection drops after the POST began: the outcome is unknown.
+        status, payload, _posts, _reads = _run_main(
+            apply_argv, post=TimeoutError(), read=_image_profile_response()
+        )
+        assert (status, payload["status"]) == (1, "outcome_unknown")
+
+        # A different package, or an edited evidence file, is not the reviewed plan.
+        tampered = copy.deepcopy(evidence)
+        tampered["result"]["image_repository_before"] = "ghcr.io/example-owner/other"
+        tampered_path = _write_json(directory, "image-tampered.json", tampered)
+        for argv in (
+            [
+                "product-image-repository-apply",
+                *IMAGE_DRY_RUN_ARGV[1:4],
+                "ghcr.io/example-owner/another",
+                *IMAGE_DRY_RUN_ARGV[5:],
+                *_reviewed_apply_argv(digest, evidence_path),
+            ],
+            [
+                "product-image-repository-apply",
+                *IMAGE_DRY_RUN_ARGV[1:],
+                *_reviewed_apply_argv(digest, tampered_path),
+            ],
+        ):
+            status, payload, posts, reads = _run_main(
+                argv, post=applied, read=_image_profile_response()
+            )
+            assert (status, posts, reads) == (2, [], []), argv
+            assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
+
+        unchanged = _saved_dry_run_output(
+            "product-image-repository-dry-run",
+            _image_response(_image_plan(image_repository_before=_NEW_IMAGE, changed=False)),
+        )
+        unchanged_path = _write_json(directory, "image-unchanged.json", unchanged)
+        argv = [
+            "product-image-repository-apply",
+            *IMAGE_DRY_RUN_ARGV[1:],
+            *_reviewed_apply_argv(unchanged["result"]["plan_sha256"], unchanged_path),
+        ]
+        status, _payload, posts, _reads = _run_main(
+            argv, post=applied, read=_image_profile_response()
+        )
+        assert (status, posts) == (2, [])
+
+
 def _backup_payload() -> dict[str, object]:
     return {
         "schema_version": 1,
@@ -6748,6 +6967,9 @@ def main() -> int:
         test_product_owner_plan_projection_digests_the_reviewed_change,
         test_product_owner_dry_run_sends_normalized_login_to_the_product_route,
         test_product_owner_apply_checks_the_client_reapplies_and_reads_back,
+        test_product_image_repository_plan_projection_digests_the_reviewed_move,
+        test_product_image_repository_dry_run_sends_the_package_to_the_product_route,
+        test_product_image_repository_apply_names_the_reviewed_start_and_reads_back,
         test_production_backup_authority_never_prints_provider_coordinates,
         test_production_backup_authority_apply_binds_the_exact_reviewed_payload,
         test_production_backup_authority_read_keeps_state_and_record_ids,

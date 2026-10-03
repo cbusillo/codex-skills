@@ -3909,6 +3909,9 @@ def _project_success_output(
     if operation in {"product-owner-dry-run", "product-owner-apply"}:
         records = _project_records(provider_payload.get("records"), {"product_profile"})
         return records, _project_product_owner_plan(provider_payload.get("result"))
+    if operation in {"product-image-repository-dry-run", "product-image-repository-apply"}:
+        records = _project_records(provider_payload.get("records"), {"product_profile"})
+        return records, _project_product_image_repository_plan(provider_payload.get("result"))
     if operation in {"production-backup-authority-dry-run", "production-backup-authority-apply"}:
         records = _project_records(provider_payload.get("records"), set())
         return records, _project_production_backup_authority_result(
@@ -4115,6 +4118,19 @@ def summarize_success(
                 "the same product, login or --clear, and reason with --expected-plan-digest."
                 if operation == "product-owner-dry-run"
                 else "Check read_back_matches before relying on the recorded Client."
+            )
+        elif operation in {
+            "product-image-repository-dry-run",
+            "product-image-repository-apply",
+        }:
+            summary["plan_sha256"] = result.get("plan_sha256")
+            summary["changed"] = result.get("changed")
+            summary["recommendation"] = (
+                "Save this redacted dry-run output, review the image repository before and after "
+                "and each lane's artifact, then apply the same product, image repository and "
+                "reason with --expected-plan-digest."
+                if operation == "product-image-repository-dry-run"
+                else "Check read_back_matches before relying on the new image repository."
             )
         elif operation in {
             "production-backup-authority-dry-run",
@@ -5961,6 +5977,39 @@ PRODUCT_OWNER_PLAN_FIELDS = {
 }
 PRODUCT_OWNER_OPERATIONS = {"set", "clear", "unchanged"}
 PRODUCT_OWNER_IDENTITY_FIELDS = {"github_login", "github_id", "review_label"}
+PRODUCT_IMAGE_REPOSITORY_PLAN_FIELDS = {
+    "status",
+    "mode",
+    "product",
+    "repository",
+    "image_repository_before",
+    "image_repository_after",
+    "changed",
+    "applied",
+    "lanes",
+    "reason",
+    "source_label",
+    "profile_updated_at_before",
+    "profile_updated_at_after",
+}
+PRODUCT_IMAGE_REPOSITORY_LANE_FIELDS = {
+    "instance",
+    "context",
+    "current_artifact_id",
+    "in_new_repository",
+}
+PRODUCT_IMAGE_REPOSITORY_DIGEST_FIELDS = (
+    "product",
+    "repository",
+    "image_repository_before",
+    "image_repository_after",
+    "reason",
+)
+# Launchplane accepts only an untagged lowercase GHCR package; refuse anything else locally.
+GHCR_IMAGE_REPOSITORY_RE = re.compile(r"^ghcr\.io/[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
+# What a profile may hold today, before the move: a lowercase registry path, never a URL.
+IMAGE_REPOSITORY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*(?::[0-9]{1,5})?(?:/[a-z0-9][a-z0-9._-]*)+$")
+PRODUCT_IMAGE_REPOSITORY_MAX_LANES = 64
 GITHUB_ID_RE = re.compile(r"^[1-9][0-9]{0,19}$")
 PRODUCTION_BACKUP_AUTHORITY_PAYLOAD_FIELDS = {
     "schema_version",
@@ -6118,6 +6167,83 @@ def _project_product_owner_plan(result: object) -> dict[str, object]:
             for field in ("product", "operation", "owner_before", "owner_after", "reason")
         }
     )
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_image_repository(value: object, *, pattern: re.Pattern[str]) -> str:
+    if value in {None, ""}:
+        return ""
+    if not isinstance(value, str) or not pattern.fullmatch(value):
+        raise LaunchplaneSafetyError("invalid_response")
+    return public_identifier(value)
+
+
+def _project_artifact_reference(value: object) -> str:
+    artifact_id = _optional_identifier(value)
+    if "://" in artifact_id:
+        raise LaunchplaneSafetyError("invalid_response")
+    return artifact_id
+
+
+def _project_image_repository_lanes(value: object) -> list[dict[str, object]]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > PRODUCT_IMAGE_REPOSITORY_MAX_LANES:
+        raise LaunchplaneSafetyError("invalid_response")
+    lanes: list[dict[str, object]] = []
+    for item in value:
+        source = _require_dict(item)
+        if any(str(key) not in PRODUCT_IMAGE_REPOSITORY_LANE_FIELDS for key in source):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        lanes.append(
+            {
+                "instance": public_identifier(source.get("instance")),
+                "context": public_identifier(source.get("context")),
+                "current_artifact_id": _project_artifact_reference(
+                    source.get("current_artifact_id")
+                ),
+                "in_new_repository": bool(_optional_bool(source.get("in_new_repository"))),
+            }
+        )
+    return lanes
+
+
+def _image_repository_plan_digest(plan: dict[str, Any]) -> str:
+    # Launchplane does not bind an image repository apply to a dry-run; this digest is the
+    # helper's. Lane artifacts are shown for review but left out: a deploy may move them.
+    return _canonical_sha256(
+        {field: plan.get(field) for field in PRODUCT_IMAGE_REPOSITORY_DIGEST_FIELDS}
+    )
+
+
+def _project_product_image_repository_plan(result: object) -> dict[str, object]:
+    source = _require_dict(result)
+    if any(str(key) not in PRODUCT_IMAGE_REPOSITORY_PLAN_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected: dict[str, object] = {
+        "status": public_code(source.get("status")),
+        "mode": _reviewed_plan_mode(source.get("mode")),
+        "product": public_identifier(source.get("product")),
+        "repository": public_identifier(source.get("repository")),
+        "image_repository_before": _project_image_repository(
+            source.get("image_repository_before"), pattern=IMAGE_REPOSITORY_RE
+        ),
+        "image_repository_after": _project_image_repository(
+            source.get("image_repository_after"), pattern=GHCR_IMAGE_REPOSITORY_RE
+        ),
+        "changed": bool(_optional_bool(source.get("changed"))),
+        "applied": bool(_optional_bool(source.get("applied"))),
+        "lanes": _project_image_repository_lanes(source.get("lanes")),
+        "reason": public_summary_string(source.get("reason")),
+        "source_label": public_identifier(source.get("source_label")),
+    }
+    if not projected["image_repository_after"]:
+        raise LaunchplaneSafetyError("invalid_response")
+    for field in ("profile_updated_at_before", "profile_updated_at_after"):
+        if source.get(field):
+            projected[field] = public_summary_string(source.get(field), max_length=64)
+    projected["plan_sha256"] = _image_repository_plan_digest(projected)
     assert_public_safe_shape(projected)
     return projected
 
@@ -6339,6 +6465,44 @@ def reviewed_product_owner_plan(
     return result
 
 
+def product_image_repository_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
+    image_repository = _required_argument(args, "image_repository").rstrip("/")
+    if not GHCR_IMAGE_REPOSITORY_RE.fullmatch(image_repository):
+        raise ValueError("invalid_image_repository")
+    return {
+        "schema_version": 1,
+        "mode": mode,
+        "image_repository": image_repository,
+        "reason": _required_argument(args, "reason"),
+    }
+
+
+def reviewed_product_image_repository_plan(
+    args: argparse.Namespace, body: dict[str, object]
+) -> dict[str, Any]:
+    """The saved dry-run plan this image repository apply must reproduce."""
+    expected_plan_digest = _reviewed_apply_digest(args)
+    result = _load_reviewed_plan_evidence(
+        args,
+        operation="product-image-repository-dry-run",
+        expected_plan_digest=expected_plan_digest,
+    )
+    before = result.get("image_repository_before")
+    if (
+        result.get("product") != str(args.product).strip()
+        or result.get("image_repository_after") != body["image_repository"]
+        or result.get("reason") != " ".join(cast(str, body["reason"]).split())
+        or not isinstance(before, str)
+        or not isinstance(result.get("repository"), str)
+        # An unchanged plan has nothing to apply.
+        or result.get("changed") is not True
+        # The saved file must still say what the digest was computed over.
+        or _image_repository_plan_digest(result) != expected_plan_digest
+    ):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    return result
+
+
 def production_backup_authority_payload(args: argparse.Namespace) -> dict[str, object]:
     payload = read_payload_file(args.payload_file)
     if any(key not in PRODUCTION_BACKUP_AUTHORITY_PAYLOAD_FIELDS for key in payload):
@@ -6457,6 +6621,26 @@ def read_product_owner(
     )
     profile = _require_dict(provider_payload.get("profile"))
     return _project_owner_identity(profile.get("owner"))
+
+
+def read_product_image_repository(
+    *, settings: dict[str, str], product: str, timeout: float
+) -> str:
+    provider_payload = request_launchplane_read(
+        service_url=settings["service_url"],
+        path=_product_read_path("product-profile-read", product=product),
+        settings=settings,
+        query={},
+        timeout=timeout,
+    )
+    profile = _require_dict(provider_payload.get("profile"))
+    image = _optional_dict(profile.get("image")) or {}
+    repository = image.get("repository") or ""
+    if not isinstance(repository, str):
+        raise LaunchplaneSafetyError("invalid_response")
+    return _project_image_repository(
+        repository.strip().rstrip("/"), pattern=IMAGE_REPOSITORY_RE
+    )
 
 
 def read_production_backup_authority(
@@ -6702,6 +6886,64 @@ def execute_product_owner_apply(
         preflight=preflight,
         finish=finish,
         label="product Client",
+    )
+
+
+def execute_product_image_repository_apply(
+    *, args: argparse.Namespace, request: dict[str, object], body: dict[str, object]
+) -> int:
+    reviewed = reviewed_product_image_repository_plan(args, body)
+    product = str(args.product).strip()
+    path = _product_read_path("product-image-repository-apply", product=product)
+    # Launchplane refuses the apply with `stale` when this is no longer the profile's repository.
+    body["expected_image_repository"] = reviewed["image_repository_before"]
+
+    def preflight(settings: dict[str, str]) -> dict[str, object] | None:
+        current = read_product_image_repository(
+            settings=settings, product=product, timeout=args.timeout
+        )
+        if current == reviewed["image_repository_before"]:
+            return None
+        return {
+            "error_code": "image_repository_changed_since_review",
+            "recommendation": "Stop before apply and dry-run again against the current profile.",
+        }
+
+    def finish(
+        settings: dict[str, str], _provider_payload: dict[str, Any], payload: dict[str, Any]
+    ) -> bool:
+        result = payload["result"]
+        applied_as_reviewed = result.get("applied") is True and all(
+            result.get(field) == reviewed[field]
+            for field in ("repository", "image_repository_before", "image_repository_after")
+        )
+        if not applied_as_reviewed:
+            payload["warnings"].append(
+                warning(
+                    "applied_plan_differs_from_review",
+                    "Launchplane applied a different image repository change than the "
+                    "reviewed dry-run.",
+                )
+            )
+        read_back_ok = attach_read_back(
+            payload,
+            read=lambda: read_product_image_repository(
+                settings=settings, product=product, timeout=args.timeout
+            ),
+            matches=lambda observed: observed == reviewed["image_repository_after"],
+            label="product image repository",
+        )
+        return applied_as_reviewed and read_back_ok
+
+    return execute_verified_apply(
+        args=args,
+        operation="product-image-repository-apply",
+        request=request,
+        path=path,
+        body=body,
+        preflight=preflight,
+        finish=finish,
+        label="product image repository",
     )
 
 
@@ -7751,6 +7993,26 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         product_owner.add_argument("--reason", required=True)
         _add_reviewed_apply_arguments(product_owner, apply=command.endswith("-apply"))
 
+    for command, help_text in (
+        (
+            "product-image-repository-dry-run",
+            "Dry-run moving a product's image repository to its repository-named package.",
+        ),
+        (
+            "product-image-repository-apply",
+            "Apply a reviewed image repository move bound to the saved dry-run digest.",
+        ),
+    ):
+        image_repository = subparsers.add_parser(command, help=help_text)
+        image_repository.add_argument("--product", required=True)
+        image_repository.add_argument(
+            "--image-repository",
+            required=True,
+            help="The untagged ghcr.io/<owner>/<name> package named after the repository.",
+        )
+        image_repository.add_argument("--reason", required=True)
+        _add_reviewed_apply_arguments(image_repository, apply=command.endswith("-apply"))
+
     production_backup_authority_read = subparsers.add_parser(
         "production-backup-authority-read",
         help="Read a production lane's backup policy and targets without provider coordinates.",
@@ -8244,6 +8506,27 @@ def main(argv: list[str]) -> int:
             }
             if mode == "apply":
                 return execute_product_owner_apply(args=args, request=request, body=body)
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=path,
+                request=request,
+                body=body,
+            )
+        if args.command in {"product-image-repository-dry-run", "product-image-repository-apply"}:
+            mode = "apply" if args.command == "product-image-repository-apply" else "dry-run"
+            path = _product_read_path(args.command, product=str(args.product).strip())
+            body = product_image_repository_body(args, mode=mode)
+            request = {
+                "mode": mode,
+                "product": public_identifier(args.product),
+                "image_repository": body["image_repository"],
+                "payload_source": "operator_argument",
+            }
+            if mode == "apply":
+                return execute_product_image_repository_apply(
+                    args=args, request=request, body=body
+                )
             return execute_post(
                 args=args,
                 operation=args.command,

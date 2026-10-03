@@ -374,6 +374,16 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/product-profiles/{product}/owner",
         "mode": "apply",
     },
+    "product-image-repository-dry-run": {
+        "method": "POST",
+        "path": "/v1/product-profiles/{product}/image-repository",
+        "mode": "dry-run",
+    },
+    "product-image-repository-apply": {
+        "method": "POST",
+        "path": "/v1/product-profiles/{product}/image-repository",
+        "mode": "apply",
+    },
     "production-backup-authority-read": {
         "method": "GET",
         "path": "/v1/production-backup-authority",
