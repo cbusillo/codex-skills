@@ -6989,7 +6989,10 @@ def execute_dokploy_compose_apply(
                 (target_id,) = target_ids
                 if _canonical_sha256(target_id) == reviewed.get("binding_sha256"):
                     return None
-            return {"recommendation": "The tracked binding changed since review; run a new dry-run."}
+            return {
+                "error_code": "compose_binding_changed_since_review",
+                "recommendation": "The tracked binding changed since review; run a new dry-run.",
+            }
         return None
 
     def finish(
