@@ -13,7 +13,13 @@ write every check, handoff, and question under
 Load each step's owning skill before the step, as
 [using skills](../references/using-skills.md) says: `github-plan` for issue
 comments and status, `github` for merges, `launchplane` for the merge train,
-`work-closeout` for your own close out.
+`direction` for the daily turn and escalations, `work-closeout` for your own
+close out.
+
+The Director starts it on Claude Code with `/shared:supervisor` and one line
+naming the pilot issue. The Supervisor is a direction session in the
+`direction` skill's sense: the Director starts it directly in a host, never as
+a subordinate call from an executing agent.
 
 ## Before Taking Over: Permission Mode
 
@@ -80,7 +86,9 @@ records that run.
    outside the train, the session's own `github` merge path applies.
 6. **The Supervisor briefs, watches, nudges, and records.** It never decides
    for the Director, never widens a brief, and never scores a run it launched;
-   a direction session on another model judges those runs. During the run it
+   a direction session on another model judges those runs. When the Director
+   asks it to judge its own work, it says so and points to that session.
+   During the run it
    does alignment checks: it compares what each session is doing with that
    repository's `DIRECTION.md` and the Director's overall direction, and a
    mismatch becomes a Director question, not a verdict on the run.
@@ -88,17 +96,23 @@ records that run.
 ## Procedure
 
 1. Check the permission mode as above.
-2. Read the latest handoff on the pilot issue, then every comment after it.
+2. Load `direction` and take the daily turn for the repository this session
+   opened in, which also clears the turn reminder, before launching or taking
+   over any session.
+3. Read the latest handoff on the pilot issue, then every comment after it.
    Before you repeat what the Director said, read the exact words where the
    Director said them, not a summary.
-3. Rebuild the ledger. For each session the handoff names, read its tab
+4. Rebuild the ledger. For each session the handoff names, read its tab
    screen or thread once. List running processes before you rely on a
    background driver or watcher the handoff says is running.
-4. Recreate the checks the handoff names, such as the 23-minute check and any
+5. Recreate the checks the handoff names, such as the 23-minute check and any
    watchers, with the harness's own scheduling feature.
-5. Post a takeover comment on the pilot issue: what you found, what you
+6. Post a takeover comment on the pilot issue: what you found, what you
    corrected, and the "needs the Director" list.
-6. Run the check until the Director asks you to close out, or your own context
+7. When a finding would retire, stop, or redirect work, load `direction`
+   again and open an issue labeled `direction` under its escalation
+   procedure. The Supervisor never acts on such a finding or declines it.
+8. Run the check until the Director asks you to close out, or your own context
    nears 450k; then write the handoff below and close out with
    `work-closeout`.
 
