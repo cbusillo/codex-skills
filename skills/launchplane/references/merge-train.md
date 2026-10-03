@@ -5,12 +5,18 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
 
 - **Before Enqueueing**: Run the controller without `--mutate` and inspect the
   intended PRs in `result.dry_run_result.queue`. The current GitHub adapter
-  classifies the PR author, not the person or App adding the label. Check
+  checks both the PR author and the actor who last applied `ready-to-merge`,
+  using the label's latest `labeled` event. Enqueue with the trusted automation
+  identity's installation token. The labeler must be trusted automation or have
+  a role in `allowed_actor_roles`; a GitHub App acting with a user's token counts
+  as the App. An unauthorized labeler is reported as
+  `ready-to-merge label ignored: applied by <login> ...`. Report that refusal;
+  do not work around it by relabeling under another identity. Check
   `actor_role`, `eligible`, `ineligible_reasons`, checks, and head SHA before
   adding ready labels. A missing ready label alone is the expected state before
   enqueueing; an unauthorized author remains ineligible after labeling. When an
   active candidate or landing is being reported instead of a fresh queue, use
-  the current policy and GitHub author evidence. A queue covers the PRs examined
+  the current policy and GitHub author and label-event evidence. A queue covers the PRs examined
   in that phase; stacked-PR phases can show only the root. Missing queue evidence
   does not mean that the queue is empty or that the intended PRs are eligible.
 - **Capability Scope**: GitHub App installation permissions, Launchplane's
@@ -52,7 +58,8 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
 - **Stacked PRs**: For a same-repo linear stack, label the root PR that
   targets the protected base branch and every child that is ready to land,
   since collapsing merges each child into the root. Launchplane collapses a child only when it is
-  itself ready to land: open, not a draft, labeled, and from an allowed author.
+  itself ready to land: open, not a draft, labeled by an allowed enqueue actor,
+  and from an allowed author.
   Otherwise the controller reports `stack_unsupported` with a
   `blocking_reason` naming the child. To land the root while a child stays
   held, retarget the held child to the protected base branch; never ready or
