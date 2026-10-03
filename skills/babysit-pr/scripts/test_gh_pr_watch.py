@@ -1157,6 +1157,53 @@ def test_run_watch_keeps_polling_open_ready_to_merge_pr(monkeypatch):
     assert [event for event, _ in events] == ["snapshot", "snapshot"]
 
 
+@pytest.mark.parametrize("stop_action", ["stop_pr_closed", "stop_exhausted_retries"])
+def test_run_watch_reports_chosen_sleep_interval(monkeypatch, stop_action):
+    args = argparse.Namespace(poll_seconds=17, green_poll_seconds=83)
+    green = {
+        "pr": sample_pr(),
+        "checks": sample_checks(),
+        "new_review_items": [],
+        "actions": ["ready_to_merge"],
+    }
+    changed_green = {**green, "pr": {**sample_pr(), "head_sha": "new-head"}}
+    pending = {
+        **changed_green,
+        "checks": sample_checks(all_terminal=False, pending_count=1),
+        "actions": ["idle"],
+    }
+    snapshots = iter([
+        green, green, changed_green, changed_green, pending, pending,
+        changed_green, {**changed_green, "actions": [stop_action]},
+    ])
+    events = []
+    sleeps = []
+    monkeypatch.setattr(
+        gh_pr_watch, "collect_snapshot",
+        lambda _args: (next(snapshots), Path("unused-state.json")),
+    )
+    monkeypatch.setattr(
+        gh_pr_watch, "print_event",
+        lambda event, payload: events.append((event, payload)),
+    )
+
+    def fake_sleep(seconds):
+        event, payload = events[-1]
+        assert event == "snapshot"
+        assert payload["next_poll_seconds"] == seconds
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(gh_pr_watch.time, "sleep", fake_sleep)
+
+    assert gh_pr_watch.run_watch(args) == 0
+    assert sleeps == [
+        args.poll_seconds, args.green_poll_seconds,
+        args.poll_seconds, args.green_poll_seconds,
+        args.poll_seconds, args.poll_seconds, args.poll_seconds,
+    ]
+    assert [event for event, _ in events] == ["snapshot"] * 8 + ["stop"]
+
+
 def test_default_state_file_uses_neutral_prefix():
     assert gh_pr_watch.default_state_file_for(sample_pr()) == Path(
         "/tmp/pr-babysit-openai-codex-pr123.json"
