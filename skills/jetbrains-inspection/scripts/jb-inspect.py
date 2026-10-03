@@ -7092,14 +7092,14 @@ def compact_inspection_proof(payload: dict[str, Any]) -> dict[str, Any]:
 
 def exhausted_retry_next_action(reason: str, payload: dict[str, Any]) -> str:
     retry_count = max(0, int(payload.get("internal_retry_count") or 0))
-    if reason not in {"stale_results", "inspection_inputs_changed", "project_analysis_not_ready"}:
-        return f"The helper already used {retry_count} internal retry attempt(s). Stop retrying this result and report the diagnostic payload."
     readiness = payload.get("internal_retry_readiness") if isinstance(payload.get("internal_retry_readiness"), dict) else {}
     if payload.get("internal_retry_skipped") is True:
         return (
             "The helper withheld its internal retry because IDE readiness did not remain stable. Stop retrying this result and report "
             "internal_retry_readiness. Resolve same-worktree writer and IDE indexing/project-model activity before any further assessment."
         )
+    if reason not in {"stale_results", "inspection_inputs_changed", "project_analysis_not_ready"}:
+        return f"The helper already used {retry_count} internal retry attempt(s). Stop retrying this result and report the diagnostic payload."
     barrier_status = str(readiness.get("status") or "unknown")
     return (
         f"The helper waited for sustained IDE readiness ({barrier_status}) and used {retry_count} internal retry attempt(s), but the result remained {reason}. "

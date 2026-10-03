@@ -7876,6 +7876,19 @@ class AgentInspectContractTest(unittest.TestCase):
                     self.assertIn("retry once", advice)
                     self.assertNotIn("Stop retrying", advice)
 
+    def test_skipped_capture_readiness_reports_the_withheld_retry(self):
+        _, payload = self.emit_agent_payload({
+            "status": "capture_incomplete", "capture_incomplete": True,
+            "retry_exhausted": True, "internal_retry_skipped": True,
+            "internal_retry_count": 0,
+            "internal_retry_readiness": {"status": "timeout", "ready": False},
+        })
+        result = payload["agent_result"]
+        self.assertFalse(result["retry_policy"]["retry"])
+        for advice in (result["next_action"], result["agent_report"]):
+            self.assertIn("internal_retry_readiness", advice)
+            self.assertNotRegex(advice.lower(), r"rerun|retry once|start a new inspection")
+
     def test_retryable_unknown_remains_explicit(self):
         exit_code, payload = self.emit_agent_payload(
             {

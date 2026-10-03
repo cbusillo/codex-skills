@@ -69,7 +69,7 @@ helper preserves the first `UNKNOWN`, skips the second inspection, and reports
 `GREEN` or `RED`; another stale/capture result remains `UNKNOWN`.
 `retry_policy.retry`, `agent_result.next_action`, and `agent_report` are one
 contract: terminal transport, ownership, execution-proof, and skipped-retry
-outcomes must not tell agents to rerun, and
+outcomes must not tell agents to rerun without resolving the reported prerequisite, and
 retryable native-run interruption may request only the single maintained fresh
 run. Never infer permission to retry from prose when `retry_policy.retry=false`,
 except for the separately authorized `go <milestone>` assessment below.
