@@ -549,11 +549,12 @@ with `status: "incomplete"` may still have a local token source; read the
 ## Exit Behavior
 
 - `0`: Launchplane accepted the request and the helper emitted a redacted
-  summary. `status: "accepted_unverified"` exits 0 for product-config,
-  repository-inventory, expected-config, repository-identity, and
-  deploy-recovery applies, and 1 for merge-train policy import and the lane-setup
-  applies. In every case the write may have committed; read back the active
-  record before any retry.
+  summary. `status: "accepted_unverified"` exits 0 for the product-config,
+  repository-inventory, expected-config, repository-identity, deploy-recovery,
+  and merge-train policy import applies, and 1 for the reviewed lane-setup
+  applies (product Client, product image repository, Dokploy target, production
+  backup authority, and private health endpoint). In every case the write may
+  have committed; read back the active record before any retry.
 - `1`: Launchplane was reached but rejected the request, or the service was
   unavailable/invalid. For `status: "outcome_unknown"`, transport failed after
   an apply POST began; read back the active record before any retry.
