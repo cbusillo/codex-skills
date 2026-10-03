@@ -2797,6 +2797,9 @@ def _reconcile_plan_validators() -> dict[str, Any]:
             "preview_operation_status",
             "preview_result_status",
             "queued_operation_status",
+            "deploy_operation_status",
+            "deploy_status",
+            "post_deploy_status",
             "last_failed_error_code",
         ),
         _public_dotted_code,
@@ -2819,6 +2822,7 @@ def _reconcile_plan_validators() -> dict[str, Any]:
                 "queued_operation_id",
                 "active_operation_id",
                 "deployed_operation_id",
+                "deployment_record_id",
                 "last_failed_operation_id",
                 "hold_recorded_by",
             ),
@@ -2845,6 +2849,12 @@ RECONCILE_PLAN_KEY_NAME_LISTS = {
 }
 
 
+def _reconcile_deploy_key_digest(value: object) -> str:
+    if not isinstance(value, str) or len(value) > 1024:
+        raise LaunchplaneSafetyError("invalid_response")
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
 def _project_reconcile_plan(plan_value: object, drops: _FieldDrops) -> dict[str, object]:
     """The plan fields the reconciler is known to write. Any other field, and a value
     that does not validate, is dropped and counted."""
@@ -2854,6 +2864,10 @@ def _project_reconcile_plan(plan_value: object, drops: _FieldDrops) -> dict[str,
         validate = RECONCILE_PLAN_VALIDATORS.get(key)
         if validate is not None:
             projected[key] = drops.keep(f"requests[].last_plan.{key}", validate, value)
+        elif key == "deploy_idempotency_key":
+            projected["deploy_key_sha256"] = drops.keep(
+                "requests[].last_plan.deploy_key_sha256", _reconcile_deploy_key_digest, value
+            )
         elif key in {"held", "owner_review_requested"}:
             projected[key] = value if isinstance(value, bool) else None
         elif key == "pull_request_number":
