@@ -11,6 +11,7 @@ not by this helper. Default is a dry run; it never force-closes a session.
 
 import argparse
 import json
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -28,6 +29,25 @@ def process_rows(output):
     return rows
 
 
+def idle_terminal_command(command):
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    if not argv:
+        return False
+    name = Path(argv[0]).name.lstrip("-")
+    if name == "login":
+        return True
+    if name not in {"zsh", "bash", "sh", "fish", "dash"}:
+        return False
+    # Command/script operands and -c are work, not an idle login shell.
+    return all(
+        arg in {"-l", "-i", "-il", "-li", "--login", "--interactive"}
+        for arg in argv[1:]
+    )
+
+
 def process_exited(entry, rows):
     pid, tty = entry.get("pid"), entry.get("tty")
     if not isinstance(pid, int) or pid <= 0 or not isinstance(tty, str) or not tty:
@@ -39,17 +59,12 @@ def process_exited(entry, rows):
         raise ValueError(
             "no process rows match the terminal TTY; inventory is uncertain"
         )
-    return not any(
-        row[1] == tty
-        and Path(row[2]).name.lstrip("-")
-        not in {"login", "zsh", "bash", "sh", "fish", "dash"}
-        for row in rows
-    )
+    return not any(row[1] == tty and not idle_terminal_command(row[2]) for row in rows)
 
 
 def inventory():
     output = subprocess.run(
-        ["ps", "-axo", "pid=,tty=,comm="],
+        ["ps", "-axo", "pid=,tty=,command="],
         check=True,
         capture_output=True,
         text=True,

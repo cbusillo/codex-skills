@@ -152,7 +152,7 @@ records that run.
    its brief, issue and current step. For Claude Code, send `/compact` with
    those instructions only at a verified idle prompt. Codex keeps working
    through automatic compaction, carrying its brief's Keep instructions; never
-   queue a request for it to compact itself. If a worker's compaction fails,
+   queue a request for it to compact itself. If a worker's compaction fails or its account needs it gone,
    request a durable handoff and relaunch the same brief after verified safe
    closeout. If it cannot hand off, preserve it and bring the failure to the
    Director. Gather the

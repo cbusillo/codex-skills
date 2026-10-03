@@ -12,7 +12,8 @@ Create a private JSON array from the handoff's actual session identities. Paths
 are relative to that ledger file; never commit transcripts, account names,
 briefs or operational coordinates. No helper searches accounts or copies auth.
 Use `iterm_tab.py list` to record the exact window, session and TTY; titles are
-labels, not identity. Match the harness process's PID and transcript yourself.
+labels, not identity. Match the harness process's PID and transcript yourself. The ledger loader
+normalizes iTerm's `/dev/` TTY prefix for `ps` matching.
 Exclude the Director's sessions or set `supervisor_owned` to false.
 
 ```json
@@ -114,7 +115,8 @@ The two flags attest the Supervisor checked the issue handoff and empty input
 (or recorded the Director's text). Default is a dry run. This helper never
 answers prompts or sends exit commands: it checks transcript, ownership, exact
 iTerm id and TTY, then proves the recorded PID is absent and only login/shell-profile processes
-remain on that TTY. Other jobs, including prompt helpers, preserve the tab. Apply rechecks activity and processes and requests
+remain on that TTY. Other jobs, including prompt helpers and shell scripts, preserve the tab.
+Process arguments are inspected privately and never emitted. Apply rechecks activity and processes and requests
 one non-force close. An uncertain inventory or remaining/reused PID preserves
 the tab. Read back `iterm_tab.py list` to confirm closure; never force or retry
 an uncertain close. Other terminal applications use the same skill procedure

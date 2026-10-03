@@ -261,6 +261,11 @@ class LedgerTests(unittest.TestCase):
         self.ledger.write_text(json.dumps([self.entry]))
         self.assertFalse(finished_map.candidates(self.ledger)[0]["candidate"])
 
+    def test_iterm_tty_path_is_normalized_for_process_matching(self):
+        self.entry["tty"] = "/dev/ttys001"
+        self.ledger.write_text(json.dumps([self.entry]))
+        self.assertEqual(session_record.load_ledger(self.ledger)[0]["tty"], "ttys001")
+
     def test_partial_write_is_error_not_finished(self):
         self.transcript.write_text("{unfinished")
         self.assertIn("error", status.snapshot(self.ledger)[0])
@@ -514,6 +519,24 @@ class TerminalTests(unittest.TestCase):
             self.assertRaises(ValueError),
         ):
             asyncio.run(iterm_tab.operate(app, args))
+
+    def test_running_shell_script_is_not_an_idle_shell(self):
+        entry = {"pid": 123, "tty": "ttys001"}
+        for command in (
+            "bash build.sh",
+            "zsh -c 'while :; do :; done'",
+            "/bin/sh /tmp/task.sh",
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(
+                    close_ttys.process_exited(entry, [(20, "ttys001", command)])
+                )
+        self.assertTrue(
+            close_ttys.process_exited(
+                entry,
+                [(20, "ttys001", "-zsh"), (21, "ttys001", "/usr/bin/login -fp user")],
+            )
+        )
 
     def test_missing_tty_rows_are_not_exit_proof(self):
         with self.assertRaises(ValueError):

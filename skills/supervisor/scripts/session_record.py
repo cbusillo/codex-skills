@@ -49,6 +49,8 @@ def load_ledger(path: Path) -> list[dict]:
         if entry["session_id"] in seen:
             raise ValueError("duplicate session_id")
         seen.add(entry["session_id"])
+        if isinstance(entry.get("tty"), str):
+            entry["tty"] = entry["tty"].removeprefix("/dev/")
         transcript = Path(entry["transcript"]).expanduser()
         entry["transcript"] = str((path.parent / transcript).resolve())
     return entries
