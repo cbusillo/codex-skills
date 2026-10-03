@@ -1,7 +1,7 @@
 # Background Review Reporting
 
-Use this contract when readiness, closeout, or GitHub work reports Every Code
-auto-review, Automatic Background Review, or an equivalent review lifecycle
+Use this contract when readiness, closeout, or GitHub work reports an Automatic
+Background Review or an equivalent review lifecycle
 that can start after the assistant's final response.
 
 ## Point-In-Time States

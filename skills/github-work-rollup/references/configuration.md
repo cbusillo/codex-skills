@@ -46,8 +46,9 @@ Each `priority_sections` entry may also include executive-facing metadata:
 - `initiatives`: compact list of named initiatives inside the workstream
 
 Use these fields when a GitHub grouping label is broader than the work it
-contains. For example, a portfolio area can be "Every Code Product Issues" while
-the workstream remains "Codex Lab" and the initiative is "Code Bridge". If these
+contains. For example, a portfolio area can be "Example Product Area" while
+the workstream remains "Example Workstream" and the initiative is "Example
+Initiative". If these
 fields are absent, executive rendering infers a workstream from item titles, but
 explicit metadata is more reliable.
 

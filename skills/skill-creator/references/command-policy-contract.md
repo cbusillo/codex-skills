@@ -14,7 +14,7 @@ an execution guard. The split is deliberately narrow:
 | Helper scripts                 | Credential mechanics, safe execution, output shape, and cleanup         |
 | Skill prose                    | Judgment, sequencing, exceptions, and human explanation                 |
 
-These are this catalog's extension contracts. Codex or Codex Lab support must
+These are this catalog's extension contracts. Codex or Claude Code support must
 be verified in the specific host version; neither the host's name nor a passing
 catalog validator proves that it implements this command-policy consumer.
 Codex's `agents/openai.yaml` invocation policy is a separate control.
@@ -129,5 +129,5 @@ metadata and that the tested model chooses a helper-backed route. They do not
 prove that the runtime intercepted a raw command before execution. Runtime
 command-blocker tests must live with the host that implements the blocker.
 Historical Every Code harness results are not evidence of current Codex or
-Codex Lab enforcement. Select current evidence using
+Claude Code enforcement. Select current evidence using
 [validation guidance](validation.md).

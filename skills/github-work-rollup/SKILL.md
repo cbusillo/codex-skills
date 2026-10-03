@@ -126,8 +126,8 @@ lanes, links, and handoffs; `manager` emphasizes priorities, focus, decisions,
 risks, velocity, and source notes; `executive` leads with outcomes and meaning,
 adapts daily/weekly/custom wording to the window, and uses GitHub counts as
 supporting evidence. Executive output should take under five minutes to read,
-target one page normally and at most two for heavy windows, and mention Every
-Code and skills impact where relevant. `summary_level` (`concise`, `standard`,
+target one page normally and at most two for heavy windows, and mention skills
+and catalog impact where relevant. `summary_level` (`concise`, `standard`,
 `detailed`) controls verbosity within a layout, not audience. Mode selects data;
 layout selects the reader.
 

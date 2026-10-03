@@ -105,8 +105,9 @@ Audience changes altitude and emphasis, not the factual boundary.
   staff-time decision.
 - Director conversation brief: tell the human story of what the team built or
   changed, why it matters, and what the reader can talk about with the team.
-  Prefer concrete handles such as "Codex Lab is becoming the agent harness" over
-  status phrasing such as "the Codex Lab workstream has active items." Use a
+  Prefer concrete handles such as "the catalog now runs the same journey on both
+  harnesses" over status phrasing such as "the skills workstream has active
+  items." Use a
   light spine, not a rigid template: short version, things worth talking about,
   where guidance would help, and receipts when those sections are useful.
 

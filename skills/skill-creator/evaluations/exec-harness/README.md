@@ -4,12 +4,12 @@ These synthetic scenarios were written for the retired Every Code exec
 harness. They are retained as historical fixtures, not a supported validation
 suite. Do not run the old wrapper or restore Every Code for current skill work.
 Use [current validation guidance](../../references/validation.md) for Codex and
-Codex Lab.
+Claude Code.
 
 The fake Responses API scenarios inspected captured context without model
 tokens; fake GitHub scenarios exercised selected helper calls. Files prefixed
 with `local-llm-` used a trusted local provider and incurred local model work.
-Neither mode establishes current Codex or Codex Lab command interception.
+Neither mode establishes current Codex or Claude Code command interception.
 
 The harness-dependent entries and CI-promotion decisions in
 [the scorecard](../../references/skill-scorecard.yaml) describe historical

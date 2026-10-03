@@ -586,8 +586,8 @@ Allowed without asking when safe:
   reconciler instead
 - report unsafe cleanup candidates instead of touching them
 
-Exclude Codex Desktop or Every Code auto-review worktrees under
-`~/.code/working/<repo>/branches/auto-review*` from ordinary cleanup. An explicit
+Exclude detached host auto-review worktrees (for example `auto-review-<hex>`)
+from ordinary cleanup. An explicit
 bulk or retirement scope still requires the shared policy's current owner/job,
 lock, runtime, content, and disposition evidence.
 
