@@ -27,6 +27,7 @@ from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
 from typing import Any, Callable, Optional
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).with_name("gh-plan.py")
@@ -5327,105 +5328,100 @@ def test_rule_violation_wrapped_required_check_rejection_stops_without_cooldown(
 
 
 def required_check_rejection_stops_without_cooldown(message: str) -> None:
+    pr = load_pr_module()
+    calls: list[str] = []
+    ready = False
+    current_time = [1000.0]
+    sleeps: list[float] = []
+
+    def sleep(duration: float) -> None:
+        sleeps.append(duration)
+        current_time[0] += duration
+
+    def fake_run(args: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        calls.append(" ".join(args))
+        if "/repos/owner/repo/pulls/12/merge" in args:
+            status = 200 if ready else 405
+            body = (
+                {"merged": True, "message": "Pull Request successfully merged", "sha": "a" * 40}
+                if ready else {"message": message}
+            )
+        elif "/repos/owner/repo/pulls/12" in args:
+            status = 200
+            body = {
+                "number": 12, "title": "Demo", "state": "open", "draft": False,
+                "mergeable": True, "mergeable_state": "clean" if ready else "blocked",
+                "html_url": "https://github.com/owner/repo/pull/12",
+                "head": {"ref": "topic", "sha": "b" * 40, "repo": {"full_name": "owner/repo"}},
+                "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+            }
+        else:
+            raise AssertionError(f"unexpected command: {args}")
+        response = (
+            f"HTTP/2.0 {status} \r\ncontent-type: application/json\r\n"
+            f"x-ratelimit-resource: core\r\n\r\n{json.dumps(body)}\n"
+        )
+        return subprocess.CompletedProcess(args, 0 if status == 200 else 1, response.encode(), b"")
+
+    def run_cli(command: str) -> subprocess.CompletedProcess[str]:
+        argv = [str(PR_SCRIPT), "--repo", "owner/repo", command, "12"]
+        stdout, stderr = StringIO(), StringIO()
+        with patch.object(sys, "argv", argv), redirect_stdout(stdout), redirect_stderr(stderr):
+            exit_code = pr.main()
+        return subprocess.CompletedProcess(argv, exit_code, stdout.getvalue(), stderr.getvalue())
+
     with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        log_path = tmp_path / "calls.log"
-        ready_path = tmp_path / "ready"
-        retry_state_path = tmp_path / "retry-state"
-        gh_path = tmp_path / "gh"
-        gh_path.write_text(
-            "#!/usr/bin/env bash\n"
-            "set -euo pipefail\n"
-            "respond() {\n"
-            "  status=$1\n"
-            "  body=$2\n"
-            "  printf 'HTTP/2.0 %s \\r\\n' \"$status\"\n"
-            "  printf 'content-type: application/json\\r\\n'\n"
-            "  printf 'x-ratelimit-resource: core\\r\\n\\r\\n'\n"
-            "  printf '%s\\n' \"$body\"\n"
-            "}\n"
-            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
-            "if [[ \"$*\" == *'/repos/owner/repo/pulls/12/merge'* ]]; then\n"
-            "  if [[ -f \"$GH_PR_READY_FILE\" ]]; then\n"
-            "    respond 200 '{\"merged\":true,\"message\":\"Pull Request successfully merged\",\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}'\n"
-            "  else\n"
-            "    respond 405 \"$GH_PR_405_BODY\"\n"
-            "    exit 1\n"
-            "  fi\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
-            "  mergeable_state=blocked\n"
-            "  [[ ! -f \"$GH_PR_READY_FILE\" ]] || mergeable_state=clean\n"
-            "  respond 200 \"{\\\"number\\\":12,\\\"title\\\":\\\"Demo\\\",\\\"state\\\":\\\"open\\\",\\\"draft\\\":false,\\\"mergeable\\\":true,\\\"mergeable_state\\\":\\\"$mergeable_state\\\",\\\"html_url\\\":\\\"https://github.com/owner/repo/pull/12\\\",\\\"head\\\":{\\\"ref\\\":\\\"topic\\\",\\\"sha\\\":\\\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\\\",\\\"repo\\\":{\\\"full_name\\\":\\\"owner/repo\\\"}},\\\"base\\\":{\\\"ref\\\":\\\"main\\\",\\\"repo\\\":{\\\"full_name\\\":\\\"owner/repo\\\"}}}\"\n"
-            "else\n"
-            "  printf 'unexpected command: %s\\n' \"$*\" >&2\n"
-            "  exit 2\n"
-            "fi\n",
-            encoding="utf-8",
-        )
-        gh_path.chmod(0o755)
-        env = dict(
-            os.environ,
-            GH_PR_GH=str(gh_path),
-            GH_PR_405_BODY=json.dumps({"message": message}),
-            GH_PR_READY_FILE=str(ready_path),
-            GH_PR_TEST_LOG=str(log_path),
-            GITHUB_RETRY_MAX_ATTEMPTS="8",
-            GITHUB_RETRY_MAX_WAIT_SECONDS="1",
-            GITHUB_RETRY_BASE_BACKOFF_SECONDS="0",
-            GITHUB_RETRY_MAX_BACKOFF_SECONDS="0",
-            GITHUB_RETRY_JITTER_SECONDS="0",
-            GITHUB_RETRY_DRAIN_SECONDS="30",
-            GITHUB_RETRY_STATE_DIR=str(retry_state_path),
-        )
-        rejected = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "merge", "12"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
-        rejected_calls = log_path.read_text(encoding="utf-8").splitlines()
-        assert rejected.returncode == 1, rejected
-        rejected_payload = json.loads(rejected.stdout)
-        assert rejected_payload["failure"]["cause"] == "required_status_checks_expected", rejected_payload
-        assert rejected_payload["observed_merge_capability"]["observed_outcome"] == "rejected", rejected_payload
-        assert rejected_payload["observed_merge_capability"]["authority"] == "unknown", rejected_payload
-        assert rejected_payload["write_outcome"] == "rejected", rejected_payload
-        assert rejected_payload["fallback_eligible"] is False, rejected_payload
-        assert rejected_payload["recommended_next_action"] == "wait_for_required_checks", rejected_payload
-        assert rejected_payload["reconciliation"] is None, rejected_payload
-        assert "gh-pr.py checks" in rejected_payload["hint"], rejected_payload
-        assert sum("/pulls/12/merge" in call for call in rejected_calls) == 1, rejected_calls
-        assert sum("/pulls/12" in call and "/merge" not in call for call in rejected_calls) == 1, rejected_calls
-        assert list(retry_state_path.glob("*.json")) == [], list(retry_state_path.glob("*"))
+        retry_state_path = Path(tmp) / "retry-state"
+        env = {
+            "GITHUB_RETRY_MAX_ATTEMPTS": "8",
+            "GITHUB_RETRY_MAX_WAIT_SECONDS": "1",
+            "GITHUB_RETRY_BASE_BACKOFF_SECONDS": "0",
+            "GITHUB_RETRY_MAX_BACKOFF_SECONDS": "0",
+            "GITHUB_RETRY_JITTER_SECONDS": "0",
+            "GITHUB_RETRY_DRAIN_SECONDS": "30",
+            "GITHUB_RETRY_STATE_DIR": str(retry_state_path),
+        }
+        runtime = pr.github_api_core.RetryRuntime(now=lambda: current_time[0], sleep=sleep)
+        # Only the fixture advances retry time; host load cannot exhaust its deadline.
+        with (
+            patch.dict(os.environ, env),
+            patch.object(pr.github_api_core, "default_retry_policy", pr.github_api_core.RetryPolicy.from_env),
+            patch.object(pr.github_api_core, "default_retry_runtime", return_value=runtime),
+            patch.object(pr.github_api_core.subprocess, "run", side_effect=fake_run),
+        ):
+            rejected = run_cli("merge")
+            rejected_calls = list(calls)
+            assert rejected.returncode == 1, rejected
+            rejected_payload = json.loads(rejected.stdout)
+            assert rejected_payload["failure"]["cause"] == "required_status_checks_expected", rejected_payload
+            assert rejected_payload["observed_merge_capability"]["observed_outcome"] == "rejected", rejected_payload
+            assert rejected_payload["observed_merge_capability"]["authority"] == "unknown", rejected_payload
+            assert rejected_payload["write_outcome"] == "rejected", rejected_payload
+            assert rejected_payload["fallback_eligible"] is False, rejected_payload
+            assert rejected_payload["recommended_next_action"] == "wait_for_required_checks", rejected_payload
+            assert rejected_payload["reconciliation"] is None, rejected_payload
+            assert "gh-pr.py checks" in rejected_payload["hint"], rejected_payload
+            assert sum("/pulls/12/merge" in call for call in rejected_calls) == 1, rejected_calls
+            assert sum("/pulls/12" in call and "/merge" not in call for call in rejected_calls) == 1, rejected_calls
+            assert list(retry_state_path.glob("*.json")) == [], list(retry_state_path.glob("*"))
 
-        unrelated_read = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "view", "12"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
-        )
-        unrelated_payload = json.loads(unrelated_read.stdout)
-        assert unrelated_payload["elapsed_wait"] == 0.0, unrelated_payload
-        assert unrelated_payload["attempts"] == 1, unrelated_payload
+            unrelated_read = run_cli("view")
+            assert unrelated_read.returncode == 0, unrelated_read
+            unrelated_payload = json.loads(unrelated_read.stdout)
+            assert unrelated_payload["elapsed_wait"] == 0.0, unrelated_payload
+            assert unrelated_payload["attempts"] == 1, unrelated_payload
 
-        ready_path.write_text("ready\n", encoding="utf-8")
-        merged = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "merge", "12"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
-        )
-        merged_payload = json.loads(merged.stdout)
-        assert merged_payload["mergeCommitOid"] == "a" * 40, merged_payload
-        assert merged_payload["elapsed_wait"] == 0.0, merged_payload
-        all_calls = log_path.read_text(encoding="utf-8").splitlines()
-        assert sum("/pulls/12/merge" in call for call in all_calls) == 2, all_calls
-        assert sum("/pulls/12" in call and "/merge" not in call for call in all_calls) == 3, all_calls
+            ready = True
+            merged = run_cli("merge")
+            assert merged.returncode == 0, merged
+            merged_payload = json.loads(merged.stdout)
+            assert merged_payload["mergeCommitOid"] == "a" * 40, merged_payload
+            assert merged_payload["elapsed_wait"] == 0.0, merged_payload
+            all_calls = calls
+            assert sum("/pulls/12/merge" in call for call in all_calls) == 2, all_calls
+            assert sum("/pulls/12" in call and "/merge" not in call for call in all_calls) == 3, all_calls
+            assert sleeps == [], sleeps
+            assert current_time[0] == 1000.0, current_time
 
 
 def test_ambiguous_405_reconciles_same_head_before_bounded_retry() -> None:
