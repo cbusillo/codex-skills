@@ -3299,6 +3299,32 @@ def unproven_inspection_conflict_result(
 
 def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
     try:
+        result = execute_inspection_on_route(args, context, route)
+    except InspectError as error:
+        reason = infer_error_reason(error, error.payload)
+        if reason in {"ide_memory_exhausted", "ide_memory_pressure"}:
+            raise
+        memory_error = ide_memory_failure(route)
+        if memory_error is not None:
+            error.payload["ide_memory"] = memory_error.payload["ide_memory"]
+            if reason in {"timeout", "inspection_api_timeout", "inspection_api_unavailable"} or int(error.payload.get("http_status") or 0) >= 500:
+                memory_error.payload["original_failure"] = error.payload
+                raise memory_error from error
+        raise
+    if result.get("verdict") == "UNKNOWN":
+        memory_error = ide_memory_failure(route)
+        if memory_error is not None:
+            result["ide_memory"] = memory_error.payload["ide_memory"]
+            if result.get("verdict_reason") in {"timeout", "inspection_api_timeout", "inspection_api_unavailable", "no_results", "capture_incomplete"}:
+                result["original_failure_reason"] = result.get("verdict_reason")
+                result["status"] = "error"
+                result["error_reason"] = memory_error.payload["error_reason"]
+                apply_verdict(result)
+    return result
+
+
+def execute_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
+    try:
         trigger_request = trigger_params(args, context, route)
         trigger = call_endpoint(route, "trigger", trigger_request)
     except InspectError as error:
@@ -4213,8 +4239,13 @@ def lifecycle_open_response_unknown(open_attempts: list[dict[str, Any]]) -> bool
 def lease_proves_open_not_attempted(lease: dict[str, Any]) -> bool:
     return (
         lease.get("state") in POTENTIAL_OPEN_LEASE_STATES
-        and lease.get("preparation_failure_stage") == "project_open"
-        and lease.get("preparation_failure_reason") in {"timeout", "connectionreseterror"}
+        and (
+            (
+                lease.get("preparation_failure_stage") == "project_open"
+                and lease.get("preparation_failure_reason") in {"timeout", "connectionreseterror"}
+            )
+            or lease.get("open_not_attempted") is True
+        )
         and lease.get("opened_by_helper") is False
         and lease.get("open_request_may_have_been_accepted") is False
         and lease.get("open_attempts") == []
@@ -4924,7 +4955,15 @@ def probe_lifecycle_open(
             if remaining_seconds < MIN_DIAGNOSTIC_PROBE_TIMEOUT_SECONDS:
                 break
             timeout_seconds = min(timeout_seconds, remaining_seconds)
-        check_ide_memory(identity, timeout_seconds=min(2.0, timeout_seconds))
+        if lease is not None and identity.get("session_id") == lease.get("session_id") and port == lease.get("ide_port"):
+            memory_error = ide_memory_failure(identity, timeout_seconds=min(2.0, timeout_seconds))
+            if memory_error is not None and memory_error.payload["error_reason"] == "ide_memory_exhausted":
+                raise memory_error
+        if deadline_ms is not None:
+            remaining_seconds = (deadline_ms - now_ms()) / 1000.0
+            if remaining_seconds < MIN_DIAGNOSTIC_PROBE_TIMEOUT_SECONDS:
+                break
+            timeout_seconds = min(timeout_seconds, remaining_seconds)
         try:
             response = http_get(
                 int(port),
@@ -4980,6 +5019,7 @@ def open_via_running_ide(
         except InspectError:
             if lease is not None and not attempts:
                 lease["open_not_attempted"] = True
+                lease["open_request_may_have_been_accepted"] = False
             raise
         try:
             if lease is not None:
@@ -5710,23 +5750,18 @@ def call_endpoint(
     port = route_port(route)
     if endpoint == "trigger":
         check_ide_memory(route)
-    try:
-        body = http_get(port, endpoint, params, timeout=timeout or max(DEFAULT_TIMEOUT_SECONDS, 10.0)).body
-    except InspectError as error:
-        check_ide_memory(route, original_error=error)
-        raise
-    if endpoint in {"wait", "problems"} and (
-        body.get("inspection_verdict") == "UNKNOWN"
-        or body.get("wait_outcome") == "timeout"
-        or body.get("timed_out") is True
-    ):
-        check_ide_memory(route)
-    return body
+    return http_get(port, endpoint, params, timeout=timeout or max(DEFAULT_TIMEOUT_SECONDS, 10.0)).body
 
 
 def check_ide_memory(
-    identity: dict[str, Any], original_error: InspectError | None = None, timeout_seconds: float = 2.0,
+    identity: dict[str, Any],
 ) -> None:
+    failure = ide_memory_failure(identity)
+    if failure is not None:
+        raise failure
+
+
+def ide_memory_failure(identity: dict[str, Any], timeout_seconds: float = 2.0) -> InspectError | None:
     if identity.get("ide_memory_diagnostic_version") != 1:
         return
     expected_session = identity.get("session_id")
@@ -5751,15 +5786,12 @@ def check_ide_memory(
         "session_id": expected_session,
         "port": route_port(identity),
     }
-    if original_error is not None:
-        payload["original_failure_reason"] = infer_error_reason(original_error, original_error.payload)
-        payload["endpoint"] = original_error.payload.get("endpoint")
     message = (
-        "IDE memory exhausted. Check for the Java heap space project-opening dialog, dismiss it, and restart the IDE before inspecting again."
+        "IDE memory exhausted. Ask the IDE owner to check for the Java heap space project-opening dialog, dismiss it, and restart the IDE before inspecting again."
         if exhausted else
-        "IDE memory pressure detected. Wait for it to settle before opening another project; restart the IDE if it persists."
+        "IDE memory pressure detected. Wait at least thirty seconds for it to settle before opening or inspecting another project; ask the IDE owner to restart if it persists."
     )
-    raise InspectError(message, 3, payload)
+    return InspectError(message, 3, payload)
 
 
 def call_contextual_endpoint(
@@ -6462,6 +6494,8 @@ def blocking_unknown_reason(payload: dict[str, Any], wait: dict[str, Any]) -> st
         return "session_drift"
     if payload.get("ambiguous"):
         return "ambiguous_route"
+    if payload.get("error_reason") in {"ide_memory_exhausted", "ide_memory_pressure"}:
+        return str(payload["error_reason"])
     if payload.get("unavailable"):
         return "inspection_api_unavailable"
     if payload.get("results_may_be_stale") or wait.get("results_may_be_stale") or payload.get("status") == "stale_results":
@@ -7315,9 +7349,9 @@ def next_action_for_bucket(verdict: str, bucket: str, reason: str, payload: dict
     if verdict == "RED":
         return "Fix the reported findings, then rerun inspection."
     if bucket == "ide_memory_exhausted":
-        return "Check for the Java heap space project-opening dialog, dismiss it, and restart the IDE before inspecting again."
+        return "Ask the IDE owner to check for the Java heap space project-opening dialog, dismiss it, and restart the IDE before inspecting again."
     if bucket == "ide_memory_pressure":
-        return "Wait for IDE memory pressure to settle before opening another project; restart the IDE if it persists."
+        return "Wait at least thirty seconds for IDE memory pressure to settle before opening or inspecting another project; ask the IDE owner to restart if it persists."
     if bucket in UNKNOWN_RETRY_BUCKETS:
         return next_action_for_unknown(reason, payload)
     if bucket == "route_not_ready":

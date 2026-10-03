@@ -3,9 +3,14 @@
 Plugins advertising `ide_memory_diagnostic_version: 1` expose a project-free
 `memory` endpoint. Before opening a project or triggering inspection, and after
 a failed endpoint request or UNKNOWN wait/problems response, the helper probes
-that endpoint with a bounded timeout. It also checks during lifecycle-open
-route probes so a Java heap space project-opening dialog is named while the
-project is still unroutable. Evidence must match the selected IDE session.
+that endpoint with a bounded timeout. Failure diagnostics run after owned-run
+cancellation and timeout recovery, preserving the original failure evidence.
+Unrelated session, request and scope failures retain their original reason
+with memory evidence attached as context. During lifecycle-open route probes,
+only exhaustion in the session that accepted the open interrupts route waiting;
+transient pressure does not abort an accepted open. The probe names the Java
+heap space project-opening dialog while the project is still unroutable.
+Evidence must match the selected IDE session.
 Current-process OOM produces `UNKNOWN/ide_memory_exhausted`; a recent
 overloaded-GC signal produces `UNKNOWN/ide_memory_pressure`. Neither authorizes
 an automatic retry. Exhaustion guidance names the modal dialog and requires
