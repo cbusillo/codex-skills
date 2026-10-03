@@ -6707,6 +6707,19 @@ def _private_health_endpoint_url(value: object) -> str:
     return url.strip()
 
 
+PRIVATE_HEALTH_ENDPOINT_PLAN_FIELDS = ("endpoint_key", "product", "context", "instance", "status")
+
+
+def _private_health_endpoint_plan_sha256(payload_digest: str, record: dict[str, Any]) -> str:
+    """The route has no plan digest; bind the private payload to the planned record here."""
+    return _canonical_sha256(
+        {
+            "payload_digest": payload_digest,
+            **{field: record.get(field) for field in PRIVATE_HEALTH_ENDPOINT_PLAN_FIELDS},
+        }
+    )
+
+
 def _project_private_health_endpoint_plan(
     result: object, *, request: dict[str, object] | None
 ) -> dict[str, object]:
@@ -6722,22 +6735,12 @@ def _project_private_health_endpoint_plan(
     record = _project_private_health_endpoint_record(source.get("record"))
     if public_identifier(source.get("endpoint_key")) != record["endpoint_key"]:
         raise LaunchplaneSafetyError("invalid_response")
-    # The route has no plan digest; bind the private payload to the reviewed plan here.
-    plan_sha256 = _canonical_sha256(
-        {
-            "payload_digest": payload_digest,
-            **{
-                field: record[field]
-                for field in ("endpoint_key", "product", "context", "instance", "status")
-            },
-        }
-    )
     projected: dict[str, object] = {
         "mode": mode,
         "endpoint_key": record["endpoint_key"],
         "endpoint_status": source["endpoint_status"],
         "record": record,
-        "plan_sha256": plan_sha256,
+        "plan_sha256": _private_health_endpoint_plan_sha256(payload_digest, record),
     }
     assert_public_safe_shape(projected)
     return projected
@@ -6774,9 +6777,10 @@ def private_health_endpoint_body(
     """The route body and the public request summary for a private endpoint payload."""
     payload = private_health_endpoint_payload(args)
     reason = _required_argument(args, "reason")
+    # Sorted, so a retry sends the same body however the payload file orders its keys.
     endpoint = {
         field: value.strip() if isinstance(value, str) else value
-        for field, value in payload.items()
+        for field, value in sorted(payload.items())
     }
     endpoint.setdefault("status", "active")
     request: dict[str, object] = {
@@ -6805,11 +6809,21 @@ def private_health_endpoint_body(
             result_status=None,
         )
         reviewed_record = result.get("record")
-        reviewed_updated_at = (
-            reviewed_record.get("updated_at") if isinstance(reviewed_record, dict) else None
-        )
+        if not isinstance(reviewed_record, dict):
+            raise ValueError("reviewed_dry_run_not_apply_eligible")
+        reviewed_updated_at = reviewed_record.get("updated_at")
+        # Recompute the reviewed digest from this payload, so neither an edited payload
+        # nor edited evidence can send a record the reviewer did not see.
         if (
             evidence["request"].get("payload_digest") != request["payload_digest"]
+            or _private_health_endpoint_plan_sha256(
+                cast(str, request["payload_digest"]), reviewed_record
+            )
+            != expected_plan_digest
+            or any(
+                reviewed_record.get(field) != endpoint[field]
+                for field in PRIVATE_HEALTH_ENDPOINT_PLAN_FIELDS
+            )
             or not isinstance(reviewed_updated_at, str)
             or not reviewed_updated_at
         ):
@@ -6846,7 +6860,6 @@ def execute_private_health_endpoint_apply(
 ) -> int:
     endpoint = cast(dict[str, Any], body["endpoint"])
     expected_plan_digest = args.expected_plan_digest.strip().lower()
-    reviewed_fields = ("endpoint_key", "product", "context", "instance", "status")
 
     def finish(
         settings: dict[str, str], provider_payload: dict[str, Any], payload: dict[str, Any]
@@ -6881,7 +6894,9 @@ def execute_private_health_endpoint_apply(
             payload,
             read=read,
             matches=lambda observed: observed["url_matches_review"] is True
-            and all(observed[field] == endpoint[field] for field in reviewed_fields),
+            and all(
+                observed[field] == endpoint[field] for field in PRIVATE_HEALTH_ENDPOINT_PLAN_FIELDS
+            ),
             label="private health endpoint",
         )
         return applied_as_reviewed and read_back_ok

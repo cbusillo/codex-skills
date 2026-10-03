@@ -5986,6 +5986,38 @@ def test_private_health_endpoint_hides_the_url_and_binds_apply_to_the_review() -
         assert payload["result"]["read_back"]["url_matches_review"] is False
         assert "10.0.0.107" not in json.dumps(payload)
 
+        # The record read back is another lane's, even though the URL agrees.
+        status, payload, _posts, _reads = _run_main(
+            apply_argv,
+            post=_private_endpoint_response("apply"),
+            read=_private_endpoint_read(instance="prod"),
+        )
+        assert (status, payload["status"]) == (1, "accepted_unverified")
+        assert payload["result"]["read_back_matches"] is False
+
+        # Evidence edited to vouch for a different payload still fails the reviewed digest.
+        swapped = {**_private_endpoint_payload(), "url": "http://10.0.0.107:8001/healthz"}
+        swapped_path = _write_json(directory, "endpoint-swapped.json", swapped)
+        forged = copy.deepcopy(evidence)
+        forged["request"]["payload_digest"] = write_action.metadata_review_digest(
+            {**swapped, "status": "active", "reason": "Monitor the testing lane privately."}
+        )
+        forged_path = _write_json(directory, "endpoint-forged.json", forged)
+        status, payload, posts, _reads = _run_main(
+            [
+                "private-health-endpoint-apply",
+                "--payload-file",
+                swapped_path,
+                "--reason",
+                "Monitor the testing lane privately.",
+                *_reviewed_apply_argv(digest, forged_path),
+            ],
+            post=_private_endpoint_response("apply"),
+            read=_private_endpoint_read(),
+        )
+        assert (status, posts) == (2, [])
+        assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
+
         # A different reason than the reviewed one is a different change.
         status, payload, posts, _reads = _run_main(
             [*apply_argv[:4], "Another reason.", *apply_argv[5:]],
