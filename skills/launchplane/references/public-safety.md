@@ -100,7 +100,7 @@ Useful scan for Launchplane context changes:
 ```sh
 rg -n --hidden --glob '!**/.git/**' \
   '(TOKEN|SECRET|PRIVATE|/Users/|github_pat_|ghp_|sk-[A-Za-z0-9]|launchplane)' \
-  launchplane README.md repo-readiness work-closeout
+  skills/launchplane README.md skills/repo-readiness skills/work-closeout
 ```
 
 Expected false positives should be documented in the PR validation notes.

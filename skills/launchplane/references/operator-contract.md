@@ -16,9 +16,10 @@ prove that the vendored artifact is current upstream. A source-provenance-only
 change is non-gating when schema version, normalization version, semantic digest,
 and contract content are unchanged.
 
-The merge-train policy import, generic-web deploy-recovery, and Odoo
-addon-settings routes remain bounded local extensions until the vendored public
-projection includes them.
+The commands listed under `LOCAL_EXTENSION_ROUTES` in
+`scripts/launchplane_contract.py`, such as merge-train policy import,
+generic-web deploy-recovery, and Odoo addon-settings, remain bounded local
+extensions until the vendored public projection includes them.
 Their private-file, dry-run, review, digest-binding, idempotency, redaction, and
 trace requirements remain fully enforced, but they must not be reported as
 contract-backed.
@@ -55,7 +56,9 @@ Terminal admin execution is optional private configuration. It is not needed
 for read-only Launchplane context and it is not the default path for ad hoc
 plaintext secret entry.
 
-Source order for non-browser admin execution:
+Source order for non-browser admin execution (the helper's global `--url`
+overrides the service URL from every source, and `--env-config` replaces the
+default `.env` path):
 
 1. Explicit command-line JSON config path supplied by the caller.
 2. Environment variables already present in the current process.

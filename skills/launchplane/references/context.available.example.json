@@ -10,11 +10,10 @@
     "pr_number": 456
   },
   "summary": {
-    "recommendation": "Inspect the linked pull request before starting new work.",
+    "recommendation": "Wait for preview readiness to pass required checks.",
     "safe_to_start": false,
     "state": "waiting",
-    "blocked_by": "Preview readiness is waiting on required checks.",
-    "source_of_truth_url": "https://github.com/example-org/example-app/pull/456"
+    "source_of_truth_url": "https://github.com/example-org/example-app/issues/123"
   },
   "sections": {
     "repo_product_mapping": {
@@ -65,9 +64,9 @@
   },
   "links": [
     {
-      "label": "Pull request",
-      "url": "https://github.com/example-org/example-app/pull/456",
-      "kind": "github_pr"
+      "label": "Source of truth",
+      "url": "https://github.com/example-org/example-app/issues/123",
+      "kind": "source"
     }
   ],
   "warnings": []
