@@ -1148,7 +1148,7 @@ def test_portfolio_capacity_admission_ranks_stops_then_age_and_keeps_own_project
             assert [item["number"] for item in result["available_candidates"]] == [23, 42]
 
 
-def test_portfolio_capacity_needs_current_person_waits_and_complete_coverage() -> None:
+def test_portfolio_capacity_needs_current_person_waits_and_complete_graph() -> None:
     roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
     leaf = global_issue("someone/business", 10)
     tool = global_issue("someone/tools", 20)
@@ -1179,8 +1179,39 @@ def test_portfolio_capacity_needs_current_person_waits_and_complete_coverage() -
                 assert result["tooling_capacity_context"]["admitted"] is False
             module.discover_direction_work = lambda *_a, **_kw: ([tool], {"complete": False, "repositories": []})
             module.cmd_next(next_args())
+            assert result["tooling_capacity_context"]["admitted"] is True
+            assert [item["number"] for item in result["available_candidates"]] == [20]
+            assert result["candidate_coverage"]["complete"] is False
+
+
+def test_portfolio_capacity_truncated_discovery_admits_tooling_but_not_incomplete_graph() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    wait = global_issue("someone/business", 10)
+    tools = [global_issue("someone/tools", number) for number in range(20, 25)]
+    edges = {(roots[0]["repo"], 1): relationships(sub_issues=[wait])}
+    with global_fixture(roots, [wait], edges, discovered=tools) as (module, result, _reads):
+        module.cmd_next(next_args())
+        items = {item["number"]: item for item in result["candidates"]}
+        context = {"issues": {
+            "someone/business#10": reviewed(items[10], "waiting", waiting_on="person"),
+            "someone/tools#20": reviewed(items[20], category="repeated_stop_tooling"),
+        }}
+        with patch.multiple(module, next_selection_context=lambda _args: context):
+            module.cmd_next(next_args(scan_limit=3))
+            assert result["graph_context"]["complete"] is True
+            assert result["tooling_capacity_context"]["admitted"] is True
+            admitted = result["available_candidates"]
+            assert [item["number"] for item in admitted] == [20]
+            assert admitted[0]["tooling_admission_rule"] == "all_milestones_waiting_on_people"
+            assert result["discovery_context"]["capacity_complete"] is False
+            assert result["discovery_context"]["unevaluated_count"] == 2
+            assert result["candidate_coverage"]["complete"] is False
+            assert result["candidate_coverage"]["warning"]
+            assert result["truncated"] is True
+            module.cmd_next(next_args(scan_limit=1))
+            assert result["graph_context"]["complete"] is False
             assert result["tooling_capacity_context"]["admitted"] is False
-            assert not result["available_candidates"]
+            assert result["available_candidates"] == []
 
 
 def test_portfolio_capacity_waiting_discovery_milestone_blocks_admission() -> None:
@@ -1982,7 +2013,8 @@ TESTS = [
     test_portfolio_partial_ownership_and_stale_or_truncated_discussions_are_not_available,
     test_portfolio_priority_requires_incident_and_repeated_stop_evidence,
     test_portfolio_capacity_admission_ranks_stops_then_age_and_keeps_own_projects,
-    test_portfolio_capacity_needs_current_person_waits_and_complete_coverage,
+    test_portfolio_capacity_needs_current_person_waits_and_complete_graph,
+    test_portfolio_capacity_truncated_discovery_admits_tooling_but_not_incomplete_graph,
     test_portfolio_capacity_waiting_discovery_milestone_blocks_admission,
     test_portfolio_capacity_shared_blocker_service_parity_and_unknown_context,
     test_portfolio_capacity_ignores_unrelated_waits_and_blocking_tooling,
