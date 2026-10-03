@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import subprocess
 import tempfile
+import sys
 from typing import Any, Callable
 
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
@@ -670,7 +672,222 @@ def test_repo_resolution_launch_failure_is_structured() -> None:
             os.environ["GH_REPO"] = original_repo
 
 
+def exact_comment(comment_id: int, **kwargs: Any) -> dict[str, Any]:
+    return {**comment_body(comment_id, **kwargs), "issue_url": "https://api.github.com/repos/owner/repo/issues/42"}
+
+
+def test_exact_edits_keep_interleaved_session_comments_separate() -> None:
+    comments = {11: exact_comment(11, body="session A"), 12: exact_comment(12, body="session B")}
+    markdown = "## Session A\n\n`literal` ${NOT_EXPANDED}\n"
+
+    def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        comment_id = int(path.rsplit("/", 1)[1])
+        if method == "GET":
+            return success(comments[comment_id].copy())
+        assert method == "PATCH"
+        comments[comment_id]["body"] = body["body"]
+        return success(comments[comment_id].copy())
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        for kind, comment_id, prior, replacement in (("issue", 11, "session A", markdown), ("pr", 12, "session B", "B updated\n")):
+            # Another session posts after this session saved its target.
+            comments[13] = exact_comment(13, body="unrelated later post")
+            result = github_comment.comment(kind, 42, replacement, repo="owner/repo", edit_comment=comment_id, expected_body=prior, gh_cmd="fake-gh")
+            assert result["selected_comment_id"] == comment_id, result
+            assert result["comment"]["id"] == comment_id, result
+        assert comments[11]["body"] == markdown, comments
+        assert comments[12]["body"] == "B updated\n", comments
+        assert comments[13]["body"] == "unrelated later post", comments
+        assert not any("?" in call["path"] or call["method"] == "POST" for call in calls), calls
+
+    with_call_stub(callback, run)
+
+
+def test_exact_edit_refuses_wrong_thread_author_and_stale_expectations() -> None:
+    cases = [
+        ({"issue_url": "https://api.github.com/repos/owner/repo/issues/43"}, {}, "comment_target_mismatch"),
+        ({"issue_url": "https://api.github.com/repos/other/repo/issues/42"}, {}, "comment_target_mismatch"),
+        ({"id": 99}, {}, "comment_target_mismatch"),
+        ({"user": {"login": "someone-else"}}, {}, "actor_mismatch"),
+        ({"user": None}, {}, "actor_mismatch"),
+        ({"body": "changed"}, {"expected_body": "body"}, "comment_conflict"),
+        ({"body": "body\n"}, {"expected_body": "body"}, "comment_conflict"),
+        ({"updated_at": "2026-07-16T13:00:00Z"}, {"expected_updated_at": "2026-07-16T12:00:00Z"}, "comment_conflict"),
+    ]
+    for changes, expectations, cause in cases:
+        def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            assert method == "GET", (method, path)
+            if path == "/user":
+                return success({"login": "fixture-automation"})
+            return success({**exact_comment(11), **changes})
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            try:
+                github_comment.comment("issue", 42, "replacement", repo="owner/repo", edit_comment=11, gh_cmd="fake-gh", **expectations)
+            except github_comment.CommentError as exc:
+                assert exc.failure.cause == cause, exc.failure
+                assert exc.failure.write_outcome == "not_started", exc.failure
+                assert exc.payload["selected_comment_id"] == 11, exc.payload
+                assert "body" not in exc.payload, exc.payload
+            else:
+                raise AssertionError("expected exact edit refusal")
+            assert len(calls) == 2, calls
+
+        with_call_stub(callback, run)
+
+
+def test_exact_edit_accepts_matching_version_and_empty_prior_body() -> None:
+    def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        if method == "GET":
+            return success(exact_comment(11, body=""))
+        assert body == {"body": "replacement"}, body
+        return success(exact_comment(11, body="replacement"))
+
+    def run(_calls: list[dict[str, Any]]) -> None:
+        result = github_comment.comment("pr", 42, "replacement", repo="OWNER/REPO", edit_comment=11, expected_body="", expected_updated_at="2026-07-16T12:00:00Z", gh_cmd="fake-gh")
+        assert result["comment_action"] == "updated", result
+
+    with_call_stub(callback, run)
+
+
+def test_exact_edit_never_replays_patch_or_creates_on_failure() -> None:
+    for status in (404, 429, 503):
+        def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            if path == "/user":
+                return success({"login": "fixture-automation"})
+            if method == "GET":
+                return success(exact_comment(11))
+            assert method == "PATCH", method
+            return failure(status, {"message": "Not Found" if status == 404 else "API rate limit exceeded" if status == 429 else "Unicorn!"}, is_write=True)
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            try:
+                github_comment.comment("issue", 42, "replacement", repo="owner/repo", edit_comment=11, expected_body="body", gh_cmd="fake-gh")
+            except github_comment.CommentError as exc:
+                assert exc.payload["selected_comment_id"] == 11, exc.payload
+            else:
+                raise AssertionError("expected patch failure")
+            assert [call["method"] for call in calls] == ["GET", "GET", "PATCH"], calls
+
+        with_call_stub(callback, run, allow_retry=True)
+
+
+def test_exact_edit_missing_target_never_selects_another_comment() -> None:
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        assert method == "GET", method
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        return failure(404, {"message": "Not Found"}, is_write=False)
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        try:
+            github_comment.comment("pr", 42, "replacement", repo="owner/repo", edit_comment=11, gh_cmd="fake-gh")
+        except github_comment.CommentError as exc:
+            assert exc.failure.write_outcome == "not_started", exc.failure
+            assert exc.payload["selected_comment_id"] == 11, exc.payload
+        else:
+            raise AssertionError("expected missing target refusal")
+        assert len(calls) == 2, calls
+
+    with_call_stub(callback, run)
+
+
+def test_exact_edit_invalid_combinations_fail_before_network() -> None:
+    cases = [{"edit_comment": 0}, {"edit_comment": True}, {"edit_comment": "11"}, {"edit_comment": 11, "edit_last": True}, {"edit_comment": 11, "create_if_none": True}, {"edit_comment": 11, "dedupe_body": True}, {"expected_body": "old"}, {"expected_updated_at": "old"}]
+    def callback(*_args: Any, **_kwargs: Any) -> github_api.ApiResult:
+        raise AssertionError("invalid arguments must not use the network")
+
+    def run(_calls: list[dict[str, Any]]) -> None:
+        for kwargs in cases:
+            try:
+                github_comment.comment("issue", 42, "replacement", repo="owner/repo", gh_cmd="fake-gh", **kwargs)
+            except github_comment.CommentError as exc:
+                assert exc.failure.cause == "validation_error", exc.failure
+            else:
+                raise AssertionError("expected input refusal")
+
+    with_call_stub(callback, run)
+
+
+def test_exact_comment_cli_preserves_files_and_conflict_envelope() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = pathlib.Path(directory)
+        prior = root / "prior.md"
+        prior.write_bytes(b"prior\r\n")
+        replacement = root / "replacement.md"
+        replacement.write_text("## Result\n\n`literal` ${NO_EXPANSION}\n", encoding="utf-8")
+        saved = root / "saved.md"
+        fake_gh = root / "fake-gh"
+        fake_gh.write_text(
+            "#!" + sys.executable + "\n"
+            "import json, os, pathlib, sys\n"
+            "args = sys.argv[1:]\n"
+            "path = next(x for x in args if x.startswith('/'))\n"
+            "method = args[args.index('--method') + 1]\n"
+            "if path == '/user': print(json.dumps({'login': 'fixture-automation'}))\n"
+            "else:\n"
+            " assert path == '/repos/owner/repo/issues/comments/11', args\n"
+            " body = 'prior\\r\\n'\n"
+            " if method == 'PATCH':\n"
+            "  body = json.load(sys.stdin)['body']\n"
+            "  pathlib.Path(os.environ['COMMENT_TEST_SAVED']).write_text(body, encoding='utf-8')\n"
+            " print(json.dumps({'id': 11, 'issue_url': 'https://api.github.com/repos/owner/repo/issues/42', 'html_url': 'https://github.com/owner/repo/issues/42#issuecomment-11', 'user': {'login': 'fixture-automation'}, 'body': body, 'updated_at': '2026-07-16T12:00:00Z'}))\n",
+            encoding="utf-8",
+        )
+        fake_gh.chmod(0o755)
+        env = {**os.environ, "GH_COMMENT_GH": str(fake_gh), "GH_PR_GH": str(fake_gh), "COMMENT_TEST_SAVED": str(saved)}
+        scripts = pathlib.Path(__file__).parent
+        for script, prefix in (("github_comment.py", ["issue", "42", "--repo", "owner/repo"]), ("gh-pr.py", ["--repo", "owner/repo", "comment", "42"])):
+            argv = [sys.executable, str(scripts / script), *prefix, "--edit-comment", "11", "--body-file", str(replacement), "--expected-body-file", str(prior), "--expected-updated-at", "2026-07-16T12:00:00Z"]
+            proc = subprocess.run(argv, env=env, capture_output=True, text=True, check=False)
+            assert proc.returncode == 0, (proc.stdout, proc.stderr)
+            result = json.loads(proc.stdout)
+            assert result["selected_comment_id"] == 11, result
+            assert saved.read_text(encoding="utf-8") == replacement.read_text(encoding="utf-8")
+            saved.unlink()
+            prior.write_text("stale\n", encoding="utf-8")
+            proc = subprocess.run(argv, env=env, capture_output=True, text=True, check=False)
+            assert proc.returncode != 0, proc.stdout
+            result = json.loads(proc.stdout)
+            assert result["write_outcome"] == "not_started", result
+            assert result["selected_comment_id"] == 11, result
+            assert not saved.exists()
+            prior.write_bytes(b"prior\r\n")
+
+
+def test_exact_edit_supports_enterprise_api_thread_urls() -> None:
+    original_host = github_api.DEFAULT_HOST
+    github_api.DEFAULT_HOST = "github.example.test"
+    try:
+        def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            if path == "/user":
+                return success({"login": "fixture-automation"})
+            result = exact_comment(11)
+            result["issue_url"] = "https://github.example.test/api/v3/repos/owner/repo/issues/42"
+            return success(result)
+
+        def run(_calls: list[dict[str, Any]]) -> None:
+            result = github_comment.comment("issue", 42, "replacement", repo="owner/repo", edit_comment=11, gh_cmd="fake-gh")
+            assert result["selected_comment_id"] == 11, result
+
+        with_call_stub(callback, run)
+    finally:
+        github_api.DEFAULT_HOST = original_host
+
+
 TESTS = [
+    test_exact_edit_supports_enterprise_api_thread_urls,
+    test_exact_comment_cli_preserves_files_and_conflict_envelope,
+    test_exact_edits_keep_interleaved_session_comments_separate,
+    test_exact_edit_refuses_wrong_thread_author_and_stale_expectations,
+    test_exact_edit_accepts_matching_version_and_empty_prior_body,
+    test_exact_edit_never_replays_patch_or_creates_on_failure,
+    test_exact_edit_missing_target_never_selects_another_comment,
+    test_exact_edit_invalid_combinations_fail_before_network,
     test_create_preserves_markdown_body,
     test_dedupe_body_reuses_existing_actor_comment_without_write,
     test_edit_last_paginates_and_selects_latest_actor_comment,
