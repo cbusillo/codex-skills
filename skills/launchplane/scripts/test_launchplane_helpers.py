@@ -7270,6 +7270,11 @@ def test_operator_free_text_redacts_credentials_and_urls() -> None:
         ("Use ghp_example123 next.", "Use [redacted] next."),
         ('Updated env_vars="password=demo-pass"', 'Updated env_vars=[redacted]'),
         ('Use password="demo secret without closing quote', 'Use [redacted]'),
+        ('updated password="demo API_KEY="superSecret123"', 'updated [redacted]'),
+        ('{"password": "abc, "api_key": "xyz"}', '{[redacted]}'),
+        ('verified password == mySecret', 'verified [redacted]'),
+        ('set API_KEY := mySecret', 'set [redacted]'),
+        ('set password=super,secret;value', 'set [redacted]'),
         ("Testing   is complete.", "Testing is complete."),
     )
     for raw, expected in examples:
