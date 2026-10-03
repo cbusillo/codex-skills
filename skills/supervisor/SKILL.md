@@ -76,7 +76,9 @@ records that run.
    issue, and tab title. Nudge a stalled session with exact facts: the comment,
    the failing check, the time it last moved. Check each session's context
    size and ask it to close out at its next safe point near 450k. Gather the
-   open Director questions.
+   open Director questions. Close finished sessions using the procedure below
+   on every check, including sessions that finished their item without needing
+   a relaunch.
 4. **Every check and every handoff ends with the "needs the Director" list**,
    headed with the Director's name (the pilot's handoffs say "Needs Chris"): each question in full, with what it decides,
    what changes on yes, and a recommendation, in one batch.
@@ -115,6 +117,43 @@ records that run.
 8. Run the check until the Director asks you to close out, or your own context
    nears 450k; then write the handoff below and close out with
    `work-closeout`.
+
+## Close Finished Sessions On Every Check
+
+1. Match the ledger's session to its transcript, process, and terminal tab.
+   Leave the Director's own sessions alone. Keep thread-only sessions without
+   a matched terminal open and record them in the ledger. Read the session's
+   latest response in its transcript: it must give the session's unqualified
+   close-out verdict `Safe to exit: yes`, and its work must be handed off on
+   the item's issue. A quotation, negation, or verdict for one check does not
+   qualify. Never infer completion from silence,
+   idleness, or the screen; Claude Code redraws its screen and can hide the
+   close-out message. If later transcript activity resumes work, keep it open.
+2. Inspect the input line before sending keys. If it holds text the Director
+   typed, record that text in the Supervisor's private handoff files, with the
+   session and tab identity, before clearing it or closing the tab. Keep the
+   tab open if the text cannot be recorded or its author is uncertain.
+3. A prompt for unfinished item work means the session is not finished; keep
+   it open. Resolve a pending close-out permission prompt only after verifying
+   the full pending tool call in the transcript matches the prompt and its
+   exact action meets the brief and the owning skill's existing rules.
+   If the action cannot be verified, keep the session open and report the prompt.
+   Use one-time approval only; never select an option that changes persistent
+   permissions. Never approve new scope or access to make a session exit.
+   Immediately before each approval, verify the visible prompt still matches
+   the checked tool call. Send one response, then read back the prompt state;
+   never retry an uncertain send or answer a subsequent prompt without checking it.
+   If the prompt needs the Director, leave the session open and include it in the next
+   "needs the Director" list. After resolving a prompt, recheck the transcript
+   and handoff before continuing, because the session may have resumed work.
+4. Immediately before sending keys, recheck the transcript, handoff, input
+   line, and that the session is at its prompt with no turn running. Clear the
+   input with Ctrl-U and verify the entire input is empty before sending
+   `/exit` for Claude Code or `/quit` for Codex into that terminal's input,
+   never through `codex queue`. If any input remains, keep the tab open.
+   Use a bounded wait for that session's process to end. Verify it ended before closing
+   the tab. If it is still running or its identity is uncertain, keep the tab
+   open and record the next action in the ledger.
 
 ## Handoff Shape
 
