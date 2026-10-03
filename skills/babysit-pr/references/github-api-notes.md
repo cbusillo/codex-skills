@@ -79,6 +79,19 @@ Used by Codex to classify branch-related vs flaky/unrelated failures. Prefer the
 
 Reruns only failed jobs (and dependencies) for a workflow run. This is a
 GitHub write and must be owned by the configured automation account.
+A retry needs a completed failed or timed-out job; a cancelled notification
+run with no such job is skipped. An explicit API rejection saying the run cannot
+be retried (including gh’s rewritten HTTP 403 message) is also skipped without discarding earlier successful reruns.
+Each cycle consumes one retry, even when multiple runs are submitted. Intent
+and budget are saved before the write; confirmed rejections alone consume no
+budget. Other explicit API rejections release the rejected intent and return partial
+progress with a failure exit. Transport errors retain intent and stop further
+submissions. Watch and retry processes serialize load/update/save through the
+same state-file lock.
+Saved intents suppress further retries and merge readiness until a later read
+shows a higher `run_attempt`. Missing or unchanged attempt evidence remains
+`check_rerun_outcome`; interrupted or unknown writes also emit
+`stop_unknown_rerun` rather than waiting indefinitely or resetting intent.
 
 ## Review-related endpoints
 

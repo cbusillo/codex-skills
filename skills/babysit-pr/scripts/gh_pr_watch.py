@@ -6,6 +6,8 @@
 """Watch GitHub PR CI and review activity for PR babysitting workflows."""
 
 import argparse
+import fcntl
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -376,6 +378,17 @@ def load_state(path):
     }, True
 
 
+@contextmanager
+def state_lock(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.with_name(path.name + ".lock").open("a") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def save_state(path, state):
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(state, indent=2, sort_keys=True) + "\n"
@@ -621,6 +634,7 @@ def failed_runs_from_workflow_runs(runs, head_sha):
         failed_runs.append(
             {
                 "run_id": run.get("id"),
+                "run_attempt": run.get("run_attempt"),
                 "workflow_name": run.get("name") or run.get("display_title") or "",
                 "status": str(run.get("status") or ""),
                 "conclusion": conclusion,
@@ -1218,6 +1232,11 @@ def collect_snapshot(args):
     pr = resolve_pr(args.pr, repo_override=args.repo)
     pr_diagnostic = pr.pop("_read_diagnostic", None)
     state_path = Path(args.state_file) if args.state_file else default_state_file_for(pr)
+    with state_lock(state_path):
+        return collect_locked_snapshot(args, pr, pr_diagnostic, state_path)
+
+
+def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
     state, fresh_state = load_state(state_path)
 
     if not state.get("started_at"):
@@ -1253,6 +1272,7 @@ def collect_snapshot(args):
         apply_review_readiness(pr, review)
         review_diagnostic = review_readiness_diagnostic(reader, review)
 
+    pending_reruns = reconcile_pending_reruns(state, pr["head_sha"], workflow_runs)
     retries_used = current_retry_count(state, pr["head_sha"])
     actions = recommend_actions(
         pr,
@@ -1265,6 +1285,16 @@ def collect_snapshot(args):
         owner_review_items=state.get("owner_review_items", []),
         owner_review_errors=state.get("owner_review_errors", []),
     )
+
+    if pending_reruns and not pr["closed"] and not pr["merged"]:
+        actions = [action for action in actions if action not in {
+            "retry_failed_checks", "ready_to_merge", "stop_exhausted_retries",
+        }]
+        actions.append("check_rerun_outcome")
+        if any(item["outcome"] != "confirmed" for item in pending_reruns.values()):
+            actions.append("stop_unknown_rerun")
+    elif "retry_failed_checks" in actions and not retryable_failed_runs(failed_runs, failed_jobs):
+        actions.remove("retry_failed_checks")
 
     state["pr"] = {"repo": pr["repo"], "number": pr["number"]}
     state["last_seen_head_sha"] = pr["head_sha"]
@@ -1283,6 +1313,7 @@ def collect_snapshot(args):
         "retry_state": {
             "current_sha_retries_used": retries_used,
             "max_flaky_retries": args.max_flaky_retries,
+            "pending_run_ids": list(pending_reruns),
         },
         "read_diagnostics": {
             "pr": pr_diagnostic,
@@ -1291,6 +1322,27 @@ def collect_snapshot(args):
         },
     }
     return snapshot, state_path
+
+
+def retryable_failed_runs(failed_runs, failed_jobs):
+    failed_job_runs = {
+        job.get("run_id") for job in failed_jobs
+        if job.get("status") == "completed"
+        and job.get("conclusion") in {"failure", "timed_out"}
+    }
+    return [run for run in failed_runs if run.get("run_id") in failed_job_runs]
+
+
+def reconcile_pending_reruns(state, head_sha, workflow_runs):
+    pending = state.setdefault("pending_reruns_by_sha", {}).setdefault(head_sha, {})
+    for run in workflow_runs:
+        run_id = str(run.get("id"))
+        previous_attempt = pending.get(run_id, {}).get("run_attempt")
+        current_attempt = run.get("run_attempt")
+        if (run.get("head_sha") == head_sha and isinstance(previous_attempt, int)
+                and isinstance(current_attempt, int) and current_attempt > previous_attempt):
+            del pending[run_id]
+    return pending
 
 
 def retry_failed_now(args):
@@ -1307,11 +1359,15 @@ def retry_failed_now(args):
         "rerun_attempted": False,
         "rerun_count": 0,
         "rerun_run_ids": [],
+        "skipped_run_ids": [],
         "reason": None,
     }
 
     if pr["closed"] or pr["merged"]:
         result["reason"] = "pr_closed"
+        return result
+    if snapshot["retry_state"].get("pending_run_ids"):
+        result["reason"] = "rerun_outcome_pending"
         return result
     if checks_summary.get("evidence_complete") is not True:
         result["reason"] = "check_evidence_incomplete"
@@ -1329,24 +1385,86 @@ def retry_failed_now(args):
         result["reason"] = "retry_budget_exhausted"
         return result
 
-    for run in failed_runs:
-        run_id = run.get("run_id")
-        if run_id in (None, ""):
-            continue
-        gh_text(["run", "rerun", str(run_id), "--failed"], repo=pr["repo"])
-        result["rerun_run_ids"].append(run_id)
+    eligible_runs = retryable_failed_runs(failed_runs, snapshot.get("failed_jobs", []))
+    result["skipped_run_ids"] = [
+        run.get("run_id") for run in failed_runs if run not in eligible_runs
+    ]
+    with state_lock(state_path):
+        return submit_locked_reruns(snapshot, state_path, result, eligible_runs)
 
-    if result["rerun_run_ids"]:
-        state, _ = load_state(state_path)
-        new_count = current_retry_count(state, pr["head_sha"]) + 1
-        set_retry_count(state, pr["head_sha"], new_count)
-        state["last_snapshot_at"] = int(time.time())
+
+def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
+    pr = snapshot["pr"]
+    state, _ = load_state(state_path)
+    retries_used = current_retry_count(state, pr["head_sha"])
+    if retries_used >= snapshot["retry_state"]["max_flaky_retries"]:
+        result["reason"] = "retry_budget_exhausted"
+        return result
+    pending = state.setdefault("pending_reruns_by_sha", {}).setdefault(pr["head_sha"], {})
+    if pending:
+        result["reason"] = "rerun_outcome_pending"
+        return result
+    current_runs = {
+        run.get("id"): run for run in get_workflow_runs_for_sha(pr["repo"], pr["head_sha"], reader=watcher_reader())
+    } if eligible_runs else {}
+    cycle_charged = False
+    for run in eligible_runs:
+        run_id = run.get("run_id")
+        current_run = current_runs.get(run_id, {})
+        attempt = run.get("run_attempt")
+        if (not isinstance(attempt, int) or attempt <= 0
+                or current_run.get("head_sha") != pr["head_sha"]
+                or current_run.get("run_attempt") != attempt
+                or current_run.get("status") != "completed"):
+            result["skipped_run_ids"].append(run_id)
+            continue
+        if not cycle_charged:
+            set_retry_count(state, pr["head_sha"], retries_used + 1)
+            cycle_charged = True
+        # Persist intent before submitting a write. A crash or ambiguous error
+        # must not let the next invocation replay the same run attempt.
+        pending[str(run_id)] = {"run_attempt": run.get("run_attempt"), "outcome": "submitting"}
         save_state(state_path, state)
         result["rerun_attempted"] = True
+        try:
+            gh_text(["run", "rerun", str(run_id), "--failed"], repo=pr["repo"])
+        except GhCommandError as err:
+            detail = github_api.redact_string(str(err))
+            # gh rewrites HTTP 403 into this message, dropping the status.
+            rejected = bool(re.search(r"HTTP (?:400|401|403|404|410|422|429)\b", detail)) or (
+                f"run {run_id} cannot be rerun;" in detail
+                or "failed to get run:" in detail
+                or isinstance(err.__cause__, FileNotFoundError)
+            )
+            if rejected:
+                del pending[str(run_id)]
+                if not result["rerun_run_ids"]:
+                    set_retry_count(state, pr["head_sha"], retries_used)
+                    cycle_charged = False
+                save_state(state_path, state)
+                if "cannot be retried" not in detail.lower():
+                    result["reason"] = "rerun_rejected"
+                    result["error"] = detail
+                    break
+                result["skipped_run_ids"].append(run_id)
+                continue
+            result["reason"] = "rerun_outcome_unknown"
+            result["error"] = detail
+            result["unknown_run_id"] = run_id
+            break
+        pending[str(run_id)]["outcome"] = "confirmed"
+        result["rerun_run_ids"].append(run_id)
         result["rerun_count"] = len(result["rerun_run_ids"])
-        result["reason"] = "rerun_triggered"
-    else:
-        result["reason"] = "failed_runs_missing_ids"
+        save_state(state_path, state)
+
+    if result["reason"] not in {"rerun_outcome_unknown", "rerun_rejected"}:
+        if result["rerun_run_ids"]:
+            result["reason"] = "rerun_triggered"
+        else:
+            result["reason"] = "no_rerunnable_failed_jobs"
+    state["last_snapshot_at"] = int(time.time())
+    save_state(state_path, state)
+    result["retries_used"] = current_retry_count(state, pr["head_sha"])
 
     return result
 
@@ -1408,6 +1526,7 @@ def run_watch(args):
         if (
             "stop_pr_closed" in actions
             or "stop_exhausted_retries" in actions
+            or "stop_unknown_rerun" in actions
         ):
             print_event("stop", {"actions": snapshot.get("actions"), "pr": snapshot.get("pr")})
             return 0
@@ -1431,8 +1550,9 @@ def main():
     args = parse_args()
     try:
         if args.retry_failed_now:
-            print_json(retry_failed_now(args))
-            return 0
+            result = retry_failed_now(args)
+            print_json(result)
+            return 1 if result.get("error") else 0
         if args.watch:
             return run_watch(args)
         snapshot, state_path = collect_snapshot(args)
