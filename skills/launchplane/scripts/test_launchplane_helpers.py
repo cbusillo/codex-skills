@@ -3817,6 +3817,57 @@ def test_reconcile_requests_read_keeps_testing_operation_ids() -> None:
     assert "Private feedback text" not in rendered
 
 
+def test_reconcile_requests_read_keeps_generic_web_testing_outcome() -> None:
+    import hashlib
+
+    key = "product-reconcile:example-product:example:testing:sha256:abc:from-deployment-1"
+    plan = {
+        "target": "testing",
+        "deploy_operation_status": "replayed",
+        "deploy_status": "fail",
+        "post_deploy_status": "skipped",
+        "deployment_record_id": "deployment-example-testing-1",
+        "deploy_idempotency_key": key,
+        "driver_message": "Private provider failure text",
+    }
+    response = {
+        "status": "ok",
+        "product": "example-product",
+        "requests": [{"target_key": "example-product:testing", "last_plan": plan}],
+    }
+    argv = ["reconcile-requests-read", "--product", "example-product"]
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    kept = payload["result"]["requests"][0]["last_plan"]
+    for field in ("deploy_operation_status", "deploy_status", "post_deploy_status", "deployment_record_id"):
+        assert kept[field] == plan[field]
+    assert kept["deploy_key_sha256"] == hashlib.sha256(key.encode()).hexdigest()
+    assert "deploy_idempotency_key" not in kept
+    assert "driver_message" not in kept
+    assert payload["result"]["dropped_field_count"] == 1
+    assert key not in json.dumps(payload)
+    assert "Private provider failure text" not in json.dumps(payload)
+
+    # A new starting deployment produces a distinct comparison value.
+    plan["deploy_idempotency_key"] = key + "-next"
+    status, next_payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    assert next_payload["result"]["requests"][0]["last_plan"]["deploy_key_sha256"] != kept["deploy_key_sha256"]
+
+    for field in ("deploy_operation_status", "deploy_status", "post_deploy_status"):
+        plan[field] = "Private provider text with spaces"
+    plan["deployment_record_id"] = {"message": "Private record text"}
+    plan["deploy_idempotency_key"] = ["Private key text"]
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    kept = payload["result"]["requests"][0]["last_plan"]
+    assert all(kept[field] == "" for field in (
+        "deploy_operation_status", "deploy_status", "post_deploy_status",
+        "deployment_record_id", "deploy_key_sha256",
+    ))
+    assert "Private" not in json.dumps(payload)
+
+
 def _target_replacement_operation_response() -> dict[str, Any]:
     operation_id = "odoo-target-replacement-example-testing-20261001T021400Z-0123456789abcdef"
     result = {
@@ -7129,6 +7180,7 @@ def main() -> int:
         test_preview_history_read_needs_exactly_one_selector,
         test_reconcile_requests_read_keeps_the_decision_and_drops_the_rest,
         test_reconcile_requests_read_keeps_testing_operation_ids,
+        test_reconcile_requests_read_keeps_generic_web_testing_outcome,
         test_target_replacement_operation_read_keeps_progress_and_drops_error_text,
         test_target_replacement_operation_read_projects_failure_details,
         test_target_replacement_operation_read_bounds_failure_details,

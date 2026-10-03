@@ -135,7 +135,11 @@ local extensions until the vendored artifact is refreshed.
   integration keys (as `omitted_integration_keys` and `missing_keys`). Operation
   ids include `queued_operation_id`, `active_operation_id`,
   `deployed_operation_id` and `last_failed_operation_id`. A failed testing
-  deploy also keeps `last_failed_error_code` and `last_failed_error_summary`.
+  deploy also keeps `deploy_operation_status`, `deploy_status`,
+  `post_deploy_status`, `deployment_record_id` and `deploy_key_sha256` (SHA-256
+  of the exact deploy idempotency key, never the raw key). Compare the operation
+  status and digest to distinguish a replay from a new deploy attempt. It keeps
+  `last_failed_error_code` and `last_failed_error_summary`.
   The service redacts that summary, and the helper's summary rules then apply
   to it the same way they do to `last_error`. Any other plan field,
   such as rejected-build error text or PR feedback, is dropped and counted under
