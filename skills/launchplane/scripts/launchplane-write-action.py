@@ -7018,9 +7018,12 @@ def execute_dokploy_compose_apply(
             )
             expected_source = reviewed.get("source")
             public["source_matches_review"] = expected_source is None or all(
-                source.get("source_type") == "git"
-                and _compose_source_digest(source) == expected_source["source_sha256"]
-                for source in (private["tracked_source"], private["live_source"])
+                observed_source.get("source_type") == "git"
+                and _compose_source_digest(observed_source) == expected_source["source_sha256"]
+                for observed_source in (
+                    cast(dict[str, object], private["tracked_source"]),
+                    cast(dict[str, object], private["live_source"]),
+                )
             )
             return public
 
