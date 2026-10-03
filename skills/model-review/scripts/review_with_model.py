@@ -105,15 +105,58 @@ def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scra
     # itself read-only runs without approval. Ignoring the user's config drops their servers, plugins,
     # and project trust, so a reviewed repository's own `.codex/config.toml` cannot start one either.
     argv = ["codex", "exec", "--ignore-user-config", "--disable", "plugins", "--disable", "apps"]
-    argv += ["-C", str(repo), "-s", "read-only", "-o", str(answer)]
+    argv += ["--json", "-C", str(repo), "-s", "read-only", "-o", str(answer)]
     if model:
         argv += ["-m", model]
     proc = run_cli([*argv, prompt], repo, timeout)
-    used = re.search(r"^model:\s*(\S+)", proc.stdout + proc.stderr, re.MULTILINE)
     response = answer.read_text() if answer.is_file() else ""
-    if proc.returncode != 0:
-        return failed("openai", f"codex exited {proc.returncode}", detail=proc.stderr[-400:])
-    return {"ok": True, "provider": "openai", "model": used.group(1) if used else model, "response": response}
+    # JSON mode does not include the model banner; a request is not proof of the model used.
+    metadata = {"model": model, "model_source": "requested, not reported by the CLI" if model else "unknown"}
+    try:
+        events = [json.loads(line) for line in proc.stdout.splitlines()]
+        if any(not isinstance(event, dict) for event in events):
+            raise ValueError("event is not an object")
+    except ValueError:
+        if proc.returncode != 0:
+            return failed("openai", f"codex exited {proc.returncode}", detail=proc.stderr[-400:], **metadata)
+        return failed("openai", "could not read codex's JSONL tool evidence", **metadata)
+    errors = []
+    turn_failed = False
+    for event in events:
+        item = event.get("item") or {}
+        if event.get("type") == "item.completed" and isinstance(item, dict) and item.get("type") == "error":
+            reroute = re.fullmatch(r"model rerouted: \S+ -> (\S+) \(.+\)", str(item.get("message")))
+            if reroute:
+                metadata = {"model": reroute.group(1), "model_source": "reported by the CLI (rerouted)"}
+        if event.get("type") == "error":
+            errors.append(str(event.get("message") or "codex reported an error"))
+        elif event.get("type") == "turn.failed":
+            turn_failed = True
+            error = event.get("error")
+            errors.append(str(error.get("message") if isinstance(error, dict) else error))
+    # Retry notices also use `error`. Only a nonzero exit or terminal turn failure is decisive.
+    if proc.returncode != 0 or turn_failed:
+        return failed("openai", f"codex exited {proc.returncode}" if proc.returncode else "codex turn failed",
+                      detail=errors[-1][-400:] if errors else proc.stderr[-400:], **metadata)
+    if not response.strip():
+        return failed("openai", "the reviewer returned nothing", **metadata)
+    # Codex's file access is through its sandboxed shell. A final message alone is not a review:
+    # in particular, a prompt that forbids commands leaves it unable to read any source.
+    commands = 0
+    try:
+        for event in events:
+            item = event.get("item") or {}
+            if (event.get("type") == "item.completed" and item.get("type") == "command_execution"
+                    and item.get("status") == "completed" and item.get("exit_code") == 0):
+                commands += 1
+    except (ValueError, AttributeError, TypeError):
+        return failed("openai", "could not read codex's JSONL tool evidence", **metadata)
+    if not commands:
+        return failed("openai", "the reviewer ran no successful shell commands; no file-read evidence. "
+                      "Do not forbid commands: Codex reads files through its read-only shell.", **metadata,
+                      successful_commands=0)
+    return {"ok": True, "provider": "openai", **metadata, "response": response,
+            "successful_commands": commands}
 
 
 def review_anthropic(prompt: str, repo: Path, model: str | None, timeout: int, _scratch: Path) -> dict[str, Any]:
@@ -453,7 +496,8 @@ def cmd_check(args: argparse.Namespace) -> int:
     for provider in args.provider or sorted(PROVIDERS):
         result = review(provider, prompt, repo, None, args.timeout)
         if result["ok"] and expected not in result["response"]:
-            result = failed(provider, "answered without reading the file", model=result.get("model"))
+            result = {**result, "ok": False, "error": "answered without reading the file"}
+            result.pop("response")
         state = "ready" if result["ok"] else "not installed" if result.get("installed") is False else "not ready"
         report.append({key: value for key, value in {**result, "state": state}.items() if key != "response"})
     print(json.dumps({"probe": str(probe), "providers": report}, indent=2))
@@ -545,7 +589,7 @@ def main() -> int:
     run.add_argument("--provider", required=True, choices=sorted(PROVIDERS))
     run.add_argument("--repo", default=".", help="Repository the reviewer reads (default: current directory).")
     run.add_argument("--prompt-file", required=True, help="What to review and what it is for; name paths, do not paste files.")
-    run.add_argument("--model", help="Model to request; the result reports the model actually used.")
+    run.add_argument("--model", help="Model to request; model_source says whether the CLI reported it.")
     run.add_argument("--out", help="Write the review here instead of including it in the JSON.")
     run.add_argument("--timeout", type=int, default=900)
     run.set_defaults(func=cmd_run)
