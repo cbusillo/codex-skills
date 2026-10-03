@@ -1104,3 +1104,18 @@ Public timestamp projections accept UTC timestamps with optional fractional
 seconds (up to six digits), preserving their exact value. Policy preflight thus
 accepts microsecond timestamps emitted by native policy preparation and retains
 that precision in reviewed evidence.
+
+## Operator free text
+
+Every emitted operator `reason` or prose `evidence` uses the shared
+`public_operator_text` projection. It normalizes whitespace and redacts
+credential assignments (including quoted values), known token forms, long
+mixed letter/digit token-like words, and URLs of any scheme. URLs are omitted
+because operator prose can name private hosts even without credentials.
+Structural fields retain their existing strict validators; invalid types,
+empty or oversized text, and other unsafe summary shapes still fail closed.
+Apply checks that compare a reviewed reason use this projection on both sides.
+The private request keeps the original reason; redaction changes public evidence
+only. A projection is lossy and cannot distinguish changes solely inside
+redacted spans; service digests and private-payload bindings remain in force
+where supported.

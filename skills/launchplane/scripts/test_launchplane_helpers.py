@@ -3091,7 +3091,6 @@ def test_testing_hold_plan_projection_is_bounded_and_fail_closed() -> None:
             _testing_hold_plan(after={"reason": "Testing.", "token": "x"}),
             "unsafe_response_shape",
         ),
-        (_testing_hold_plan(reason="Bearer abcdefghijklmnop"), "invalid_response"),
     ):
         _expect_error(lambda candidate=plan: write_action._project_testing_hold_plan(candidate), code)
     _expect_error(
@@ -6008,7 +6007,6 @@ def test_product_owner_plan_projection_digests_the_reviewed_change() -> None:
         (_owner_plan(owner_after={"github_login": "a", "github_id": "1", "email": "x"}), "unsafe_response_shape"),
         (_owner_plan(resolved_github_id="12ab"), "invalid_response"),
         (_owner_plan(resolved_github_login="not a login"), "invalid_response"),
-        (_owner_plan(reason="Bearer abcdefghijklmnop"), "invalid_response"),
     ):
         _expect_error(
             lambda value=candidate: write_action._project_product_owner_plan(value), code
@@ -6234,7 +6232,6 @@ def test_product_image_repository_plan_projection_digests_the_reviewed_move() ->
             _image_plan(lanes=[{**lane, "current_artifact_id": "https://registry.example.invalid/x"}]),
             "invalid_response",
         ),
-        (_image_plan(reason="Bearer abcdefghijklmnop"), "invalid_response"),
     ):
         _expect_error(
             lambda value=candidate: write_action._project_product_image_repository_plan(value),
@@ -7259,8 +7256,91 @@ def test_product_promotion_dry_run_never_accepts_a_live_result() -> None:
     )
     assert status == 1 and payload["status"] == "invalid"
 
+def test_operator_free_text_redacts_credentials_and_urls() -> None:
+    project = write_action.public_operator_text
+    examples = (
+        ("Use password=demo-pass before retrying.", "Use [redacted] before retrying."),
+        ("Check ssh://deploy@internal.example.invalid/private next.", "Check [redacted] next."),
+        ('Use API_KEY="demo key with spaces" safely.', 'Use [redacted] safely.'),
+        ("Use 'client_secret': 'demo secret' safely.", "Use [redacted] safely."),
+        ("Visit " + "https://" + "demo:pass@example.invalid/private next.", "Visit [redacted] next."),
+        ("See https://example.invalid/review next.", "See [redacted] next."),
+        ("Use Bearer abcdefghijklmnop next.", "Use [redacted] next."),
+        ("Use rk_live_1234567890abcdefghijkl next.", "Use [redacted] next."),
+        ("Use ghp_example123 next.", "Use [redacted] next."),
+        ("Testing   is complete.", "Testing is complete."),
+    )
+    for raw, expected in examples:
+        assert project(raw) == expected
+        assert project(expected) == expected
+        write_action.assert_public_safe_shape({"reason": project(raw)})
+        for operation, response in (
+            ("product-owner-dry-run", _owner_response(_owner_plan(reason=raw))),
+            ("product-image-repository-dry-run", _image_response(_image_plan(reason=raw))),
+            ("testing-hold-dry-run", _testing_hold_response(_testing_hold_plan(reason=raw))),
+        ):
+            output = _saved_dry_run_output(operation, response)
+            assert output["result"]["reason"] == expected
+    sharing = write_action._project_sharing_reason({
+        "kind": "read_only_source", "reason": examples[0][0], "evidence": examples[1][0],
+    })
+    assert sharing["reason"] == examples[0][1]
+    assert sharing["evidence"] == examples[1][1]
+    allowance = write_action._project_integration_allowance({
+        "integration": "example", "kind": "read_only_source",
+        "reason": examples[0][0], "evidence": examples[1][0],
+    })
+    assert allowance["reason"] == examples[0][1]
+    assert allowance["evidence"] == examples[1][1]
+    for invalid in (None, {}, "", "x" * 501):
+        _expect_error(lambda value=invalid: project(value), "invalid_response")
+
+
+def test_redacted_reasons_allow_matching_reviewed_apply() -> None:
+    for reason in ("Use password=demo-pass safely.", "Check ssh://deploy@internal.example.invalid/private next."):
+        with TemporaryDirectory() as directory:
+            for operation, argv, response, applied, profiles in (
+                ("product-owner", OWNER_DRY_RUN_ARGV,
+                 _owner_response(_owner_plan(reason=reason)),
+                 _owner_response(_owner_plan(reason=reason, mode="apply", applied=True)),
+                 [_profile_response(), _profile_response("example-client", "1234567")]),
+                ("product-image-repository", IMAGE_DRY_RUN_ARGV,
+                 _image_response(_image_plan(reason=reason)),
+                 _image_response(_image_plan(reason=reason, mode="apply", applied=True)),
+                 [_image_profile_response(), _image_profile_response(_NEW_IMAGE)]),
+            ):
+                dry_argv = [*argv[:-1], reason]
+                status, evidence, posts, _reads = _run_main(dry_argv, post=response)
+                assert status == 0, evidence
+                assert posts[0]["body"]["reason"] == reason
+                evidence_path = _write_json(directory, operation + ".json", evidence)
+                digest = evidence["result"]["plan_sha256"]
+                apply_argv = [operation + "-apply", *dry_argv[1:], *_reviewed_apply_argv(digest, evidence_path)]
+                profile_reads = iter(profiles)
+                status, output, posts, _reads = _run_main(
+                    apply_argv, post=applied, read=lambda _kwargs: next(profile_reads)
+                )
+                assert status == 0, output
+                assert posts[0]["body"]["reason"] == reason
+                assert output["result"]["reason"] == write_action.public_operator_text(reason)
+                different = [operation + "-apply", *argv[1:-1], "A different public reason.",
+                             *_reviewed_apply_argv(digest, evidence_path)]
+                status, _output, posts, reads = _run_main(different, post=applied, read=profiles[0])
+                assert status == 2 and not posts and not reads
+            evidence = _saved_dry_run_output(
+                "testing-hold-dry-run", _testing_hold_response(_testing_hold_plan(reason=reason))
+            )
+            path = _write_json(directory, "hold.json", evidence)
+            args = _testing_hold_args(reason=reason, idempotency_key="hold-1", reviewed_dry_run=True,
+                                      expected_plan_digest=evidence["result"]["plan_sha256"],
+                                      dry_run_evidence_file=path)
+            assert write_action.testing_hold_body(args, mode="apply")["reason"] == reason
+
+
 def main() -> int:
     tests = [
+        test_operator_free_text_redacts_credentials_and_urls,
+        test_redacted_reasons_allow_matching_reviewed_apply,
         test_path_check_reads_both_paths_and_preserves_clear_blocked_unknown,
         test_path_check_refuses_unknown_fields_unsafe_values_and_incomplete_evidence,
         test_path_check_refuses_bad_selector_and_surfaces_read_denial,

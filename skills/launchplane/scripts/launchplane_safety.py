@@ -294,6 +294,37 @@ def public_summary_string(value: object, *, max_length: int = 500, allow_url: bo
     return compact
 
 
+# Person-written metadata can contain pasted credentials without a known prefix.
+CREDENTIAL_LIKE_WORD_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*[0-9])(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{20,}"
+)
+CREDENTIAL_ASSIGNMENT_RE = re.compile(
+    r"(?<![\w-])(?:[\"']?)([A-Za-z_][A-Za-z0-9_.-]*)(?:[\"']?)\s*[:=]\s*"
+    r"(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;]+)"
+)
+FREE_TEXT_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s<>\"']+", re.IGNORECASE)
+
+
+def public_operator_text(value: object, *, max_length: int = 500) -> str:
+    """Project operator prose, redacting credential assignments, tokens and URLs.
+
+    URLs are omitted even without userinfo: operator prose may name private hosts.
+    Structural fields still use their own strict validators.
+    """
+    if not isinstance(value, str):
+        raise LaunchplaneSafetyError("invalid_response")
+    compact = " ".join(value.split())
+    if not compact or len(compact) > max_length:
+        raise LaunchplaneSafetyError("invalid_response")
+    redacted = CREDENTIAL_ASSIGNMENT_RE.sub(
+        lambda match: "[redacted]" if is_denied_key(match[1]) else match[0], compact
+    )
+    redacted = FREE_TEXT_URL_RE.sub("[redacted]", redacted)
+    redacted = _redact_token_like(redacted)
+    redacted = CREDENTIAL_LIKE_WORD_RE.sub("[redacted]", redacted)
+    return public_summary_string(redacted, max_length=max_length)
+
+
 def public_url(value: object) -> str:
     if not isinstance(value, str):
         raise LaunchplaneSafetyError("invalid_response")
