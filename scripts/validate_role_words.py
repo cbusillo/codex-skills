@@ -47,12 +47,9 @@ LINK_TARGET = re.compile(r"\]\([^)]*\)")
 URL = re.compile(r"https?://\S+")
 
 # The glossary names the retired words. Recorded evaluation evidence keeps the
-# words it was written with. The root DIRECTION.md changes only through a
-# code-owner-approved pull request, which converts it separately
-# (cbusillo/direction#13 tracks it); drop it from this set once that lands.
+# words it was written with.
 EXCLUDED = re.compile(
-    r"^evals/(?!README\.md$)|/evaluations/acceptance-"
-    r"|^DIRECTION\.md$|^skills/references/role-words\.md$"
+    r"^evals/(?!README\.md$)|/evaluations/acceptance-|^skills/references/role-words\.md$"
 )
 
 
