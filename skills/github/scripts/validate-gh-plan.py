@@ -4731,6 +4731,46 @@ def test_pr_helper_write_commands_route_through_configured_gh() -> None:
     assert not any(call.startswith("pr edit 9 --repo owner/repo |") for call in calls), calls
 
 
+def test_pr_create_as_own_user_says_the_change_used_ai_assistance() -> None:
+    pr = load_pr_module()
+    bodies: list[str] = []
+
+    def record_write(args: list[str], **_payload: Any) -> subprocess.CompletedProcess[str]:
+        bodies.append(Path(args[args.index("--body-file") + 1]).read_text(encoding="utf-8"))
+        return subprocess.CompletedProcess(args, 0, "https://github.com/director/catalog/pull/9\n", "")
+
+    def create_args(body_file: Optional[str], *, fill: bool = False) -> Any:
+        return types.SimpleNamespace(
+            repo="director/catalog", title=None if fill else "Change", body_file=body_file,
+            base=None, head=None, draft=False, dry_run=False, fill=fill, fill_first=False,
+            fill_verbose=False, label=[], reviewer=[], assignee=[], milestone=None,
+            project=[], template=None, no_maintainer_edit=False,
+        )
+
+    pr.run_pr_write = record_write
+    pr.github_identity = types.SimpleNamespace(acts_as_own_user=lambda repository: repository == "director/catalog")
+    with tempfile.TemporaryDirectory() as tmp:
+        plain = Path(tmp) / "plain.md"
+        plain.write_text("## Why\n\nA fix.\n", encoding="utf-8")
+        own_sentence = Path(tmp) / "own.md"
+        own_sentence.write_text("A fix.\n\nWritten with AI assistance; I reviewed and tested it.\n", encoding="utf-8")
+
+        added = pr.cmd_create(create_args(str(plain)))
+        kept = pr.cmd_create(create_args(str(own_sentence)))
+        try:
+            pr.cmd_create(create_args(None, fill=True))
+        except pr.PrHelperError as error:
+            assert "requires --body-file" in str(error)
+        else:
+            raise AssertionError("a filled PR body as your own user must be refused")
+        assert plain.read_text(encoding="utf-8") == "## Why\n\nA fix.\n"
+
+    assert added["identity"] == "own_user" and added["aiAssistanceSentenceAdded"] is True
+    assert bodies[0] == f"## Why\n\nA fix.\n\n{pr.AI_ASSISTANCE_SENTENCE}\n"
+    assert kept["aiAssistanceSentenceAdded"] is False
+    assert bodies[1] == "A fix.\n\nWritten with AI assistance; I reviewed and tested it.\n"
+
+
 def test_pr_helper_list_paginates_only_when_limit_exceeds_one_page() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -6740,6 +6780,7 @@ def main() -> None:
         test_plan_missing_bot_route_fails_closed,
         test_pr_helper_uses_rest_endpoints_for_common_pr_work,
         test_pr_helper_write_commands_route_through_configured_gh,
+        test_pr_create_as_own_user_says_the_change_used_ai_assistance,
         test_pr_helper_list_paginates_only_when_limit_exceeds_one_page,
         test_pr_helper_delete_branch_uses_rest_ref_delete,
         test_delete_ref_reconciles_unknown_outcome,

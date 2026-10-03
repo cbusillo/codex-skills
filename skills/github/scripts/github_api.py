@@ -689,7 +689,8 @@ def actor_from_gh_stderr(stderr: str) -> Optional[str]:
 
 
 def active_fallback_was_authorized(stderr: str) -> bool:
-    return "explicitly authorized active-auth fallback" in stderr.casefold()
+    folded = stderr.casefold()
+    return "explicitly authorized active-auth fallback" in folded or "acting as your own github user" in folded
 
 
 def parse_gh_include_output(raw: str) -> tuple[int, dict[str, str], Any]:

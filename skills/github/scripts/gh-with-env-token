@@ -666,6 +666,14 @@ target_repository() {
 		esac
 		case $argument in
 		https://github.com/*/*/issues/* | https://github.com/*/*/pull/*)
+			# Only an operand names the target; the value of a text option,
+			# such as a --body that links another issue, does not.
+			case $previous in
+			-b | --body | -t | --title | --subject | -F | --body-file | -f | --field | --raw-field | -q | --jq | --template | -m | --message)
+				previous=$argument
+				continue
+				;;
+			esac
 			path=${argument#https://github.com/}
 			owner=${path%%/*}
 			rest=${path#*/}
@@ -748,7 +756,8 @@ repository_from_reference() {
 
 # Each repository owner installs the App separately; use the installation on
 # the repository the command names. A write to a repository without one is
-# refused rather than sent with another identity.
+# refused when the automation's account owns it; elsewhere the helper exits
+# with the contributor status and the person acts as their own GitHub user.
 app_auth_for_command() {
 	target_repo=$(target_repository "$@")
 	require_installation=
@@ -769,6 +778,35 @@ app_auth_for_command() {
 	fi
 }
 
+# github_identity.CONTRIBUTOR_EXIT_STATUS: the App is not installed on the
+# target repository and the automation's account does not own it.
+contributor_exit_status=3
+
+# In a repository someone else owns, a contributor's agent writes as the
+# person's own GitHub login; say so, and never when automation auth is required.
+act_as_own_user() {
+	own_user_repository=$1
+	shift
+	if ! validate_sensitive_read_policy "$@"; then
+		return 2
+	fi
+	if [ "$require_automation_auth" -eq 1 ]; then
+		echo "error: $own_user_repository is not the automation's repository and this command requires configured automation authentication; refusing to act as your own GitHub user" >&2
+		return 1
+	fi
+	own_login=$(active_auth_login)
+	if [ -z "$own_login" ]; then
+		echo "error: acting as your own GitHub user on $own_user_repository needs an active gh login; run gh auth login" >&2
+		return 1
+	fi
+	echo "notice: acting as your own GitHub user on $own_user_repository; using the active gh account '$own_login'" >&2
+	if [ "$print_auth_account" -eq 1 ]; then
+		echo "gh auth status (your own GitHub user):" >&2
+		env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" auth status >&2 || true
+	fi
+	run_with_input env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" "$@"
+}
+
 app_variable_count=0
 for app_variable in GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH; do
 	eval "app_variable_value=\${$app_variable:-}"
@@ -782,7 +820,15 @@ if [ "$app_variable_count" -gt 0 ]; then
 		echo "error: incomplete GitHub App configuration; set GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, and GITHUB_APP_PRIVATE_KEY_PATH" >&2
 		exit 1
 	fi
-	app_auth_output=$(app_auth_for_command "$@")
+	app_auth_status=0
+	app_auth_output=$(app_auth_for_command "$@") || app_auth_status=$?
+	if [ "$app_auth_status" -eq "$contributor_exit_status" ]; then
+		act_as_own_user "$(target_repository "$@")" "$@"
+		exit $?
+	fi
+	if [ "$app_auth_status" -ne 0 ]; then
+		exit "$app_auth_status"
+	fi
 	app_login=$(printf '%s\n' "$app_auth_output" | sed -n '1p')
 	GH_TOKEN=$(printf '%s\n' "$app_auth_output" | sed -n '2p')
 	if [ -z "$app_login" ] || [ -z "$GH_TOKEN" ] || [ "$(printf '%s\n' "$app_auth_output" | sed -n '3p')" != "" ]; then

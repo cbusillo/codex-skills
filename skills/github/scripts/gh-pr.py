@@ -14,6 +14,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 from typing import Any, Callable, Optional, Tuple
@@ -319,6 +320,11 @@ def cmd_list(args: argparse.Namespace) -> dict[str, Any]:
     return {"ok": True, "repo": repo, "pullRequests": [normalize_pr(item) for item in pulls]}
 
 
+# The owner's voice, for a PR opened as the person in a repository they do not
+# control; it claims review, not testing, which only the person can say.
+AI_ASSISTANCE_SENTENCE = "I wrote this change with AI assistance and reviewed it."
+
+
 def cmd_create(args: argparse.Namespace) -> dict[str, Any]:
     repo = resolve_repo(args.repo)
     fill_flags = [args.fill, args.fill_first, args.fill_verbose]
@@ -328,9 +334,28 @@ def cmd_create(args: argparse.Namespace) -> dict[str, Any]:
         raise PrHelperError("PR create requires --body-file unless a --fill variant is used", operation="create", repo=repo)
     if sum(1 for value in fill_flags if value) > 1:
         raise PrHelperError("Use only one of --fill, --fill-first, or --fill-verbose", operation="create", repo=repo)
+    body_file = args.body_file
+    ai_sentence_added = False
+    own_user = github_identity.acts_as_own_user(repo)
+    if own_user:
+        # The person opens this PR in a repository they do not control, so its
+        # body says the change was written with AI assistance.
+        if not args.body_file:
+            raise PrHelperError(
+                "PR create as your own GitHub user requires --body-file so the AI-assistance sentence can be added",
+                operation="create",
+                repo=repo,
+            )
+        body = read_text_file(args.body_file, operation="create", repo=repo)
+        if "ai assistance" not in body.casefold():
+            body = f"{body.rstrip()}\n\n{AI_ASSISTANCE_SENTENCE}\n"
+            ai_sentence_added = True
+        body_path = pathlib.Path(tempfile.mkstemp(prefix="gh-pr-body-", suffix=".md")[1])
+        body_path.write_text(body, encoding="utf-8")
+        body_file = str(body_path)
     gh_args = ["pr", "create", "--repo", repo]
     append_flag(gh_args, "--title", args.title)
-    append_flag(gh_args, "--body-file", args.body_file)
+    append_flag(gh_args, "--body-file", body_file)
     append_flag(gh_args, "--base", args.base)
     append_flag(gh_args, "--head", args.head)
     append_bool(gh_args, "--draft", args.draft)
@@ -345,9 +370,17 @@ def cmd_create(args: argparse.Namespace) -> dict[str, Any]:
     append_repeated_flag(gh_args, "--project", args.project)
     append_flag(gh_args, "--template", args.template)
     append_bool(gh_args, "--no-maintainer-edit", args.no_maintainer_edit)
-    proc = run_pr_write(gh_args, operation="create", repo=repo)
+    try:
+        proc = run_pr_write(gh_args, operation="create", repo=repo)
+    finally:
+        if body_file != args.body_file:
+            pathlib.Path(body_file).unlink(missing_ok=True)
     stdout = proc.stdout.strip()
-    return {"ok": True, "operation": "create", "repo": repo, "url": extract_url(stdout), "stdout": stdout}
+    result = {"ok": True, "operation": "create", "repo": repo, "url": extract_url(stdout), "stdout": stdout}
+    if own_user:
+        result["identity"] = "own_user"
+        result["aiAssistanceSentenceAdded"] = ai_sentence_added
+    return result
 
 
 def cmd_edit(args: argparse.Namespace) -> dict[str, Any]:
