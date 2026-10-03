@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import re
 import subprocess
 import sys
@@ -52,10 +53,11 @@ _SOURCE_SHA_PATTERN = re.compile(r"^(unknown|[0-9a-f]{40}|[0-9a-f]{64})$")
 class FreshnessError(ValueError):
     """Public-safe freshness failure."""
 
-    def __init__(self, code: str, *, retryable: bool = False) -> None:
+    def __init__(self, code: str, *, retryable: bool = False, detail_code: str | None = None) -> None:
         super().__init__(code)
         self.code = code
         self.retryable = retryable
+        self.detail_code = detail_code
 
 
 CommandRunner = Callable[[list[str], str | None], dict[str, Any]]
@@ -537,3 +539,90 @@ def report_maintenance_issue(
         "classification": "known-stale",
         "issue": {"action": "created", "number": _issue_number(payload)},
     }
+
+
+# The workflow's installation token has issue access but no /user endpoint.
+# Keep this adapter separate from local automation authentication.
+def report_workflow_maintenance_issue(
+    evidence: Mapping[str, Any], *, repository: str,
+    api: Callable[[str, str, dict[str, Any] | None], Any] | None = None,
+) -> dict[str, Any]:
+    expected_ref = f"{repository}/.github/workflows/launchplane-contract-freshness.yml@refs/heads/main"
+    if (
+        not _REPOSITORY_PATTERN.fullmatch(repository)
+        or os.environ.get("GITHUB_ACTIONS") != "true"
+        or os.environ.get("GITHUB_REPOSITORY") != repository
+        or os.environ.get("GITHUB_REF") != "refs/heads/main"
+        or os.environ.get("GITHUB_WORKFLOW_REF") != expected_ref
+        or os.environ.get("GITHUB_EVENT_NAME") not in {"schedule", "workflow_dispatch"}
+        or not os.environ.get("GH_TOKEN")
+    ):
+        raise FreshnessError("invalid_reporting_workflow")
+    if evidence.get("classification") != "known-stale":
+        return {"schema_version": EVIDENCE_SCHEMA_VERSION,
+                "classification": evidence.get("classification"),
+                "issue": {"action": "none", "number": None}}
+    body = maintenance_issue_body(evidence)
+    call = api or _workflow_issue_api
+    matches = []
+    for page in range(1, 11):
+        issues = call("GET", f"/repos/{repository}/issues?state=open&per_page=100&page={page}", None)
+        if not isinstance(issues, list):
+            raise FreshnessError("github_reporting_failed")
+        for issue in issues:
+            if not isinstance(issue, dict) or "pull_request" in issue:
+                continue
+            if MAINTENANCE_ISSUE_MARKER not in str(issue.get("body") or ""):
+                continue
+            if (
+                issue.get("user", {}).get("login") != "github-actions[bot]"
+                or not str(issue.get("body") or "").startswith(MAINTENANCE_ISSUE_MARKER)
+                or type(issue.get("number")) is not int
+            ):
+                raise FreshnessError("maintenance_issue_not_workflow_owned")
+            matches.append(issue)
+        if len(issues) < 100:
+            break
+    else:
+        raise FreshnessError("maintenance_issue_inventory_incomplete")
+    if len(matches) > 1:
+        raise FreshnessError("duplicate_maintenance_issues")
+    if matches:
+        number = matches[0]["number"]
+        action = "updated"
+        call("PATCH", f"/repos/{repository}/issues/{number}",
+             {"title": MAINTENANCE_ISSUE_TITLE, "body": body})
+    else:
+        created = call("POST", f"/repos/{repository}/issues",
+                       {"title": MAINTENANCE_ISSUE_TITLE, "body": body})
+        number = _issue_number(created)
+        action = "created"
+    verified = call("GET", f"/repos/{repository}/issues/{number}", None)
+    if (
+        not isinstance(verified, dict)
+        or verified.get("user", {}).get("login") != "github-actions[bot]"
+        or verified.get("number") != number
+        or verified.get("body") != body
+        or verified.get("title") != MAINTENANCE_ISSUE_TITLE
+        or verified.get("state") != "open"
+    ):
+        raise FreshnessError("maintenance_issue_readback_failed")
+    return {"schema_version": EVIDENCE_SCHEMA_VERSION, "classification": "known-stale",
+            "issue": {"action": action, "number": number}}
+
+
+def _workflow_issue_api(method: str, path: str, payload: dict[str, Any] | None) -> Any:
+    # Native gh uses exactly the job-provided GH_TOKEN. Do not load local App
+    # credentials, probe /user, fall back to a personal account, or replay writes.
+    args = ["gh", "api", "--hostname", "github.com", "--method", method, path]
+    if payload is not None:
+        args += ["--input", "-"]
+    try:
+        result = subprocess.run(
+            args, input=json.dumps(payload) if payload is not None else None,
+            capture_output=True, text=True, check=True, timeout=30,
+        )
+        return json.loads(result.stdout)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        raise FreshnessError("github_reporting_failed",
+                             detail_code="workflow_issue_read_failed" if method == "GET" else "workflow_issue_write_unconfirmed") from exc

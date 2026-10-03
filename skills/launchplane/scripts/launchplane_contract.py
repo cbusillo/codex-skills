@@ -132,26 +132,19 @@ EXPECTED_OPERATION_CONTRACTS = {
         "idempotency": "optional",
         "reviewed_evidence": [],
     },
+    "apply_odoo_addon_settings": {
+        "method": "POST",
+        "supported_surfaces": ["agent_helper", "operator_ui", "service_api"],
+        "modes": ["dry-run", "apply"],
+        "idempotency": "apply",
+        "reviewed_evidence": ["reviewed_plan_digest"],
+    },
     "apply_product_config": {
         "method": "POST",
         "supported_surfaces": ["agent_helper", "operator_ui", "service_api"],
         "modes": ["dry-run", "apply"],
         "idempotency": "apply",
         "reviewed_evidence": ["reviewed_dry_run"],
-    },
-    "apply_change_impact_policy": {
-        "method": "POST",
-        "supported_surfaces": ["agent_helper", "operator_ui", "service_api"],
-        "modes": ["dry-run", "apply"],
-        "idempotency": "none",
-        "reviewed_evidence": ["reviewed_dry_run", "expected_policy_digest"],
-    },
-    "read_change_impact_policy": {
-        "method": "GET",
-        "supported_surfaces": ["agent_helper", "read_only_service"],
-        "modes": ["read"],
-        "idempotency": "none",
-        "reviewed_evidence": [],
     },
     "write_merge_train_controller_run_once": {
         "method": "POST",
@@ -212,12 +205,8 @@ PROJECTED_HELPER_COMMANDS = {
     ),
     "product-config-dry-run": ("apply_product_config", ("dry-run",)),
     "product-config-apply": ("apply_product_config", ("apply",)),
-    "change-impact-policy-dry-run": (
-        "apply_change_impact_policy",
-        ("dry-run",),
-    ),
-    "change-impact-policy-apply": ("apply_change_impact_policy", ("apply",)),
-    "change-impact-policy-read": ("read_change_impact_policy", ("read",)),
+    "odoo-addon-settings-dry-run": ("apply_odoo_addon_settings", ("dry-run",)),
+    "odoo-addon-settings-apply": ("apply_odoo_addon_settings", ("apply",)),
     "merge-train-controller-run-once": (
         "write_merge_train_controller_run_once",
         ("dry-run", "mutate"),
@@ -267,16 +256,6 @@ LOCAL_EXTENSION_ROUTES = {
     "repository-inventory-apply": {
         "method": "POST",
         "path": "/v1/repository-inventory/apply",
-        "mode": "apply",
-    },
-    "odoo-addon-settings-dry-run": {
-        "method": "POST",
-        "path": "/v1/product-config/odoo-addon-settings/apply",
-        "mode": "dry-run",
-    },
-    "odoo-addon-settings-apply": {
-        "method": "POST",
-        "path": "/v1/product-config/odoo-addon-settings/apply",
         "mode": "apply",
     },
     "integration-allowances-read": {
@@ -486,6 +465,7 @@ EXPECTED_PROTECTED_WORKFLOWS = {
     },
     ".github/workflows/product-onboarding-manifest.yml": {
         "operation_id": "apply_product_stable_lane_repair",
+        "reusable_workflow_file": ".github/workflows/reusable-stable-lane-repair.yml",
     },
 }
 

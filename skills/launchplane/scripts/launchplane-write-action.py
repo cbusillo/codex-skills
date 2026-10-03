@@ -54,7 +54,6 @@ LOCAL_OPERATOR_ENV_KEYS = {
     "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL",
 }
 READ_ONLY_OPERATIONS = {
-    "change-impact-policy-read",
     "repository-inventory-read",
     "integration-allowances-read",
     "testing-hold-read",
@@ -319,63 +318,6 @@ PREVIEW_FEEDBACK_REMEDIATION_RESULT_FIELDS = {
     "outcome",
     "mutation_evidence",
     "companion_feedback_id",
-}
-CHANGE_IMPACT_POLICY_RESULT_FIELDS = {"schema_version", "status", "record", "audit", "attribution_status"}
-CHANGE_IMPACT_POLICY_RECORD_FIELDS = {
-    "schema_version",
-    "record_id",
-    "status",
-    "repository_id",
-    "repository_owner_id",
-    "repository",
-    "policy_revision",
-    "component_rules",
-    "default_unknown_review_tier",
-    "effective_at",
-    "source",
-    "reason",
-    "supersedes_record_id",
-    "policy_digest",
-    "classification_model",
-}
-CHANGE_IMPACT_COMPONENT_RULE_FIELDS = {
-    "schema_version",
-    "rule_id",
-    "component",
-    "path_prefixes",
-    "affected_products",
-    "review_tier",
-    "production_affecting",
-    "product_impact",
-    "governance_impact",
-    "generated_by",
-    "reason",
-}
-CHANGE_IMPACT_PRODUCT_SCOPE_FIELDS = {
-    "schema_version",
-    "product",
-    "system",
-    "owner_action",
-    "owner_environment",
-}
-CHANGE_IMPACT_POLICY_READ_FIELDS = {
-    "schema_version",
-    "mode",
-    "authoritative",
-    "enforcement_effect",
-    "repository_id",
-    "current_policy",
-    "policy_history_count",
-    "audit",
-    "attribution_status",
-}
-CHANGE_IMPACT_POLICY_AUDIT_FIELDS = {
-    "schema_version", "record_id", "policy_digest", "actor_kind", "actor_subject",
-    "workflow_identity", "trace_id", "recorded_at",
-}
-CHANGE_IMPACT_POLICY_WORKFLOW_FIELDS = {
-    "repository", "repository_id", "repository_owner_id", "workflow_ref",
-    "job_workflow_ref", "ref", "sha",
 }
 GENERIC_WEB_DEPLOY_RECOVERY_DRY_RUN_FIELDS = {
     "schema_version",
@@ -1535,155 +1477,6 @@ def _project_preview_feedback_remediation_result(result: object) -> dict[str, ob
     return projected
 
 
-def _project_change_impact_policy_record(record_value: object) -> dict[str, object]:
-    record = _require_dict(record_value)
-    if any(str(key) not in CHANGE_IMPACT_POLICY_RECORD_FIELDS for key in record):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
-    if record.get("classification_model") not in (None, "v2"):
-        raise LaunchplaneSafetyError("invalid_response")
-    component_rules = record.get("component_rules")
-    if component_rules is not None:
-        if not isinstance(component_rules, list):
-            raise LaunchplaneSafetyError("invalid_response")
-        for rule_value in component_rules:
-            rule = _require_dict(rule_value)
-            if any(str(key) not in CHANGE_IMPACT_COMPONENT_RULE_FIELDS for key in rule):
-                raise LaunchplaneSafetyError("unsafe_response_shape")
-            product_impact = rule.get("product_impact")
-            if product_impact is not None and product_impact != "declared_none":
-                raise LaunchplaneSafetyError("invalid_response")
-            _optional_bool(rule.get("governance_impact"))
-            generated_by = rule.get("generated_by")
-            if record.get("classification_model") != "v2" and any(
-                rule.get(field) is not None
-                for field in ("product_impact", "governance_impact", "generated_by")
-            ):
-                raise LaunchplaneSafetyError("invalid_response")
-            if generated_by is not None:
-                if (
-                    not isinstance(generated_by, list) or not 1 <= len(generated_by) <= 20
-                    or any(not isinstance(item, str) or not item.strip() for item in generated_by)
-                ):
-                    raise LaunchplaneSafetyError("invalid_response")
-                if len(set(generated_by)) != len(generated_by) or product_impact is not None or rule.get("affected_products"):
-                    raise LaunchplaneSafetyError("invalid_response")
-            if product_impact is not None and rule.get("affected_products"):
-                raise LaunchplaneSafetyError("invalid_response")
-            path_prefixes = rule.get("path_prefixes")
-            if path_prefixes is not None and not isinstance(path_prefixes, list):
-                raise LaunchplaneSafetyError("invalid_response")
-            affected_products = rule.get("affected_products")
-            if affected_products is None:
-                continue
-            if not isinstance(affected_products, list):
-                raise LaunchplaneSafetyError("invalid_response")
-            for scope_value in affected_products:
-                scope = _require_dict(scope_value)
-                if any(str(key) not in CHANGE_IMPACT_PRODUCT_SCOPE_FIELDS for key in scope):
-                    raise LaunchplaneSafetyError("unsafe_response_shape")
-    revision = record.get("policy_revision")
-    if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
-        raise LaunchplaneSafetyError("invalid_response")
-    policy_status = public_code(record.get("status"))
-    if policy_status not in {"active", "superseded"}:
-        raise LaunchplaneSafetyError("invalid_response")
-    policy_digest = public_identifier(record.get("policy_digest"))
-    if len(policy_digest) != 64 or any(character not in "0123456789abcdef" for character in policy_digest):
-        raise LaunchplaneSafetyError("invalid_response")
-    projected = {
-        "record_id": public_identifier(record.get("record_id")),
-        "policy_digest": policy_digest,
-        "policy_revision": revision,
-        "status": policy_status,
-        "effective_at": public_timestamp(record.get("effective_at")),
-    }
-    assert_public_safe_shape(projected)
-    return projected
-
-
-def _project_change_impact_policy_result(result: object) -> dict[str, object]:
-    source = _require_dict(result)
-    if any(str(key) not in CHANGE_IMPACT_POLICY_RESULT_FIELDS for key in source):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
-    apply_status = public_code(source.get("status"))
-    if apply_status not in {"would_apply", "would_replay", "applied", "replayed"}:
-        raise LaunchplaneSafetyError("invalid_response")
-    projected: dict[str, object] = {
-        "status": apply_status,
-        "record": _project_change_impact_policy_record(source.get("record")),
-    }
-    projected.update(_project_change_impact_attribution(source, projected["record"], apply_status=apply_status))
-    return projected
-
-
-def _validate_private_string(value: object, *, maximum: int, minimum: int = 0) -> None:
-    if not isinstance(value, str) or not minimum <= len(value) <= maximum:
-        raise LaunchplaneSafetyError("invalid_response")
-
-
-def _project_change_impact_attribution(
-    source: dict[str, Any], policy: object, *, apply_status: str | None = None,
-) -> dict[str, object]:
-    if "audit" not in source and "attribution_status" not in source:
-        return {}
-    status = source.get("attribution_status")
-    audit_value = source.get("audit")
-    allowed = {"attributed", "legacy_unattributed", "attribution_unavailable"}
-    if apply_status in {"would_apply", "would_replay"}:
-        allowed = {"not_applied"}
-    elif apply_status is not None:
-        allowed = {"attributed", "legacy_unattributed"}
-    if not isinstance(status, str) or status not in allowed:
-        raise LaunchplaneSafetyError("invalid_response")
-    if (status == "attributed") != (audit_value is not None):
-        raise LaunchplaneSafetyError("invalid_response")
-    if policy is None and status != "attribution_unavailable":
-        raise LaunchplaneSafetyError("invalid_response")
-    projected: dict[str, object] = {"attribution_status": status, "audit": None}
-    if audit_value is None:
-        return projected
-    record = _require_dict(policy)
-    audit = _require_exact_fields(audit_value, CHANGE_IMPACT_POLICY_AUDIT_FIELDS)
-    if type(audit["schema_version"]) is not int or audit["schema_version"] != 1:
-        raise LaunchplaneSafetyError("invalid_response")
-    if audit["record_id"] != record["record_id"] or audit["policy_digest"] != record["policy_digest"]:
-        raise LaunchplaneSafetyError("invalid_response")
-    kind = audit["actor_kind"]
-    if not isinstance(kind, str) or kind not in {"local_admin", "local_operator", "github_actions"}:
-        raise LaunchplaneSafetyError("invalid_response")
-    _validate_private_string(audit["actor_subject"], minimum=1, maximum=512)
-    if not audit["actor_subject"].strip():
-        raise LaunchplaneSafetyError("invalid_response")
-    _validate_private_string(audit["trace_id"], minimum=1, maximum=256)
-    workflow_value = audit["workflow_identity"]
-    if (kind == "github_actions") != (workflow_value is not None):
-        raise LaunchplaneSafetyError("invalid_response")
-    if workflow_value is not None:
-        workflow = _require_exact_fields(workflow_value, CHANGE_IMPACT_POLICY_WORKFLOW_FIELDS)
-        for field, minimum, maximum in (
-            ("repository", 1, 256), ("repository_id", 0, 64), ("repository_owner_id", 0, 64),
-            ("workflow_ref", 0, 512), ("job_workflow_ref", 0, 512), ("ref", 0, 512), ("sha", 1, 64),
-        ):
-            _validate_private_string(workflow[field], minimum=minimum, maximum=maximum)
-    recorded_at = audit["recorded_at"]
-    if not isinstance(recorded_at, str) or not re.fullmatch(
-        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
-        r"(?:\.[0-9]{1,6})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])", recorded_at,
-    ):
-        raise LaunchplaneSafetyError("invalid_response")
-    try:
-        recorded_display = datetime.fromisoformat(recorded_at).astimezone(UTC)
-    except (ValueError, OverflowError) as exc:
-        raise LaunchplaneSafetyError("invalid_response") from exc
-    recorded_display_text = recorded_display.isoformat(timespec="seconds").replace("+00:00", "Z")
-    projected["audit"] = {
-        "record_id": record["record_id"], "policy_digest": record["policy_digest"],
-        "actor_kind": kind, "recorded_at": public_timestamp(recorded_display_text),
-    }
-    assert_public_safe_shape(projected)
-    return projected
-
-
 def _project_sha256(value: object) -> str:
     digest = public_identifier(value)
     if len(digest) != 64 or any(
@@ -1994,33 +1787,6 @@ def _project_repository_inventory_apply_result(value: object) -> dict[str, objec
         "supersedes_record_id": supersedes_record_id,
         "applied_at": public_timestamp(source.get("applied_at")),
     }
-    assert_public_safe_shape(projected)
-    return projected
-
-
-def _project_change_impact_policy_read_model(value: object) -> dict[str, object]:
-    source = _require_dict(value)
-    if any(str(key) not in CHANGE_IMPACT_POLICY_READ_FIELDS for key in source):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
-    history_count = source.get("policy_history_count")
-    if not isinstance(history_count, int) or isinstance(history_count, bool) or history_count < 0:
-        raise LaunchplaneSafetyError("invalid_response")
-    current_policy = source.get("current_policy")
-    projected: dict[str, object] = {
-        "policy_history_count": history_count,
-        "current_policy": None,
-    }
-    # Older service responses may include these flags; current read models do not.
-    for field in ("mode", "enforcement_effect"):
-        if source.get(field) is not None:
-            if not isinstance(source[field], str):
-                raise LaunchplaneSafetyError("invalid_response")
-            projected[field] = public_code(source[field])
-    if source.get("authoritative") is not None:
-        projected["authoritative"] = _optional_bool(source["authoritative"])
-    if current_policy is not None:
-        projected["current_policy"] = _project_change_impact_policy_record(current_policy)
-    projected.update(_project_change_impact_attribution(source, projected["current_policy"]))
     assert_public_safe_shape(projected)
     return projected
 
@@ -3902,11 +3668,6 @@ def _project_success_output(
         return records, _project_preview_feedback_remediation_result(
             provider_payload.get("result")
         )
-    if operation in {"change-impact-policy-dry-run", "change-impact-policy-apply"}:
-        records = _project_records(provider_payload.get("records"), set())
-        return records, _project_change_impact_policy_result(
-            provider_payload.get("result")
-        )
     if operation in {"repository-inventory-dry-run", "repository-inventory-apply"}:
         records = _project_records(provider_payload.get("records"), set())
         return records, _project_repository_inventory_apply_result(
@@ -3964,28 +3725,6 @@ def _project_success_output(
     raise LaunchplaneSafetyError("invalid_response")
 
 
-def summarize_change_impact_policy_read(
-    *, request: dict[str, object], provider_payload: dict[str, Any]
-) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", "read_model"} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
-    status = public_code(provider_payload.get("status"), default="ok")
-    payload = base_payload(
-        status=status, operation="change-impact-policy-read", request=request
-    )
-    payload["result"] = _project_change_impact_policy_read_model(
-        provider_payload.get("read_model")
-    )
-    payload["summary"] = {
-        "launchplane_status": status,
-        "trace_id": public_trace_id(provider_payload.get("trace_id")),
-        "recommendation": "Use the active record metadata to verify the intended policy revision and digest.",
-    }
-    assert_public_safe_shape(payload["result"])
-    assert_public_safe_shape(payload["summary"])
-    return payload
-
-
 def summarize_repository_inventory_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
@@ -4041,7 +3780,6 @@ def _status_for_http_error(code: int, provider_payload: dict[str, object]) -> st
         "stale",
         "mismatched_intent",
         "matching_dry_run_required",
-        "change_impact_policy_conflict",
     }:
         return "stale"
     return "unavailable"
@@ -4096,13 +3834,6 @@ def summarize_success(
             summary["safe_to_execute"] = intent.get("safe_to_execute")
             if intent.get("next_action"):
                 summary["recommendation"] = intent["next_action"]
-        elif operation in {"change-impact-policy-dry-run", "change-impact-policy-apply"}:
-            summary["policy_apply_status"] = result.get("status")
-            summary["recommendation"] = (
-                "Review the redacted dry-run result before applying the exact same private payload."
-                if operation == "change-impact-policy-dry-run"
-                else "Read back the active change-impact policy before relying on it."
-            )
         elif operation in {"repository-inventory-dry-run", "repository-inventory-apply"}:
             summary["inventory_apply_status"] = result.get("status")
             summary["inventory_digest"] = result.get("inventory_digest")
@@ -5419,35 +5150,6 @@ def product_expected_config_payload_body(args: argparse.Namespace, *, mode: str)
     return body
 
 
-def change_impact_policy_payload_body(
-    args: argparse.Namespace, *, mode: str
-) -> dict[str, object]:
-    body = read_payload_file(args.payload_file)
-    body["mode"] = mode
-    record = body.get("record")
-    if not isinstance(record, dict):
-        raise ValueError("record_required")
-    if mode == "apply":
-        _require_idempotency(args)
-        if not args.reviewed_dry_run:
-            raise ValueError("reviewed_dry_run_required")
-        reason = record.get("reason")
-        if not isinstance(reason, str) or not reason.strip():
-            raise ValueError("reason_required")
-        expected_policy_digest = args.expected_policy_digest.strip().lower()
-        payload_policy_digest = str(record.get("policy_digest") or "").strip().lower()
-        if not expected_policy_digest:
-            raise ValueError("expected_policy_digest_required")
-        if len(expected_policy_digest) != 64 or any(
-            character not in "0123456789abcdef" for character in expected_policy_digest
-        ):
-            raise ValueError("invalid_expected_policy_digest")
-        if payload_policy_digest and payload_policy_digest != expected_policy_digest:
-            raise ValueError("policy_digest_mismatch")
-        record["policy_digest"] = expected_policy_digest
-    return body
-
-
 def _required_lower_sha256(value: object, *, code: str) -> str:
     if not isinstance(value, str):
         raise ValueError(code)
@@ -5754,7 +5456,6 @@ def execute_post(
                 "integration-allowances-apply",
                 "testing-hold-apply",
                 "product-repository-identity-apply",
-                "change-impact-policy-apply",
                 "generic-web-deploy-recovery-apply",
                 "repository-inventory-apply",
                 "product-expected-config-apply",
@@ -5984,39 +5685,6 @@ def execute_merge_train_policy_import(
             ]
             emit(payload)
             return 0
-        emit_invalid_response(operation=operation, request=request)
-        return 1
-
-
-def execute_change_impact_policy_read(
-    *, args: argparse.Namespace, request: dict[str, object]
-) -> int:
-    operation = "change-impact-policy-read"
-    settings = prepare_operator_settings(
-        args=args, operation=operation, request=request
-    )
-    if settings is None:
-        return 2
-    try:
-        provider_payload = request_launchplane_read(
-            service_url=settings["service_url"],
-            path=helper_command_path(operation),
-            settings=settings,
-            query={"repository_id": args.repository_id},
-            timeout=args.timeout,
-        )
-        emit(summarize_change_impact_policy_read(request=request, provider_payload=provider_payload))
-        return 0
-    except urllib.error.HTTPError as exc:
-        emit_http_error_payload(operation=operation, request=request, exc=exc)
-        return 1
-    except LaunchplaneSafetyError as exc:
-        emit_safety_error_payload(operation=operation, request=request, exc=exc)
-        return 1
-    except (OSError, TimeoutError, urllib.error.URLError):
-        emit_provider_unavailable(operation=operation, request=request)
-        return 1
-    except (ValueError, json.JSONDecodeError):
         emit_invalid_response(operation=operation, request=request)
         return 1
 
@@ -7981,32 +7649,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             expected_config.add_argument("--reviewed-dry-run", action="store_true")
             expected_config.add_argument("--dry-run-evidence-file", required=True, help="Saved helper output for the exact reviewed metadata.")
 
-    change_impact_dry_run = subparsers.add_parser(
-        "change-impact-policy-dry-run",
-        help="Submit a private change-impact policy dry-run payload.",
-    )
-    change_impact_dry_run.add_argument(
-        "--payload-file", required=True, help="Private local JSON payload file."
-    )
-    change_impact_dry_run.add_argument("--idempotency-key", default="")
-
-    change_impact_apply = subparsers.add_parser(
-        "change-impact-policy-apply",
-        help="Submit a reviewed private change-impact policy apply payload.",
-    )
-    change_impact_apply.add_argument(
-        "--payload-file", required=True, help="Private local JSON payload file."
-    )
-    change_impact_apply.add_argument("--idempotency-key", required=True)
-    change_impact_apply.add_argument("--reviewed-dry-run", action="store_true")
-    change_impact_apply.add_argument("--expected-policy-digest", required=True)
-
-    change_impact_read = subparsers.add_parser(
-        "change-impact-policy-read",
-        help="Read bounded active change-impact policy metadata.",
-    )
-    change_impact_read.add_argument("--repository-id", required=True)
-
     merge_train_policy_dry_run = subparsers.add_parser(
         "merge-train-policy-import-dry-run",
         help="Dry-run one private merge-train policy import after active-policy preflight.",
@@ -8495,31 +8137,6 @@ def main(argv: list[str]) -> int:
                 request=request,
                 body=body,
             )
-        if args.command == "change-impact-policy-dry-run":
-            request = {"mode": "dry_run", "payload_source": "private_file"}
-            body = change_impact_policy_payload_body(args, mode="dry_run")
-            return execute_post(
-                args=args,
-                operation=args.command,
-                path=helper_command_path(args.command),
-                request=request,
-                body=body,
-            )
-        if args.command == "change-impact-policy-apply":
-            request = {"mode": "apply", "payload_source": "private_file"}
-            body = change_impact_policy_payload_body(args, mode="apply")
-            return execute_post(
-                args=args,
-                operation=args.command,
-                path=helper_command_path(args.command),
-                request=request,
-                body=body,
-            )
-        if args.command == "change-impact-policy-read":
-            request = {
-                "payload_source": "operator_argument",
-            }
-            return execute_change_impact_policy_read(args=args, request=request)
         if args.command in {
             "merge-train-policy-import-dry-run",
             "merge-train-policy-import-apply",
