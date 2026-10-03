@@ -53,8 +53,10 @@ path/ancestry/blocking target or an exact waypoint title shared by the issue's o
 its repository direction and the overall direction. A title match carries
 `basis: exact_listed_title_match`; it does not claim a native Track link.
 `none_found` means the inspected context
-contains no such link; `unknown` preserves incomplete context. This explanation
-does not change ranking, adopt direction or establish availability.
+contains no such link; `unknown` preserves incomplete context. This explanation alone does not adopt direction or establish availability.
+Capacity admission uses its established milestone links, supplemented by complete
+ancestry for excluded discoveries; unresolved shared milestone titles keep the
+rule off.
 `candidate_coverage.unevaluated_repositories` names the inventoried sources and
 issue counts omitted by the ordinary evaluation allowance after graph overlap
 and marked-incident handling. Other source bounds/failures remain in

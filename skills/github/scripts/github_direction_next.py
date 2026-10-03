@@ -375,7 +375,7 @@ def tooling_capacity_context(
     if not coverage_complete or not graph.get("dependency_context", {}).get("complete"):
         return {**result, "reason": "incomplete_portfolio_coverage"}
     if context.get("repository_holds"):
-        return {**result, "reason": "held_repository_inventory"}
+        return {**result, "reason": "held_repository_inventory", "repository": next(iter(context["repository_holds"]))}
     reviews = {key.casefold(): value for key, value in context.get("issues", {}).items()}
     entries = [*graph.get("candidates", []), *graph.get("excluded", []), *discoveries]
     entry_keys = {(entry["repo"].casefold(), entry["number"]) for entry in entries}

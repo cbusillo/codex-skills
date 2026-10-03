@@ -1278,6 +1278,17 @@ def test_portfolio_capacity_ignores_unrelated_waits_and_blocking_tooling() -> No
             assert items[30]["discussion"]["ancestry_complete"] is True
 
 
+def test_portfolio_capacity_preserves_wait_reports_when_ancestry_is_unavailable() -> None:
+    waiting = global_issue("someone/product", 30, body="## Current Status\nWaiting for: Customer testing.")
+    with global_fixture([], [], {}, discovered=[waiting]) as (module, result, _reads):
+        with patch.multiple(module, read_next_parent=Mock(side_effect=module.PlanError("Parent unavailable"))):
+            module.cmd_next(next_args())
+        assert result["discovery_context"]["complete"] is False
+        assert next(item for item in result["excluded"] if item["number"] == 30)["exclusion"] == "waiting"
+        assert result["waiting"][0]["number"] == 30
+        assert result["tooling_capacity_context"]["admitted"] is False
+
+
 def test_portfolio_inventory_sources_exclusions_round_robin_and_read_bounds() -> None:
     module = load_module()
     repositories = [{"full_name": name, **extra} for name, extra in [
@@ -1889,6 +1900,7 @@ TESTS = [
     test_portfolio_capacity_waiting_discovery_milestone_blocks_admission,
     test_portfolio_capacity_shared_blocker_service_parity_and_unknown_context,
     test_portfolio_capacity_ignores_unrelated_waits_and_blocking_tooling,
+    test_portfolio_capacity_preserves_wait_reports_when_ancestry_is_unavailable,
     test_portfolio_inventory_sources_exclusions_round_robin_and_read_bounds,
     test_portfolio_inventory_failure_and_scan_bound_never_claim_full_coverage,
     test_next_beta_rc_stable_chain_respects_native_blockers,

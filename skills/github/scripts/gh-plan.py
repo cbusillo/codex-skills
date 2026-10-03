@@ -2922,7 +2922,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
             if item.get("exclusion") not in {"completed", "pull_request", "unknown_dependencies"}:
                 exclusion = item.get("exclusion")
                 item = with_ancestry(item)
-                if exclusion and (item.get("discussion") or {}).get("ancestry_complete"):
+                if exclusion:
                     item["exclusion"] = exclusion
             if not (item.get("discussion") or {}).get("complete"):
                 discovery["complete"] = False
