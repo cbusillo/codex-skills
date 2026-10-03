@@ -1899,19 +1899,19 @@ def cmd_claim(args: argparse.Namespace) -> None:
     previous_status = ""
     config = load_config(repo)
 
-    def check_wait(issue: dict[str, Any], status: str) -> None:
-        status_state = next_plan_status(issue, config)
-        reports = github_direction_next.waiting_records(compact_issue(issue), status)
+    def check_wait(waiting_issue: dict[str, Any], waiting_status: str) -> None:
+        status_state = next_plan_status(waiting_issue, config)
+        reports = github_direction_next.waiting_records(compact_issue(waiting_issue), waiting_status)
         blocked_text = any(
             (match := re.match(r"\s*(?:[-*]\s+)?Blocked by:\s*(.+)", line, re.I))
             and match.group(1).casefold().rstrip(" .") not in {"none", "n/a", "nothing", "-"}
-            for line in status.splitlines()
+            for line in waiting_status.splitlines()
         )
         if (status_state in {"waiting", "blocked", "stale", "done"} or reports or blocked_text
-                or re.search(r"(?im)^\s*(?:[-*]\s+)?State:\s*(?:waiting|parked|blocked|stale|done)\b", status)):
+                or re.search(r"(?im)^\s*(?:[-*]\s+)?State:\s*(?:waiting|parked|blocked|stale|done)\b", waiting_status)):
             if not args.wait_resolved:
                 raise ClassifiedPlanError("claim_wait_unresolved", "Verify the recorded wait or hold, then pass --wait-resolved with existing resolution evidence",
-                                          payload={"previous_current_status": status})
+                                          payload={"previous_current_status": waiting_status})
 
     def claim_recovery() -> dict[str, Any]:
         recovery = {}
@@ -1922,10 +1922,10 @@ def cmd_claim(args: argparse.Namespace) -> None:
                         "then": "Post this exact release through the same bot, preserve competing ownership, and recheck before any retry"}
         return recovery
 
-    def refuse(conflicts: list[dict[str, Any]]) -> None:
+    def refuse(competing_claims: list[dict[str, Any]]) -> None:
         raise ClassifiedPlanError(
             "claim_conflict", "Another worker or ambiguous ownership evidence holds this issue; preserve it for owner review",
-            payload={"competing_evidence": conflicts, "claim_recovery": claim_recovery()},
+            payload={"competing_evidence": competing_claims, "claim_recovery": claim_recovery()},
         )
 
     try:
@@ -2909,6 +2909,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     ranked["dependency_context"]["milestone_inventory_truncated"] = milestones_truncated
     graph_coverage = {"complete": ranked["dependency_context"]["complete"], "evaluated": ranked["evaluated"], "truncated": ranked["truncated"]}
     discoveries: list[dict[str, Any]] = []
+    unevaluated_milestones: list[dict[str, Any]] = []
     discovery: dict[str, Any] = {"complete": False, "exclusion": "explicit_milestone_scope"}
     preflight = github_direction_next.tooling_capacity_context(
         ranked, [], milestone_titles=titles, context=selection_context,
@@ -2927,13 +2928,19 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         skipped_counts: dict[str, int] = {}
         capacity_unevaluated = len(inventory) - len(scanned)
         for item in inventory:
-            if (item["repo"].casefold(), item["number"]) not in scanned_keys and not github_direction_next.repository_hold(selection_context, item["repo"]):
-                skipped_counts[item["repo"]] = skipped_counts.get(item["repo"], 0) + 1
+            if (item["repo"].casefold(), item["number"]) not in scanned_keys:
+                # Inventory already identifies title-matched milestone work;
+                # an ordinary scan bound must not erase that known frontier.
+                if (item.get("milestone") or {}).get("title") in titles:
+                    unevaluated_milestones.append(compact_list_issue(item["repo"], item))
+                if not github_direction_next.repository_hold(selection_context, item["repo"]):
+                    skipped_counts[item["repo"]] = skipped_counts.get(item["repo"], 0) + 1
         discovery.update(
             evaluated=len(scanned), scan_limit=args.scan_limit,
             live_breakage_evaluated=sum(github_direction_next.is_live_breakage(item) and not github_direction_next.repository_hold(selection_context, item["repo"]) for item in scanned),
             unevaluated_count=sum(skipped_counts.values()),
             capacity_unevaluated_count=capacity_unevaluated,
+            unevaluated_milestone_issues=unevaluated_milestones,
             held_scan_limit=args.scan_limit,
             unevaluated_repositories=[{"repo": name, "issue_count": count} for name, count in sorted(skipped_counts.items())],
         )
@@ -2978,10 +2985,16 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                         discovery["complete"] = False
             else:
                 discoveries.append(item)
+    incomplete_milestone_sources = [
+        source["repo"] for source in discovery.get("repositories", [])
+        if set(direction_milestone_titles(source.get("direction") or "")).intersection(titles)
+        and (source.get("truncated") or source.get("error"))
+    ]
+    discovery["incomplete_milestone_repositories"] = incomplete_milestone_sources
     candidate_coverage_complete = bool(graph_coverage["complete"] and (scope is not None or discovery.get("complete")))
     portfolio = github_direction_next.rank_portfolio_work(
         ranked, discoveries, milestone_titles=titles, selection_context=selection_context,
-        coverage_complete=scope is None and graph_coverage["complete"] and discovery.get("capacity_complete", discovery.get("complete", False)),
+        coverage_complete=scope is None and graph_coverage["complete"] and not unevaluated_milestones and not incomplete_milestone_sources,
         repository_milestones={source["repo"]: direction_milestone_titles(source["direction"]) if source.get("direction") else None for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
         repository_waypoints={source["repo"]: repository_direction_milestones(source) for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
     )
