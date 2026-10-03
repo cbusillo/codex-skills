@@ -7265,6 +7265,7 @@ def main() -> int:
         test_path_check_refuses_unknown_fields_unsafe_values_and_incomplete_evidence,
         test_path_check_refuses_bad_selector_and_surfaces_read_denial,
         test_product_owner_plan_projection_digests_the_reviewed_change,
+        test_client_named_fields_read_like_their_legacy_owner_names,
         test_product_owner_dry_run_sends_normalized_login_to_the_product_route,
         test_product_owner_apply_checks_the_client_reapplies_and_reads_back,
         test_product_image_repository_plan_projection_digests_the_reviewed_move,
@@ -7620,6 +7621,58 @@ def test_odoo_addon_settings_cli_dispatches_local_extension_route() -> None:
     assert calls[0]["body"]["mode"] == "dry-run"
     assert calls[1]["body"]["mode"] == "apply"
     assert "secret-shopify-api-token-binding" not in json.dumps(calls[1]["request"])
+
+
+def test_client_named_fields_read_like_their_legacy_owner_names() -> None:
+    argv = ["product-profile-read", "--product", "example-product"]
+    _status, legacy, _calls = _run_product_read(argv, _product_profile_response())
+    renamed = _product_profile_response()
+    profile = cast(dict[str, Any], renamed["profile"])
+    profile["client"] = profile.pop("owner")
+    status, payload, _calls = _run_product_read(argv, renamed)
+    assert status == 0
+    assert payload["result"] == legacy["result"]
+    both = copy.deepcopy(renamed)
+    cast(dict[str, Any], both["profile"])["owner"] = {"github_login": "someone-else", "github_id": "7"}
+    status, _payload, _calls = _run_product_read(argv, both)
+    assert status == 1
+
+    plan = _owner_plan()
+    renamed_plan = {**plan, "client_before": plan["owner_before"], "client_after": plan["owner_after"]}
+    del renamed_plan["owner_before"], renamed_plan["owner_after"]
+    assert write_action._project_product_owner_plan(renamed_plan) == write_action._project_product_owner_plan(plan)
+    _expect_error(
+        lambda: write_action._project_product_owner_plan(
+            {**plan, "client_after": {"github_login": "someone-else", "github_id": "7"}}
+        ),
+        "invalid_response",
+    )
+
+    decision = {
+        "record_id": "decision-one", "product": "example-site", "repository": "example/site",
+        "pull_request_number": 42, "head_sha": "a" * 40, "preview_url": "https://preview.example.invalid",
+        "decision": "accepted", "reason": "Looks right.",
+        "owner_github_id": "9001", "owner_github_login": "example-client",
+        "decided_at": "2026-09-26T12:00:00Z", "feedback_url": "https://github.com/example/site/pull/42#issuecomment-1",
+    }
+    renamed_decision = {
+        **{key: value for key, value in decision.items() if not key.startswith("owner_")},
+        "client_github_id": "9001", "client_github_login": "example-client",
+    }
+    conflicting = {**decision, "client_github_login": "someone-else"}
+    settings = {"service_url": "https://private.example.invalid", "token": "private-credential"}
+    for latest, expected in (
+        (renamed_decision, {"ok": True, "decision": decision}),
+        (conflicting, {"ok": False, "error": "owner_review_read_unavailable"}),
+    ):
+        payload = {"status": "ok", "repository": "example/site", "pull_request_number": 42, "latest_decision": latest}
+        with patch.object(owner_review, "resolve_settings", return_value=settings), patch.object(
+            owner_review, "request_launchplane_read", return_value=payload
+        ):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                owner_review.main(["--repo", "example/site", "--pr", "42"])
+            assert json.loads(output.getvalue()) == expected
 
 
 if __name__ == "__main__":

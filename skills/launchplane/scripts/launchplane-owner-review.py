@@ -39,6 +39,23 @@ DECISION_FIELDS = (
     "decided_at",
     "feedback_url",
 )
+# Launchplane is renaming these decision fields to Client names
+# (cbusillo/direction#13). Either spelling is read; output keeps the legacy keys.
+CLIENT_FIELDS = {
+    "owner_github_id": "client_github_id",
+    "owner_github_login": "client_github_login",
+}
+
+
+def legacy_decision_view(decision):
+    """Map Client-named decision fields onto their legacy keys, refusing a conflict."""
+    view = dict(decision)
+    for legacy, client in CLIENT_FIELDS.items():
+        if client in view:
+            if legacy in view and view[legacy] != view[client]:
+                raise ValueError("unexpected_review_decision")
+            view[legacy] = view.pop(client)
+    return view
 
 
 def read_review(args):
@@ -68,6 +85,8 @@ def read_review(args):
     decision = payload.get("latest_decision")
     if decision is None and not args.decision_id:
         return None
+    if isinstance(decision, dict):
+        decision = legacy_decision_view(decision)
     if (
         not isinstance(decision, dict)
         or any(key not in decision for key in DECISION_FIELDS)
