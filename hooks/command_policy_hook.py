@@ -178,7 +178,9 @@ class ShellScript:
                 self.emit(self.index + 1)
             elif character == ")" and context == "(":
                 self.close()
-            elif context != "((" and shell.startswith("<<", self.index) and not shell.startswith("<<<", self.index):
+            elif shell.startswith("<<<", self.index):
+                self.emit(self.index + 3)  # A here-string: its word is an ordinary argument.
+            elif context != "((" and shell.startswith("<<", self.index):
                 self.heredoc()
             elif character == "\n" and self.pending:
                 self.emit(self.index + 1)
@@ -188,7 +190,8 @@ class ShellScript:
 
     def close(self) -> None:
         _, start = self.stack.pop()
-        if start is not None:
+        # Record only outermost substitutions; parsing one finds those inside it.
+        if start is not None and all(enclosing is None for _, enclosing in self.stack):
             self.substitutions.append(self.shell[start:self.index])
         self.emit(self.index + 1)
 
@@ -274,7 +277,7 @@ def nested_commands(sources: list[str]) -> list[list[str]]:
     for source in sources:
         try:
             commands.extend(simple_commands(source))
-        except ValueError:
+        except (ValueError, RecursionError):
             continue  # An unreadable part must not let the rest of the line through.
     return commands
 
@@ -307,7 +310,7 @@ def unwrap(argv: list[str]) -> list[list[str]]:
             return [["gh-with-env-token", *arguments]]
         elif head == "eval":
             # Its quoted arguments are the command, not data.
-            return simple_commands(" ".join(argv[1:]))
+            return nested_commands([" ".join(argv[1:])])
         else:
             break
     if not argv:

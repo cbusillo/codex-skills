@@ -496,6 +496,8 @@ class CommandPolicyHookTests(unittest.TestCase):
             ("echo $((1 << 2))\ngh pr merge 17", "gh pr merge 17"),
             ("printf '%s\\n' \"$(( $(gh api repos/o/r/pulls | wc -l) + 1 ))\"", "gh api repos/o/r/pulls"),
             ("bash <<< 'gh api repos/o/r/pulls'", "gh api repos/o/r/pulls"),
+            ("cat <<< \"text\"\ngh api repos/o/r/pulls", "gh api repos/o/r/pulls"),
+            ("grep foo <<< \"$text\"\ngit -c commit.gpgsign=false commit -m demo", "git -c commit.gpgsign=false commit"),
             ("sudo sh -c 'gh api repos/o/r/pulls'", "gh api repos/o/r/pulls"),
             ("timeout 60 bash -lc 'git push origin main'", "git push origin main"),
             ("bash -c \"bash -c 'gh api repos/o/r/pulls'\"", "gh api repos/o/r/pulls"),
