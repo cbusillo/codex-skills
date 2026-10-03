@@ -312,7 +312,7 @@ commands:
         "--operation-id",
         "<operation-id>",
       ]
-    purpose: Reads one Odoo deploy operation's status, phase, times and error code.
+    purpose: Reads one Odoo deploy operation's status, phase, times, error code, bounded description and env-key names.
   - name: launchplane-target-replacement-plan-read
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -1119,12 +1119,13 @@ verification.
   for why a testing or stable Odoo deploy failed: take the id from
   `reconcile-requests-read` (`queued_operation_id`, `active_operation_id`,
   `deployed_operation_id` or `last_failed_operation_id`). It returns status,
-  phase, times, attempt, artifact id, image digest, step statuses and error
-  code; free-text error messages are dropped. The service authorizes it as
+  phase, times, attempt, and, when present in the response, artifact id,
+  image digest and step statuses. Failure details include the error code, Launchplane's fixed `error_description` as a bounded public summary,
+  and validated `error_detail_keys` (env-key names only); free-text error
+  messages are dropped. The service authorizes it as `operations.read` on
+  product `launchplane` for the operation's context and instance, or
   `odoo_target_replacement_apply.execute` on the operation's own product,
-  context and instance. Without that grant, read why a reconciler testing
-  deploy failed from `reconcile-requests-read` (`last_failed_error_code` and
-  the service-redacted `last_failed_error_summary`).
+  context and instance.
 - `POST /v1/drivers/odoo/target-replacement-plan`: Bounded local-extension
   read (`target-replacement-plan-read --product --instance`) for what an Odoo
   target replacement on that lane would do, before any apply. The route builds

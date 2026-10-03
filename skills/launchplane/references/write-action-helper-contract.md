@@ -142,12 +142,18 @@ local extensions until the vendored artifact is refreshed.
   `requests[].last_plan.<unlisted field>`; the same drop and omit rules apply.
 - `target-replacement-operation-read --operation-id` calls
   `GET /v1/drivers/odoo/target-replacement/operations/{operation_id}` with no
-  query. The service authorizes it as `odoo_target_replacement_apply.execute`
-  on the operation's product, context and instance, so a caller without that
-  grant gets `authorization_denied`. It returns the operation's id, product,
+  query. The service authorizes it as `operations.read` on product
+  `launchplane` for the operation's context and instance, or as
+  `odoo_target_replacement_apply.execute` on the operation's product, context
+  and instance. The read grant returns a structured view without the request
+  or embedded result; the execute grant returns the full service record. The
+  helper projects either view. It returns the operation's id, product,
   context, instance, status, phase, attempt, deployment record id, the
   requested artifact id, created, updated, started, heartbeat and finished
-  times, and `error_code`; and, once a result exists, the deploy, post-deploy,
+  times, `error_code`, a bounded `error_description` using the existing
+  public-summary validator (the descriptive word `credential` is redacted),
+  and validated
+  `error_detail_keys` (env-key names only); and, once a result exists, the deploy, post-deploy,
   health, canonical and logo statuses, the deployment and release tuple ids,
   artifact id and image digest. Free-text error messages, on the operation and
   on the result, are dropped rather than filtered: they can name hosts, provider
