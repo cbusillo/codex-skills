@@ -7038,6 +7038,12 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
     if verdict == "UNKNOWN" and next_action in {UNKNOWN_RETRY_ACTION, UNKNOWN_TERMINAL_ACTION}:
         next_action = UNKNOWN_RETRY_ACTION if retry_policy["retry"] else UNKNOWN_TERMINAL_ACTION
         payload["verdict_next_action"] = next_action
+    if verdict == "UNKNOWN" and not retry_policy["retry"] and payload.get("retry_exhausted") is not True:
+        if payload.get("inspection_verdict_next_action") or reason in {
+            "inspection_api_timeout", "run_changed", "inspection_still_running",
+        }:
+            next_action = UNKNOWN_TERMINAL_ACTION
+            payload["verdict_next_action"] = next_action
     next_action = guidance_for_command(next_action, payload.get("command"))
     report = agent_report_for(verdict, bucket, reason, payload, next_action)
     payload["bucket"] = bucket

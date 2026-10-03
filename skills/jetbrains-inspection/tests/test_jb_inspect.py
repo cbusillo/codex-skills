@@ -7823,6 +7823,28 @@ class AgentInspectContractTest(unittest.TestCase):
             self.assertIn("internal_retry_readiness", advice)
             self.assertNotRegex(advice.lower(), r"rerun|retry once|start a new inspection")
 
+    def test_tool_caused_interruption_does_not_invite_assessment(self):
+        for reason in ("inspection_api_timeout", "run_changed", "inspection_still_running"):
+            with self.subTest(reason=reason):
+                _, payload = self.emit_agent_payload({
+                    "status": "error", "error_reason": reason,
+                    "inspection_attribution": {"classification": "tool_caused"},
+                })
+                result = payload["agent_result"]
+                self.assertFalse(result["retry_policy"]["retry"])
+                for advice in (result["next_action"], result["agent_report"]):
+                    self.assertNotRegex(advice.lower(), r"rerun|retry once|start a new inspection")
+
+    def test_plugin_terminal_advice_follows_helper_contract(self):
+        case = next(case for case in attribution_cases() if case["name"] == "plugin-http-500")
+        for status in ("error", "unknown"):
+            with self.subTest(status=status):
+                _, payload = self.emit_agent_payload({**case["payload"], "status": status})
+                result = payload["agent_result"]
+                self.assertFalse(result["retry_policy"]["retry"])
+                for advice in (result["next_action"], result["agent_report"]):
+                    self.assertNotRegex(advice.lower(), r"rerun|retry once|start a new inspection")
+
     def test_fallback_advice_preserves_permitted_retry(self):
         for reason in ("indexing", "running", "already_opening", "open_state_unknown",
                        "capture_incomplete", "scope_not_covered"):
