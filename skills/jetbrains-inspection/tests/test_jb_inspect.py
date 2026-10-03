@@ -4021,6 +4021,98 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(result["reason"], "original_ide_process_dead_no_route")
         self.assertTrue(result["released_without_close"])
 
+    def test_cleanup_prepared_lease_releases_only_with_dead_original_ide_proof(self):
+        lease = {
+            "lease_id": "prepared-lease", "state": "prepared",
+            "opened_by_helper": True, "open_request_may_have_been_accepted": False,
+            "lifecycle_target_path": "/tmp/worktree", "session_id": "old-session",
+            "project_instance_id": "old-session:1", "project_key": "path:/tmp/worktree",
+            "route": {"base_path": "/tmp/worktree", "session_id": "old-session", "project_instance_id": "old-session:1"},
+            "ide_port": 63343, "open_attempts": [{
+                "accepted": True, "ownership_registered": True,
+                "lease_id": "prepared-lease",
+                "lifecycle_ownership_protocol": jb_inspect.LIFECYCLE_OWNERSHIP_PROTOCOL,
+                "identity": {"session_id": "old-session", "port": 63343, "pid": 753},
+            }],
+        }
+        replacement = {"base_path": "/tmp/worktree", "session_id": "new-session"}
+        cases = [
+            (lease, [], set(), True, True),
+            (lease | {"open_attempts": [{"method": "bootstrap_ide", "accepted": True}, *lease["open_attempts"]]}, [], set(), True, True),
+            (lease, [], {"old-session"}, True, False),
+            (lease, [replacement], {"new-session"}, True, False),
+            (lease, [], set(), False, False),
+            (lease, [], None, True, False),
+            (lease | {"state": "open_requesting"}, [], set(), True, False),
+            (lease | {"open_request_may_have_been_accepted": True}, [], set(), True, False),
+            (lease | {"open_attempts": []}, [], set(), True, False),
+            (lease | {"open_attempts": [lease["open_attempts"][0] | {"ownership_registered": False}]}, [], set(), True, False),
+        ]
+        for candidate, routes, sessions, dead, released in cases:
+            with (
+                self.subTest(candidate=candidate, routes=routes, sessions=sessions, dead=dead),
+                patch.object(jb_inspect, "pid_definitively_dead", return_value=dead),
+                patch.object(jb_inspect, "private_http_get_body") as claim,
+                patch.object(jb_inspect, "cleanup_lifecycle") as close,
+            ):
+                result = jb_inspect.cleanup_stale_helper_lease(candidate, routes, sessions)
+            claim.assert_not_called()
+            close.assert_not_called()
+            self.assertEqual(result.get("released_without_close", False), released)
+
+    def test_connection_reset_after_open_send_preserves_request_identity(self):
+        lease = {"lease_id": "reset-lease", "state": "open_requesting"}
+        identity = {"session_id": "session", "port": 63343}
+        saved = []
+        with (
+            patch.object(jb_inspect, "discover_open_identities", return_value=[identity]),
+            patch.object(jb_inspect, "identity_matches_context", return_value=True),
+            patch.object(jb_inspect, "write_lease", side_effect=lambda value: saved.append(value.copy())),
+            patch.object(jb_inspect, "http_get", side_effect=ConnectionResetError()),
+        ):
+            with self.assertRaises(ConnectionResetError):
+                jb_inspect.open_via_running_ide(Namespace(), {"worktree_root": "/tmp/worktree"}, [], lease=lease)
+        self.assertEqual(saved[-1]["ide_port"], identity["port"])
+        self.assertEqual(saved[-1]["session_id"], identity["session_id"])
+        lease.update({
+            "state": "cleanup_pending", "preparation_failure_stage": "project_open",
+            "preparation_failure_reason": "connectionreseterror",
+            "open_request_may_have_been_accepted": False,
+        })
+        self.assertFalse(jb_inspect.lease_proves_open_not_attempted(lease))
+
+    def test_cleanup_command_removes_unattempted_connection_reset_lease(self):
+        lease = {
+            "lease_id": "unattempted", "state": "cleanup_pending",
+            "preparation_failure_stage": "project_open",
+            "preparation_failure_reason": "connectionreseterror",
+            "opened_by_helper": False, "open_request_may_have_been_accepted": False,
+            "open_attempts": [], "pid": 999999, "updated_at_ms": jb_inspect.now_ms(),
+        }
+        for changes, removable in [
+            ({}, True), ({"session_id": "session"}, False),
+            ({"ide_port": 63343}, False),
+            ({"open_request_may_have_been_accepted": True}, False),
+            ({"open_attempts": [{"accepted": False, "request_may_have_been_accepted": True}]}, False),
+            ({"preparation_failure_reason": "interrupted"}, False),
+        ]:
+            with (
+                self.subTest(changes=changes),
+                patch.object(jb_inspect, "read_local_leases", return_value=[(Path("/tmp/unattempted.json"), lease | changes)]),
+                patch.object(jb_inspect, "pid_alive", return_value=False),
+                patch.object(jb_inspect, "discover_routes_for_cleanup", return_value=([], set())) as discover,
+                patch.object(jb_inspect, "private_http_get_body") as claim,
+                patch.object(jb_inspect, "cleanup_lifecycle") as close,
+                patch.object(Path, "unlink") as unlink,
+            ):
+                result = jb_inspect.cleanup_stale_helper_leases(Namespace(max_age_ms=86400000, dry_run=False))
+            self.assertEqual(bool(result["removed"]), removable)
+            self.assertEqual(unlink.called, removable)
+            if removable:
+                discover.assert_not_called()
+            claim.assert_not_called()
+            close.assert_not_called()
+
     def test_cleanup_pending_lease_retains_dead_original_session_when_target_is_open_elsewhere(self):
         lease = {
             "lease_id": "pending-lease",

@@ -2932,6 +2932,7 @@ TARGET_REPLACEMENT_OPERATION_OMITTED_FIELDS = frozenset(
     {
         "error_message",
         "schema_version",
+        "free_text_omitted",
         "idempotency_key",
         "idempotency_scope",
         "request_fingerprint",
@@ -2994,6 +2995,9 @@ TARGET_REPLACEMENT_RESULT_FIELDS = frozenset(
         "image_reference",
         "runtime_source",
         "error_message",
+        "error_code",
+        "error_description",
+        "error_detail_keys",
         *TARGET_REPLACEMENT_RESULT_STATUSES,
         *TARGET_REPLACEMENT_RESULT_IDS,
     }
@@ -3043,8 +3047,17 @@ def _project_target_replacement_result(
     return projected
 
 
+def _public_operation_error_description(value: object) -> str:
+    if not isinstance(value, str):
+        raise LaunchplaneSafetyError("invalid_response")
+    # Fixed service prose describes a credential refusal. Redact that word
+    # rather than loosening the public-summary policy; _FieldDrops checks the raw shape.
+    summary = re.sub(r"\bcredential\b(?!\s*[:=])", "[redacted]", value, flags=re.IGNORECASE)
+    return public_summary_string(summary)
+
+
 def _project_target_replacement_operation(provider_payload: dict[str, Any]) -> dict[str, object]:
-    """One Odoo target-replacement operation's progress and error code. Error messages,
+    """One Odoo target-replacement operation's progress and bounded failure details. Error messages,
     settings, URLs, provider target names and evidence payloads are dropped and listed by
     path; a secret-looking value in a kept field fails the read."""
     operation = _require_dict(provider_payload.get("operation"))
@@ -3076,6 +3089,10 @@ def _project_target_replacement_operation(provider_payload: dict[str, Any]) -> d
             "operation.request.artifact_id", public_identifier, request.get("artifact_id")
         ),
         "error_code": field("error_code", _public_dotted_code),
+        "error_description": field("error_description", _public_operation_error_description),
+        "error_detail_keys": _project_env_key_names(
+            operation.get("error_detail_keys"), path="operation.error_detail_keys", drops=drops
+        ),
     }
     for name in TARGET_REPLACEMENT_OPERATION_TIMESTAMPS:
         projected_operation[name] = field(
@@ -4628,7 +4645,8 @@ def summarize_target_replacement_operation_read(
         "launchplane_status": status,
         "trace_id": public_trace_id(provider_payload.get("trace_id")),
         "recommendation": (
-            "Read operation.status, phase and error_code first; the result statuses say "
+            "Read operation.status, phase, error_code, error_description and error_detail_keys "
+            "first; the result statuses say "
             "which deploy or verification step failed. Error messages are not returned."
         ),
     }
