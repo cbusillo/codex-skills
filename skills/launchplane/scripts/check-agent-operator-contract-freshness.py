@@ -21,6 +21,7 @@ from launchplane_contract_freshness import (
     FreshnessError,
     evaluate_freshness,
     report_maintenance_issue,
+    report_workflow_maintenance_issue,
 )
 
 
@@ -39,15 +40,17 @@ def build_parser() -> argparse.ArgumentParser:
     report = subparsers.add_parser("report")
     report.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY"))
     report.add_argument("--evidence-file", type=Path, required=True)
+    report.add_argument("--workflow-token", action="store_true",
+                        help="Use only the freshness workflow job's existing GitHub token.")
     return parser
 
 
-def _error_payload(code: str) -> dict[str, object]:
+def _error_payload(code: str, detail_code: str | None = None) -> dict[str, object]:
     return {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "classification": "unknown",
         "retryable": False,
-        "error": {"code": code},
+        "error": {"code": code, "detail_code": detail_code},
         "summary": {"advisory_only": True, "runtime_authority": False},
     }
 
@@ -72,9 +75,10 @@ def main(argv: list[str] | None = None) -> int:
                 raise FreshnessError("invalid_freshness_evidence") from exc
             if not isinstance(raw_evidence, dict):
                 raise FreshnessError("invalid_freshness_evidence")
-            payload = report_maintenance_issue(raw_evidence, repository=args.repository)
+            reporter = report_workflow_maintenance_issue if args.workflow_token else report_maintenance_issue
+            payload = reporter(raw_evidence, repository=args.repository)
     except FreshnessError as exc:
-        print(json.dumps(_error_payload(exc.code), sort_keys=True))
+        print(json.dumps(_error_payload(exc.code, exc.detail_code), sort_keys=True))
         return 1
     print(json.dumps(payload, sort_keys=True))
     return 0

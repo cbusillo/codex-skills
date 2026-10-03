@@ -259,50 +259,6 @@ commands:
         "<key>",
       ]
     purpose: Dry-runs or applies one audited Launchplane-managed preview-feedback remediation.
-  - name: launchplane-change-impact-policy-dry-run
-    source: skill
-    resource_path: scripts/launchplane-write-action.py
-    example_argv:
-      [
-        "uv",
-        "run",
-        "scripts/launchplane-write-action.py",
-        "change-impact-policy-dry-run",
-        "--payload-file",
-        "<private-file>",
-      ]
-    purpose: Dry-runs an explicit private change-impact policy payload with redacted output.
-  - name: launchplane-change-impact-policy-apply
-    source: skill
-    resource_path: scripts/launchplane-write-action.py
-    example_argv:
-      [
-        "uv",
-        "run",
-        "scripts/launchplane-write-action.py",
-        "change-impact-policy-apply",
-        "--payload-file",
-        "<private-file>",
-        "--reviewed-dry-run",
-        "--expected-policy-digest",
-        "<dry-run-digest>",
-        "--idempotency-key",
-        "<key>",
-      ]
-    purpose: Applies a reviewed private change-impact policy payload with redacted output.
-  - name: launchplane-change-impact-policy-read
-    source: skill
-    resource_path: scripts/launchplane-write-action.py
-    example_argv:
-      [
-        "uv",
-        "run",
-        "scripts/launchplane-write-action.py",
-        "change-impact-policy-read",
-        "--repository-id",
-        "<repository-id>",
-      ]
-    purpose: Reads bounded active change-impact policy metadata for verification.
   - name: launchplane-target-replacement-operation-read
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -515,24 +471,6 @@ policy:
               "<private-dry-run-output>",
             ]
           purpose: Applies only exact, determinate, retry-safe reviewed recovery evidence through the bounded helper.
-    - id: prefer-launchplane-write-helper-for-change-impact-policy-api
-      match:
-        shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/change-impact/policies/apply\\b"
-      action: require_preferred
-      message: Raw Launchplane change-impact policy calls bypass helper-owned private-file, dry-run/apply, idempotency, redaction, and trace discipline. Use the write-action helper.
-      preferred:
-        - kind: script
-          path: scripts/launchplane-write-action.py
-          example_argv:
-            [
-              "uv",
-              "run",
-              "scripts/launchplane-write-action.py",
-              "change-impact-policy-dry-run",
-              "--payload-file",
-              "<private-file>",
-            ]
-          purpose: Dry-runs explicit admin policy input through the bounded helper.
     - id: prefer-launchplane-write-helper-for-product-expected-config-api
       match:
         shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/product-profiles/expected-config/apply\\b"
@@ -1020,7 +958,7 @@ verification.
 - `scripts/launchplane-context.py`: Structural state helper.
 - `scripts/launchplane-write-action.py`: Public-safe write-action wrapper for
   product-config intent preflight, private local product-config dry-run/apply,
-  change-impact policy dry-run/apply/read-back, guarded merge-train policy
+  guarded merge-train policy
   import, repository inventory read/dry-run/apply, product environment,
   activity, preview, reconcile and secret-binding metadata reads, Odoo
   target-replacement operation and plan reads, Client, image repository,
@@ -1037,11 +975,6 @@ verification.
   authorization and managed-secret binding evidence; never carries plaintext.
 - `POST /v1/product-config/apply`: Primary product-config admin path for
   signed-in, scoped admins; dry-run before apply.
-- `POST /v1/change-impact/policies/apply`: Change-impact policy dry-run/apply
-  path for explicit private admin input; apply must pin the dry-run policy
-  digest and be followed by bounded read-back.
-- `GET /v1/change-impact/policy`: Bounded active policy read-back for exact
-  revision and digest verification.
 - `POST /v1/merge-train/policies/import`: Bounded local-extension path for
   private merge-train policy dry-run/apply. Require active-policy digest
   preflight, exact saved dry-run evidence, reviewed acknowledgement,
@@ -1061,7 +994,7 @@ verification.
 - `POST /v1/admin/generic-web/deploy-recovery/apply`: Generic-web
   deploy-recovery apply path; requires the original deploy idempotency key,
   the dry-run digest, and reviewed acknowledgement.
-- `POST /v1/product-config/odoo-addon-settings/apply`: Bounded local-extension
+- `POST /v1/product-config/odoo-addon-settings/apply`: Projected contract
   path for an Odoo lane's Shopify addon settings on its instance-override record
   (`odoo-addon-settings-dry-run` / `odoo-addon-settings-apply`). The private
   payload carries the store key, API version and `test_store` as literals and
