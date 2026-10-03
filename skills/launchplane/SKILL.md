@@ -738,7 +738,7 @@ operation map rather than adding duplicate literals.
 The merge-train policy import, repository inventory, product expected configuration,
 generic-web deploy-recovery, Odoo addon-settings, integration-allowances,
 testing-hold, product-repository-identity, product-environment-read,
-product-activity-read, product-profile-read, preview-history-read,
+product-activity-read, product-profile-read, path-check, preview-history-read,
 reconcile-requests-read, target-replacement-operation-read,
 target-replacement-plan-read, `product-owner-*`, `dokploy-target-create-compose-*`,
 `production-backup-authority-*`, product-promotion-status-read and

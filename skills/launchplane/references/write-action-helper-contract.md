@@ -815,7 +815,8 @@ description, fix kind, and record ids. Clear steps use `fix: none`; other fix
 kinds are `code`, `grant`, `owner_approval`, `client_acceptance`, `by_hand` and
 `wait`. Counts and overall state must agree with the steps, and the response
 must match the requested product and path. Unknown fields at every level,
-unsafe names or values, missing evidence and invalid enums fail closed. Lists
+unsafe names or values, missing fields and invalid enums fail closed. Empty
+record-id lists are valid when the service has no record id for a step. Lists
 are limited to 50 steps and 50 record ids per step; oversized responses fail
 instead of omitting blockers. A successful read can still describe a blocked
 or unknown path; inspect `result.state` and every step before proposing action.
