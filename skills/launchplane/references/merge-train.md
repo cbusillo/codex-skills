@@ -8,11 +8,14 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   checks both the PR author and the actor who last applied `ready-to-merge`,
   using the label's latest `labeled` event. Enqueue with the trusted automation
   identity's installation token. The labeler must be trusted automation or have
-  a role in `allowed_actor_roles`; a GitHub App acting with a user's token counts
-  as the App. An unauthorized labeler is reported as
-  `ready-to-merge label ignored: applied by <login> ...`. Report that refusal;
+  a role in `allowed_actor_roles`. A label applied by a GitHub App acting with
+  a user's token is refused even when the App is trusted automation.
+  An unauthorized labeler is reported as
+  `ready-to-merge label ignored: applied by <login> ...`; the same
+  `ready-to-merge label ignored:` prefix also covers unreadable labeler evidence
+  and an App acting for a user. Report those refusals;
   do not work around it by relabeling under another identity. Check
-  `actor_role`, `eligible`, `ineligible_reasons`, checks, and head SHA before
+  `actor_role` (the author's role), `eligible`, `ineligible_reasons`, checks, and head SHA before
   adding ready labels. A missing ready label alone is the expected state before
   enqueueing; an unauthorized author remains ineligible after labeling. When an
   active candidate or landing is being reported instead of a fresh queue, use
