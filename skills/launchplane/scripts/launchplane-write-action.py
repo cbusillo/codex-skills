@@ -60,6 +60,7 @@ READ_ONLY_OPERATIONS = {
     "product-environment-read",
     "product-activity-read",
     "product-profile-read",
+    "path-check",
     "preview-history-read",
     "reconcile-requests-read",
     "target-replacement-operation-read",
@@ -4508,6 +4509,80 @@ def _summarize_product_read(
     return payload
 
 
+def _project_path_check(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    fields = {"product", "path", "state", "blocked_count", "unknown_count", "steps"}
+    step_fields = {"step_id", "state", "code", "description", "fix", "record_ids"}
+    states = ("clear", "blocked", "unknown")
+    fixes = ("none", "code", "grant", "owner_approval", "client_acceptance", "by_hand", "wait")
+    if set(source) != fields:
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    assert_public_safe_shape(source)
+    if source["path"] not in ("testing", "promote") or source["state"] not in states:
+        raise LaunchplaneSafetyError("invalid_response")
+    steps = source["steps"]
+    if not isinstance(steps, list) or not steps or len(steps) > 50:
+        raise LaunchplaneSafetyError("invalid_response")
+    projected_steps: list[dict[str, object]] = []
+    for value in steps:
+        step = _require_dict(value)
+        if set(step) != step_fields:
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        if step["state"] not in states or step["fix"] not in fixes:
+            raise LaunchplaneSafetyError("invalid_response")
+        if not isinstance(step["code"], str):
+            raise LaunchplaneSafetyError("invalid_response")
+        record_ids = step["record_ids"]
+        if not isinstance(record_ids, list) or len(record_ids) > 50:
+            raise LaunchplaneSafetyError("invalid_response")
+        projected_steps.append(
+            {
+                "step_id": public_identifier(step["step_id"]),
+                "state": step["state"],
+                "code": public_code(step["code"]),
+                "description": public_summary_string(step["description"]),
+                "fix": step["fix"],
+                "record_ids": [public_identifier(record_id) for record_id in record_ids],
+            }
+        )
+    blocked = sum(step["state"] == "blocked" for step in projected_steps)
+    unknown = sum(step["state"] == "unknown" for step in projected_steps)
+    state = "blocked" if blocked else "unknown" if unknown else "clear"
+    for field, count in (("blocked_count", blocked), ("unknown_count", unknown)):
+        if type(source[field]) is not int or source[field] != count:
+            raise LaunchplaneSafetyError("invalid_response")
+    if source["state"] != state:
+        raise LaunchplaneSafetyError("invalid_response")
+    return {
+        "product": public_identifier(source["product"]),
+        "path": source["path"],
+        "state": state,
+        "blocked_count": blocked,
+        "unknown_count": unknown,
+        "steps": projected_steps,
+    }
+
+
+def summarize_path_check(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    payload = _summarize_product_read(
+        operation="path-check",
+        request=request,
+        provider_payload=provider_payload,
+        result_key="check",
+        project=_project_path_check,
+        recommendation=(
+            "Read every blocked or unknown step before proposing the next action; "
+            "this read grants no authority."
+        ),
+    )
+    result = _require_dict(payload["result"])
+    if result["product"] != request["product"] or result["path"] != request["path"]:
+        raise LaunchplaneSafetyError("invalid_response")
+    return payload
+
+
 def summarize_product_environment_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
@@ -4688,6 +4763,7 @@ def execute_target_replacement_plan_read(*, args: argparse.Namespace) -> int:
 
 
 PRODUCT_READ_SUMMARIZERS = {
+    "path-check": summarize_path_check,
     "product-environment-read": summarize_product_environment_read,
     "product-activity-read": summarize_product_activity_read,
     "product-profile-read": summarize_product_profile_read,
@@ -4698,7 +4774,12 @@ PRODUCT_READ_SUMMARIZERS = {
 
 
 def execute_product_read(
-    *, args: argparse.Namespace, operation: str, request: dict[str, object], path: str
+    *,
+    args: argparse.Namespace,
+    operation: str,
+    request: dict[str, object],
+    path: str,
+    query: dict[str, str] | None = None,
 ) -> int:
     summarize = PRODUCT_READ_SUMMARIZERS[operation]
     settings = prepare_operator_settings(args=args, operation=operation, request=request)
@@ -4709,7 +4790,7 @@ def execute_product_read(
             service_url=settings["service_url"],
             path=path,
             settings=settings,
-            query={},
+            query=query or {},
             timeout=args.timeout,
         )
         emit(summarize(request=request, provider_payload=provider_payload))
@@ -7049,6 +7130,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     product_profile_read.add_argument("--product", required=True)
 
+    path_check = subparsers.add_parser(
+        "path-check", help="Read every blocker on the caller's testing or promotion path."
+    )
+    path_check.add_argument("--product", required=True)
+    path_check.add_argument("--path", required=True, choices=("testing", "promote"))
+
     product_activity_read = subparsers.add_parser(
         "product-activity-read",
         help="Read a product's recent deployment, promotion and preview activity.",
@@ -7496,6 +7583,17 @@ def main(argv: list[str]) -> int:
             }
             return execute_product_read(
                 args=args, operation=args.command, request=request, path=path
+            )
+        if args.command == "path-check":
+            path = _product_read_path(args.command, product=args.product)
+            request = {
+                "product": public_identifier(args.product),
+                "path": args.path,
+                "payload_source": "operator_argument",
+            }
+            return execute_product_read(
+                args=args, operation=args.command, request=request, path=path,
+                query={"path": args.path},
             )
         if args.command == "product-profile-read":
             path = _product_read_path(args.command, product=args.product)

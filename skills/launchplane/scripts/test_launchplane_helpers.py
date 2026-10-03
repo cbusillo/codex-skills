@@ -19,7 +19,7 @@ import types
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from email.message import Message
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -2842,6 +2842,136 @@ def _run_product_read(
     ):
         status = write_action.main(argv)
     return status, json.loads(output.getvalue()), calls
+
+
+def _path_check_response(path: str = "testing") -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "trace_id": "launchplane_req_path_check",
+        "check": {
+            "product": "example-product",
+            "path": path,
+            "state": "clear",
+            "blocked_count": 0,
+            "unknown_count": 0,
+            "steps": [
+                {
+                    "step_id": "profile_lane",
+                    "state": "clear",
+                    "code": "lane_recorded",
+                    "description": "The lane is recorded.",
+                    "fix": "none",
+                    "record_ids": [],
+                },
+                {
+                    "step_id": "testing_deploy" if path == "testing" else "backup_authority",
+                    "state": "clear",
+                    "code": "already_deployed" if path == "testing" else "backup_ready",
+                    "description": "The evidence is recorded.",
+                    "fix": "none",
+                    "record_ids": ["operation-example-1"],
+                },
+            ],
+        },
+    }
+
+
+def test_path_check_reads_both_paths_and_preserves_clear_blocked_unknown() -> None:
+    for path in ("testing", "promote"):
+        for state, fix, code in (
+            ("clear", "none", "already_deployed"),
+            ("blocked", "grant", "caller_lacks_promotion_grant"),
+            ("unknown", "wait", "reconcile_requests_unread"),
+        ):
+            response = _path_check_response(path)
+            check = response["check"]
+            check["state"] = state
+            check["blocked_count"] = int(state == "blocked")
+            check["unknown_count"] = int(state == "unknown")
+            check["steps"][1].update(state=state, fix=fix, code=code)
+            argv = ["path-check", "--product", check["product"], "--path", path]
+            status, payload, calls = _run_product_read(argv, response)
+            assert status == 0, payload
+            assert len(calls) == 1
+            route = contract.LOCAL_EXTENSION_ROUTES["path-check"]
+            assert calls[0]["path"] == route["path"].format(product=check["product"])
+            assert calls[0]["query"] == {"path": path}
+            assert payload["result"] == check
+            assert payload["summary"]["trace_id"] == response["trace_id"]
+
+    # Blockers and unread evidence must survive together, in service order.
+    response = _path_check_response()
+    check = response["check"]
+    check.update(state="blocked", blocked_count=1, unknown_count=1)
+    check["steps"][0].update(state="blocked", fix="by_hand")
+    check["steps"][1].update(state="unknown", fix="wait")
+    status, payload, _calls = _run_product_read(
+        ["path-check", "--product", check["product"], "--path", check["path"]], response
+    )
+    assert status == 0 and payload["result"] == check
+
+
+def test_path_check_refuses_unknown_fields_unsafe_values_and_incomplete_evidence() -> None:
+    mutations = (
+        lambda body: body.update(extra="private detail"),
+        lambda body: body["check"].update(extra="private detail"),
+        lambda body: body["check"]["steps"][0].update(provider_error="private detail"),
+        lambda body: body["check"]["steps"][0].update(secret_name="PRIVATE_SECRET"),
+        lambda body: body["check"]["steps"][0].update(description="Bearer abcdefghijklmnop"),
+        lambda body: body["check"]["steps"][0].update(description="https://private.example.invalid/x"),
+        lambda body: body["check"]["steps"][0].update(record_ids=["token=private-value"]),
+        lambda body: body["check"]["steps"][0].pop("state"),
+        lambda body: body["check"]["steps"][0].update(state="pending"),
+        lambda body: body["check"]["steps"][0].update(state=[]),
+        lambda body: body["check"]["steps"][0].update(fix="invent_access"),
+        lambda body: body["check"]["steps"][0].update(code={}),
+        lambda body: body["check"]["steps"][0].update(record_ids={}),
+        lambda body: body["check"].update(steps=[]),
+        lambda body: body["check"].update(steps=[None]),
+        lambda body: body["check"].update(blocked_count=1),
+        lambda body: body["check"].update(unknown_count=False),
+        lambda body: body["check"].update(state="blocked"),
+        lambda body: body["check"].update(path="rollback"),
+        lambda body: body["check"].update(path="promote"),
+        lambda body: body["check"].update(product="another-product"),
+    )
+    argv = ["path-check", "--product", "example-product", "--path", "testing"]
+    for mutate in mutations:
+        response = _path_check_response()
+        mutate(response)
+        status, payload, calls = _run_product_read(argv, response)
+        assert status == 1 and len(calls) == 1, payload
+        assert payload["status"] == "invalid" and not payload["result"], payload
+        for value in ("private detail", "PRIVATE_SECRET", "abcdefghijklmnop", "private.example", "private-value"):
+            assert value not in json.dumps(payload)
+
+
+def test_path_check_refuses_bad_selector_and_surfaces_read_denial() -> None:
+    status, payload, calls = _run_product_read(
+        ["path-check", "--product", "../admin", "--path", "testing"], _path_check_response()
+    )
+    assert status == 2 and not calls
+    assert payload["warnings"][0]["code"] == "invalid_product"
+    with redirect_stderr(io.StringIO()):
+        try:
+            _run_product_read(
+                ["path-check", "--product", "example-product", "--path", "rollback"], {}
+            )
+        except SystemExit as exc:
+            assert exc.code == 2
+        else:
+            raise AssertionError("Unsupported path was accepted")
+    denied = urllib.error.HTTPError(
+        "https://launchplane.example.invalid", 404, "Not found", Message(),
+        io.BytesIO(json.dumps({"status": "error", "trace_id": "launchplane_req_denied",
+                              "error": {"code": "not_found", "message": "private detail"}}).encode()),
+    )
+    status, payload, calls = _run_product_read(
+        ["path-check", "--product", "example-product", "--path", "testing"], denied
+    )
+    assert status == 1 and len(calls) == 1
+    assert not payload["result"] and "private detail" not in json.dumps(payload)
+    assert payload["summary"]["trace_id"] == "launchplane_req_denied"
 
 
 def test_product_environment_read_uses_path_route_and_projects_deploy_identity() -> None:
@@ -6011,6 +6141,9 @@ def test_product_promotion_dry_run_never_accepts_a_live_result() -> None:
 
 def main() -> int:
     tests = [
+        test_path_check_reads_both_paths_and_preserves_clear_blocked_unknown,
+        test_path_check_refuses_unknown_fields_unsafe_values_and_incomplete_evidence,
+        test_path_check_refuses_bad_selector_and_surfaces_read_denial,
         test_product_owner_plan_projection_digests_the_reviewed_change,
         test_product_owner_dry_run_sends_normalized_login_to_the_product_route,
         test_product_owner_apply_checks_the_client_reapplies_and_reads_back,
