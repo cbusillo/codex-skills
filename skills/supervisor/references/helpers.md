@@ -96,32 +96,42 @@ before `--verified-target`, then read back once; do not replay an uncertain send
 
 ## Choosing the account
 
-Launch with `--account-provider openai|anthropic|google` and the helper picks
-the account, as the Director decided on
-[codex-skills#886](https://github.com/cbusillo/codex-skills/issues/886): among
-the configured accounts for that provider, the one whose weekly window resets
-soonest, with its tightest window above the account's reserve. It exports that
-account's `env` settings ahead of the launch command, so they also reach an
-agent started after `cd`, and reports the account, its reason and the others in
-the launch output. Read that output before recording the session. Five-hour
-windows do not rank; they reset for every account all the time. A window counts
-as weekly when its Context Panel label says so; an account without one ranks by
-its latest reset. Context Panel's Use last setting is not consulted.
+Launch with `--account-provider openai|anthropic|google` and the helper follows
+Context Panel's own **Use next** choice for that provider, as the Director
+corrected on [codex-skills#1108](https://github.com/cbusillo/codex-skills/issues/1108).
+It reads `answers.useNext` from the same agent snapshot and maps its `accountID`
+to one configured launch account. Context Panel owns the ranking, including
+banked reset expiries and Use last. The existing capacity reserve still applies;
+a choice without room or without a unique configured match refuses instead of
+silently launching a different account.
+
+The helper exports that account's `env` settings ahead of the launch command,
+so they also reach an agent started after `cd`, and reports the source, account,
+reason and other accounts in the launch output. Read that output before
+recording the session.
 
 ```sh
 uv run skills/supervisor/scripts/account_choice.py --provider anthropic
 uv run skills/supervisor/scripts/iterm_tab.py new --window-id <id> --command-file <launch-file> --account-provider anthropic
 ```
 
-Capacity comes from Context Panel's agent account snapshot (schema 1, its
-`ContextPanelAccountSnapshot` reader). The helper falls back only when the
-reader fails or every configured account of that provider is in a state with no
-current reading (unknown, stale, refreshing, unavailable, not connected or
-off): it uses the first configured account, says `fallback` and why, and does
-not check capacity. Otherwise, when no account has room above its reserve,
-is `limited`, or matches no single snapshot row, it refuses and creates no
-tab. `--account <name>` launches on a named configured account instead. A
-launch file that already sets the account's variable is refused.
+Capacity and the choice come from Context Panel's agent account snapshot
+(schema 1, its `ContextPanelAccountSnapshot` reader). When a provider has no
+Use next choice, the helper reports `fallback` and keeps the previous behavior:
+it chooses the soonest weekly reset with room above the account's reserve
+(or the latest reset when no weekly window is labeled). If the reader fails
+or every configured account has no current reading (unknown, stale, refreshing,
+unavailable, not connected or off), it uses the configured order without a
+capacity check and says why. Known readings with no room and ambiguous matches
+still refuse and create no tab. `--account <name>` launches on a named configured
+account instead. A launch file that already sets the account's variable is refused.
+
+For Codex's shared app server, launch with `codex --remote unix://`: the empty
+Unix endpoint resolves through the selected `CODEX_HOME`, so each account uses
+its own daemon. A fixed socket or WebSocket endpoint attaches to that server's
+account regardless of the exported home. The chosen home must already have its
+daemon running when using `--remote`; use Codex's built-in daemon start command
+for that home when needed.
 
 Accounts live only in private config, the first `[accounts]` table in
 `$CODE_HOME`, then `$CODEX_HOME`, then `~/.code`, under
