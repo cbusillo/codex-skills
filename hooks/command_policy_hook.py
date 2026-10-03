@@ -312,6 +312,12 @@ def unwrap(argv: list[str], nested: bool) -> list[list[str]]:
             if SHELL_COMMAND_FLAG.match(token):  # -c, -lc, -ec ...
                 return simple_commands(argv[index + 1], nested=True)
     commands = [argv]
+    shells = [index for index, token in enumerate(argv[1:-1], start=1) if Path(token).name in SHELLS]
+    if shells and not nested:
+        # A wrapper left in place (`sudo sh -c`, `xargs bash -c`) still runs the script.
+        flag = next((index for index in range(shells[0] + 1, len(argv) - 1) if SHELL_COMMAND_FLAG.match(argv[index])), None)
+        if flag is not None:
+            commands += nested_commands([argv[flag + 1]], nested=True)
     if argv[0] == "ssh":
         # The remote command runs too; the host and option values read as harmless words.
         commands += nested_commands([" ".join(argv[1:])], nested)

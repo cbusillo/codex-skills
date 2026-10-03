@@ -496,6 +496,8 @@ class CommandPolicyHookTests(unittest.TestCase):
             ("echo $((1 << 2))\ngh pr merge 17", "gh pr merge 17"),
             ("printf '%s\\n' \"$(( $(gh api repos/o/r/pulls | wc -l) + 1 ))\"", "gh api repos/o/r/pulls"),
             ("bash <<< 'gh api repos/o/r/pulls'", "gh api repos/o/r/pulls"),
+            ("sudo sh -c 'gh api repos/o/r/pulls'", "gh api repos/o/r/pulls"),
+            ("timeout 60 bash -lc 'git push origin main'", "git push origin main"),
             ("ssh -p 2222 build-host 'gh api repos/o/r/pulls'", "gh api repos/o/r/pulls"),
             ("ssh build-host bash <<'EOF'\ngh api repos/o/r/pulls\nEOF", "gh api repos/o/r/pulls"),
             ("gh-with-env-token api repos/o/r/issues/1 --method PATCH -f body=x", "repos/o/r/issues/1"),
