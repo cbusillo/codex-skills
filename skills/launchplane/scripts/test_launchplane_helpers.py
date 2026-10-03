@@ -2683,6 +2683,7 @@ def test_product_secret_bindings_read_fails_closed_on_values_and_ciphertext() ->
         ("plaintext_value", "private-value"),
         ("secret_value", "private-value"),
         ("version_id", "ghp_" + "abcdefghijklmnop"),
+        ("provider_note", "ghp_" + "abcdefghijklmnop"),
     ):
         response = _secret_bindings_response()
         cast(list[dict[str, object]], response["bindings"])[0][field] = value

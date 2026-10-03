@@ -2962,14 +2962,12 @@ def _project_product_secret_binding(
     binding_value: object, drops: _FieldDrops
 ) -> dict[str, object] | None:
     """One binding's metadata, or None when its identity is unusable. A sensitive
-    field name, such as a value or ciphertext, fails the whole read."""
+    field name, such as a value or ciphertext, or a secret-looking value in any
+    field, kept or dropped, fails the whole read."""
     if not isinstance(binding_value, dict):
         return None
     binding = binding_value
-    if any(
-        key not in PRODUCT_SECRET_BINDING_FIELDS and is_denied_key(str(key)) for key in binding
-    ):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    assert_public_safe_shape(binding)
 
     def field(name: str, validate: Any) -> object:
         return drops.keep(f"bindings[].{name}", validate, binding.get(name))

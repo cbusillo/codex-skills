@@ -149,7 +149,8 @@ local extensions until the vendored artifact is refreshed.
   and lists only bindings covered by the caller's `secret.list` access; preview,
   removed-lane, global and worker stores are never listed. A field named like a
   value, ciphertext or other secret fails the whole read, as does a
-  secret-looking value; any other unlisted field is dropped and counted under
+  secret-looking value in any field, including one that would be dropped; any
+  other unlisted field is dropped and counted under
   `bindings[].<unlisted field>`, and a binding without a usable key, context
   or scope is omitted and counted.
 - `target-replacement-operation-read --operation-id` calls
@@ -578,8 +579,10 @@ lane inside the service:
 ```
 
 `copy_from` has exactly `context`, `instance` and `version_id`; the helper
-refuses an entry that also carries a `value` (`secret_copy_with_value`) or a
-malformed reference (`invalid_secret_copy_from`) before sending anything. The
+refuses an entry that also carries a non-null `value` (`secret_copy_with_value`)
+or a malformed reference (`invalid_secret_copy_from`) before sending anything.
+As in the service, a `null` `copy_from` means no copy, and a `null` `value`
+beside `copy_from` means no value. The
 source binding key is the destination binding key, and the destination must be
 lane-exact. A declared `secret_class` and a sharing reason with evidence are
 required; Launchplane does not check token permissions, so a person verifies
