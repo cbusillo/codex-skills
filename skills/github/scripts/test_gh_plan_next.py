@@ -1235,11 +1235,16 @@ def test_portfolio_capacity_reports_reviews_before_unread_excluded_ancestry() ->
             "someone/business#10": reviewed(items[10], "waiting", waiting_on="person"),
             "someone/tools#20": reviewed(items[20], category="repeated_stop_tooling"),
         }}
+        read_parent = module.read_next_parent
+        def unavailable_parent(repo: str, number: int) -> Any:
+            if repo == unrelated["repo"] and number == unrelated["number"]:
+                raise module.PlanError("Parent unavailable")
+            return read_parent(repo, number)
         with patch.multiple(module, next_selection_context=lambda _args: context):
             module.cmd_next(next_args())
             assert result["tooling_capacity_context"]["admitted"] is True
             assert [item["number"] for item in result["available_candidates"]] == [20]
-            with patch.multiple(module, read_next_parent=Mock(side_effect=module.PlanError("Parent unavailable"))):
+            with patch.multiple(module, read_next_parent=unavailable_parent):
                 module.cmd_next(next_args())
             assert result["tooling_capacity_context"]["admitted"] is False
             assert result["tooling_capacity_context"]["reason"] == "unknown_milestone_context"
