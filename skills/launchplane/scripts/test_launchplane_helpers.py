@@ -3066,7 +3066,7 @@ def _testing_hold_response(plan: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _saved_dry_run_output(operation: str, response: dict[str, object]) -> dict[str, object]:
+def _saved_dry_run_output(operation: str, response: dict[str, object]) -> dict[str, Any]:
     # The apply's evidence is the helper's own saved dry-run output, not the raw service reply.
     return write_action.summarize_success(
         operation=operation, request={"mode": "dry-run"}, provider_payload=response
@@ -3093,7 +3093,7 @@ def test_testing_hold_plan_projection_is_bounded_and_fail_closed() -> None:
         ),
         (_testing_hold_plan(reason="Bearer abcdefghijklmnop"), "invalid_response"),
     ):
-        _expect_error(lambda plan=plan: write_action._project_testing_hold_plan(plan), code)
+        _expect_error(lambda candidate=plan: write_action._project_testing_hold_plan(candidate), code)
     _expect_error(
         lambda: write_action._project_success_output(
             "testing-hold-dry-run",
@@ -4522,7 +4522,7 @@ def test_testing_hold_body_binds_apply_to_saved_dry_run() -> None:
             ({"reason": "A reason nobody reviewed"}, "reviewed_dry_run_not_apply_eligible"),
         ):
             args = argparse.Namespace(**{**vars(apply_args), **overrides})
-            _expect_error(lambda args=args: write_action.testing_hold_body(args, mode="apply"), code)
+            _expect_error(lambda candidate=args: write_action.testing_hold_body(candidate, mode="apply"), code)
 
 
 def test_testing_hold_cli_dispatches_local_extension_route() -> None:
@@ -4637,7 +4637,7 @@ def test_product_repository_identity_projection_is_bounded_and_fail_closed() -> 
         ),
     ):
         _expect_error(
-            lambda plan=plan: write_action._project_product_repository_identity_plan(plan), code
+            lambda candidate=plan: write_action._project_product_repository_identity_plan(candidate), code
         )
 
 
@@ -4690,7 +4690,7 @@ def test_product_repository_identity_apply_requires_saved_dry_run() -> None:
         ):
             args = argparse.Namespace(**{**vars(apply_args), **overrides})
             _expect_error(
-                lambda args=args: write_action.product_repository_identity_body(args, mode="apply"), code
+                lambda candidate=args: write_action.product_repository_identity_body(candidate, mode="apply"), code
             )
 
         calls: list[dict[str, Any]] = []
@@ -5765,10 +5765,10 @@ def test_expected_config_removal_shape_is_bound_to_the_request() -> None:
             }
 
         def dry_run() -> tuple[int, str]:
-            output = io.StringIO()
-            with redirect_stdout(output):
-                exit_code = write_action.main(["product-expected-config-dry-run", "--payload-file", str(payload_path)])
-            return exit_code, output.getvalue()
+            captured = io.StringIO()
+            with redirect_stdout(captured):
+                status = write_action.main(["product-expected-config-dry-run", "--payload-file", str(payload_path)])
+            return status, captured.getvalue()
 
         with (
             temporary_attribute(write_action, "prepare_operator_settings", lambda **_kwargs: {"service_url": "https://launchplane.example.invalid", "token": "fixture-only"}),
@@ -5909,7 +5909,7 @@ def _run_main(
         value = cast(Any, read)(kwargs) if callable(read) else read
         if isinstance(value, BaseException):
             raise value
-        return cast(dict[str, Any], value)
+        return value
 
     output = io.StringIO()
     with (
@@ -5993,10 +5993,7 @@ OWNER_DRY_RUN_ARGV = [
 
 
 def test_product_owner_plan_projection_digests_the_reviewed_change() -> None:
-    result = cast(
-        dict[str, Any],
-        _saved_dry_run_output("product-owner-dry-run", _owner_response(_owner_plan())),
-    )
+    result = _saved_dry_run_output("product-owner-dry-run", _owner_response(_owner_plan()))
     projected = result["result"]
     assert projected["owner_after"] == {"github_login": "example-client", "github_id": "1234567"}
     assert projected["plan_sha256"] == result["summary"]["plan_sha256"]
@@ -6051,10 +6048,7 @@ def test_product_owner_dry_run_sends_normalized_login_to_the_product_route() -> 
 
 def test_product_owner_apply_checks_the_client_reapplies_and_reads_back() -> None:
     with TemporaryDirectory(dir=Path.home()) as directory:
-        evidence = cast(
-            dict[str, Any],
-            _saved_dry_run_output("product-owner-dry-run", _owner_response(_owner_plan())),
-        )
+        evidence = _saved_dry_run_output("product-owner-dry-run", _owner_response(_owner_plan()))
         evidence_path = _write_json(directory, "owner-dry-run.json", evidence)
         digest = evidence["result"]["plan_sha256"]
         apply_argv = [
@@ -6142,12 +6136,9 @@ def test_product_owner_apply_checks_the_client_reapplies_and_reads_back() -> Non
             status, payload, posts, reads = _run_main(argv, post=applied, read=_profile_response())
             assert (status, posts, reads) == (2, [], []), overrides
             assert payload["warnings"][0]["code"] == code
-        unchanged = cast(
-            dict[str, Any],
-            _saved_dry_run_output(
-                "product-owner-dry-run",
-                _owner_response(_owner_plan(operation="unchanged", changed=False)),
-            ),
+        unchanged = _saved_dry_run_output(
+            "product-owner-dry-run",
+            _owner_response(_owner_plan(operation="unchanged", changed=False)),
         )
         unchanged_path = _write_json(directory, "owner-unchanged.json", unchanged)
         argv = [
