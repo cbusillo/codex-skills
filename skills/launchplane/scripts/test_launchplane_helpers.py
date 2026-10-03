@@ -6135,7 +6135,7 @@ def _compose_payload() -> dict[str, object]:
     }
 
 
-def _compose_response(mode: str = "dry-run", target_id: str = "planned-compose-id") -> dict[str, object]:
+def _compose_response(mode: str = "dry-run", target_id: str = "planned-compose-id") -> dict[str, Any]:
     return {
         "status": "accepted",
         "trace_id": "launchplane_req_compose",
@@ -6178,7 +6178,7 @@ def _compose_response(mode: str = "dry-run", target_id: str = "planned-compose-i
     }
 
 
-def _inspect_response(target_id: str = "compose-private-9", status: str = "present") -> dict[str, object]:
+def _inspect_response(target_id: str = "compose-private-9", status: str = "present") -> dict[str, Any]:
     return {
         "status": "ok",
         "trace_id": "launchplane_req_inspect",
@@ -6291,6 +6291,125 @@ def test_dokploy_compose_target_hides_provider_ids_and_binds_the_payload() -> No
             )
             assert (status, posts) == (2, []), code
             assert payload["warnings"][0]["code"] == code
+
+
+COMPOSE_SOURCE = {
+    "custom_git_url": "https://github.com/example-owner/example-product.git",
+    "custom_git_branch": "main",
+    "compose_path": "./docker/compose.yml",
+}
+
+
+def _source_completion_response(mode: str = "dry-run", target_id: str = "compose-private-9") -> dict[str, Any]:
+    response = _compose_response(mode, target_id)
+    response["result"]["operation"] = "complete-compose-source"
+    response["result"]["setup"].pop("plan")
+    response["result"]["setup"]["source"] = {**COMPOSE_SOURCE, "repository": "example-owner/example-product"}
+    return response
+
+
+def _source_inspect_response() -> dict[str, Any]:
+    response = _inspect_response()
+    response["inspect"]["provider"] = {}
+    for target in (response["inspect"]["provider"], response["inspect"]["tracked_target"]):
+        target.update(COMPOSE_SOURCE, source_type="git")
+    return response
+
+
+def test_compose_source_create_reads_back_repository_branch_and_path() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        source_inputs = {key: value for key, value in COMPOSE_SOURCE.items() if key != "custom_git_url"}
+        payload_path = _write_json(directory, "compose.json", {**_compose_payload(), **source_inputs})
+        def response(mode: str) -> dict[str, Any]:
+            value = _compose_response(mode, "compose-private-9")
+            value["result"]["setup"]["plan"]["compose"].update(COMPOSE_SOURCE)
+            return value
+        status, evidence, posts, _ = _run_main(
+            ["dokploy-target-create-compose-dry-run", "--payload-file", payload_path], post=response("dry-run")
+        )
+        assert status == 0, evidence
+        assert posts[0]["body"]["custom_git_branch"] == source_inputs["custom_git_branch"]
+        evidence_path = _write_json(directory, "review.json", evidence)
+        argv = ["dokploy-target-create-compose-apply", "--payload-file", payload_path,
+                *_reviewed_apply_argv(evidence["result"]["plan_sha256"], evidence_path)]
+        status, result, _, _ = _run_main(argv, post=response("apply"), read=_source_inspect_response())
+        assert status == 0 and result["result"]["read_back_matches"] is True, result
+        changed = _source_inspect_response()
+        changed["inspect"]["provider"]["custom_git_url"] = "https://github.com/other/repo.git"
+        status, result, _, _ = _run_main(argv, post=response("apply"), read=changed)
+        assert status == 1 and result["result"]["read_back_matches"] is False
+        assert COMPOSE_SOURCE["custom_git_url"] not in json.dumps(result)
+
+
+def test_compose_source_completion_binds_source_and_existing_target() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        private = {"context": "example", "instance": "testing", "reason": "Complete testing source.",
+                   "custom_git_branch": COMPOSE_SOURCE["custom_git_branch"], "compose_path": COMPOSE_SOURCE["compose_path"]}
+        payload_path = _write_json(directory, "source.json", private)
+        dry_argv = ["dokploy-target-complete-compose-source-dry-run", "--payload-file", payload_path]
+        status, evidence, posts, _ = _run_main(dry_argv, post=_source_completion_response())
+        assert status == 0, evidence
+        assert posts[0]["body"] == {**private, "operation": "complete-compose-source", "product": "launchplane", "mode": "dry-run"}
+        assert posts[0]["path"] == contract.helper_command_path(dry_argv[0])
+        printed = json.dumps(evidence)
+        for hidden in ("compose-private-9", COMPOSE_SOURCE["custom_git_url"], "git@", "EXAMPLE_KEY", "testing.example.invalid"):
+            assert hidden not in printed, hidden
+        evidence_path = _write_json(directory, "review.json", evidence)
+        argv = ["dokploy-target-complete-compose-source-apply", "--payload-file", payload_path,
+                *_reviewed_apply_argv(evidence["result"]["plan_sha256"], evidence_path)]
+        reads = iter([_inspect_response(), _source_inspect_response()])
+        status, result, posts, _ = _run_main(argv, post=_source_completion_response("apply"), read=lambda _: next(reads))
+        assert status == 0 and result["result"]["read_back_matches"] is True, result
+        assert len(posts) == 1 and posts[0]["idempotency_key"] == "apply-1"
+        assert posts[0]["body"]["confirmation"] == write_action.DOKPLOY_TARGET_SETUP_CONFIRMATION
+        # Stale binding is rejected before the write.
+        status, result, posts, _ = _run_main(argv, post=_source_completion_response("apply"), read=_inspect_response("other-compose"))
+        assert status == 1 and result["status"] == "stale" and posts == []
+        # A mismatched tracked or live source is never verified.
+        for location in ("tracked", "live"):
+            changed = _source_inspect_response()
+            target = changed["inspect"]["tracked_target"] if location == "tracked" else changed["inspect"]["provider"]
+            target["custom_git_branch"] = "other-branch"
+            reads = iter([_inspect_response(), changed])
+            status, result, posts, _ = _run_main(argv, post=_source_completion_response("apply"), read=lambda _: next(reads))
+            assert status == 1 and result["status"] == "accepted_unverified"
+            assert result["result"]["read_back_matches"] is False and len(posts) == 1
+        # The service applied a different target than it planned.
+        reads = iter([_inspect_response(), _source_inspect_response()])
+        status, result, posts, _ = _run_main(argv, post=_source_completion_response("apply", "other-compose"), read=lambda _: next(reads))
+        assert status == 1 and result["status"] == "accepted_unverified"
+        # Exact payload evidence and reviewed acknowledgement are required.
+        for field in ("custom_git_branch", "compose_path", "reason"):
+            _write_json(directory, "source.json", {**private, field: "changed"})
+            status, _, posts, _ = _run_main(argv, post=_source_completion_response("apply"))
+            assert status == 2 and posts == []
+        _write_json(directory, "source.json", private)
+        status, _, posts, _ = _run_main([value for value in argv if value != "--reviewed-dry-run"], post=_source_completion_response("apply"))
+        assert status == 2 and posts == []
+        # Corrupt saved source metadata cannot cause a post-write traceback.
+        corrupted = {**evidence, "result": {**evidence["result"], "source": {}}}
+        _write_json(directory, "review.json", corrupted)
+        reads = iter([_inspect_response(), _source_inspect_response()])
+        status, result, posts, _ = _run_main(argv, post=_source_completion_response("apply"), read=lambda _: next(reads))
+        assert status == 0 and result["result"]["read_back_matches"] is True
+        _write_json(directory, "review.json", evidence)
+        # Partial outcomes retain safe trace/code; no automatic retry or read follows the error.
+        error = urllib.error.HTTPError("https://private.invalid", 502, "private", Message(), io.BytesIO(json.dumps({
+            "trace_id": "launchplane_req_partial", "error": {"code": "dokploy_source_partial_outcome", "message": "private-provider-data"},
+        }).encode()))
+        status, result, posts, reads = _run_main(argv, post=error, read=_inspect_response())
+        assert status == 1 and result["status"] == "outcome_unknown"
+        assert result["summary"]["error_code"] == "dokploy_source_partial_outcome"
+        assert result["summary"]["trace_id"] == "launchplane_req_partial"
+        assert len(posts) == 1 and len(reads) == 1
+        assert "private-provider-data" not in json.dumps(result)
+        for field, value in (("instance", "prod"), ("target_id", "private-id"), ("server_id", "private-id"),
+                             ("custom_git_url", "https://github.com/other/repo.git"), ("domains", []),
+                             ("credential", "secret"), ("custom_git_branch", "main;echo x"),
+                             ("compose_path", "../compose.yml")):
+            path = _write_json(directory, "bad.json", {**private, field: value})
+            status, _, posts, _ = _run_main([dry_argv[0], "--payload-file", path], post=_source_completion_response())
+            assert status == 2 and posts == [], field
 
 
 PRIVATE_ENDPOINT_URL = "http://10.0.0.106:8001/healthz"
@@ -6670,6 +6789,8 @@ def main() -> int:
         test_production_backup_authority_apply_binds_the_exact_reviewed_payload,
         test_production_backup_authority_read_keeps_state_and_record_ids,
         test_dokploy_compose_target_hides_provider_ids_and_binds_the_payload,
+        test_compose_source_create_reads_back_repository_branch_and_path,
+        test_compose_source_completion_binds_source_and_existing_target,
         test_private_health_endpoint_hides_the_url_and_binds_apply_to_the_review,
         test_private_health_endpoint_read_lists_keys_without_urls,
         test_product_promotion_status_keeps_the_fingerprint_and_drops_release_detail,

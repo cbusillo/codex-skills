@@ -741,7 +741,8 @@ testing-hold, product-repository-identity, product-environment-read,
 product-activity-read, product-profile-read, path-check, preview-history-read,
 reconcile-requests-read, target-replacement-operation-read,
 target-replacement-plan-read, `product-owner-*`, `product-image-repository-*`,
-`dokploy-target-create-compose-*`, `production-backup-authority-*`,
+`dokploy-target-create-compose-*`, `dokploy-target-complete-compose-source-*`,
+`production-backup-authority-*`,
 `private-health-endpoint-*`, product-promotion-status-read and
 product-promotion-dry-run commands are explicit bounded local
 extensions because the vendored public
@@ -1155,6 +1156,12 @@ verification.
   lane's Dokploy compose target from a private payload
   (`dokploy-target-create-compose-dry-run` / `-apply`). Provider ids, server
   ids, domains and git URLs never reach the output; apply reads the target back.
+  An explicit `custom_git_branch` and `compose_path` set the product-derived
+  repository source on creation. `dokploy-target-complete-compose-source-dry-run`
+  / `-apply` complete an empty tracked testing compose with branch/path only,
+  saved review evidence, binding/source verification and no deployment. Read
+  [Provider target](references/write-action-helper-contract.md#provider-target)
+  before either source operation, including partial-outcome recovery.
   Add the lane record afterwards with the contract-backed stable-lane repair
   workflow.
 - `GET /v1/production-backup-authority` and
