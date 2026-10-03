@@ -114,13 +114,16 @@ asking the live plugin to prove the same lease binding. A definitive
 legacy proof remains an explicit nonzero `unresolved` result. Path/session
 matching selects a candidate route but is never itself permission to close.
 Stale cleanup may release a route-less pending lease without discovery only
-when the handled project-open timeout or connection reset records explicit negative ownership and
-acceptance, no open attempts, and no route/session identity. Missing, legacy,
+when the handled project-open timeout or connection reset records explicit
+negative ownership and acceptance, no open attempts, and no route/session
+identity. Missing, legacy,
 interrupted, or transport-ambiguous evidence remains fail-closed and unresolved.
-It may also release only the local `cleanup_pending` or completed `prepared` lease, without closing a
-project, when successful discovery proves the lease-bound accepting IDE session
+It may also release only the local `cleanup_pending` or completed `prepared`
+lease, without closing a project, when successful discovery proves the lease-bound accepting IDE session
 is absent, the recorded IDE process is definitively dead, and no live route in
-any session resolves the exact target path. Missing process identity, ambiguous
+any session resolves the exact target path. App-start entries without lease or
+ownership identity are excluded from the accepted lifecycle request count.
+Missing process identity, ambiguous
 acceptance, PID permission errors, and same-path routes in a new session remain
 fail-closed and unresolved.
 Preparation failures for projects that were already open release only the local

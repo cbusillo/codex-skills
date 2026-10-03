@@ -4026,6 +4026,8 @@ class LifecycleTest(unittest.TestCase):
             "lease_id": "prepared-lease", "state": "prepared",
             "opened_by_helper": True, "open_request_may_have_been_accepted": False,
             "lifecycle_target_path": "/tmp/worktree", "session_id": "old-session",
+            "project_instance_id": "old-session:1", "project_key": "path:/tmp/worktree",
+            "route": {"base_path": "/tmp/worktree", "session_id": "old-session", "project_instance_id": "old-session:1"},
             "ide_port": 63343, "open_attempts": [{
                 "accepted": True, "ownership_registered": True,
                 "lease_id": "prepared-lease",
@@ -4036,6 +4038,7 @@ class LifecycleTest(unittest.TestCase):
         replacement = {"base_path": "/tmp/worktree", "session_id": "new-session"}
         cases = [
             (lease, [], set(), True, True),
+            (lease | {"open_attempts": [{"method": "bootstrap_ide", "accepted": True}, *lease["open_attempts"]]}, [], set(), True, True),
             (lease, [], {"old-session"}, True, False),
             (lease, [replacement], {"new-session"}, True, False),
             (lease, [], set(), False, False),
@@ -4067,6 +4070,7 @@ class LifecycleTest(unittest.TestCase):
         }
         for changes, removable in [
             ({}, True), ({"session_id": "session"}, False),
+            ({"ide_port": 63343}, False),
             ({"open_request_may_have_been_accepted": True}, False),
             ({"open_attempts": [{"accepted": False, "request_may_have_been_accepted": True}]}, False),
             ({"preparation_failure_reason": "interrupted"}, False),

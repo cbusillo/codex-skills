@@ -11121,6 +11121,11 @@ def can_release_dead_original_ide_lease(
     for attempt in attempts:
         if not isinstance(attempt, dict):
             continue
+        # App startup carries no project-open or lease ownership evidence.
+        if attempt.get("method") == "bootstrap_ide" and not any(
+            key in attempt for key in ("identity", "lease_id", "ownership_registered", "lifecycle_ownership_protocol")
+        ):
+            continue
         accepted = attempt.get("accepted") is True
         ownership_registered = attempt.get("ownership_registered") is True
         if not accepted and not ownership_registered:
