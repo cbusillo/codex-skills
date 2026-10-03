@@ -470,7 +470,7 @@ def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
         operation=CURRENT_OPERATION,
         edit_last=args.edit_last,
         edit_comment=args.edit_comment,
-        expected_body=read_text_file(args.expected_body_file, operation="comment", repo=repo, pr=number) if args.expected_body_file is not None else None,
+        expected_body=read_text_file(args.expected_body_file, preserve_newlines=True, operation="comment", repo=repo, pr=number) if args.expected_body_file is not None else None,
         expected_updated_at=args.expected_updated_at,
         create_if_none=args.create_if_none,
     )
@@ -1401,11 +1401,14 @@ def append_repeated_flag(args: list[str], flag: str, values: list[str]) -> None:
         args.extend([flag, value])
 
 
-def read_text_file(path: str, **payload: Any) -> str:
+def read_text_file(path: str, *, preserve_newlines: bool = False, **payload: Any) -> str:
     try:
         if path == "-":
+            if preserve_newlines:
+                return sys.stdin.buffer.read().decode("utf-8")
             return sys.stdin.read()
-        return pathlib.Path(path).read_text(encoding="utf-8")
+        with pathlib.Path(path).open(encoding="utf-8", newline="" if preserve_newlines else None) as stream:
+            return stream.read()
     except OSError as exc:
         raise PrHelperError("Could not read body file", detail=str(exc), path=path, **payload) from exc
 

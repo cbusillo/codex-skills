@@ -744,7 +744,12 @@ def _comment_impl(
         )
         selected = result.body
         steps.append("read_exact_comment")
-        issue_url = f"https://api.{github_api_core.DEFAULT_HOST}/repos/{resolved_repo}/issues/{number}"
+        api_root = (
+            "https://api.github.com"
+            if github_api_core.DEFAULT_HOST.casefold() == "github.com"
+            else f"https://{github_api_core.DEFAULT_HOST}/api/v3"
+        )
+        issue_url = f"{api_root}/repos/{resolved_repo}/issues/{number}"
         if (
             not isinstance(selected, dict)
             or selected.get("id") != edit_comment
@@ -1028,11 +1033,14 @@ def comment(
         raise
 
 
-def read_body(path: str) -> str:
+def read_body(path: str, *, preserve_newlines: bool = False) -> str:
     if path == "-":
+        if preserve_newlines:
+            return sys.stdin.buffer.read().decode("utf-8")
         return sys.stdin.read()
     try:
-        return pathlib.Path(path).read_text(encoding="utf-8")
+        with pathlib.Path(path).open(encoding="utf-8", newline="" if preserve_newlines else None) as stream:
+            return stream.read()
     except OSError as exc:
         raise _local_error(
             f"Could not read comment body file: {github_api_core.redact_path(path)}",
@@ -1129,7 +1137,7 @@ def main() -> int:
             repo=args.repo,
             edit_last=args.edit_last,
             edit_comment=args.edit_comment,
-            expected_body=read_body(args.expected_body_file) if args.expected_body_file is not None else None,
+            expected_body=read_body(args.expected_body_file, preserve_newlines=True) if args.expected_body_file is not None else None,
             expected_updated_at=args.expected_updated_at,
             create_if_none=args.create_if_none,
             operation=operation,

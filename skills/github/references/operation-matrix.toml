@@ -375,6 +375,7 @@ source_refs = ["github/scripts/gh-pr.py:cmd_comment", "github/scripts/github_com
 test_refs = ["github/scripts/test_github_comment.py:test_create_unknown_outcome_returns_reconciled_comment_without_retry", "github/scripts/test_github_comment.py:test_create_reconciliation_rejects_concurrent_identical_comment", "github/scripts/test_github_comment.py:test_unknown_create_no_match_fails_closed_without_repeat", "github/scripts/test_github_comment.py:test_rejected_create_retries_without_reconciliation", "github/scripts/validate-gh-plan.py:test_pr_helper_write_commands_route_through_configured_gh", "github/scripts/validate-operation-matrix.py:self-test", "github/scripts/test_github_comment.py:test_exact_edits_keep_interleaved_session_comments_separate", "github/scripts/test_github_comment.py:test_exact_edit_refuses_wrong_thread_author_and_stale_expectations", "github/scripts/test_github_comment.py:test_exact_edit_never_replays_patch_or_creates_on_failure"]
 
 
+
 [[operations]]
 id = "github.pr.checks"
 capabilities = ["pull_requests_read", "checks_read", "statuses_read"]
@@ -1176,6 +1177,7 @@ source_refs = ["github/scripts/gh-comment", "github/scripts/github_comment.py:co
 test_refs = ["github/scripts/test_github_comment.py:test_unknown_create_no_match_fails_closed_without_repeat", "github/scripts/test_github_comment.py:test_rejected_create_retries_without_reconciliation", "github/scripts/test_github_comment.py:test_create_unknown_outcome_returns_reconciled_comment_without_retry", "github/scripts/test_github_comment.py:test_create_reconciliation_rejects_concurrent_identical_comment", "github/scripts/test_github_comment.py:test_create_reconciliation_excludes_preexisting_same_second_comment", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test", "github/scripts/test_github_comment.py:test_exact_edits_keep_interleaved_session_comments_separate", "github/scripts/test_github_comment.py:test_exact_edit_refuses_wrong_thread_author_and_stale_expectations", "github/scripts/test_github_comment.py:test_exact_edit_never_replays_patch_or_creates_on_failure"]
 
 
+
 [[operations]]
 id = "github.comment.pr"
 capabilities = ["pull_requests_write"]
@@ -1195,6 +1197,7 @@ reconciliation_strategy = "operation_marker"
 retained_graphql_rationale = "No retained GraphQL transport; PR timeline comments use the shared REST issue-comment endpoint and actor-aware fresh-read reconciliation."
 source_refs = ["github/scripts/gh-comment", "github/scripts/github_comment.py:comment", "github/scripts/github_comment.py:reconcile_created_comment"]
 test_refs = ["github/scripts/test_github_comment.py:test_unknown_create_no_match_fails_closed_without_repeat", "github/scripts/test_github_comment.py:test_rejected_create_retries_without_reconciliation", "github/scripts/test_github_comment.py:test_create_unknown_outcome_returns_reconciled_comment_without_retry", "github/scripts/test_github_comment.py:test_create_reconciliation_rejects_concurrent_identical_comment", "github/scripts/test_github_comment.py:test_create_reconciliation_excludes_preexisting_same_second_comment", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test", "github/scripts/test_github_comment.py:test_exact_edits_keep_interleaved_session_comments_separate", "github/scripts/test_github_comment.py:test_exact_edit_refuses_wrong_thread_author_and_stale_expectations", "github/scripts/test_github_comment.py:test_exact_edit_never_replays_patch_or_creates_on_failure"]
+
 
 
 [[operations]]
@@ -2043,7 +2046,7 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github/scripts/github-work-evidence.py" = "eef884893d5bedce8a539587e7f7fd93e109ef1a17aedf887575a144340977a6"
 "github/scripts/github_api.py" = "d021f2572a2ff5fc7199a32fe01bad82c5c6db5c930b538c63944ee85a32d4fc"
 "github/scripts/github_capabilities.py" = "bfd1a0a155a783feca5735b870a78709032e878a9011a07034b000e41be97901"
-"github/scripts/github_comment.py" = "f1e6cbc469e645cd0ad81d07908d3c84d56271135b8aed214876412c2e262fa0"
+"github/scripts/github_comment.py" = "3833134cc809b2fc10a81b54ec7d92c420121f69f5417cede54be579820dd0cf"
 "github/scripts/github_direction_next.py" = "ec587fc078bb843c70ef91a102abb7dec2509167ec2316d004d5a8fd02891a4a"
 "github/scripts/github_identity.py" = "44f8eaaa8a9507865239bdb431bbeccfc35cf7652e80f8ec3928cba5de35d0a1"
 "github/scripts/github_issue.py" = "d3abe027034d589ec78f91f20466f7a482980b00c34817128302204404f0e026"

@@ -817,7 +817,7 @@ def test_exact_comment_cli_preserves_files_and_conflict_envelope() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = pathlib.Path(directory)
         prior = root / "prior.md"
-        prior.write_text("prior\n", encoding="utf-8")
+        prior.write_bytes(b"prior\r\n")
         replacement = root / "replacement.md"
         replacement.write_text("## Result\n\n`literal` ${NO_EXPANSION}\n", encoding="utf-8")
         saved = root / "saved.md"
@@ -831,7 +831,7 @@ def test_exact_comment_cli_preserves_files_and_conflict_envelope() -> None:
             "if path == '/user': print(json.dumps({'login': 'fixture-automation'}))\n"
             "else:\n"
             " assert path == '/repos/owner/repo/issues/comments/11', args\n"
-            " body = 'prior\\n'\n"
+            " body = 'prior\\r\\n'\n"
             " if method == 'PATCH':\n"
             "  body = json.load(sys.stdin)['body']\n"
             "  pathlib.Path(os.environ['COMMENT_TEST_SAVED']).write_text(body, encoding='utf-8')\n"
@@ -856,10 +856,31 @@ def test_exact_comment_cli_preserves_files_and_conflict_envelope() -> None:
             assert result["write_outcome"] == "not_started", result
             assert result["selected_comment_id"] == 11, result
             assert not saved.exists()
-            prior.write_text("prior\n", encoding="utf-8")
+            prior.write_bytes(b"prior\r\n")
+
+
+def test_exact_edit_supports_enterprise_api_thread_urls() -> None:
+    original_host = github_api.DEFAULT_HOST
+    github_api.DEFAULT_HOST = "github.example.test"
+    try:
+        def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            if path == "/user":
+                return success({"login": "fixture-automation"})
+            result = exact_comment(11)
+            result["issue_url"] = "https://github.example.test/api/v3/repos/owner/repo/issues/42"
+            return success(result)
+
+        def run(_calls: list[dict[str, Any]]) -> None:
+            result = github_comment.comment("issue", 42, "replacement", repo="owner/repo", edit_comment=11, gh_cmd="fake-gh")
+            assert result["selected_comment_id"] == 11, result
+
+        with_call_stub(callback, run)
+    finally:
+        github_api.DEFAULT_HOST = original_host
 
 
 TESTS = [
+    test_exact_edit_supports_enterprise_api_thread_urls,
     test_exact_comment_cli_preserves_files_and_conflict_envelope,
     test_exact_edits_keep_interleaved_session_comments_separate,
     test_exact_edit_refuses_wrong_thread_author_and_stale_expectations,
