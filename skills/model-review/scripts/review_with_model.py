@@ -111,18 +111,34 @@ def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scra
     proc = run_cli([*argv, prompt], repo, timeout)
     used = re.search(r"^model:\s*(\S+)", proc.stdout + proc.stderr, re.MULTILINE)
     response = answer.read_text() if answer.is_file() else ""
-    if proc.returncode != 0:
-        return failed("openai", f"codex exited {proc.returncode}", detail=proc.stderr[-400:])
     metadata = {"model": used.group(1) if used else model,
-                "model_source": "reported by the CLI" if used else "requested, not reported by the CLI"}
+                "model_source": "reported by the CLI" if used else
+                "requested, not reported by the CLI" if model else "unknown"}
+    try:
+        events = [json.loads(line) for line in proc.stdout.splitlines()]
+        if any(not isinstance(event, dict) for event in events):
+            raise ValueError("event is not an object")
+    except ValueError:
+        if proc.returncode != 0:
+            return failed("openai", f"codex exited {proc.returncode}", detail=proc.stderr[-400:], **metadata)
+        return failed("openai", "could not read codex's JSONL tool evidence", **metadata)
+    errors = []
+    for event in events:
+        if event.get("type") == "error":
+            errors.append(str(event.get("message") or "codex reported an error"))
+        elif event.get("type") == "turn.failed":
+            error = event.get("error")
+            errors.append(str(error.get("message") if isinstance(error, dict) else error))
+    if proc.returncode != 0 or errors:
+        return failed("openai", f"codex exited {proc.returncode}" if proc.returncode else "codex reported an error",
+                      detail=errors[-1][-400:] if errors else proc.stderr[-400:], **metadata)
     if not response.strip():
         return failed("openai", "the reviewer returned nothing", **metadata)
     # Codex's file access is through its sandboxed shell. A final message alone is not a review:
     # in particular, a prompt that forbids commands leaves it unable to read any source.
     commands = 0
     try:
-        for line in proc.stdout.splitlines():
-            event = json.loads(line)
+        for event in events:
             item = event.get("item") or {}
             if (event.get("type") == "item.completed" and item.get("type") == "command_execution"
                     and item.get("status") == "completed" and item.get("exit_code") == 0):

@@ -25,13 +25,13 @@ FAKE_CODEX = """#!/bin/sh
 # Writes the answer to the file given after -o, like `codex exec`.
 [ -n "$FAKE_CODEX_ARGV_FILE" ] && printf '%s\\n' "$@" > "$FAKE_CODEX_ARGV_FILE"
 while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done
-echo "model: gpt-test" >&2
 if [ "${FAKE_CODEX_EVENTS+x}" ]; then
   printf '%s' "$FAKE_CODEX_EVENTS"
 else
   printf '%s\\n' '{"type":"item.completed","item":{"type":"command_execution","status":"completed","exit_code":0}}'
 fi
 printf '%s' "$FAKE_ANSWER" > "$out"
+exit "${FAKE_CODEX_EXIT:-0}"
 """
 FAKE_CLAUDE = """#!/bin/sh
 [ -n "$FAKE_CLAUDE_ARGV_FILE" ] && printf '%s\\n' "$@" > "$FAKE_CLAUDE_ARGV_FILE"
@@ -114,7 +114,7 @@ class ReviewWithModelTests(unittest.TestCase):
         agy_json = json.dumps({"response": "none", "denied_actions": []})
         cwd_file = self.root / "agy-cwd"
         for provider, model, env in (
-            ("openai", "gpt-test", {"FAKE_ANSWER": "none"}),
+            ("openai", None, {"FAKE_ANSWER": "none"}),
             ("anthropic", "claude-test", {"FAKE_CLAUDE_JSON": claude_json}),
             ("google", "gemini-test", {"FAKE_AGY_JSON": agy_json, "FAKE_AGY_CWD_FILE": str(cwd_file)}),
         ):
@@ -405,13 +405,24 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertIn("JSONL tool evidence", result["error"])
 
     def test_openai_successful_shell_evidence_accepts_none_and_reports_requested_model_honestly(self) -> None:
-        self.install("codex", FAKE_CODEX.replace('echo "model: gpt-test" >&2', ':'))
+        self.install("codex", FAKE_CODEX)
         code, result = self.run_helper("run", "--provider", "openai", "--repo", str(self.repo),
                                        "--prompt-file", str(self.prompt), "--model", "requested-model",
                                        FAKE_ANSWER="none")
         self.assertEqual((code, result["response"], result["successful_commands"]), (0, "none", 1))
         self.assertEqual(result["model"], "requested-model")
         self.assertIn("not reported", result["model_source"])
+        code, result = self.review("openai", FAKE_ANSWER="none")
+        self.assertEqual((code, result["model"], result["model_source"]), (0, None, "unknown"))
+
+    def test_openai_jsonl_provider_errors_keep_their_reason(self) -> None:
+        self.install("codex", FAKE_CODEX)
+        for event in ({"type": "error", "message": "usage limit reached"},
+                      {"type": "turn.failed", "error": {"message": "unknown model"}}):
+            with self.subTest(event=event):
+                code, result = self.review("openai", FAKE_CODEX_EVENTS=json.dumps(event), FAKE_CODEX_EXIT="1")
+                self.assertEqual((code, result["ok"]), (1, False))
+                self.assertEqual(result["detail"], event.get("message") or event["error"]["message"])
 
     def test_a_planted_finding_arrives_once_inside_a_real_review_and_only_when_the_owner_set_it(self) -> None:
         self.install("codex", FAKE_CODEX)
