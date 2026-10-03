@@ -80,6 +80,14 @@ second plan or a reason to ask the Director for permission to inspect work.
     }
   },
   "issues": {
+    "owner/business#12": {
+      "state": "waiting",
+      "waiting_on": "person",
+      "reason": "The owner must complete the recorded acceptance check.",
+      "evidence": ["Current issue discussion identifying the person and action"],
+      "discussion_digest": "Copy the digest from the discussion just reviewed",
+      "ownership_complete": true
+    },
     "owner/product#42": {
       "state": "available",
       "category": "own_project",
@@ -113,7 +121,10 @@ the milestone-wait condition, not provider usage.
 
 `tooling_capacity_context` explains whether the capacity rule is established,
 including the first unresolved issue when a milestone review or context is missing.
-Held repositories remain excluded from selection but are inventoried read-only.
+Held repositories remain excluded from selection. Capacity-only reads run only
+when current person-wait reviews leave that admission possible; available or
+underway graph work disables those extra reads. Then held repositories are
+inventoried read-only.
 A hold alone is never a person wait. Their milestone candidates need the same
 current person-wait reviews; unrelated holds do not block independent tooling.
 Held issues use a separate bounded allowance of `--scan-limit`, leaving the

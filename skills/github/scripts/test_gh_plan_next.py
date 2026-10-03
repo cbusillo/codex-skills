@@ -1281,16 +1281,20 @@ def test_portfolio_capacity_ignores_unrelated_waits_and_blocking_tooling() -> No
             module.cmd_next(next_args())
             assert result["tooling_capacity_context"]["admitted"] is True
             assert [item["number"] for item in result["available_candidates"]] == [20]
-            assert items[30]["discussion"]["ancestry_complete"] is True
+            assert next(item for item in result["excluded"] if item["number"] == 30)["discussion"]["ancestry_complete"] is True
 
 
 def test_portfolio_capacity_preserves_wait_reports_when_ancestry_is_unavailable() -> None:
     waiting = global_issue("someone/product", 30, body="## Current Status\nWaiting for: Customer testing.")
     with global_fixture([], [], {}, discovered=[waiting]) as (module, result, _reads):
-        with patch.multiple(module, read_next_parent=Mock(side_effect=module.PlanError("Parent unavailable"))):
+        module.load_direction = lambda *_: "# Direction\n\n## Milestones\n"
+        module.cmd_next(next_args())
+        item = next(item for item in result["excluded"] if item["number"] == 30)
+        context = {"issues": {"someone/product#30": reviewed(item, "waiting", waiting_on="person")}}
+        with patch.multiple(module, next_selection_context=lambda _args: context, read_next_parent=Mock(side_effect=module.PlanError("Parent unavailable"))):
             module.cmd_next(next_args())
         assert result["discovery_context"]["complete"] is True
-        assert result["discovery_context"]["capacity_complete"] is False
+        assert result["tooling_capacity_context"]["admitted"] is False
         assert next(item for item in result["excluded"] if item["number"] == 30)["exclusion"] == "waiting"
         assert result["waiting"][0]["number"] == 30
         assert result["tooling_capacity_context"]["admitted"] is False
@@ -1344,10 +1348,31 @@ def test_portfolio_held_reads_do_not_consume_ordinary_scan_allowance() -> None:
         module, load_direction=lambda *_: None,
         collect_paged_rest_items=lambda path, **_kw: ("automation-gh", [{"full_name": "someone/held"}]) if path == "/installation/repositories" else (_ for _ in ()).throw(module.PlanError("held inventory unavailable")),
     ):
-        found, coverage = module.discover_direction_work("someone/direction", next_args(), selection_context=context)
+        found, coverage = module.discover_direction_work("someone/direction", next_args(), selection_context=context, capacity_evidence=True)
         assert found == [] and coverage["complete"] is True
         assert coverage["capacity_complete"] is False
         assert coverage["repositories"][0]["exclusion"] == "repository_held"
+
+
+def test_portfolio_available_milestone_skips_capacity_only_reads() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    leaf = global_issue("someone/business", 10)
+    waiting = global_issue("someone/product", 30, body="## Current Status\nWaiting for: Customer testing.")
+    edges = {(roots[0]["repo"], 1): relationships(sub_issues=[leaf])}
+    with global_fixture(roots, [leaf], edges, discovered=[waiting]) as (module, result, _reads):
+        modes = []
+        def discover(_repo: str, _args: Any, **kwargs: Any) -> Any:
+            modes.append(kwargs["capacity_evidence"])
+            return [waiting], {"complete": True, "repositories": [{"repo": "someone/product", "direction": None}]}
+        with patch.multiple(module, discover_direction_work=discover, read_next_parent=Mock(side_effect=AssertionError("excluded ancestry must not be read"))):
+            module.cmd_next(next_args())
+            candidate = next(item for item in result["candidates"] if item["number"] == 10)
+            context = {"issues": {"someone/business#10": reviewed(candidate, category="milestone")}}
+            with patch.multiple(module, next_selection_context=lambda _args: context):
+                module.cmd_next(next_args())
+        assert modes == [False, False]
+        assert [item["number"] for item in result["available_candidates"]] == [10]
+        assert result["waiting"][0]["number"] == 30
 
 
 def test_portfolio_inventory_sources_exclusions_round_robin_and_read_bounds() -> None:
@@ -1383,7 +1408,7 @@ def test_portfolio_inventory_sources_exclusions_round_robin_and_read_bounds() ->
         for configured in ({"app": "configured"}, None):
             calls.clear()
             with patch.multiple(module.github_identity, github_app_config=lambda: configured):
-                found, coverage = module.discover_direction_work("someone/direction", args, selection_context=context)
+                found, coverage = module.discover_direction_work("someone/direction", args, selection_context=context, capacity_evidence=True)
             assert calls[0] == ("/installation/repositories" if configured else "/user/repos")
             assert [(item["repo"], item["number"]) for item in found] == [("someone/a", 1), ("someone/b", 1), ("someone/held", 1), ("someone/a", 2), ("someone/b", 2), ("someone/held", 2)]
             assert coverage["complete"] is False
@@ -1964,6 +1989,7 @@ TESTS = [
     test_portfolio_capacity_preserves_wait_reports_when_ancestry_is_unavailable,
     test_portfolio_capacity_includes_discovered_milestone_dependencies,
     test_portfolio_held_reads_do_not_consume_ordinary_scan_allowance,
+    test_portfolio_available_milestone_skips_capacity_only_reads,
     test_portfolio_inventory_sources_exclusions_round_robin_and_read_bounds,
     test_portfolio_inventory_failure_and_scan_bound_never_claim_full_coverage,
     test_next_beta_rc_stable_chain_respects_native_blockers,
