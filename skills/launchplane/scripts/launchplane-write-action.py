@@ -4273,7 +4273,7 @@ def summarize_http_error(
             "recommendation": http_error_recommendation(status),
         }
         payload["warnings"] = [warning(
-            str(diagnostics.get("error_code", status)),
+            cast(str, diagnostics.get("error_code", status)),
             "Launchplane controller request was rejected; inspect the trace before retrying.",
         )]
         return payload

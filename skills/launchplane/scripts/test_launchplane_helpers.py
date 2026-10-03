@@ -1782,9 +1782,10 @@ def _run_controller_response(response: object, *, mutate: bool = False, timeout:
         else:
             assert kwargs["timeout"] == timeout
         return cast(dict[str, Any], response)
-    with patch.object(write_action, "prepare_operator_settings", return_value={
+    post = Mock(side_effect=fake_post)
+    with temporary_attribute(write_action, "prepare_operator_settings", lambda **_kwargs: {
         "service_url": "https://launchplane.example.invalid", "token": "fixture-only",
-    }), patch.object(write_action, "request_launchplane", side_effect=fake_post) as post, redirect_stdout(output):
+    }), temporary_attribute(write_action, "request_launchplane", post), redirect_stdout(output):
         status = write_action.main(argv)
     assert post.call_count == 1
     return status, json.loads(output.getvalue())
