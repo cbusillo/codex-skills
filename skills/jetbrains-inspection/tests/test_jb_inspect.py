@@ -89,6 +89,16 @@ class IdeMemoryTests(unittest.TestCase):
         self.assertEqual(get.call_args.args[1], "memory")
         get.assert_called_once()
 
+    def test_deferred_memory_failure_guidance_includes_retained_lease_cleanup(self):
+        payload = jb_inspect.apply_verdict({
+            "status": "error", "error_reason": "ide_memory_exhausted",
+            "cleanup": {"status": "deferred"},
+        })
+        action = payload["agent_result"]["next_action"]
+        self.assertIn("restart the IDE", action)
+        self.assertIn("cleanup-helper-leases", action)
+        self.assertFalse(payload["retry_policy"]["retry"])
+
     def test_failure_is_classified_using_current_session_memory(self):
         failure = jb_inspect.InspectError("timed out", 3, {"error_reason": "inspection_api_timeout", "endpoint": "wait"})
         with patch.object(jb_inspect, "execute_inspection_on_route", side_effect=failure), \

@@ -2836,7 +2836,8 @@ def run_inspection_with_internal_retry(args: argparse.Namespace, context: dict[s
         except InspectError as error:
             if error.payload.get("error_reason") == "ide_memory_exhausted":
                 error.payload["internal_retries"] = retry_summaries
-                error.payload["internal_retry_count"] = attempt + 1
+                error.payload["internal_retry_count"] = attempt if error.payload.get("trigger_not_sent") is True else attempt + 1
+                error.payload["internal_retry_skipped"] = error.payload.get("trigger_not_sent") is True
                 error.payload["internal_retry_readiness"] = readiness
                 error.payload["internal_retry_readiness_history"] = readiness_history
                 if current_result.get("transport_state_unknown") is True:
@@ -4173,6 +4174,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
                 }:
                     error.payload["original_failure_reason"] = reason
                     error.payload["error_reason"] = "ide_memory_exhausted"
+                    error.payload["error_message"] = str(memory_error)
         if python_sdk_preparation is not None and isinstance(error, InspectError):
             error.payload.setdefault("python_sdk_preparation", python_sdk_preparation)
         cleanup = cleanup_failed_preparation(
@@ -5851,9 +5853,9 @@ def ide_memory_failure(identity: dict[str, Any], timeout_seconds: float = 2.0) -
         "port": route_port(identity),
     }
     message = (
-        "IDE memory exhausted. Ask the Director to check for the Java heap space project-opening dialog, dismiss it, and restart the IDE before inspecting again."
+        "IDE memory exhausted. Ask the Director to dismiss any memory-error dialog (such as Java heap space) and restart the IDE before inspecting again."
         if exhausted else
-        "IDE memory pressure detected. Wait at least thirty seconds for it to settle before opening or inspecting another project; ask the Director to restart if it persists."
+        "Recent IDE memory pressure is diagnostic context and does not prove exhaustion."
     )
     return InspectError(message, 3, payload)
 
@@ -6716,7 +6718,11 @@ UNKNOWN_TERMINAL_ACTION = "Stop retrying this result and report the helper diagn
 def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     reason = normalize_reason(reason)
     if reason == "ide_memory_exhausted":
-        return "Ask the Director to check for the Java heap space project-opening dialog, dismiss it, and restart the IDE before inspecting again."
+        action = "Ask the Director to dismiss any memory-error dialog (such as Java heap space) and restart the IDE before inspecting again."
+        cleanup = payload.get("cleanup") if isinstance(payload.get("cleanup"), dict) else {}
+        if cleanup.get("status") in {"deferred", "kept_warm"} or payload.get("cleanup_deferred"):
+            action += " Then run cleanup-helper-leases for the retained lease before another inspection."
+        return action
     if reason in REPOSITORY_PREPARATION_TERMINAL_REASONS or reason == "repository_preparation_failure":
         preparation = repository_preparation_for_payload(payload)
         return repository_preparation_next_action(reason, preparation)
@@ -7415,7 +7421,7 @@ def next_action_for_bucket(verdict: str, bucket: str, reason: str, payload: dict
     if verdict == "RED":
         return "Fix the reported findings, then rerun inspection."
     if bucket == "ide_memory_exhausted":
-        return "Ask the Director to check for the Java heap space project-opening dialog, dismiss it, and restart the IDE before inspecting again."
+        return next_action_for_unknown(reason, payload)
     if bucket in UNKNOWN_RETRY_BUCKETS:
         return next_action_for_unknown(reason, payload)
     if bucket == "route_not_ready":
