@@ -68,11 +68,18 @@ class IdeMemoryTests(unittest.TestCase):
                 jb_inspect.open_via_running_ide(args, {}, lease=lease)
         self.assertEqual(events, ["memory"])
         self.assertTrue(lease["open_not_attempted"])
-        payload = jb_inspect.apply_agent_result({"verdict": "UNKNOWN", "verdict_reason": raised.exception.payload["error_reason"]})
+        payload = jb_inspect.apply_verdict(jb_inspect.error_payload(raised.exception))
         self.assertEqual(payload["agent_result"]["bucket"], "ide_memory_exhausted")
         self.assertFalse(payload["retry_policy"]["retry"])
         self.assertIn("restart the IDE", payload["agent_result"]["next_action"])
         self.assertIn("Java heap space", payload["agent_result"]["next_action"])
+        output = io.StringIO()
+        with redirect_stdout(output):
+            jb_inspect.emit_agent_result(jb_inspect.error_payload(raised.exception))
+        emitted = json.loads(output.getvalue())
+        self.assertEqual(emitted["agent_result"]["bucket"], "ide_memory_exhausted")
+        self.assertIn("Java heap space", emitted["agent_result"]["next_action"])
+        self.assertEqual(emitted["diagnostic"]["ide_memory"]["status"], "exhausted")
 
     def test_trigger_stops_before_inspection_request(self):
         with patch.object(jb_inspect, "http_get", return_value=self.response()) as get:
@@ -131,6 +138,8 @@ class IdeMemoryTests(unittest.TestCase):
         self.assertEqual(result["cancellation"]["status"], "cancelled")
         self.assertEqual(result["original_failure_reason"], "timeout")
         self.assertFalse(result["retry_policy"]["retry"])
+        self.assertIn("Java heap space", result["agent_result"]["next_action"])
+        self.assertIn("restart the IDE", result["agent_result"]["next_action"])
 
     def test_session_drift_retains_reason_under_memory_pressure(self):
         failure = jb_inspect.InspectError("session changed", 3, {"error_reason": "session_drift", "http_status": 409})
@@ -175,13 +184,36 @@ class IdeMemoryTests(unittest.TestCase):
         self.assertEqual(get.call_args.args[1], "trigger")
         get.assert_called_once()
 
-    def test_pressure_is_not_exhaustion_and_disallows_automatic_retry(self):
-        with patch.object(jb_inspect, "http_get", return_value=self.response(status="low_memory")):
-            with self.assertRaises(jb_inspect.InspectError) as raised:
-                jb_inspect.call_endpoint(self.identity(), "trigger", {})
-        payload = jb_inspect.apply_agent_result({"verdict": "UNKNOWN", "verdict_reason": raised.exception.payload["error_reason"]})
-        self.assertEqual(payload["agent_result"]["bucket"], "ide_memory_pressure")
-        self.assertFalse(payload["retry_policy"]["retry"])
+    def test_pressure_does_not_block_trigger_or_change_unknown_retry_policy(self):
+        response = jb_inspect.HttpResult(200, {"status": "triggered"}, "http://fixture")
+        with patch.object(jb_inspect, "http_get", side_effect=[self.response(status="low_memory"), response]) as get:
+            self.assertEqual(jb_inspect.call_endpoint(self.identity(), "trigger", {}), response.body)
+        self.assertEqual(get.call_count, 2)
+        original = jb_inspect.apply_verdict({"status": "timed_out", "timed_out": True})
+        expected_retry = dict(original["retry_policy"])
+        with patch.object(jb_inspect, "execute_inspection_on_route", return_value=original), \
+                patch.object(jb_inspect, "http_get", return_value=self.response(status="low_memory")):
+            result = jb_inspect.run_inspection_on_route(Namespace(), {}, self.identity())
+        self.assertEqual(result["verdict_reason"], "timeout")
+        self.assertEqual(result["retry_policy"], expected_retry)
+        self.assertEqual(result["ide_memory"]["status"], "low_memory")
+
+    def test_open_probe_names_oom_only_in_the_accepting_session(self):
+        identity = self.identity() | {"lifecycle_open_diagnostic_version": 1}
+        lease = {"session_id": identity["session_id"], "ide_port": identity["port"]}
+        for status in ("exhausted", "low_memory"):
+            with self.subTest(status=status), \
+                    patch.object(jb_inspect, "discover_open_identities", return_value=[identity]), \
+                    patch.object(jb_inspect, "identity_matches_context", return_value=True), \
+                    patch.object(jb_inspect, "http_get", side_effect=[self.response(status=status), jb_inspect.HttpResult(200, {"status": "opening"}, "http://fixture")]) as get:
+                if status == "exhausted":
+                    with self.assertRaises(jb_inspect.InspectError) as raised:
+                        jb_inspect.probe_lifecycle_open(Namespace(), {"worktree_root": "/fixture"}, lease)
+                    self.assertEqual(raised.exception.payload["error_reason"], "ide_memory_exhausted")
+                    self.assertEqual(get.call_count, 1)
+                else:
+                    self.assertEqual(jb_inspect.probe_lifecycle_open(Namespace(), {"worktree_root": "/fixture"}, lease)["status"], "opening")
+                    self.assertEqual(get.call_count, 2)
 
 
 class SdkRetirementTests(unittest.TestCase):

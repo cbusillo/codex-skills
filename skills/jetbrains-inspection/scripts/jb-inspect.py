@@ -3307,7 +3307,10 @@ def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], r
         memory_error = ide_memory_failure(route)
         if memory_error is not None:
             error.payload["ide_memory"] = memory_error.payload["ide_memory"]
-            if reason in {"timeout", "inspection_api_timeout", "inspection_api_unavailable"} or int(error.payload.get("http_status") or 0) >= 500:
+            if memory_error.payload["error_reason"] == "ide_memory_exhausted" and (
+                reason in {"timeout", "inspection_api_timeout", "inspection_api_unavailable"}
+                or int(error.payload.get("http_status") or 0) >= 500
+            ):
                 memory_error.payload["original_failure"] = error.payload
                 raise memory_error from error
         raise
@@ -3315,7 +3318,9 @@ def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], r
         memory_error = ide_memory_failure(route)
         if memory_error is not None:
             result["ide_memory"] = memory_error.payload["ide_memory"]
-            if result.get("verdict_reason") in {"timeout", "inspection_api_timeout", "inspection_api_unavailable", "no_results", "capture_incomplete"}:
+            if memory_error.payload["error_reason"] == "ide_memory_exhausted" and result.get("verdict_reason") in {
+                "timeout", "inspection_api_timeout", "inspection_api_unavailable", "no_results", "capture_incomplete",
+            }:
                 result["original_failure_reason"] = result.get("verdict_reason")
                 result["status"] = "error"
                 result["error_reason"] = memory_error.payload["error_reason"]
@@ -5010,17 +5015,16 @@ def open_via_running_ide(
             return None
         raise
     matching = [identity for identity in identities if identity_matches_context(identity, context)]
+    first_memory_error: InspectError | None = None
     for identity in matching:
         port = identity.get("port")
         if not port:
             continue
         try:
             check_ide_memory(identity)
-        except InspectError:
-            if lease is not None and not attempts:
-                lease["open_not_attempted"] = True
-                lease["open_request_may_have_been_accepted"] = False
-            raise
+        except InspectError as error:
+            first_memory_error = first_memory_error or error
+            continue
         try:
             if lease is not None:
                 persist_open_request_identity(lease, identity, method, attempts if attempts is not None else [])
@@ -5063,6 +5067,11 @@ def open_via_running_ide(
                 mark_lease_state(lease, "open_requesting")
                 raise
             continue
+    if first_memory_error is not None:
+        if lease is not None and not attempts:
+            lease["open_not_attempted"] = True
+            lease["open_request_may_have_been_accepted"] = False
+        raise first_memory_error
     if attempts is not None and not matching:
         attempts.append(
             {
@@ -5757,7 +5766,7 @@ def check_ide_memory(
     identity: dict[str, Any],
 ) -> None:
     failure = ide_memory_failure(identity)
-    if failure is not None:
+    if failure is not None and failure.payload["error_reason"] == "ide_memory_exhausted":
         raise failure
 
 
@@ -6651,6 +6660,8 @@ UNKNOWN_TERMINAL_ACTION = "Stop retrying this result and report the helper diagn
 
 def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     reason = normalize_reason(reason)
+    if reason == "ide_memory_exhausted":
+        return "Ask the IDE owner to check for the Java heap space project-opening dialog, dismiss it, and restart the IDE before inspecting again."
     if reason in REPOSITORY_PREPARATION_TERMINAL_REASONS or reason == "repository_preparation_failure":
         preparation = repository_preparation_for_payload(payload)
         return repository_preparation_next_action(reason, preparation)
@@ -8999,6 +9010,11 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
         "prepared_internal_retry_count": payload.get("prepared_internal_retry_count"),
         "prepared_internal_retry_reason": payload.get("prepared_internal_retry_reason"),
         "python_sdk_preparation": python_sdk_preparation_for_payload(payload),
+        "ide_memory": payload.get("ide_memory"),
+        "original_failure_reason": payload.get("original_failure_reason") or (
+            payload.get("original_failure", {}).get("error_reason")
+            if isinstance(payload.get("original_failure"), dict) else None
+        ),
         "unknown_log_path": payload.get("unknown_log_path"),
         "unknown_log_error": payload.get("unknown_log_error"),
         "outcome_log_path": payload.get("outcome_log_path"),
