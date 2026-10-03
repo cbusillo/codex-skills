@@ -37,8 +37,9 @@ does not trigger a global repository scan, cache sweep, or retirement workflow.
    A lock whose reason names a retire command was placed by the host's
    worktree helper when it created the checkout. It is not another job's hold.
    When this task created the worktree and its PR is merged or closed, retire
-   the worktree with that command. The command runs its own checks and restores
-   the lock if it fails.
+   the worktree with that command. It replaces the manual unlock and removal
+   in step 6, including the IDE SDK retirement, and restores the lock if it
+   fails.
 2. Establish current Git evidence. Resolve the live default branch and pin its
    advertised SHA (`git ls-remote --symref`); obtain missing objects through an
    authorized fetch, rather than trusting a stale tracking ref. Check ancestry
