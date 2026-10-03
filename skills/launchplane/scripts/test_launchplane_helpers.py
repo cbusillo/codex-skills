@@ -7268,6 +7268,8 @@ def test_operator_free_text_redacts_credentials_and_urls() -> None:
         ("Use Bearer abcdefghijklmnop next.", "Use [redacted] next."),
         ("Use rk_live_1234567890abcdefghijkl next.", "Use [redacted] next."),
         ("Use ghp_example123 next.", "Use [redacted] next."),
+        ('Updated env_vars="password=demo-pass"', 'Updated env_vars=[redacted]'),
+        ('Use password="demo secret without closing quote', 'Use [redacted]'),
         ("Testing   is complete.", "Testing is complete."),
     )
     for raw, expected in examples:

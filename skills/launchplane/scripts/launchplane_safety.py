@@ -298,9 +298,11 @@ def public_summary_string(value: object, *, max_length: int = 500, allow_url: bo
 CREDENTIAL_LIKE_WORD_RE = re.compile(
     r"(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*[0-9])(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{20,}"
 )
-CREDENTIAL_ASSIGNMENT_RE = re.compile(
-    r"(?<![\w-])(?:[\"']?)([A-Za-z_][A-Za-z0-9_.-]*)(?:[\"']?)\s*[:=]\s*"
-    r"(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;]+)"
+CREDENTIAL_ASSIGNMENT_HEAD_RE = re.compile(
+    r"(?<![\w-])[\"']?([A-Za-z_][A-Za-z0-9_.-]*)[\"']?\s*[:=]\s*"
+)
+CREDENTIAL_VALUE_RE = re.compile(
+    r"\"(?:\\.|[^\"\\])*(?:\"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+"
 )
 FREE_TEXT_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s<>\"']+", re.IGNORECASE)
 
@@ -316,9 +318,22 @@ def public_operator_text(value: object, *, max_length: int = 500) -> str:
     compact = " ".join(value.split())
     if not compact or len(compact) > max_length:
         raise LaunchplaneSafetyError("invalid_response")
-    redacted = CREDENTIAL_ASSIGNMENT_RE.sub(
-        lambda match: "[redacted]" if is_denied_key(match[1]) else match[0], compact
-    )
+    # Scan assignment heads without consuming benign values: a quoted config
+    # value can itself contain a password assignment. Overlapping sensitive
+    # spans are covered by the first redaction. An unclosed quote consumes the
+    # remaining text rather than publishing a partial secret.
+    pieces: list[str] = []
+    cursor = 0
+    for match in CREDENTIAL_ASSIGNMENT_HEAD_RE.finditer(compact):
+        if match.start() < cursor or not is_denied_key(match[1]):
+            continue
+        credential_value = CREDENTIAL_VALUE_RE.match(compact, match.end())
+        if credential_value is None:
+            raise LaunchplaneSafetyError("invalid_response")
+        pieces.extend((compact[cursor:match.start()], "[redacted]"))
+        cursor = credential_value.end()
+    pieces.append(compact[cursor:])
+    redacted = "".join(pieces)
     redacted = FREE_TEXT_URL_RE.sub("[redacted]", redacted)
     redacted = _redact_token_like(redacted)
     redacted = CREDENTIAL_LIKE_WORD_RE.sub("[redacted]", redacted)
