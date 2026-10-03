@@ -140,6 +140,9 @@ records that run.
    If the action cannot be verified, keep the session open and report the prompt.
    Use one-time approval only; never select an option that changes persistent
    permissions. Never approve new scope or access to make a session exit.
+   Immediately before each approval, verify the visible prompt still matches
+   the checked tool call. Send one response, then read back the prompt state;
+   never retry an uncertain send or answer a subsequent prompt without checking it.
    If the prompt needs the Director, leave the session open and include it in the next
    "needs the Director" list. After resolving a prompt, recheck the transcript
    and handoff before continuing, because the session may have resumed work.
