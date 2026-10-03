@@ -105,7 +105,7 @@ def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scra
     # itself read-only runs without approval. Ignoring the user's config drops their servers, plugins,
     # and project trust, so a reviewed repository's own `.codex/config.toml` cannot start one either.
     argv = ["codex", "exec", "--ignore-user-config", "--disable", "plugins", "--disable", "apps"]
-    argv += ["-C", str(repo), "-s", "read-only", "-o", str(answer)]
+    argv += ["--json", "-C", str(repo), "-s", "read-only", "-o", str(answer)]
     if model:
         argv += ["-m", model]
     proc = run_cli([*argv, prompt], repo, timeout)
@@ -113,7 +113,28 @@ def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scra
     response = answer.read_text() if answer.is_file() else ""
     if proc.returncode != 0:
         return failed("openai", f"codex exited {proc.returncode}", detail=proc.stderr[-400:])
-    return {"ok": True, "provider": "openai", "model": used.group(1) if used else model, "response": response}
+    metadata = {"model": used.group(1) if used else model,
+                "model_source": "reported by the CLI" if used else "requested, not reported by the CLI"}
+    if not response.strip():
+        return failed("openai", "the reviewer returned nothing", **metadata)
+    # Codex's file access is through its sandboxed shell. A final message alone is not a review:
+    # in particular, a prompt that forbids commands leaves it unable to read any source.
+    commands = 0
+    try:
+        for line in proc.stdout.splitlines():
+            event = json.loads(line)
+            item = event.get("item") or {}
+            if (event.get("type") == "item.completed" and item.get("type") == "command_execution"
+                    and item.get("status") == "completed" and item.get("exit_code") == 0):
+                commands += 1
+    except (ValueError, AttributeError, TypeError):
+        return failed("openai", "could not read codex's JSONL tool evidence", **metadata)
+    if not commands:
+        return failed("openai", "the reviewer ran no successful shell commands; no file-read evidence. "
+                      "Do not forbid commands: Codex reads files through its read-only shell.", **metadata,
+                      successful_commands=0)
+    return {"ok": True, "provider": "openai", **metadata, "response": response,
+            "successful_commands": commands}
 
 
 def review_anthropic(prompt: str, repo: Path, model: str | None, timeout: int, _scratch: Path) -> dict[str, Any]:

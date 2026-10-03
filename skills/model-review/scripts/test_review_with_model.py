@@ -25,7 +25,12 @@ FAKE_CODEX = """#!/bin/sh
 # Writes the answer to the file given after -o, like `codex exec`.
 [ -n "$FAKE_CODEX_ARGV_FILE" ] && printf '%s\\n' "$@" > "$FAKE_CODEX_ARGV_FILE"
 while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done
-echo "model: gpt-test"
+echo "model: gpt-test" >&2
+if [ "${FAKE_CODEX_EVENTS+x}" ]; then
+  printf '%s' "$FAKE_CODEX_EVENTS"
+else
+  printf '%s\\n' '{"type":"item.completed","item":{"type":"command_execution","status":"completed","exit_code":0}}'
+fi
 printf '%s' "$FAKE_ANSWER" > "$out"
 """
 FAKE_CLAUDE = """#!/bin/sh
@@ -381,6 +386,32 @@ class ReviewWithModelTests(unittest.TestCase):
         code, result = self.review("anthropic", FAKE_CLAUDE_JSON=limit)
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertIn("spend limit", result["detail"])
+
+    def test_openai_without_successful_shell_evidence_fails_even_with_an_answer(self) -> None:
+        self.install("codex", FAKE_CODEX)
+        refusal = "I couldn't perform the review: no file-reading tool, and you prohibited commands."
+        final = {"type": "item.completed", "item": {"type": "agent_message", "text": refusal}}
+        for events in ("", json.dumps(final), json.dumps({"type": "item.started", "item": {
+                "type": "command_execution", "status": "in_progress"}}), json.dumps({
+                "type": "item.completed", "item": {"type": "command_execution", "status": "failed",
+                "exit_code": 1}})):
+            with self.subTest(events=events):
+                code, result = self.review("openai", FAKE_ANSWER=refusal, FAKE_CODEX_EVENTS=events)
+                self.assertEqual((code, result["ok"], result["successful_commands"]), (1, False, 0))
+                self.assertIn("Do not forbid commands", result["error"])
+                self.assertNotIn("response", result)
+        code, result = self.review("openai", FAKE_ANSWER="none", FAKE_CODEX_EVENTS="not JSON")
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertIn("JSONL tool evidence", result["error"])
+
+    def test_openai_successful_shell_evidence_accepts_none_and_reports_requested_model_honestly(self) -> None:
+        self.install("codex", FAKE_CODEX.replace('echo "model: gpt-test" >&2', ':'))
+        code, result = self.run_helper("run", "--provider", "openai", "--repo", str(self.repo),
+                                       "--prompt-file", str(self.prompt), "--model", "requested-model",
+                                       FAKE_ANSWER="none")
+        self.assertEqual((code, result["response"], result["successful_commands"]), (0, "none", 1))
+        self.assertEqual(result["model"], "requested-model")
+        self.assertIn("not reported", result["model_source"])
 
     def test_a_planted_finding_arrives_once_inside_a_real_review_and_only_when_the_owner_set_it(self) -> None:
         self.install("codex", FAKE_CODEX)

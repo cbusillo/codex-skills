@@ -46,7 +46,10 @@ one.
 
 1. Commit the change and leave the worktree clean. Write a prompt file that
    names the change, the paths to read, and what the change is for. Never ask
-   the reviewer to run a command. The helper names a temporary diff file in
+   the reviewer to run a command or tests, and do not forbid commands either:
+   the OpenAI reviewer reads files through its read-only shell. Say, for example,
+   "Your access is read-only; read whatever files you need, and do not modify anything."
+   The helper names a temporary diff file in
    its preamble when the branch has committed changes;
    ask the reviewer to read it directly. Do not paste file contents, your
    argument that the change is right, or the answer you expect. Ask for a
@@ -79,6 +82,10 @@ Exit 0 means a review came back. Exit 1 means the run failed, and exit 2 means
 that provider's CLI is not installed. A reviewer that could not read files, or
 returned nothing, is reported as a failure, never as "no findings"; do not
 paper over it by pasting files into the prompt.
+
+OpenAI runs must show a successful shell command in their JSONL tool evidence;
+an answer without one fails even when the CLI exits 0. This proves tool activity,
+not that the reviewer read every relevant file; check the review's coverage too.
 
 - Run `uv run scripts/review_with_model.py check --repo <repo>` to see which
   providers can read the repository from this machine before spending a review.
