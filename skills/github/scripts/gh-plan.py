@@ -2681,12 +2681,15 @@ def discover_direction_work(
         elif repository.get("size") == 0 and repository.get("open_issues_count") == 0:
             reason = "empty_without_open_issues"
         hold = github_direction_next.repository_hold(selection_context, name)
-        if hold:
+        if hold and reason is None:
             source["hold"] = hold
             reason = "repository_held"
         if reason:
             source["exclusion"] = reason
-            continue
+            if reason != "repository_held":
+                continue
+        # A hold forbids selection, not the read-only inventory needed to prove
+        # portfolio-wide milestone waits. rank_portfolio_work still excludes it.
         try:
             source["direction"] = load_direction(name)
             _, issues = collect_paged_rest_items(

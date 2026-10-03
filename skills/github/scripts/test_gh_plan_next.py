@@ -1209,6 +1209,12 @@ def test_portfolio_capacity_waiting_discovery_milestone_blocks_admission() -> No
         context["repository_holds"] = {"someone/business": {"reason": "Owner hold", "evidence": ["owner instruction"]}}
         with patch.multiple(module, next_selection_context=lambda _args: context):
             module.cmd_next(next_args())
+            assert result["tooling_capacity_context"]["admitted"] is True
+            assert [item["number"] for item in result["available_candidates"]] == [20]
+        # A hold does not substitute for the actual milestone person-wait proof.
+        context["issues"].pop("someone/business#10")
+        with patch.multiple(module, next_selection_context=lambda _args: context):
+            module.cmd_next(next_args())
             assert result["tooling_capacity_context"]["admitted"] is False
 
 
@@ -1324,9 +1330,9 @@ def test_portfolio_inventory_sources_exclusions_round_robin_and_read_bounds() ->
             with patch.multiple(module.github_identity, github_app_config=lambda: configured):
                 found, coverage = module.discover_direction_work("someone/direction", args, selection_context=context)
             assert calls[0] == ("/installation/repositories" if configured else "/user/repos")
-            assert [(item["repo"], item["number"]) for item in found] == [("someone/a", 1), ("someone/b", 1), ("someone/a", 2), ("someone/b", 2)]
+            assert [(item["repo"], item["number"]) for item in found] == [("someone/a", 1), ("someone/b", 1), ("someone/held", 1), ("someone/a", 2), ("someone/b", 2), ("someone/held", 2)]
             assert coverage["complete"] is False
-            assert len(calls) == 7
+            assert len(calls) == 9
             reasons = {source.get("exclusion") for source in coverage["repositories"]}
             assert reasons >= {"repository_held", "source_unavailable", "other_owner", "archived_or_disabled", "empty_without_open_issues", "issues_disabled"}
 

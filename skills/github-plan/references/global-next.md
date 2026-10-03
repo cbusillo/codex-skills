@@ -101,7 +101,7 @@ complete graph and portfolio coverage and current reviews of every milestone
 frontier issue, including excluded waits and discovered milestone work. Each must
 be `state: waiting`, with `waiting_on: person`, the current `discussion_digest`,
 complete discussion and ownership evidence, and a reason and evidence identifying
-who must act. A CI/event wait, held repository, underway or unreviewed milestone
+who must act. A CI/event wait, a hold alone, underway or unreviewed milestone
 issue, or incomplete coverage does not establish this rule. Empty Tracks contain
 no milestone candidates; no frontier waits at all cannot establish the rule.
 A `--milestone` run cannot establish portfolio-wide capacity admission.
@@ -113,9 +113,10 @@ the milestone-wait condition, not provider usage.
 
 `tooling_capacity_context` explains whether the capacity rule is established,
 including the first unresolved issue when a milestone review or context is missing.
-Held repositories are omitted from discovery, so their inventory cannot establish
-a portfolio-wide person-wait rule; any recorded repository hold disables capacity
-admission while leaving ordinary eligible work selectable.
+Held repositories remain excluded from selection but are inventoried read-only.
+A hold alone is never a person wait. Their milestone candidates need the same
+current person-wait reviews; unrelated holds do not block independent tooling.
+Failed or bounded inventory still leaves portfolio coverage incomplete.
 Every available tooling candidate carries `tooling_admission_rule`
 (`repeated_stops` or `all_milestones_waiting_on_people`), the same value in
 `reasons`, and `recorded_stop_count` for weekly audit counts. During capacity

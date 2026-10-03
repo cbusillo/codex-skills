@@ -374,8 +374,6 @@ def tooling_capacity_context(
     result: dict[str, Any] = {"admitted": False, "reason": "milestone_waits_not_proven"}
     if not coverage_complete or not graph.get("dependency_context", {}).get("complete"):
         return {**result, "reason": "incomplete_portfolio_coverage"}
-    if context.get("repository_holds"):
-        return {**result, "reason": "held_repository_inventory", "repository": next(iter(context["repository_holds"]))}
     reviews = {key.casefold(): value for key, value in context.get("issues", {}).items()}
     entries = [*graph.get("candidates", []), *graph.get("excluded", []), *discoveries]
     entry_keys = {(entry["repo"].casefold(), entry["number"]) for entry in entries}
@@ -409,8 +407,7 @@ def tooling_capacity_context(
         review = reviews.get(f"{entry['repo']}#{entry['number']}".casefold(), {})
         discussion = entry.get("discussion") or {}
         if (
-            repository_hold(context, entry["repo"])
-            or not discussion.get("complete")
+            not discussion.get("complete")
             or review.get("discussion_digest") != discussion.get("digest")
             or review.get("state") != "waiting"
             or review.get("waiting_on") != "person"
