@@ -6135,7 +6135,7 @@ def _compose_payload() -> dict[str, object]:
     }
 
 
-def _compose_response(mode: str = "dry-run", target_id: str = "planned-compose-id") -> dict[str, object]:
+def _compose_response(mode: str = "dry-run", target_id: str = "planned-compose-id") -> dict[str, Any]:
     return {
         "status": "accepted",
         "trace_id": "launchplane_req_compose",
@@ -6178,7 +6178,7 @@ def _compose_response(mode: str = "dry-run", target_id: str = "planned-compose-i
     }
 
 
-def _inspect_response(target_id: str = "compose-private-9", status: str = "present") -> dict[str, object]:
+def _inspect_response(target_id: str = "compose-private-9", status: str = "present") -> dict[str, Any]:
     return {
         "status": "ok",
         "trace_id": "launchplane_req_inspect",
@@ -6301,7 +6301,7 @@ COMPOSE_SOURCE = {
 
 
 def _source_completion_response(mode: str = "dry-run", target_id: str = "compose-private-9") -> dict[str, Any]:
-    response = cast(dict[str, Any], _compose_response(mode, target_id))
+    response = _compose_response(mode, target_id)
     response["result"]["operation"] = "complete-compose-source"
     response["result"]["setup"].pop("plan")
     response["result"]["setup"]["source"] = {**COMPOSE_SOURCE, "repository": "example-owner/example-product"}
@@ -6309,8 +6309,9 @@ def _source_completion_response(mode: str = "dry-run", target_id: str = "compose
 
 
 def _source_inspect_response() -> dict[str, Any]:
-    response = cast(dict[str, Any], _inspect_response())
-    for target in (response["inspect"], response["inspect"]["tracked_target"]):
+    response = _inspect_response()
+    response["inspect"]["provider"] = {}
+    for target in (response["inspect"]["provider"], response["inspect"]["tracked_target"]):
         target.update(COMPOSE_SOURCE, source_type="git")
     return response
 
@@ -6320,7 +6321,7 @@ def test_compose_source_create_reads_back_repository_branch_and_path() -> None:
         source_inputs = {key: value for key, value in COMPOSE_SOURCE.items() if key != "custom_git_url"}
         payload_path = _write_json(directory, "compose.json", {**_compose_payload(), **source_inputs})
         def response(mode: str) -> dict[str, Any]:
-            value = cast(dict[str, Any], _compose_response(mode, "compose-private-9"))
+            value = _compose_response(mode, "compose-private-9")
             value["result"]["setup"]["plan"]["compose"].update(COMPOSE_SOURCE)
             return value
         status, evidence, posts, _ = _run_main(
@@ -6334,7 +6335,7 @@ def test_compose_source_create_reads_back_repository_branch_and_path() -> None:
         status, result, _, _ = _run_main(argv, post=response("apply"), read=_source_inspect_response())
         assert status == 0 and result["result"]["read_back_matches"] is True, result
         changed = _source_inspect_response()
-        changed["inspect"]["custom_git_url"] = "https://github.com/other/repo.git"
+        changed["inspect"]["provider"]["custom_git_url"] = "https://github.com/other/repo.git"
         status, result, _, _ = _run_main(argv, post=response("apply"), read=changed)
         assert status == 1 and result["result"]["read_back_matches"] is False
         assert COMPOSE_SOURCE["custom_git_url"] not in json.dumps(result)
@@ -6367,7 +6368,7 @@ def test_compose_source_completion_binds_source_and_existing_target() -> None:
         # A mismatched tracked or live source is never verified.
         for location in ("tracked", "live"):
             changed = _source_inspect_response()
-            target = changed["inspect"]["tracked_target"] if location == "tracked" else changed["inspect"]
+            target = changed["inspect"]["tracked_target"] if location == "tracked" else changed["inspect"]["provider"]
             target["custom_git_branch"] = "other-branch"
             reads = iter([_inspect_response(), changed])
             status, result, posts, _ = _run_main(argv, post=_source_completion_response("apply"), read=lambda _: next(reads))
@@ -6385,6 +6386,13 @@ def test_compose_source_completion_binds_source_and_existing_target() -> None:
         _write_json(directory, "source.json", private)
         status, _, posts, _ = _run_main([value for value in argv if value != "--reviewed-dry-run"], post=_source_completion_response("apply"))
         assert status == 2 and posts == []
+        # Corrupt saved source metadata cannot cause a post-write traceback.
+        corrupted = {**evidence, "result": {**evidence["result"], "source": {}}}
+        _write_json(directory, "review.json", corrupted)
+        reads = iter([_inspect_response(), _source_inspect_response()])
+        status, result, posts, _ = _run_main(argv, post=_source_completion_response("apply"), read=lambda _: next(reads))
+        assert status == 0 and result["result"]["read_back_matches"] is True
+        _write_json(directory, "review.json", evidence)
         # Partial outcomes retain safe trace/code; no automatic retry or read follows the error.
         error = urllib.error.HTTPError("https://private.invalid", 502, "private", Message(), io.BytesIO(json.dumps({
             "trace_id": "launchplane_req_partial", "error": {"code": "dokploy_source_partial_outcome", "message": "private-provider-data"},

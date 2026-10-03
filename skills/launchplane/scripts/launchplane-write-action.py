@@ -6274,8 +6274,9 @@ def _project_dokploy_compose_setup(
         "provider_warning_count": len(provider_warnings),
     }
     source_plan = _require_dict(setup.get("source")) if operation == "complete-compose-source" else _require_dict(plan.get("compose"))
-    if (request or {}).get("source_inputs") is not None and any(
-        source_plan.get(field) != cast(dict[str, object], cast(dict[str, object], request)["source_inputs"]).get(field)
+    source_inputs = _optional_dict((request or {}).get("source_inputs"))
+    if source_inputs is not None and any(
+        source_plan.get(field) != source_inputs.get(field)
         for field in ("custom_git_branch", "compose_path")
     ):
         raise LaunchplaneSafetyError("invalid_response")
@@ -6458,7 +6459,8 @@ def dokploy_compose_payload(args: argparse.Namespace) -> dict[str, object]:
         if payload.get("instance") != "testing":
             raise ValueError("compose_source_requires_testing")
         for field in ("context", "reason"):
-            if not isinstance(payload.get(field), str) or not payload[field].strip():
+            value = payload.get(field)
+            if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{field}_required")
         return payload
     for field in ("context", "instance", "target_name", "server_id", "reason"):
@@ -6588,6 +6590,7 @@ def read_dokploy_target(
     inspect = _require_dict(provider_payload.get("inspect"))
     tracked = _require_dict(inspect.get("tracked_target") or {})
     provider_target = _require_dict(inspect.get("provider_target_record") or {})
+    live_provider = _require_dict(inspect.get("provider") or {})
     private = {
         "target_ids": {
             str(source.get("target_id") or "").strip()
@@ -6598,7 +6601,7 @@ def read_dokploy_target(
         "tracked_source": {field: tracked.get(field) for field in (
             "source_type", "custom_git_url", "custom_git_branch", "compose_path",
         )},
-        "live_source": {field: inspect.get(field) for field in (
+        "live_source": {field: live_provider.get(field) for field in (
             "source_type", "custom_git_url", "custom_git_branch", "compose_path",
         )},
     }
@@ -6693,13 +6696,16 @@ def execute_verified_apply(
             if operation.startswith("dokploy-target-"):
                 try:
                     error = summarize_http_error(operation=operation, request=request, exc=exc)
-                    unknown["summary"].update({field: error["summary"][field] for field in (
+                    unknown_summary = _require_dict(unknown["summary"])
+                    error_summary = _require_dict(error["summary"])
+                    unknown_summary.update({field: error_summary[field] for field in (
                         "http_status", "trace_id", "error_code",
                     )})
-                    unknown["summary"]["recommendation"] = (
-                        "Source setup may have partially changed the provider. Require admin "
-                        "reconciliation before any retry under any key; never replace or adopt the target."
-                    )
+                    if error_summary["error_code"] == "dokploy_source_partial_outcome" or request.get("source_inputs"):
+                        unknown_summary["recommendation"] = (
+                            "Source setup may have partially changed the provider. Require admin "
+                            "reconciliation before any retry under any key; never replace or adopt the target."
+                        )
                 except LaunchplaneSafetyError:
                     pass
             emit(unknown)
@@ -7016,7 +7022,7 @@ def execute_dokploy_compose_apply(
                 private["domains"] == _domain_set(body["domains"])
                 and private["healthcheck_path"] == body["healthcheck_path"]
             )
-            expected_source = reviewed.get("source")
+            expected_source = result.get("source")
             public["source_matches_review"] = expected_source is None or all(
                 observed_source.get("source_type") == "git"
                 and _compose_source_digest(observed_source) == expected_source["source_sha256"]
