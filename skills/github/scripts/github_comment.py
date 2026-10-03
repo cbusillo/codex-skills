@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import datetime as dt
 import hashlib
 import json
@@ -265,6 +266,7 @@ def _call_api(
         ]
     ] = None,
     retry_context: Optional[github_api_core.ReconciliationContext] = None,
+    retry_policy: Optional[github_api_core.RetryPolicy] = None,
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
 ) -> github_api_core.ApiResult:
     result = github_api_core.call_gh_with_retry(
@@ -280,7 +282,7 @@ def _call_api(
         failed_step=failed_step,
         is_write=is_write,
         reconcile=reconcile,
-        retry_policy=retry_context.retry_policy if retry_context is not None else None,
+        retry_policy=retry_context.retry_policy if retry_context is not None else retry_policy,
         retry_runtime=retry_context.retry_runtime if retry_context is not None else None,
         deadline_at=retry_context.deadline_at if retry_context is not None else None,
     )
@@ -651,6 +653,9 @@ def _comment_impl(
     *,
     repo: Optional[str] = None,
     edit_last: bool = False,
+    edit_comment: Optional[int] = None,
+    expected_body: Optional[str] = None,
+    expected_updated_at: Optional[str] = None,
     create_if_none: bool = False,
     gh_cmd: str = DEFAULT_GH,
     expected_actor: Optional[str] = EXPECTED_ACTOR,
@@ -703,6 +708,19 @@ def _comment_impl(
             failed_step="input_validation",
         )
 
+    if (
+        (edit_comment is not None and (isinstance(edit_comment, bool) or not isinstance(edit_comment, int) or edit_comment <= 0))
+        or (edit_comment is not None and (edit_last or create_if_none or dedupe_body))
+        or (edit_comment is None and (expected_body is not None or expected_updated_at is not None))
+    ):
+        raise _local_error(
+            "--edit-comment requires a positive ID and cannot be combined with edit-last, create-if-none or deduplication; expected values require --edit-comment",
+            operation=operation,
+            cause="validation_error",
+            expected_actor=expected_actor,
+            failed_step="input_validation",
+        )
+
     resolved_repo = resolve_repo(repo, gh_cmd=gh_cmd, operation=operation)
     collected_retry_summaries = retry_summaries if retry_summaries is not None else []
     actor = authenticated_actor(
@@ -714,6 +732,67 @@ def _comment_impl(
     steps = list(completed_steps or [])
     steps.append("resolve_actor")
     existing_comments: Optional[list[dict[str, Any]]] = None
+
+    if edit_comment is not None:
+        path = f"/repos/{resolved_repo}/issues/comments/{edit_comment}"
+        target = {"kind": kind, "repo": resolved_repo, "number": number, "selected_comment_id": edit_comment}
+        result = _call_api(
+            "GET", path, None,
+            gh_cmd=gh_cmd, operation=operation, actor=actor, expected_actor=expected_actor,
+            completed_steps=steps, failed_step="read_exact_comment", is_write=False,
+            failure_payload=target, retry_summaries=collected_retry_summaries,
+        )
+        selected = result.body
+        steps.append("read_exact_comment")
+        issue_url = f"https://api.{github_api_core.DEFAULT_HOST}/repos/{resolved_repo}/issues/{number}"
+        if (
+            not isinstance(selected, dict)
+            or selected.get("id") != edit_comment
+            or str(selected.get("issue_url") or "").casefold() != issue_url.casefold()
+        ):
+            raise _local_error(
+                "Exact comment does not belong to the requested repository and thread",
+                operation=operation, cause="comment_target_mismatch", actor=actor,
+                expected_actor=expected_actor, completed_steps=steps,
+                failed_step="validate_exact_comment", payload=target,
+            )
+        author = (selected.get("user") or {}).get("login") if isinstance(selected.get("user"), dict) else None
+        if not isinstance(author, str) or author.casefold() != actor.casefold():
+            raise _local_error(
+                "Exact comment is not authored by the authenticated actor",
+                operation=operation, cause="actor_mismatch", actor=actor,
+                expected_actor=expected_actor, completed_steps=steps,
+                failed_step="validate_exact_comment", payload=target,
+            )
+        if (
+            (expected_body is not None and selected.get("body") != expected_body)
+            or (expected_updated_at is not None and selected.get("updated_at") != expected_updated_at)
+        ):
+            raise _local_error(
+                "Exact comment changed: expected body or updated_at does not match; read the target before editing",
+                operation=operation, cause="comment_conflict", actor=actor,
+                expected_actor=expected_actor, completed_steps=steps,
+                failed_step="validate_exact_comment", payload=target,
+            )
+        steps.append("validate_exact_comment")
+        update_step = failed_step or "update_comment"
+        result = _call_api(
+            "PATCH", path, {"body": body},
+            gh_cmd=gh_cmd, operation=operation, actor=actor, expected_actor=expected_actor,
+            completed_steps=steps, failed_step=update_step, is_write=True,
+            failure_payload={**target, "reconciliation": {"strategy": "selected_comment_lookup", "creation_skipped": True}},
+            # A repeated PATCH could overwrite a change made after the preflight read.
+            retry_policy=dataclasses.replace(github_api_core.default_retry_policy(), max_attempts=1),
+            retry_summaries=collected_retry_summaries,
+        )
+        steps.append(update_step)
+        payload = _comment_payload(
+            result.body, operation=operation, kind=kind, repo=resolved_repo,
+            number=number, actor=actor, expected_actor=expected_actor,
+            comment_action="updated", completed_steps=steps, retry_summary=result.retry_summary,
+        )
+        payload["selected_comment_id"] = edit_comment
+        return payload
 
     if edit_last:
         comments, steps = list_comments(
@@ -912,6 +991,9 @@ def comment(
     *,
     repo: Optional[str] = None,
     edit_last: bool = False,
+    edit_comment: Optional[int] = None,
+    expected_body: Optional[str] = None,
+    expected_updated_at: Optional[str] = None,
     create_if_none: bool = False,
     gh_cmd: str = DEFAULT_GH,
     expected_actor: Optional[str] = EXPECTED_ACTOR,
@@ -929,6 +1011,9 @@ def comment(
             body,
             repo=repo,
             edit_last=edit_last,
+            edit_comment=edit_comment,
+            expected_body=expected_body,
+            expected_updated_at=expected_updated_at,
             create_if_none=create_if_none,
             gh_cmd=gh_cmd,
             expected_actor=expected_actor,
@@ -966,6 +1051,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-R", "--repo")
     parser.add_argument("--body-file", default="-", help="Read Markdown from a file, or '-' for stdin.")
     parser.add_argument("--edit-last", action="store_true")
+    parser.add_argument("--edit-comment", type=int, help="Edit this exact timeline comment ID, after checking its thread and author.")
+    parser.add_argument("--expected-body-file", help="Require an exact prior body from this UTF-8 file (including operation markers).")
+    parser.add_argument("--expected-updated-at", help="Require the prior comment's exact updated_at value.")
     parser.add_argument("--create-if-none", action="store_true")
     return parser
 
@@ -1040,6 +1128,9 @@ def main() -> int:
             body,
             repo=args.repo,
             edit_last=args.edit_last,
+            edit_comment=args.edit_comment,
+            expected_body=read_body(args.expected_body_file) if args.expected_body_file is not None else None,
+            expected_updated_at=args.expected_updated_at,
             create_if_none=args.create_if_none,
             operation=operation,
             expected_actor=expected_actor,

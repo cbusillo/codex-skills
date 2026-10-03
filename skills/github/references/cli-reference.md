@@ -199,6 +199,8 @@ also include the shared `api_result` diagnostics envelope.
   timeline comment through the shared REST issue-comment endpoint. Add
   `--edit-last` to replace the authenticated actor's latest comment and
   `--create-if-none` only when a missing prior comment should create one.
+  Use `--edit-comment ID` for a known comment; optional `--expected-body-file`
+  and `--expected-updated-at` check its prior state as described below.
 - `scripts/gh-pr.py checks <pr>`: Show check runs and commit statuses
   for the PR head.
 - `scripts/gh-pr.py merge <pr> --method merge`: Merge a PR. The expected head
@@ -751,6 +753,31 @@ select that actor's newest comment by creation time and id, and stream Markdown
 through JSON stdin. If the selected comment is deleted before PATCH, the helper
 fails without creating a replacement; `--create-if-none` applies only when the
 initial paged lookup finds no actor-owned comment.
+When sessions share an automation actor, save the returned `comment.id` and
+use `--edit-comment ID` rather than actor-wide `--edit-last`. Both comment
+entry points support it. The helper reads that exact comment, validates its
+repository/thread and authenticated author, and PATCHes only that ID. A missing,
+deleted, foreign-thread or foreign-author target fails without selecting another
+comment or creating one. Results include `selected_comment_id` and `comment.id`.
+
+```bash
+scripts/gh-comment issue 42 --repo OWNER/REPO --edit-comment 123456 \
+  --body-file replacement.md --expected-body-file prior.md
+```
+
+`--expected-body-file` compares the full prior body exactly, including whitespace
+and hidden operation markers. `--expected-updated-at` compares GitHub's exact
+prior `updated_at` value; either or both may be supplied. A mismatch returns
+`comment_conflict` with `write_outcome: not_started`, without printing bodies.
+These are preflight comparisons, not an atomic compare-and-swap: a concurrent
+edit after the read can still win or be overwritten, and timestamp precision
+alone cannot detect every same-second edit. Exact edits never automatically
+replay PATCH; read back the same ID before another invocation after a failure.
+The expected-value flags require `--edit-comment`, which cannot combine with
+`--edit-last`, `--create-if-none`, or body deduplication. Give expected and new
+bodies separate files when both are required; a stdin stream can be consumed
+only once.
+
 For PR review feedback, use `scripts/gh-with-env-token pr review --body-file`.
 
 Raw `gh pr create`, `gh pr edit`, and `gh pr comment` use the active local

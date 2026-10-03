@@ -263,6 +263,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("pr", help="PR number, URL, or branch.")
     p.add_argument("--body-file", required=True, help="Read comment Markdown from this file. Use '-' to read from stdin.")
     p.add_argument("--edit-last", action="store_true", help="Edit the authenticated actor's latest comment.")
+    p.add_argument("--edit-comment", type=int, help="Edit this exact timeline comment ID.")
+    p.add_argument("--expected-body-file", help="Require this exact prior comment body.")
+    p.add_argument("--expected-updated-at", help="Require this prior updated_at value.")
     p.add_argument("--create-if-none", action="store_true", help="Create a comment when --edit-last finds none.")
     p.set_defaults(func=cmd_comment)
 
@@ -418,6 +421,9 @@ def shared_comment(
     completed_steps: Optional[list[str]] = None,
     failed_step: Optional[str] = None,
     edit_last: bool = False,
+    edit_comment: Optional[int] = None,
+    expected_body: Optional[str] = None,
+    expected_updated_at: Optional[str] = None,
     create_if_none: bool = False,
 ) -> dict[str, Any]:
     retry_summaries: list[github_api_core.RetrySummary] = []
@@ -433,6 +439,9 @@ def shared_comment(
             completed_steps=completed_steps,
             failed_step=failed_step,
             edit_last=edit_last,
+            edit_comment=edit_comment,
+            expected_body=expected_body,
+            expected_updated_at=expected_updated_at,
             create_if_none=create_if_none,
             retry_summaries=retry_summaries,
         )
@@ -460,6 +469,9 @@ def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
         body,
         operation=CURRENT_OPERATION,
         edit_last=args.edit_last,
+        edit_comment=args.edit_comment,
+        expected_body=read_text_file(args.expected_body_file, operation="comment", repo=repo, pr=number) if args.expected_body_file is not None else None,
+        expected_updated_at=args.expected_updated_at,
         create_if_none=args.create_if_none,
     )
     return {
