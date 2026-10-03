@@ -177,7 +177,8 @@ def _judge(
         if state.empty_candidate_failures >= settings.empty_candidate_failures:
             return "failed", {"reason": "candidate_failed without a failing check", "candidate_sha": candidate_sha}
         return None
-    if action == "update_branch":
+    intended_action = (result.get("dry_run_result") or {}).get("intended_next_action")
+    if action == "update_branch" or intended_action == "update_branch":
         if (result.get("branch_update_result") or {}).get("status") == "updated":
             # The controller already refreshed a queued branch, possibly another PR's; the deadline bounds repeats.
             return None

@@ -78,7 +78,11 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   state, treats a candidate made stale by a queue change as rebuildable, waits
   out a block raised only because the batch candidate's checks are still
   running or another driver holds the controller lease, treats a branch the
-  controller refreshed as progress, and stops on other blocks, failed,
+  controller refreshed as progress, and stops early with `needs_owner` when
+  the dry run's `intended_next_action` is `update_branch` and the driver may
+  not refresh that PR, even if the controller reports `wait_for_root_checks`.
+  `--allow-branch-update` permits refreshing only the driver's own selected PR.
+  It stops on other blocks, failed,
   ineligible, closed, deadline, no response, or repeated controller refusals,
   with each refusal's error code, HTTP status and trace ID. A candidate failure reports the
   failing checks and run URLs on the candidate commit.

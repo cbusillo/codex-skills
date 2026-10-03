@@ -165,6 +165,48 @@ class TrainDriveTests(unittest.TestCase):
         self.assertEqual((outcome, train.updates), ("needs_owner", 0))
         self.assertIn("#8", events[-1][1]["reason"])
 
+    def test_a_root_check_wait_that_needs_a_branch_update_stops_early(self) -> None:
+        train = FakeTrain([_response("wait_for_root_checks", dry_run_result={
+            "intended_next_action": "update_branch", "selected_pr": {"number": 7},
+            "branch_update_required": True, "required_checks_status": "pass",
+        })])
+        outcome, events = _drive(train)
+        self.assertEqual((outcome, train.calls, train.updates, train.clock), ("needs_owner", 1, 0, 0))
+        self.assertIn("branch is behind its base", events[-1][1]["reason"])
+
+    def test_an_intended_branch_update_uses_the_existing_update_permissions(self) -> None:
+        for selected in (7, 8):
+            with self.subTest(selected=selected):
+                train = FakeTrain([
+                    _response("wait_for_root_checks", dry_run_result={
+                        "intended_next_action": "update_branch", "selected_pr": {"number": selected},
+                    }),
+                    _response("land_batch"),
+                ], merge_after={7: 2})
+                outcome, events = _drive(train, allow_branch_update=True)
+                if selected == 7:
+                    self.assertEqual((outcome, train.updates), ("landed", 1))
+                else:
+                    self.assertEqual((outcome, train.calls, train.updates), ("needs_owner", 1, 0))
+                    self.assertIn("#8", events[-1][1]["reason"])
+
+    def test_an_intended_branch_update_already_done_by_the_controller_is_progress(self) -> None:
+        train = FakeTrain([
+            _response("update_branch", dry_run_result={"intended_next_action": "update_branch"},
+                      branch_update_result={"status": "updated"}),
+            _response("land_batch"),
+        ], merge_after={7: 2})
+        outcome, _ = _drive(train)
+        self.assertEqual((outcome, train.updates), ("landed", 0))
+
+    def test_a_root_check_wait_without_a_branch_update_keeps_waiting(self) -> None:
+        train = FakeTrain([
+            _response("wait_for_root_checks", dry_run_result={"intended_next_action": "wait_for_checks"}),
+            _response("land_batch"),
+        ], merge_after={7: 2})
+        outcome, _ = _drive(train)
+        self.assertEqual((outcome, train.calls, train.updates), ("landed", 2, 0))
+
     def test_batch_companions_missing_from_the_queue_are_still_reported(self) -> None:
         train = FakeTrain([_response("land_batch")], merge_after={7: 1, 9: 1})
         train.companions = [9]
