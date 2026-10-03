@@ -15,7 +15,7 @@ Executing loop for this repository (from DIRECTION.md):
   next and go   both
   escalate      a finding that retires, stops, or redirects work is an issue labeled direction, not a change
   land          load github to open and merge the PR, babysit-pr to watch until merged, then reconcile the runtime checkout
-  close out     load work-closeout to update the plan issue, open follow-up issues without starting them, remove the worktree, leave main clean
+  close out     load work-closeout to update the plan issue, open follow-up issues without starting them, remove the worktree (with the retire command its lock reason names, if any), leave main clean
 ```
 
 Load each step's owning skill before acting, including when it is a step inside
