@@ -3570,6 +3570,13 @@ def test_target_replacement_operation_read_bounds_failure_details() -> None:
     assert operation["error_detail_keys"] == ["EXAMPLE_SETTING"]
     assert "operation.error_description" in payload["result"]["dropped_field_paths"]
     assert "operation.error_detail_keys[]" in payload["result"]["dropped_field_paths"]
+    for description in ("credential=hunter2-example", "credential : hunter2-example"):
+        source["error_description"] = description
+        status, payload, _calls = _run_product_read(argv, response)
+        assert status == 0
+        assert payload["result"]["operation"]["error_description"] == ""
+        assert "hunter2-example" not in json.dumps(payload)
+        assert "operation.error_description" in payload["result"]["dropped_field_paths"]
     for value in (None, [], "not a list", {"unexpected": "detail"}):
         source["error_detail_keys"] = value
         status, payload, _calls = _run_product_read(argv, response)

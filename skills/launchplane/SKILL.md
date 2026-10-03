@@ -1110,8 +1110,8 @@ verification.
   for why a testing or stable Odoo deploy failed: take the id from
   `reconcile-requests-read` (`queued_operation_id`, `active_operation_id`,
   `deployed_operation_id` or `last_failed_operation_id`). It returns status,
-  phase, times, attempt, artifact id, image digest, step statuses and error
-  code, Launchplane's fixed `error_description` as a bounded public summary,
+  phase, times, attempt, and, when present in the response, artifact id,
+  image digest and step statuses. Failure details include the error code, Launchplane's fixed `error_description` as a bounded public summary,
   and validated `error_detail_keys` (env-key names only); free-text error
   messages are dropped. The service authorizes it as `operations.read` on
   product `launchplane` for the operation's context and instance, or

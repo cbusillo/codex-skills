@@ -3051,7 +3051,7 @@ def _public_operation_error_description(value: object) -> str:
         raise LaunchplaneSafetyError("invalid_response")
     # Fixed service prose describes a credential refusal. Redact that word
     # rather than loosening the public-summary policy; _FieldDrops checks the raw shape.
-    summary = re.sub(r"\bcredential\b", "[redacted]", value, flags=re.IGNORECASE)
+    summary = re.sub(r"\bcredential\b(?!\s*[:=])", "[redacted]", value, flags=re.IGNORECASE)
     return public_summary_string(summary)
 
 
