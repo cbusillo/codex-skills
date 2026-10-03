@@ -292,7 +292,10 @@ authorization result, not a reason to use another path.
   `domains` list, and `project_id`, `project_name` or `environment_id`.
   Optional: `schema_version`, `project_description`, `environment_name`,
   `environment_description`, `app_name`, `description`, `source_git_ref`,
-  `source_type`, `compose_path`, `runtime_port` and `deploy_timeout_seconds`.
+  `source_type`, `compose_path`, `custom_git_branch`, `runtime_port` and
+  `deploy_timeout_seconds`. With `custom_git_branch`, an explicit relative
+  `compose_path` is required; Launchplane derives the git repository from the
+  exclusive generic-web product profile and disables auto-deploy.
   Any other field is refused before a request is sent. The helper adds the
   operation, the service product and, on apply only, Launchplane's typed
   confirmation.
@@ -308,6 +311,38 @@ authorization result, not a reason to use another path.
   present, that every record names the created compose, and that the tracked
   target holds the reviewed domains and health-check path. These are compared,
   never printed.
+
+`dokploy-target-complete-compose-source-dry-run` and
+`dokploy-target-complete-compose-source-apply` use the same setup route with
+`operation: "complete-compose-source"`. The private payload accepts only
+`schema_version`, `context`, `instance` (exactly `testing`), `custom_git_branch`,
+`compose_path` and `reason`. Branch and path are required and use shell-safe
+relative repository syntax (letters, digits, dot, underscore, hyphen, slash).
+Target ids, placement, repository URLs, domains and credential fields are
+refused. The service derives the repository and requires an empty tracked
+compose with exclusive product/lane ownership and matching provider binding;
+it refuses configured or partial sources and never replaces a target.
+
+Both source operations retain the existing saved-evidence safeguards: save and
+review the dry-run output, then apply the exact private payload with
+`--reviewed-dry-run`, `--expected-plan-digest` (the result's `plan_sha256`),
+`--dry-run-evidence-file` and a stable `--idempotency-key`. The digest includes
+the planned source; completion also includes a private digest of the tracked
+binding, checked through inspect before apply. This helper comparison is not a
+server-enforced compare-and-swap between dry-run and apply. The service rechecks
+and locks its current ownership/binding during completion.
+
+Output shows the branch and compose path and digests, while dropping URLs,
+provider ids, environment values and credentials. Apply verifies the returned
+plan and binding, then compares tracked and live provider git source to the
+reviewed repository URL, branch and path privately. Check `read_back_matches`;
+accepted-but-unverified is not success. Completion leaves the lane in place and
+starts no deployment. Creation still needs stable-lane repair afterwards.
+
+HTTP 502 `dokploy_source_partial_outcome` may follow a provider change. The
+helper reports `outcome_unknown`, retains the safe trace/code and sends no
+automatic retry. Require admin reconciliation before retrying under **any**
+key; never recreate, replace or silently adopt the target as recovery.
 
 ### Lane record
 

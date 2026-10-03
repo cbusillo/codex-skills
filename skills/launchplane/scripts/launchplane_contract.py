@@ -409,6 +409,16 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/dokploy-targets/setup",
         "mode": "apply",
     },
+    "dokploy-target-complete-compose-source-dry-run": {
+        "method": "POST",
+        "path": "/v1/dokploy-targets/setup",
+        "mode": "dry-run",
+    },
+    "dokploy-target-complete-compose-source-apply": {
+        "method": "POST",
+        "path": "/v1/dokploy-targets/setup",
+        "mode": "apply",
+    },
     "private-health-endpoint-read": {
         "method": "GET",
         "path": "/v1/private-health-endpoints/records",

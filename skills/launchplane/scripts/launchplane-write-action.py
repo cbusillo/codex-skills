@@ -3920,6 +3920,8 @@ def _project_success_output(
     if operation in {
         "dokploy-target-create-compose-dry-run",
         "dokploy-target-create-compose-apply",
+        "dokploy-target-complete-compose-source-dry-run",
+        "dokploy-target-complete-compose-source-apply",
     }:
         records = _project_records(provider_payload.get("records"), set())
         return records, _project_dokploy_compose_setup(
@@ -4146,14 +4148,16 @@ def summarize_success(
         elif operation in {
             "dokploy-target-create-compose-dry-run",
             "dokploy-target-create-compose-apply",
+            "dokploy-target-complete-compose-source-dry-run",
+            "dokploy-target-complete-compose-source-apply",
         }:
             summary["plan_sha256"] = result.get("plan_sha256")
             summary["recommendation"] = (
                 "Save this redacted dry-run output, review the plan actions, then apply the exact "
                 "same private payload with --expected-plan-digest."
-                if operation == "dokploy-target-create-compose-dry-run"
-                else "Check read_back_matches, then add the lane record through the stable-lane "
-                "repair workflow."
+                if operation.endswith("-dry-run")
+                else "Check read_back_matches before relying on the target and its source. "
+                "For a newly created target, add the lane through stable-lane repair."
             )
         elif operation in {
             "private-health-endpoint-dry-run",
@@ -6084,11 +6088,15 @@ DOKPLOY_COMPOSE_PAYLOAD_FIELDS = {
     "source_git_ref",
     "source_type",
     "compose_path",
+    "custom_git_branch",
     "healthcheck_path",
     "domains",
     "runtime_port",
     "deploy_timeout_seconds",
     "reason",
+}
+DOKPLOY_COMPOSE_SOURCE_PAYLOAD_FIELDS = {
+    "schema_version", "context", "instance", "custom_git_branch", "compose_path", "reason",
 }
 DOKPLOY_COMPOSE_SETUP_RESULT_FIELDS = {
     "mode",
@@ -6359,6 +6367,28 @@ def _dokploy_setup_target_id(result: object) -> str:
     return target_id.strip()
 
 
+def _validate_compose_source(branch: object, path: object) -> None:
+    if (
+        not isinstance(branch, str) or not re.fullmatch(r"[A-Za-z0-9._/-]+", branch)
+        or branch.startswith(("-", "/")) or branch.endswith(("/", ".", ".lock"))
+        or any(part in branch for part in ("..", "//"))
+    ):
+        raise ValueError("invalid_compose_source_branch")
+    if (
+        not isinstance(path, str) or not re.fullmatch(r"[A-Za-z0-9._/-]+", path)
+        or path.startswith("/") or ".." in path.split("/")
+        or not path.strip("./")
+    ):
+        raise ValueError("invalid_compose_source_path")
+
+
+def _compose_source_digest(source: dict[str, object]) -> str:
+    # URL stays private; bind it along with the branch and path to the review.
+    return _canonical_sha256({field: source.get(field) for field in (
+        "custom_git_url", "custom_git_branch", "compose_path",
+    )})
+
+
 def _project_dokploy_compose_setup(
     result: object, *, request: dict[str, object] | None
 ) -> dict[str, object]:
@@ -6367,16 +6397,17 @@ def _project_dokploy_compose_setup(
     source = _require_dict(result)
     if any(str(key) not in DOKPLOY_COMPOSE_SETUP_RESULT_FIELDS for key in source):
         raise LaunchplaneSafetyError("unsafe_response_shape")
-    if source.get("operation") != "create-compose":
+    operation = source.get("operation")
+    if operation not in {"create-compose", "complete-compose-source"} or operation != (request or {}).get("setup_operation", "create-compose"):
         raise LaunchplaneSafetyError("invalid_response")
     payload_digest = (request or {}).get("payload_digest")
     if not isinstance(payload_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", payload_digest):
         raise LaunchplaneSafetyError("invalid_response")
     setup = _require_dict(source.get("setup"))
-    plan = _require_dict(setup.get("plan"))
+    plan = _require_dict(setup.get("plan")) if operation == "create-compose" else {}
     plan_actions = {
         part: public_code(_require_dict(plan.get(part)).get("action"))
-        for part in ("project", "environment", "compose")
+        for part in (("project", "environment", "compose") if plan else ())
     }
     target_record = setup.get("target_record")
     target_record = {} if target_record is None else _require_dict(target_record)
@@ -6392,7 +6423,7 @@ def _project_dokploy_compose_setup(
         raise LaunchplaneSafetyError("invalid_response")
     projected: dict[str, object] = {
         "mode": _reviewed_plan_mode(source.get("mode")),
-        "operation": "create-compose",
+        "operation": operation,
         "context": public_identifier(source.get("context")),
         "instance": public_identifier(source.get("instance")),
         "applied": bool(_optional_bool(source.get("applied"))),
@@ -6403,6 +6434,29 @@ def _project_dokploy_compose_setup(
         "route_domain_count": len(route_domain_ids),
         "provider_warning_count": len(provider_warnings),
     }
+    source_plan = _require_dict(setup.get("source")) if operation == "complete-compose-source" else _require_dict(plan.get("compose"))
+    source_inputs = _optional_dict((request or {}).get("source_inputs"))
+    if source_inputs is not None and any(
+        source_plan.get(field) != source_inputs.get(field)
+        for field in ("custom_git_branch", "compose_path")
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    if source_plan.get("custom_git_branch"):
+        _validate_compose_source(source_plan.get("custom_git_branch"), source_plan.get("compose_path"))
+        if not isinstance(source_plan.get("custom_git_url"), str) or not source_plan["custom_git_url"]:
+            raise LaunchplaneSafetyError("invalid_response")
+        projected["source"] = {
+            "custom_git_branch": source_plan["custom_git_branch"],
+            "compose_path": source_plan["compose_path"],
+            "source_sha256": _compose_source_digest(source_plan),
+        }
+    elif operation == "complete-compose-source":
+        raise LaunchplaneSafetyError("invalid_response")
+    if operation == "complete-compose-source":
+        target_id = _dokploy_setup_target_id(source)
+        if not target_id:
+            raise LaunchplaneSafetyError("invalid_response")
+        projected["binding_sha256"] = _canonical_sha256(target_id)
     provider_target = setup.get("provider_target_record")
     if provider_target is not None:
         provider_target = _require_dict(provider_target)
@@ -6417,6 +6471,8 @@ def _project_dokploy_compose_setup(
             "context": projected["context"],
             "instance": projected["instance"],
             "plan_actions": plan_actions,
+            **({"source": projected["source"]} if "source" in projected else {}),
+            **({"binding_sha256": projected["binding_sha256"]} if "binding_sha256" in projected else {}),
         }
     )
     assert_public_safe_shape(projected)
@@ -6554,8 +6610,20 @@ def production_backup_authority_body(
 
 def dokploy_compose_payload(args: argparse.Namespace) -> dict[str, object]:
     payload = read_payload_file(args.payload_file)
-    if any(key not in DOKPLOY_COMPOSE_PAYLOAD_FIELDS for key in payload):
+    completion = args.command.startswith("dokploy-target-complete-compose-source-")
+    allowed = DOKPLOY_COMPOSE_SOURCE_PAYLOAD_FIELDS if completion else DOKPLOY_COMPOSE_PAYLOAD_FIELDS
+    if any(key not in allowed for key in payload):
         raise ValueError("unsupported_dokploy_target_field")
+    if completion or payload.get("custom_git_branch"):
+        _validate_compose_source(payload.get("custom_git_branch"), payload.get("compose_path"))
+    if completion:
+        if payload.get("instance") != "testing":
+            raise ValueError("compose_source_requires_testing")
+        for field in ("context", "reason"):
+            value = payload.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field}_required")
+        return payload
     for field in ("context", "instance", "target_name", "server_id", "reason"):
         value = payload.get(field)
         if not isinstance(value, str) or not value.strip():
@@ -6581,16 +6649,20 @@ def dokploy_compose_body(
     args: argparse.Namespace, *, mode: str
 ) -> tuple[dict[str, object], dict[str, object]]:
     payload = dokploy_compose_payload(args)
+    setup_operation = "complete-compose-source" if args.command.startswith("dokploy-target-complete-compose-source-") else "create-compose"
     request: dict[str, object] = {
         "mode": mode,
         "payload_source": "private_file",
         "payload_digest": metadata_review_digest(payload),
         "context": public_identifier(payload["context"]),
         "instance": public_identifier(payload["instance"]),
+        "setup_operation": setup_operation,
     }
+    if payload.get("custom_git_branch"):
+        request["source_inputs"] = {field: payload[field] for field in ("custom_git_branch", "compose_path")}
     body: dict[str, object] = {
         **payload,
-        "operation": "create-compose",
+        "operation": setup_operation,
         # Target setup is authorized on Launchplane's own service product.
         "product": "launchplane",
         "mode": mode,
@@ -6599,7 +6671,7 @@ def dokploy_compose_body(
         expected_plan_digest = _reviewed_apply_digest(args)
         evidence, _result = _load_reviewed_evidence(
             args,
-            operation="dokploy-target-create-compose-dry-run",
+            operation=args.command.removesuffix("-apply") + "-dry-run",
             expected_digest=expected_plan_digest,
             result_status=None,
         )
@@ -6679,6 +6751,7 @@ def read_dokploy_target(
     inspect = _require_dict(provider_payload.get("inspect"))
     tracked = _require_dict(inspect.get("tracked_target") or {})
     provider_target = _require_dict(inspect.get("provider_target_record") or {})
+    live_provider = _require_dict(inspect.get("provider") or {})
     private = {
         "target_ids": {
             str(source.get("target_id") or "").strip()
@@ -6686,6 +6759,12 @@ def read_dokploy_target(
         },
         "domains": _domain_set(tracked.get("domains")),
         "healthcheck_path": str(tracked.get("healthcheck_path") or ""),
+        "tracked_source": {field: tracked.get(field) for field in (
+            "source_type", "custom_git_url", "custom_git_branch", "compose_path",
+        )},
+        "live_source": {field: live_provider.get(field) for field in (
+            "source_type", "custom_git_url", "custom_git_branch", "compose_path",
+        )},
     }
     public = {
         "status": public_code(inspect.get("status")),
@@ -6774,7 +6853,23 @@ def execute_verified_apply(
     except urllib.error.HTTPError as exc:
         # A gateway error after the POST began may follow a write Launchplane completed.
         if post_attempted and (exc.code >= 500 or exc.code == 408):
-            emit(_apply_outcome_unknown(operation=operation, request=request, label=label))
+            unknown = _apply_outcome_unknown(operation=operation, request=request, label=label)
+            if operation.startswith("dokploy-target-"):
+                try:
+                    error = summarize_http_error(operation=operation, request=request, exc=exc)
+                    unknown_summary = _require_dict(unknown["summary"])
+                    error_summary = _require_dict(error["summary"])
+                    unknown_summary.update({field: error_summary[field] for field in (
+                        "http_status", "trace_id", "error_code",
+                    )})
+                    if error_summary["error_code"] == "dokploy_source_partial_outcome" or request.get("source_inputs"):
+                        unknown_summary["recommendation"] = (
+                            "Source setup may have partially changed the provider. Require admin "
+                            "reconciliation before any retry under any key; never replace or adopt the target."
+                        )
+                except LaunchplaneSafetyError:
+                    pass
+            emit(unknown)
             return 1
         emit_http_error_payload(operation=operation, request=request, exc=exc)
         return 1
@@ -7039,6 +7134,27 @@ def execute_dokploy_compose_apply(
     context = cast(str, body["context"]).strip()
     instance = cast(str, body["instance"]).strip()
     expected_plan_digest = args.expected_plan_digest.strip().lower()
+    completion = body["operation"] == "complete-compose-source"
+    _evidence, reviewed = _load_reviewed_evidence(
+        args, operation=args.command.removesuffix("-apply") + "-dry-run",
+        expected_digest=expected_plan_digest, result_status=None,
+    )
+
+    def preflight(settings: dict[str, str]) -> dict[str, object] | None:
+        if completion:
+            _public, private = read_dokploy_target(
+                settings=settings, context=context, instance=instance, timeout=args.timeout
+            )
+            target_ids = cast(set[str], private["target_ids"])
+            if target_ids != {""} and len(target_ids) == 1:
+                (target_id,) = target_ids
+                if _canonical_sha256(target_id) == reviewed.get("binding_sha256"):
+                    return None
+            return {
+                "error_code": "compose_binding_changed_since_review",
+                "recommendation": "The tracked binding changed since review; run a new dry-run.",
+            }
+        return None
 
     def finish(
         settings: dict[str, str], provider_payload: dict[str, Any], payload: dict[str, Any]
@@ -7066,9 +7182,18 @@ def execute_dokploy_compose_apply(
             # Compared here and never printed: the records name the created compose and
             # hold the reviewed domains and health path.
             public["target_ids_agree"] = private["target_ids"] == {created_target_id}
-            public["configuration_matches_review"] = (
+            public["configuration_matches_review"] = completion or (
                 private["domains"] == _domain_set(body["domains"])
                 and private["healthcheck_path"] == body["healthcheck_path"]
+            )
+            expected_source = result.get("source")
+            public["source_matches_review"] = expected_source is None or all(
+                observed_source.get("source_type") == "git"
+                and _compose_source_digest(observed_source) == expected_source["source_sha256"]
+                for observed_source in (
+                    cast(dict[str, object], private["tracked_source"]),
+                    cast(dict[str, object], private["live_source"]),
+                )
             )
             return public
 
@@ -7077,19 +7202,20 @@ def execute_dokploy_compose_apply(
             read=read,
             matches=lambda observed: observed["provider_target_record"] == "present"
             and observed["target_ids_agree"] is True
-            and observed["configuration_matches_review"] is True,
+            and observed["configuration_matches_review"] is True
+            and observed["source_matches_review"] is True,
             label="Dokploy target",
         )
         return applied_as_reviewed and read_back_ok
 
     return execute_verified_apply(
         args=args,
-        operation="dokploy-target-create-compose-apply",
+        operation=args.command,
         request=request,
-        path=helper_command_path("dokploy-target-create-compose-apply"),
+        path=helper_command_path(args.command),
         body=body,
-        # Launchplane refuses a second provider target for the lane itself.
-        preflight=lambda _settings: None,
+        # Completion compares the saved binding before any provider write.
+        preflight=preflight,
         finish=finish,
         label="Dokploy target",
     )
@@ -8051,6 +8177,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         )
         _add_reviewed_apply_arguments(compose_target, apply=command.endswith("-apply"))
 
+    for mode in ("dry-run", "apply"):
+        source = subparsers.add_parser(
+            f"dokploy-target-complete-compose-source-{mode}",
+            help="Complete an empty tracked testing compose's repository source.",
+        )
+        source.add_argument("--payload-file", required=True, help="Private local JSON payload file.")
+        _add_reviewed_apply_arguments(source, apply=mode == "apply")
+
     private_endpoint_read = subparsers.add_parser(
         "private-health-endpoint-read",
         help="List a lane's private health endpoint keys, status and scope, without URLs.",
@@ -8563,6 +8697,8 @@ def main(argv: list[str]) -> int:
         if args.command in {
             "dokploy-target-create-compose-dry-run",
             "dokploy-target-create-compose-apply",
+            "dokploy-target-complete-compose-source-dry-run",
+            "dokploy-target-complete-compose-source-apply",
         }:
             mode = "apply" if args.command.endswith("-apply") else "dry-run"
             body, request = dokploy_compose_body(args, mode=mode)
