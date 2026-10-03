@@ -237,6 +237,26 @@ login to a user account and its immutable id, and authorizes the change as
   Client changed since the review. An `unchanged` plan has nothing to apply and
   is refused. After the POST it reads the profile back.
 
+### Image repository
+
+`product-image-repository-dry-run` and `product-image-repository-apply` call
+`POST /v1/product-profiles/{product}/image-repository`. Launchplane accepts only
+the untagged GHCR package named after the product's repository, authorizes the
+change as `product_profile.write`, and changes no other profile field.
+
+- Both take `--product`, `--image-repository ghcr.io/OWNER/NAME` and
+  `--reason`. Nothing in the request is secret, so there is no payload file.
+- Output shows the product, its repository, the image repository before and
+  after, `changed`, each lane's current artifact id and whether it is already
+  in the new package, and `plan_sha256` over product, repository, before, after
+  and reason. Lane artifacts are left out of the digest because a deploy may
+  move them between the dry run and the apply.
+- Apply reads the product profile first and stops with `stale` when its image
+  repository is no longer the reviewed starting point. It sends that starting
+  point as `expected_image_repository`, so Launchplane also refuses a move from
+  anywhere else. An unchanged plan has nothing to apply and is refused. After
+  the POST it reads the profile back and checks `image.repository`.
+
 ### Provider target
 
 `dokploy-target-create-compose-dry-run` and

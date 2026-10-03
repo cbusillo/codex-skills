@@ -740,7 +740,8 @@ generic-web deploy-recovery, Odoo addon-settings, integration-allowances,
 testing-hold, product-repository-identity, product-environment-read,
 product-activity-read, product-profile-read, preview-history-read,
 reconcile-requests-read, target-replacement-operation-read,
-target-replacement-plan-read, `product-owner-*`, `dokploy-target-create-compose-*`,
+target-replacement-plan-read, `product-owner-*`, `product-image-repository-*`,
+`dokploy-target-create-compose-*`,
 `production-backup-authority-*`, product-promotion-status-read and
 product-promotion-dry-run commands are explicit bounded local
 extensions because the vendored public
@@ -1018,7 +1019,8 @@ verification.
   change-impact policy dry-run/apply/read-back, guarded merge-train policy
   import, repository inventory read/dry-run/apply, product environment,
   activity, preview and reconcile reads, Odoo target-replacement operation and
-  plan reads, Client, Dokploy compose target and production backup authority
+  plan reads, Client, image repository, Dokploy compose target and production
+  backup authority
   dry-run/apply with read-back, product promotion status and dry-run, and
   merge-train controller calls.
 - `scripts/check-agent-operator-contract.py`: Hermetic schema, digest,
@@ -1132,6 +1134,13 @@ verification.
   `-apply`, with `--product`, `--github-login` or `--clear`, and `--reason`).
   Apply checks the Client has not changed since the review, then reads the
   profile back.
+- `POST /v1/product-profiles/{product}/image-repository`: Bounded
+  local-extension path that moves a product's image repository to the GHCR
+  package named after its repository (`product-image-repository-dry-run` /
+  `-apply`, with `--product`, `--image-repository` and `--reason`). The dry run
+  shows the repository before and after and each lane's current artifact.
+  Apply sends the reviewed starting repository and stops when the profile has
+  moved since the review, then reads the profile back.
 - `POST /v1/dokploy-targets/setup`: Bounded local-extension path that creates a
   lane's Dokploy compose target from a private payload
   (`dokploy-target-create-compose-dry-run` / `-apply`). Provider ids, server
