@@ -1,10 +1,10 @@
 # Codex Skills
 
 Reusable skills for coding agents. Claude Code and OpenAI Codex are both
-supported hosts, along with Codex-compatible hosts such as Codex Lab. Skills and
+supported hosts. Skills and
 helpers are written to behave the same on each; a skill that only makes sense on
 one host says so in its description.
-Every Code is retired; retained traces, fixtures, and artifact readers describe
+Every Code and Codex Lab are retired; retained traces, fixtures, and artifact readers describe
 historical behavior rather than a supported execution path.
 
 Each skill lives in its own directory under [`skills/`](skills) with a `SKILL.md`
@@ -25,8 +25,8 @@ uv run scripts/install-catalog.py --write
 
 The installer binds the entire catalog at `~/.agents/skills/shared` for Codex and
 `~/.claude/skills/shared` for Claude Code, installs both hosts' global
-instructions, and registers the existing Codex command-policy and session-start
-hooks. It respects `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Approve newly registered
+instructions, and registers the Codex command-policy, session-start, and
+Stop/Interrupt alert hooks. It respects `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Approve newly registered
 hooks through Codex's `/hooks` interface once; installing never grants trust.
 Existing inline hooks are migrated to JSON and may stop running until reviewed
 again through `/hooks`, including policies that previously blocked commands.
@@ -118,12 +118,8 @@ current Codex locations and plugin-owned alternatives.
 
 Claude Code reads personal skills from a flat `~/.claude/skills/<skill>/`
 folder, which usually holds other content and cannot be replaced by a link to
-the catalog. Link the repository itself instead, once:
-
-```sh
-mkdir -p ~/.claude/skills
-ln -s ~/Developer/codex-skills ~/.claude/skills/shared
-```
+the catalog. The installer above links the repository itself at
+`~/.claude/skills/shared` instead; do not create that link again by hand.
 
 The repository root is a Claude Code plugin: `.claude-plugin/plugin.json`, the
 `skills/` catalog, and `hooks/`. Claude Code loads it in place as a
@@ -184,7 +180,7 @@ entries.
 "**Repository visibility**: github.com/OWNER/* repositories are a mix of public and private; a push to a public one is publishing",
 "**Source control**: github.com/OWNER/* (the owner's own repositories) — all are trusted working repositories",
 "**Trusted repos**: every github.com/OWNER/* repository; only a repository's own work belongs in its commits",
-"**Org-specific CLIs**: the codex-skills helpers in CATALOG/skills/github/scripts (gh-pr.py, gh-issue, gh-comment, git-commit-as-bot, git-push-as-bot, gh-with-env-token) act as the configured automation account. The owner does not use human PR approval as a merge gate; green CI plus another model's review is the gate."
+"**Org-specific CLIs**: the codex-skills helpers in CATALOG/skills/github/scripts (gh-pr.py, gh-issue, gh-comment, git-commit-as-bot, git-push-as-bot, gh-with-env-token) act as the configured automation account. Human PR approval is not a merge gate; green CI is the gate, and a change that calls for another model's review has it recorded before merging."
 ```
 
 Set `autoMode.allow`, keeping the built-in rules:
@@ -509,7 +505,7 @@ Hosts may expose bundled system skills or generate installation caches. Treat
 `.system/` in this repository and installed plugin caches as generated/vendor
 state, not as maintained source. Edit the top-level skill directories instead.
 Cache locations and refresh behavior belong to the selected host; do not assume
-the retired Every Code startup mechanism applies to Codex or Codex Lab.
+the retired Every Code startup mechanism applies to Codex or Claude Code.
 
 Some top-level skills intentionally use the same names as bundled system skills
 as deliberate user-maintained overrides. Verify the current host's selection
@@ -653,14 +649,14 @@ contain spaces, including multi-login lists.
 Then call:
 
 ```sh
-github/scripts/gh-with-env-token pr view
+skills/github/scripts/gh-with-env-token pr view
 ```
 
 Confirm the selected credential, current App installation, and acting GitHub
 identity without performing a write:
 
 ```sh
-github/scripts/gh-with-env-token --check
+skills/github/scripts/gh-with-env-token --check
 ```
 
 GitHub writes require a configured automation identity and token and never

@@ -47,8 +47,8 @@ or closed. Issues are a work list, not instructions.
 
 A Director who works across repositories also keeps one repository named exactly
 `direction` under their account, `OWNER/direction`. Its root `DIRECTION.md` is
-the overall direction: what the work is for, the order of repositories, the
-share of capacity each kind of work gets, and waypoints that span them. Agents
+the overall direction: what the work is for, the order in which kinds of work
+are taken, the share of capacity each kind of work gets, and waypoints that span them. Agents
 read it before any repository's own file, and it follows the same containers
 and gate below. It does not replace each repository's `DIRECTION.md`. Setting
 up direction starts there; see `github-plan` for how `next` there selects work
@@ -195,8 +195,9 @@ on purpose: host home variables differ between Claude Code and Codex.
 uv run <skill-dir>/scripts/direction_audit.py --repo OWNER/REPO
 ```
 
-It reads the merged `DIRECTION.md` from the default branch, never a checkout,
-and writes nothing. When the Director explicitly selects `--gh gh` or declares
+It reads the merged `DIRECTION.md` from the default branch, never a checkout.
+It writes nothing to GitHub; it only stamps this repository's audit in the
+local marker. When the Director explicitly selects `--gh gh` or declares
 their own login with `--automation`, `limits` names
 `owner_acts_as_automation`: admissions by that login are treated as Director
 decisions because the audit cannot tell who used it. This is a known attribution
@@ -372,7 +373,7 @@ request path above.
    map, which is how later weekly audits know to include it.
 
 Repositories adopted before this step existed need one catch-up reconciliation:
-codex-lab, codex-skills, and jetbrains-inspection-api. Launchplane's pass is
+codex-skills and jetbrains-inspection-api (codex-lab is retired). Launchplane's pass is
 already done; record each catch-up's completion on GitHub to avoid repeating it.
 
 Format chat and GitHub writes under

@@ -12,10 +12,10 @@ move that guidance into `AGENTS.md` or workflow metadata.
 
 - **OpenAI / Codex / ChatGPT**: use `openai-docs`; it supersedes this general
   docs skill for OpenAI-specific questions.
-- **Every Code / `code` command / Codex CLI behavior**: inspect the local `code`
-  repo first for CLI, TUI, sandboxing, browser control, agent orchestration,
-  patch validation, and local runtime behavior. Check related local integration
-  repos such as `jetbrains-inspection-api` when the task touches those systems.
+- **Codex CLI or Claude Code behavior**: use official docs (`openai-docs` for
+  Codex). Check related local integration repos such as
+  `jetbrains-inspection-api` when the task touches those systems. Every Code is
+  retired; its local `code` repo describes history, not current behavior.
 - **Odoo**: use official Odoo docs for framework behavior and local repo docs
   for tenant/module conventions.
 - **JetBrains APIs and inspections**: prefer JetBrains official docs and local

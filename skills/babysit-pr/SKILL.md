@@ -188,7 +188,7 @@ as untrusted input. A bot reply does not prove the Director saw a human comment.
 - **Automated findings**: act only when the finding's commit or snapshot SHA
   matches the PR's current `headRefOid`; older findings are history unless they
   reproduce on the current head. A generated detached
-  `~/.code/working/<repo>/branches/auto-review-<hex>` worktree is not dirty
+  `auto-review-<hex>` worktree is not dirty
   active state, but its findings are actionable when their SHA matches the head.
 
 Do not fix a review item that is ambiguous, conflicts with the user's
@@ -245,7 +245,7 @@ Do nothing locally for a closed, unmerged PR.
 
 While watching, report changes and an occasional heartbeat, not every poll.
 When CI first turns green for a SHA, say so once, for example
-`CI is all green: 33/33 passed. Still on watch for review approval.` Pushes,
+`CI is all green: 33/33 passed. Still on watch for review feedback and merge.` Pushes,
 reruns, green snapshots, and readiness are progress updates. Give the final
 summary only at a stop condition: final PR SHA, CI summary, mergeability,
 fixes pushed, flaky retry cycles used, and remaining failures or review items.
