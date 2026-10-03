@@ -148,7 +148,7 @@ records that run.
    input with Ctrl-U and verify the entire input is empty before sending
    `/exit` for Claude Code or `/quit` for Codex into that terminal's input,
    never through `codex queue`. If any input remains, keep the tab open.
-   Wait for that session's process to end. Verify it ended before closing
+   Use a bounded wait for that session's process to end. Verify it ended before closing
    the tab. If it is still running or its identity is uncertain, keep the tab
    open and record the next action in the ledger.
 
