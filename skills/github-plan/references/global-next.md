@@ -136,7 +136,7 @@ admission requires complete milestone graph coverage. Portfolio discovery bounds
 and `discovery_context.capacity_complete` remain reporting evidence and do not
 veto admission by themselves. Inspected discoveries with unresolved milestone
 context or waits still prevent admission; a partial candidate list never proves
-that no other work exists. Already-inventoried title-matched milestone issues
+that no other work exists. Already-inventoried issues with an overall milestone title
 omitted by the scan still prevent admission and are named in
 `discovery_context.unevaluated_milestone_issues`. Unavailable discovery sources
 remain coverage warnings rather than a portfolio-wide admission veto.
@@ -152,7 +152,8 @@ cannot crowd them out of bounded results; repeated-stop tooling retains its
 existing precedence over own projects; this is not a per-call share quota. Without capacity
 admission, existing ranking is unchanged. Service callers of
 `rank_portfolio_work` must supply `coverage_complete: true` only after proving
-their milestone graph complete; omission leaves capacity admission disabled.
+their milestone graph complete with no known milestone issues left uninspected;
+omission leaves capacity admission disabled.
 
 These are the caller's
 evidence judgments, not classifications guessed from names, labels, or keywords.

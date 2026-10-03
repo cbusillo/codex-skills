@@ -1899,19 +1899,19 @@ def cmd_claim(args: argparse.Namespace) -> None:
     previous_status = ""
     config = load_config(repo)
 
-    def check_wait(issue: dict[str, Any], status: str) -> None:
-        status_state = next_plan_status(issue, config)
-        reports = github_direction_next.waiting_records(compact_issue(issue), status)
+    def check_wait(waiting_issue: dict[str, Any], waiting_status: str) -> None:
+        status_state = next_plan_status(waiting_issue, config)
+        reports = github_direction_next.waiting_records(compact_issue(waiting_issue), waiting_status)
         blocked_text = any(
             (match := re.match(r"\s*(?:[-*]\s+)?Blocked by:\s*(.+)", line, re.I))
             and match.group(1).casefold().rstrip(" .") not in {"none", "n/a", "nothing", "-"}
-            for line in status.splitlines()
+            for line in waiting_status.splitlines()
         )
         if (status_state in {"waiting", "blocked", "stale", "done"} or reports or blocked_text
-                or re.search(r"(?im)^\s*(?:[-*]\s+)?State:\s*(?:waiting|parked|blocked|stale|done)\b", status)):
+                or re.search(r"(?im)^\s*(?:[-*]\s+)?State:\s*(?:waiting|parked|blocked|stale|done)\b", waiting_status)):
             if not args.wait_resolved:
                 raise ClassifiedPlanError("claim_wait_unresolved", "Verify the recorded wait or hold, then pass --wait-resolved with existing resolution evidence",
-                                          payload={"previous_current_status": status})
+                                          payload={"previous_current_status": waiting_status})
 
     def claim_recovery() -> dict[str, Any]:
         recovery = {}
@@ -1922,10 +1922,10 @@ def cmd_claim(args: argparse.Namespace) -> None:
                         "then": "Post this exact release through the same bot, preserve competing ownership, and recheck before any retry"}
         return recovery
 
-    def refuse(conflicts: list[dict[str, Any]]) -> None:
+    def refuse(competing_claims: list[dict[str, Any]]) -> None:
         raise ClassifiedPlanError(
             "claim_conflict", "Another worker or ambiguous ownership evidence holds this issue; preserve it for owner review",
-            payload={"competing_evidence": conflicts, "claim_recovery": claim_recovery()},
+            payload={"competing_evidence": competing_claims, "claim_recovery": claim_recovery()},
         )
 
     try:
@@ -2926,16 +2926,12 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         scanned = github_direction_next.discovery_scan(inventory, args.scan_limit, selection_context)
         scanned_keys = {(item["repo"].casefold(), item["number"]) for item in scanned}
         skipped_counts: dict[str, int] = {}
-        repository_waypoints = {
-            source["repo"]: repository_direction_milestones(source)
-            for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)
-        }
         capacity_unevaluated = len(inventory) - len(scanned)
         for item in inventory:
             if (item["repo"].casefold(), item["number"]) not in scanned_keys:
                 # Inventory already identifies title-matched milestone work;
                 # an ordinary scan bound must not erase that known frontier.
-                if github_direction_next.overall_milestone_context(item, ranked, titles, repository_waypoints)["state"] == "matched":
+                if (item.get("milestone") or {}).get("title") in titles:
                     unevaluated_milestones.append(compact_list_issue(item["repo"], item))
                 if not github_direction_next.repository_hold(selection_context, item["repo"]):
                     skipped_counts[item["repo"]] = skipped_counts.get(item["repo"], 0) + 1

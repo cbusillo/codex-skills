@@ -1239,6 +1239,16 @@ def test_portfolio_capacity_unscanned_known_milestone_prevents_admission() -> No
             assert result["tooling_capacity_context"]["admitted"] is False
             assert result["available_candidates"] == []
             assert result["discovery_context"]["unevaluated_milestone_issues"][0]["number"] == 30
+            # An unparsed repository direction cannot make the known title disappear.
+            original_discovery = module.discover_direction_work
+            def unparsed_discovery(*args: Any, **kwargs: Any) -> Any:
+                inventory, coverage = original_discovery(*args, **kwargs)
+                coverage["repositories"][1]["direction"] = "# Direction\nNo parsed waypoints."
+                return inventory, coverage
+            with patch.multiple(module, discover_direction_work=unparsed_discovery):
+                module.cmd_next(next_args(scan_limit=3))
+                assert result["tooling_capacity_context"]["admitted"] is False
+                assert result["discovery_context"]["unevaluated_milestone_issues"][0]["number"] == 30
             # Once inspected, its current person-wait review settles this frontier.
             context["issues"]["someone/business#30"] = reviewed(items[30], "waiting", waiting_on="person")
             module.cmd_next(next_args())

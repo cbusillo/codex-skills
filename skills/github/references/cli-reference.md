@@ -611,9 +611,12 @@ functions, and report their discovery coverage separately. Capacity callers also
 read bounded ancestry for excluded discoveries, preserving their original wait
 reports while marking capacity ancestry/discussion evidence incomplete. Held
 repositories use a separate bounded read allowance and remain unselectable;
-`discovery_context.capacity_complete` records completeness for this admission. For capacity admission,
-pass `coverage_complete=True` to `rank_portfolio_work` only for complete portfolio
-coverage; its default is false. Current milestone person-wait reviews and
+`discovery_context.capacity_complete` reports discovery evidence completeness
+separately from admission. For capacity admission, pass `coverage_complete=True`
+to `rank_portfolio_work` only for complete milestone graph coverage with no known
+milestone issues left uninspected; its default is false. Portfolio discovery
+bounds or unavailable sources remain explicit coverage warnings, not a blanket
+admission veto. Current milestone person-wait reviews and
 `tooling_admission_rule` outputs follow the linked global selection procedure.
 Supply parsed
 `repository_waypoints` separately from ranking order for waypoint explanations
