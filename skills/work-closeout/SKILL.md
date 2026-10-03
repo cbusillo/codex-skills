@@ -144,7 +144,7 @@ preserved, or intentionally left in place.
    uv run <skill-dir>/../launchplane/scripts/launchplane-context.py --repo OWNER/REPO
    ```
 
-   Use `available` context to notice pending Every Code work, preview readiness,
+   Use `available` context to notice pending work, preview readiness,
    deploy/product evidence, or source-of-truth links that should be reflected in
    the closeout. Treat `no_context`, `unavailable`, `unauthorized`, `invalid`,
    or helper failure as normal absence. Do not block safe-to-exit only because
@@ -408,8 +408,8 @@ checks below as relevant.
 
 ## Auto Review Worktrees
 
-Codex Desktop and Every Code auto-review flows may create detached review
-worktrees under paths like:
+Host auto-review flows may leave detached review worktrees, such as those the
+retired Every Code harness created under:
 
 ```text
 ~/.code/working/<repo>/branches/auto-review*

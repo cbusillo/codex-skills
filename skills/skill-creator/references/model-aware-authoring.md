@@ -6,8 +6,8 @@ comparison or another documentation pass.
 
 ## Select the relevant guidance
 
-Keep the model separate from the host: Astra and Sol are models; Codex and Codex
-Lab provide tools, skill discovery, and execution controls. Verify the target
+Keep the model separate from the host: Astra and Sol are models; Codex and Claude
+Code provide tools, skill discovery, and execution controls. Verify the target
 host's capabilities when the change depends on them.
 
 For OpenAI models, use the [OpenAI Docs skill](../../openai-docs/SKILL.md) to

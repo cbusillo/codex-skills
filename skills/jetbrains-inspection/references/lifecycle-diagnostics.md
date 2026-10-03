@@ -190,7 +190,7 @@ guard deadline remains fail-closed as `project_configuration_unstable`.
 preparation as `project_content_roots_missing` and trigger lease-bound cleanup;
 a lifecycle open response or routable project alone is not readiness proof.
 Configure trusted roots in `~/.config/jetbrains-inspection/config.json`, shared
-by Every Code, Codex CLI, and Codex Lab CLI. `JETBRAINS_INSPECTION_GLOBAL_CONFIG`
+by every supported harness. `JETBRAINS_INSPECTION_GLOBAL_CONFIG`
 selects an explicit file instead. When the shared file is absent, the helper
 still reads an existing `${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-inspection.json`
 for compatibility. Configurations are not merged; an invalid shared file fails
@@ -200,7 +200,7 @@ continues to override the roots themselves.
 To migrate, move the existing configuration to the shared path without dropping
 other settings. Older installed helpers can use the explicit config override or
 a compatibility symlink at the old location until they are updated. CLI home
-variables do not affect shared-config discovery; `CODEX_LAB_HOME` is not needed.
+variables do not affect shared-config discovery.
 Removing the legacy file after migration leaves the shared configuration intact.
 This migrates configuration only, not helper caches, leases, or outcome logs.
 

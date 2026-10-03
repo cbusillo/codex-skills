@@ -12,7 +12,7 @@ required checks. Keep the scope proportional and reuse current passing evidence.
 | Helper tests using representative inputs | The exercised script behavior and failure handling | Whether an agent chooses the helper |
 | Independent source review or manual cases | Instruction consistency and a reviewer's proposed decisions | Actual tool execution or a measured model improvement |
 | Direct local-model calls | That model's responses to the supplied context | Codex/Astra behavior or host tool and approval handling |
-| Codex or Codex Lab execution | Observed actions and outputs for the tested host, model, configuration, and task | Untested hosts, models, tasks, or runtime enforcement paths |
+| Codex or Claude Code execution | Observed actions and outputs for the tested host, model, configuration, and task | Untested hosts, models, tasks, or runtime enforcement paths |
 
 Complete required checks even when another row supplies useful evidence. A
 missing optional harness does not create a new approval gate; a required check
@@ -32,17 +32,17 @@ explicit-only invocation uses `policy.allow_implicit_invocation: false` in
 `agents/openai.yaml`; catalog acceptance of the same field elsewhere is not
 proof that Codex enforces it.
 
-## Current Codex and Codex Lab execution
+## Current Codex and Claude Code execution
 
 Identify the intended host and model before selecting a command. Inspect the
 available executable's version and help; do not assume that `codex` and
-`codex-lab` have interchangeable flags, discovery rules, or harnesses.
+`claude` have interchangeable flags, discovery rules, or harnesses.
 Use the existing authorized access path and the host's supported execution
 interface. An instruction audit alone does not require changing runtime or
 model configuration.
 
 The host and model are separate parts of the evidence. To test Astra behavior,
-run a compatible Codex or Codex Lab host with Astra and record the model actually
+run a compatible Codex host with Astra and record the model actually
 used; another model's run cannot establish Astra behavior.
 
 Use an isolated task workspace or fixtures under the repository's worktree and
