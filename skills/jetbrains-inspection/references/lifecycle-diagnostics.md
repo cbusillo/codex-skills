@@ -4,6 +4,28 @@ Read when diagnosing auto-open, ownership, retry, cleanup, trust, or IDE-selecti
 problems, or changing the helper lifecycle. Commands and paths below are relative
 to the `jetbrains-inspection` skill directory.
 
+Plugins advertising `ide_memory_diagnostic_version: 1` expose a project-free
+`memory` endpoint. Before opening a project or triggering inspection, and after
+a failed endpoint request or UNKNOWN wait/problems response, the helper probes
+that endpoint with a bounded timeout. Failure diagnostics run after owned-run
+cancellation and timeout recovery where those existing paths apply, preserving
+the original failure evidence. Memory detection does not add a new cancellation
+path for non-timeout endpoint errors.
+Unrelated session, request and scope failures retain their original reason
+with memory evidence attached as context. During lifecycle-open route probes,
+only exhaustion in the session that accepted the open interrupts route waiting;
+transient pressure does not abort an accepted open. The probe names the Java
+heap space project-opening dialog while the project is still unroutable.
+Evidence must match the selected IDE session.
+Current-process OOM produces `UNKNOWN/ide_memory_exhausted` with no automatic
+retry. A recent overloaded-GC signal remains diagnostic context and does not
+block opening or inspection, reclassify a failure, or change its retry policy.
+Exhaustion guidance names the modal dialog and requires
+an IDE restart by the Director. The helper never dismisses a dialog or restarts
+the IDE. Older plugins and unavailable or session-mismatched memory diagnostics
+preserve the original routing/transport result; an unreachable IDE is not
+proof of memory exhaustion.
+
 `open-worktree`, `agent-inspect`, `inspect`, and `inspect-closeout` create a
 local lease, serialize helper-owned IDE
 opens, open the exact current worktree only when no exact route exists, wait for
