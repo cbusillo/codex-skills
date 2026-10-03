@@ -741,7 +741,8 @@ testing-hold, product-repository-identity, product-environment-read,
 product-activity-read, product-profile-read, preview-history-read,
 reconcile-requests-read, target-replacement-operation-read,
 target-replacement-plan-read, `product-owner-*`, `dokploy-target-create-compose-*`,
-`production-backup-authority-*`, product-promotion-status-read and
+`production-backup-authority-*`, `private-health-endpoint-*`,
+product-promotion-status-read and
 product-promotion-dry-run commands are explicit bounded local
 extensions because the vendored public
 operation projection does not contain their routes. Do not describe them as contract-backed. If a later artifact adds those
@@ -1018,8 +1019,8 @@ verification.
   change-impact policy dry-run/apply/read-back, guarded merge-train policy
   import, repository inventory read/dry-run/apply, product environment,
   activity, preview and reconcile reads, Odoo target-replacement operation and
-  plan reads, Client, Dokploy compose target and production backup authority
-  dry-run/apply with read-back, product promotion status and dry-run, and
+  plan reads, Client, Dokploy compose target, production backup authority and
+  private health endpoint dry-run/apply with read-back, product promotion status and dry-run, and
   merge-train controller calls.
 - `scripts/check-agent-operator-contract.py`: Hermetic schema, digest,
   public-safety, operation, workflow, invariant, and local-consumer conformance
@@ -1144,6 +1145,15 @@ verification.
   (`production-backup-authority-read` / `-dry-run` / `-apply`). The private
   payload carries the Proxmox coordinates; output shows only record ids,
   revisions, kinds and the `authority_digest` apply is bound to.
+- `GET /v1/private-health-endpoints/records` and
+  `POST /v1/private-health-endpoints/apply`: Bounded local-extension paths for
+  the private health endpoint record a lane's `private_http` health check names
+  (`private-health-endpoint-read --product --context [--instance]` /
+  `-dry-run` / `-apply`, with `--payload-file` and `--reason`). The private
+  payload carries the endpoint key, scope and URL; output shows keys, scope and
+  status only. Apply requires the saved dry-run evidence,
+  `--expected-plan-digest`, reviewed acknowledgement and an idempotency key,
+  then reads the record back and compares its URL privately.
 - `GET .../environments/prod/promotion-status` and
   `POST .../environments/prod/promotion/dry-run` under `/v1/products/{product}`:
   Bounded local-extension reads and dry-runs (`product-promotion-status-read`,

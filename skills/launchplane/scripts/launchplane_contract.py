@@ -389,6 +389,21 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/dokploy-targets/setup",
         "mode": "apply",
     },
+    "private-health-endpoint-read": {
+        "method": "GET",
+        "path": "/v1/private-health-endpoints/records",
+        "mode": "read",
+    },
+    "private-health-endpoint-dry-run": {
+        "method": "POST",
+        "path": "/v1/private-health-endpoints/apply",
+        "mode": "dry-run",
+    },
+    "private-health-endpoint-apply": {
+        "method": "POST",
+        "path": "/v1/private-health-endpoints/apply",
+        "mode": "apply",
+    },
     "product-promotion-status-read": {
         "method": "GET",
         "path": "/v1/products/{product}/environments/{environment}/promotion-status",
@@ -419,6 +434,10 @@ INTERNAL_HELPER_ROUTES = {
     "dokploy-target-inspect": {
         "method": "GET",
         "path": "/v1/dokploy-targets/inspect",
+    },
+    "private-health-endpoint-record-read": {
+        "method": "GET",
+        "path": "/v1/private-health-endpoints/records/{endpoint_key}",
     },
 }
 

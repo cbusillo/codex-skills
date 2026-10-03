@@ -310,6 +310,34 @@ and `POST /v1/production-backup-authority/apply`. They are authorized as
   ids against the saved dry-run, then reads the authority back and checks them
   again.
 
+### Private health endpoints
+
+`private-health-endpoint-read`, `private-health-endpoint-dry-run` and
+`private-health-endpoint-apply` call `GET /v1/private-health-endpoints/records`
+and `POST /v1/private-health-endpoints/apply`. They are authorized as
+`private_health_endpoint.read` and `.apply` on the record's product and
+context. A lane's `private_http` health check names one of these records by its
+`endpoint_key`.
+
+- `private-health-endpoint-read --product --context [--instance]` lists each
+  record's `endpoint_key`, product, context, instance, `status` (`active` or
+  `disabled`) and `updated_at`. The URL and the free-text `source_label` are
+  dropped.
+- The private payload file holds `endpoint_key`, `product`, `context`,
+  `instance` and `url`, with optional `status` (default `active`),
+  `source_label` and `schema_version`. Launchplane refuses a public URL. The
+  helper sets `updated_at`; a payload that carries it is refused. `--reason` is
+  required on both dry-run and apply and is part of what the review binds.
+- Launchplane does not bind the apply to the dry-run. The helper digests the
+  payload and reason with the planned key and scope into `plan_sha256`; pass
+  it as `--expected-plan-digest`. It refuses an apply whose payload or reason
+  differs from the reviewed one, and sends the reviewed dry-run's `updated_at`
+  so a retry with the same idempotency key replays instead of conflicting.
+- After apply the helper compares the applied record, and the record read back
+  from `GET /v1/private-health-endpoints/records/{endpoint_key}`, with the
+  reviewed key, scope, status and URL. Output reports `url_matches_review` and
+  never shows the URL.
+
 ### Product promotion status and dry-run
 
 `product-promotion-status-read --product` calls
