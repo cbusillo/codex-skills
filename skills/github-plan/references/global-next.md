@@ -105,13 +105,13 @@ Categories for discovered work are `live_incident`, `repeated_stop_tooling`, and
 `own_project`; linked graph work keeps its milestone priority. Tooling keeps the existing
 `repeated_stop_tooling` category. Two distinct HTTPS links in `stop_occurrences`
 admit it under the repeated-stop rule. With fewer links, capacity admission needs
-complete graph and portfolio coverage and current reviews of every milestone
+complete milestone graph coverage and current reviews of every inspected milestone
 frontier issue, including excluded waits and discovered milestone work. Each must
 be `state: waiting`, with `waiting_on: person`, the current `discussion_digest`,
 complete discussion and ownership evidence, and a reason and evidence identifying
 who must act. A CI/event wait, a hold alone, underway or unreviewed milestone
-issue, or incomplete coverage does not establish this rule. Empty Tracks contain
-no milestone candidates; no frontier waits at all cannot establish the rule.
+issue, or incomplete milestone graph coverage does not establish this rule.
+Empty Tracks contain no milestone candidates; no frontier waits at all cannot establish the rule.
 A `--milestone` run cannot establish portfolio-wide capacity admission.
 Deferred/stale milestone issues report `milestone_issue_excluded` with the issue
 and exclusion, rather than asking for a person-wait review that cannot clear it.
@@ -132,8 +132,21 @@ ordinary discovery allowance available to selectable work. Their failures and
 bounds affect `discovery_context.capacity_complete`, not ordinary candidate
 coverage. Failed ancestry on already-excluded discoveries likewise preserves
 ordinary wait reports while making capacity evidence incomplete. Capacity
-admission requires both graph coverage and `capacity_complete`, not just the
-ordinary candidate coverage flag. Dependencies of discovered title-matched
+admission requires complete milestone graph coverage. Portfolio discovery bounds
+and `discovery_context.capacity_complete` remain reporting evidence and do not
+veto admission by themselves. Inspected discoveries with unresolved milestone
+context or waits still prevent admission; a partial candidate list never proves
+that no other work exists. Already-inventoried issues with an overall milestone title
+omitted by the scan still prevent admission and are named in
+`discovery_context.unevaluated_milestone_issues`. Unavailable discovery sources
+remain coverage warnings rather than a portfolio-wide admission veto. A truncated
+or failed issue inventory in a repository whose read direction lists an overall
+milestone is incomplete milestone evidence and prevents admission; those sources
+are named in `discovery_context.incomplete_milestone_repositories`. Repositories
+and issues never reached by bounded discovery remain outside this proof: admission
+does not assert that the unseen portfolio has no milestone work. Widen discovery
+when that evidence is needed.
+Dependencies of discovered title-matched
 milestone containers inherit that scope; unavailable reads or dependency cycles
 cannot establish person waits.
 Every available tooling candidate carries `tooling_admission_rule`
@@ -145,7 +158,8 @@ cannot crowd them out of bounded results; repeated-stop tooling retains its
 existing precedence over own projects; this is not a per-call share quota. Without capacity
 admission, existing ranking is unchanged. Service callers of
 `rank_portfolio_work` must supply `coverage_complete: true` only after proving
-their portfolio inventory complete; omission leaves capacity admission disabled.
+their milestone graph complete with no known milestone issues left uninspected;
+omission leaves capacity admission disabled.
 
 These are the caller's
 evidence judgments, not classifications guessed from names, labels, or keywords.
