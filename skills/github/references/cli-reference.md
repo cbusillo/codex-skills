@@ -825,7 +825,10 @@ for that command, after its Director approved writing there. Without it the
 write is refused with a message naming the opt-in, and a value in `local.env`
 does not count. With it, stderr carries
 `notice: acting as your own GitHub user on OWNER/REPO`; Python
-helpers report that login as the actor. `git-push-as-bot` pushes there with
+helpers report that login as the actor. New comments also retain the resolved
+login as their expected response actor, including readback after an uncertain
+write, so an authorized switch from the bot is not reported as a failure.
+`git-push-as-bot` pushes there with
 the active login's token, `git-commit-as-bot` keeps the person's own git
 identity, and `gh-pr.py create` requires `--body-file` and appends
 `I wrote this change with AI assistance and reviewed it.` unless the body

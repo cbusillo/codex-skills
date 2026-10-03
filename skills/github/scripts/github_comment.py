@@ -55,6 +55,16 @@ def effective_expected_actor(expected_actor: Optional[str]) -> Optional[str]:
     return expected_actor
 
 
+def response_expected_actor(
+    result: github_api_core.ApiResult, expected_actor: Optional[str]
+) -> Optional[str]:
+    # The wrapper may authorize an own-user route only on the repository write.
+    # Preserve that resolved login instead of rechecking the original bot login.
+    if expected_actor and result.actor and result.expected_actor is None:
+        return result.actor
+    return expected_actor
+
+
 def _public_api_result(result: github_api_core.ApiResult) -> dict[str, Any]:
     payload = result.as_dict()
     payload.pop("body", None)
@@ -958,7 +968,7 @@ def _comment_impl(
             started_at,
             gh_cmd=gh_cmd,
             operation=operation,
-            expected_actor=expected_actor,
+            expected_actor=response_expected_actor(failed_result, expected_actor),
             completed_steps=steps,
             fingerprint=fingerprint,
             operation_id=operation_id,
@@ -980,8 +990,8 @@ def _comment_impl(
         kind=kind,
         repo=resolved_repo,
         number=number,
-        actor=actor,
-        expected_actor=expected_actor,
+        actor=result.actor or actor,
+        expected_actor=response_expected_actor(result, expected_actor),
         comment_action="created",
         completed_steps=steps,
         operation_marker=marker,

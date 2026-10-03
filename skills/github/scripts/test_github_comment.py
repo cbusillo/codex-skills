@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import sys
 from typing import Any, Callable
+from unittest.mock import patch
 
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 os.environ["CODEX_AUTOMATION_LOGIN"] = "fixture-automation"
@@ -311,6 +312,146 @@ def test_create_if_none_requires_edit_last() -> None:
         assert exc.failure.write_outcome == "not_started", exc.failure
     else:
         raise AssertionError("expected validation error")
+
+
+def test_own_user_write_reports_resolved_actor_and_rejects_wrong_author() -> None:
+    for author in ("contributor", "unexpected-user"):
+        def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            if path == "/user":
+                return success({"login": "fixture-automation"})
+            if method == "GET":
+                return success([])
+            result = success(comment_body(10, author))
+            result.actor = "contributor"
+            result.expected_actor = None  # Authorized own-user notice from the wrapper.
+            return result
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}):
+                try:
+                    payload = github_comment.comment("pr", 42, "body", repo="owner/repo", gh_cmd="fake-gh")
+                except github_comment.CommentError as exc:
+                    assert author == "unexpected-user", exc
+                    assert exc.failure.cause == "actor_mismatch", exc.failure
+                    assert exc.failure.write_outcome == "unknown", exc.failure
+                else:
+                    assert author == "contributor", payload
+                    assert payload["actor"] == payload["expected_actor"] == author, payload
+                    assert payload["outcome_certainty"] == "confirmed", payload
+                assert sum(call["method"] == "POST" for call in calls) == 1, calls
+
+        with_call_stub(callback, run)
+
+
+def test_own_user_opt_in_does_not_override_automation_response_context() -> None:
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        if method == "GET":
+            return success([])
+        result = success(comment_body(11, "unexpected-user"))
+        result.actor = result.expected_actor = "fixture-automation"
+        return result
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}):
+            try:
+                github_comment.comment("pr", 42, "body", repo="owner/repo", gh_cmd="fake-gh")
+            except github_comment.CommentError as exc:
+                assert exc.failure.cause == "actor_mismatch", exc.failure
+            else:
+                raise AssertionError("expected actor mismatch")
+        assert sum(call["method"] == "POST" for call in calls) == 1, calls
+
+    with_call_stub(callback, run)
+
+
+def test_own_user_invalid_response_reports_resolved_actor() -> None:
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        if method == "GET":
+            return success([])
+        result = success({})
+        result.actor = "contributor"
+        result.expected_actor = None
+        return result
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        try:
+            github_comment.comment("pr", 42, "body", repo="owner/repo", gh_cmd="fake-gh")
+        except github_comment.CommentError as exc:
+            assert exc.failure.cause == "invalid_response", exc.failure
+            assert exc.failure.write_outcome == "unknown", exc.failure
+            assert exc.api_result is not None
+            assert exc.api_result["actor"] == exc.api_result["expected_actor"] == "contributor", exc.api_result
+        else:
+            raise AssertionError("expected invalid response")
+        assert sum(call["method"] == "POST" for call in calls) == 1, calls
+
+    with_call_stub(callback, run)
+
+
+def test_edit_preserves_comment_author_after_authorized_route_switch() -> None:
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        if method == "GET":
+            return success([comment_body(14)])
+        assert method == "PATCH"
+        result = success(comment_body(14))  # Editing does not change the original author.
+        result.actor = "contributor"
+        result.expected_actor = None
+        return result
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        payload = github_comment.comment(
+            "pr", 42, "body", repo="owner/repo", gh_cmd="fake-gh", edit_last=True
+        )
+        assert payload["comment"]["author"] == "fixture-automation", payload
+        assert payload["outcome_certainty"] == "confirmed", payload
+        assert [call["method"] for call in calls] == ["GET", "GET", "PATCH"], calls
+
+    with_call_stub(callback, run)
+
+
+def test_own_user_unknown_write_reconciles_without_duplicate() -> None:
+    submitted_body = ""
+    get_calls = 0
+
+    def callback(method: str, path: str, body: Any, **kwargs: Any) -> github_api.ApiResult:
+        nonlocal submitted_body, get_calls
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        if method == "POST":
+            submitted_body = body["body"]
+            result = failure(503, "Unicorn!", is_write=True)
+            result.actor = "contributor"
+            result.expected_actor = None
+            return result
+        get_calls += 1
+        if get_calls == 1:
+            return success([])
+        assert kwargs["actor"] == kwargs["expected_actor"] == "contributor", kwargs
+        result = success([comment_body(
+            12, "contributor", body=submitted_body, created_at="2026-07-17T18:45:01Z"
+        )])
+        result.actor = "contributor"
+        result.expected_actor = None
+        return result
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}), patch.object(
+            github_comment, "_utc_now", return_value=github_comment.dt.datetime(
+                2026, 7, 17, 18, 45, tzinfo=github_comment.dt.timezone.utc
+            )
+        ):
+            payload = github_comment.comment("pr", 42, "body", repo="owner/repo", gh_cmd="fake-gh")
+        assert payload["actor"] == payload["expected_actor"] == "contributor", payload
+        assert payload["outcome_certainty"] == "reconciled_applied", payload
+        assert sum(call["method"] == "POST" for call in calls) == 1, calls
+
+    with_call_stub(callback, run, allow_retry=True)
 
 
 def test_explicit_active_fallback_accepts_and_reports_actual_actor() -> None:
@@ -895,6 +1036,11 @@ TESTS = [
     test_create_if_none_creates_only_when_initial_lookup_is_empty,
     test_deletion_race_never_falls_back_to_create,
     test_actor_mismatch_blocks_mutation,
+    test_own_user_write_reports_resolved_actor_and_rejects_wrong_author,
+    test_own_user_opt_in_does_not_override_automation_response_context,
+    test_own_user_invalid_response_reports_resolved_actor,
+    test_edit_preserves_comment_author_after_authorized_route_switch,
+    test_own_user_unknown_write_reconciles_without_duplicate,
     test_create_if_none_requires_edit_last,
     test_explicit_active_fallback_accepts_and_reports_actual_actor,
     test_active_fallback_reports_response_actor_after_route_switch,
