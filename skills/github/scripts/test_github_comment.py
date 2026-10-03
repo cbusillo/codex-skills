@@ -366,6 +366,32 @@ def test_own_user_opt_in_does_not_override_automation_response_context() -> None
     with_call_stub(callback, run)
 
 
+def test_own_user_invalid_response_reports_resolved_actor() -> None:
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        if method == "GET":
+            return success([])
+        result = success({})
+        result.actor = "contributor"
+        result.expected_actor = None
+        return result
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        try:
+            github_comment.comment("pr", 42, "body", repo="owner/repo", gh_cmd="fake-gh")
+        except github_comment.CommentError as exc:
+            assert exc.failure.cause == "invalid_response", exc.failure
+            assert exc.failure.write_outcome == "unknown", exc.failure
+            assert exc.api_result is not None
+            assert exc.api_result["actor"] == exc.api_result["expected_actor"] == "contributor", exc.api_result
+        else:
+            raise AssertionError("expected invalid response")
+        assert sum(call["method"] == "POST" for call in calls) == 1, calls
+
+    with_call_stub(callback, run)
+
+
 def test_own_user_unknown_write_reconciles_without_duplicate() -> None:
     submitted_body = ""
     get_calls = 0
@@ -989,6 +1015,7 @@ TESTS = [
     test_actor_mismatch_blocks_mutation,
     test_own_user_write_reports_resolved_actor_and_rejects_wrong_author,
     test_own_user_opt_in_does_not_override_automation_response_context,
+    test_own_user_invalid_response_reports_resolved_actor,
     test_own_user_unknown_write_reconciles_without_duplicate,
     test_create_if_none_requires_edit_last,
     test_explicit_active_fallback_accepts_and_reports_actual_actor,

@@ -825,7 +825,7 @@ for that command, after its Director approved writing there. Without it the
 write is refused with a message naming the opt-in, and a value in `local.env`
 does not count. With it, stderr carries
 `notice: acting as your own GitHub user on OWNER/REPO`; Python
-helpers report that login as the actor. Comment writes also retain the resolved
+helpers report that login as the actor. New comments also retain the resolved
 login as their expected response actor, including readback after an uncertain
 write, so an authorized switch from the bot is not reported as a failure.
 `git-push-as-bot` pushes there with

@@ -803,7 +803,8 @@ def _comment_impl(
         steps.append(update_step)
         payload = _comment_payload(
             result.body, operation=operation, kind=kind, repo=resolved_repo,
-            number=number, actor=actor, expected_actor=response_expected_actor(result, expected_actor),
+            number=number, actor=result.actor or actor,
+            expected_actor=response_expected_actor(result, expected_actor),
             comment_action="updated", completed_steps=steps, retry_summary=result.retry_summary,
         )
         payload["selected_comment_id"] = edit_comment
@@ -866,7 +867,7 @@ def _comment_impl(
                 kind=kind,
                 repo=resolved_repo,
                 number=number,
-                actor=actor,
+                actor=result.actor or actor,
                 expected_actor=response_expected_actor(result, expected_actor),
                 comment_action="updated",
                 completed_steps=steps,
@@ -990,7 +991,7 @@ def _comment_impl(
         kind=kind,
         repo=resolved_repo,
         number=number,
-        actor=actor,
+        actor=result.actor or actor,
         expected_actor=response_expected_actor(result, expected_actor),
         comment_action="created",
         completed_steps=steps,
