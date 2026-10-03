@@ -63,6 +63,7 @@ READ_ONLY_OPERATIONS = {
     "path-check",
     "preview-history-read",
     "reconcile-requests-read",
+    "product-secret-bindings-read",
     "target-replacement-operation-read",
     "target-replacement-plan-read",
     "production-backup-authority-read",
@@ -1087,6 +1088,17 @@ def _project_runtime_key_safety(value: object) -> dict[str, object]:
     return projected
 
 
+SECRET_COPY_FROM_FIELDS = ("context", "instance", "version_id")
+
+
+def _project_secret_copy_from(value: object) -> dict[str, object]:
+    """The source a copied secret came from, as reviewed: lane and version id only."""
+    source = _require_dict(value)
+    if set(source) != set(SECRET_COPY_FROM_FIELDS):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    return {key: public_identifier(source[key]) for key in SECRET_COPY_FROM_FIELDS}
+
+
 def _project_secret_results(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list):
         raise LaunchplaneSafetyError("invalid_response")
@@ -1102,6 +1114,7 @@ def _project_secret_results(value: object) -> list[dict[str, object]]:
         "secret_id",
         "secret_class",
         "sharing_reason",
+        "copy_from",
     }
     for item in value:
         source = _require_dict(item)
@@ -1115,6 +1128,8 @@ def _project_secret_results(value: object) -> list[dict[str, object]]:
             result["secret_class"] = public_code(source["secret_class"], default="unknown")
         if source.get("sharing_reason") is not None:
             result["sharing_reason"] = _project_sharing_reason(source["sharing_reason"])
+        if source.get("copy_from") is not None:
+            result["copy_from"] = _project_secret_copy_from(source["copy_from"])
         projected.append(result)
     return projected
 
@@ -2919,6 +2934,107 @@ def _project_reconcile_requests(provider_payload: dict[str, Any]) -> dict[str, o
     return projected
 
 
+PRODUCT_SECRET_BINDINGS_MAX = 200
+# Metadata fields the service returns for one binding (launchplane#2810); it sends
+# no value or ciphertext.
+PRODUCT_SECRET_BINDING_FIELDS = frozenset(
+    {
+        "binding_key",
+        "name",
+        "scope",
+        "context",
+        "instance",
+        "secret_class",
+        "sharing_reason",
+        "version_id",
+    }
+)
+PRODUCT_SECRET_BINDING_SCOPES = {"context", "context_instance"}
+
+
+def _product_secret_binding_scope(value: object) -> str:
+    if not isinstance(value, str) or value not in PRODUCT_SECRET_BINDING_SCOPES:
+        raise LaunchplaneSafetyError("invalid_response")
+    return value
+
+
+def _project_product_secret_binding(
+    binding_value: object, drops: _FieldDrops
+) -> dict[str, object] | None:
+    """One binding's metadata, or None when its identity is unusable. A sensitive
+    field name, such as a value or ciphertext, fails the whole read."""
+    if not isinstance(binding_value, dict):
+        return None
+    binding = binding_value
+    if any(
+        key not in PRODUCT_SECRET_BINDING_FIELDS and is_denied_key(str(key)) for key in binding
+    ):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+
+    def field(name: str, validate: Any) -> object:
+        return drops.keep(f"bindings[].{name}", validate, binding.get(name))
+
+    binding_key = field("binding_key", public_identifier)
+    context = field("context", public_identifier)
+    scope = field("scope", _product_secret_binding_scope)
+    if not binding_key or not context or not scope:
+        return None
+    instance = field("instance", public_identifier)
+    if (scope == "context_instance") != bool(instance):
+        drops.drop("bindings[].instance")
+        return None
+    sharing_reason: object = None
+    if binding.get("sharing_reason") is not None:
+        sharing_reason = field("sharing_reason", _project_sharing_reason) or None
+    _report_dropped_fields(
+        binding,
+        prefix="bindings[]",
+        kept=set(PRODUCT_SECRET_BINDING_FIELDS),
+        known=PRODUCT_SECRET_BINDING_FIELDS,
+        drops=drops,
+    )
+    return {
+        "binding_key": binding_key,
+        "name": field("name", public_identifier),
+        "scope": scope,
+        "context": context,
+        "instance": instance,
+        # Projected as secret_class: the public-safety shape check refuses other
+        # key names containing "secret".
+        "secret_class": field("secret_class", public_code),
+        "sharing_reason": sharing_reason,
+        "version_id": field("version_id", public_identifier),
+    }
+
+
+def _project_product_secret_bindings(provider_payload: dict[str, Any]) -> dict[str, object]:
+    """A product's runtime secret binding metadata, bounded. Odd fields are dropped and
+    unusable bindings omitted, with counts and field paths; a secret-looking value or a
+    sensitive field name fails the read."""
+    bindings = provider_payload.get("bindings") or []
+    if not isinstance(bindings, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    drops = _FieldDrops()
+    projected_bindings: list[dict[str, object]] = []
+    omitted_binding_count = 0
+    for binding_value in bindings[:PRODUCT_SECRET_BINDINGS_MAX]:
+        projected_binding = _project_product_secret_binding(binding_value, drops)
+        if projected_binding is None:
+            omitted_binding_count += 1
+        else:
+            projected_bindings.append(projected_binding)
+    projected: dict[str, object] = {
+        "product": public_identifier(provider_payload.get("product")),
+        "bindings": projected_bindings,
+        "bindings_truncated": len(bindings) > PRODUCT_SECRET_BINDINGS_MAX,
+        "omitted_binding_count": omitted_binding_count,
+        "dropped_field_count": drops.count,
+        "dropped_field_paths": sorted(drops.paths),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
 TARGET_REPLACEMENT_OPERATION_TIMESTAMPS = (
     "created_at",
     "updated_at",
@@ -4706,6 +4822,29 @@ def summarize_reconcile_requests_read(
     return payload
 
 
+def summarize_product_secret_bindings_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    if any(str(key) not in {"status", "trace_id", "product", "bindings"} for key in provider_payload):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    status = public_code(provider_payload.get("status"), default="ok")
+    payload = base_payload(
+        status=status, operation="product-secret-bindings-read", request=request
+    )
+    payload["result"] = _project_product_secret_bindings(provider_payload)
+    payload["summary"] = {
+        "launchplane_status": status,
+        "trace_id": public_trace_id(provider_payload.get("trace_id")),
+        "recommendation": (
+            "Only bindings your access covers are listed. To copy one, put its context, "
+            "instance and version_id in a product-config secret entry's copy_from and "
+            "dry-run first; Launchplane refuses a source whose class does not allow the lane."
+        ),
+    }
+    assert_public_safe_shape(payload["summary"])
+    return payload
+
+
 def summarize_target_replacement_operation_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
@@ -4805,6 +4944,7 @@ PRODUCT_READ_SUMMARIZERS = {
     "product-profile-read": summarize_product_profile_read,
     "preview-history-read": summarize_preview_history_read,
     "reconcile-requests-read": summarize_reconcile_requests_read,
+    "product-secret-bindings-read": summarize_product_secret_bindings_read,
     "target-replacement-operation-read": summarize_target_replacement_operation_read,
 }
 
@@ -5079,8 +5219,31 @@ def product_config_preflight_body(args: argparse.Namespace) -> dict[str, object]
     return body
 
 
+def _validate_product_config_secret_copies(body: dict[str, object]) -> None:
+    """A copy entry names its source lane and reviewed version, and carries no value."""
+    secrets = body.get("secrets")
+    if not isinstance(secrets, list):
+        return
+    for secret in secrets:
+        if not isinstance(secret, dict) or secret.get("copy_from") is None:
+            continue
+        if secret.get("value") is not None:
+            raise ValueError("secret_copy_with_value")
+        copy_from = secret["copy_from"]
+        if (
+            not isinstance(copy_from, dict)
+            or set(copy_from) != set(SECRET_COPY_FROM_FIELDS)
+            or not all(
+                isinstance(copy_from[key], str) and copy_from[key].strip()
+                for key in SECRET_COPY_FROM_FIELDS
+            )
+        ):
+            raise ValueError("invalid_secret_copy_from")
+
+
 def product_config_payload_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
     body = read_payload_file(args.payload_file)
+    _validate_product_config_secret_copies(body)
     body["mode"] = mode
     if mode == "apply":
         _require_idempotency(args)
@@ -7518,6 +7681,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     reconcile_requests_read.add_argument("--product", required=True)
 
+    product_secret_bindings_read = subparsers.add_parser(
+        "product-secret-bindings-read",
+        help=(
+            "Read a product's runtime secret binding metadata (names, scope, lane, class, "
+            "sharing reason and version id); never values."
+        ),
+    )
+    product_secret_bindings_read.add_argument("--product", required=True)
+
     target_replacement_operation_read = subparsers.add_parser(
         "target-replacement-operation-read",
         help=(
@@ -7995,7 +8167,7 @@ def main(argv: list[str]) -> int:
             return execute_product_read(
                 args=args, operation=args.command, request=request, path=path
             )
-        if args.command == "reconcile-requests-read":
+        if args.command in {"reconcile-requests-read", "product-secret-bindings-read"}:
             path = _product_read_path(args.command, product=args.product)
             request = {
                 "product": public_identifier(args.product),
