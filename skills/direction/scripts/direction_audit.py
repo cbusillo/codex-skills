@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from typing import Any, Callable
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -48,6 +49,17 @@ GATE_PHRASES: tuple[tuple[str, re.Pattern[str]], ...] = (
 WRAPPER = pathlib.Path(__file__).resolve().parents[2] / "github" / "scripts" / "gh-with-env-token"
 MAX_ADMISSION_ISSUES = 50
 MAX_INBOUND_ISSUES = 50
+
+# The capacity count of the overall direction (`OWNER/direction` only). The
+# map is data in that repository, changed by pull request like DIRECTION.md.
+RANK_MAP_PATH = "ranks.toml"
+RANKS = ("milestone", "tooling", "own")
+OWN_SHARE_FLOOR = 0.20
+REPO_NAME = re.compile(r"[\w.-]+/[\w.-]+")
+# GitHub's revert button titles the pull request `Revert "..."` and writes
+# `Reverts OWNER/REPO#N`; `git revert` writes `This reverts commit <sha>`.
+REVERT_TITLE = re.compile(r"^\s*revert\b", re.I)
+REVERT_BODY = re.compile(r"^\s*Reverts [\w.-]+/[\w.-]+#\d+|\bThis reverts commit [0-9a-f]{7,40}\b", re.I | re.M)
 
 
 class AuditError(Exception):
@@ -148,6 +160,7 @@ def audit(
     rulesets: list[dict[str, Any]] | None = None,
     rulesets_unavailable: bool = False,
     audit_since: dt.datetime | None = None,
+    capacity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     limits: list[dict[str, Any]] = []
@@ -281,6 +294,14 @@ def audit(
         if phrases and issue.get("state", "open") == "open":
             findings.append({"kind": "gate_phrase", "number": number, "title": issue.get("title"), "phrases": phrases})
 
+    if capacity is not None:
+        if capacity["rank_map"] is None:
+            findings.append({"kind": "rank_map_missing", "detail": f"{RANK_MAP_PATH} not found on the default branch; every repository is unranked"})
+        for row in capacity["unranked"]:
+            findings.append({"kind": "repository_unranked", "title": row["repo"], "merged": row["merged"]})
+        if capacity["own_share_floor"] == "below":
+            findings.append({"kind": "own_share_below_floor", "own_share": capacity["own_share"], "floor": OWN_SHARE_FLOOR})
+
     order = {
         "coverage_incomplete": -1,
         "direction_missing": 0,
@@ -298,9 +319,12 @@ def audit(
         "milestone_issue_quote_mismatch": 8,
         "gate_phrase": 9,
         "waiting_blocks_other_repository": 8,
+        "rank_map_missing": 10,
+        "repository_unranked": 10,
+        "own_share_below_floor": 10,
     }
     findings.sort(key=lambda item: (order.get(item["kind"], 99), str(item.get("number") or item.get("milestone") or item.get("title") or "")))
-    return {
+    result = {
         "ok": not findings,
         "listed_milestones": listed,
         "open_milestones": sorted(open_titles),
@@ -308,6 +332,9 @@ def audit(
         "limits": limits,
         "counts": _counts(findings),
     }
+    if capacity is not None:
+        result["capacity"] = capacity
+    return result
 
 
 def _counts(findings: list[dict[str, Any]]) -> dict[str, int]:
@@ -353,17 +380,26 @@ def fetch_rulesets(repo: str, *, fetch: Callable[[list[str]], Any]) -> tuple[lis
 MAX_PAGES = 20
 
 
-def fetch_paginated(path: str, *, fetch: Callable[[list[str]], Any], max_pages: int = MAX_PAGES) -> tuple[list[dict[str, Any]], bool]:
-    """All pages of a listing, and whether the page cap cut it short."""
+def fetch_paginated(
+    path: str, *, fetch: Callable[[list[str]], Any], max_pages: int = MAX_PAGES,
+    key: str | None = None, stop: Callable[[dict[str, Any]], bool] | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """All pages of a listing, and whether the page cap cut it short.
+
+    `key` names the list inside an object response. `stop` ends the read after
+    a page holding an item it matches, for listings sorted newest first.
+    """
     items: list[dict[str, Any]] = []
     page = 1
     while True:
         joiner = "&" if "?" in path else "?"
         body = fetch(["api", f"{path}{joiner}per_page=100&page={page}", "--method", "GET"])
+        if key is not None and isinstance(body, dict):
+            body = body.get(key)
         if not isinstance(body, list):
             raise AuditError(f"unexpected response shape for {path}")
         items.extend(body)
-        if len(body) < 100:
+        if len(body) < 100 or (stop and any(stop(item) for item in body)):
             return items, False
         if page >= max_pages:
             return items, True
@@ -400,10 +436,15 @@ def enrich_admission_actors(
 
 def merged_direction(repo: str, *, fetch: Callable[[list[str]], Any]) -> str | None:
     """DIRECTION.md from the default branch, or None when the repository has none."""
+    return merged_file(repo, "DIRECTION.md", fetch=fetch)
+
+
+def merged_file(repo: str, path: str, *, fetch: Callable[[list[str]], Any]) -> str | None:
+    """A file from the default branch, or None when it does not exist there."""
     import base64
 
     try:
-        body = fetch(["api", f"repos/{repo}/contents/DIRECTION.md", "--method", "GET"])
+        body = fetch(["api", f"repos/{repo}/contents/{path}", "--method", "GET"])
     except AuditError as exc:
         if re.search(r"\bHTTP 404\b", str(exc)):
             return None
@@ -623,6 +664,160 @@ def fetch_audit_issues(
     return issues, truncated
 
 
+def parse_rank_map(text: str) -> dict[str, str]:
+    """The `[repositories]` table of the rank map, keyed by lowercase OWNER/REPO."""
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise AuditError(f"{RANK_MAP_PATH} is not valid TOML: {exc}") from exc
+    table = data.get("repositories")
+    if not isinstance(table, dict):
+        raise AuditError(f"{RANK_MAP_PATH} needs a [repositories] table")
+    ranks: dict[str, str] = {}
+    for repo, rank in table.items():
+        if not REPO_NAME.fullmatch(repo) or rank not in RANKS:
+            raise AuditError(f"{RANK_MAP_PATH}: {repo} = {rank!r}; expected \"OWNER/REPO\" = one of {', '.join(RANKS)}")
+        ranks[repo.casefold()] = rank
+    return ranks
+
+
+def _within(value: Any, since: dt.datetime, until: dt.datetime) -> bool:
+    moment = _parse_time(value)
+    return moment is not None and since <= moment <= until
+
+
+def capacity_summary(
+    *, rank_map: dict[str, str] | None, rank_map_source: str | None,
+    pulls: dict[str, list[dict[str, Any]]], milestones: dict[str, list[dict[str, Any]]],
+    events: dict[str, list[dict[str, Any]]], since: dt.datetime, until: dt.datetime,
+) -> dict[str, Any]:
+    """The overall direction's weekly numbers from per-repository listings."""
+    ranks = rank_map or {}
+    merged_by_rank = dict.fromkeys((*RANKS, "unranked"), 0)
+    by_repository: dict[str, dict[str, Any]] = {}
+    unranked: list[dict[str, Any]] = []
+    reverts: list[dict[str, Any]] = []
+    for repo in sorted(pulls):
+        merged = [pull for pull in pulls[repo] if _within(pull.get("merged_at"), since, until)]
+        if not merged:
+            continue
+        rank = ranks.get(repo.casefold(), "unranked")
+        merged_by_rank[rank] += len(merged)
+        by_repository[repo] = {"rank": rank, "merged": len(merged)}
+        if rank == "unranked":
+            unranked.append({"repo": repo, "merged": len(merged)})
+        for pull in merged:
+            if REVERT_TITLE.search(str(pull.get("title") or "")) or REVERT_BODY.search(str(pull.get("body") or "")):
+                reverts.append({"repo": repo, "number": pull.get("number"), "title": pull.get("title"), "merged_at": pull.get("merged_at")})
+    total = sum(merged_by_rank.values())
+    own = merged_by_rank["own"]
+    own_share = round(own / total, 3) if total else None
+    if not total:
+        floor = "no_merges"
+    elif own / total >= OWN_SHARE_FLOOR:
+        floor = "met"
+    elif (own + merged_by_rank["unranked"]) / total < OWN_SHARE_FLOOR:
+        floor = "below"
+    else:
+        # Unranked merges could lift own projects over the floor; the map decides.
+        floor = "unknown"
+    closed = [
+        {"repo": repo, "number": item.get("number"), "title": item.get("title"), "closed_at": item.get("closed_at")}
+        for repo in sorted(milestones) for item in milestones[repo]
+        if item.get("state") == "closed" and _within(item.get("closed_at"), since, until)
+    ]
+    reopened: dict[tuple[str, Any], dict[str, Any]] = {}
+    for repo in sorted(events):
+        for event in events[repo]:
+            subject = event.get("issue") or {}
+            if (event.get("event") != "reopened" or "pull_request" in subject
+                    or not _within(event.get("created_at"), since, until)):
+                continue
+            key = (repo, subject.get("number"))
+            if key not in reopened or str(event.get("created_at")) > str(reopened[key]["reopened_at"]):
+                reopened[key] = {"repo": repo, "number": subject.get("number"), "title": subject.get("title"), "reopened_at": event.get("created_at")}
+    return {
+        "since": since.isoformat().replace("+00:00", "Z"),
+        "until": until.isoformat().replace("+00:00", "Z"),
+        "rank_map": rank_map_source,
+        "merged_total": total,
+        "merged_by_rank": merged_by_rank,
+        "own_share": own_share,
+        "own_share_floor": floor,
+        "by_repository": by_repository,
+        "unranked": unranked,
+        "milestones_closed": closed,
+        "issues_reopened": sorted(reopened.values(), key=lambda item: (item["repo"], str(item["number"]))),
+        "revert_pulls": reverts,
+        "provider_capacity_unused": "manual",
+    }
+
+
+def fetch_capacity(
+    direction_repo: str, since: dt.datetime, until: dt.datetime, *, fetch: Callable[[list[str]], Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Read the rank map and the owner's repositories one by one, never the search API."""
+    owner = direction_repo.split("/")[0].casefold()
+    truncated: list[str] = []
+    text = merged_file(direction_repo, RANK_MAP_PATH, fetch=fetch)
+    rank_map = parse_rank_map(text) if text is not None else None
+    try:
+        listed, cut = fetch_paginated("installation/repositories", fetch=fetch, key="repositories")
+    except AuditError as installation_error:
+        # The Director's own login has no installation; it lists what it owns.
+        try:
+            listed, cut = fetch_paginated("user/repos?affiliation=owner", fetch=fetch)
+        except AuditError as exc:
+            raise AuditError(f"could not list repositories: {installation_error}; {exc}") from exc
+    if cut:
+        truncated.append("capacity_repositories")
+    repos = {
+        str(item.get("full_name")).casefold(): item for item in listed
+        if str(((item.get("owner") or {}).get("login")) or "").casefold() == owner
+    }
+    for name in sorted(rank_map or {}):
+        if name in repos:
+            continue
+        try:
+            repos[name] = fetch(["api", f"repos/{name}", "--method", "GET"])
+        except AuditError:
+            truncated.append(f"capacity_repository:{name}")
+
+    def older(field: str) -> Callable[[dict[str, Any]], bool]:
+        return lambda item: (moment := _parse_time(item.get(field))) is not None and moment < since
+
+    pulls: dict[str, list[dict[str, Any]]] = {}
+    milestones: dict[str, list[dict[str, Any]]] = {}
+    events: dict[str, list[dict[str, Any]]] = {}
+    for meta in repos.values():
+        name = str(meta.get("full_name"))
+        pushed = _parse_time(meta.get("pushed_at"))
+        quiet = pushed is not None and pushed < since
+        if quiet and meta.get("archived"):
+            continue
+        try:
+            # A merge pushes to the base branch, so a repository with no push
+            # since the window opened has no merged pull request in it.
+            if not quiet:
+                pulls[name], cut = fetch_paginated(
+                    f"repos/{name}/pulls?state=closed&sort=updated&direction=desc",
+                    fetch=fetch, stop=older("updated_at"),
+                )
+                truncated += [f"capacity_pulls:{name}"] if cut else []
+            milestones[name], cut = fetch_paginated(f"repos/{name}/milestones?state=closed", fetch=fetch, max_pages=2)
+            truncated += [f"capacity_milestones:{name}"] if cut else []
+            events[name], cut = fetch_paginated(f"repos/{name}/issues/events", fetch=fetch, stop=older("created_at"))
+            truncated += [f"capacity_events:{name}"] if cut else []
+        except AuditError:
+            truncated.append(f"capacity_reads:{name}")
+    source = f"{direction_repo}:{RANK_MAP_PATH}@default-branch" if rank_map is not None else None
+    summary = capacity_summary(
+        rank_map=rank_map, rank_map_source=source, pulls=pulls,
+        milestones=milestones, events=events, since=since, until=until,
+    )
+    return summary, truncated
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", help="OWNER/REPO; defaults to the origin remote of the current checkout")
@@ -690,6 +885,10 @@ def main(argv: list[str] | None = None) -> int:
         rulesets, cut = fetch_rulesets(repo, fetch=fetch)
         truncated += ["rulesets"] if cut else []
         direction_pulls = direction_pull_requests(repo, pulls, fetch=fetch)
+        capacity = None
+        if repo.split("/")[1].casefold() == "direction":
+            capacity, cut = fetch_capacity(repo, audit_since, now, fetch=fetch)
+            truncated.extend(cut)
     except AuditError as exc:
         error: dict[str, Any] = {"ok": False, "error": str(exc)}
         if args.gh == str(WRAPPER):
@@ -712,6 +911,7 @@ def main(argv: list[str] | None = None) -> int:
         bot_logins=github_identity.configured_bot_logins(),
         expected_automation=github_identity.automation_login(),
         owner_identity_explicit=owner_reader or args.automation is not None,
+        capacity=capacity,
     )
     result.update({"repo": repo, "direction_source": f"{repo}:DIRECTION.md@default-branch", "read_only": True})
     result["audit_since"] = audit_since.isoformat().replace("+00:00", "Z")

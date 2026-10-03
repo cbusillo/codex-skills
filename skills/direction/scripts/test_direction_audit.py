@@ -912,6 +912,196 @@ def test_waiting_inbound_fetch_coverage_includes_caps_errors_and_ambiguous_targe
     zero = {**gates[0], "issue_dependencies_summary": {"blocking": 0}}
     assert not module.enrich_waiting_inbound_blockers([zero], "o/r", fetch=denied)
 
+SINCE = NOW - dt.timedelta(days=7)
+RANKS = """[repositories]
+"o/live" = "milestone"
+"o/tools" = "tooling"
+"o/fun" = "own"
+"""
+
+
+def stamp(moment: dt.datetime) -> str:
+    return moment.isoformat().replace("+00:00", "Z")
+
+
+def merged_pull(number: int, merged: dt.datetime | None, *, title: str = "Change", body: str = "") -> dict[str, Any]:
+    return {"number": number, "title": title, "body": body, "merged_at": stamp(merged) if merged else None,
+            "updated_at": stamp(merged or SINCE)}
+
+
+def summary(module: Any, **overrides: Any) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "rank_map": module.parse_rank_map(RANKS), "rank_map_source": "o/direction:ranks.toml",
+        "pulls": {}, "milestones": {}, "events": {}, "since": SINCE, "until": NOW,
+    }
+    params.update(overrides)
+    return module.capacity_summary(**params)
+
+
+def test_capacity_counts_merges_inside_the_window_by_rank() -> None:
+    module = load()
+    second = dt.timedelta(seconds=1)
+    result = summary(module, pulls={
+        "o/live": [merged_pull(1, SINCE), merged_pull(2, SINCE - second), merged_pull(3, None)],
+        "o/fun": [merged_pull(4, NOW), merged_pull(5, NOW + second)],
+        "o/tools": [merged_pull(6, NOW - second)],
+    })
+    assert result["merged_by_rank"] == {"milestone": 1, "tooling": 1, "own": 1, "unranked": 0}
+    assert result["merged_total"] == 3
+    assert result["by_repository"]["o/live"] == {"rank": "milestone", "merged": 1}
+    assert result["unranked"] == []
+
+
+def test_capacity_reports_unranked_repositories_instead_of_guessing() -> None:
+    module = load()
+    pulls = {"o/fun": [merged_pull(1, NOW)], "o/stranger": [merged_pull(2, NOW), merged_pull(3, NOW)], "o/quiet": [merged_pull(4, SINCE - dt.timedelta(days=1))]}
+    result = summary(module, pulls=pulls)
+    assert result["unranked"] == [{"repo": "o/stranger", "merged": 2}]
+    assert result["merged_by_rank"]["unranked"] == 2
+    found = run(module, capacity=result)
+    assert [item for item in found["findings"] if item["kind"] == "repository_unranked"] == [
+        {"kind": "repository_unranked", "title": "o/stranger", "merged": 2},
+    ]
+    assert found["capacity"] is result
+    missing = summary(module, rank_map=None, rank_map_source=None, pulls=pulls)
+    assert missing["merged_by_rank"]["unranked"] == 3
+    assert {"rank_map_missing", "repository_unranked"} <= set(kinds(run(module, capacity=missing)))
+
+
+def test_own_share_floor_is_unknown_while_unranked_merges_could_lift_it() -> None:
+    module = load()
+    floor = round(module.OWN_SHARE_FLOOR * 100)
+
+    def share(own: int, unranked: int) -> dict[str, Any]:
+        pulls = {
+            "o/fun": [merged_pull(n, NOW) for n in range(own)],
+            "o/stranger": [merged_pull(n, NOW) for n in range(unranked)],
+            "o/live": [merged_pull(n, NOW) for n in range(100 - own - unranked)],
+        }
+        return summary(module, pulls=pulls)
+
+    assert share(floor, 0)["own_share_floor"] == "met"
+    below = share(floor - 1, 0)
+    assert below["own_share_floor"] == "below"
+    assert "own_share_below_floor" in kinds(run(module, capacity=below))
+    assert share(floor - 1, 1)["own_share_floor"] == "unknown"
+    assert summary(module)["own_share_floor"] == "no_merges"
+    assert "own_share_below_floor" not in kinds(run(module, capacity=share(floor, 0)))
+
+
+def test_capacity_lists_reverts_reopened_issues_and_closed_milestones_in_window() -> None:
+    module = load()
+    early = SINCE - dt.timedelta(hours=1)
+    pulls = {"o/live": [
+        merged_pull(1, NOW, title='Revert "Add the cache"', body="Reverts o/live#9"),
+        merged_pull(2, NOW, title="Undo the pin", body="This reverts commit 0123abc."),
+        merged_pull(3, NOW, title="Revertible migrations"),
+        merged_pull(4, early, title="Revert old"),
+    ]}
+    events = {"o/live": [
+        {"event": "reopened", "created_at": stamp(NOW), "issue": {"number": 7, "title": "Bug"}},
+        {"event": "reopened", "created_at": stamp(SINCE), "issue": {"number": 7, "title": "Bug"}},
+        {"event": "reopened", "created_at": stamp(NOW), "issue": {"number": 8, "pull_request": {}}},
+        {"event": "reopened", "created_at": stamp(early), "issue": {"number": 9}},
+        {"event": "closed", "created_at": stamp(NOW), "issue": {"number": 10}},
+    ]}
+    milestones = {"o/live": [
+        {"number": 1, "title": "Shipped", "state": "closed", "closed_at": stamp(NOW)},
+        {"number": 2, "title": "Old", "state": "closed", "closed_at": stamp(early)},
+    ]}
+    result = summary(module, pulls=pulls, events=events, milestones=milestones)
+    assert [item["number"] for item in result["revert_pulls"]] == [1, 2]
+    assert result["issues_reopened"] == [{"repo": "o/live", "number": 7, "title": "Bug", "reopened_at": stamp(NOW)}]
+    assert [item["number"] for item in result["milestones_closed"]] == [1]
+
+
+def test_rank_map_rejects_unknown_ranks_and_names() -> None:
+    module = load()
+    for text in ('[repositories]\n"o/r" = "hobby"\n', '[repositories]\nr = "own"\n', 'x = 1\n', '[repositories\n'):
+        try:
+            module.parse_rank_map(text)
+        except module.AuditError:
+            continue
+        raise AssertionError(text)
+    assert module.parse_rank_map('[repositories]\n"O/Fun" = "own"\n') == {"o/fun": "own"}
+
+
+def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
+    import base64
+
+    module = load()
+    old = stamp(SINCE - dt.timedelta(days=1))
+    listing = [
+        {"full_name": "o/live", "owner": {"login": "o"}, "pushed_at": stamp(NOW)},
+        {"full_name": "o/quiet", "owner": {"login": "o"}, "pushed_at": old},
+        {"full_name": "o/attic", "owner": {"login": "o"}, "pushed_at": old, "archived": True},
+        {"full_name": "x/other", "owner": {"login": "x"}, "pushed_at": stamp(NOW)},
+    ]
+    calls: list[str] = []
+
+    def fetch(args: list[str]) -> Any:
+        path = args[1]
+        calls.append(path)
+        if path.startswith("repos/o/direction/contents/"):
+            return {"content": base64.b64encode(RANKS.encode()).decode()}
+        if path.startswith("installation/repositories"):
+            raise module.AuditError("installation/repositories failed: HTTP 403")
+        if path.startswith("user/repos"):
+            return listing
+        if path == "repos/o/tools":
+            return {"full_name": "o/tools", "owner": {"login": "o"}, "pushed_at": stamp(NOW)}
+        if path == "repos/o/fun":
+            raise module.AuditError("HTTP 404")
+        if path.startswith("repos/o/live/pulls"):
+            # A full page that reaches past the window ends the read.
+            return [merged_pull(n, NOW) for n in range(99)] + [{**merged_pull(99, None), "updated_at": old}]
+        return []
+
+    result, truncated = module.fetch_capacity("o/direction", SINCE, NOW, fetch=fetch)
+    assert result["merged_by_rank"]["milestone"] == 99
+    assert truncated == ["capacity_repository:o/fun"]
+    assert not any("page=2" in path for path in calls if "/pulls" in path)
+    assert not any(path.startswith(("repos/o/quiet/pulls", "repos/o/attic/", "repos/x/")) for path in calls)
+    assert any(path.startswith("repos/o/quiet/issues/events") for path in calls)
+    assert any(path.startswith("repos/o/tools/pulls") for path in calls)
+
+    def nothing_lists(args: list[str]) -> Any:
+        if "/contents/" in args[1]:
+            raise module.AuditError("HTTP 404")
+        raise module.AuditError(f"{args[1]} failed: HTTP 403")
+
+    try:
+        module.fetch_capacity("o/direction", SINCE, NOW, fetch=nothing_lists)
+    except module.AuditError as exc:
+        assert "installation/repositories" in str(exc) and "user/repos" in str(exc)
+    else:
+        raise AssertionError("both listings failed")
+
+def test_only_the_direction_repository_audit_counts_capacity() -> None:
+    module = load()
+    windows: list[tuple[str, dt.datetime]] = []
+
+    def capacity(repo: str, since: dt.datetime, until: dt.datetime, **_kwargs: Any) -> tuple[dict[str, Any], list[str]]:
+        windows.append((repo, since))
+        return summary(module, since=since, until=until), ["capacity_pulls:o/live"]
+
+    for audited in ("o/direction", "o/r"):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "marker.json"
+            marker.write_text(json.dumps({"audits": {audited: stamp(SINCE)}}))
+            output = StringIO()
+            with (patch.dict("os.environ", {"DIRECTION_MARKER": str(marker)}),
+                  patch.dict(vars(module), {
+                      "merged_direction": lambda *_args, **_kwargs: DIRECTION,
+                      "gh_json": lambda *_args, **_kwargs: [],
+                      "fetch_capacity": capacity,
+                  }),
+                  redirect_stdout(output)):
+                module.main(["--repo", audited, "--automation", "bot", "--gh", "fixture-gh"])
+            result = json.loads(output.getvalue())
+            assert ("capacity" in result) is (audited == "o/direction")
+    assert windows == [("o/direction", SINCE)]
+
 
 def main() -> int:
     tests = [value for name, value in globals().items() if name.startswith("test_") and callable(value)]
