@@ -405,6 +405,7 @@ def tooling_capacity_context(
         settled.update(ready)
         unresolved.difference_update(ready)
     frontier: list[dict[str, Any]] = []
+    unknown: list[dict[str, Any]] = []
     for entry in entries:
         if entry.get("exclusion") in {"completed", "outside_direction_tracks", "tracking", "tracking_without_open_work"}:
             continue
@@ -417,7 +418,8 @@ def tooling_capacity_context(
             # title shared with overall direction still needs parsed waypoints.
             if (entry.get("discussion") or {}).get("ancestry_complete") is True and (entry.get("milestone") or {}).get("title") not in milestone_titles:
                 continue
-            return {**result, "reason": "unknown_milestone_context", "issue": f"{entry['repo']}#{entry['number']}"}
+            unknown.append(entry)
+            continue
         if milestone["state"] != "matched":
             continue
         # Shared prerequisites may inherit only the first native path. Use the
@@ -428,8 +430,6 @@ def tooling_capacity_context(
         ):
             continue
         frontier.append(entry)
-    if not frontier:
-        return {**result, "reason": "no_milestone_waits"}
     for entry in frontier:
         if entry.get("exclusion") not in {None, "waiting", "parent_waiting"}:
             return {**result, "reason": "milestone_issue_excluded", "issue": f"{entry['repo']}#{entry['number']}", "exclusion": entry["exclusion"]}
@@ -443,6 +443,13 @@ def tooling_capacity_context(
             or review.get("ownership_complete") is not True
         ):
             return {**result, "issue": f"{entry['repo']}#{entry['number']}", "required": "current_complete_person_wait_review"}
+    # Person-wait reviews enable the adapter's capacity-only ancestry reads.
+    # Report that prerequisite before context those reads have not gathered.
+    if unknown:
+        entry = unknown[0]
+        return {**result, "reason": "unknown_milestone_context", "issue": f"{entry['repo']}#{entry['number']}"}
+    if not frontier:
+        return {**result, "reason": "no_milestone_waits"}
     return {"admitted": True, "reason": "all_milestones_waiting_on_people", "milestone_wait_count": len(frontier)}
 
 
