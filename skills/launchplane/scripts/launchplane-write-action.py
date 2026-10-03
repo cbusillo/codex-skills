@@ -5738,6 +5738,8 @@ def execute_post(
                 summary["recommendation"] = (
                     "The controller response could not be verified. Read the PR and controller "
                     "state before any retry; a mutating pass may have completed."
+                    if request.get("mutate")
+                    else "The controller dry-run response could not be verified; inspect the trace before retrying."
                 )
                 emit(payload)
                 return 1

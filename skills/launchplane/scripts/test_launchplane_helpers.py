@@ -1868,6 +1868,9 @@ def test_controller_rejected_response_keeps_only_safe_trace_and_code() -> None:
         assert payload["summary"]["trace_id"] == response["trace_id"]
         assert payload["summary"]["error_code"] == error["code"]
         assert "private-fixture-value" not in json.dumps(payload)
+        status, dry_run_payload = _run_controller_response(response)
+        assert status == 1
+        assert "may have completed" not in dry_run_payload["summary"]["recommendation"]
     for trace, code in (
         ("launchplane_req_diagnostic", "ghp_privatefixture"),
         ("Bearer private-fixture-value", "merge_readiness_not_ready"),
@@ -1881,10 +1884,13 @@ def test_controller_rejected_response_keeps_only_safe_trace_and_code() -> None:
 
 
 def test_controller_http_error_keeps_safe_identifiers_without_raw_error_text() -> None:
-    for http_status in (403, 409, 502):
+    for http_status, error_code in (
+        (403, "merge_readiness_not_ready"), (409, "merge_readiness_not_ready"),
+        (502, "merge_readiness_not_ready"), (409, "merge_train_controller_lease_held"),
+    ):
         response = {
             "trace_id": "launchplane_req_http", "error": {
-                "code": "merge_readiness_not_ready", "message": "Bearer private-fixture-value",
+                "code": error_code, "message": "Bearer private-fixture-value",
             }, "token": "private-fixture-value",
         }
         error = urllib.error.HTTPError(
