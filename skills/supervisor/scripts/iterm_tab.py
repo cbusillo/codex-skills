@@ -8,7 +8,11 @@
 import argparse
 import asyncio
 import json
+import os
+import shlex
 from pathlib import Path
+
+import account_choice
 
 
 def sessions(app):
@@ -40,6 +44,21 @@ async def send(session, text, submit=True):
     if submit:
         await asyncio.sleep(0.4)
         await session.async_send_text("\r", suppress_broadcast=True)
+
+
+def with_account(command_text, choice):
+    """Prefix one agent invocation with the chosen account's environment."""
+    if "\n" in command_text:
+        raise ValueError("account selection needs a one-line launch command")
+    for key in choice["env"]:
+        if f"{key}=" in command_text:
+            raise ValueError(f"launch file already sets {key}; remove it or omit --account-provider")
+    settings = " ".join(
+        f"{key}={shlex.quote(os.path.expanduser(value))}"
+        for key, value in choice["env"].items()
+    )
+    # export, not env: the account must also reach an agent after `cd dir &&`.
+    return f"export {settings} && {command_text}"
 
 
 async def operate(app, args):
@@ -103,6 +122,14 @@ async def operate(app, args):
             raise ValueError("window id does not identify one window")
         command_text = args.command_file.read_text(encoding="utf-8").rstrip("\n")
         validate_text(command_text)
+        choice = None
+        if getattr(args, "account_provider", None):
+            choice = account_choice.select(
+                args.account_provider, args.account_config, args.account
+            )
+            command_text = with_account(command_text, choice)
+        elif getattr(args, "account", None):
+            raise ValueError("--account needs --account-provider")
         tab = await windows[0].async_create_tab()
         if not tab.current_session:
             raise ValueError("new tab has no session; inspect it before retrying")
@@ -112,6 +139,8 @@ async def operate(app, args):
             "tab_id": tab.tab_id,
             "session_id": tab.current_session.session_id,
         }
+        if choice:
+            result["account"] = account_choice.public(choice)
     if previous_tab:
         await previous_tab.async_select()
     return result
@@ -125,6 +154,13 @@ def main():
     new = commands.add_parser("new")
     new.add_argument("--window-id", required=True)
     new.add_argument("--command-file", type=Path, required=True)
+    new.add_argument(
+        "--account-provider",
+        choices=account_choice.PROVIDERS,
+        help="launch on the account Context Panel says resets soonest with room",
+    )
+    new.add_argument("--account", help="use this configured account by name")
+    new.add_argument("--account-config", type=Path)
     for name in ("send", "read", "clear"):
         sub = commands.add_parser(name)
         sub.add_argument("--session-id", required=True)

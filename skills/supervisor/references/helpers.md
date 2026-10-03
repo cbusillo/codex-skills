@@ -83,7 +83,8 @@ uv run skills/supervisor/scripts/iterm_tab.py send --session-id <iterm-session-i
 Use one dedicated Supervisor window, never the window with the most tabs. The
 helper restores the previous tab after launch. Launch files contain the exact
 brief and account/model settings already authorized, without the Discord
-channels flag. Run one agent invocation, without restart loops or commands
+channels flag; `--account-provider` can choose the account instead (see
+below). Run one agent invocation, without restart loops or commands
 that continue after it exits; put required environment settings on that launch
 command (for example with `env`). Read the launched screen once for folder trust or another
 blocking prompt. Record the new native thread and exact transcript in the
@@ -92,6 +93,58 @@ its configured home; never queue exit commands. The terminal helper suppresses
 broadcast input, uses bracketed paste for multiline messages, and sends text
 and Return separately. Verify input and prompt
 before `--verified-target`, then read back once; do not replay an uncertain send.
+
+## Choosing the account
+
+Launch with `--account-provider openai|anthropic|google` and the helper picks
+the account, as the Director decided on
+[codex-skills#886](https://github.com/cbusillo/codex-skills/issues/886): among
+the configured accounts for that provider, the one whose weekly window resets
+soonest, with its tightest window above the account's reserve. It exports that
+account's `env` settings ahead of the launch command, so they also reach an
+agent started after `cd`, and reports the account, its reason and the others in
+the launch output. Read that output before recording the session. Five-hour
+windows do not rank; they reset for every account all the time. A window counts
+as weekly when its Context Panel label says so; an account without one ranks by
+its latest reset. Context Panel's Use last setting is not consulted.
+
+```sh
+uv run skills/supervisor/scripts/account_choice.py --provider anthropic
+uv run skills/supervisor/scripts/iterm_tab.py new --window-id <id> --command-file <launch-file> --account-provider anthropic
+```
+
+Capacity comes from Context Panel's agent account snapshot (schema 1, its
+`ContextPanelAccountSnapshot` reader). The helper falls back only when the
+reader fails or every configured account of that provider is in a state with no
+current reading (unknown, stale, refreshing, unavailable, not connected or
+off): it uses the first configured account, says `fallback` and why, and does
+not check capacity. Otherwise, when no account has room above its reserve,
+is `limited`, or matches no single snapshot row, it refuses and creates no
+tab. `--account <name>` launches on a named configured account instead. A
+launch file that already sets the account's variable is refused.
+
+Accounts live only in private config, the first `[accounts]` table in
+`$CODE_HOME`, then `$CODEX_HOME`, then `~/.code`, under
+`skill-data/supervisor.toml`, or `--account-config`. List each provider's
+accounts in the Director's fallback order:
+
+```toml
+[accounts]
+snapshot_command = ["<path to ContextPanelAccountSnapshot>"]
+reserve = 0.05  # default share of the tightest window kept unused
+
+[[accounts.account]]
+name = "<local nickname>"
+provider = "anthropic"
+context_panel_configuration_id = "<configurationID from the snapshot>"  # or context_panel_label
+env = { CLAUDE_CONFIG_DIR = "<account config dir>" }
+reserve = 0.2  # optional per-account reserve
+```
+
+Codex accounts must set `CODEX_HOME` to the account's home and Claude Code
+accounts `CLAUDE_CONFIG_DIR`; config without its provider's variable is
+refused. The helper never reads credentials and never changes a
+login, including the desktop app's.
 
 ## Finished-session shutdown stages
 
