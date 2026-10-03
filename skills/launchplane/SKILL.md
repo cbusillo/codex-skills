@@ -738,7 +738,7 @@ operation map rather than adding duplicate literals.
 The merge-train policy import, repository inventory, product expected configuration,
 generic-web deploy-recovery, Odoo addon-settings, integration-allowances,
 testing-hold, product-repository-identity, product-environment-read,
-product-activity-read, product-profile-read, preview-history-read,
+product-activity-read, product-profile-read, path-check, preview-history-read,
 reconcile-requests-read, target-replacement-operation-read,
 target-replacement-plan-read, `product-owner-*`, `dokploy-target-create-compose-*`,
 `production-backup-authority-*`, `private-health-endpoint-*`,
@@ -1096,6 +1096,15 @@ verification.
   `unknown` require it. It also returns the display name, driver, repository,
   lifecycle state and lane contexts and instances. Images, URLs, workflows and
   expected configuration are dropped.
+- `GET /v1/products/{product}/path-check`: Bounded local-extension read
+  (`path-check --product P --path testing|promote`). Use it first when asking
+  whether this identity can take this product to done. It answers for the
+  caller's own identity and requires `product_environment.read` on the
+  product's lane contexts. It returns every ordered step as `clear`, `blocked`
+  or `unknown`, with counts, a code, Launchplane's fixed description, fix kind
+  (`none` for clear steps), and evidence record ids. Unknown fields and unsafe
+  names or values fail closed. The read writes nothing and grants no authority;
+  a clear path does not replace approval or the action's own gates.
 - `GET /v1/previews/{preview_id}/history`: Bounded local-extension read
   (`preview-history-read`, by `--preview-id` or by `--context`, `--repository`
   and `--pr`) for confirming what a preview serves: its state, serving

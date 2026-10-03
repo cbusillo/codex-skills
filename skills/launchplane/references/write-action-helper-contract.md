@@ -835,6 +835,26 @@ Stop and report on terminal or attention actions:
 Do not hardcode repositories, labels, tokens, protected branches, private hosts,
 or local file-backed product config in skill guidance or helper examples.
 
+## Product Path Check
+
+Use `path-check --product P --path testing|promote` first to ask whether the
+caller's own identity can take a product along that path. It makes one GET to
+`/v1/products/{product}/path-check` with the `path` query parameter, requiring
+`product_environment.read` on the product's lane contexts. This is a bounded
+local extension; it writes nothing and grants no authority.
+
+The service's `check` becomes `result`: product, path, overall state, blocked
+and unknown counts, and ordered steps with `step_id`, state, code, fixed
+description, fix kind, and record ids. Clear steps use `fix: none`; other fix
+kinds are `code`, `grant`, `owner_approval`, `client_acceptance`, `by_hand` and
+`wait`. Counts and overall state must agree with the steps, and the response
+must match the requested product and path. Unknown fields at every level,
+unsafe names or values, missing fields and invalid enums fail closed. Empty
+record-id lists are valid when the service has no record id for a step. Lists
+are limited to 50 steps and 50 record ids per step; oversized responses fail
+instead of omitting blockers. A successful read can still describe a blocked
+or unknown path; inspect `result.state` and every step before proposing action.
+
 ## Output Shape
 
 Every response is a public-safe JSON object:
