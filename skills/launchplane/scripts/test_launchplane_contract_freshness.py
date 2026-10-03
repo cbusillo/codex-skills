@@ -10,10 +10,12 @@ from __future__ import annotations
 import copy
 import http.client
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -269,8 +271,111 @@ def test_local_conformance_remains_independent_of_remote_freshness() -> None:
     assert payload["summary"]["upstream_freshness_proven"] is False
 
 
+def workflow_environment() -> dict[str, str]:
+    repo = "example/repo"
+    return {
+        "GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": repo,
+        "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "schedule",
+        "GITHUB_WORKFLOW_REF": f"{repo}/.github/workflows/launchplane-contract-freshness.yml@refs/heads/main",
+        "GH_TOKEN": "synthetic-workflow-token",
+    }
+
+
+def test_workflow_token_reports_without_user_lookup() -> None:
+    evidence = freshness.compare_artifacts(contract_artifact(), changed_artifact())
+    for existing in (False, True):
+        issue = {"number": 702, "state": "open", "user": {"login": "github-actions[bot]"},
+                 "title": freshness.MAINTENANCE_ISSUE_TITLE,
+                 "body": freshness.MAINTENANCE_ISSUE_MARKER + "\nold evidence"}
+        calls = []
+
+        def api(method: str, path: str, payload: dict[str, Any] | None) -> Any:
+            calls.append((method, path, payload))
+            assert "/user" not in path
+            if "?" in path:
+                return [issue.copy()] if existing else []
+            if method in {"POST", "PATCH"}:
+                issue.update(payload or {})
+            return issue.copy()
+
+        with patch.dict(os.environ, workflow_environment(), clear=True):
+            result = freshness.report_workflow_maintenance_issue(evidence, repository="example/repo", api=api)
+        assert result["issue"] == {"action": "updated" if existing else "created", "number": 702}
+        assert calls[-1][:2] == ("GET", "/repos/example/repo/issues/702")
+        assert issue["body"] == freshness.maintenance_issue_body(evidence)
+
+
+def test_workflow_reporting_refuses_wrong_context_and_foreign_issues() -> None:
+    evidence = freshness.compare_artifacts(contract_artifact(), changed_artifact())
+    for key, value in (("GITHUB_ACTIONS", "false"), ("GITHUB_REPOSITORY", "other/repo"),
+                       ("GITHUB_REF", "refs/heads/work/test"), ("GITHUB_EVENT_NAME", "pull_request"),
+                       ("GITHUB_WORKFLOW_REF", "other-workflow"), ("GH_TOKEN", "")):
+        calls = []
+        with patch.dict(os.environ, {**workflow_environment(), key: value}, clear=True):
+            try:
+                freshness.report_workflow_maintenance_issue(evidence, repository="example/repo",
+                                                          api=lambda *args: calls.append(args))
+            except freshness.FreshnessError as exc:
+                assert exc.code == "invalid_reporting_workflow"
+            else:
+                raise AssertionError("wrong workflow must not report")
+        assert not calls
+    calls = []
+    issue = {"number": 702, "user": {"login": "human"}, "body": freshness.MAINTENANCE_ISSUE_MARKER}
+
+    def api(method: str, path: str, payload: dict[str, Any] | None) -> Any:
+        calls.append((method, path, payload))
+        return [issue]
+
+    with patch.dict(os.environ, workflow_environment(), clear=True):
+        try:
+            freshness.report_workflow_maintenance_issue(evidence, repository="example/repo", api=api)
+        except freshness.FreshnessError as exc:
+            assert exc.code == "maintenance_issue_not_workflow_owned"
+        else:
+            raise AssertionError("must preserve foreign-owned issues")
+    assert all(method == "GET" for method, _, _ in calls)
+
+
+def test_workflow_reporting_paginates_and_preserves_unknown_writes() -> None:
+    evidence = freshness.compare_artifacts(contract_artifact(), changed_artifact())
+    issue = {"number": 702, "user": {"login": "github-actions[bot]"},
+             "body": freshness.MAINTENANCE_ISSUE_MARKER}
+    calls = []
+
+    def api(method: str, path: str, payload: dict[str, Any] | None) -> Any:
+        calls.append((method, path, payload))
+        if "&page=1" in path:
+            return [{"number": n, "body": "unrelated"} for n in range(100)]
+        if "&page=2" in path:
+            return [issue]
+        raise freshness.FreshnessError("github_reporting_failed")
+
+    with patch.dict(os.environ, workflow_environment(), clear=True):
+        try:
+            freshness.report_workflow_maintenance_issue(evidence, repository="example/repo", api=api)
+        except freshness.FreshnessError as exc:
+            assert exc.code == "github_reporting_failed"
+        else:
+            raise AssertionError("unknown write must remain failed")
+    assert [method for method, _, _ in calls] == ["GET", "GET", "PATCH"]
+
+
+def test_workflow_api_uses_native_job_token_without_actor_probe() -> None:
+    with patch.object(freshness.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, '{"number": 702}', "")) as run:
+        result = freshness._workflow_issue_api("POST", "/repos/example/repo/issues", {"body": "synthetic"})
+    assert result == {"number": 702}
+    args = run.call_args.args[0]
+    assert args[0] == "gh" and "--hostname" in args and "/user" not in args
+    assert json.loads(run.call_args.kwargs["input"]) == {"body": "synthetic"}
+
+
 def main() -> int:
     tests = [
+        test_workflow_token_reports_without_user_lookup,
+        test_workflow_reporting_refuses_wrong_context_and_foreign_issues,
+        test_workflow_reporting_paginates_and_preserves_unknown_writes,
+        test_workflow_api_uses_native_job_token_without_actor_probe,
         test_matching_digest_is_current,
         test_provenance_only_change_is_current,
         test_valid_semantic_mismatch_is_known_stale,

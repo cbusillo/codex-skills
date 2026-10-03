@@ -90,10 +90,10 @@ jobs:
         env:
           FRESHNESS_EVIDENCE: ${{ needs.compare.outputs.evidence }}
           GH_TOKEN: ${{ github.token }}
-          GH_WITH_ENV_TOKEN_EXPECTED_LOGIN: github-actions[bot]
         run: |
           set -euo pipefail
           printf '%s\n' "$FRESHNESS_EVIDENCE" > freshness.json
           uv run skills/launchplane/scripts/check-agent-operator-contract-freshness.py report \
+            --workflow-token \
             --repository "$GITHUB_REPOSITORY" \
             --evidence-file freshness.json
