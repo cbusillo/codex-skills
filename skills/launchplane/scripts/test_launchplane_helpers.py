@@ -3543,6 +3543,16 @@ def test_target_replacement_operation_read_projects_failure_details() -> None:
         assert operation[name] == source[name]
         assert f"operation.{name}" not in payload["result"]["dropped_field_paths"]
     assert "error_message" not in operation
+    assert "operation.free_text_omitted" in payload["result"]["dropped_field_paths"]
+    source["error_description"] = (
+        "A setting the site's records would carry is a platform credential, which never "
+        "belongs in an app runtime."
+    )
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    description = payload["result"]["operation"]["error_description"]
+    assert description == source["error_description"].replace("credential", "[redacted]")
+    assert "operation.error_description" not in payload["result"]["dropped_field_paths"]
 
 
 def test_target_replacement_operation_read_bounds_failure_details() -> None:
