@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -2830,7 +2831,17 @@ def run_inspection_with_internal_retry(args: argparse.Namespace, context: dict[s
             current_result["internal_retry_readiness_history"] = readiness_history
             current_result["retry_exhausted"] = True
             return current_result
-        current_result = run_inspection_on_route(args, context, route)
+        try:
+            current_result = run_inspection_on_route(args, context, route)
+        except InspectError as error:
+            if error.payload.get("error_reason") == "ide_memory_exhausted":
+                error.payload["internal_retries"] = retry_summaries
+                error.payload["internal_retry_count"] = attempt + 1
+                error.payload["internal_retry_readiness"] = readiness
+                error.payload["internal_retry_readiness_history"] = readiness_history
+                if current_result.get("transport_state_unknown") is True:
+                    error.payload["transport_state_unknown"] = True
+            raise
         current_result["internal_retries"] = retry_summaries
         current_result["internal_retry_count"] = attempt + 1
         current_result["internal_retry_readiness"] = readiness
@@ -3150,6 +3161,12 @@ def inspection_exception_result(error: BaseException) -> dict[str, Any]:
         "error_reason": reason,
         "transport_state_unknown": True,
     }
+    if isinstance(error, InspectError):
+        if error.payload.get("trigger_not_sent") is True:
+            result["trigger_not_sent"] = True
+            result["transport_state_unknown"] = error.payload.get("transport_state_unknown") is True
+        if isinstance(error.payload.get("ide_memory"), dict):
+            result["ide_memory"] = error.payload["ide_memory"]
     apply_verdict(result)
     return result
 
@@ -3302,7 +3319,7 @@ def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], r
         result = execute_inspection_on_route(args, context, route)
     except InspectError as error:
         reason = infer_error_reason(error, error.payload)
-        if reason in {"ide_memory_exhausted", "ide_memory_pressure"}:
+        if reason == "ide_memory_exhausted":
             raise
         memory_error = ide_memory_failure(route)
         if memory_error is not None:
@@ -3318,9 +3335,12 @@ def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], r
         memory_error = ide_memory_failure(route)
         if memory_error is not None:
             result["ide_memory"] = memory_error.payload["ide_memory"]
-            if memory_error.payload["error_reason"] == "ide_memory_exhausted" and result.get("verdict_reason") in {
-                "timeout", "inspection_api_timeout", "inspection_api_unavailable", "no_results", "capture_incomplete",
-            }:
+            if memory_error.payload["error_reason"] == "ide_memory_exhausted" and (
+                result.get("verdict_reason") in {
+                    "timeout", "inspection_api_timeout", "inspection_api_unavailable", "no_results", "capture_incomplete",
+                }
+                or int(result.get("http_status") or 0) >= 500
+            ):
                 result["original_failure_reason"] = result.get("verdict_reason")
                 result["status"] = "error"
                 result["error_reason"] = memory_error.payload["error_reason"]
@@ -4143,6 +4163,16 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
             prepared["readiness_barrier"] = readiness
         return prepared, lease, close_proof
     except BaseException as error:
+        if isinstance(error, InspectError) and validated_route is not None:
+            memory_error = ide_memory_failure(validated_route)
+            if memory_error is not None:
+                reason = infer_error_reason(error, error.payload)
+                error.payload["ide_memory"] = memory_error.payload["ide_memory"]
+                if memory_error.payload["error_reason"] == "ide_memory_exhausted" and reason in {
+                    "timeout", "ide_not_ready_timeout", "inspection_api_timeout", "inspection_api_unavailable",
+                }:
+                    error.payload["original_failure_reason"] = reason
+                    error.payload["error_reason"] = "ide_memory_exhausted"
         if python_sdk_preparation is not None and isinstance(error, InspectError):
             error.payload.setdefault("python_sdk_preparation", python_sdk_preparation)
         cleanup = cleanup_failed_preparation(
@@ -4241,6 +4271,23 @@ def lifecycle_open_response_unknown(open_attempts: list[dict[str, Any]]) -> bool
     return any(attempt.get("request_may_have_been_accepted") is True for attempt in open_attempts)
 
 
+def project_open_was_not_requested(attempts: Any) -> bool:
+    if not isinstance(attempts, list):
+        return False
+    for attempt in attempts:
+        if not isinstance(attempt, dict) or any(key in attempt for key in (
+            "identity", "lease_id", "ownership_registered", "lifecycle_ownership_protocol",
+            "open_outcome", "request_may_have_been_accepted", "endpoint_status", "opening_scheduled",
+        )):
+            return False
+        if attempt.get("method") == "bootstrap_ide":
+            continue
+        if attempt.get("reason") == "no_matching_running_ide" and attempt.get("accepted") is False:
+            continue
+        return False
+    return True
+
+
 def lease_proves_open_not_attempted(lease: dict[str, Any]) -> bool:
     return (
         lease.get("state") in POTENTIAL_OPEN_LEASE_STATES
@@ -4253,7 +4300,10 @@ def lease_proves_open_not_attempted(lease: dict[str, Any]) -> bool:
         )
         and lease.get("opened_by_helper") is False
         and lease.get("open_request_may_have_been_accepted") is False
-        and lease.get("open_attempts") == []
+        and (
+            lease.get("open_attempts") == []
+            or lease.get("open_not_attempted") is True and project_open_was_not_requested(lease.get("open_attempts"))
+        )
         and not lease.get("session_id")
         and not lease.get("ide_port")
         and not lease.get("project_instance_id")
@@ -5068,9 +5118,10 @@ def open_via_running_ide(
                 raise
             continue
     if first_memory_error is not None:
-        if lease is not None and not attempts:
+        if lease is not None and project_open_was_not_requested(attempts or []):
             lease["open_not_attempted"] = True
             lease["open_request_may_have_been_accepted"] = False
+            lease["open_attempts"] = attempts or []
         raise first_memory_error
     if attempts is not None and not matching:
         attempts.append(
@@ -5758,7 +5809,11 @@ def call_endpoint(
 ) -> dict[str, Any]:
     port = route_port(route)
     if endpoint == "trigger":
-        check_ide_memory(route)
+        try:
+            check_ide_memory(route)
+        except InspectError as error:
+            error.payload["trigger_not_sent"] = True
+            raise
     return http_get(port, endpoint, params, timeout=timeout or max(DEFAULT_TIMEOUT_SECONDS, 10.0)).body
 
 
@@ -5778,7 +5833,7 @@ def ide_memory_failure(identity: dict[str, Any], timeout_seconds: float = 2.0) -
         return
     try:
         response = http_get(route_port(identity), "memory", {}, timeout=timeout_seconds).body
-    except InspectError:
+    except (InspectError, OSError, http.client.HTTPException):
         return
     if response.get("session_id") != expected_session:
         return
@@ -5796,9 +5851,9 @@ def ide_memory_failure(identity: dict[str, Any], timeout_seconds: float = 2.0) -
         "port": route_port(identity),
     }
     message = (
-        "IDE memory exhausted. Ask the IDE owner to check for the Java heap space project-opening dialog, dismiss it, and restart the IDE before inspecting again."
+        "IDE memory exhausted. Ask the Director to check for the Java heap space project-opening dialog, dismiss it, and restart the IDE before inspecting again."
         if exhausted else
-        "IDE memory pressure detected. Wait at least thirty seconds for it to settle before opening or inspecting another project; ask the IDE owner to restart if it persists."
+        "IDE memory pressure detected. Wait at least thirty seconds for it to settle before opening or inspecting another project; ask the Director to restart if it persists."
     )
     return InspectError(message, 3, payload)
 
@@ -6503,7 +6558,7 @@ def blocking_unknown_reason(payload: dict[str, Any], wait: dict[str, Any]) -> st
         return "session_drift"
     if payload.get("ambiguous"):
         return "ambiguous_route"
-    if payload.get("error_reason") in {"ide_memory_exhausted", "ide_memory_pressure"}:
+    if payload.get("error_reason") == "ide_memory_exhausted":
         return str(payload["error_reason"])
     if payload.get("unavailable"):
         return "inspection_api_unavailable"
@@ -6661,7 +6716,7 @@ UNKNOWN_TERMINAL_ACTION = "Stop retrying this result and report the helper diagn
 def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     reason = normalize_reason(reason)
     if reason == "ide_memory_exhausted":
-        return "Ask the IDE owner to check for the Java heap space project-opening dialog, dismiss it, and restart the IDE before inspecting again."
+        return "Ask the Director to check for the Java heap space project-opening dialog, dismiss it, and restart the IDE before inspecting again."
     if reason in REPOSITORY_PREPARATION_TERMINAL_REASONS or reason == "repository_preparation_failure":
         preparation = repository_preparation_for_payload(payload)
         return repository_preparation_next_action(reason, preparation)
@@ -7237,7 +7292,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
     if verdict == "RED":
         return "actionable_findings"
     normalized = normalize_reason(reason)
-    if normalized in {"ide_memory_exhausted", "ide_memory_pressure"}:
+    if normalized == "ide_memory_exhausted":
         return normalized
     if normalized == "plugin_deployment_mismatch":
         return "environment_blocked"
@@ -7360,9 +7415,7 @@ def next_action_for_bucket(verdict: str, bucket: str, reason: str, payload: dict
     if verdict == "RED":
         return "Fix the reported findings, then rerun inspection."
     if bucket == "ide_memory_exhausted":
-        return "Ask the IDE owner to check for the Java heap space project-opening dialog, dismiss it, and restart the IDE before inspecting again."
-    if bucket == "ide_memory_pressure":
-        return "Wait at least thirty seconds for IDE memory pressure to settle before opening or inspecting another project; ask the IDE owner to restart if it persists."
+        return "Ask the Director to check for the Java heap space project-opening dialog, dismiss it, and restart the IDE before inspecting again."
     if bucket in UNKNOWN_RETRY_BUCKETS:
         return next_action_for_unknown(reason, payload)
     if bucket == "route_not_ready":

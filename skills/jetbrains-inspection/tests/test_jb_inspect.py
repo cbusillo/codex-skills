@@ -101,13 +101,71 @@ class IdeMemoryTests(unittest.TestCase):
 
     def test_unavailable_or_different_session_memory_preserves_original_failure(self):
         failure = jb_inspect.InspectError("timed out", 3, {"error_reason": "inspection_api_timeout"})
-        for diagnostic in (failure, self.response(session="restarted"), self.response(status="normal")):
+        for diagnostic in (failure, ConnectionResetError("IDE dropped connection"), jb_inspect.http.client.RemoteDisconnected("no response"), self.response(session="restarted"), self.response(status="normal")):
             with self.subTest(diagnostic=diagnostic), \
                     patch.object(jb_inspect, "execute_inspection_on_route", side_effect=failure), \
                     patch.object(jb_inspect, "http_get", side_effect=[diagnostic]):
                 with self.assertRaises(jb_inspect.InspectError) as raised:
                     jb_inspect.run_inspection_on_route(Namespace(), {}, self.identity())
                 self.assertIs(raised.exception, failure)
+
+    def test_trigger_preflight_closes_helper_owned_project_without_transport_uncertainty(self):
+        route = self.identity()
+        lease = {"lease_id": "owned", "opened_by_helper": True, "state": "prepared"}
+        snapshot = {"status": "ok", "entries": {}}
+        with patch.object(jb_inspect, "prepare_lifecycle_details", return_value=({"route": route}, lease, "proof")), \
+                patch.object(jb_inspect, "http_get", return_value=self.response()), \
+                patch.object(jb_inspect, "cleanup_lifecycle", return_value={"status": "closed"}) as close, \
+                patch.object(jb_inspect, "git_worktree_status_snapshot", return_value=snapshot), \
+                patch.object(jb_inspect, "post_cleanup_worktree_status_snapshot", return_value=snapshot):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.run_prepared_inspection(helper_args(command="closeout", lifecycle_lock_timeout_ms=1000), {})
+        close.assert_called_once_with(lease, route, "proof")
+        self.assertEqual(raised.exception.payload["cleanup"]["status"], "closed")
+        self.assertTrue(raised.exception.payload["inspection_failure"]["trigger_not_sent"])
+        self.assertFalse(raised.exception.payload["inspection_failure"]["transport_state_unknown"])
+
+    def test_problems_server_error_is_classified_after_preserving_response(self):
+        failure = jb_inspect.InspectError("HTTP 500", 3, {"http_status": 500, "endpoint": "problems", "error_reason": "inspection_api_http_error"})
+        result = jb_inspect.inspection_endpoint_failure_result(failure, self.identity(), {"run_id": 7}, {}, None)
+        with patch.object(jb_inspect, "execute_inspection_on_route", return_value=result), \
+                patch.object(jb_inspect, "http_get", return_value=self.response()):
+            observed = jb_inspect.run_inspection_on_route(Namespace(), {}, self.identity())
+        self.assertEqual(observed["agent_result"]["bucket"], "ide_memory_exhausted")
+        self.assertEqual(observed["http_status"], 500)
+        self.assertEqual(observed["endpoint"], "problems")
+        self.assertEqual(observed["original_failure_reason"], "inspection_api_http_error")
+
+    def test_readiness_timeout_names_current_oom_and_preserves_failure(self):
+        route = self.identity() | {"base_path": "/fixture", "project_key": "path:/fixture", "project_instance_id": "current:1"}
+        lease = {"lease_id": "owned", "state": "preparing"}
+        failure = jb_inspect.InspectError("not ready", 3, {"error_reason": "ide_not_ready_timeout"})
+        with patch.object(jb_inspect, "run_repository_preparation", return_value={}), \
+                patch.object(jb_inspect, "create_local_lease", return_value=lease), \
+                patch.object(jb_inspect, "find_exact_route", return_value=route), \
+                patch.object(jb_inspect, "matching_deferred_lease", return_value=None), \
+                patch.object(jb_inspect, "ensure_exact_worktree"), \
+                patch.object(jb_inspect, "claim_lifecycle", return_value=unowned_lifecycle_result(route)), \
+                patch.object(jb_inspect, "wait_until_route_ready", side_effect=failure), \
+                patch.object(jb_inspect, "http_get", return_value=self.response()), \
+                patch.object(jb_inspect, "write_lease"), \
+                patch.object(jb_inspect, "remove_lease"):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.prepare_lifecycle_details(helper_args(open=True), {"worktree_root": "/fixture"})
+        self.assertEqual(raised.exception.payload["error_reason"], "ide_memory_exhausted")
+        self.assertEqual(raised.exception.payload["original_failure_reason"], "ide_not_ready_timeout")
+        self.assertEqual(raised.exception.payload["cleanup"]["reason"], "project_preexisted")
+
+    def test_retry_refusal_retains_first_attempt_evidence_and_transport_uncertainty(self):
+        first = jb_inspect.apply_verdict({"status": "stale_results", "results_may_be_stale": True, "transport_state_unknown": True})
+        refusal = jb_inspect.InspectError("memory exhausted", 3, {"error_reason": "ide_memory_exhausted", "trigger_not_sent": True})
+        with patch.object(jb_inspect, "run_inspection_on_route", side_effect=[first, refusal]), \
+                patch.object(jb_inspect, "wait_for_internal_retry_readiness", return_value={"ready": True}):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.run_inspection_with_internal_retry(Namespace(), {}, self.identity())
+        self.assertEqual(raised.exception.payload["internal_retries"][0]["verdict_reason"], "stale_results")
+        self.assertEqual(raised.exception.payload["internal_retry_readiness"], {"ready": True})
+        self.assertTrue(jb_inspect.inspection_exception_result(raised.exception)["transport_state_unknown"])
 
     def test_wait_timeout_cancels_owned_run_before_memory_classification(self):
         route = self.identity()
@@ -177,6 +235,25 @@ class IdeMemoryTests(unittest.TestCase):
         self.assertEqual(result["status"], "opening")
         self.assertEqual(get.call_args.args[1], "lifecycle/open")
         get.assert_called_once()
+
+    def test_bootstrap_only_memory_refusal_releases_lease_but_preserves_ambiguous_attempts(self):
+        bootstrap = [{"method": "running_ide", "accepted": False, "reason": "no_matching_running_ide"}, {"method": "bootstrap_ide", "accepted": True}]
+        ambiguous = [{"method": "bootstrap_ide", "accepted": True, "ownership_registered": True}]
+        for attempts in (bootstrap, ambiguous):
+            lease = {"lease_id": "owned", "state": "open_requesting", "opened_by_helper": False, "open_attempts": attempts}
+            with patch.object(jb_inspect, "discover_open_identities", return_value=[self.identity()]), \
+                    patch.object(jb_inspect, "identity_matches_context", return_value=True), \
+                    patch.object(jb_inspect, "http_get", return_value=self.response()):
+                with self.assertRaises(jb_inspect.InspectError):
+                    jb_inspect.open_via_running_ide(Namespace(port=None), {}, attempts, "bootstrapped_ide", lease)
+            with patch.object(jb_inspect, "remove_lease") as remove:
+                if attempts is bootstrap:
+                    result = jb_inspect.cleanup_failed_preparation(lease, None, None, jb_inspect.InspectError("memory", 3), "project_open")
+                    self.assertEqual(result, {"status": "not_needed", "reason": "open_not_attempted"})
+                    remove.assert_called_once_with(lease)
+                else:
+                    self.assertTrue(jb_inspect.lease_may_own_open_project(lease))
+                    remove.assert_not_called()
 
     def test_older_plugin_does_not_probe_or_change_request(self):
         with patch.object(jb_inspect, "http_get", return_value=jb_inspect.HttpResult(200, {"status": "ok"}, "http://fixture")) as get:
