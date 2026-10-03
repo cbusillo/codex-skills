@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from http.cookiejar import Cookie
@@ -37,6 +38,13 @@ PRIVATE_LITERALS = (
     "private container command",
     "private hypervisor command",
 )
+
+
+@pytest.fixture(autouse=True)
+def clear_npmplus_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in tuple(os.environ):
+        if name.startswith("NPMPLUS_"):
+            monkeypatch.delenv(name, raising=False)
 
 
 def put_text(path: Path, value: str) -> None:
@@ -565,6 +573,20 @@ def test_help_does_not_contain_private_literals(monkeypatch: pytest.MonkeyPatch,
         for literal in PRIVATE_LITERALS:
             assert literal not in result.stdout
         assert str(private_home) not in result.stdout
+
+
+def test_api_config_loads_fixture_credentials(tmp_path: Path) -> None:
+    private_repo = make_private_repo(tmp_path)
+    context = npmplus_ops.load_context(
+        private_repo, write_provider(private_repo, context_payload()), "default"
+    )
+
+    config = npmplus_ops.load_api_config(context, 10)
+    fixture_values = npmplus_ops.parse_env_file(context.env_file)
+
+    assert config.base_url == fixture_values[context.base_url_env]
+    assert config.identity == fixture_values[context.identity_env]
+    assert config.secret == fixture_values[context.secret_env]
 
 
 def test_api_config_rejects_wrong_instance(
