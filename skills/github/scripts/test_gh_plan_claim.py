@@ -416,6 +416,50 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                 self.assert_no_writes()
 
+    def test_explicit_no_wait_status_allows_claim_without_resolution(self):
+        statuses = (
+            "Blocked by: No native issue blocker.\nWaiting for: nothing.",
+            "Blocked by: No native issue blocker\nWaiting for:",
+            "Blocked by: none. The service fields are live.",
+            "Blocked by: None.\nWaiting for: Nothing for read-only investigation.",
+            "- Blocked by: NONE.\n- Waiting for: NOTHING FOR READ-ONLY INVESTIGATION.",
+        )
+        for status in statuses:
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["body"] += status + "\n"
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                self.assertIn("post", self.events)
+                self.assertIn(status, self.emitted.call_args.args[0]["previous_current_status"])
+
+    def test_no_wait_prefix_does_not_hide_real_wait(self):
+        statuses = (
+            "Blocked by: No native issue blocker; waiting for owner decision",
+            "Blocked by: No native issue blocker;\n  waiting for owner decision",
+            "Blocked by: none. Waiting for owner decision.",
+            "Blocked by: none. Pending physical confirmation.",
+            "Blocked by: None.\nWaiting for: Physical confirmation after implementation.",
+            "Blocked by: None.\nWaiting for: Nothing for read-only investigation; waiting for owner decision.",
+            "Blocked by: None.\nWaiting for: Nothing for read-only investigation until owner approval.",
+            "Blocked by: None.\nParked until: Nothing for read-only investigation.",
+        )
+        for status in statuses:
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["body"] += status + "\n"
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_wait_unresolved")
+                self.assert_no_writes()
+
+    def test_no_wait_text_does_not_override_native_blocker(self):
+        self.issue["body"] += "Blocked by: No native issue blocker.\nWaiting for: nothing.\n"
+        self.blockers = [{"state": "open", "number": 41}]
+        with self.assertRaises(PLAN.PlanError):
+            self.run_claim()
+        self.assert_no_writes()
+
     def test_wait_labels_refuse_until_existing_resolution_recorded(self):
         self.issue["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
         with self.assertRaises(PLAN.ClassifiedPlanError):
