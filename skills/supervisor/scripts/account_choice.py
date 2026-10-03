@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Choose the provider account whose usage window resets soonest with room above its reserve.
+"""Choose Context Panel's use-next account for the provider, with a reported fallback.
 
 Capacity and resets come from Context Panel's agent account snapshot (schema 1).
 Accounts, their launch environment and the snapshot command come from private
@@ -165,13 +165,19 @@ def parse_time(value):
     return parsed if parsed.tzinfo else None
 
 
-def assess(account, rows, now):
-    """Judge one configured account against its Context Panel row."""
+def matching_rows(account, rows):
+    """Resolve the private configuration selector against provider-scoped rows."""
     if account["match"] == "context_panel_label":
         wanted = account["match_value"].casefold()
         matches = [r for r in rows if str(r.get("label", "")).casefold() == wanted]
     else:
         matches = [r for r in rows if r.get("configurationID") == account["match_value"]]
+    return matches
+
+
+def assess(account, rows, now):
+    """Judge one configured account against its Context Panel row."""
+    matches = matching_rows(account, rows)
     if len(matches) != 1:
         return Assessment(account, False, None, None, f"{len(matches)} Context Panel rows match; expected one")
     row = matches[0]
@@ -223,11 +229,41 @@ def choose(provider, config, snapshot, unavailable_reason, now=None, name=None):
         )
     rows = [r for r in snapshot["accounts"] if isinstance(r, dict) and r.get("provider") == provider]
     assessed = [assess(account, rows, now) for account in accounts]
+    answers = snapshot.get("answers") or {}
+    if not isinstance(answers, dict):
+        raise ValueError("Context Panel answers must be an object")
+    recommendations = answers.get("useNext") or []
+    if not isinstance(recommendations, list) or not all(isinstance(r, dict) for r in recommendations):
+        raise ValueError("Context Panel useNext must be a list of recommendations")
+    next_choices = [r for r in recommendations if r.get("provider") == provider]
+    if next_choices:
+        if len(next_choices) != 1 or not next_choices[0].get("accountID"):
+            raise ValueError(f"Context Panel has an ambiguous {provider} use-next choice")
+        next_id = next_choices[0]["accountID"]
+        next_rows = [row for row in rows if row.get("id") == next_id]
+        if len(next_rows) != 1:
+            raise ValueError(f"Context Panel {provider} use-next choice matches no single account row")
+        configured = [entry for entry in assessed
+                      if matching_rows(entry.account, rows) == next_rows]
+        if len(configured) != 1:
+            raise ValueError(f"Context Panel {provider} use-next choice matches no single configured account")
+        best = configured[0]
+        if not best.eligible:
+            raise ValueError(f"Context Panel {provider} use-next account cannot be launched ({best.reason})")
+        return decision(
+            best.account,
+            "context-panel",
+            f"Context Panel use next: {best.reason}",
+            resets_at=best.reset,
+            remaining=best.remaining,
+            skipped=[entry for entry in assessed if entry is not best],
+        )
+    fallback_reason = f"Context Panel has no {provider} use-next choice; "
     if all(entry.no_reading for entry in assessed):
         return decision(
             accounts[0],
             "fallback",
-            f"Context Panel has no current {provider} reading for any configured account; "
+            fallback_reason + f"no current {provider} reading for any configured account; "
             "used the configured order, capacity not checked",
             skipped=assessed,
         )
@@ -240,8 +276,8 @@ def choose(provider, config, snapshot, unavailable_reason, now=None, name=None):
     best = min(eligible, key=lambda entry: entry.reset or far_future)
     return decision(
         best.account,
-        "context-panel",
-        f"soonest reset with room: {best.reason}",
+        "fallback",
+        fallback_reason + f"used soonest reset with room: {best.reason}",
         resets_at=best.reset,
         remaining=best.remaining,
         skipped=[entry for entry in assessed if entry is not best],

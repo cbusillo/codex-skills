@@ -8,6 +8,8 @@
 import argparse
 import asyncio
 import json
+import subprocess
+import shlex
 import os
 import tempfile
 import unittest
@@ -446,6 +448,7 @@ def account_row(label, remaining, resets, state="available", cfg="cfg"):
         "provider": "anthropic",
         "label": label,
         "configurationID": cfg,
+        "id": "row-" + cfg,
         "state": state,
         "remainingFraction": remaining,
         "windows": [
@@ -460,14 +463,73 @@ def accounts_config(text=ACCOUNTS_TOML):
     )
 
 
-def choose_from(rows, **extra):
+def choose_from(rows, recommendations=None, **extra):
     snapshot = {"schemaVersion": 1, "accounts": rows}
+    if recommendations is not None:
+        snapshot["answers"] = {"useNext": recommendations}
     return account_choice.choose(
         "anthropic", accounts_config(), snapshot, None, now=NOW, **extra
     )
 
 
 class AccountChoiceTests(unittest.TestCase):
+
+    def test_context_panel_choice_overrides_weekly_ranking_for_each_provider(self):
+        for provider in account_choice.PROVIDERS:
+            with self.subTest(provider=provider):
+                config = accounts_config()
+                for account in config["accounts"]:
+                    account["provider"] = provider
+                rows = [
+                    account_row("main", 0.6, ["2026-10-04T03:00:00Z"]),
+                    account_row("spare", 0.5, ["2026-10-07T08:00:00Z"], cfg="cfg-spare"),
+                ]
+                for row, count in zip(rows, [1, 2]):
+                    row["provider"] = provider
+                    row["bankedResets"] = {"summary": {
+                        "availableCount": count,
+                        "knownExpiries": ["2026-10-05T03:00:00Z", "2026-10-06T03:00:00Z"][:count],
+                    }}
+                snapshot = {"accounts": rows, "answers": {"useNext": [
+                    {"provider": other, "accountID": "irrelevant"}
+                    for other in account_choice.PROVIDERS if other != provider
+                ] + [{"provider": provider, "accountID": "row-cfg-spare"}]}}
+                choice = account_choice.choose(provider, config, snapshot, None, now=NOW)
+                self.assertEqual((choice["name"], choice["source"]), ("spare", "context-panel"))
+                self.assertIn("Context Panel use next", choice["reason"])
+                # Label-based configuration must resolve the same snapshot ID too.
+                snapshot["answers"]["useNext"][-1]["accountID"] = "row-cfg"
+                rows[0]["useLast"] = True  # The consumer must not re-rank the app's answer.
+                self.assertEqual(account_choice.choose(provider, config, snapshot, None, now=NOW)["name"], "main")
+
+    def test_missing_provider_choice_reports_previous_ranking_as_fallback(self):
+        rows = [
+            account_row("main", 0.6, ["2026-10-07T08:00:00Z"]),
+            account_row("spare", 0.5, ["2026-10-04T03:00:00Z"], cfg="cfg-spare"),
+        ]
+        for recommendations in (None, [], [{"provider": "openai", "accountID": "other"}]):
+            with self.subTest(recommendations=recommendations):
+                choice = choose_from(rows, recommendations=recommendations)
+                self.assertEqual((choice["name"], choice["source"]), ("spare", "fallback"))
+                self.assertIn("no anthropic use-next choice", choice["reason"])
+                self.assertIn("soonest reset with room", choice["reason"])
+
+    def test_unlaunchable_context_panel_choice_refuses_without_substitution(self):
+        rows = [account_row("main", 0.6, []), account_row("spare", 0.5, [], cfg="cfg-spare")]
+        recommendation = [{"provider": "anthropic", "accountID": "row-cfg-spare"}]
+        rows[1]["remainingFraction"] = 0.01
+        with self.assertRaisesRegex(ValueError, "use-next account cannot be launched"):
+            choose_from(rows, recommendations=recommendation)
+        rows[1].update(remainingFraction=None, state="stale")
+        with self.assertRaisesRegex(ValueError, "use-next account cannot be launched"):
+            choose_from(rows, recommendations=recommendation)
+        with self.assertRaisesRegex(ValueError, "no single account row"):
+            choose_from(rows, recommendations=[{"provider": "anthropic", "accountID": "missing"}])
+        rows[1].update(configurationID="unconfigured", id="row-unconfigured")
+        with self.assertRaisesRegex(ValueError, "no single configured account"):
+            choose_from(rows, recommendations=[{"provider": "anthropic", "accountID": "row-unconfigured"}])
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            choose_from(rows, recommendations=recommendation * 2)
 
     def test_weekly_reset_ranks_and_five_hour_windows_do_not(self):
         rows = [
@@ -476,7 +538,7 @@ class AccountChoiceTests(unittest.TestCase):
             account_row("Spare", 0.5, ["2026-10-03T19:00:00Z", "2026-10-04T03:00:00Z"], cfg="cfg-spare"),
         ]
         choice = choose_from(rows)
-        self.assertEqual((choice["name"], choice["source"]), ("spare", "context-panel"))
+        self.assertEqual((choice["name"], choice["source"]), ("spare", "fallback"))
         self.assertEqual(choice["resets_at"], "2026-10-04T03:00:00+00:00")
         self.assertEqual([o["name"] for o in choice["others"]], ["main"])
         # Near the end of a week the five-hour window outlasts it; the week still ranks.
@@ -629,6 +691,24 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(
             terminal.async_send_text.await_args_list[0].args, ("run-authorized-brief",)
         )
+
+    def test_codex_remote_launch_inherits_selected_home_after_cd(self):
+        rows = [account_row("main", 0.6, []), account_row("spare", 0.5, [], cfg="cfg-spare")]
+        for row in rows:
+            row["provider"] = "openai"
+        config = accounts_config(ACCOUNTS_TOML.replace("anthropic", "openai").replace("CLAUDE_CONFIG_DIR", "CODEX_HOME"))
+        choice = account_choice.choose("openai", config, {
+            "accounts": rows,
+            "answers": {"useNext": [{"provider": "openai", "accountID": "row-cfg-spare"}]},
+        }, None, now=NOW)
+        # Stand in for the CLI without reading auth or starting a real session.
+        with tempfile.TemporaryDirectory() as folder:
+            fake_codex = Path(folder) / "codex"
+            fake_codex.write_text('#!/bin/sh\nprintf "%s\\n" "$CODEX_HOME" "$1" "$2"\n')
+            fake_codex.chmod(0o700)
+            command = iterm_tab.with_account(f"cd / && {shlex.quote(str(fake_codex))} --remote unix://", choice)
+            launched = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True, check=True)
+        self.assertEqual(launched.stdout.splitlines(), [choice["env"]["CODEX_HOME"], "--remote", "unix://"])
 
     def test_launch_on_chosen_account_prefixes_env_only(self):
         terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
