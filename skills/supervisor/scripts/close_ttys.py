@@ -14,8 +14,8 @@ import json
 import subprocess
 from pathlib import Path
 
-from iterm_tab import select_session
 import session_record
+from iterm_tab import select_session
 
 
 def process_rows(output):
