@@ -2629,11 +2629,25 @@ PRODUCT_PRODUCTION_USES = {"unknown", "prelaunch", "live"}
 GITHUB_LOGIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$")
 
 
+def _client_or_legacy_owner(source: dict[str, object], client_key: str, owner_key: str) -> object:
+    """Read a Client field Launchplane may still send under its legacy ``owner`` name.
+
+    Launchplane is renaming these fields (cbusillo/direction#13). Either name is
+    accepted; a response that carries both with different values is refused.
+    """
+    if client_key not in source:
+        return source.get(owner_key)
+    if owner_key in source and source[owner_key] != source[client_key]:
+        raise LaunchplaneSafetyError("invalid_response")
+    return source[client_key]
+
+
 def _project_product_profile(value: object) -> dict[str, object]:
-    """Who owns the product and how its production is classified; settings, secrets,
-    images, URLs, workflows and expected configuration are dropped."""
+    """Who the product's Client is and how its production is classified; settings,
+    secrets, images, URLs, workflows and expected configuration are dropped."""
     source = _require_dict(value)
-    owner = {} if source.get("owner") is None else source.get("owner")
+    client = _client_or_legacy_owner(source, "client", "owner")
+    owner = {} if client is None else client
     lanes = [] if source.get("lanes") is None else source.get("lanes")
     if not isinstance(owner, dict) or not isinstance(lanes, list):
         raise LaunchplaneSafetyError("invalid_response")
@@ -6066,6 +6080,8 @@ PRODUCT_OWNER_PLAN_FIELDS = {
     "resolved_github_id",
     "owner_before",
     "owner_after",
+    "client_before",
+    "client_after",
     "changed",
     "applied",
     "reason",
@@ -6252,8 +6268,12 @@ def _project_product_owner_plan(result: object) -> dict[str, object]:
                 "github_id": source.get("resolved_github_id"),
             }
         ),
-        "owner_before": _project_owner_identity(source.get("owner_before")),
-        "owner_after": _project_owner_identity(source.get("owner_after")),
+        "owner_before": _project_owner_identity(
+            _client_or_legacy_owner(source, "client_before", "owner_before")
+        ),
+        "owner_after": _project_owner_identity(
+            _client_or_legacy_owner(source, "client_after", "owner_after")
+        ),
         "changed": bool(_optional_bool(source.get("changed"))),
         "applied": bool(_optional_bool(source.get("applied"))),
         "reason": public_summary_string(source.get("reason")),
@@ -6786,7 +6806,7 @@ def read_product_owner(
         timeout=timeout,
     )
     profile = _require_dict(provider_payload.get("profile"))
-    return _project_owner_identity(profile.get("owner"))
+    return _project_owner_identity(_client_or_legacy_owner(profile, "client", "owner"))
 
 
 def read_product_image_repository(
