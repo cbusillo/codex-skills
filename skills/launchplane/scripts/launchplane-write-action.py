@@ -2620,7 +2620,7 @@ def _project_product_environment(value: object) -> dict[str, object]:
 
 PRODUCT_PROFILE_MAX_LANES = 20
 PRODUCT_PRODUCTION_USES = {"unknown", "prelaunch", "live"}
-GITHUB_LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
+GITHUB_LOGIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$")
 
 
 def _project_product_profile(value: object) -> dict[str, object]:
@@ -2698,7 +2698,7 @@ def _project_product_activity_event(
     """One event, or None when its identity is unusable; odd optional fields are dropped."""
     if not isinstance(event_value, dict):
         return None
-    event = cast(dict[str, Any], event_value)
+    event = event_value
     event_id = drops.keep("events[].event_id", public_identifier, event.get("event_id"))
     event_type = drops.keep("events[].event_type", _public_dotted_code, event.get("event_type"))
     if not event_id or not event_type:
@@ -2890,7 +2890,7 @@ def _project_reconcile_request(
 ) -> dict[str, object] | None:
     if not isinstance(request_value, dict):
         return None
-    request = cast(dict[str, Any], request_value)
+    request = request_value
     target_key = drops.keep("requests[].target_key", public_identifier, request.get("target_key"))
     if not target_key:
         return None
@@ -3152,7 +3152,7 @@ def _project_target_replacement_result(
     if not isinstance(value, dict):
         drops.drop("result")
         return None
-    result = cast(dict[str, Any], value)
+    result = value
     projected: dict[str, object] = {
         name: drops.keep(f"result.{name}", _public_dotted_code, result.get(name))
         for name in TARGET_REPLACEMENT_RESULT_STATUSES
@@ -3195,8 +3195,8 @@ def _project_target_replacement_operation(provider_payload: dict[str, Any]) -> d
     if raw_result is None:
         raw_result = operation.get("result")
 
-    def field(name: str, validate: Any) -> object:
-        return drops.keep(f"operation.{name}", validate, operation.get(name))
+    def field(field_name: str, validate: Any) -> object:
+        return drops.keep(f"operation.{field_name}", validate, operation.get(field_name))
 
     attempt = operation.get("attempt")
     if isinstance(attempt, bool) or not isinstance(attempt, int):
@@ -3334,7 +3334,7 @@ def _project_target_replacement_current_target(
     if not isinstance(value, dict):
         drops.drop("plan.current_target")
         return None
-    target = cast(dict[str, Any], value)
+    target = value
     projected: dict[str, object] = {
         name: _project_env_key_names(target.get(name), path=f"plan.current_target.{name}", drops=drops)
         for name in TARGET_REPLACEMENT_CURRENT_TARGET_KEY_LISTS
@@ -3506,7 +3506,7 @@ def _project_preview_generation(
 ) -> dict[str, object] | None:
     if not isinstance(generation_value, dict):
         return None
-    generation = cast(dict[str, Any], generation_value)
+    generation = generation_value
     generation_id = drops.keep(
         "generations[].generation_id", public_identifier, generation.get("generation_id")
     )
@@ -7079,7 +7079,7 @@ def execute_production_backup_authority_apply(
     reviewed_policy = reviewed.get("policy") if isinstance(reviewed.get("policy"), dict) else {}
     # The saved evidence holds projected strings; anything else simply fails to match.
     reviewed_targets = {
-        cast(str, target.get("target_id")): cast(str, target.get("record_id"))
+        target.get("target_id"): target.get("record_id")
         for target in reviewed.get("targets") or []
         if isinstance(target, dict)
     }
