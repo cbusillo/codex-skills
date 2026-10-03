@@ -30,20 +30,24 @@ common local-network conventions.
 
 The private provider invoked through the configured operations-repository
 pointer must emit the contract version and environment-variable names rather
-than credential values. A representative provider payload is:
+than credential values. The helpers run the operations repository's
+`scripts/infra-context.py partdb --format json` and require JSON. A
+representative provider payload is:
 
-```toml
-schema_version = "partdb.context.v1"
-
-[api]
-base_url_env = "PARTDB_BASE_URL"
-read_token_env = "PARTDB_READ_TOKEN"
-env_file = ".env"
-write_token_env = "PARTDB_WRITE_TOKEN"
-
-[policy]
-allow_mutations = false
-private_taxonomy_ref = "local-only"
+```json
+{
+  "schema_version": "partdb.context.v1",
+  "api": {
+    "base_url_env": "PARTDB_BASE_URL",
+    "read_token_env": "PARTDB_READ_TOKEN",
+    "env_file": ".env",
+    "write_token_env": "PARTDB_WRITE_TOKEN"
+  },
+  "policy": {
+    "allow_mutations": false,
+    "private_taxonomy_ref": "local-only"
+  }
+}
 ```
 
 Use placeholders such as these only as a contract illustration. Store actual
@@ -66,7 +70,7 @@ environment; never in the public skill repository.
 
 ## Schema And Identity Handshake
 
-Before a future helper queries an instance, it must:
+Before a helper queries an instance, it must:
 
 1. Resolve the private context and required environment variables without
    printing their values.
@@ -77,7 +81,7 @@ Before a future helper queries an instance, it must:
    cannot be verified; the bundled helpers do not infer an identity endpoint.
 4. Treat the declared read or write role as private-context policy, not proof
    that the installed API can introspect token scope. Confirm the role during
-   private setup before a future helper permits a write.
+   private setup before the write helper is used.
 5. Fail closed when the schema, identity, declared role, or expected instance
    does not match the private context.
 

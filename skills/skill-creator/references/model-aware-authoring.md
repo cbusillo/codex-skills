@@ -20,7 +20,7 @@ current official guidance for the named model through `docs-lookup` when needed.
 ## Apply Astra guidance to skill design
 
 The following authoring implications are our application of
-[OpenAI's Astra prompting guidance](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra#prompting-best-practices),
+[OpenAI's Astra prompting guidance](https://developers.openai.com/api/docs/guides/latest-model/gpt-6-astra.md#prompting-best-practices),
 reviewed September 12, 2026. Verify current advice through OpenAI Docs when doing
 Astra-specific work; these are audit priorities, not measured improvements.
 

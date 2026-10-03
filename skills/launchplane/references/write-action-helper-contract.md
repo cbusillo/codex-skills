@@ -4,7 +4,7 @@ This contract defines the public-safe wrapper for bounded Launchplane admin
 actions. It is separate from `launchplane-context.py`: read-only context remains
 optional and soft-failing, explicit write actions fail closed, and bounded
 admin reads also fail closed when required configuration or authorization is
-missing.
+missing. Command examples run from the `launchplane` skill directory.
 
 Projected operation paths are resolved from the vendored
 `agent-operator-contract.json` through `launchplane_contract.py`. Run
@@ -488,7 +488,9 @@ arbitrary marker.
 
 ## Configuration
 
-The helper uses this private admin config source order:
+The helper uses this private admin config source order. A global `--url`,
+given before the subcommand, overrides the service URL from every source, and
+`--env-config` replaces the default `.env` path.
 
 1. `--config /path/to/local-operator.json`
 2. environment variables in the current process
@@ -534,8 +536,8 @@ missing, but it does not use that variable as write authority.
 For public-safe diagnostics, use:
 
 ```sh
-uv run launchplane/scripts/launchplane-write-action.py operator-config-diagnostic
-uv run launchplane/scripts/launchplane-write-action.py --url <operator-url> operator-config-diagnostic
+uv run scripts/launchplane-write-action.py operator-config-diagnostic
+uv run scripts/launchplane-write-action.py --url <operator-url> operator-config-diagnostic
 ```
 
 The diagnostic reports source presence, token presence, and which source won. It
@@ -547,8 +549,11 @@ with `status: "incomplete"` may still have a local token source; read the
 ## Exit Behavior
 
 - `0`: Launchplane accepted the request and the helper emitted a redacted
-  summary. For `status: "accepted_unverified"`, the write may have committed;
-  read back the active record before any retry.
+  summary. `status: "accepted_unverified"` exits 0 for product-config,
+  repository-inventory, expected-config, repository-identity, and
+  deploy-recovery applies, and 1 for merge-train policy import and the lane-setup
+  applies. In every case the write may have committed; read back the active
+  record before any retry.
 - `1`: Launchplane was reached but rejected the request, or the service was
   unavailable/invalid. For `status: "outcome_unknown"`, transport failed after
   an apply POST began; read back the active record before any retry.
@@ -566,7 +571,7 @@ preflight. This validates authorization and managed-secret binding policy
 without accepting plaintext values:
 
 ```sh
-uv run launchplane/scripts/launchplane-write-action.py \
+uv run scripts/launchplane-write-action.py \
   product-config-preflight \
   --product example-product \
   --context example-testing \
@@ -589,12 +594,12 @@ When a trusted local admin already has an explicit private payload file outside
 the repo, the helper can submit the documented product-config route:
 
 ```sh
-uv run launchplane/scripts/launchplane-write-action.py \
+uv run scripts/launchplane-write-action.py \
   product-config-dry-run \
   --payload-file /private/path/product-config-request.json \
   --idempotency-key example-product-config-dry-run-123
 
-uv run launchplane/scripts/launchplane-write-action.py \
+uv run scripts/launchplane-write-action.py \
   product-config-apply \
   --payload-file /private/path/product-config-request.json \
   --reviewed-dry-run \
@@ -695,18 +700,18 @@ file contains the service envelope, including `record`, concurrency expectations
 and the admin-supplied source and reason. The helper overrides only `mode`.
 
 ```sh
-uv run launchplane/scripts/launchplane-write-action.py \
+uv run scripts/launchplane-write-action.py \
   change-impact-policy-dry-run \
   --payload-file /private/path/change-impact-policy.json
 
-uv run launchplane/scripts/launchplane-write-action.py \
+uv run scripts/launchplane-write-action.py \
   change-impact-policy-apply \
   --payload-file /private/path/change-impact-policy.json \
   --reviewed-dry-run \
   --expected-policy-digest <digest-from-dry-run> \
   --idempotency-key example-repository-policy-revision-1
 
-uv run launchplane/scripts/launchplane-write-action.py \
+uv run scripts/launchplane-write-action.py \
   change-impact-policy-read \
   --repository-id <repository-id>
 ```
@@ -752,12 +757,12 @@ worktree. The top-level fields must be exactly `schema_version`, `product`,
 `mode`, `reason`, and `record`; the helper does not rewrite the requested mode.
 
 ```sh
-uv run launchplane/scripts/launchplane-write-action.py \
+uv run scripts/launchplane-write-action.py \
   merge-train-policy-import-dry-run \
   --payload-file /private/path/merge-train-policy-dry-run.json \
   --expected-current-policy-digest <active-policy-digest>
 
-uv run launchplane/scripts/launchplane-write-action.py \
+uv run scripts/launchplane-write-action.py \
   merge-train-policy-import-apply \
   --payload-file /private/path/merge-train-policy-apply.json \
   --expected-current-policy-digest <active-policy-digest> \
@@ -806,17 +811,17 @@ raw HTTP calls, checked-in catalogs, or workflow-owned authority. Write payloads
 must be explicit private JSON files outside the active repository or worktree.
 
 ```sh
-uv run launchplane/scripts/launchplane-write-action.py \
+uv run scripts/launchplane-write-action.py \
   repository-inventory-read \
   --repository-id <repository-id>
 
-uv run launchplane/scripts/launchplane-write-action.py \
+uv run scripts/launchplane-write-action.py \
   repository-inventory-dry-run \
   --payload-file /private/path/repository-inventory.json \
   --idempotency-key <stable-key> \
   > /private/path/repository-inventory-dry-run.json
 
-uv run launchplane/scripts/launchplane-write-action.py \
+uv run scripts/launchplane-write-action.py \
   repository-inventory-apply \
   --payload-file /private/path/repository-inventory.json \
   --idempotency-key <stable-key> \
@@ -866,12 +871,12 @@ the original deploy's idempotency key for both calls — it is sent as the reque
 `Idempotency-Key` header exactly as supplied.
 
 ```sh
-uv run launchplane/scripts/launchplane-write-action.py \
+uv run scripts/launchplane-write-action.py \
   generic-web-deploy-recovery-dry-run \
   --payload-file /private/path/deploy-recovery.json \
   --idempotency-key <original-deploy-idempotency-key>
 
-uv run launchplane/scripts/launchplane-write-action.py \
+uv run scripts/launchplane-write-action.py \
   generic-web-deploy-recovery-apply \
   --payload-file /private/path/deploy-recovery.json \
   --idempotency-key <original-deploy-idempotency-key> \
@@ -918,12 +923,12 @@ requires manual verification before any retry.
 The helper wraps the preferred merge-train route:
 
 ```sh
-uv run launchplane/scripts/launchplane-write-action.py \
+uv run scripts/launchplane-write-action.py \
   merge-train-controller-run-once \
   --repo example/repo \
   --base-branch main
 
-uv run launchplane/scripts/launchplane-write-action.py \
+uv run scripts/launchplane-write-action.py \
   merge-train-controller-run-once \
   --repo example/repo \
   --base-branch main \

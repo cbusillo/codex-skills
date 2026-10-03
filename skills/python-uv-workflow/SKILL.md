@@ -82,7 +82,7 @@ explicitly asks.
 
 Repository-specific execution details—such as custom test commands, lockfile policies, or platform-specific entrypoints—should be managed via repository metadata:
 
-- **`.github/github.json`**: Use the `qualityGate` and `metadataFreshness` blocks to define canonical commands.
+- **`.github/github.json`**: Use the `qualityGate` block to define canonical commands; `metadataFreshness` lists events that should trigger a metadata review.
 - **`AGENTS.md`**: Refer to this file for behavioral quirks, lockfile consistency requirements, or stewardship rules specific to the repository.
 - **Environment Variables**: Use repository-documented environment variables for gating live tests or providing necessary credentials.
 
