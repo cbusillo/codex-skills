@@ -34,6 +34,11 @@ does not trigger a global repository scan, cache sweep, or retirement workflow.
    bindings; unresolved ownership remains a hold. Release a known task-owned
    worktree lock only when its job has ended and removal is authorized, then
    collect fresh evidence. Never unlock merely because a lock looks stale.
+   A lock whose reason names a retire command was placed by the host's
+   worktree helper when it created the checkout. It is not another job's hold.
+   When this task created the worktree and its PR is merged or closed, retire
+   the worktree with that command. The command runs its own checks and restores
+   the lock if it fails.
 2. Establish current Git evidence. Resolve the live default branch and pin its
    advertised SHA (`git ls-remote --symref`); obtain missing objects through an
    authorized fetch, rather than trusting a stale tracking ref. Check ancestry
@@ -103,8 +108,12 @@ reconciliation remain separate outcomes.
 
 ## Task artifacts and retention
 
-When creating a task output directory, choose its purpose and expected lifetime
-once for the group. At closeout, account for the actual files the task created;
+Write task output (logs, review prompts, screenshots, watch state) in the
+session scratchpad or the system temporary directory. When it must outlive the
+session, use the location the host names, for example in its worktree helper's
+output. Never write it at a volume root, in the shared worktree parent, or in
+the home folder. When creating a task output directory, choose its purpose and
+expected lifetime once for the group. At closeout, account for the actual files the task created;
 a brief list in the existing task record is enough. No per-file issue, running
 ledger, manifest or retention service is required.
 
