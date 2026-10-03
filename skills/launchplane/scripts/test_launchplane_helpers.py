@@ -2401,19 +2401,19 @@ def test_product_config_projection_keeps_declared_secret_class_end_to_end() -> N
     ]
 
 
-_SECRET_COPY_FROM = {
+_COPY_REFERENCE = {
     "context": "example-product",
     "instance": "prod",
     "version_id": "secret-version-example-1",
 }
-_SECRET_COPY_SHARING_REASON = {
+_COPY_SHARING_REASON = {
     "kind": "read_only_source",
     "reason": "Testing reads the same source.",
     "evidence": "The Client verified view-only permissions on 2026-10-02.",
 }
 
 
-def _secret_copy_payload() -> dict[str, object]:
+def _copy_reference_payload() -> dict[str, object]:
     return {
         "product": "example-product",
         "context": "example-product",
@@ -2422,15 +2422,15 @@ def _secret_copy_payload() -> dict[str, object]:
         "secrets": [
             {
                 "binding_key": "EXAMPLE_SYNC_API_TOKEN",
-                "copy_from": dict(_SECRET_COPY_FROM),
+                "copy_from": dict(_COPY_REFERENCE),
                 "secret_class": "shared_safe",
-                "sharing_reason": dict(_SECRET_COPY_SHARING_REASON),
+                "sharing_reason": dict(_COPY_SHARING_REASON),
             }
         ],
     }
 
 
-def _secret_copy_response(mode: str, *, replayed: bool = False) -> dict[str, object]:
+def _copy_reference_response(mode: str, *, replayed: bool = False) -> dict[str, object]:
     response: dict[str, object] = {
         "status": "accepted",
         "trace_id": f"launchplane_req_copy_{mode}",
@@ -2467,8 +2467,8 @@ def _secret_copy_response(mode: str, *, replayed: bool = False) -> dict[str, obj
                     "context": "example-product",
                     "instance": "testing",
                     "secret_id": "secret-record-copy",
-                    "copy_from": dict(_SECRET_COPY_FROM),
-                    "sharing_reason": dict(_SECRET_COPY_SHARING_REASON),
+                    "copy_from": dict(_COPY_REFERENCE),
+                    "sharing_reason": dict(_COPY_SHARING_REASON),
                     "secret_class": "shared_safe",
                 }
             ],
@@ -2488,13 +2488,13 @@ def test_product_config_secret_copy_keeps_the_source_through_dry_run_apply_and_r
         "integration": "runtime_environment",
         "binding_key": "EXAMPLE_SYNC_API_TOKEN",
         "secret_class": "shared_safe",
-        "sharing_reason": _SECRET_COPY_SHARING_REASON,
-        "copy_from": _SECRET_COPY_FROM,
+        "sharing_reason": _COPY_SHARING_REASON,
+        "copy_from": _COPY_REFERENCE,
     }
     responses = [
-        _secret_copy_response("dry-run"),
-        _secret_copy_response("apply"),
-        _secret_copy_response("apply", replayed=True),
+        _copy_reference_response("dry-run"),
+        _copy_reference_response("apply"),
+        _copy_reference_response("apply", replayed=True),
     ]
     calls: list[dict[str, Any]] = []
 
@@ -2505,7 +2505,7 @@ def test_product_config_secret_copy_keeps_the_source_through_dry_run_apply_and_r
     settings = {"service_url": "https://launchplane.example.invalid", "token": "t"}
     with TemporaryDirectory(dir=Path.home()) as directory:
         payload_path = Path(directory) / "copy.json"
-        payload_path.write_text(json.dumps(_secret_copy_payload()), encoding="utf-8")
+        payload_path.write_text(json.dumps(_copy_reference_payload()), encoding="utf-8")
         apply_argv = [
             "product-config-apply",
             "--payload-file",
@@ -2534,7 +2534,7 @@ def test_product_config_secret_copy_keeps_the_source_through_dry_run_apply_and_r
     assert [call["body"]["mode"] for call in calls] == ["dry-run", "apply", "apply"]
     for call in calls:
         (secret,) = call["body"]["secrets"]
-        assert secret["copy_from"] == _SECRET_COPY_FROM
+        assert secret["copy_from"] == _COPY_REFERENCE
         assert "value" not in secret
     assert [call["idempotency_key"] for call in calls] == ["", "example-copy-1", "example-copy-1"]
     for payload in outputs:
@@ -2549,13 +2549,13 @@ def test_product_config_secret_copy_refuses_a_value_or_malformed_source() -> Non
         args = argparse.Namespace(payload_file=str(payload_path), idempotency_key="")
         for change, code in (
             ({"value": "should-not-be-sent"}, "secret_copy_with_value"),
-            ({"copy_from": {**_SECRET_COPY_FROM, "product": "other"}}, "invalid_secret_copy_from"),
-            ({"copy_from": {**_SECRET_COPY_FROM, "version_id": " "}}, "invalid_secret_copy_from"),
+            ({"copy_from": {**_COPY_REFERENCE, "product": "other"}}, "invalid_secret_copy_from"),
+            ({"copy_from": {**_COPY_REFERENCE, "version_id": " "}}, "invalid_secret_copy_from"),
             ({"copy_from": "example-product/prod"}, "invalid_secret_copy_from"),
         ):
-            payload = _secret_copy_payload()
-            secrets_list = cast(list[dict[str, object]], payload["secrets"])
-            secrets_list[0] = {**secrets_list[0], **change}
+            payload = _copy_reference_payload()
+            payload_entries = cast(list[dict[str, object]], payload["secrets"])
+            payload_entries[0] = {**payload_entries[0], **change}
             payload_path.write_text(json.dumps(payload), encoding="utf-8")
             try:
                 write_action.product_config_payload_body(args, mode="dry-run")
@@ -2575,12 +2575,12 @@ def test_product_config_secret_copy_refuses_a_value_or_malformed_source() -> Non
 
 def test_product_config_secret_copy_projection_refuses_extra_source_fields() -> None:
     for copy_from in (
-        {**_SECRET_COPY_FROM, "ciphertext": "opaque"},
-        {**_SECRET_COPY_FROM, "secret_id": "secret-record-source"},
+        {**_COPY_REFERENCE, "ciphertext": "opaque"},
+        {**_COPY_REFERENCE, "secret_id": "secret-record-source"},
         {"context": "example-product", "instance": "prod"},
-        {**_SECRET_COPY_FROM, "version_id": "ghp_" + "abcdefghijklmnop"},
+        {**_COPY_REFERENCE, "version_id": "ghp_" + "abcdefghijklmnop"},
     ):
-        response = _secret_copy_response("apply")
+        response = _copy_reference_response("apply")
         result = cast(dict[str, Any], response["result"])
         result["secrets"][0]["copy_from"] = copy_from
         try:
@@ -2608,7 +2608,7 @@ def _secret_bindings_response() -> dict[str, object]:
                 "instance": "prod",
                 "secret_class": "shared_safe",
                 "sharing_reason": {
-                    **_SECRET_COPY_SHARING_REASON,
+                    **_COPY_SHARING_REASON,
                     "recorded_by": "operator-example",
                     "recorded_at": "2026-10-02T00:00:00Z",
                 },
@@ -2647,7 +2647,7 @@ def test_product_secret_bindings_read_keeps_metadata_and_counts_the_rest() -> No
             "instance": "prod",
             "secret_class": "shared_safe",
             "sharing_reason": {
-                **_SECRET_COPY_SHARING_REASON,
+                **_COPY_SHARING_REASON,
                 "recorded_by": "operator-example",
                 "recorded_at": "2026-10-02T00:00:00Z",
             },
