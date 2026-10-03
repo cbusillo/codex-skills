@@ -5521,10 +5521,7 @@ IMAGE_DRY_RUN_ARGV = [
 
 
 def test_product_image_repository_plan_projection_digests_the_reviewed_move() -> None:
-    result = cast(
-        dict[str, Any],
-        _saved_dry_run_output("product-image-repository-dry-run", _image_response(_image_plan())),
-    )
+    result = _saved_dry_run_output("product-image-repository-dry-run", _image_response(_image_plan()))
     projected = result["result"]
     assert projected["image_repository_after"] == _NEW_IMAGE
     assert projected["lanes"][0]["current_artifact_id"].startswith(f"{_OLD_IMAGE}@sha256:")
@@ -5588,11 +5585,8 @@ def test_product_image_repository_dry_run_sends_the_package_to_the_product_route
 
 def test_product_image_repository_apply_names_the_reviewed_start_and_reads_back() -> None:
     with TemporaryDirectory(dir=Path.home()) as directory:
-        evidence = cast(
-            dict[str, Any],
-            _saved_dry_run_output(
-                "product-image-repository-dry-run", _image_response(_image_plan())
-            ),
+        evidence = _saved_dry_run_output(
+            "product-image-repository-dry-run", _image_response(_image_plan())
         )
         evidence_path = _write_json(directory, "image-dry-run.json", evidence)
         digest = evidence["result"]["plan_sha256"]
@@ -5670,12 +5664,9 @@ def test_product_image_repository_apply_names_the_reviewed_start_and_reads_back(
             assert (status, posts, reads) == (2, [], []), argv
             assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
 
-        unchanged = cast(
-            dict[str, Any],
-            _saved_dry_run_output(
-                "product-image-repository-dry-run",
-                _image_response(_image_plan(image_repository_before=_NEW_IMAGE, changed=False)),
-            ),
+        unchanged = _saved_dry_run_output(
+            "product-image-repository-dry-run",
+            _image_response(_image_plan(image_repository_before=_NEW_IMAGE, changed=False)),
         )
         unchanged_path = _write_json(directory, "image-unchanged.json", unchanged)
         argv = [
