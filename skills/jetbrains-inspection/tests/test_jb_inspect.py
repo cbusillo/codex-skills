@@ -7787,6 +7787,42 @@ class AgentInspectContractTest(unittest.TestCase):
         self.assertEqual(payload["findings"], [])
         self.assertFalse(payload["findings_truncated"])
 
+    def test_terminal_transport_and_ownership_advice_does_not_invite_assessment(self):
+        for reason in ("connectionreseterror", "ownership_route_unavailable"):
+            with self.subTest(reason=reason):
+                exit_code, payload = self.emit_agent_payload(
+                    {"status": "error", "error_reason": reason}, helper_exit_code=3,
+                )
+                self.assertEqual(exit_code, 0)
+                result = payload["agent_result"]
+                self.assertEqual(result["verdict"], "UNKNOWN")
+                self.assertTrue(result["terminal"])
+                self.assertFalse(result["retry_policy"]["retry"])
+                self.assertEqual(result["retry_policy"]["max_attempts"], 0)
+                for advice in (result["next_action"], result["agent_report"]):
+                    self.assertIn("diagnostic", advice)
+                    self.assertIn("ownership route", advice)
+                    self.assertNotRegex(advice.lower(), r"rerun|retry once|start a new inspection")
+
+    def test_skipped_readiness_advice_does_not_invite_assessment(self):
+        stale_result = {"status": "stale_results", "results_may_be_stale": True}
+        jb_inspect.apply_verdict(stale_result)
+        with (
+            patch.object(jb_inspect, "run_inspection_on_route", return_value=stale_result),
+            patch.object(jb_inspect, "wait_for_internal_retry_readiness", return_value={
+                "status": "timeout", "ready": False, "exit_reason": "indexing",
+            }),
+        ):
+            result = jb_inspect.run_inspection_with_internal_retry(Namespace(), {}, {"port": 63342})
+        _, payload = self.emit_agent_payload(result)
+        result = payload["agent_result"]
+        self.assertTrue(result["terminal"])
+        self.assertFalse(result["retry_policy"]["retry"])
+        self.assertEqual(result["retry_policy"]["max_attempts"], 0)
+        for advice in (result["next_action"], result["agent_report"]):
+            self.assertIn("internal_retry_readiness", advice)
+            self.assertNotRegex(advice.lower(), r"rerun|retry once|start a new inspection")
+
     def test_retryable_unknown_remains_explicit(self):
         exit_code, payload = self.emit_agent_payload(
             {
@@ -13581,10 +13617,8 @@ class Issue458RegressionTest(unittest.TestCase):
             "Do not repeat the failed assessment unchanged. "
             "If the documented setup is absent, ambiguous, or requires global/system changes, report that blocker instead.",
         )
-        self.assertEqual(
-            content_root_action,
-            "Do not report GREEN or RED. Rerun inspection and include helper diagnostics if it remains UNKNOWN.",
-        )
+        self.assertIn("diagnostic", content_root_action)
+        self.assertNotRegex(content_root_action.lower(), r"rerun|retry once|start a new inspection")
         self.assertFalse(
             jb_inspect.retry_policy_for(
                 "UNKNOWN",

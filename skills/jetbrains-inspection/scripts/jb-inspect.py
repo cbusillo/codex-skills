@@ -6694,7 +6694,10 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
         return "Inspect lifecycle cleanup output; close helper-opened IDE projects or rerun inspect-closeout after cleanup succeeds."
     if diagnostic.get("observed_non_empty_inspection_tree") is True:
         return "Treat this as a plugin/helper capture bug and include capture_diagnostic when reporting it."
-    return "Do not report GREEN or RED. Rerun inspection and include helper diagnostics if it remains UNKNOWN."
+    return (
+        "Stop retrying this result and report the helper diagnostic payload. "
+        "Restore the IDE/plugin connection and exact ownership route before any further assessment."
+    )
 
 
 def helper_revision() -> str:
@@ -7080,9 +7083,8 @@ def exhausted_retry_next_action(reason: str, payload: dict[str, Any]) -> str:
     readiness = payload.get("internal_retry_readiness") if isinstance(payload.get("internal_retry_readiness"), dict) else {}
     if payload.get("internal_retry_skipped") is True:
         return (
-            "The helper withheld its internal retry because IDE readiness did not remain stable. Stop retrying this result in this run; "
-            "wait for same-worktree writers and IDE indexing/project-model updates to settle, then start a new inspection and include "
-            "internal_retry_readiness if it remains UNKNOWN."
+            "The helper withheld its internal retry because IDE readiness did not remain stable. Stop retrying this result and report "
+            "internal_retry_readiness. Resolve same-worktree writer and IDE indexing/project-model activity before any further assessment."
         )
     barrier_status = str(readiness.get("status") or "unknown")
     return (
