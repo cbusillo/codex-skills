@@ -943,7 +943,7 @@ def test_capacity_counts_merges_inside_the_window_by_rank() -> None:
     second = dt.timedelta(seconds=1)
     result = summary(module, pulls={
         "o/live": [merged_pull(1, SINCE), merged_pull(2, SINCE - second), merged_pull(3, None)],
-        "o/fun": [merged_pull(4, NOW), merged_pull(5, NOW + second)],
+        "o/fun": [merged_pull(4, NOW), merged_pull(5, NOW + second), merged_pull(4, NOW)],
         "o/tools": [merged_pull(6, NOW - second)],
     })
     assert result["merged_by_rank"] == {"milestone": 1, "tooling": 1, "own": 1, "unranked": 0}
@@ -986,6 +986,7 @@ def test_own_share_floor_is_unknown_while_unranked_merges_could_lift_it() -> Non
     assert "own_share_below_floor" in kinds(run(module, capacity=below))
     assert share(floor - 1, 1)["own_share_floor"] == "unknown"
     assert summary(module)["own_share_floor"] == "no_merges"
+    assert summary(module, pulls={"o/fun": [merged_pull(1, NOW)]}, incomplete=True)["own_share_floor"] == "unknown"
     assert "own_share_below_floor" not in kinds(run(module, capacity=share(floor, 0)))
 
 
@@ -1034,7 +1035,8 @@ def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
     listing = [
         {"full_name": "o/live", "owner": {"login": "o"}, "pushed_at": stamp(NOW)},
         {"full_name": "o/quiet", "owner": {"login": "o"}, "pushed_at": old},
-        {"full_name": "o/attic", "owner": {"login": "o"}, "pushed_at": old, "archived": True},
+        {"full_name": "o/attic", "owner": {"login": "o"}, "pushed_at": old, "updated_at": old, "archived": True},
+        {"full_name": "o/shut", "owner": {"login": "o"}, "pushed_at": old, "updated_at": stamp(NOW), "archived": True},
         {"full_name": "x/other", "owner": {"login": "x"}, "pushed_at": stamp(NOW)},
     ]
     calls: list[str] = []
@@ -1063,6 +1065,8 @@ def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
     assert not any("page=2" in path for path in calls if "/pulls" in path)
     assert not any(path.startswith(("repos/o/quiet/pulls", "repos/o/attic/", "repos/x/")) for path in calls)
     assert any(path.startswith("repos/o/quiet/issues/events") for path in calls)
+    assert any(path.startswith("repos/o/shut/milestones") for path in calls)
+    assert result["own_share_floor"] == "unknown"
     assert any(path.startswith("repos/o/tools/pulls") for path in calls)
 
     def nothing_lists(args: list[str]) -> Any:
@@ -1100,6 +1104,9 @@ def test_only_the_direction_repository_audit_counts_capacity() -> None:
                 module.main(["--repo", audited, "--automation", "bot", "--gh", "fixture-gh"])
             result = json.loads(output.getvalue())
             assert ("capacity" in result) is (audited == "o/direction")
+            # The direction audit's capacity read was incomplete, so its window stays open.
+            assert (result["marked"] is None) is (audited == "o/direction")
+            assert (json.loads(marker.read_text())["audits"][audited] == stamp(SINCE)) is (audited == "o/direction")
     assert windows == [("o/direction", SINCE)]
 
 

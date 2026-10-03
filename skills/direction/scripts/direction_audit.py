@@ -690,6 +690,7 @@ def capacity_summary(
     *, rank_map: dict[str, str] | None, rank_map_source: str | None,
     pulls: dict[str, list[dict[str, Any]]], milestones: dict[str, list[dict[str, Any]]],
     events: dict[str, list[dict[str, Any]]], since: dt.datetime, until: dt.datetime,
+    incomplete: bool = False,
 ) -> dict[str, Any]:
     """The overall direction's weekly numbers from per-repository listings."""
     ranks = rank_map or {}
@@ -698,7 +699,9 @@ def capacity_summary(
     unranked: list[dict[str, Any]] = []
     reverts: list[dict[str, Any]] = []
     for repo in sorted(pulls):
-        merged = [pull for pull in pulls[repo] if _within(pull.get("merged_at"), since, until)]
+        # A pull request updated mid-read can shift into the next page twice.
+        unique = {pull.get("number"): pull for pull in pulls[repo]}
+        merged = [pull for pull in unique.values() if _within(pull.get("merged_at"), since, until)]
         if not merged:
             continue
         rank = ranks.get(repo.casefold(), "unranked")
@@ -712,7 +715,10 @@ def capacity_summary(
     total = sum(merged_by_rank.values())
     own = merged_by_rank["own"]
     own_share = round(own / total, 3) if total else None
-    if not total:
+    if incomplete:
+        # A repository that could not be read could move the share either way.
+        floor = "unknown"
+    elif not total:
         floor = "no_merges"
     elif own / total >= OWN_SHARE_FLOOR:
         floor = "met"
@@ -793,7 +799,9 @@ def fetch_capacity(
         name = str(meta.get("full_name"))
         pushed = _parse_time(meta.get("pushed_at"))
         quiet = pushed is not None and pushed < since
-        if quiet and meta.get("archived"):
+        updated = _parse_time(meta.get("updated_at"))
+        if meta.get("archived") and updated is not None and updated < since:
+            # Archiving updates the repository, so it was read-only all window.
             continue
         try:
             # A merge pushes to the base branch, so a repository with no push
@@ -814,6 +822,7 @@ def fetch_capacity(
     summary = capacity_summary(
         rank_map=rank_map, rank_map_source=source, pulls=pulls,
         milestones=milestones, events=events, since=since, until=until,
+        incomplete=bool(truncated),
     )
     return summary, truncated
 
@@ -917,7 +926,9 @@ def main(argv: list[str] | None = None) -> int:
     result["audit_since"] = audit_since.isoformat().replace("+00:00", "Z")
     # Preserve unseen labeled closures without letting unrelated listing/event
     # caps keep already-judged work and stale reminders recurring indefinitely.
-    result["marked"] = None if "recent_closed_audit_issues" in truncated else record_audit(repo, now, direction_text)
+    # Incomplete capacity reads also keep the window open for a rerun.
+    keep_window = "recent_closed_audit_issues" in truncated or any(item.startswith("capacity_") for item in truncated)
+    result["marked"] = None if keep_window else record_audit(repo, now, direction_text)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["ok"] else 3
 
