@@ -4060,6 +4060,27 @@ class LifecycleTest(unittest.TestCase):
             close.assert_not_called()
             self.assertEqual(result.get("released_without_close", False), released)
 
+    def test_connection_reset_after_open_send_preserves_request_identity(self):
+        lease = {"lease_id": "reset-lease", "state": "open_requesting"}
+        identity = {"session_id": "session", "port": 63343}
+        saved = []
+        with (
+            patch.object(jb_inspect, "discover_open_identities", return_value=[identity]),
+            patch.object(jb_inspect, "identity_matches_context", return_value=True),
+            patch.object(jb_inspect, "write_lease", side_effect=lambda value: saved.append(value.copy())),
+            patch.object(jb_inspect, "http_get", side_effect=ConnectionResetError()),
+        ):
+            with self.assertRaises(ConnectionResetError):
+                jb_inspect.open_via_running_ide(Namespace(), {"worktree_root": "/tmp/worktree"}, [], lease=lease)
+        self.assertEqual(saved[-1]["ide_port"], identity["port"])
+        self.assertEqual(saved[-1]["session_id"], identity["session_id"])
+        lease.update({
+            "state": "cleanup_pending", "preparation_failure_stage": "project_open",
+            "preparation_failure_reason": "connectionreseterror",
+            "open_request_may_have_been_accepted": False,
+        })
+        self.assertFalse(jb_inspect.lease_proves_open_not_attempted(lease))
+
     def test_cleanup_command_removes_unattempted_connection_reset_lease(self):
         lease = {
             "lease_id": "unattempted", "state": "cleanup_pending",
