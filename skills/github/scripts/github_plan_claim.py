@@ -17,6 +17,22 @@ from typing import Any
 MARKER = "github-plan:claim "
 
 
+def no_wait_reason(reason: str, *, field: str) -> bool:
+    """Recognize explicit absence of a wait without discarding wait clauses."""
+    reason = reason.strip().casefold().rstrip(" .")
+    if reason in {"none", "n/a", "nothing", "-", "no native issue blocker"}:
+        return True
+    # Only Blocked by may contain a separate explanatory sentence. A semicolon
+    # (including a continued wait on the next line) remains a recorded blocker.
+    if re.search(r"\b(?:wait(?:ing)?|await(?:ing)?|pending|parked|blocked|until|unless|except|but|after|requires?|needs?)\b", reason):
+        return False
+    if field == "Blocked by":
+        return bool(re.fullmatch(r"(?:none|n/a|nothing|no native issue blocker)\.\s+[^;]+", reason))
+    if field == "Waiting for":
+        return bool(re.fullmatch(r"nothing for [\w -]+", reason))
+    return False
+
+
 def marker(claim: dict[str, str]) -> str:
     return "<!-- " + MARKER + json.dumps(claim, sort_keys=True) + " -->"
 
