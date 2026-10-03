@@ -110,8 +110,8 @@ frontier issue, including excluded waits and discovered milestone work. Each mus
 be `state: waiting`, with `waiting_on: person`, the current `discussion_digest`,
 complete discussion and ownership evidence, and a reason and evidence identifying
 who must act. A CI/event wait, a hold alone, underway or unreviewed milestone
-issue, or incomplete milestone graph coverage does not establish this rule. Empty Tracks contain
-no milestone candidates; no frontier waits at all cannot establish the rule.
+issue, or incomplete milestone graph coverage does not establish this rule.
+Empty Tracks contain no milestone candidates; no frontier waits at all cannot establish the rule.
 A `--milestone` run cannot establish portfolio-wide capacity admission.
 Deferred/stale milestone issues report `milestone_issue_excluded` with the issue
 and exclusion, rather than asking for a person-wait review that cannot clear it.
@@ -136,7 +136,11 @@ admission requires complete milestone graph coverage. Portfolio discovery bounds
 and `discovery_context.capacity_complete` remain reporting evidence and do not
 veto admission by themselves. Inspected discoveries with unresolved milestone
 context or waits still prevent admission; a partial candidate list never proves
-that no other work exists. Dependencies of discovered title-matched
+that no other work exists. Already-inventoried title-matched milestone issues
+omitted by the scan still prevent admission and are named in
+`discovery_context.unevaluated_milestone_issues`. Unavailable discovery sources
+remain coverage warnings rather than a portfolio-wide admission veto.
+Dependencies of discovered title-matched
 milestone containers inherit that scope; unavailable reads or dependency cycles
 cannot establish person waits.
 Every available tooling candidate carries `tooling_admission_rule`

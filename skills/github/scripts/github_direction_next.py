@@ -478,7 +478,7 @@ def rank_portfolio_work(
         if key in seen:
             continue
         seen.add(key)
-        item = {**raw, "availability": "needs_review"}
+        item: dict[str, Any] = {**raw, "availability": "needs_review"}
         item["overall_milestone_context"] = overall_milestone_context(
             item, graph, milestone_titles,
             repository_waypoints or {},
