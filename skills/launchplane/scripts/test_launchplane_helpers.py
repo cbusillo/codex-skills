@@ -2401,6 +2401,310 @@ def test_product_config_projection_keeps_declared_secret_class_end_to_end() -> N
     ]
 
 
+_COPY_REFERENCE = {
+    "context": "example-product",
+    "instance": "prod",
+    "version_id": "secret-version-example-1",
+}
+_COPY_SHARING_REASON = {
+    "kind": "read_only_source",
+    "reason": "Testing reads the same source.",
+    "evidence": "The Client verified view-only permissions on 2026-10-02.",
+}
+
+
+def _copy_reference_payload() -> dict[str, object]:
+    return {
+        "product": "example-product",
+        "context": "example-product",
+        "instance": "testing",
+        "reason": "Copy the verified read-only source to testing.",
+        "secrets": [
+            {
+                "binding_key": "EXAMPLE_SYNC_API_TOKEN",
+                "copy_from": dict(_COPY_REFERENCE),
+                "secret_class": "shared_safe",
+                "sharing_reason": dict(_COPY_SHARING_REASON),
+            }
+        ],
+    }
+
+
+def _copy_reference_response(mode: str, *, replayed: bool = False) -> dict[str, object]:
+    response: dict[str, object] = {
+        "status": "accepted",
+        "trace_id": f"launchplane_req_copy_{mode}",
+        "records": {},
+        "result": {
+            "status": "ok",
+            "mode": mode,
+            "product": "example-product",
+            "context": "example-product",
+            "instance": "testing",
+            "runtime_environment": {
+                "action": "skipped",
+                "scope": "instance",
+                "context": "example-product",
+                "instance": "testing",
+                "keys": [],
+                "changed_keys": [],
+                "unchanged_keys": [],
+                "env_value_count_after": 0,
+            },
+            "runtime_key_safety": {
+                "required": True,
+                "status": "pass",
+                "checked_binding_keys": ["EXAMPLE_SYNC_API_TOKEN"],
+                "findings": [],
+            },
+            "secrets": [
+                {
+                    "action": "created",
+                    "scope": "context_instance",
+                    "integration": "runtime_environment",
+                    "name": "EXAMPLE_SYNC_API_TOKEN",
+                    "binding_key": "EXAMPLE_SYNC_API_TOKEN",
+                    "context": "example-product",
+                    "instance": "testing",
+                    "secret_id": "secret-record-copy",
+                    "copy_from": dict(_COPY_REFERENCE),
+                    "sharing_reason": dict(_COPY_SHARING_REASON),
+                    "secret_class": "shared_safe",
+                }
+            ],
+            "summary": {"runtime_changed_key_count": 0, "secret_change_count": 1},
+            "next_actions": [],
+        },
+    }
+    if replayed:
+        response["replayed"] = True
+        response["original_trace_id"] = "launchplane_req_copy_apply"
+    return response
+
+
+def test_product_config_secret_copy_keeps_the_source_through_dry_run_apply_and_replay() -> None:
+    expected_secret = {
+        "action": "created",
+        "integration": "runtime_environment",
+        "binding_key": "EXAMPLE_SYNC_API_TOKEN",
+        "secret_class": "shared_safe",
+        "sharing_reason": _COPY_SHARING_REASON,
+        "copy_from": _COPY_REFERENCE,
+    }
+    responses = [
+        _copy_reference_response("dry-run"),
+        _copy_reference_response("apply"),
+        _copy_reference_response("apply", replayed=True),
+    ]
+    calls: list[dict[str, Any]] = []
+
+    def fake_request(**kwargs: Any) -> dict[str, object]:
+        calls.append(kwargs)
+        return responses[len(calls) - 1]
+
+    settings = {"service_url": "https://launchplane.example.invalid", "token": "t"}
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = Path(directory) / "copy.json"
+        payload_path.write_text(json.dumps(_copy_reference_payload()), encoding="utf-8")
+        apply_argv = [
+            "product-config-apply",
+            "--payload-file",
+            str(payload_path),
+            "--idempotency-key",
+            "example-copy-1",
+            "--reviewed-dry-run",
+        ]
+        outputs: list[dict[str, Any]] = []
+        for argv in (
+            ["product-config-dry-run", "--payload-file", str(payload_path)],
+            apply_argv,
+            apply_argv,
+        ):
+            output = io.StringIO()
+            with (
+                temporary_attribute(
+                    write_action, "prepare_operator_settings", lambda **_kwargs: settings
+                ),
+                temporary_attribute(write_action, "request_launchplane", fake_request),
+                redirect_stdout(output),
+            ):
+                assert write_action.main(argv) == 0, output.getvalue()
+            outputs.append(json.loads(output.getvalue()))
+
+    assert [call["body"]["mode"] for call in calls] == ["dry-run", "apply", "apply"]
+    for call in calls:
+        (secret,) = call["body"]["secrets"]
+        assert secret["copy_from"] == _COPY_REFERENCE
+        assert "value" not in secret
+    assert [call["idempotency_key"] for call in calls] == ["", "example-copy-1", "example-copy-1"]
+    for payload in outputs:
+        assert payload["status"] == "accepted"
+        assert payload["result"]["secrets"] == [expected_secret]
+        assert "secret-record-copy" not in json.dumps(payload)
+
+
+def test_product_config_secret_copy_refuses_a_value_or_malformed_source() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = Path(directory) / "copy.json"
+        args = argparse.Namespace(payload_file=str(payload_path), idempotency_key="")
+        for change, code in (
+            ({"value": "should-not-be-sent"}, "secret_copy_with_value"),
+            ({"copy_from": {**_COPY_REFERENCE, "product": "other"}}, "invalid_secret_copy_from"),
+            ({"copy_from": {**_COPY_REFERENCE, "version_id": " "}}, "invalid_secret_copy_from"),
+            ({"copy_from": "example-product/prod"}, "invalid_secret_copy_from"),
+        ):
+            payload = _copy_reference_payload()
+            payload_entries = cast(list[dict[str, object]], payload["secrets"])
+            payload_entries[0] = {**payload_entries[0], **change}
+            payload_path.write_text(json.dumps(payload), encoding="utf-8")
+            try:
+                write_action.product_config_payload_body(args, mode="dry-run")
+            except ValueError as exc:
+                assert str(exc) == code
+            else:
+                raise AssertionError(f"expected {code}")
+
+        ordinary = {
+            "product": "example-product",
+            "secrets": [{"binding_key": "EXAMPLE_API_TOKEN", "value": "private-value"}],
+        }
+        payload_path.write_text(json.dumps(ordinary), encoding="utf-8")
+        body = write_action.product_config_payload_body(args, mode="dry-run")
+        assert body["secrets"] == ordinary["secrets"]
+
+
+def test_product_config_secret_copy_projection_refuses_extra_source_fields() -> None:
+    for copy_from in (
+        {**_COPY_REFERENCE, "ciphertext": "opaque"},
+        {**_COPY_REFERENCE, "secret_id": "secret-record-source"},
+        {"context": "example-product", "instance": "prod"},
+        {**_COPY_REFERENCE, "version_id": "ghp_" + "abcdefghijklmnop"},
+    ):
+        response = _copy_reference_response("apply")
+        result = cast(dict[str, Any], response["result"])
+        result["secrets"][0]["copy_from"] = copy_from
+        try:
+            write_action.summarize_success(
+                operation="product-config-apply",
+                request={"mode": "apply", "payload_source": "private_file"},
+                provider_payload=response,
+            )
+        except safety.LaunchplaneSafetyError:
+            continue
+        raise AssertionError(f"expected {copy_from!r} to be refused")
+
+
+def _secret_bindings_response() -> dict[str, object]:
+    return {
+        "status": "ok",
+        "trace_id": "launchplane_req_secret_bindings",
+        "product": "example-product",
+        "bindings": [
+            {
+                "binding_key": "EXAMPLE_SYNC_API_TOKEN",
+                "name": "EXAMPLE_SYNC_API_TOKEN",
+                "scope": "context_instance",
+                "context": "example-product",
+                "instance": "prod",
+                "secret_class": "shared_safe",
+                "sharing_reason": {
+                    **_COPY_SHARING_REASON,
+                    "recorded_by": "operator-example",
+                    "recorded_at": "2026-10-02T00:00:00Z",
+                },
+                "version_id": "secret-version-example-1",
+                "provider_note": "private provider text",
+            },
+            {
+                "binding_key": "EXAMPLE_SITE_PASSWORD",
+                "name": "EXAMPLE_SITE_PASSWORD",
+                "scope": "context",
+                "context": "example-product",
+                "instance": "",
+                "secret_class": None,
+                "sharing_reason": None,
+                "version_id": "secret-version-example-2",
+            },
+            {"binding_key": "has spaces", "scope": "context", "context": "example-product"},
+        ],
+    }
+
+
+def test_product_secret_bindings_read_keeps_metadata_and_counts_the_rest() -> None:
+    argv = ["product-secret-bindings-read", "--product", "example-product"]
+    status, payload, calls = _run_product_read(argv, _secret_bindings_response())
+
+    assert status == 0, payload
+    assert calls[0]["path"] == "/v1/products/example-product/secret-bindings"
+    assert contract.LOCAL_EXTENSION_ROUTES["product-secret-bindings-read"]["method"] == "GET"
+    result = payload["result"]
+    assert result["bindings"] == [
+        {
+            "binding_key": "EXAMPLE_SYNC_API_TOKEN",
+            "name": "EXAMPLE_SYNC_API_TOKEN",
+            "scope": "context_instance",
+            "context": "example-product",
+            "instance": "prod",
+            "secret_class": "shared_safe",
+            "sharing_reason": {
+                **_COPY_SHARING_REASON,
+                "recorded_by": "operator-example",
+                "recorded_at": "2026-10-02T00:00:00Z",
+            },
+            "version_id": "secret-version-example-1",
+        },
+        {
+            "binding_key": "EXAMPLE_SITE_PASSWORD",
+            "name": "EXAMPLE_SITE_PASSWORD",
+            "scope": "context",
+            "context": "example-product",
+            "instance": "",
+            "secret_class": "",
+            "sharing_reason": None,
+            "version_id": "secret-version-example-2",
+        },
+    ]
+    assert result["omitted_binding_count"] == 1
+    assert result["dropped_field_paths"] == [
+        "bindings[].<unlisted field>",
+        "bindings[].binding_key",
+    ]
+    assert result["dropped_field_count"] == 2
+    rendered = json.dumps(payload)
+    assert "provider_note" not in rendered
+    assert "private provider text" not in rendered
+
+
+def test_product_secret_bindings_read_fails_closed_on_values_and_ciphertext() -> None:
+    argv = ["product-secret-bindings-read", "--product", "example-product"]
+    for field, value in (
+        ("value", "private-value"),
+        ("ciphertext", "gAAAAAexample"),
+        ("plaintext_value", "private-value"),
+        ("secret_value", "private-value"),
+        ("version_id", "ghp_" + "abcdefghijklmnop"),
+        ("provider_note", "ghp_" + "abcdefghijklmnop"),
+    ):
+        response = _secret_bindings_response()
+        cast(list[dict[str, object]], response["bindings"])[0][field] = value
+        status, payload, _calls = _run_product_read(argv, response)
+        assert status == 1, field
+        assert payload["status"] == "invalid"
+        assert value not in json.dumps(payload)
+
+    nested = _secret_bindings_response()
+    first = cast(list[dict[str, Any]], nested["bindings"])[0]
+    first["sharing_reason"] = {**first["sharing_reason"], "value": "private-value"}
+    status, payload, _calls = _run_product_read(argv, nested)
+    assert status == 1
+    assert "private-value" not in json.dumps(payload)
+
+    extra_top_level = {**_secret_bindings_response(), "values": ["private-value"]}
+    status, payload, _calls = _run_product_read(argv, extra_top_level)
+    assert status == 1
+    assert "private-value" not in json.dumps(payload)
+
+
 def _integration_allowance_payload() -> dict[str, object]:
     return {
         "integration": "fishbowl",
@@ -6840,6 +7144,11 @@ def main() -> int:
         test_product_repository_identity_apply_requires_saved_dry_run,
         test_product_config_secret_results_keep_declared_secret_class,
         test_product_config_projection_keeps_declared_secret_class_end_to_end,
+        test_product_config_secret_copy_keeps_the_source_through_dry_run_apply_and_replay,
+        test_product_config_secret_copy_refuses_a_value_or_malformed_source,
+        test_product_config_secret_copy_projection_refuses_extra_source_fields,
+        test_product_secret_bindings_read_keeps_metadata_and_counts_the_rest,
+        test_product_secret_bindings_read_fails_closed_on_values_and_ciphertext,
         test_repository_inventory_review_evidence_binds_exact_private_payload,
         test_repository_inventory_projection_is_bounded_and_fail_closed,
         test_agent_operator_contract_cli_is_public_safe_and_hermetic,

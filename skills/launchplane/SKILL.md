@@ -739,10 +739,10 @@ The merge-train policy import, repository inventory, product expected configurat
 generic-web deploy-recovery, Odoo addon-settings, integration-allowances,
 testing-hold, product-repository-identity, product-environment-read,
 product-activity-read, product-profile-read, path-check, preview-history-read,
-reconcile-requests-read, target-replacement-operation-read,
-target-replacement-plan-read, `product-owner-*`, `product-image-repository-*`,
-`dokploy-target-create-compose-*`, `dokploy-target-complete-compose-source-*`,
-`production-backup-authority-*`,
+reconcile-requests-read, product-secret-bindings-read,
+target-replacement-operation-read, target-replacement-plan-read, `product-owner-*`,
+`product-image-repository-*`, `dokploy-target-create-compose-*`,
+`dokploy-target-complete-compose-source-*`, `production-backup-authority-*`,
 `private-health-endpoint-*`, product-promotion-status-read and
 product-promotion-dry-run commands are explicit bounded local
 extensions because the vendored public
@@ -1019,10 +1019,10 @@ verification.
   product-config intent preflight, private local product-config dry-run/apply,
   change-impact policy dry-run/apply/read-back, guarded merge-train policy
   import, repository inventory read/dry-run/apply, product environment,
-  activity, preview and reconcile reads, Odoo target-replacement operation and
-  plan reads, Client, image repository, Dokploy compose target, production
-  backup authority and private health endpoint dry-run/apply with read-back,
-  product promotion status and dry-run, and
+  activity, preview, reconcile and secret-binding metadata reads, Odoo
+  target-replacement operation and plan reads, Client, image repository,
+  Dokploy compose target, production backup authority and private health
+  endpoint dry-run/apply with read-back, product promotion status and dry-run, and
   merge-train controller calls.
 - `scripts/check-agent-operator-contract.py`: Hermetic schema, digest,
   public-safety, operation, workflow, invariant, and local-consumer conformance
@@ -1117,6 +1117,16 @@ verification.
   event reconciler last decided for each of a product's previews and its
   testing lane: state, attempt, delivery id, last error, and the plan's
   action, reason, commit, digests and ids.
+- `GET /v1/products/{product}/secret-bindings`: Bounded local-extension read
+  (`product-secret-bindings-read --product`) of a product's runtime secret
+  binding metadata: binding key, name, scope, context, instance, declared
+  class, sharing reason and current `version_id`. It never returns a value or
+  ciphertext, and lists only bindings the caller's `secret.list` access covers,
+  so an empty list does not prove absence. Use a binding's context, instance
+  and `version_id` as `copy_from` in a product-config secret entry to copy a
+  product's own stable-lane secret into another of its lanes without
+  collecting the value; see the
+  [write-action contract](references/write-action-helper-contract.md#copying-a-managed-runtime-secret).
 - `GET /v1/drivers/odoo/target-replacement/operations/{operation_id}`: Bounded
   local-extension read (`target-replacement-operation-read --operation-id`)
   for why a testing or stable Odoo deploy failed: take the id from

@@ -339,6 +339,11 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/product-profiles/{product}/reconcile-requests",
         "mode": "read",
     },
+    "product-secret-bindings-read": {
+        "method": "GET",
+        "path": "/v1/products/{product}/secret-bindings",
+        "mode": "read",
+    },
     "target-replacement-operation-read": {
         "method": "GET",
         "path": "/v1/drivers/odoo/target-replacement/operations/{operation_id}",

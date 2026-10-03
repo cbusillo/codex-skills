@@ -77,7 +77,7 @@ block ordinary Launchplane helper reads.
 
 The merge-train policy import, repository inventory, product expected configuration,
 generic-web deploy-recovery, Odoo addon-settings, Client, Dokploy compose target,
-production backup authority, product path-check, and product promotion status and dry-run commands, plus the private Client-review reader,
+production backup authority, product path-check, product secret-binding metadata, and product promotion status and dry-run commands, plus the private Client-review reader,
 are currently bounded local extensions because they are consumed by local helpers but are not present
 in the upstream public operation projection. The validator keeps these explicit
 and fails if an upstream artifact later projects the same routes, forcing a

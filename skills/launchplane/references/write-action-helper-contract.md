@@ -140,6 +140,19 @@ local extensions until the vendored artifact is refreshed.
   to it the same way they do to `last_error`. Any other plan field,
   such as rejected-build error text or PR feedback, is dropped and counted under
   `requests[].last_plan.<unlisted field>`; the same drop and omit rules apply.
+- `product-secret-bindings-read --product` calls
+  `GET /v1/products/{product}/secret-bindings` with no query. It returns up to
+  200 of the product's runtime secret bindings, each with `binding_key`,
+  `name`, `scope` (`context` or `context_instance`), `context`, `instance`,
+  `secret_class`, `sharing_reason` (kind, reason, evidence, recorded by and
+  at) and the current `version_id`. The service needs `product_profile.read`
+  and lists only bindings covered by the caller's `secret.list` access; preview,
+  removed-lane, global and worker stores are never listed. A field named like a
+  value, ciphertext or other secret fails the whole read, as does a
+  secret-looking value in any field, including one that would be dropped; any
+  other unlisted field is dropped and counted under
+  `bindings[].<unlisted field>`, and a binding without a usable key, context
+  or scope is omitted and counted.
 - `target-replacement-operation-read --operation-id` calls
   `GET /v1/drivers/odoo/target-replacement/operations/{operation_id}` with no
   query. The service authorizes it as `operations.read` on product
@@ -597,10 +610,63 @@ lane. Launchplane refuses a class the lane does not allow. The redacted secret
 results echo the stored `secret_class` alongside `action`, `integration`, and
 `binding_key`.
 
+### Copying a managed runtime secret
+
+A product-config secret entry may carry `copy_from` instead of `value` to copy
+one of the product's own stable-lane runtime secrets into the payload's target
+lane inside the service:
+
+```json
+{
+  "binding_key": "EXAMPLE_SYNC_API_TOKEN",
+  "copy_from": {
+    "context": "example-product",
+    "instance": "prod",
+    "version_id": "<version_id from product-secret-bindings-read>"
+  },
+  "secret_class": "shared_safe",
+  "sharing_reason": {
+    "kind": "read_only_source",
+    "reason": "Testing reads the same source.",
+    "evidence": "Who verified the permissions, when, and what they saw."
+  }
+}
+```
+
+`copy_from` has exactly `context`, `instance` and `version_id`; the helper
+refuses an entry that also carries a non-null `value` (`secret_copy_with_value`)
+or a malformed reference (`invalid_secret_copy_from`) before sending anything.
+As in the service, a `null` `copy_from` means no copy, and a `null` `value`
+beside `copy_from` means no value. The
+source binding key is the destination binding key, and the destination must be
+lane-exact. A declared `secret_class` and a sharing reason with evidence are
+required; Launchplane does not check token permissions, so a person verifies
+them and the evidence records it.
+
+Take `version_id` from `product-secret-bindings-read`. Run
+`product-config-dry-run` first, then `product-config-apply --reviewed-dry-run`
+with the same file and an idempotency key; the service refuses an apply
+without its matching dry-run. The redacted secret results show `copy_from`
+(context, instance and version id) with `action`, `binding_key`,
+`secret_class` and `sharing_reason`, through dry-run, apply and replay.
+
+Refusals come from the service and appear only as `error_code`: a source
+outside the product's stable lanes, missing, ambiguous, or whose declared class
+does not allow the destination lane is `secret_copy_refused`; a rotated source
+is `secret_copy_source_changed` (read the metadata again and review a fresh
+dry-run); missing `secret.read` on the source is `authorization_denied`. Do not
+relabel the destination to get past a class refusal. A writer authorized for
+the source lane can reclassify a source verified as shareable by targeting
+that same lane with `copy_from` pointing at its own current version and the new
+class, reason and evidence. Reading a source and writing testing never
+authorizes that production-lane write; testing-only access is not authority to
+write production. A copy updates Launchplane records only; live runtime sync or
+deployment stays a separate operation.
+
 Unsupported secret source shapes must fail closed in caller guidance. Do not
 translate committed secret references, provider env lookups, stdin/stdout
 transport, arbitrary secret ids, or "reuse current value" requests into a
-product-config request.
+product-config request; the only supported reuse is `copy_from` above.
 
 Unsupported runtime-authority shapes must also fail closed. Do not translate
 checked-in product maps, workflow defaults, copied provider route payloads,
@@ -961,7 +1027,9 @@ provider dictionary pass-through:
 - `product-config-preflight`, `product-config-dry-run`, and
   `product-config-apply` may emit only intent status, reason code,
   safe-to-execute, next action, managed binding keys, runtime key-safety finding
-  codes, and product-config/intent record ids. Schema-v2 runtime retirement
+  codes, and product-config/intent record ids. Secret results also show a
+  copied secret's `copy_from` (context, instance and version id); any other
+  field in it is refused. Schema-v2 runtime retirement
   responses also expose the before/after lists of retired provider key names.
   Each list is bounded, unique, and restricted to uppercase environment key
   names; nonempty lists require instance scope. Nested record metadata is
