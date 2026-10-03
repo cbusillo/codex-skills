@@ -1392,10 +1392,20 @@ def snapshot_change_key(snapshot):
 
 
 def run_watch(args):
-    poll_seconds = args.poll_seconds
     last_change_key = None
     while True:
         snapshot, state_path = collect_snapshot(args)
+        current_change_key = snapshot_change_key(snapshot)
+        changed = current_change_key != last_change_key
+        green = is_ci_green(snapshot)
+        pr = snapshot.get("pr") or {}
+        pr_open = not bool(pr.get("closed")) and not bool(pr.get("merged"))
+
+        if not green or not pr_open or changed or last_change_key is None:
+            poll_seconds = args.poll_seconds
+        else:
+            poll_seconds = getattr(args, "green_poll_seconds", 300)
+
         print_event(
             "snapshot",
             {
@@ -1411,17 +1421,6 @@ def run_watch(args):
         ):
             print_event("stop", {"actions": snapshot.get("actions"), "pr": snapshot.get("pr")})
             return 0
-
-        current_change_key = snapshot_change_key(snapshot)
-        changed = current_change_key != last_change_key
-        green = is_ci_green(snapshot)
-        pr = snapshot.get("pr") or {}
-        pr_open = not bool(pr.get("closed")) and not bool(pr.get("merged"))
-
-        if not green or not pr_open or changed or last_change_key is None:
-            poll_seconds = args.poll_seconds
-        else:
-            poll_seconds = getattr(args, "green_poll_seconds", 300)
 
         last_change_key = current_change_key
         time.sleep(poll_seconds)
