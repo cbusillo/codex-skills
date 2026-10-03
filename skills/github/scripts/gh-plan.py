@@ -2937,8 +2937,10 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                     discovery["complete"] = False
             else:
                 discoveries.append(item)
+    candidate_coverage_complete = bool(graph_coverage["complete"] and (scope is not None or discovery.get("complete")))
     portfolio = github_direction_next.rank_portfolio_work(
         ranked, discoveries, milestone_titles=titles, selection_context=selection_context,
+        coverage_complete=scope is None and candidate_coverage_complete,
         repository_milestones={source["repo"]: direction_milestone_titles(source["direction"]) if source.get("direction") else None for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
         repository_waypoints={source["repo"]: repository_direction_milestones(source) for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
     )
@@ -2947,7 +2949,6 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     ranked["available_candidates"] = ranked["available_candidates"][:args.limit]
     ranked["graph_context"] = graph_coverage
     ranked["discovery_context"] = discovery
-    candidate_coverage_complete = bool(graph_coverage["complete"] and (scope is not None or discovery.get("complete")))
     ranked["candidate_coverage"] = {
         "scope": "milestone" if scope is not None else "portfolio",
         "complete": candidate_coverage_complete,
