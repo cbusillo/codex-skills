@@ -39,11 +39,12 @@ def is_live_breakage(issue: dict[str, Any]) -> bool:
     return LIVE_BREAKAGE_LABEL in {name.casefold() for name in normalize_labels(issue.get("labels"))}
 
 
-def discovery_scan(inventory: list[dict[str, Any]], scan_limit: int) -> list[dict[str, Any]]:
+def discovery_scan(inventory: list[dict[str, Any]], scan_limit: int, selection_context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Owner-marked incidents do not consume the ordinary discovery allowance."""
     incidents = [item for item in inventory if is_live_breakage(item)]
-    ordinary = [item for item in inventory if not is_live_breakage(item)]
-    return incidents + ordinary[:scan_limit]
+    ordinary = [item for item in inventory if not is_live_breakage(item) and not repository_hold(selection_context or {}, item["repo"])]
+    held = [item for item in inventory if not is_live_breakage(item) and repository_hold(selection_context or {}, item["repo"])]
+    return incidents + ordinary[:scan_limit] + held[:scan_limit]
 
 
 def compact_list_issue(repo: str, issue: dict[str, Any]) -> dict[str, Any]:
@@ -365,11 +366,92 @@ def overall_milestone_context(
     return {"state": "none_found" if complete else "unknown", "titles": [], "source": "checked_native_ancestry_and_repository_direction" if complete else "incomplete_context"}
 
 
+def tooling_capacity_context(
+    graph: dict[str, Any], discoveries: list[dict[str, Any]], *,
+    milestone_titles: list[str], context: dict[str, Any],
+    repository_waypoints: dict[str, list[str] | None], coverage_complete: bool,
+) -> dict[str, Any]:
+    """Only current caller evidence can distinguish a person from an event wait."""
+    result: dict[str, Any] = {"admitted": False, "reason": "milestone_waits_not_proven"}
+    if not coverage_complete or not graph.get("dependency_context", {}).get("complete"):
+        return {**result, "reason": "incomplete_portfolio_coverage"}
+    reviews = {key.casefold(): value for key, value in context.get("issues", {}).items()}
+    entries = [*graph.get("candidates", []), *graph.get("excluded", []), *discoveries]
+    by_key = {(entry["repo"].casefold(), entry["number"]): entry for entry in entries}
+    entry_keys = set(by_key)
+    matched = {key for key, entry in by_key.items() if overall_milestone_context(entry, graph, milestone_titles, repository_waypoints)["state"] == "matched"}
+    pending = list(matched)
+    while pending:
+        key = pending.pop()
+        entry = by_key[key]
+        if entry.get("exclusion") not in {"blocked_by_open_dependency", "delegated_to_open_sub_issues"}:
+            continue
+        for dependency in [*entry.get("blocked_by", []), *entry.get("open_sub_issues", [])]:
+            dependency_key = (dependency["repo"].casefold(), dependency["number"])
+            if dependency_key not in entry_keys:
+                return {**result, "reason": "incomplete_milestone_dependencies", "issue": f"{entry['repo']}#{entry['number']}"}
+            if dependency_key not in matched:
+                matched.add(dependency_key)
+                pending.append(dependency_key)
+    unresolved = {key for key in matched if by_key[key].get("exclusion") in {"blocked_by_open_dependency", "delegated_to_open_sub_issues"} and (by_key[key].get("blocked_by") or by_key[key].get("open_sub_issues"))}
+    settled = matched - unresolved
+    while unresolved:
+        ready = {key for key in unresolved if all(
+            (dependency["repo"].casefold(), dependency["number"]) in settled
+            for dependency in [*by_key[key].get("blocked_by", []), *by_key[key].get("open_sub_issues", [])]
+        )}
+        if not ready:
+            return {**result, "reason": "milestone_dependency_cycle"}
+        settled.update(ready)
+        unresolved.difference_update(ready)
+    frontier: list[dict[str, Any]] = []
+    for entry in entries:
+        if entry.get("exclusion") in {"completed", "outside_direction_tracks", "tracking", "tracking_without_open_work"}:
+            continue
+        milestone = overall_milestone_context(entry, graph, milestone_titles, repository_waypoints)
+        if (entry["repo"].casefold(), entry["number"]) in matched:
+            milestone = {"state": "matched"}
+        if milestone["state"] == "unknown":
+            # A complete graph and ancestry can rule out native Track links.
+            # Unrelated blocking issues do not become milestone work. A local
+            # title shared with overall direction still needs parsed waypoints.
+            if (entry.get("discussion") or {}).get("ancestry_complete") is True and (entry.get("milestone") or {}).get("title") not in milestone_titles:
+                continue
+            return {**result, "reason": "unknown_milestone_context", "issue": f"{entry['repo']}#{entry['number']}"}
+        if milestone["state"] != "matched":
+            continue
+        # Shared prerequisites may inherit only the first native path. Use the
+        # recorded edges, not path membership, to recognize inspected containers.
+        dependencies = [*entry.get("blocked_by", []), *entry.get("open_sub_issues", [])]
+        if entry.get("exclusion") in {"blocked_by_open_dependency", "delegated_to_open_sub_issues"} and dependencies and all(
+            (dependency["repo"].casefold(), dependency["number"]) in entry_keys for dependency in dependencies
+        ):
+            continue
+        frontier.append(entry)
+    if not frontier:
+        return {**result, "reason": "no_milestone_waits"}
+    for entry in frontier:
+        if entry.get("exclusion") not in {None, "waiting", "parent_waiting"}:
+            return {**result, "reason": "milestone_issue_excluded", "issue": f"{entry['repo']}#{entry['number']}", "exclusion": entry["exclusion"]}
+        review = reviews.get(f"{entry['repo']}#{entry['number']}".casefold(), {})
+        discussion = entry.get("discussion") or {}
+        if (
+            not discussion.get("complete")
+            or review.get("discussion_digest") != discussion.get("digest")
+            or review.get("state") != "waiting"
+            or review.get("waiting_on") != "person"
+            or review.get("ownership_complete") is not True
+        ):
+            return {**result, "issue": f"{entry['repo']}#{entry['number']}", "required": "current_complete_person_wait_review"}
+    return {"admitted": True, "reason": "all_milestones_waiting_on_people", "milestone_wait_count": len(frontier)}
+
+
 def rank_portfolio_work(
     graph: dict[str, Any], discoveries: list[dict[str, Any]], *,
     milestone_titles: list[str], selection_context: dict[str, Any] | None = None,
     repository_milestones: dict[str, list[str] | None] | None = None,
     repository_waypoints: dict[str, list[str] | None] | None = None,
+    coverage_complete: bool = False,
 ) -> dict[str, Any]:
     """Share final evidence handling across adapters without inferring permission.
 
@@ -378,6 +460,10 @@ def rank_portfolio_work(
     evidence; neither labels nor an incomplete session list establish availability.
     """
     context = validate_selection_context(selection_context or {})
+    capacity = tooling_capacity_context(
+        graph, discoveries, milestone_titles=milestone_titles, context=context,
+        repository_waypoints=repository_waypoints or {}, coverage_complete=coverage_complete,
+    )
     reviews = {key.casefold(): value for key, value in context.get("issues", {}).items()}
     candidates: list[dict[str, Any]] = []
     excluded = list(graph.get("excluded", []))
@@ -436,13 +522,16 @@ def rank_portfolio_work(
             occurrences = review.get("stop_occurrences") or []
             if category not in {"live_incident", "milestone", "repeated_stop_tooling", "own_project"} or (category == "milestone" and not item.get("via")):
                 item["review_required"] = "direction_eligibility"
-            elif category == "repeated_stop_tooling" and (
-                not isinstance(occurrences, list)
-                or len({url for url in occurrences if isinstance(url, str) and url.startswith("https://")}) < 2
-            ):
-                item["review_required"] = "two_linked_stop_occurrences"
             else:
-                item.update(availability="available", category=category, review=review)
+                stop_count = len({url for url in occurrences if isinstance(url, str) and url.startswith("https://")}) if isinstance(occurrences, list) else 0
+                if category == "repeated_stop_tooling" and stop_count < 2 and not capacity["admitted"]:
+                    item["review_required"] = "two_linked_stop_occurrences"
+                else:
+                    item.update(availability="available", category=category, review=review)
+                    if category == "repeated_stop_tooling":
+                        rule = "repeated_stops" if stop_count >= 2 else "all_milestones_waiting_on_people"
+                        item.update(tooling_admission_rule=rule, recorded_stop_count=stop_count)
+                        item["reasons"] = [*item.get("reasons", []), rule]
         candidates.append(item)
     for repo, titles in (repository_milestones or {}).items():
         group = [item for item in candidates if not item.get("via") and item["repo"].casefold() == repo.casefold()]
@@ -452,8 +541,8 @@ def rank_portfolio_work(
     rank_next_candidates(candidates, direction_milestones=milestone_titles)
     priority = {"live_incident": 0, "milestone": 1, "repeated_stop_tooling": 2, "own_project": 3}
     candidates.sort(key=lambda candidate: (
-        0 if is_live_breakage(candidate) else priority.get(candidate.get("category"), 1 if candidate.get("via") else 4),
-        candidate["rank"] if candidate.get("via") else candidate.get("repository_rank", candidate["rank"]),
+        0 if is_live_breakage(candidate) else (4 if candidate.get("tooling_admission_rule") == "all_milestones_waiting_on_people" else priority.get(candidate.get("category"), 1 if candidate.get("via") else 5)),
+        -candidate.get("recorded_stop_count", 0) if capacity["admitted"] and candidate.get("category") == "repeated_stop_tooling" and not is_live_breakage(candidate) else (candidate["rank"] if candidate.get("via") else candidate.get("repository_rank", candidate["rank"])),
         str(candidate.get("created_at") or ""), candidate["repo"].casefold(), candidate["number"],
     ))
     for rank, item in enumerate(candidates, 1):
@@ -464,6 +553,7 @@ def rank_portfolio_work(
         "available_candidates": available, "available_candidate_count": len(available),
         "review_required_count": len(candidates) - len(available),
         "underway": underway, "waiting": waiting, "excluded": excluded,
+        "tooling_capacity_context": capacity,
         "repository_holds": context.get("repository_holds", {}),
         "ownership_context": {"source": "caller_evidence", "all_active_sessions_searched": False},
     }
@@ -609,6 +699,8 @@ def rank_direction_work(
         node = read_node(ref["repo"], ref["number"])
         item = {
             **node["item"],
+            "blocked_by": node.get("blockers") or [],
+            "open_sub_issues": node.get("children") or [],
             "issue_milestone": node["item"].get("milestone"),
             "milestone": milestone,
             "via": via,
