@@ -18,12 +18,13 @@ comments and status, `github` for merges, `launchplane` for the merge train,
 ## Before Taking Over: Permission Mode
 
 The permission mode decides what a Supervisor can do. In Claude Code's auto
-mode the classifier denies launching sessions and merging, unless the Director
-has applied the auto-mode entries in the catalog README's Auto mode section
-by hand. Check the current mode
-before taking over. If it will deny a step you need, tell the Director in your
-first message, before the first denial, and say which steps it blocks. Never
-change the Director's settings yourself.
+mode the classifier denies launching sessions and merging. The auto-mode
+entries in the catalog README's Auto mode section, which the Director applies
+by hand, cover only a direct `gh-pr.py merge` that this session's messages
+authorize; they cover neither launching sessions nor merge-train landings.
+Check the current mode before taking over. If it will deny a step you need,
+tell the Director in your first message, before the first denial, and name
+each step it blocks. Never change the Director's settings yourself.
 
 ## Pilot Status
 
@@ -55,12 +56,14 @@ records that run.
 
 1. **One brief per session and repository.** The brief says what the session
    may do, where it stops, and where it asks. Never widen a brief after
-   launch. A session that needs more scope gets a Director question, and a new
-   brief if the Director says yes.
+   launch. A session that needs more scope gets a Director question. If the
+   Director says yes, the wider scope goes in a new brief for a fresh
+   session; the running session's brief stays as it was.
 2. **Director questions live on the item's issue**, as a comment that starts
    `Owner question:`. The Director answers in chat, Discord, or on GitHub. The
-   Supervisor records the answer as an `Owner decision` comment on that issue
-   and points the session at it. Briefs accept a decision recorded by the
+   Supervisor records the answer as an `Owner decision` comment on that issue,
+   quoting the Director's words and saying where they were said, and points
+   the session at it. It records only what the Director said. Briefs accept a decision recorded by the
    Supervisor or a direction session, not only one posted from the Director's
    own login.
 3. **A check about every 23 minutes.** Keep a ledger of session, repository,
@@ -68,8 +71,8 @@ records that run.
    the failing check, the time it last moved. Check each session's context
    size and ask it to close out at its next safe point near 450k. Gather the
    open Director questions.
-4. **Every check and every handoff ends with the "needs the Director" list**
-   (in the pilot, "Needs Chris"): each question in full, with what it decides,
+4. **Every check and every handoff ends with the "needs the Director" list**,
+   headed with the Director's name (the pilot's handoffs say "Needs Chris"): each question in full, with what it decides,
    what changes on yes, and a recommendation, in one batch.
 5. **Land through the merge train** with the maintained driver,
    `skills/launchplane/scripts/launchplane-train-drive.py`, one driver per
@@ -77,9 +80,10 @@ records that run.
    outside the train, the session's own `github` merge path applies.
 6. **The Supervisor briefs, watches, nudges, and records.** It never decides
    for the Director, never widens a brief, and never scores a run it launched;
-   a direction session on another model judges those runs. It does alignment
-   checks against each repository's `DIRECTION.md` and the Director's overall
-   direction during the run.
+   a direction session on another model judges those runs. During the run it
+   does alignment checks: it compares what each session is doing with that
+   repository's `DIRECTION.md` and the Director's overall direction, and a
+   mismatch becomes a Director question, not a verdict on the run.
 
 ## Procedure
 
@@ -123,8 +127,9 @@ Post it on the pilot issue as one comment:
 - Sessions never use `git stash`; it is shared across worktrees.
 - When a bug fits a pattern, sweep the whole path once instead of fixing it
   round by round on the train.
-- Every child of a stacked PR must be ready itself; routing a parent can land
-  a held child.
+- Before routing the parent of a stacked PR, keep each held child draft or
+  unlabeled, as the `launchplane` skill says; every child that lands must be
+  ready itself.
 - A killed train driver can leave a lease for a while, and two drivers on one
   repository is a wait, not a failure.
 - About a dozen sessions plus drivers on one App token trip GitHub's
