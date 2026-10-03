@@ -6,6 +6,8 @@
 """Watch GitHub PR CI and review activity for PR babysitting workflows."""
 
 import argparse
+import fcntl
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -374,6 +376,17 @@ def load_state(path):
         "seen_review_ids": [],
         "last_snapshot_at": None,
     }, True
+
+
+@contextmanager
+def state_lock(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.with_name(path.name + ".lock").open("a") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def save_state(path, state):
@@ -1219,6 +1232,11 @@ def collect_snapshot(args):
     pr = resolve_pr(args.pr, repo_override=args.repo)
     pr_diagnostic = pr.pop("_read_diagnostic", None)
     state_path = Path(args.state_file) if args.state_file else default_state_file_for(pr)
+    with state_lock(state_path):
+        return collect_locked_snapshot(args, pr, pr_diagnostic, state_path)
+
+
+def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
     state, fresh_state = load_state(state_path)
 
     if not state.get("started_at"):
@@ -1269,8 +1287,12 @@ def collect_snapshot(args):
     )
 
     if pending_reruns and not pr["closed"] and not pr["merged"]:
-        actions = [action for action in actions if action not in {"retry_failed_checks", "ready_to_merge"}]
+        actions = [action for action in actions if action not in {
+            "retry_failed_checks", "ready_to_merge", "stop_exhausted_retries",
+        }]
         actions.append("check_rerun_outcome")
+        if any(item["outcome"] != "confirmed" for item in pending_reruns.values()):
+            actions.append("stop_unknown_rerun")
     elif "retry_failed_checks" in actions and not retryable_failed_runs(failed_runs, failed_jobs):
         actions.remove("retry_failed_checks")
 
@@ -1315,7 +1337,7 @@ def reconcile_pending_reruns(state, head_sha, workflow_runs):
     pending = state.setdefault("pending_reruns_by_sha", {}).setdefault(head_sha, {})
     for run in workflow_runs:
         run_id = str(run.get("id"))
-        previous_attempt = pending.get(run_id)
+        previous_attempt = pending.get(run_id, {}).get("run_attempt")
         current_attempt = run.get("run_attempt")
         if (run.get("head_sha") == head_sha and isinstance(previous_attempt, int)
                 and isinstance(current_attempt, int) and current_attempt > previous_attempt):
@@ -1367,8 +1389,21 @@ def retry_failed_now(args):
     result["skipped_run_ids"] = [
         run.get("run_id") for run in failed_runs if run not in eligible_runs
     ]
+    with state_lock(state_path):
+        return submit_locked_reruns(snapshot, state_path, result, eligible_runs)
+
+
+def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
+    pr = snapshot["pr"]
     state, _ = load_state(state_path)
+    retries_used = current_retry_count(state, pr["head_sha"])
+    if retries_used >= snapshot["retry_state"]["max_flaky_retries"]:
+        result["reason"] = "retry_budget_exhausted"
+        return result
     pending = state.setdefault("pending_reruns_by_sha", {}).setdefault(pr["head_sha"], {})
+    if pending:
+        result["reason"] = "rerun_outcome_pending"
+        return result
     cycle_charged = False
     for run in eligible_runs:
         run_id = run.get("run_id")
@@ -1379,27 +1414,39 @@ def retry_failed_now(args):
             cycle_charged = True
         # Persist intent before submitting a write. A crash or ambiguous error
         # must not let the next invocation replay the same run attempt.
-        pending[str(run_id)] = run.get("run_attempt")
+        pending[str(run_id)] = {"run_attempt": run.get("run_attempt"), "outcome": "submitting"}
         save_state(state_path, state)
         result["rerun_attempted"] = True
         try:
             gh_text(["run", "rerun", str(run_id), "--failed"], repo=pr["repo"])
         except GhCommandError as err:
             detail = github_api.redact_string(str(err))
-            if "HTTP 422" in detail and "cannot be retried" in detail.lower():
+            # gh rewrites HTTP 403 into this message, dropping the status.
+            rejected = bool(re.search(r"HTTP (?:400|401|403|404|410|422|429)\b", detail)) or (
+                f"run {run_id} cannot be rerun;" in detail
+            )
+            if rejected:
                 del pending[str(run_id)]
-                result["skipped_run_ids"].append(run_id)
+                if not result["rerun_run_ids"]:
+                    set_retry_count(state, pr["head_sha"], retries_used)
+                    cycle_charged = False
                 save_state(state_path, state)
+                if "cannot be retried" not in detail.lower():
+                    result["reason"] = "rerun_rejected"
+                    result["error"] = detail
+                    break
+                result["skipped_run_ids"].append(run_id)
                 continue
             result["reason"] = "rerun_outcome_unknown"
             result["error"] = detail
             result["unknown_run_id"] = run_id
             break
+        pending[str(run_id)]["outcome"] = "confirmed"
         result["rerun_run_ids"].append(run_id)
         result["rerun_count"] = len(result["rerun_run_ids"])
         save_state(state_path, state)
 
-    if result["reason"] != "rerun_outcome_unknown":
+    if result["reason"] not in {"rerun_outcome_unknown", "rerun_rejected"}:
         if result["rerun_run_ids"]:
             result["reason"] = "rerun_triggered"
         else:
@@ -1470,6 +1517,7 @@ def run_watch(args):
         if (
             "stop_pr_closed" in actions
             or "stop_exhausted_retries" in actions
+            or "stop_unknown_rerun" in actions
         ):
             print_event("stop", {"actions": snapshot.get("actions"), "pr": snapshot.get("pr")})
             return 0

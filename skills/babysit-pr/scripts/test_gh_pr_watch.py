@@ -8,6 +8,7 @@
 
 import argparse
 import json
+import multiprocessing
 import os
 import subprocess
 import sys
@@ -1287,7 +1288,7 @@ def test_nonretryable_rejection_preserves_success_and_continues(monkeypatch, tmp
     assert set(state["pending_reruns_by_sha"]["abc123"]) == {str(n) for n in expected}
 
 
-@pytest.mark.parametrize("error", ["connection reset", "HTTP 403: denied", "HTTP 422: different validation error"])
+@pytest.mark.parametrize("error", ["connection reset", "HTTP 503: service unavailable"])
 def test_ambiguous_error_preserves_progress_and_blocks_replay(monkeypatch, tmp_path, error):
     snapshot, path = retry_snapshot(monkeypatch, tmp_path,
                                     [failed_run(1), failed_run(2), failed_run(3)],
@@ -1312,7 +1313,7 @@ def test_ambiguous_error_preserves_progress_and_blocks_replay(monkeypatch, tmp_p
         {"id": 1, "head_sha": "abc123", "run_attempt": 2},
         {"id": 2, "head_sha": "abc123", "run_attempt": 1},
     ])
-    assert pending == {"2": 1}
+    assert pending == {"2": {"run_attempt": 1, "outcome": "submitting"}}
     snapshot["retry_state"]["pending_run_ids"] = list(pending)
     assert gh_pr_watch.retry_failed_now(argparse.Namespace())["reason"] == "rerun_outcome_pending"
     assert writes == ["1", "2"]
@@ -1332,7 +1333,7 @@ def test_crash_after_write_intent_cannot_replay(monkeypatch, tmp_path):
         gh_pr_watch.retry_failed_now(argparse.Namespace())
     state = gh_pr_watch.load_state(path)[0]
     assert gh_pr_watch.current_retry_count(state, "abc123") == 1
-    assert gh_pr_watch.reconcile_pending_reruns(state, "abc123", []) == {"1": 1}
+    assert gh_pr_watch.reconcile_pending_reruns(state, "abc123", []) == {"1": {"run_attempt": 1, "outcome": "submitting"}}
 
 
 def test_cancelled_run_with_failed_job_is_rerunnable(monkeypatch, tmp_path):
@@ -1345,9 +1346,10 @@ def test_cancelled_run_with_failed_job_is_rerunnable(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("run_attempt, expected_action", [(1, "check_rerun_outcome"), (2, "retry_failed_checks")])
-def test_snapshot_reconciles_write_intent_before_recommending_retry(monkeypatch, tmp_path, run_attempt, expected_action):
+@pytest.mark.parametrize("max_retries", [1, 3])
+def test_snapshot_reconciles_write_intent_before_recommending_retry(monkeypatch, tmp_path, run_attempt, expected_action, max_retries):
     path = tmp_path / "state.json"
-    gh_pr_watch.save_state(path, {"pending_reruns_by_sha": {"abc123": {"1": 1}},
+    gh_pr_watch.save_state(path, {"pending_reruns_by_sha": {"abc123": {"1": {"run_attempt": 1, "outcome": "submitting"}}},
                                   "retries_by_sha": {"abc123": 1}})
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *args, **kwargs: sample_pr())
     monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda reader=None: "octocat")
@@ -1359,12 +1361,16 @@ def test_snapshot_reconciles_write_intent_before_recommending_retry(monkeypatch,
          "status": "completed", "conclusion": "failure"},
     ])
     monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *args, **kwargs: [failed_job(1)])
-    args = argparse.Namespace(pr="123", repo=None, state_file=str(path), max_flaky_retries=3)
+    args = argparse.Namespace(pr="123", repo=None, state_file=str(path), max_flaky_retries=max_retries)
 
     snapshot, _ = gh_pr_watch.collect_snapshot(args)
 
+    if run_attempt == 2 and max_retries == 1:
+        expected_action = "stop_exhausted_retries"
+    assert ("stop_unknown_rerun" in snapshot["actions"]) == (run_attempt == 1)
+    assert ("stop_exhausted_retries" in snapshot["actions"]) == (run_attempt == 2 and max_retries == 1)
     assert expected_action in snapshot["actions"]
-    assert ("retry_failed_checks" in snapshot["actions"]) == (run_attempt == 2)
+    assert ("retry_failed_checks" in snapshot["actions"]) == (run_attempt == 2 and max_retries > 1)
     assert snapshot["retry_state"]["pending_run_ids"] == (["1"] if run_attempt == 1 else [])
     assert snapshot["retry_state"]["current_sha_retries_used"] == 1
 
@@ -1376,6 +1382,133 @@ def test_retry_cli_returns_partial_progress_with_failure_exit(monkeypatch, capsy
     })
     assert gh_pr_watch.main() == 1
     assert json.loads(capsys.readouterr().out)["rerun_run_ids"] == [1]
+
+
+@pytest.mark.parametrize("error", ["HTTP 403: denied", "HTTP 422: invalid request",
+                                   "run 1 cannot be rerun; Resource not accessible by integration"])
+def test_confirmed_rejection_releases_intent_and_budget(monkeypatch, tmp_path, error):
+    _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
+
+    def reject(*_args, **_kwargs):
+        raise gh_pr_watch.GhCommandError(error)
+
+    monkeypatch.setattr(gh_pr_watch, "gh_text", reject)
+    result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+    assert result["reason"] == "rerun_rejected"
+    assert result["error"] == error
+    assert result["retries_used"] == 0
+    assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"] == {}
+
+
+def test_gh_rewritten_nonretryable_rejection_is_skipped(monkeypatch, tmp_path):
+    retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
+
+    def reject(*_args, **_kwargs):
+        raise gh_pr_watch.GhCommandError("run 1 cannot be rerun; This workflow run cannot be retried")
+
+    monkeypatch.setattr(gh_pr_watch, "gh_text", reject)
+    result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+    assert result["skipped_run_ids"] == [1]
+    assert result["retries_used"] == 0
+    assert "error" not in result
+
+
+def test_concurrent_retries_do_not_replay_unknown_write(monkeypatch, tmp_path):
+    snapshot, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
+    ctx = multiprocessing.get_context("fork")
+    barrier = ctx.Barrier(2)
+    results = ctx.Queue()
+    writes_path = tmp_path / "writes.txt"
+
+    def collect(_args):
+        barrier.wait(timeout=10)
+        return snapshot, path
+
+    def submit(*_args, **_kwargs):
+        with writes_path.open("a") as stream:
+            stream.write("submitted\n")
+        raise gh_pr_watch.GhCommandError("connection reset")
+
+    monkeypatch.setattr(gh_pr_watch, "collect_snapshot", collect)
+    monkeypatch.setattr(gh_pr_watch, "gh_text", submit)
+
+    def worker():
+        results.put(gh_pr_watch.retry_failed_now(argparse.Namespace())["reason"])
+
+    workers = [ctx.Process(target=worker) for _ in range(2)]
+    try:
+        for process in workers:
+            process.start()
+        for process in workers:
+            process.join(timeout=15)
+            assert process.exitcode == 0
+        assert {results.get(timeout=2), results.get(timeout=2)} == {
+            "rerun_outcome_unknown", "rerun_outcome_pending",
+        }
+        assert writes_path.read_text() == "submitted\n"
+        assert gh_pr_watch.current_retry_count(gh_pr_watch.load_state(path)[0], "abc123") == 1
+    finally:
+        for process in workers:
+            if process.is_alive():
+                process.terminate()
+                process.join()
+        results.close()
+
+
+def test_snapshot_cannot_overwrite_retry_intent(monkeypatch, tmp_path):
+    path = tmp_path / "state.json"
+    ctx = multiprocessing.get_context("fork")
+    snapshot_reading = ctx.Event()
+    finish_read = ctx.Event()
+    retry_started = ctx.Event()
+    snapshot = {"pr": sample_pr(), "retry_state": {"max_flaky_retries": 3}}
+    args = argparse.Namespace(pr="123", repo=None, state_file=str(path), max_flaky_retries=3)
+    monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *a, **kw: sample_pr())
+    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda reader=None: "octocat")
+    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *a, **kw: [])
+    monkeypatch.setattr(gh_pr_watch.github_read, "pull_request_checks", lambda *a, **kw: {})
+    monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *a, **kw: sample_checks(failed_count=1))
+    monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *a, **kw: [])
+
+    def runs(*_args, **_kwargs):
+        snapshot_reading.set()
+        assert finish_read.wait(timeout=10)
+        return []
+
+    def unknown(*_args, **_kwargs):
+        raise gh_pr_watch.GhCommandError("connection reset")
+
+    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", runs)
+    monkeypatch.setattr(gh_pr_watch, "gh_text", unknown)
+
+    def retry():
+        retry_started.set()
+        with gh_pr_watch.state_lock(path):
+            gh_pr_watch.submit_locked_reruns(snapshot, path, {
+                "reason": None, "rerun_run_ids": [], "skipped_run_ids": [],
+            }, [failed_run(1)])
+
+    watcher = ctx.Process(target=lambda: gh_pr_watch.collect_snapshot(args))
+    retry_process = ctx.Process(target=retry)
+    try:
+        watcher.start()
+        assert snapshot_reading.wait(timeout=10)
+        retry_process.start()
+        assert retry_started.wait(timeout=10)
+        finish_read.set()
+        for process in (watcher, retry_process):
+            process.join(timeout=15)
+            assert process.exitcode == 0
+        state = gh_pr_watch.load_state(path)[0]
+        assert state["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "submitting"
+        assert gh_pr_watch.current_retry_count(state, "abc123") == 1
+    finally:
+        finish_read.set()
+        for process in (watcher, retry_process):
+            if process.is_alive():
+                process.terminate()
+                process.join()
+
 
 
 if __name__ == "__main__":
