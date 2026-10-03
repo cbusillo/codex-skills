@@ -43,7 +43,7 @@ FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
 FRONTMATTER_PROSE = re.compile(r"^(\s*)(?:-\s+)?(?:description|purpose|message):")
 FRONTMATTER_KEY = re.compile(r"^\s*(?:-\s+)?[\w-]+:(?:\s|$)")
 INLINE_CODE = re.compile(r"(`+).*?\1")
-LINK_TARGET = re.compile(r"\]\([^)]*\)")
+LINK_TARGET = re.compile(r"]\([^)]*\)")
 URL = re.compile(r"https?://\S+")
 
 # The glossary names the retired words. Recorded evaluation evidence keeps the
@@ -117,13 +117,13 @@ def prose_lines(text: str) -> Iterable[tuple[int, str]]:
         carried = TRAILING_QUALIFIER.search(previous)
         previous = line
         if carried:
-            line = carried.group(0).strip() + " " + line.lstrip()
+            line = carried.group().strip() + " " + line.lstrip()
         yield number, ALLOWED.sub(" ", line)
 
 
 def findings(text: str) -> list[tuple[int, str]]:
     return [
-        (number, match.group(0))
+        (number, match.group())
         for number, line in prose_lines(text)
         for match in RETIRED.finditer(line)
     ]
