@@ -374,18 +374,25 @@ def tooling_capacity_context(
     result: dict[str, Any] = {"admitted": False, "reason": "milestone_waits_not_proven"}
     if not coverage_complete or not graph.get("dependency_context", {}).get("complete"):
         return {**result, "reason": "incomplete_portfolio_coverage"}
+    if context.get("repository_holds"):
+        return {**result, "reason": "held_repository_inventory"}
     reviews = {key.casefold(): value for key, value in context.get("issues", {}).items()}
     entries = [*graph.get("candidates", []), *graph.get("excluded", []), *discoveries]
+    entry_keys = {(entry["repo"].casefold(), entry["number"]) for entry in entries}
     frontier: list[dict[str, Any]] = []
     for entry in entries:
-        milestone = overall_milestone_context(entry, graph, milestone_titles, repository_waypoints)
-        if milestone["state"] != "matched" or entry.get("exclusion") in {"completed", "outside_direction_tracks", "tracking", "tracking_without_open_work"}:
+        if entry.get("exclusion") in {"completed", "outside_direction_tracks", "tracking", "tracking_without_open_work"}:
             continue
-        key = (entry["repo"].casefold(), entry["number"])
-        # Native dependency containers are represented by their inspected leaves.
-        if entry.get("exclusion") in {"blocked_by_open_dependency", "delegated_to_open_sub_issues"} and any(
-            key in {(step["repo"].casefold(), step["number"]) for step in other.get("via", [])[:-1]}
-            for other in entries
+        milestone = overall_milestone_context(entry, graph, milestone_titles, repository_waypoints)
+        if milestone["state"] == "unknown":
+            return {**result, "reason": "unknown_milestone_context", "issue": f"{entry['repo']}#{entry['number']}"}
+        if milestone["state"] != "matched":
+            continue
+        # Shared prerequisites may inherit only the first native path. Use the
+        # recorded edges, not path membership, to recognize inspected containers.
+        dependencies = [*entry.get("blocked_by", []), *entry.get("open_sub_issues", [])]
+        if entry.get("exclusion") in {"blocked_by_open_dependency", "delegated_to_open_sub_issues"} and dependencies and all(
+            (dependency["repo"].casefold(), dependency["number"]) in entry_keys for dependency in dependencies
         ):
             continue
         frontier.append(entry)
@@ -403,7 +410,7 @@ def tooling_capacity_context(
             or review.get("waiting_on") != "person"
             or review.get("ownership_complete") is not True
         ):
-            return result
+            return {**result, "issue": f"{entry['repo']}#{entry['number']}", "required": "current_complete_person_wait_review"}
     return {"admitted": True, "reason": "all_milestones_waiting_on_people", "milestone_wait_count": len(frontier)}
 
 
@@ -501,11 +508,8 @@ def rank_portfolio_work(
             item["repository_rank"] = item["rank"]
     rank_next_candidates(candidates, direction_milestones=milestone_titles)
     priority = {"live_incident": 0, "milestone": 1, "repeated_stop_tooling": 2, "own_project": 3}
-    if capacity["admitted"]:
-        # Keep own projects selectable while tooling fills spare capacity.
-        priority.update(own_project=2, repeated_stop_tooling=3)
     candidates.sort(key=lambda candidate: (
-        0 if is_live_breakage(candidate) else priority.get(candidate.get("category"), 1 if candidate.get("via") else 4),
+        0 if is_live_breakage(candidate) else (4 if candidate.get("tooling_admission_rule") == "all_milestones_waiting_on_people" else priority.get(candidate.get("category"), 1 if candidate.get("via") else 5)),
         -candidate.get("recorded_stop_count", 0) if capacity["admitted"] and candidate.get("category") == "repeated_stop_tooling" else (candidate["rank"] if candidate.get("via") else candidate.get("repository_rank", candidate["rank"])),
         str(candidate.get("created_at") or ""), candidate["repo"].casefold(), candidate["number"],
     ))
@@ -663,6 +667,8 @@ def rank_direction_work(
         node = read_node(ref["repo"], ref["number"])
         item = {
             **node["item"],
+            "blocked_by": node.get("blockers") or [],
+            "open_sub_issues": node.get("children") or [],
             "issue_milestone": node["item"].get("milestone"),
             "milestone": milestone,
             "via": via,

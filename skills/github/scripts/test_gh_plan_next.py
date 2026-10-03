@@ -701,7 +701,7 @@ def global_fixture(
         load_config=lambda *_: module.DEFAULT_CONFIG,
         load_direction=lambda *_: DIRECTION,
         collect_paged_rest_items=collect,
-        discover_direction_work=lambda *_args, **_kwargs: (discovered or [], {"complete": True, "repositories": []}),
+        discover_direction_work=lambda *_args, **_kwargs: (discovered or [], {"complete": True, "repositories": [{"repo": name, "direction": None} for name in sorted({item["repo"] for item in discovered or []})]}),
         next_focus_context=lambda *_: (None, {}, {"available": False, "reason": "project_not_configured"}),
         read_next_issue_relationships=native_reader if relationship_requests is not None else read_relationships,
         read_next_parent=lambda target, number: parent_map.get((target.casefold(), number)),
@@ -1137,15 +1137,15 @@ def test_portfolio_capacity_admission_ranks_stops_then_age_and_keeps_own_project
         with patch.multiple(module, next_selection_context=lambda _args: context):
             module.cmd_next(next_args())
             assert result["tooling_capacity_context"]["admitted"] is True
-            assert [item["number"] for item in result["available_candidates"]] == [42, 23, 22, 21, 20]
+            assert [item["number"] for item in result["available_candidates"]] == [23, 42, 22, 21, 20]
             tools_by_number = {item["number"]: item for item in result["available_candidates"] if item["repo"] == "someone/tools"}
             assert tools_by_number[23]["tooling_admission_rule"] == "repeated_stops"
             assert tools_by_number[22]["tooling_admission_rule"] == "all_milestones_waiting_on_people"
             assert tools_by_number[22]["recorded_stop_count"] == 1
             args = next_args()
-            args.limit = 1
+            args.limit = 2
             module.cmd_next(args)
-            assert [item["number"] for item in result["available_candidates"]] == [42]
+            assert [item["number"] for item in result["available_candidates"]] == [23, 42]
 
 
 def test_portfolio_capacity_needs_current_person_waits_and_complete_coverage() -> None:
@@ -1174,6 +1174,9 @@ def test_portfolio_capacity_needs_current_person_waits_and_complete_coverage() -
         with patch.multiple(module, next_selection_context=lambda _args: base):
             module.cmd_next(next_args())
             assert result["tooling_capacity_context"]["admitted"] is True
+            with patch.multiple(module.github_milestone_core, show_milestone=lambda *_a, **_kw: {"milestone": roots[0]["milestone"]}):
+                module.cmd_next(next_args(milestone="First"))
+                assert result["tooling_capacity_context"]["admitted"] is False
             module.discover_direction_work = lambda *_a, **_kw: ([tool], {"complete": False, "repositories": []})
             module.cmd_next(next_args())
             assert result["tooling_capacity_context"]["admitted"] is False
@@ -1187,7 +1190,7 @@ def test_portfolio_capacity_waiting_discovery_milestone_blocks_admission() -> No
     unlinked = global_issue("someone/other", 30, milestone=milestone_data(7, "First", created_at="2026-01-01"))
     edges = {(roots[0]["repo"], 1): relationships(sub_issues=[wait]), (roots[1]["repo"], 2): relationships(sub_issues=[wait])}
     with global_fixture(roots, [wait], edges, discovered=[tool, unlinked]) as (module, result, _reads):
-        module.discover_direction_work = lambda *_a, **_kw: ([tool, unlinked], {"complete": True, "repositories": [{"repo": "someone/other", "direction": DIRECTION}]})
+        module.discover_direction_work = lambda *_a, **_kw: ([tool, unlinked], {"complete": True, "repositories": [{"repo": "someone/other", "direction": DIRECTION}, {"repo": "someone/tools", "direction": None}]})
         module.cmd_next(next_args())
         items = {item["number"]: item for item in result["candidates"]}
         context = {"issues": {
@@ -1207,6 +1210,48 @@ def test_portfolio_capacity_waiting_discovery_milestone_blocks_admission() -> No
         with patch.multiple(module, next_selection_context=lambda _args: context):
             module.cmd_next(next_args())
             assert result["tooling_capacity_context"]["admitted"] is False
+
+
+def test_portfolio_capacity_shared_blocker_service_parity_and_unknown_context() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    parents = [global_issue("someone/business", n) for n in (10, 11)]
+    wait = global_issue("someone/business", 12, body="## Current Status\nWaiting for: Customer testing.")
+    tool = global_issue("someone/tools", 20)
+    incident = global_issue("someone/product", 30, labels=["live-breakage"])
+    edges = {(root["repo"], root["number"]): relationships(sub_issues=[parent]) for root, parent in zip(roots, parents)}
+    edges.update({(parent["repo"], parent["number"]): relationships(blocked_by=[wait]) for parent in parents})
+    with global_fixture(roots, [*parents, wait], edges, discovered=[tool, incident]) as (module, result, _reads):
+        module.cmd_next(next_args())
+        items = {item["number"]: item for item in [*result["candidates"], *result["excluded"]]}
+        context = {"issues": {
+            "someone/business#12": reviewed(items[12], "waiting", waiting_on="person"),
+            "someone/tools#20": reviewed(items[20], category="repeated_stop_tooling"),
+            "someone/product#30": reviewed(items[30], category="live_incident"),
+        }}
+        with patch.multiple(module, next_selection_context=lambda _args: context):
+            module.cmd_next(next_args())
+            assert result["tooling_capacity_context"]["admitted"] is True
+            assert [item["number"] for item in result["available_candidates"]] == [30, 20]
+        graph = module.github_direction_next.rank_direction_work(
+            [{**root, "url": root["html_url"]} for root in roots], milestone_titles=["First", "Second"],
+            read_node=lambda repo, number: {
+                "item": items[number],
+                "blockers": [module.compact_relationship_issue(wait, "blocked_by")] if number in (10, 11) else [],
+                "children": [module.compact_relationship_issue(parents[number - 1], "sub_issue")] if repo == "someone/direction" else [],
+            }, scan_limit=50,
+        )
+        # Reuse the CLI's full snapshots to compare the shared service surface.
+        discoveries = [items[20], items[30]]
+        kwargs = dict(milestone_titles=["First", "Second"], selection_context=context,
+                      repository_waypoints={"someone/tools": [], "someone/product": []})
+        service = module.github_direction_next.rank_portfolio_work(graph, discoveries, **kwargs, coverage_complete=True)
+        assert [item["number"] for item in service["available_candidates"]] == [30, 20]
+        service = module.github_direction_next.rank_portfolio_work(graph, discoveries, **kwargs)
+        assert [item["number"] for item in service["available_candidates"]] == [30]
+        kwargs["repository_waypoints"]["someone/tools"] = None
+        service = module.github_direction_next.rank_portfolio_work(graph, discoveries, **kwargs, coverage_complete=True)
+        assert service["tooling_capacity_context"]["reason"] == "unknown_milestone_context"
+        assert service["tooling_capacity_context"]["issue"] == "someone/tools#20"
 
 
 def test_portfolio_inventory_sources_exclusions_round_robin_and_read_bounds() -> None:
@@ -1818,6 +1863,7 @@ TESTS = [
     test_portfolio_capacity_admission_ranks_stops_then_age_and_keeps_own_projects,
     test_portfolio_capacity_needs_current_person_waits_and_complete_coverage,
     test_portfolio_capacity_waiting_discovery_milestone_blocks_admission,
+    test_portfolio_capacity_shared_blocker_service_parity_and_unknown_context,
     test_portfolio_inventory_sources_exclusions_round_robin_and_read_bounds,
     test_portfolio_inventory_failure_and_scan_bound_never_claim_full_coverage,
     test_next_beta_rc_stable_chain_respects_native_blockers,

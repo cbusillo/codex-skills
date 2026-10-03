@@ -105,13 +105,18 @@ no milestone candidates; no frontier waits at all cannot establish the rule.
 A `--milestone` run cannot establish portfolio-wide capacity admission.
 No person is inferred from free text. Refresh these reviews on each selection.
 
-`tooling_capacity_context` explains whether the capacity rule is established.
+`tooling_capacity_context` explains whether the capacity rule is established,
+including the first unresolved issue when a milestone review or context is missing.
+Held repositories are omitted from discovery, so their inventory cannot establish
+a portfolio-wide person-wait rule; any recorded repository hold disables capacity
+admission while leaving ordinary eligible work selectable.
 Every available tooling candidate carries `tooling_admission_rule`
 (`repeated_stops` or `all_milestones_waiting_on_people`), the same value in
 `reasons`, and `recorded_stop_count` for weekly audit counts. During capacity
 admission, tooling sorts by distinct recorded stop links, most first, then age.
-Own projects stay ahead of that tooling so spare-capacity work cannot crowd them
-out of bounded results; this is not a per-call share quota. Without capacity
+Own projects stay ahead of capacity-admitted tooling so spare-capacity work
+cannot crowd them out of bounded results; repeated-stop tooling retains its
+existing precedence over own projects; this is not a per-call share quota. Without capacity
 admission, existing ranking is unchanged. Service callers of
 `rank_portfolio_work` must supply `coverage_complete: true` only after proving
 their portfolio inventory complete; omission leaves capacity admission disabled.
