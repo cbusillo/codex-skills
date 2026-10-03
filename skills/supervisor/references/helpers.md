@@ -99,12 +99,14 @@ before `--verified-target`, then read back once; do not replay an uncertain send
 Launch with `--account-provider openai|anthropic|google` and the helper picks
 the account, as the Director decided on
 [codex-skills#886](https://github.com/cbusillo/codex-skills/issues/886): among
-the configured accounts for that provider, the one whose longest usage window
-resets soonest, with its tightest window above the account's reserve. It
-prefixes the launch command with that account's `env` settings and reports the
-account, its reason and the others in the launch output. Read that output
-before recording the session. Five-hour windows do not rank; they reset for
-every account all the time. Context Panel's Use last setting is not consulted.
+the configured accounts for that provider, the one whose weekly window resets
+soonest, with its tightest window above the account's reserve. It exports that
+account's `env` settings ahead of the launch command, so they also reach an
+agent started after `cd`, and reports the account, its reason and the others in
+the launch output. Read that output before recording the session. Five-hour
+windows do not rank; they reset for every account all the time. A window counts
+as weekly when its Context Panel label says so; an account without one ranks by
+its latest reset. Context Panel's Use last setting is not consulted.
 
 ```sh
 uv run skills/supervisor/scripts/account_choice.py --provider anthropic
@@ -112,11 +114,12 @@ uv run skills/supervisor/scripts/iterm_tab.py new --window-id <id> --command-fil
 ```
 
 Capacity comes from Context Panel's agent account snapshot (schema 1, its
-`ContextPanelAccountSnapshot` reader). The snapshot is used only when it
-reports a current reading: when the reader fails or no configured account of
-that provider has a current reading, the helper uses the first configured
-account, says `fallback` and why, and does not check capacity. When readings
-exist but no account has room above its reserve, it refuses and creates no
+`ContextPanelAccountSnapshot` reader). The helper falls back only when the
+reader fails or every configured account of that provider is in a state with no
+current reading (unknown, stale, refreshing, unavailable, not connected or
+off): it uses the first configured account, says `fallback` and why, and does
+not check capacity. Otherwise, when no account has room above its reserve,
+is `limited`, or matches no single snapshot row, it refuses and creates no
 tab. `--account <name>` launches on a named configured account instead. A
 launch file that already sets the account's variable is refused.
 
@@ -138,8 +141,9 @@ env = { CLAUDE_CONFIG_DIR = "<account config dir>" }
 reserve = 0.2  # optional per-account reserve
 ```
 
-Codex accounts set `CODEX_HOME` to the account's home; Claude Code accounts set
-`CLAUDE_CONFIG_DIR`. The helper never reads credentials and never changes a
+Codex accounts must set `CODEX_HOME` to the account's home and Claude Code
+accounts `CLAUDE_CONFIG_DIR`; config without its provider's variable is
+refused. The helper never reads credentials and never changes a
 login, including the desktop app's.
 
 ## Finished-session shutdown stages

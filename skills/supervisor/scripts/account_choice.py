@@ -13,6 +13,7 @@ local config; nothing here reads credentials or changes any login.
 import argparse
 import json
 import os
+import re
 import subprocess
 import tomllib
 from datetime import datetime, timezone
@@ -21,6 +22,11 @@ from typing import NamedTuple
 
 PROVIDERS = ("openai", "anthropic", "google")
 CURRENT_STATES = {"available", "closeToLimit"}
+# Context Panel states with no current reading; "limited" is a current reading with no room.
+NO_READING_STATES = {"unknown", "stale", "refreshing", "unavailable", "notConnected", "off"}
+# The variable that puts a launched harness on an account; Google has none yet.
+ACCOUNT_VARIABLES = {"openai": "CODEX_HOME", "anthropic": "CLAUDE_CONFIG_DIR"}
+WEEKLY = re.compile(r"week", re.IGNORECASE)
 DEFAULT_RESERVE = 0.05
 SNAPSHOT_TIMEOUT_SECONDS = 60
 
@@ -31,6 +37,7 @@ class Assessment(NamedTuple):
     reset: datetime | None
     remaining: float | None
     reason: str
+    no_reading: bool = False
 
 
 def config_paths(env, home):
@@ -101,6 +108,9 @@ def validate_config(section):
             )
         ):
             raise ValueError(f"account {name}: env must map variable names to nonempty strings")
+        required = ACCOUNT_VARIABLES.get(account["provider"])
+        if required and required not in launch_env:
+            raise ValueError(f"account {name}: {account['provider']} accounts must set {required} in env")
         result.append(
             {
                 "name": name,
@@ -166,8 +176,10 @@ def assess(account, rows, now):
         return Assessment(account, False, None, None, f"{len(matches)} Context Panel rows match; expected one")
     row = matches[0]
     remaining = row.get("remainingFraction")
+    if row.get("state") in NO_READING_STATES:
+        return Assessment(account, False, None, None, f"no current reading (state {row['state']})", True)
     if row.get("state") not in CURRENT_STATES or not isinstance(remaining, (int, float)):
-        return Assessment(account, False, None, None, f"no current reading (state {row.get('state')})")
+        return Assessment(account, False, None, None, f"no room (state {row.get('state')})")
     if remaining <= account["reserve"]:
         return Assessment(
             account,
@@ -176,14 +188,17 @@ def assess(account, rows, now):
             float(remaining),
             f"{remaining:.0%} left, at or below its {account['reserve']:.0%} reserve",
         )
-    # Short windows (five-hour) reset for every account all the time; the longest
-    # window is the allowance whose unused capacity lapses, so its reset ranks.
-    resets = [
-        parse_time(window.get("naturalResetAt"))
+    # Five-hour windows reset for every account all the time; the weekly allowance
+    # is the capacity that lapses, so its soonest reset ranks. Without a weekly
+    # label, the latest reset stands in for the longest window.
+    parsed = [
+        (str(window.get("label", "")), parse_time(window.get("naturalResetAt")))
         for window in row.get("windows") or []
         if isinstance(window, dict)
     ]
-    reset = max((at for at in resets if at and at > now), default=None)
+    future = [(label, at) for label, at in parsed if at and at > now]
+    weekly = [at for label, at in future if WEEKLY.search(label)]
+    reset = min(weekly) if weekly else max((at for _, at in future), default=None)
     when = f"resets {reset.isoformat()}" if reset else "no reset time reported"
     return Assessment(account, True, reset, float(remaining), f"{remaining:.0%} left, {when}")
 
@@ -208,7 +223,7 @@ def choose(provider, config, snapshot, unavailable_reason, now=None, name=None):
         )
     rows = [r for r in snapshot["accounts"] if isinstance(r, dict) and r.get("provider") == provider]
     assessed = [assess(account, rows, now) for account in accounts]
-    if all(entry.remaining is None for entry in assessed):
+    if all(entry.no_reading for entry in assessed):
         return decision(
             accounts[0],
             "fallback",
@@ -219,7 +234,7 @@ def choose(provider, config, snapshot, unavailable_reason, now=None, name=None):
     eligible = [entry for entry in assessed if entry.eligible]
     if not eligible:
         details = "; ".join(f"{e.account['name']}: {e.reason}" for e in assessed)
-        raise ValueError(f"no {provider} account has room above its reserve ({details})")
+        raise ValueError(f"no {provider} account can be chosen ({details})")
     far_future = datetime.max.replace(tzinfo=timezone.utc)
     # min keeps the first configured account for ties and unknown resets.
     best = min(eligible, key=lambda entry: entry.reset or far_future)

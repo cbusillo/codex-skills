@@ -57,7 +57,8 @@ def with_account(command_text, choice):
         f"{key}={shlex.quote(os.path.expanduser(value))}"
         for key, value in choice["env"].items()
     )
-    return f"env {settings} {command_text}"
+    # export, not env: the account must also reach an agent after `cd dir &&`.
+    return f"export {settings} && {command_text}"
 
 
 async def operate(app, args):

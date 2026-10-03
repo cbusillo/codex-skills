@@ -440,13 +440,17 @@ env = { CLAUDE_CONFIG_DIR = "/accounts/spare dir" }
 
 
 def account_row(label, remaining, resets, state="available", cfg="cfg"):
+    """resets: (five-hour, weekly) reset times, or one unlabeled window's."""
+    labels = ["Claude 5-hour", "Claude weekly"] if len(resets) == 2 else ["Claude"]
     return {
         "provider": "anthropic",
         "label": label,
         "configurationID": cfg,
         "state": state,
         "remainingFraction": remaining,
-        "windows": [{"naturalResetAt": reset} for reset in resets],
+        "windows": [
+            {"label": name, "naturalResetAt": reset} for name, reset in zip(labels, resets)
+        ],
     }
 
 
@@ -465,7 +469,7 @@ def choose_from(rows, **extra):
 
 class AccountChoiceTests(unittest.TestCase):
 
-    def test_longest_window_reset_ranks_and_short_windows_do_not(self):
+    def test_weekly_reset_ranks_and_five_hour_windows_do_not(self):
         rows = [
             # Main's five-hour window resets first, but its week ends later.
             account_row("main", 0.6, ["2026-10-03T17:00:00Z", "2026-10-07T08:00:00Z"]),
@@ -475,6 +479,12 @@ class AccountChoiceTests(unittest.TestCase):
         self.assertEqual((choice["name"], choice["source"]), ("spare", "context-panel"))
         self.assertEqual(choice["resets_at"], "2026-10-04T03:00:00+00:00")
         self.assertEqual([o["name"] for o in choice["others"]], ["main"])
+        # Near the end of a week the five-hour window outlasts it; the week still ranks.
+        rows = [
+            account_row("main", 0.6, ["2026-10-03T20:00:00Z", "2026-10-03T17:00:00Z"]),
+            account_row("spare", 0.5, ["2026-10-03T18:30:00Z", "2026-10-03T18:00:00Z"], cfg="cfg-spare"),
+        ]
+        self.assertEqual(choose_from(rows)["name"], "main")
 
     def test_reserve_and_stale_readings_are_skipped(self):
         rows = [
@@ -489,13 +499,27 @@ class AccountChoiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no current reading"):
             choose_from(rows)
 
+    def test_known_readings_without_room_refuse_rather_than_fall_back(self):
+        exhausted = [
+            account_row("main", None, [], state="limited"),
+            account_row("spare", None, [], state="limited", cfg="cfg-spare"),
+        ]
+        with self.assertRaisesRegex(ValueError, "main: no room.*spare: no room"):
+            choose_from(exhausted)
+        ambiguous = [account_row("main", 0.9, []), account_row("Main", 0.9, [])]
+        with self.assertRaisesRegex(ValueError, "2 Context Panel rows match"):
+            choose_from(ambiguous)
+
     def test_fallback_only_without_a_current_reading(self):
         unavailable = account_choice.choose(
             "anthropic", accounts_config(), None, "snapshot command exited 1", now=NOW
         )
         self.assertEqual((unavailable["name"], unavailable["source"]), ("main", "fallback"))
         self.assertIn("snapshot command exited 1", unavailable["reason"])
-        unread = choose_from([account_row("main", None, [], state="unknown")])
+        unread = choose_from([
+            account_row("main", None, [], state="unknown"),
+            account_row("spare", None, [], state="stale", cfg="cfg-spare"),
+        ])
         self.assertEqual((unread["name"], unread["source"]), ("main", "fallback"))
         named = choose_from([], name="spare")
         self.assertEqual((named["name"], named["source"]), ("spare", "named"))
@@ -535,6 +559,10 @@ class AccountChoiceTests(unittest.TestCase):
             self.assertEqual([a["reserve"] for a in config["accounts"]], [0.2, 0.05])
             path.write_text(ACCOUNTS_TOML.replace('context_panel_label = "Main"', ""))
             with self.assertRaisesRegex(ValueError, "exactly one"):
+                account_choice.load_config(env={"CODE_HOME": folder}, home=Path("/nowhere"))
+            # A copied entry that sets another harness's variable would launch on the default login.
+            path.write_text(ACCOUNTS_TOML.replace("CLAUDE_CONFIG_DIR = \"~/claude-main\"", "CODEX_HOME = \"~/x\""))
+            with self.assertRaisesRegex(ValueError, "must set CLAUDE_CONFIG_DIR"):
                 account_choice.load_config(env={"CODE_HOME": folder}, home=Path("/nowhere"))
 
 
@@ -614,7 +642,7 @@ class TerminalTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as folder:
             command = Path(folder) / "launch.txt"
-            command.write_text("claude 'brief'\n")
+            command.write_text("cd /repo && claude 'brief'\n")
             args = argparse.Namespace(
                 command="new", window_id="chosen", command_file=command,
                 account_provider="anthropic", account=None, account_config=None,
@@ -629,7 +657,7 @@ class TerminalTests(unittest.TestCase):
                     asyncio.run(iterm_tab.operate(app, args))
         self.assertEqual(
             terminal.async_send_text.await_args_list[0].args,
-            ("env CLAUDE_CONFIG_DIR='/accounts/spare dir' claude 'brief'",),
+            ("export CLAUDE_CONFIG_DIR='/accounts/spare dir' && cd /repo && claude 'brief'",),
         )
         window.async_create_tab.assert_awaited_once()
         self.assertEqual(result["account"]["env_keys"], ["CLAUDE_CONFIG_DIR"])
