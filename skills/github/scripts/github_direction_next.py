@@ -374,7 +374,7 @@ def tooling_capacity_context(
     """Only current caller evidence can distinguish a person from an event wait."""
     result: dict[str, Any] = {"admitted": False, "reason": "milestone_waits_not_proven"}
     if not coverage_complete or not graph.get("dependency_context", {}).get("complete"):
-        return {**result, "reason": "incomplete_portfolio_coverage"}
+        return {**result, "reason": "incomplete_milestone_coverage"}
     reviews = {key.casefold(): value for key, value in context.get("issues", {}).items()}
     entries = [*graph.get("candidates", []), *graph.get("excluded", []), *discoveries]
     by_key = {(entry["repo"].casefold(), entry["number"]): entry for entry in entries}
@@ -458,6 +458,8 @@ def rank_portfolio_work(
     Unreviewed issues remain possible work, never independently available work.
     Callers interpret direction and full discussions and supply current ownership
     evidence; neither labels nor an incomplete session list establish availability.
+    coverage_complete attests the milestone graph, independently of portfolio
+    discovery bounds. Inspected discoveries still contribute milestone evidence.
     """
     context = validate_selection_context(selection_context or {})
     capacity = tooling_capacity_context(
@@ -476,7 +478,7 @@ def rank_portfolio_work(
         if key in seen:
             continue
         seen.add(key)
-        item = {**raw, "availability": "needs_review"}
+        item: dict[str, Any] = {**raw, "availability": "needs_review"}
         item["overall_milestone_context"] = overall_milestone_context(
             item, graph, milestone_titles,
             repository_waypoints or {},
