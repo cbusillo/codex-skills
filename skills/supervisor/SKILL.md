@@ -9,7 +9,7 @@ resources:
     description: List, read, launch and reach exact iTerm sessions.
   - path: scripts/account_choice.py
     kind: script
-    description: Choose the launch account that resets soonest with room, from Context Panel.
+    description: Follow Context Panel's use-next launch account, with a reported fallback.
   - path: scripts/status.py
     kind: script
     description: Read context and activity for explicit ledger sessions.
