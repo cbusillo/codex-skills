@@ -7801,7 +7801,7 @@ class AgentInspectContractTest(unittest.TestCase):
                 self.assertEqual(result["retry_policy"]["max_attempts"], 0)
                 for advice in (result["next_action"], result["agent_report"]):
                     self.assertIn("diagnostic", advice)
-                    self.assertIn("ownership route", advice)
+                    self.assertIn("prerequisite", advice)
                     self.assertNotRegex(advice.lower(), r"rerun|retry once|start a new inspection")
 
     def test_skipped_readiness_advice_does_not_invite_assessment(self):
@@ -7822,6 +7822,23 @@ class AgentInspectContractTest(unittest.TestCase):
         for advice in (result["next_action"], result["agent_report"]):
             self.assertIn("internal_retry_readiness", advice)
             self.assertNotRegex(advice.lower(), r"rerun|retry once|start a new inspection")
+
+    def test_fallback_advice_preserves_permitted_retry(self):
+        for reason in ("indexing", "running", "already_opening", "open_state_unknown",
+                       "capture_incomplete", "scope_not_covered"):
+            with self.subTest(reason=reason):
+                _, payload = self.emit_agent_payload({
+                    "status": "error",
+                    "error_reason": reason,
+                    "route": {"project_key": "path:/tmp/project", "session_id": "session-1"},
+                    "inspection_attribution": {"classification": "legitimate_fail_closed"},
+                })
+                result = payload["agent_result"]
+                self.assertTrue(result["retry_policy"]["retry"])
+                self.assertEqual(result["retry_policy"]["max_attempts"], 1)
+                for advice in (result["next_action"], result["agent_report"]):
+                    self.assertIn("retry once", advice)
+                    self.assertNotIn("Stop retrying", advice)
 
     def test_retryable_unknown_remains_explicit(self):
         exit_code, payload = self.emit_agent_payload(

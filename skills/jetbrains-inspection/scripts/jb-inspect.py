@@ -6553,6 +6553,10 @@ def unproven_batch_annotator_suffix(payload: dict[str, Any]) -> str:
     return " Blocking: " + "; ".join(f"{pair['tool']} on {pair['file']}" for pair in pairs) + "."
 
 
+UNKNOWN_RETRY_ACTION = "Wait for IDE/capture readiness to settle, then retry once and report helper diagnostics if it remains UNKNOWN."
+UNKNOWN_TERMINAL_ACTION = "Stop retrying this result and report the helper diagnostic payload. Resolve the reported IDE/plugin or ownership prerequisite before any further assessment."
+
+
 def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     reason = normalize_reason(reason)
     if reason in REPOSITORY_PREPARATION_TERMINAL_REASONS or reason == "repository_preparation_failure":
@@ -6694,10 +6698,7 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
         return "Inspect lifecycle cleanup output; close helper-opened IDE projects or rerun inspect-closeout after cleanup succeeds."
     if diagnostic.get("observed_non_empty_inspection_tree") is True:
         return "Treat this as a plugin/helper capture bug and include capture_diagnostic when reporting it."
-    return (
-        "Stop retrying this result and report the helper diagnostic payload. "
-        "Restore the IDE/plugin connection and exact ownership route before any further assessment."
-    )
+    return UNKNOWN_TERMINAL_ACTION
 
 
 def helper_revision() -> str:
@@ -7034,6 +7035,9 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
     if diagnosis is not None:
         payload["unknown_diagnosis"] = diagnosis
     next_action = str(payload.get("verdict_next_action") or next_action_for_bucket(verdict, bucket, reason, payload))
+    if verdict == "UNKNOWN" and next_action in {UNKNOWN_RETRY_ACTION, UNKNOWN_TERMINAL_ACTION}:
+        next_action = UNKNOWN_RETRY_ACTION if retry_policy["retry"] else UNKNOWN_TERMINAL_ACTION
+        payload["verdict_next_action"] = next_action
     next_action = guidance_for_command(next_action, payload.get("command"))
     report = agent_report_for(verdict, bucket, reason, payload, next_action)
     payload["bucket"] = bucket
