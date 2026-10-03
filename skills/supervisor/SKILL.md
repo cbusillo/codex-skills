@@ -7,6 +7,9 @@ resources:
   - path: scripts/iterm_tab.py
     kind: script
     description: List, read, launch and reach exact iTerm sessions.
+  - path: scripts/account_choice.py
+    kind: script
+    description: Choose the launch account that resets soonest with room, from Context Panel.
   - path: scripts/status.py
     kind: script
     description: Read context and activity for explicit ledger sessions.
@@ -31,6 +34,11 @@ commands:
     resource_path: scripts/iterm_tab.py
     example_argv: ["uv", "run", "scripts/iterm_tab.py", "list"]
     purpose: List exact window, tab and session identities.
+  - name: supervisor-account-choice
+    source: skill
+    resource_path: scripts/account_choice.py
+    example_argv: ["uv", "run", "scripts/account_choice.py", "--provider", "anthropic"]
+    purpose: Show which configured account a launch would use and why.
   - name: supervisor-status
     source: skill
     resource_path: scripts/status.py
@@ -192,7 +200,7 @@ records that run.
    and the bounded `skills/supervisor/scripts/codex_idle_watch.py` watch for
    Codex turn ends. A notice prompts verification, never a completion verdict.
    Read [helper setup](references/helpers.md) before rebuilding the private
-   ledger or running a helper; the catalog supplies all six pilot helpers.
+   ledger or running a helper; the catalog supplies all seven pilot helpers.
 6. Post a takeover comment on the pilot issue: what you found, what you
    corrected, and the "needs the Director" list.
 7. When a finding would retire, stop, or redirect work, load `direction`

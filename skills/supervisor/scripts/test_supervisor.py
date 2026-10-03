@@ -11,10 +11,12 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import account_choice
 import close_ttys
 import codex_idle_watch
 import finished_map
@@ -416,6 +418,126 @@ class QuestionTests(unittest.TestCase):
             oq.fetch("repo#1")
 
 
+NOW = datetime(2026, 10, 3, 16, tzinfo=timezone.utc)
+ACCOUNTS_TOML = """
+[accounts]
+snapshot_command = ["context-panel-snapshot"]
+reserve = 0.05
+
+[[accounts.account]]
+name = "main"
+provider = "anthropic"
+context_panel_label = "Main"
+env = { CLAUDE_CONFIG_DIR = "~/claude-main" }
+reserve = 0.2
+
+[[accounts.account]]
+name = "spare"
+provider = "anthropic"
+context_panel_configuration_id = "cfg-spare"
+env = { CLAUDE_CONFIG_DIR = "/accounts/spare dir" }
+"""
+
+
+def account_row(label, remaining, resets, state="available", cfg="cfg"):
+    return {
+        "provider": "anthropic",
+        "label": label,
+        "configurationID": cfg,
+        "state": state,
+        "remainingFraction": remaining,
+        "windows": [{"naturalResetAt": reset} for reset in resets],
+    }
+
+
+def accounts_config(text=ACCOUNTS_TOML):
+    return account_choice.validate_config(
+        __import__("tomllib").loads(text)["accounts"]
+    )
+
+
+def choose_from(rows, **extra):
+    snapshot = {"schemaVersion": 1, "accounts": rows}
+    return account_choice.choose(
+        "anthropic", accounts_config(), snapshot, None, now=NOW, **extra
+    )
+
+
+class AccountChoiceTests(unittest.TestCase):
+
+    def test_longest_window_reset_ranks_and_short_windows_do_not(self):
+        rows = [
+            # Main's five-hour window resets first, but its week ends later.
+            account_row("main", 0.6, ["2026-10-03T17:00:00Z", "2026-10-07T08:00:00Z"]),
+            account_row("Spare", 0.5, ["2026-10-03T19:00:00Z", "2026-10-04T03:00:00Z"], cfg="cfg-spare"),
+        ]
+        choice = choose_from(rows)
+        self.assertEqual((choice["name"], choice["source"]), ("spare", "context-panel"))
+        self.assertEqual(choice["resets_at"], "2026-10-04T03:00:00+00:00")
+        self.assertEqual([o["name"] for o in choice["others"]], ["main"])
+
+    def test_reserve_and_stale_readings_are_skipped(self):
+        rows = [
+            account_row("main", 0.6, ["2026-10-07T08:00:00Z"]),
+            account_row("spare", 0.04, ["2026-10-04T03:00:00Z"], cfg="cfg-spare"),
+        ]
+        self.assertEqual(choose_from(rows)["name"], "main")
+        rows[0]["remainingFraction"] = 0.15  # below main's own 20% reserve
+        with self.assertRaisesRegex(ValueError, "main: 15% left.*spare: 4% left"):
+            choose_from(rows)
+        rows[0].update(remainingFraction=0.9, state="stale")
+        with self.assertRaisesRegex(ValueError, "no current reading"):
+            choose_from(rows)
+
+    def test_fallback_only_without_a_current_reading(self):
+        unavailable = account_choice.choose(
+            "anthropic", accounts_config(), None, "snapshot command exited 1", now=NOW
+        )
+        self.assertEqual((unavailable["name"], unavailable["source"]), ("main", "fallback"))
+        self.assertIn("snapshot command exited 1", unavailable["reason"])
+        unread = choose_from([account_row("main", None, [], state="unknown")])
+        self.assertEqual((unread["name"], unread["source"]), ("main", "fallback"))
+        named = choose_from([], name="spare")
+        self.assertEqual((named["name"], named["source"]), ("spare", "named"))
+        with self.assertRaises(ValueError):
+            choose_from([], name="missing")
+
+    def test_snapshot_read_failures_mean_unavailable(self):
+        def runner(code=0, stdout="", error=None):
+            def fake_run(*_args, **_kwargs):
+                if error:
+                    raise error
+                return SimpleNamespace(returncode=code, stdout=stdout)
+            return fake_run
+
+        cases = {
+            "exited 1": runner(code=1),
+            "not JSON": runner(stdout="{"),
+            "version 1": runner(stdout='{"schemaVersion": 2, "accounts": []}'),
+            "could not run": runner(error=FileNotFoundError()),
+        }
+        for reason, fake in cases.items():
+            with self.subTest(reason=reason):
+                snapshot, problem = account_choice.read_snapshot(["reader"], runner=fake)
+                self.assertIsNone(snapshot)
+                self.assertIn(reason, problem)
+        snapshot, problem = account_choice.read_snapshot(
+            ["reader"], runner=runner(stdout='{"schemaVersion": 1, "accounts": []}')
+        )
+        self.assertEqual((snapshot["accounts"], problem), ([], None))
+
+    def test_private_config_location_and_invalid_config(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "skill-data/supervisor.toml"
+            path.parent.mkdir()
+            path.write_text(ACCOUNTS_TOML)
+            config = account_choice.load_config(env={"CODE_HOME": folder}, home=Path("/nowhere"))
+            self.assertEqual([a["reserve"] for a in config["accounts"]], [0.2, 0.05])
+            path.write_text(ACCOUNTS_TOML.replace('context_panel_label = "Main"', ""))
+            with self.assertRaisesRegex(ValueError, "exactly one"):
+                account_choice.load_config(env={"CODE_HOME": folder}, home=Path("/nowhere"))
+
+
 class TerminalTests(unittest.TestCase):
     def test_exact_session_and_ambiguity(self):
         one = SimpleNamespace(session_id="id1")
@@ -479,6 +601,39 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(
             terminal.async_send_text.await_args_list[0].args, ("run-authorized-brief",)
         )
+
+    def test_launch_on_chosen_account_prefixes_env_only(self):
+        terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
+        tab = SimpleNamespace(tab_id="newtab", current_session=terminal)
+        window = SimpleNamespace(
+            window_id="chosen", async_create_tab=AsyncMock(return_value=tab)
+        )
+        app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+        choice = account_choice.decision(
+            accounts_config()["accounts"][1], "context-panel", "resets soonest"
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            command = Path(folder) / "launch.txt"
+            command.write_text("claude 'brief'\n")
+            args = argparse.Namespace(
+                command="new", window_id="chosen", command_file=command,
+                account_provider="anthropic", account=None, account_config=None,
+            )
+            with (
+                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
+                patch.object(account_choice, "select", return_value=choice),
+            ):
+                result = asyncio.run(iterm_tab.operate(app, args))
+                command.write_text("env CLAUDE_CONFIG_DIR=/other claude\n")
+                with self.assertRaisesRegex(ValueError, "already sets"):
+                    asyncio.run(iterm_tab.operate(app, args))
+        self.assertEqual(
+            terminal.async_send_text.await_args_list[0].args,
+            ("env CLAUDE_CONFIG_DIR='/accounts/spare dir' claude 'brief'",),
+        )
+        window.async_create_tab.assert_awaited_once()
+        self.assertEqual(result["account"]["env_keys"], ["CLAUDE_CONFIG_DIR"])
+        self.assertNotIn("env", result["account"])
 
     def test_invalid_launch_file_creates_no_tab(self):
         window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
