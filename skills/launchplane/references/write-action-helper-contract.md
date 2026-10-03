@@ -936,6 +936,21 @@ reports the redacted `controller_action`, durable record ids, trace id, and
 compact evidence. Repeated calls should read the action before deciding whether
 to run again.
 
+Both dry-run and mutating controller calls default to a 180-second HTTP timeout;
+other commands keep their 10-second default. An explicit `--timeout` before the
+subcommand overrides either default. A client timeout returns `client_timeout`
+with `timeout_seconds` and a message saying how long it waited. It does not
+establish a service outage. A mutating pass may have completed after the client
+stopped waiting: read the PR and controller state before any retry.
+
+Reconciliation results retain `active_action`, `active_phase` and
+`active_record_id` so a caller can identify the work holding the lease. Empty
+record identifiers are returned as null. Blocked landing results retain the
+landing-plan record id in `result`, and the error code in `summary`. HTTP error
+bodies and non-projectable 2xx bodies retain independently validated trace ids
+and error codes when present; raw error messages and unsafe identifiers are
+omitted. A non-projectable response remains invalid, with no projected result.
+
 When the controller returns `controller_action: block`, the helper preserves a
 public-safe `blocking_reason` code and message plus the bounded merge-readiness
 facets (`state`, reason codes, `owner_states`, technical checks, engineering
