@@ -1,5 +1,19 @@
 # Inspection lifecycle diagnostics
 
+Plugins advertising `ide_memory_diagnostic_version: 1` expose a project-free
+`memory` endpoint. Before opening a project or triggering inspection, and after
+a failed endpoint request or UNKNOWN wait/problems response, the helper probes
+that endpoint with a bounded timeout. It also checks during lifecycle-open
+route probes so a Java heap space project-opening dialog is named while the
+project is still unroutable. Evidence must match the selected IDE session.
+Current-process OOM produces `UNKNOWN/ide_memory_exhausted`; a recent
+overloaded-GC signal produces `UNKNOWN/ide_memory_pressure`. Neither authorizes
+an automatic retry. Exhaustion guidance names the modal dialog and requires
+an IDE restart by its owner. The helper never dismisses a dialog or restarts
+the IDE. Older plugins and unavailable or session-mismatched memory diagnostics
+preserve the original routing/transport result; an unreachable IDE is not
+proof of memory exhaustion.
+
 Read when diagnosing auto-open, ownership, retry, cleanup, trust, or IDE-selection
 problems, or changing the helper lifecycle. Commands and paths below are relative
 to the `jetbrains-inspection` skill directory.
