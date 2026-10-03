@@ -4214,7 +4214,7 @@ def lease_proves_open_not_attempted(lease: dict[str, Any]) -> bool:
     return (
         lease.get("state") in POTENTIAL_OPEN_LEASE_STATES
         and lease.get("preparation_failure_stage") == "project_open"
-        and lease.get("preparation_failure_reason") == "timeout"
+        and lease.get("preparation_failure_reason") in {"timeout", "connectionreseterror"}
         and lease.get("opened_by_helper") is False
         and lease.get("open_request_may_have_been_accepted") is False
         and lease.get("open_attempts") == []
@@ -11098,7 +11098,7 @@ def can_release_dead_original_ide_lease(
     routes: list[dict[str, Any]],
     observed_sessions: set[str] | None,
 ) -> bool:
-    if observed_sessions is None or lease.get("state") != "cleanup_pending":
+    if observed_sessions is None or lease.get("state") not in {"cleanup_pending", "prepared"}:
         return False
     if lease.get("opened_by_helper") is not True or lease.get("open_request_may_have_been_accepted") is True:
         return False
