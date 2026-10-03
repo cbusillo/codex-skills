@@ -28,8 +28,9 @@ guardrail for habits, not a security boundary. Forms that need real option
 parsing to unwrap, such as `xargs` and `sudo`, are deliberately left alone.
 
 Policies match commands, not data (#671, #1014). A heredoc body is data unless
-a shell reads it; command substitutions in an unquoted-delimiter body, and in
-double-quoted arguments, still run and are checked. A `shell_regex` policy
+a shell or ssh reads it; command substitutions in an unquoted-delimiter body,
+in double-quoted arguments and in arithmetic still run and are checked, as are
+`eval` arguments, a shell's here-string and an ssh remote command. A `shell_regex` policy
 matches only where a token of a running command starts, so a quoted argument
 such as a search pattern or a prose example does not match, while `sudo gh api`
 or `xargs gh api` still does.
@@ -121,9 +122,10 @@ class ShellScript:
         self.bodies: list[tuple[str, bool]] = []
         self.substitutions: list[str] = []
         self.pending: list[tuple[str, bool, bool]] = []
-        # Open contexts, innermost last: "(" for a subshell or `$(`, '"' for a
-        # double quote, "`" for a backtick, "body" for an expanding heredoc
-        # body; each with the index its substitution source starts at, if any.
+        # Open contexts, innermost last: "(" for a subshell or `$(`, "((" for
+        # `$((` arithmetic, '"' for a double quote, "`" for a backtick, "body"
+        # for an expanding heredoc body; each with the index its substitution
+        # source starts at, if any.
         self.stack: list[tuple[str, int | None]] = [("body", None)] if expanding else []
         self.index = 0
         self.scan()
@@ -144,8 +146,11 @@ class ShellScript:
             if character == "\\":
                 self.emit(self.index + 2)
             elif shell.startswith("$((", self.index):
-                closing = shell.find("))", self.index + 3)  # Arithmetic: `<<` is a shift.
-                self.emit(len(shell) if closing < 0 else closing + 2)
+                self.stack.append(("((", None))  # Arithmetic: `<<` is a shift; `$(...)` still runs.
+                self.emit(self.index + 3)
+            elif context == "((" and shell.startswith("))", self.index):
+                self.stack.pop()
+                self.emit(self.index + 2)
             elif shell.startswith("$(", self.index):
                 self.stack.append(("(", self.index + 2))
                 self.emit(self.index + 2)
@@ -169,7 +174,7 @@ class ShellScript:
                 self.emit(self.index + 1)
             elif character == ")" and context == "(":
                 self.close()
-            elif shell.startswith("<<", self.index) and not shell.startswith("<<<", self.index):
+            elif context != "((" and shell.startswith("<<", self.index) and not shell.startswith("<<<", self.index):
                 self.heredoc()
             elif character == "\n" and self.pending:
                 self.emit(self.index + 1)
@@ -236,7 +241,9 @@ class ShellScript:
 
 
 def reads_script_from_input(argv: list[str]) -> bool:
-    """A shell without `-c` reads its script from stdin or a file, so heredoc text may run."""
+    """A shell without `-c`, or ssh, may run its stdin or a file, so heredoc text may run."""
+    if argv[0] == "ssh":
+        return True
     return argv[0] in SHELLS and not any(SHELL_COMMAND_FLAG.match(token) for token in argv[1:])
 
 
@@ -304,7 +311,13 @@ def unwrap(argv: list[str], nested: bool) -> list[list[str]]:
         for index, token in enumerate(argv[1:-1], start=1):
             if SHELL_COMMAND_FLAG.match(token):  # -c, -lc, -ec ...
                 return simple_commands(argv[index + 1], nested=True)
-    return [argv]
+    commands = [argv]
+    if argv[0] == "ssh":
+        # The remote command runs too; the host and option values read as harmless words.
+        commands += nested_commands([" ".join(argv[1:])], nested)
+    if reads_script_from_input(argv) and "<<<" in argv[:-1]:
+        commands += nested_commands([argv[argv.index("<<<") + 1]], nested)
+    return commands
 
 
 def runnable(token: str, skill: str) -> str:
