@@ -35,6 +35,10 @@ def process_exited(entry, rows):
     # A reused PID or any non-shell job on this TTY preserves the tab.
     if any(row[0] == pid for row in rows):
         return False
+    if not any(row[1] == tty for row in rows):
+        raise ValueError(
+            "no process rows match the terminal TTY; inventory is uncertain"
+        )
     return not any(
         row[1] == tty
         and Path(row[2]).name.lstrip("-")

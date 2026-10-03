@@ -165,7 +165,7 @@ def summarize(records: list[dict], harness: str) -> dict:
     lines = result["last_text"].strip().splitlines()
     result["safe_verdict"] = bool(
         lines
-        and SAFE.fullmatch(lines[-1].strip())
+        and SAFE.fullmatch(re.sub(r"^[-*] ", "", lines[-1].strip()).replace("**", ""))
         and not any(line.lstrip().startswith(("```", "~~~")) for line in lines)
         and result["at_turn_end"]
         and result["turn_end"] != "turn_aborted"

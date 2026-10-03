@@ -78,6 +78,25 @@ class TranscriptTests(unittest.TestCase):
                     session_record.summarize([claude(text)], "claude")["safe_verdict"]
                 )
 
+    def test_standard_closeout_bullets_and_bold_labels(self):
+        for text in (
+            "- Safe to exit: yes",
+            "- **Safe to exit:** yes",
+            "* **Safe to exit: yes**",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(
+                    session_record.summarize([claude(text)], "claude")["safe_verdict"]
+                )
+        for text in (
+            "> - **Safe to exit:** yes",
+            "- **Safe to exit:** yes, if CI passes",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(
+                    session_record.summarize([claude(text)], "claude")["safe_verdict"]
+                )
+
     def test_tool_use_after_verdict_invalidates_it(self):
         record = claude("Safe to exit: yes")
         record["message"]["content"].append({"type": "tool_use", "name": "Bash"})
@@ -492,6 +511,12 @@ class TerminalTests(unittest.TestCase):
             self.assertRaises(ValueError),
         ):
             asyncio.run(iterm_tab.operate(app, args))
+
+    def test_missing_tty_rows_are_not_exit_proof(self):
+        with self.assertRaises(ValueError):
+            close_ttys.process_exited(
+                {"pid": 123, "tty": "ttys001"}, [(20, "ttys999", "/bin/zsh")]
+            )
 
     def test_process_inventory_refuses_unparseable_or_live_identity(self):
         self.assertEqual(

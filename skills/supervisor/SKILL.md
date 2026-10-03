@@ -120,7 +120,8 @@ Verified on Claude Code as the Supervisor. From there it reaches Codex sessions
 with `codex queue --thread <id> --message "<text>"` and Claude Code sessions in
 terminal tabs with `skills/supervisor/scripts/iterm_tab.py`, using an exact
 `--session-id` from its `list` output. Launch Codex sessions with "keep working
-through compaction"; do not hand them off at a context percentage. Codex as
+through compaction" and Keep instructions naming the brief, issue and current
+step; do not hand them off at a context percentage. Codex as
 the Supervisor is expected to work; claim it only after a run has verified it and the pilot issue
 records that run.
 
@@ -137,7 +138,8 @@ records that run.
 2. **Director questions live on the item's issue**, as a comment that starts
    `Owner question:`. The Director answers in chat, Discord, or on GitHub. The
    Supervisor records the answer as an `Owner decision` comment on that issue,
-   quoting the Director's words and saying where they were said, and points
+   quoting the Director's words, saying where they were said, linking the
+   question comment it answers, and points
    the session at it. It records only what the Director said. Briefs accept a decision recorded by the
    Supervisor or a direction session, not only one posted from the Director's
    own login.
