@@ -344,11 +344,14 @@ class LedgerTests(unittest.TestCase):
                 session_record,
                 "session_status",
                 side_effect=[{"safe_verdict": True}, {"safe_verdict": False}],
+            ) as reader,
+            patch.object(
+                close_ttys, "inventory", return_value=[(20, "ttys001", "/bin/zsh")]
             ),
-            patch.object(close_ttys, "inventory", return_value=[]),
             self.assertRaises(ValueError),
         ):
             asyncio.run(close_ttys.close(app, entry, True, True, True))
+        self.assertEqual(reader.call_count, 2)
         terminal.async_close.assert_not_awaited()
 
 
