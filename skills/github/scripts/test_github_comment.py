@@ -392,6 +392,29 @@ def test_own_user_invalid_response_reports_resolved_actor() -> None:
     with_call_stub(callback, run)
 
 
+def test_edit_preserves_comment_author_after_authorized_route_switch() -> None:
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        if method == "GET":
+            return success([comment_body(14)])
+        assert method == "PATCH"
+        result = success(comment_body(14))  # Editing does not change the original author.
+        result.actor = "contributor"
+        result.expected_actor = None
+        return result
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        payload = github_comment.comment(
+            "pr", 42, "body", repo="owner/repo", gh_cmd="fake-gh", edit_last=True
+        )
+        assert payload["comment"]["author"] == "fixture-automation", payload
+        assert payload["outcome_certainty"] == "confirmed", payload
+        assert [call["method"] for call in calls] == ["GET", "GET", "PATCH"], calls
+
+    with_call_stub(callback, run)
+
+
 def test_own_user_unknown_write_reconciles_without_duplicate() -> None:
     submitted_body = ""
     get_calls = 0
@@ -1016,6 +1039,7 @@ TESTS = [
     test_own_user_write_reports_resolved_actor_and_rejects_wrong_author,
     test_own_user_opt_in_does_not_override_automation_response_context,
     test_own_user_invalid_response_reports_resolved_actor,
+    test_edit_preserves_comment_author_after_authorized_route_switch,
     test_own_user_unknown_write_reconciles_without_duplicate,
     test_create_if_none_requires_edit_last,
     test_explicit_active_fallback_accepts_and_reports_actual_actor,
