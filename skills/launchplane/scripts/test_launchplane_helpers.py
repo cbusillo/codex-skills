@@ -1766,6 +1766,145 @@ def _summarize_queue_response(response: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _run_controller_response(response: object, *, mutate: bool = False, timeout: float | None = None) -> tuple[int, dict[str, Any]]:
+    argv = ["merge-train-controller-run-once", "--repo", "example/repo"]
+    if mutate:
+        argv += ["--mutate", "--idempotency-key", "controller-pass-one"]
+    if timeout is not None:
+        argv = ["--timeout", str(timeout), *argv]
+    output = io.StringIO()
+    def fake_post(**kwargs: Any) -> dict[str, Any]:
+        if isinstance(response, Exception):
+            raise response
+        # The observed controller pass needs 19 seconds, even without mutation.
+        if timeout is None:
+            assert kwargs["timeout"] > 19
+        else:
+            assert kwargs["timeout"] == timeout
+        return cast(dict[str, Any], response)
+    post = Mock(side_effect=fake_post)
+    with temporary_attribute(write_action, "prepare_operator_settings", lambda **_kwargs: {
+        "service_url": "https://launchplane.example.invalid", "token": "fixture-only",
+    }), temporary_attribute(write_action, "request_launchplane", post), redirect_stdout(output):
+        status = write_action.main(argv)
+    assert post.call_count == 1
+    return status, json.loads(output.getvalue())
+
+
+def test_controller_timeout_covers_slow_dry_run_and_mutation_and_keeps_override() -> None:
+    response = _queue_refusal_response()
+    for mutate in (False, True):
+        status, payload = _run_controller_response(response, mutate=mutate)
+        assert status == 0
+        assert payload["summary"]["trace_id"] == response["trace_id"]
+        status, _ = _run_controller_response(response, mutate=mutate, timeout=7.5)
+        assert status == 0
+    controller = write_action.parse_args(["merge-train-controller-run-once", "--repo", "example/repo"])
+    ordinary = write_action.parse_args(["product-profile-read", "--product", "example-product"])
+    assert ordinary.timeout < controller.timeout
+
+
+def test_controller_block_and_reconciliation_preserve_durable_diagnostics() -> None:
+    result = {
+        "controller_action": "block", "mode": "blocked",
+        "blocking_reason": {"code": "merge_readiness_not_ready", "message": "Required checks failed."},
+        "merge_readiness": {"state": "blocked_checks", "reason_codes": ["checks_failed"]},
+        "merge_train_batch_landing_plan_record_id": "landing-plan-example",
+        "landing_plan": {"record_id": "landing-plan-example"},
+    }
+    response = {"status": "accepted", "trace_id": "launchplane_req_block", "records": {}, "result": result}
+    status, payload = _run_controller_response(response, mutate=True)
+    assert status == 0
+    assert payload["status"] == "accepted"
+    assert payload["summary"]["controller_action"] == result["controller_action"]
+    assert payload["summary"]["error_code"] == result["blocking_reason"]["code"]
+    assert payload["result"]["merge_readiness"] == result["merge_readiness"]
+    assert payload["result"]["merge_train_batch_landing_plan_record_id"] == result["merge_train_batch_landing_plan_record_id"]
+    assert payload["result"]["landing_plan"] == result["landing_plan"]
+    lease = {
+        "controller_action": "resume_reconciliation", "controller_reconciliation_status": "required",
+        "active_action": "land_batch", "active_phase": "merge_batch_entries",
+        "active_record_id": "landing-plan-example",
+    }
+    response["result"] = lease
+    status, payload = _run_controller_response(response)
+    assert status == 0
+    assert payload["result"] == lease
+    lease["active_record_id"] = ""
+    assert _run_controller_response(response)[1]["result"]["active_record_id"] is None
+
+
+def test_controller_client_timeout_is_not_a_service_outage_and_never_retries() -> None:
+    for error in (TimeoutError("timed out"), urllib.error.URLError(TimeoutError("timed out"))):
+        for mutate in (False, True):
+            status, payload = _run_controller_response(error, mutate=mutate, timeout=7.5)
+            assert status == 1
+            assert payload["summary"]["error_code"] == "client_timeout"
+            assert payload["summary"]["timeout_seconds"] == 7.5
+            assert payload["warnings"][0]["code"] == "client_timeout"
+            assert "7.5 s" in payload["warnings"][0]["message"]
+            if mutate:
+                assert "may have completed" in payload["summary"]["recommendation"]
+    status, payload = _run_controller_response(urllib.error.URLError("connection refused"))
+    assert status == 1
+    assert payload["warnings"][0]["code"] == "provider_unavailable"
+
+
+def test_controller_rejected_response_keeps_only_safe_trace_and_code() -> None:
+    for code_source in ("top", "error", "blocking_reason"):
+        response: dict[str, Any] = {
+            "status": "accepted", "trace_id": "launchplane_req_diagnostic", "records": {},
+            "result": {"controller_action": "block", "token": "private-fixture-value"},
+        }
+        error = {"code": "merge_readiness_not_ready", "message": "Bearer private-fixture-value"}
+        if code_source == "top":
+            response["error"] = error
+        else:
+            response["result"][code_source] = error
+        status, payload = _run_controller_response(response, mutate=True)
+        assert status == 1
+        assert payload["status"] == "invalid"
+        assert payload["result"] == {}
+        assert payload["summary"]["trace_id"] == response["trace_id"]
+        assert payload["summary"]["error_code"] == error["code"]
+        assert "private-fixture-value" not in json.dumps(payload)
+        status, dry_run_payload = _run_controller_response(response)
+        assert status == 1
+        assert "may have completed" not in dry_run_payload["summary"]["recommendation"]
+    for trace, code in (
+        ("launchplane_req_diagnostic", "ghp_privatefixture"),
+        ("Bearer private-fixture-value", "merge_readiness_not_ready"),
+        ({}, {}),
+    ):
+        response = {"trace_id": trace, "error": {"code": code}, "result": {"unexpected": True}}
+        status, payload = _run_controller_response(response)
+        assert status == 1
+        assert ("trace_id" in payload["summary"]) == (trace == "launchplane_req_diagnostic")
+        assert ("error_code" in payload["summary"]) == (code == "merge_readiness_not_ready")
+
+
+def test_controller_http_error_keeps_safe_identifiers_without_raw_error_text() -> None:
+    for http_status, error_code in (
+        (403, "merge_readiness_not_ready"), (409, "merge_readiness_not_ready"),
+        (502, "merge_readiness_not_ready"), (409, "merge_train_controller_lease_held"),
+    ):
+        response = {
+            "trace_id": "launchplane_req_http", "error": {
+                "code": error_code, "message": "Bearer private-fixture-value",
+            }, "token": "private-fixture-value",
+        }
+        error = urllib.error.HTTPError(
+            "https://launchplane.example.invalid/controller", http_status, "Rejected", Message(),
+            io.BytesIO(json.dumps(response).encode()),
+        )
+        status, payload = _run_controller_response(error)
+        assert status == 1
+        assert payload["summary"]["http_status"] == http_status
+        assert payload["summary"]["trace_id"] == response["trace_id"]
+        assert payload["summary"]["error_code"] == response["error"]["code"]
+        assert "private-fixture-value" not in json.dumps(payload)
+
+
 def test_merge_train_idle_preserves_author_refusal_without_pr_content() -> None:
     result = _summarize_queue_response(_queue_refusal_response())
     dry_run = result["result"]["dry_run_result"]
@@ -7225,6 +7364,11 @@ def main() -> int:
         test_optional_public_identifier_rejects_null_values,
         test_runtime_environment_projection_enforces_scope_identity,
         test_merge_train_idle_preserves_author_refusal_without_pr_content,
+        test_controller_timeout_covers_slow_dry_run_and_mutation_and_keeps_override,
+        test_controller_block_and_reconciliation_preserve_durable_diagnostics,
+        test_controller_client_timeout_is_not_a_service_outage_and_never_retries,
+        test_controller_rejected_response_keeps_only_safe_trace_and_code,
+        test_controller_http_error_keeps_safe_identifiers_without_raw_error_text,
         test_merge_train_queue_distinguishes_eligible_empty_and_unavailable,
         test_merge_train_queue_rejects_malformed_or_sensitive_evidence,
         test_current_launchplane_service_response_shapes,

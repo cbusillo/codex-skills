@@ -1432,6 +1432,12 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
     ):
         if key in source:
             projected[key] = public_identifier(source[key])
+    for key in (
+        "active_action", "active_phase", "active_record_id",
+        "landing_plan_record_id", "merge_train_batch_landing_plan_record_id",
+    ):
+        if key in source:
+            projected[key] = _optional_public_identifier(source[key])
     if "mutate" in source:
         projected["mutate"] = _optional_bool(source["mutate"])
     if "candidate_ref_cleanup_github_status_code" in source:
@@ -4067,6 +4073,7 @@ def summarize_success(
         "recommendation": "Review the redacted result before deciding the next action.",
     }
     if operation == "merge-train-controller-run-once":
+        summary.update(_controller_error_diagnostics(provider_payload))
         controller_action = result.get("controller_action")
         if isinstance(controller_action, str):
             summary["controller_action"] = controller_action
@@ -4221,6 +4228,33 @@ def summarize_success(
     return payload
 
 
+def _controller_error_diagnostics(provider_payload: dict[str, Any]) -> dict[str, object]:
+    """Retain independently validated identifiers even when the rest is unprojectable."""
+    diagnostics: dict[str, object] = {}
+    try:
+        trace_id = public_trace_id(provider_payload.get("trace_id"))
+        if trace_id:
+            diagnostics["trace_id"] = trace_id
+    except (LaunchplaneSafetyError, TypeError):
+        pass
+    result = provider_payload.get("result")
+    sources = [provider_payload]
+    if isinstance(result, dict):
+        sources.append(result)
+    for source in sources:
+        for key in ("error", "blocking_reason"):
+            error = source.get(key)
+            if isinstance(error, dict):
+                try:
+                    code = public_code(error.get("code"))
+                    assert_public_safe_shape(code)
+                    diagnostics["error_code"] = code
+                    return diagnostics
+                except (LaunchplaneSafetyError, TypeError):
+                    pass
+    return diagnostics
+
+
 def summarize_http_error(
     *, operation: str, request: dict[str, object], exc: urllib.error.HTTPError
 ) -> dict[str, object]:
@@ -4230,6 +4264,19 @@ def summarize_http_error(
     if not isinstance(error, dict):
         error = {}
     payload = base_payload(status=status, operation=operation, request=request)
+    if operation == "merge-train-controller-run-once":
+        diagnostics = _controller_error_diagnostics(provider_payload)
+        payload["summary"] = {
+            "http_status": exc.code,
+            "error_code": status,
+            **diagnostics,
+            "recommendation": http_error_recommendation(status),
+        }
+        payload["warnings"] = [warning(
+            cast(str, diagnostics.get("error_code", status)),
+            "Launchplane controller request was rejected; inspect the trace before retrying.",
+        )]
+        return payload
     payload["summary"] = {
         "http_status": exc.code,
         "trace_id": public_trace_id(provider_payload.get("trace_id")),
@@ -5681,6 +5728,21 @@ def execute_post(
                 )
             )
         except LaunchplaneSafetyError:
+            if operation == "merge-train-controller-run-once":
+                payload = unavailable_payload(
+                    operation=operation, request=request, status="invalid",
+                    code="invalid_response", message="Launchplane returned an invalid response.",
+                )
+                summary = cast(dict[str, object], payload["summary"])
+                summary.update(_controller_error_diagnostics(provider_payload))
+                summary["recommendation"] = (
+                    "The controller response could not be verified. Read the PR and controller "
+                    "state before any retry; a mutating pass may have completed."
+                    if request.get("mutate")
+                    else "The controller dry-run response could not be verified; inspect the trace before retrying."
+                )
+                emit(payload)
+                return 1
             if operation not in {
                 "odoo-addon-settings-apply",
                 "integration-allowances-apply",
@@ -5746,7 +5808,25 @@ def execute_post(
     except LaunchplaneSafetyError as exc:
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError):
+    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        if operation == "merge-train-controller-run-once" and (
+            isinstance(exc, TimeoutError)
+            or (isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError))
+        ):
+            payload = unavailable_payload(
+                operation=operation, request=request, status="unavailable",
+                code="client_timeout", message=f"Controller request timed out after {args.timeout:g} s.",
+            )
+            payload["summary"] = {
+                "error_code": "client_timeout", "timeout_seconds": args.timeout,
+                "recommendation": (
+                    "Read the PR and controller state before any retry; the mutating pass may have completed."
+                    if request.get("mutate")
+                    else "The client timed out; this does not establish a service outage."
+                ),
+            }
+            emit(payload)
+            return 1
         emit_provider_unavailable(operation=operation, request=request)
         return 1
     except (ValueError, json.JSONDecodeError):
@@ -7844,7 +7924,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--config", help="Optional private operator JSON config path.")
     parser.add_argument("--env-config", help="Optional private operator .env config path.")
     parser.add_argument("--url", help="Optional Launchplane service URL override.")
-    parser.add_argument("--timeout", type=float, default=10.0, help="HTTP timeout seconds.")
+    parser.add_argument(
+        "--timeout", type=float, default=argparse.SUPPRESS,
+        help="HTTP timeout seconds (controller: 180; other commands: 10).",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser(
@@ -8315,7 +8398,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     remediation.add_argument("--related-issue", required=True)
     remediation.add_argument("--idempotency-key", required=True)
     remediation.add_argument("--reviewed-dry-run", action="store_true")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args.timeout = getattr(
+        args, "timeout", 180.0 if args.command == "merge-train-controller-run-once" else 10.0,
+    )
+    return args
 
 
 def main(argv: list[str]) -> int:
