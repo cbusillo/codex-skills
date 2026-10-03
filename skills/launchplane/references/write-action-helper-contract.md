@@ -549,9 +549,11 @@ with `status: "incomplete"` may still have a local token source; read the
 ## Exit Behavior
 
 - `0`: Launchplane accepted the request and the helper emitted a redacted
-  summary. `status: "accepted_unverified"` exits 0 for the product-config,
-  repository-inventory, expected-config, repository-identity, deploy-recovery,
-  and merge-train policy import applies, and 1 for the reviewed lane-setup
+  summary. `status: "accepted_unverified"` exits 0 for the Odoo addon-settings,
+  integration-allowances, testing-hold, product-repository-identity,
+  change-impact-policy, generic-web deploy-recovery, repository-inventory,
+  product expected-config, and merge-train policy import applies; product-config
+  apply does not emit it. It exits 1 for the reviewed lane-setup
   applies (product Client, product image repository, Dokploy target, production
   backup authority, and private health endpoint). In every case the write may
   have committed; read back the active record before any retry.
