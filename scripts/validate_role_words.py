@@ -36,8 +36,8 @@ ALLOWED = re.compile(
     r"|\bowner\s+(?:or|and)\s+name\b",
     re.IGNORECASE,
 )
-# A qualifier that ends a line carries over to the wrapped next line.
-TRAILING_QUALIFIER = re.compile(rf"\b{QUALIFIER}\s*$", re.IGNORECASE)
+# A qualifier or "policy" at a line ending carries over to wrapped prose.
+TRAILING_QUALIFIER = re.compile(rf"\b(?:{QUALIFIER}|policy)\s*$", re.IGNORECASE)
 
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
 FRONTMATTER_PROSE = re.compile(r"^(\s*)(?:-\s+)?(?:description|purpose|message):")
