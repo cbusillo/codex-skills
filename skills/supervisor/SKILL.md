@@ -76,7 +76,9 @@ records that run.
    issue, and tab title. Nudge a stalled session with exact facts: the comment,
    the failing check, the time it last moved. Check each session's context
    size and ask it to close out at its next safe point near 450k. Gather the
-   open Director questions.
+   open Director questions. Close finished sessions using the procedure below
+   on every check, including sessions that finished their item without needing
+   a relaunch.
 4. **Every check and every handoff ends with the "needs the Director" list**,
    headed with the Director's name (the pilot's handoffs say "Needs Chris"): each question in full, with what it decides,
    what changes on yes, and a recommendation, in one batch.
@@ -115,6 +117,28 @@ records that run.
 8. Run the check until the Director asks you to close out, or your own context
    nears 450k; then write the handoff below and close out with
    `work-closeout`.
+
+## Close Finished Sessions On Every Check
+
+1. Match the ledger's session to its transcript, process, and terminal tab.
+   Leave the Director's own sessions alone. Read the session's latest response
+   in its transcript: it must explicitly say `Safe to exit: yes`, and its work
+   must be handed off on the item's issue. Never infer completion from silence,
+   idleness, or the screen; Claude Code redraws its screen and can hide the
+   close-out message. If later transcript activity resumes work, keep it open.
+2. Inspect the input line before sending keys. If it holds text the Director
+   typed, record that text in the Supervisor's private handoff files, with the
+   session and tab identity, before clearing it or closing the tab. Keep the
+   tab open if the text cannot be recorded or its author is uncertain.
+3. Resolve any pending permission prompt within the brief's existing authority;
+   never approve new scope or access to make a session exit. If the prompt
+   needs the Director, leave the session open and include it in the next
+   "needs the Director" list. After resolving a prompt, recheck the transcript
+   and handoff before continuing, because the session may have resumed work.
+4. Clear the input line, send `/exit` for Claude Code or `/quit` for Codex,
+   and wait for that session's process to end. Verify it ended before closing
+   the tab. If it is still running or its identity is uncertain, keep the tab
+   open and record the next action in the ledger.
 
 ## Handoff Shape
 
