@@ -309,7 +309,7 @@ not bypass it or substitute another command.
 ## Worktree Safety
 
 Inspect the worktree being edited. Do not silently inspect the main worktree
-when Code is operating in a linked worktree. If routing resolves to another
+when the agent is operating in a linked worktree. If routing resolves to another
 worktree, treat that as a blocker unless the user explicitly approves it.
 
 For readiness inspection, require an exact worktree route. A containing main

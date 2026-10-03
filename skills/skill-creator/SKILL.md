@@ -86,7 +86,7 @@ commands:
 
 Create or update skills that provide specialized workflows, tools, domain
 knowledge and reusable resources. Verify current capabilities before relying on
-Codex Lab or another host's specific behavior. Apply
+a specific host's behavior. Apply
 [task scope and authorization](../references/execution-scope.md), preserving
 existing authorization and intentional quality/approval policies. Install this
 maintained override with the catalog's shared `../references/` directory;
@@ -257,7 +257,7 @@ optional harness does not create a new approval gate.
 For routing, command-policy, safety or GitHub/repo workflow changes, normally
 cover intended trigger/success, adjacent routing, and boundary cases; add a
 negative/ambiguity case when practical. Judge observable actions/outputs.
-Current Codex/Codex Lab execution, direct local-model responses and source
+Current Codex or Claude Code execution, direct local-model responses and source
 reviews have different scopes: report the one performed. Every Code is retired;
 its fixtures/readers are historical, not a supported validation path.
 

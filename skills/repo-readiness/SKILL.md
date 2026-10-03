@@ -68,13 +68,14 @@ inspection, browser, CI, deployment, or security gates.
    ```
 
    Use `available` context only as a hint for product mapping, preview readiness,
-   Every Code state, deploy evidence, or source-of-truth links. Treat `no_context`,
+   deploy evidence, or source-of-truth links. Treat `no_context`,
    `unavailable`, `unauthorized`, `invalid`, or helper failure as normal absence and
    continue with local/GitHub readiness checks. Do not print raw helper stderr or
    copy helper payloads into readiness output.
 
-   If you inspect worktrees, ignore Codex Desktop or Every Code auto-review
-   worktrees under `~/.code/working/<repo>/branches/auto-review*` unless the user's
+   If you inspect worktrees, ignore detached host auto-review worktrees, such as
+   `~/.code/working/<repo>/branches/auto-review*` left by the retired Every Code
+   harness, unless the user's
    task is specifically about that review. They are detached external review
    context and should not affect readiness for the active repo/branch.
 
@@ -82,8 +83,9 @@ inspection, browser, CI, deployment, or security gates.
    context or repo tooling, follow
    `../references/background-review-reporting.md`. Match the observation to the
    active branch, PR, and head SHA before using it as evidence. Do not declare a
-   branch, PR, release, or handoff green while blocking findings against the
-   current target are unresolved or while a matching review is `in flight`.
+   branch, PR, release, or handoff green while findings against the current
+   target are not yet accounted for (fixed, deferred, tracked, or declined with
+   a recorded reason) or while a matching review is `in flight`.
    When no lifecycle evidence is visible before a possible post-turn trigger,
    report `not yet observable`; do not infer a skipped or not-emitted outcome,
    and do not delay the final response solely waiting for that trigger. If a
