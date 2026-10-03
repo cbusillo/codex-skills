@@ -23,9 +23,18 @@ stop every shell command on the host.
 Policies match an argv prefix, so the hook first removes what an agent commonly
 puts in front of a tool: leading assignments, `command`/`exec`/`time`/`nohup`,
 `env` with its flags and assignments, `uv run` with its flags, a directory in
-front of the tool name, `gh-with-env-token`, and one `sh`/`bash`/`zsh -c '...'` wrapper. This is a
+front of the tool name, `gh-with-env-token`, and `sh`/`bash`/`zsh -c '...'` wrappers. This is a
 guardrail for habits, not a security boundary. Forms that need real option
-parsing to unwrap, such as `xargs` and `sudo`, are deliberately left alone.
+parsing to unwrap, such as `xargs` and `sudo`, are deliberately left alone,
+though a shell script behind one is still read.
+
+Policies match commands, not data (#671, #1014). A heredoc body is data unless
+a shell or ssh reads it; command substitutions in an unquoted-delimiter body,
+in double-quoted arguments and in arithmetic still run and are checked, as are
+`eval` arguments, a shell's here-string and an ssh remote command. A `shell_regex` policy
+matches only where a token of a running command starts, so a quoted argument
+such as a search pattern or a prose example does not match, while `sudo gh api`
+or `xargs gh api` still does.
 """
 
 from __future__ import annotations
@@ -78,12 +87,8 @@ class ShellStream(io.StringIO):
 
 
 def shell_tokens(shell: str) -> list[str]:
-    # Preserve existing heredoc handling until #671 supplies command/data parsing.
-    # Such ambiguous scripts cannot qualify for repository exceptions below.
-    heredoc = "<<" in shell
-    lexer = shlex.shlex(ShellStream(shell), posix=True, punctuation_chars="();<>|&" if heredoc else "();<>|&\n")
-    if not heredoc:
-        lexer.whitespace = " \t\r"
+    lexer = shlex.shlex(ShellStream(shell), posix=True, punctuation_chars="();<>|&\n")
+    lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     return list(lexer)
 
@@ -99,13 +104,182 @@ def shell_commands(shell: str) -> list[list[str]]:
     return [argv for argv in commands if argv]
 
 
-def simple_commands(shell: str, nested: bool = False) -> list[list[str]]:
-    """Split a shell line into the argv of each simple command it runs."""
+class ShellScript:
+    """Separate what a shell line runs from the heredoc data it carries.
+
+    `text` is the line with every heredoc body removed. `bodies` holds each
+    body and whether the shell expands it (an unquoted delimiter).
+    `substitutions` holds the source of each `$(...)` and backtick command
+    substitution outside single quotes, including inside double quotes, where
+    the lexer keeps it as one data token although it runs. With `expanding`,
+    the text is an expanding heredoc body: quotes are literal and only
+    substitutions are read. This follows ordinary agent commands; it is not a
+    full shell parser.
+    """
+
+    def __init__(self, shell: str, expanding: bool = False) -> None:
+        self.shell = shell
+        self.text_parts: list[str] = []
+        self.bodies: list[tuple[str, bool]] = []
+        self.substitutions: list[str] = []
+        self.pending: list[tuple[str, bool, bool]] = []
+        # Open contexts, innermost last: "(" for a subshell or `$(`, "((" for
+        # `$((` arithmetic, '"' for a double quote, "`" for a backtick, "body"
+        # for an expanding heredoc body; each with the index its substitution
+        # source starts at, if any.
+        self.stack: list[tuple[str, int | None]] = [("body", None)] if expanding else []
+        self.index = 0
+        self.scan()
+
+    @property
+    def text(self) -> str:
+        return "".join(self.text_parts)
+
+    def emit(self, end: int) -> None:
+        self.text_parts.append(self.shell[self.index:end])
+        self.index = end
+
+    def scan(self) -> None:
+        shell = self.shell
+        while self.index < len(shell):
+            character = shell[self.index]
+            context = self.stack[-1][0] if self.stack else ""
+            if character == "\\":
+                self.emit(self.index + 2)
+            elif shell.startswith("$((", self.index):
+                self.stack.append(("((", None))  # Arithmetic: `<<` is a shift; `$(...)` still runs.
+                self.emit(self.index + 3)
+            elif context == "((" and shell.startswith("))", self.index):
+                self.stack.pop()
+                self.emit(self.index + 2)
+            elif shell.startswith("$(", self.index):
+                self.stack.append(("(", self.index + 2))
+                self.emit(self.index + 2)
+            elif character == "`":
+                self.backtick()
+            elif context in {'"', "body"}:
+                if character == '"' and context == '"':
+                    self.stack.pop()
+                self.emit(self.index + 1)
+            elif character == "'":
+                closing = shell.find("'", self.index + 1)
+                self.emit(len(shell) if closing < 0 else closing + 1)
+            elif character == '"':
+                self.stack.append(('"', None))
+                self.emit(self.index + 1)
+            elif character == "#" and (self.index == 0 or shell[self.index - 1] in " \t\r\n;&|()"):
+                closing = shell.find("\n", self.index)
+                self.emit(len(shell) if closing < 0 else closing)
+            elif shell.startswith("((", self.index) and (self.index == 0 or shell[self.index - 1] in " \t\r\n;&|"):
+                self.stack.append(("((", None))  # An arithmetic command, as in `$((`.
+                self.emit(self.index + 2)
+            elif character == "(":
+                self.stack.append(("(", None))
+                self.emit(self.index + 1)
+            elif character == ")" and context == "(":
+                self.close()
+            elif shell.startswith("<<<", self.index):
+                self.emit(self.index + 3)  # A here-string: its word is an ordinary argument.
+            elif context != "((" and shell.startswith("<<", self.index):
+                self.heredoc()
+            elif character == "\n" and self.pending:
+                self.emit(self.index + 1)
+                self.read_bodies()
+            else:
+                self.emit(self.index + 1)
+
+    def close(self) -> None:
+        _, start = self.stack.pop()
+        # Record only outermost substitutions; parsing one finds those inside it.
+        if start is not None and all(enclosing is None for _, enclosing in self.stack):
+            self.substitutions.append(self.shell[start:self.index])
+        self.emit(self.index + 1)
+
+    def backtick(self) -> None:
+        if self.stack and self.stack[-1][0] == "`":
+            self.close()
+        else:
+            self.stack.append(("`", self.index + 1))
+            self.emit(self.index + 1)
+
+    def heredoc(self) -> None:
+        shell = self.shell
+        cursor = self.index + 2
+        strip_tabs = shell.startswith("-", cursor)
+        cursor += strip_tabs
+        while cursor < len(shell) and shell[cursor] in " \t":
+            cursor += 1
+        word: list[str] = []
+        quoted = False
+        while cursor < len(shell) and shell[cursor] not in " \t\r\n;&|()<>":
+            character = shell[cursor]
+            if character in "'\"":
+                closing = shell.find(character, cursor + 1)
+                closing = len(shell) if closing < 0 else closing
+                word.append(shell[cursor + 1:closing])
+                quoted, cursor = True, closing + 1
+            elif character == "\\":
+                word.append(shell[cursor + 1:cursor + 2])
+                quoted, cursor = True, cursor + 2
+            else:
+                word.append(character)
+                cursor += 1
+        if word:
+            self.pending.append(("".join(word), strip_tabs, not quoted))
+        self.emit(min(cursor, len(shell)))
+
+    def read_bodies(self) -> None:
+        """Consume the body lines of each heredoc opened on the line just ended."""
+        shell = self.shell
+        cursor = self.index
+        for delimiter, strip_tabs, expands in self.pending:
+            body: list[str] = []
+            while cursor < len(shell):
+                end = shell.find("\n", cursor)
+                end = len(shell) if end < 0 else end
+                line = shell[cursor:end]
+                cursor = end + 1
+                if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+                    break
+                body.append(line)
+            self.bodies.append(("\n".join(body), expands))
+        self.pending = []
+        self.index = min(cursor, len(shell))
+
+
+def reads_script_from_input(argv: list[str]) -> bool:
+    """A shell without `-c`, even behind a wrapper such as `sudo`, or ssh may run heredoc text."""
+    if argv[0] == "ssh":
+        return True
+    shells = [index for index, token in enumerate(argv) if Path(token).name in SHELLS]
+    return bool(shells) and not any(SHELL_COMMAND_FLAG.match(token) for token in argv[shells[0] + 1:])
+
+
+def simple_commands(shell: str) -> list[list[str]]:
+    """Return the argv of each simple command a shell line runs, per the module docstring."""
+    script = ShellScript(shell)
     unwrapped: list[list[str]] = []
-    commands = shell_commands(shell)
-    for argv in commands:
-        unwrapped.extend(unwrap(argv, nested))
+    for argv in shell_commands(script.text):
+        unwrapped.extend(unwrap(argv))
+    unwrapped.extend(nested_commands(script.substitutions))
+    shell_reads_bodies = any(reads_script_from_input(argv) for argv in unwrapped)
+    for body, expands in script.bodies:
+        if shell_reads_bodies:
+            unwrapped.extend(nested_commands([body]))
+        elif expands:
+            unwrapped.extend(nested_commands(ShellScript(body, expanding=True).substitutions))
     return unwrapped
+
+
+def nested_commands(sources: list[str]) -> list[list[str]]:
+    """Each nested script is shorter than the text holding it, so recursion ends."""
+    commands: list[list[str]] = []
+    for source in sources:
+        try:
+            commands.extend(simple_commands(source))
+        except (ValueError, RecursionError):
+            continue  # An unreadable part must not let the rest of the line through.
+    return commands
 
 
 def drop_flags(argv: list[str], value_flags: set[str] | None = None) -> list[str]:
@@ -117,7 +291,7 @@ def drop_flags(argv: list[str], value_flags: set[str] | None = None) -> list[str
     return argv
 
 
-def unwrap(argv: list[str], nested: bool) -> list[list[str]]:
+def unwrap(argv: list[str]) -> list[list[str]]:
     """Return the command or commands an argv really runs, per the module docstring."""
     while argv:
         head = Path(argv[0]).name
@@ -134,16 +308,31 @@ def unwrap(argv: list[str], nested: bool) -> list[list[str]]:
             if arguments[:1] == ["--check"]:
                 break  # Auth preflight exits without executing gh.
             return [["gh-with-env-token", *arguments]]
+        elif head == "eval":
+            # Its quoted arguments are the command, not data.
+            return nested_commands([" ".join(argv[1:])])
         else:
             break
     if not argv:
         return []
     argv = [Path(argv[0]).name, *argv[1:]]
-    if argv[0] in SHELLS and not nested:
+    if argv[0] in SHELLS:
         for index, token in enumerate(argv[1:-1], start=1):
             if SHELL_COMMAND_FLAG.match(token):  # -c, -lc, -ec ...
-                return simple_commands(argv[index + 1], nested=True)
-    return [argv]
+                return nested_commands([argv[index + 1]])
+    commands = [argv]
+    shells = [index for index, token in enumerate(argv[1:-1], start=1) if Path(token).name in SHELLS]
+    if shells:
+        # A wrapper left in place (`sudo sh -c`, `xargs bash -c`) still runs the script.
+        flag = next((index for index in range(shells[0] + 1, len(argv) - 1) if SHELL_COMMAND_FLAG.match(argv[index])), None)
+        if flag is not None:
+            commands += nested_commands([argv[flag + 1]])
+    if argv[0] == "ssh":
+        # The remote command runs too; the host and option values read as harmless words.
+        commands += nested_commands([" ".join(argv[1:])])
+    if reads_script_from_input(argv) and "<<<" in argv[:-1]:
+        commands += nested_commands([argv[argv.index("<<<") + 1]])
+    return commands
 
 
 def runnable(token: str, skill: str) -> str:
@@ -162,9 +351,10 @@ def runnable(token: str, skill: str) -> str:
     return next((str(path.resolve()) for path in candidates if path.is_file()), token)
 
 
-def describe(policy: dict[str, Any], skill: str) -> str:
+def describe(policy: dict[str, Any], skill: str, argv: list[str]) -> str:
     lines = [
         f"Blocked by the `{skill}` skill's command policy `{policy['id']}`.",
+        f"Matched command: {shlex.join(argv)}",
         f"Load the `{skill}` skill before continuing ({CATALOG / skill / 'SKILL.md'}).",
     ]
     if policy.get("message"):
@@ -229,7 +419,7 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
     for argv in commands:
         while argv and argv[0] in TRANSPARENT | {"builtin"}:
             argv = argv[1:]
-        normalized = unwrap(argv, nested=True)
+        normalized = unwrap(argv)
         for index, token in enumerate(argv):
             if token == "." and not (
                 index > 0 and argv[index - 1] == "--control-plane-root"
@@ -241,14 +431,15 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
     return cwd if cwd.is_absolute() else None
 
 
-def blocking_policy(shell: str, cwd: Path | None = None) -> tuple[dict[str, Any], str] | None:
+def blocking_policy(shell: str, cwd: Path | None = None) -> tuple[dict[str, Any], str, list[str]] | None:
     simulator = load_simulator()
     catalog = {(entry["skill"], entry["id"]): entry for entry in simulator.policy_catalog()}
     context = exception_cwd(shell, cwd or Path.cwd())
     for argv in simple_commands(shell):
         wrapped_gh = argv[0] == "gh-with-env-token"
         matched_argv = ["gh", *argv[1:]] if wrapped_gh else argv
-        for match in simulator.simulate(matched_argv, shell, cwd=context):
+        # Regex policies see the command as written, wrapper included, from command position only.
+        for match in simulator.simulate(matched_argv, cwd=context, command_argv=argv):
             policy = catalog[(match.skill, match.policy_id)]
             if wrapped_gh and policy.get("action") == "require_preferred" and any(
                 Path(preferred.get("path", "")).name == "gh-with-env-token"
@@ -258,7 +449,7 @@ def blocking_policy(shell: str, cwd: Path | None = None) -> tuple[dict[str, Any]
                 # already supplies their declared preferred route. Still check
                 # the other matches (for example the issue source-edit reject).
                 continue
-            return policy, match.skill
+            return policy, match.skill, argv
     return None
 
 
