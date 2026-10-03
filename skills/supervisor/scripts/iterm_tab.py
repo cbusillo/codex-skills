@@ -157,7 +157,7 @@ def main():
     new.add_argument(
         "--account-provider",
         choices=account_choice.PROVIDERS,
-        help="launch on the account Context Panel says resets soonest with room",
+        help="launch on Context Panel's use-next account, with a reported fallback",
     )
     new.add_argument("--account", help="use this configured account by name")
     new.add_argument("--account-config", type=Path)
