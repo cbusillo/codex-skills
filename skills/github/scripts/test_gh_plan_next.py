@@ -1214,6 +1214,38 @@ def test_portfolio_capacity_truncated_discovery_admits_tooling_but_not_incomplet
             assert result["available_candidates"] == []
 
 
+def test_portfolio_capacity_reports_reviews_before_unread_excluded_ancestry() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    wait = global_issue("someone/business", 10, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Customer testing.")
+    tool = global_issue("someone/tools", 20)
+    unrelated = global_issue("someone/product", 439, milestone=milestone_data(14, "Encrypted Disc Relay", created_at="2026-08-31T00:00:00Z"))
+    blocker = global_issue("someone/product", 711)
+    edges = {
+        (roots[0]["repo"], 1): relationships(sub_issues=[wait]),
+        (unrelated["repo"], 439): relationships(blocked_by=[blocker]),
+    }
+    with global_fixture(roots, [wait], edges, discovered=[unrelated, tool]) as (module, result, _reads):
+        module.cmd_next(next_args())
+        capacity = result["tooling_capacity_context"]
+        assert capacity["issue"] == "someone/business#10"
+        assert capacity["required"] == "current_complete_person_wait_review"
+        items = {item["number"]: item for item in [*result["candidates"], *result["excluded"]]}
+        assert "ancestry_complete" not in items[439]["discussion"]
+        context = {"issues": {
+            "someone/business#10": reviewed(items[10], "waiting", waiting_on="person"),
+            "someone/tools#20": reviewed(items[20], category="repeated_stop_tooling"),
+        }}
+        with patch.multiple(module, next_selection_context=lambda _args: context):
+            module.cmd_next(next_args())
+            assert result["tooling_capacity_context"]["admitted"] is True
+            assert [item["number"] for item in result["available_candidates"]] == [20]
+            with patch.multiple(module, read_next_parent=Mock(side_effect=module.PlanError("Parent unavailable"))):
+                module.cmd_next(next_args())
+            assert result["tooling_capacity_context"]["admitted"] is False
+            assert result["tooling_capacity_context"]["reason"] == "unknown_milestone_context"
+            assert result["tooling_capacity_context"]["issue"] == "someone/product#439"
+
+
 def test_portfolio_capacity_unscanned_known_milestone_prevents_admission() -> None:
     roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
     wait = global_issue("someone/business", 10)
@@ -2084,6 +2116,7 @@ TESTS = [
     test_portfolio_capacity_admission_ranks_stops_then_age_and_keeps_own_projects,
     test_portfolio_capacity_needs_current_person_waits_and_complete_graph,
     test_portfolio_capacity_truncated_discovery_admits_tooling_but_not_incomplete_graph,
+    test_portfolio_capacity_reports_reviews_before_unread_excluded_ancestry,
     test_portfolio_capacity_unscanned_known_milestone_prevents_admission,
     test_portfolio_capacity_partial_milestone_source_differs_from_unrelated_source,
     test_portfolio_capacity_waiting_discovery_milestone_blocks_admission,
