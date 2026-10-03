@@ -2852,7 +2852,7 @@ RECONCILE_PLAN_KEY_NAME_LISTS = {
 def _reconcile_deploy_key_digest(value: object) -> str:
     if not isinstance(value, str) or len(value) > 1024:
         raise LaunchplaneSafetyError("invalid_response")
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 def _project_reconcile_plan(plan_value: object, drops: _FieldDrops) -> dict[str, object]:

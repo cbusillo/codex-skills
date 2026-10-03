@@ -3821,7 +3821,7 @@ def test_reconcile_requests_read_keeps_generic_web_testing_outcome() -> None:
     import hashlib
 
     key = "product-reconcile:example-product:example:testing:sha256:abc:from-deployment-1"
-    plan = {
+    plan: dict[str, Any] = {
         "target": "testing",
         "deploy_operation_status": "replayed",
         "deploy_status": "fail",
