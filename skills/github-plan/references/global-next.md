@@ -116,7 +116,15 @@ including the first unresolved issue when a milestone review or context is missi
 Held repositories remain excluded from selection but are inventoried read-only.
 A hold alone is never a person wait. Their milestone candidates need the same
 current person-wait reviews; unrelated holds do not block independent tooling.
-Failed or bounded inventory still leaves portfolio coverage incomplete.
+Held issues use a separate bounded allowance of `--scan-limit`, leaving the
+ordinary discovery allowance available to selectable work. Their failures and
+bounds affect `discovery_context.capacity_complete`, not ordinary candidate
+coverage. Failed ancestry on already-excluded discoveries likewise preserves
+ordinary wait reports while making capacity evidence incomplete. Capacity
+admission requires both graph coverage and `capacity_complete`, not just the
+ordinary candidate coverage flag. Dependencies of discovered title-matched
+milestone containers inherit that scope; unavailable reads or dependency cycles
+cannot establish person waits.
 Every available tooling candidate carries `tooling_admission_rule`
 (`repeated_stops` or `all_milestones_waiting_on_people`), the same value in
 `reasons`, and `recorded_stop_count` for weekly audit counts. During capacity

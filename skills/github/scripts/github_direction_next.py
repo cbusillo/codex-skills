@@ -39,11 +39,12 @@ def is_live_breakage(issue: dict[str, Any]) -> bool:
     return LIVE_BREAKAGE_LABEL in {name.casefold() for name in normalize_labels(issue.get("labels"))}
 
 
-def discovery_scan(inventory: list[dict[str, Any]], scan_limit: int) -> list[dict[str, Any]]:
+def discovery_scan(inventory: list[dict[str, Any]], scan_limit: int, selection_context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Owner-marked incidents do not consume the ordinary discovery allowance."""
     incidents = [item for item in inventory if is_live_breakage(item)]
-    ordinary = [item for item in inventory if not is_live_breakage(item)]
-    return incidents + ordinary[:scan_limit]
+    ordinary = [item for item in inventory if not is_live_breakage(item) and not repository_hold(selection_context or {}, item["repo"])]
+    held = [item for item in inventory if not is_live_breakage(item) and repository_hold(selection_context or {}, item["repo"])]
+    return incidents + ordinary[:scan_limit] + held[:scan_limit]
 
 
 def compact_list_issue(repo: str, issue: dict[str, Any]) -> dict[str, Any]:
@@ -376,12 +377,40 @@ def tooling_capacity_context(
         return {**result, "reason": "incomplete_portfolio_coverage"}
     reviews = {key.casefold(): value for key, value in context.get("issues", {}).items()}
     entries = [*graph.get("candidates", []), *graph.get("excluded", []), *discoveries]
-    entry_keys = {(entry["repo"].casefold(), entry["number"]) for entry in entries}
+    by_key = {(entry["repo"].casefold(), entry["number"]): entry for entry in entries}
+    entry_keys = set(by_key)
+    matched = {key for key, entry in by_key.items() if overall_milestone_context(entry, graph, milestone_titles, repository_waypoints)["state"] == "matched"}
+    pending = list(matched)
+    while pending:
+        key = pending.pop()
+        entry = by_key[key]
+        if entry.get("exclusion") not in {"blocked_by_open_dependency", "delegated_to_open_sub_issues"}:
+            continue
+        for dependency in [*entry.get("blocked_by", []), *entry.get("open_sub_issues", [])]:
+            dependency_key = (dependency["repo"].casefold(), dependency["number"])
+            if dependency_key not in entry_keys:
+                return {**result, "reason": "incomplete_milestone_dependencies", "issue": f"{entry['repo']}#{entry['number']}"}
+            if dependency_key not in matched:
+                matched.add(dependency_key)
+                pending.append(dependency_key)
+    unresolved = {key for key in matched if by_key[key].get("exclusion") in {"blocked_by_open_dependency", "delegated_to_open_sub_issues"} and (by_key[key].get("blocked_by") or by_key[key].get("open_sub_issues"))}
+    settled = matched - unresolved
+    while unresolved:
+        ready = {key for key in unresolved if all(
+            (dependency["repo"].casefold(), dependency["number"]) in settled
+            for dependency in [*by_key[key].get("blocked_by", []), *by_key[key].get("open_sub_issues", [])]
+        )}
+        if not ready:
+            return {**result, "reason": "milestone_dependency_cycle"}
+        settled.update(ready)
+        unresolved.difference_update(ready)
     frontier: list[dict[str, Any]] = []
     for entry in entries:
         if entry.get("exclusion") in {"completed", "outside_direction_tracks", "tracking", "tracking_without_open_work"}:
             continue
         milestone = overall_milestone_context(entry, graph, milestone_titles, repository_waypoints)
+        if (entry["repo"].casefold(), entry["number"]) in matched:
+            milestone = {"state": "matched"}
         if milestone["state"] == "unknown":
             # A complete graph and ancestry can rule out native Track links.
             # Unrelated blocking issues do not become milestone work. A local

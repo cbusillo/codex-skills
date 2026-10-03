@@ -609,7 +609,9 @@ evidence with the same holds, review states, and priority. Services must supply
 repository milestone order and bounded parent evidence through those shared
 functions, and report their discovery coverage separately. Capacity callers also
 read bounded ancestry for excluded discoveries, preserving their original wait
-reports while marking failed ancestry/discussion evidence incomplete. For capacity admission,
+reports while marking capacity ancestry/discussion evidence incomplete. Held
+repositories use a separate bounded read allowance and remain unselectable;
+`discovery_context.capacity_complete` records completeness for this admission. For capacity admission,
 pass `coverage_complete=True` to `rank_portfolio_work` only for complete portfolio
 coverage; its default is false. Current milestone person-wait reviews and
 `tooling_admission_rule` outputs follow the linked global selection procedure.
