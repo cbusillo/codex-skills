@@ -1229,6 +1229,10 @@ def retry_snapshot(monkeypatch, tmp_path, runs, jobs):
         "retry_state": {"current_sha_retries_used": 0, "max_flaky_retries": 3},
     }
     monkeypatch.setattr(gh_pr_watch, "collect_snapshot", lambda args: (snapshot, state_path))
+    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *args, **kwargs: [
+        {"id": run["run_id"], "head_sha": "abc123", "run_attempt": run["run_attempt"],
+         "status": run["status"]} for run in runs
+    ])
     return snapshot, state_path
 
 
@@ -1473,7 +1477,8 @@ def test_snapshot_cannot_overwrite_retry_intent(monkeypatch, tmp_path):
     def runs(*_args, **_kwargs):
         snapshot_reading.set()
         assert finish_read.wait(timeout=10)
-        return []
+        return [{"id": 1, "head_sha": "abc123", "run_attempt": 1,
+                 "status": "completed", "conclusion": "failure"}]
 
     def unknown(*_args, **_kwargs):
         raise gh_pr_watch.GhCommandError("connection reset")
@@ -1509,6 +1514,21 @@ def test_snapshot_cannot_overwrite_retry_intent(monkeypatch, tmp_path):
                 process.terminate()
                 process.join()
 
+
+
+
+@pytest.mark.parametrize("fresh_run", [
+    {"id": 1, "head_sha": "abc123", "run_attempt": 2, "status": "completed"},
+    {"id": 1, "head_sha": "abc123", "run_attempt": 1, "status": "in_progress"},
+    {"id": 1, "head_sha": "other", "run_attempt": 1, "status": "completed"},
+])
+def test_retry_rechecks_run_after_snapshot_lock_gap(monkeypatch, tmp_path, fresh_run):
+    retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
+    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *a, **kw: [fresh_run])
+    monkeypatch.setattr(gh_pr_watch, "gh_text", lambda *a, **kw: pytest.fail("stale write"))
+    result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+    assert result["skipped_run_ids"] == [1]
+    assert result["retries_used"] == 0
 
 
 if __name__ == "__main__":

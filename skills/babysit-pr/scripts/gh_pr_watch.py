@@ -1404,10 +1404,19 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
     if pending:
         result["reason"] = "rerun_outcome_pending"
         return result
+    current_runs = {
+        run.get("id"): run for run in get_workflow_runs_for_sha(pr["repo"], pr["head_sha"])
+    } if eligible_runs else {}
     cycle_charged = False
     for run in eligible_runs:
         run_id = run.get("run_id")
-        if run_id in (None, ""):
+        current_run = current_runs.get(run_id, {})
+        attempt = run.get("run_attempt")
+        if (not isinstance(attempt, int) or attempt <= 0
+                or current_run.get("head_sha") != pr["head_sha"]
+                or current_run.get("run_attempt") != attempt
+                or current_run.get("status") != "completed"):
+            result["skipped_run_ids"].append(run_id)
             continue
         if not cycle_charged:
             set_retry_count(state, pr["head_sha"], retries_used + 1)
@@ -1451,8 +1460,6 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
             result["reason"] = "rerun_triggered"
         else:
             result["reason"] = "no_rerunnable_failed_jobs"
-            if cycle_charged:
-                set_retry_count(state, pr["head_sha"], retries_used)
     state["last_snapshot_at"] = int(time.time())
     save_state(state_path, state)
     result["retries_used"] = current_retry_count(state, pr["head_sha"])
