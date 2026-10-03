@@ -46,6 +46,19 @@ def test_flags_frontmatter_description_only() -> None:
         raise AssertionError(module.findings(text))
 
 
+def test_flags_wrapped_policy_administrator() -> None:
+    module = load_module()
+    for text in (
+        "The signed-in policy\nadministrator approves access.",
+        "The signed-in POLICY  \n  administrators approve access.",
+        "---\ndescription: >-\n  Ask the policy\n  administrator first.\n---\n",
+    ):
+        expected_line = 4 if text.startswith("---") else 2
+        found = module.findings(text)
+        if len(found) != 1 or found[0][0] != expected_line:
+            raise AssertionError(found)
+
+
 def test_flags_folded_frontmatter_prose() -> None:
     module = load_module()
     text = (
@@ -84,6 +97,7 @@ def test_allows_github_sense_and_code() -> None:
 def main() -> int:
     test_flags_role_words_in_prose()
     test_flags_frontmatter_description_only()
+    test_flags_wrapped_policy_administrator()
     test_flags_folded_frontmatter_prose()
     test_allows_github_sense_and_code()
     print("ok test-validate-role-words")
