@@ -1105,13 +1105,13 @@ seconds (up to six digits), preserving their exact value. Policy preflight thus
 accepts microsecond timestamps emitted by native policy preparation and retains
 that precision in reviewed evidence.
 
-## Operator free text
+## Admin free text
 
-Every emitted operator `reason` or prose `evidence` uses the shared
+Every emitted admin `reason` or prose `evidence` uses the shared
 `public_operator_text` projection. It normalizes whitespace and redacts
 credential assignments (including quoted values), known token forms, long
 mixed letter/digit token-like words, and URLs of any scheme. URLs are omitted
-because operator prose can name private hosts even without credentials.
+because admin prose can name private hosts even without credentials.
 Structural fields retain their existing strict validators; invalid types,
 empty or oversized text, and other unsafe summary shapes still fail closed.
 Apply checks that compare a reviewed reason use this projection on both sides.
