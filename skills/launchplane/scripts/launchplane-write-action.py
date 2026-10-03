@@ -31,6 +31,7 @@ from launchplane_safety import (  # noqa: E402
     is_denied_key,
     public_code,
     public_identifier,
+    public_operator_text,
     public_summary_string,
     public_timestamp,
     public_trace_id,
@@ -1860,11 +1861,6 @@ INTEGRATION_ALLOWANCE_KINDS = {"dev_store", "read_only_source", "pre_live"}
 SECRET_SHARING_REASON_KINDS = INTEGRATION_ALLOWANCE_KINDS | {"site_shared"}
 SECRET_SHARING_REASON_FIELDS = {"kind", "reason", "evidence", "recorded_by", "recorded_at"}
 LANE_INTEGRATION_KEY_FIELDS = {"binding_key", "declared_secret_class", "sharing_reason"}
-# A long run of letters and digits in person-written text, such as a pasted API
-# key (rk_live_..., a hex token): redacted before a sharing reason is shown.
-CREDENTIAL_LIKE_WORD_RE = re.compile(
-    r"(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*[0-9])(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{20,}"
-)
 INTEGRATION_ALLOWANCES_PLAN_FIELDS = {
     "status",
     "mode",
@@ -2007,19 +2003,15 @@ def _project_integration_allowance(value: object) -> dict[str, object]:
     projected: dict[str, object] = {
         "integration": public_code(source.get("integration")),
         "kind": kind,
-        "reason": public_summary_string(source.get("reason")),
+        "reason": public_operator_text(source.get("reason")),
     }
     if source.get("evidence"):
-        projected["evidence"] = public_summary_string(source.get("evidence"))
+        projected["evidence"] = public_operator_text(source.get("evidence"))
     if source.get("recorded_by"):
         projected["recorded_by"] = public_identifier(source.get("recorded_by"))
     if source.get("recorded_at"):
         projected["recorded_at"] = public_summary_string(source.get("recorded_at"), max_length=64)
     return projected
-
-
-def _redact_credential_like_words(text: str) -> str:
-    return CREDENTIAL_LIKE_WORD_RE.sub("[redacted]", text)
 
 
 def _project_sharing_reason(value: object) -> dict[str, object]:
@@ -2032,8 +2024,8 @@ def _project_sharing_reason(value: object) -> dict[str, object]:
         raise LaunchplaneSafetyError("invalid_response")
     projected: dict[str, object] = {
         "kind": kind,
-        "reason": _redact_credential_like_words(public_summary_string(source.get("reason"))),
-        "evidence": _redact_credential_like_words(public_summary_string(source.get("evidence"))),
+        "reason": public_operator_text(source.get("reason")),
+        "evidence": public_operator_text(source.get("evidence")),
     }
     if source.get("recorded_by"):
         projected["recorded_by"] = public_identifier(source.get("recorded_by"))
@@ -2080,7 +2072,7 @@ def _project_integration_allowances_plan(result: object) -> dict[str, object]:
         "context": public_identifier(source.get("context")),
         "instance": public_identifier(source.get("instance")),
         "environment_class": public_code(source.get("environment_class")),
-        "reason": public_summary_string(source.get("reason")),
+        "reason": public_operator_text(source.get("reason")),
         "source_label": public_identifier(source.get("source_label")),
         "record_sha256_before": _optional_sha256(source.get("record_sha256_before")),
         "record_sha256_after": _optional_sha256(source.get("record_sha256_after")),
@@ -2146,7 +2138,7 @@ def _project_testing_hold(value: object) -> dict[str, object] | None:
     source = _require_dict(value)
     if any(str(key) not in TESTING_HOLD_FIELDS for key in source):
         raise LaunchplaneSafetyError("unsafe_response_shape")
-    projected: dict[str, object] = {"reason": public_summary_string(source.get("reason"))}
+    projected: dict[str, object] = {"reason": public_operator_text(source.get("reason"))}
     if source.get("recorded_by"):
         projected["recorded_by"] = public_identifier(source.get("recorded_by"))
     if source.get("recorded_at"):
@@ -2171,7 +2163,7 @@ def _project_testing_hold_plan(result: object) -> dict[str, object]:
         "before": _project_testing_hold(source.get("before")),
         "after": _project_testing_hold(source.get("after")),
         "read_back": _project_testing_hold(source.get("read_back")),
-        "reason": public_summary_string(source.get("reason")),
+        "reason": public_operator_text(source.get("reason")),
         "source_label": public_identifier(source.get("source_label")),
         "record_sha256_before": _optional_sha256(source.get("record_sha256_before")),
         "record_sha256_after": _optional_sha256(source.get("record_sha256_after")),
@@ -2620,7 +2612,7 @@ def _reconcile_plan_validators() -> dict[str, Any]:
         # Launchplane's fixed description plus up to 32 validated env-key names
         # (launchplane#2717); the helper's own summary redaction still applies.
         last_failed_error_summary=lambda value: public_summary_string(value, max_length=1500),
-        hold_reason=lambda value: public_summary_string(value, max_length=300),
+        hold_reason=lambda value: public_operator_text(value, max_length=300),
         hold_recorded_at=lambda value: public_summary_string(value, max_length=64),
         preview_url=_public_origin_url,
     )
@@ -3491,7 +3483,7 @@ def _project_product_repository_identity_plan(result: object) -> dict[str, objec
         "inventory_record_id": public_identifier(source.get("inventory_record_id")),
         "inventory_revision": inventory_revision,
         "inventory_digest": _project_sha256(source.get("inventory_digest")),
-        "reason": public_summary_string(source.get("reason")),
+        "reason": public_operator_text(source.get("reason")),
         "source_label": public_identifier(source.get("source_label")),
         "profile_record_sha256_before": _optional_sha256(
             source.get("profile_record_sha256_before")
@@ -3524,7 +3516,7 @@ def _project_odoo_addon_settings_result(result: object) -> dict[str, object]:
         "instance": public_identifier(source.get("instance")),
         "addon": public_code(source.get("addon")),
         "rendered_action": public_code(source.get("rendered_action")),
-        "reason": public_summary_string(source.get("reason")),
+        "reason": public_operator_text(source.get("reason")),
         "source_label": public_identifier(source.get("source_label")),
         "record_sha256_before": _optional_sha256(source.get("record_sha256_before")),
         "record_sha256_after": _optional_sha256(source.get("record_sha256_after")),
@@ -4886,7 +4878,7 @@ def testing_hold_body(args: argparse.Namespace, *, mode: str) -> dict[str, objec
             or result.get("instance") != body["instance"]
             # A lift's reason is not in the plan digest, so bind direction and reason here.
             or (result.get("after") is not None) != body["hold"]
-            or result.get("reason") != " ".join(str(body["reason"]).split())
+            or public_operator_text(result.get("reason")) != public_operator_text(body["reason"])
         ):
             raise ValueError("reviewed_dry_run_not_apply_eligible")
         body["reviewed_plan_sha256"] = expected_plan_digest
@@ -5944,7 +5936,7 @@ def _project_product_owner_plan(result: object) -> dict[str, object]:
         ),
         "changed": bool(_optional_bool(source.get("changed"))),
         "applied": bool(_optional_bool(source.get("applied"))),
-        "reason": public_summary_string(source.get("reason")),
+        "reason": public_operator_text(source.get("reason")),
         "source_label": public_identifier(source.get("source_label")),
     }
     for field in ("profile_updated_at_before", "profile_updated_at_after"):
@@ -6025,7 +6017,7 @@ def _project_product_image_repository_plan(result: object) -> dict[str, object]:
         "changed": bool(_optional_bool(source.get("changed"))),
         "applied": bool(_optional_bool(source.get("applied"))),
         "lanes": _project_image_repository_lanes(source.get("lanes")),
-        "reason": public_summary_string(source.get("reason")),
+        "reason": public_operator_text(source.get("reason")),
         "source_label": public_identifier(source.get("source_label")),
     }
     if not projected["image_repository_after"]:
@@ -6295,7 +6287,7 @@ def reviewed_product_owner_plan(
             not body["clear"]
             and str(resolved_login or "").lower() != cast(str, body["github_login"]).lower()
         )
-        or result.get("reason") != " ".join(cast(str, body["reason"]).split())
+        or public_operator_text(result.get("reason")) != public_operator_text(body["reason"])
         or not isinstance(result.get("owner_before"), dict)
         or not isinstance(result.get("owner_after"), dict)
     ):
@@ -6329,7 +6321,7 @@ def reviewed_product_image_repository_plan(
     if (
         result.get("product") != str(args.product).strip()
         or result.get("image_repository_after") != body["image_repository"]
-        or result.get("reason") != " ".join(cast(str, body["reason"]).split())
+        or public_operator_text(result.get("reason")) != public_operator_text(body["reason"])
         or not isinstance(before, str)
         or not isinstance(result.get("repository"), str)
         # An unchanged plan has nothing to apply.

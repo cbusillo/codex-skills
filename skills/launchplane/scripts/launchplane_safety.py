@@ -294,6 +294,55 @@ def public_summary_string(value: object, *, max_length: int = 500, allow_url: bo
     return compact
 
 
+# Person-written metadata can contain pasted credentials without a known prefix.
+CREDENTIAL_LIKE_WORD_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*[0-9])(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{20,}"
+)
+CREDENTIAL_ASSIGNMENT_HEAD_RE = re.compile(
+    r"(?<![\w-])[\"']?([A-Za-z_][A-Za-z0-9_.-]*)[\"']?\s*[:=]+\s*"
+)
+CREDENTIAL_VALUE_RE = re.compile(
+    r"\"(?:\\.|[^\"\\])*(?:\"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s]+"
+)
+FREE_TEXT_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s<>\"']+", re.IGNORECASE)
+
+
+def public_operator_text(value: object, *, max_length: int = 500) -> str:
+    """Project operator prose, redacting credential assignments, tokens and URLs.
+
+    URLs are omitted even without userinfo: operator prose may name private hosts.
+    Structural fields still use their own strict validators.
+    """
+    if not isinstance(value, str):
+        raise LaunchplaneSafetyError("invalid_response")
+    compact = " ".join(value.split())
+    if not compact or len(compact) > max_length:
+        raise LaunchplaneSafetyError("invalid_response")
+    # Scan assignment heads without consuming benign values: a quoted config
+    # value can itself contain a password assignment. Overlapping sensitive
+    # spans extend the first redaction. An unclosed quote consumes the
+    # remaining text rather than publishing a partial secret.
+    pieces: list[str] = []
+    cursor = 0
+    for match in CREDENTIAL_ASSIGNMENT_HEAD_RE.finditer(compact):
+        if not is_denied_key(match[1]):
+            continue
+        credential_value = CREDENTIAL_VALUE_RE.match(compact, match.end())
+        if credential_value is None:
+            raise LaunchplaneSafetyError("invalid_response")
+        if match.start() < cursor:
+            cursor = max(cursor, credential_value.end())
+            continue
+        pieces.extend((compact[cursor:match.start()], "[redacted]"))
+        cursor = credential_value.end()
+    pieces.append(compact[cursor:])
+    redacted = "".join(pieces)
+    redacted = FREE_TEXT_URL_RE.sub("[redacted]", redacted)
+    redacted = _redact_token_like(redacted)
+    redacted = CREDENTIAL_LIKE_WORD_RE.sub("[redacted]", redacted)
+    return public_summary_string(redacted, max_length=max_length)
+
+
 def public_url(value: object) -> str:
     if not isinstance(value, str):
         raise LaunchplaneSafetyError("invalid_response")
