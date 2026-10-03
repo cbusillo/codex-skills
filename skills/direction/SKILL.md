@@ -169,7 +169,11 @@ repository visibility before treating a missing direction file as unadopted,
 preserves unreadable entries and unrelated marker state, and creates a private
 backup beside the marker before removing confirmed entries. Unknown entries
 remain for a later audit with the required read access; they are not evidence
-of adoption. Exit 3 reports unknown entries even when confirmed removals were
+of adoption. When the Director independently approves removing a named
+repository whose repository read returns HTTP 404, add
+`--remove-missing-repo OWNER/REPO` to both preview and apply, repeating it for
+each approved name. A 404 alone, including under `--gh gh`, never establishes
+that a repository is gone. Exit 3 reports unknown entries even when confirmed removals were
 applied; check `applied` and `backup` rather than treating it as no change.
 The documented reader on the Director's own login also works here with
 `--gh gh` for private repositories. To undo cleanup, restore the backup only if no later turn or audit
