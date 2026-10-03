@@ -99,6 +99,7 @@ def match_policy(
     argv: list[str],
     shell: str,
     repository: str | None = None,
+    command_texts: list[str] | None = None,
 ) -> PolicyMatch | None:
     matcher = policy.get("match")
     if not isinstance(matcher, dict):
@@ -119,8 +120,14 @@ def match_policy(
         if argv[: len(expected)] == expected:
             return PolicyMatch(skill, policy_id, "argv_prefix", (2, len(expected), -skill_order, -index))
         return None
-    if "shell_regex" in matcher and re.search(str(matcher["shell_regex"]), shell):
-        return PolicyMatch(skill, policy_id, "shell_regex", (1, 0, -skill_order, -index))
+    if "shell_regex" in matcher:
+        pattern = re.compile(str(matcher["shell_regex"]))
+        if command_texts is None:
+            matched = pattern.search(shell) is not None
+        else:
+            matched = any(pattern.match(text) for text in command_texts)
+        if matched:
+            return PolicyMatch(skill, policy_id, "shell_regex", (1, 0, -skill_order, -index))
     return None
 
 
@@ -146,8 +153,30 @@ def verified_repository(cwd: Path) -> str | None:
     return match.group(1).lower() if match else None
 
 
-def simulate(argv: list[str], shell: str | None = None, *, cwd: Path | None = None) -> list[PolicyMatch]:
+def command_position_texts(argv: list[str]) -> list[str]:
+    """The command's text from each token on, so a regex can start only where a token starts.
+
+    Quoting keeps a data argument such as `rg 'gh api'` from matching, while
+    `sudo gh api` or `xargs gh api` still match at the `gh` token.
+    """
+    return [shlex.join(argv[start:]) for start in range(len(argv))]
+
+
+def simulate(
+    argv: list[str],
+    shell: str | None = None,
+    *,
+    cwd: Path | None = None,
+    command_argv: list[str] | None = None,
+) -> list[PolicyMatch]:
+    """Match `argv` against every policy.
+
+    `shell_regex` searches `shell` (default: the joined argv). Given
+    `command_argv`, the one simple command a shell line runs, a regex instead
+    matches only from command position in it.
+    """
     shell_text = shell if shell is not None else shlex.join(argv)
+    command_texts = command_position_texts(command_argv) if command_argv is not None else None
     policies = iter_policies()
     needs_repository = any(
         argv[:len(exception["argv_prefix"])] == exception["argv_prefix"]
@@ -157,7 +186,7 @@ def simulate(argv: list[str], shell: str | None = None, *, cwd: Path | None = No
     matches = [
         match
         for skill_order, skill, index, policy in policies
-        if (match := match_policy(skill_order, skill, index, policy, argv, shell_text, repository)) is not None
+        if (match := match_policy(skill_order, skill, index, policy, argv, shell_text, repository, command_texts)) is not None
     ]
     return sorted(matches, key=lambda match: match.score, reverse=True)
 

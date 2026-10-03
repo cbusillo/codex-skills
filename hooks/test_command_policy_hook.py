@@ -450,6 +450,68 @@ class CommandPolicyHookTests(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual((bash(line).returncode, bash(line).stderr), (0, ""))
 
+    def test_the_simulators_cases_hold_for_whole_shell_lines(self) -> None:
+        for argv, shell, skill in SIMULATOR.EXPECTATIONS:
+            line = shell or shlex.join(argv)
+            with self.subTest(line=line):
+                result = bash(line)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(f"`{skill}`", result.stderr)
+        for argv, shell in SIMULATOR.NEGATIVE_EXPECTATIONS:
+            line = shell or shlex.join(argv)
+            with self.subTest(line=line):
+                self.assertEqual((bash(line).returncode, bash(line).stderr), (0, ""))
+
+    def test_quoted_arguments_and_heredoc_data_are_not_commands(self) -> None:
+        # Each line was refused in a real session although nothing in it ran the named tool (#671, #1014).
+        for line in (
+            "ps -axo pid,command | rg '^ *[0-9]+ .*gh api --paginate repos/cbusillo/verireel/actions/runs --jq'",
+            "uv run gh-plan.py search \"command policy gh api quoted user:cbusillo\" --state all",
+            "python3 - <<'EOF'\nprint('git -c commit.gpgsign=false commit --dry-run')\nEOF",
+            "cat > fixture.sh <<'EOF'\ngit commit -qm base\n(cd ../landing && git commit -qam \"next\")\nEOF",
+            "cat > notes.md <<'EOF'\n| launchplane | skill |\n| --- | --- |\nEOF\ngit status",
+            "cat <<EOF > body.md\nRun gh api repos/o/r/pulls; then git push origin main.\nEOF",
+            "python3 - <<-'EOF'\n\tlaunchplane merge-train run-once\n\tEOF",
+            "printf '%s\\n' \"$((1 << 2))\" 'gh pr merge 17'",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual((bash(line).returncode, bash(line).stderr), (0, ""))
+
+    def test_commands_that_run_from_heredocs_quotes_and_wrappers_stay_blocked(self) -> None:
+        for line, matched in (
+            ("bash <<'EOF'\ngit push origin main\nEOF", "git push origin main"),
+            ("cat <<'EOF' | sh -e\ngh pr merge 17\nEOF", "gh pr merge 17"),
+            ("cat <<EOF\n$(gh pr merge 17)\nEOF", "gh pr merge 17"),
+            ("cat <<EOF\nmerged: `gh pr merge 17`\nEOF", "gh pr merge 17"),
+            ("cat <<'EOF'\ntext\nEOF\ngh pr merge 17", "gh pr merge 17"),
+            ("cat <<-EOF\n\tdata\n\tEOF\ngh pr merge 17", "gh pr merge 17"),
+            ("git commit -m \"$(cat <<'EOF'\nmessage\nEOF\n)\"", "git commit -m"),
+            ("echo \"$(gh api repos/o/r/pulls)\"", "gh api repos/o/r/pulls"),
+            ("echo \"`gh api repos/o/r/pulls`\"", "gh api repos/o/r/pulls"),
+            ("echo `gh api repos/o/r/pulls`", "gh api repos/o/r/pulls"),
+            ("diff <(gh api repos/o/r/pulls) saved.json", "gh api repos/o/r/pulls"),
+            ("sudo gh api repos/o/r/pulls", "gh api repos/o/r/pulls"),
+            ("timeout 30 gh api repos/o/r/pulls", "gh api repos/o/r/pulls"),
+            ("eval \"gh api repos/o/r/pulls\"", "gh api repos/o/r/pulls"),
+            ("echo $((1 << 2))\ngh pr merge 17", "gh pr merge 17"),
+            ("printf '%s\\n' \"$(( $(gh api repos/o/r/pulls | wc -l) + 1 ))\"", "gh api repos/o/r/pulls"),
+            ("bash <<< 'gh api repos/o/r/pulls'", "gh api repos/o/r/pulls"),
+            ("cat <<< \"text\"\ngh api repos/o/r/pulls", "gh api repos/o/r/pulls"),
+            ("grep foo <<< \"$text\"\ngit -c commit.gpgsign=false commit -m demo", "git -c commit.gpgsign=false commit"),
+            ("sudo sh -c 'gh api repos/o/r/pulls'", "gh api repos/o/r/pulls"),
+            ("timeout 60 bash -lc 'git push origin main'", "git push origin main"),
+            ("bash -c \"bash -c 'gh api repos/o/r/pulls'\"", "gh api repos/o/r/pulls"),
+            ("sudo bash <<'EOF'\ngh api repos/o/r/pulls\nEOF", "gh api repos/o/r/pulls"),
+            ("((mask = 1 << 2))\ngh api repos/o/r/pulls", "gh api repos/o/r/pulls"),
+            ("ssh -p 2222 build-host 'gh api repos/o/r/pulls'", "gh api repos/o/r/pulls"),
+            ("ssh build-host bash <<'EOF'\ngh api repos/o/r/pulls\nEOF", "gh api repos/o/r/pulls"),
+            ("gh-with-env-token api repos/o/r/issues/1 --method PATCH -f body=x", "repos/o/r/issues/1"),
+        ):
+            with self.subTest(line=line):
+                result = bash(line)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(matched, result.stderr)
+
     def test_other_tools_and_unreadable_events_are_let_through(self) -> None:
         self.assertEqual(run_hook(json.dumps({"tool_name": "Read", "tool_input": {}})).returncode, 0)
         for payload in ("not json", json.dumps({"tool_name": "Bash"})):
