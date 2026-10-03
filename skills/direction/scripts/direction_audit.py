@@ -479,7 +479,10 @@ def previous_audit_stamp(repo: str) -> dt.datetime | None:
         return None
 
 
-def prune_unadopted(path: pathlib.Path, *, fetch: Callable[[list[str]], Any], apply: bool = False) -> dict[str, Any]:
+def prune_unadopted(
+    path: pathlib.Path, *, fetch: Callable[[list[str]], Any], apply: bool = False,
+    remove_missing_repos: tuple[str, ...] = (),
+) -> dict[str, Any]:
     """Preview confirmed missing direction files; preserve unreadable repositories."""
     original = path.read_bytes()
     current = json.loads(original)
@@ -494,7 +497,15 @@ def prune_unadopted(path: pathlib.Path, *, fetch: Callable[[list[str]], Any], ap
             continue
         try:
             # Contents 404 alone can also mean an inaccessible private repo.
-            visible = fetch(["api", f"repos/{repo}", "--method", "GET"])
+            try:
+                visible = fetch(["api", f"repos/{repo}", "--method", "GET"])
+            except AuditError as exc:
+                # A 404 does not prove deletion, even with the owner's reader.
+                # Only an exact, independently owner-approved name may override it.
+                if repo in remove_missing_repos and re.search(r"\bHTTP 404\b", str(exc)):
+                    removed.append(repo)
+                    continue
+                raise
             if not isinstance(visible, dict) or str(visible.get("full_name", "")).casefold() != repo.casefold():
                 raise AuditError("repository visibility could not be confirmed")
             try:
@@ -620,15 +631,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gh", default=str(WRAPPER), help="gh-compatible command used for reads")
     parser.add_argument("--prune-unadopted", action="store_true", help="preview removal of unadopted repositories from the local marker")
     parser.add_argument("--apply-prune", action="store_true", help="apply the pruning preview with a recoverable backup")
+    parser.add_argument("--remove-missing-repo", action="append", default=[], metavar="OWNER/REPO",
+                        help="owner-approved marker removal when this exact repository returns HTTP 404; repeat per repository")
     args = parser.parse_args(argv)
 
     if args.apply_prune and not args.prune_unadopted:
         parser.error("--apply-prune requires --prune-unadopted")
+    if args.remove_missing_repo and not args.prune_unadopted:
+        parser.error("--remove-missing-repo requires --prune-unadopted")
+    if any(not re.fullmatch(r"[\w.-]+/[\w.-]+", repo) for repo in args.remove_missing_repo):
+        parser.error("--remove-missing-repo requires an exact OWNER/REPO name")
     if args.prune_unadopted:
         import direction_mark
 
         try:
-            result = prune_unadopted(direction_mark.marker_path(), fetch=lambda a: gh_json(a, gh=args.gh), apply=args.apply_prune)
+            result = prune_unadopted(
+                direction_mark.marker_path(), fetch=lambda a: gh_json(a, gh=args.gh),
+                apply=args.apply_prune, remove_missing_repos=tuple(args.remove_missing_repo),
+            )
         except (AuditError, OSError, ValueError) as exc:
             print(json.dumps({"ok": False, "error": str(exc)}))
             return 1

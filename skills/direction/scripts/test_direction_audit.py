@@ -515,6 +515,106 @@ def test_prune_does_not_confuse_repository_digits_with_http_status() -> None:
             raise AssertionError("repository digits were mistaken for a missing direction file")
 
 
+def test_prune_owner_approved_missing_repos_are_exact_and_recoverable() -> None:
+    module = load()
+    original = {"turn": "earlier", "audits": {"o/approved": "a", "o/unapproved": "b", "o/adopted": "c"}}
+    calls: list[str] = []
+
+    def fetch(args: list[str]) -> dict[str, Any]:
+        calls.append(args[1])
+        if args[1] in ("repos/o/approved", "repos/o/unapproved"):
+            raise module.AuditError("HTTP 404")
+        if args[1].endswith("/contents/DIRECTION.md"):
+            return {"type": "file", "content": "direction"}
+        return {"full_name": "o/adopted"}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        marker.write_text(json.dumps(original))
+        before = marker.read_bytes()
+        names = ("o/approved", "o/adopted")
+        preview = module.prune_unadopted(marker, fetch=fetch, remove_missing_repos=names)
+        assert preview["removed"] == ["o/approved"]
+        assert preview["retained"] == ["o/adopted"]
+        assert list(preview["unknown"]) == ["o/unapproved"]
+        assert marker.read_bytes() == before and preview["backup"] is None
+        applied = module.prune_unadopted(marker, fetch=fetch, apply=True, remove_missing_repos=names)
+        backup = Path(applied["backup"])
+        assert backup.read_bytes() == before and backup.stat().st_mode & 0o777 == 0o600
+        assert json.loads(marker.read_text()) == {**original, "audits": {"o/unapproved": "b", "o/adopted": "c"}}
+        assert "repos/o/approved/contents/DIRECTION.md" not in calls
+        after = marker.read_bytes()
+        repeated = module.prune_unadopted(marker, fetch=fetch, apply=True, remove_missing_repos=names)
+        assert repeated["backup"] is None and not repeated["applied"]
+        assert marker.read_bytes() == after
+
+
+def test_prune_approved_name_does_not_override_other_read_failures() -> None:
+    module = load()
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        before = b'{"audits":{"o/app404":"a"}}'
+        marker.write_bytes(before)
+        for error in ("HTTP 403", "HTTP 429", "HTTP 502", "unreadable o/app404"):
+            def fetch(_args: list[str], _error: str = error) -> Any:
+                raise module.AuditError(_error)
+
+            result = module.prune_unadopted(marker, fetch=fetch, apply=True, remove_missing_repos=("o/app404",))
+            assert result["removed"] == [] and "o/app404" in result["unknown"]
+            assert result["backup"] is None and marker.read_bytes() == before
+
+
+def test_prune_approved_removal_preserves_concurrent_edits() -> None:
+    module = load()
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        marker.write_text('{"audits":{"o/missing":"a"}}')
+        changed = '{"turn":"new","audits":{"o/missing":"a"}}'
+
+        def fetch(_args: list[str]) -> Any:
+            marker.write_text(changed)
+            raise module.AuditError("HTTP 404")
+
+        try:
+            module.prune_unadopted(marker, fetch=fetch, apply=True, remove_missing_repos=("o/missing",))
+        except module.AuditError:
+            pass
+        else:
+            raise AssertionError("approved removal overwrote a concurrent edit")
+        assert marker.read_text() == changed
+        assert list(Path(tmp).glob("*.backup-*")) == []
+
+
+def test_prune_cli_passes_approved_names_and_requires_prune_mode() -> None:
+    module = load()
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        marker.write_text('{"audits":{"o/first":"a","o/second":"b"}}')
+        before = marker.read_bytes()
+
+        def fetch(_args: list[str], **_kwargs: Any) -> Any:
+            raise module.AuditError("HTTP 404")
+
+        mark = types.SimpleNamespace(marker_path=lambda: marker)
+        output = StringIO()
+        with (patch.dict(sys.modules, {"direction_mark": mark}),
+              patch.dict(vars(module), {"gh_json": fetch}), redirect_stdout(output)):
+            assert module.main(["--prune-unadopted", "--apply-prune", "--remove-missing-repo", "o/first",
+                                "--remove-missing-repo", "o/second"]) == 0
+        result = json.loads(output.getvalue())
+        assert result["removed"] == ["o/first", "o/second"] and result["applied"]
+        assert Path(result["backup"]).read_bytes() == before
+        assert json.loads(marker.read_text())["audits"] == {}
+        for args in (["--remove-missing-repo", "o/first"],
+                     ["--prune-unadopted", "--remove-missing-repo", "o/*"]):
+            try:
+                module.main(args)
+            except SystemExit as exc:
+                assert exc.code != 0
+            else:
+                raise AssertionError("invalid removal invocation was accepted")
+
+
 def test_open_audit_questions_beyond_the_general_issue_cap_are_still_reported() -> None:
     module = load()
     question = issue(1, "Old audit question", labels=("audit",))
