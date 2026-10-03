@@ -2985,10 +2985,16 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                         discovery["complete"] = False
             else:
                 discoveries.append(item)
+    incomplete_milestone_sources = [
+        source["repo"] for source in discovery.get("repositories", [])
+        if set(direction_milestone_titles(source.get("direction") or "")).intersection(titles)
+        and (source.get("truncated") or source.get("error"))
+    ]
+    discovery["incomplete_milestone_repositories"] = incomplete_milestone_sources
     candidate_coverage_complete = bool(graph_coverage["complete"] and (scope is not None or discovery.get("complete")))
     portfolio = github_direction_next.rank_portfolio_work(
         ranked, discoveries, milestone_titles=titles, selection_context=selection_context,
-        coverage_complete=scope is None and graph_coverage["complete"] and not unevaluated_milestones,
+        coverage_complete=scope is None and graph_coverage["complete"] and not unevaluated_milestones and not incomplete_milestone_sources,
         repository_milestones={source["repo"]: direction_milestone_titles(source["direction"]) if source.get("direction") else None for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
         repository_waypoints={source["repo"]: repository_direction_milestones(source) for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
     )

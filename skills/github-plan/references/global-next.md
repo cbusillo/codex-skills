@@ -139,7 +139,13 @@ context or waits still prevent admission; a partial candidate list never proves
 that no other work exists. Already-inventoried issues with an overall milestone title
 omitted by the scan still prevent admission and are named in
 `discovery_context.unevaluated_milestone_issues`. Unavailable discovery sources
-remain coverage warnings rather than a portfolio-wide admission veto.
+remain coverage warnings rather than a portfolio-wide admission veto. A truncated
+or failed issue inventory in a repository whose read direction lists an overall
+milestone is incomplete milestone evidence and prevents admission; those sources
+are named in `discovery_context.incomplete_milestone_repositories`. Repositories
+and issues never reached by bounded discovery remain outside this proof: admission
+does not assert that the unseen portfolio has no milestone work. Widen discovery
+when that evidence is needed.
 Dependencies of discovered title-matched
 milestone containers inherit that scope; unavailable reads or dependency cycles
 cannot establish person waits.

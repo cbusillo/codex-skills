@@ -1256,6 +1256,33 @@ def test_portfolio_capacity_unscanned_known_milestone_prevents_admission() -> No
             assert [item["number"] for item in result["available_candidates"]] == [20]
 
 
+def test_portfolio_capacity_partial_milestone_source_differs_from_unrelated_source() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    wait = global_issue("someone/business", 10)
+    tool = global_issue("someone/tools", 20)
+    edges = {(roots[0]["repo"], 1): relationships(sub_issues=[wait])}
+    with global_fixture(roots, [wait], edges, discovered=[tool]) as (module, result, _reads):
+        module.cmd_next(next_args())
+        items = {item["number"]: item for item in result["candidates"]}
+        context = {"issues": {
+            "someone/business#10": reviewed(items[10], "waiting", waiting_on="person"),
+            "someone/tools#20": reviewed(items[20], category="repeated_stop_tooling"),
+        }}
+        for failure in ({"truncated": True}, {"error": "Issue inventory unavailable"}):
+            for source_direction, admitted in ((DIRECTION, False), ("# Direction\n\n## Milestones\n", True)):
+                coverage = {"complete": False, "capacity_complete": False, "repositories": [
+                    {"repo": "someone/extra", "direction": source_direction, **failure},
+                    {"repo": "someone/tools", "direction": None},
+                ]}
+                with patch.multiple(module, next_selection_context=lambda _args: context,
+                                    discover_direction_work=lambda *_a, **_kw: ([tool], coverage)):
+                    module.cmd_next(next_args())
+                assert result["tooling_capacity_context"]["admitted"] is admitted
+                assert bool(result["discovery_context"]["incomplete_milestone_repositories"]) is not admitted
+                assert result["candidate_coverage"]["complete"] is False
+                assert result["candidate_coverage"]["warning"]
+
+
 def test_portfolio_capacity_waiting_discovery_milestone_blocks_admission() -> None:
     roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
     wait = global_issue("someone/business", 10)
@@ -2058,6 +2085,7 @@ TESTS = [
     test_portfolio_capacity_needs_current_person_waits_and_complete_graph,
     test_portfolio_capacity_truncated_discovery_admits_tooling_but_not_incomplete_graph,
     test_portfolio_capacity_unscanned_known_milestone_prevents_admission,
+    test_portfolio_capacity_partial_milestone_source_differs_from_unrelated_source,
     test_portfolio_capacity_waiting_discovery_milestone_blocks_admission,
     test_portfolio_capacity_shared_blocker_service_parity_and_unknown_context,
     test_portfolio_capacity_ignores_unrelated_waits_and_blocking_tooling,
