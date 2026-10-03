@@ -2919,8 +2919,11 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
             seeds[(raw["repo"].casefold(), raw["number"])] = raw
             node = read_node(raw["repo"], raw["number"])
             item = {**node["item"], "source": "repository_discovery"}
-            if not item.get("exclusion"):
+            if item.get("exclusion") not in {"completed", "pull_request", "unknown_dependencies"}:
+                exclusion = item.get("exclusion")
                 item = with_ancestry(item)
+                if exclusion and (item.get("discussion") or {}).get("ancestry_complete"):
+                    item["exclusion"] = exclusion
             if not (item.get("discussion") or {}).get("complete"):
                 discovery["complete"] = False
             if item.get("exclusion"):

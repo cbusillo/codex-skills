@@ -103,7 +103,11 @@ who must act. A CI/event wait, held repository, underway or unreviewed milestone
 issue, or incomplete coverage does not establish this rule. Empty Tracks contain
 no milestone candidates; no frontier waits at all cannot establish the rule.
 A `--milestone` run cannot establish portfolio-wide capacity admission.
-No person is inferred from free text. Refresh these reviews on each selection.
+Deferred/stale milestone issues report `milestone_issue_excluded` with the issue
+and exclusion, rather than asking for a person-wait review that cannot clear it.
+No person is inferred from free text. Refresh these reviews on each selection. Whether provider capacity would
+otherwise go unused remains the caller's judgment under direction; `next` proves
+the milestone-wait condition, not provider usage.
 
 `tooling_capacity_context` explains whether the capacity rule is established,
 including the first unresolved issue when a milestone review or context is missing.

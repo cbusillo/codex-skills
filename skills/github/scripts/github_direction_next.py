@@ -385,6 +385,11 @@ def tooling_capacity_context(
             continue
         milestone = overall_milestone_context(entry, graph, milestone_titles, repository_waypoints)
         if milestone["state"] == "unknown":
+            # A complete graph and ancestry can rule out native Track links.
+            # Unrelated blocking issues do not become milestone work. A local
+            # title shared with overall direction still needs parsed waypoints.
+            if (entry.get("discussion") or {}).get("ancestry_complete") is True and (entry.get("milestone") or {}).get("title") not in milestone_titles:
+                continue
             return {**result, "reason": "unknown_milestone_context", "issue": f"{entry['repo']}#{entry['number']}"}
         if milestone["state"] != "matched":
             continue
@@ -399,11 +404,12 @@ def tooling_capacity_context(
     if not frontier:
         return {**result, "reason": "no_milestone_waits"}
     for entry in frontier:
+        if entry.get("exclusion") not in {None, "waiting", "parent_waiting"}:
+            return {**result, "reason": "milestone_issue_excluded", "issue": f"{entry['repo']}#{entry['number']}", "exclusion": entry["exclusion"]}
         review = reviews.get(f"{entry['repo']}#{entry['number']}".casefold(), {})
         discussion = entry.get("discussion") or {}
         if (
             repository_hold(context, entry["repo"])
-            or entry.get("exclusion") not in {None, "waiting", "parent_waiting"}
             or not discussion.get("complete")
             or review.get("discussion_digest") != discussion.get("digest")
             or review.get("state") != "waiting"
@@ -510,7 +516,7 @@ def rank_portfolio_work(
     priority = {"live_incident": 0, "milestone": 1, "repeated_stop_tooling": 2, "own_project": 3}
     candidates.sort(key=lambda candidate: (
         0 if is_live_breakage(candidate) else (4 if candidate.get("tooling_admission_rule") == "all_milestones_waiting_on_people" else priority.get(candidate.get("category"), 1 if candidate.get("via") else 5)),
-        -candidate.get("recorded_stop_count", 0) if capacity["admitted"] and candidate.get("category") == "repeated_stop_tooling" else (candidate["rank"] if candidate.get("via") else candidate.get("repository_rank", candidate["rank"])),
+        -candidate.get("recorded_stop_count", 0) if capacity["admitted"] and candidate.get("category") == "repeated_stop_tooling" and not is_live_breakage(candidate) else (candidate["rank"] if candidate.get("via") else candidate.get("repository_rank", candidate["rank"])),
         str(candidate.get("created_at") or ""), candidate["repo"].casefold(), candidate["number"],
     ))
     for rank, item in enumerate(candidates, 1):

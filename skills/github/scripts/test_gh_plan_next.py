@@ -1249,9 +1249,33 @@ def test_portfolio_capacity_shared_blocker_service_parity_and_unknown_context() 
         service = module.github_direction_next.rank_portfolio_work(graph, discoveries, **kwargs)
         assert [item["number"] for item in service["available_candidates"]] == [30]
         kwargs["repository_waypoints"]["someone/tools"] = None
+        discoveries[0] = {**discoveries[0], "milestone": milestone_data(5, "First", created_at="2026-01-01")}
         service = module.github_direction_next.rank_portfolio_work(graph, discoveries, **kwargs, coverage_complete=True)
         assert service["tooling_capacity_context"]["reason"] == "unknown_milestone_context"
         assert service["tooling_capacity_context"]["issue"] == "someone/tools#20"
+
+
+def test_portfolio_capacity_ignores_unrelated_waits_and_blocking_tooling() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    wait = global_issue("someone/business", 10, body="## Current Status\nWaiting for: Customer testing.")
+    tool = global_issue("someone/tools", 20)
+    unrelated_wait = global_issue("someone/product", 30, body="## Current Status\nWaiting for: Customer testing.")
+    dependent = global_issue("someone/tools", 21)
+    edges = {(root["repo"], root["number"]): relationships(sub_issues=[wait]) for root in roots}
+    edges[(tool["repo"], 20)] = relationships(blocking=[dependent])
+    edges[(dependent["repo"], 21)] = relationships(blocked_by=[tool])
+    with global_fixture(roots, [wait], edges, discovered=[tool, dependent, unrelated_wait]) as (module, result, _reads):
+        module.cmd_next(next_args())
+        items = {item["number"]: item for item in [*result["candidates"], *result["excluded"]]}
+        context = {"issues": {
+            "someone/business#10": reviewed(items[10], "waiting", waiting_on="person"),
+            "someone/tools#20": reviewed(items[20], category="repeated_stop_tooling"),
+        }}
+        with patch.multiple(module, next_selection_context=lambda _args: context):
+            module.cmd_next(next_args())
+            assert result["tooling_capacity_context"]["admitted"] is True
+            assert [item["number"] for item in result["available_candidates"]] == [20]
+            assert items[30]["discussion"]["ancestry_complete"] is True
 
 
 def test_portfolio_inventory_sources_exclusions_round_robin_and_read_bounds() -> None:
@@ -1864,6 +1888,7 @@ TESTS = [
     test_portfolio_capacity_needs_current_person_waits_and_complete_coverage,
     test_portfolio_capacity_waiting_discovery_milestone_blocks_admission,
     test_portfolio_capacity_shared_blocker_service_parity_and_unknown_context,
+    test_portfolio_capacity_ignores_unrelated_waits_and_blocking_tooling,
     test_portfolio_inventory_sources_exclusions_round_robin_and_read_bounds,
     test_portfolio_inventory_failure_and_scan_bound_never_claim_full_coverage,
     test_next_beta_rc_stable_chain_respects_native_blockers,
