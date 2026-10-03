@@ -607,8 +607,17 @@ inaccessible nodes to unknown and preserving provider/auth/quota stop behavior.
 `rank_portfolio_work` combines graph candidates, discoveries, and caller selection
 evidence with the same holds, review states, and priority. Services must supply
 repository milestone order and bounded parent evidence through those shared
-functions, and report their discovery coverage separately. Supply parsed
-`repository_waypoints` separately from ranking order for waypoint explanations:
+functions, and report their discovery coverage separately. Capacity callers also
+read bounded ancestry for excluded discoveries, preserving their original wait
+reports while marking capacity ancestry/discussion evidence incomplete. Held
+repositories use a separate bounded read allowance and remain unselectable;
+`discovery_context.capacity_complete` records completeness for this admission. For capacity admission,
+pass `coverage_complete=True` to `rank_portfolio_work` only for complete portfolio
+coverage; its default is false. Current milestone person-wait reviews and
+`tooling_admission_rule` outputs follow the linked global selection procedure.
+Supply parsed
+`repository_waypoints` separately from ranking order for waypoint explanations
+and capacity eligibility:
 an absent direction file or empty section maps to `[]`, an unread/unparsed
 source to `None`. Omitted waypoint evidence stays unknown; the ranking map
 alone cannot prove parsing. A repository hold

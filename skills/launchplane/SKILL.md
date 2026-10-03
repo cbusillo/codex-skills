@@ -312,7 +312,7 @@ commands:
         "--operation-id",
         "<operation-id>",
       ]
-    purpose: Reads one Odoo deploy operation's status, phase, times and error code.
+    purpose: Reads one Odoo deploy operation's status, phase, times, error code, bounded description and env-key names.
   - name: launchplane-target-replacement-plan-read
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -738,11 +738,11 @@ operation map rather than adding duplicate literals.
 The merge-train policy import, repository inventory, product expected configuration,
 generic-web deploy-recovery, Odoo addon-settings, integration-allowances,
 testing-hold, product-repository-identity, product-environment-read,
-product-activity-read, product-profile-read, preview-history-read,
+product-activity-read, product-profile-read, path-check, preview-history-read,
 reconcile-requests-read, target-replacement-operation-read,
 target-replacement-plan-read, `product-owner-*`, `product-image-repository-*`,
-`dokploy-target-create-compose-*`,
-`production-backup-authority-*`, product-promotion-status-read and
+`dokploy-target-create-compose-*`, `production-backup-authority-*`,
+`private-health-endpoint-*`, product-promotion-status-read and
 product-promotion-dry-run commands are explicit bounded local
 extensions because the vendored public
 operation projection does not contain their routes. Do not describe them as contract-backed. If a later artifact adds those
@@ -1019,9 +1019,9 @@ verification.
   change-impact policy dry-run/apply/read-back, guarded merge-train policy
   import, repository inventory read/dry-run/apply, product environment,
   activity, preview and reconcile reads, Odoo target-replacement operation and
-  plan reads, Client, image repository, Dokploy compose target and production
-  backup authority
-  dry-run/apply with read-back, product promotion status and dry-run, and
+  plan reads, Client, image repository, Dokploy compose target, production
+  backup authority and private health endpoint dry-run/apply with read-back,
+  product promotion status and dry-run, and
   merge-train controller calls.
 - `scripts/check-agent-operator-contract.py`: Hermetic schema, digest,
   public-safety, operation, workflow, invariant, and local-consumer conformance
@@ -1097,6 +1097,15 @@ verification.
   `unknown` require it. It also returns the display name, driver, repository,
   lifecycle state and lane contexts and instances. Images, URLs, workflows and
   expected configuration are dropped.
+- `GET /v1/products/{product}/path-check`: Bounded local-extension read
+  (`path-check --product P --path testing|promote`). Use it first when asking
+  whether this identity can take this product to done. It answers for the
+  caller's own identity and requires `product_environment.read` on the
+  product's lane contexts. It returns every ordered step as `clear`, `blocked`
+  or `unknown`, with counts, a code, Launchplane's fixed description, fix kind
+  (`none` for clear steps), and evidence record ids. Unknown fields and unsafe
+  names or values fail closed. The read writes nothing and grants no authority;
+  a clear path does not replace approval or the action's own gates.
 - `GET /v1/previews/{preview_id}/history`: Bounded local-extension read
   (`preview-history-read`, by `--preview-id` or by `--context`, `--repository`
   and `--pr`) for confirming what a preview serves: its state, serving
@@ -1112,12 +1121,13 @@ verification.
   for why a testing or stable Odoo deploy failed: take the id from
   `reconcile-requests-read` (`queued_operation_id`, `active_operation_id`,
   `deployed_operation_id` or `last_failed_operation_id`). It returns status,
-  phase, times, attempt, artifact id, image digest, step statuses and error
-  code; free-text error messages are dropped. The service authorizes it as
+  phase, times, attempt, and, when present in the response, artifact id,
+  image digest and step statuses. Failure details include the error code, Launchplane's fixed `error_description` as a bounded public summary,
+  and validated `error_detail_keys` (env-key names only); free-text error
+  messages are dropped. The service authorizes it as `operations.read` on
+  product `launchplane` for the operation's context and instance, or
   `odoo_target_replacement_apply.execute` on the operation's own product,
-  context and instance. Without that grant, read why a reconciler testing
-  deploy failed from `reconcile-requests-read` (`last_failed_error_code` and
-  the service-redacted `last_failed_error_summary`).
+  context and instance.
 - `POST /v1/drivers/odoo/target-replacement-plan`: Bounded local-extension
   read (`target-replacement-plan-read --product --instance`) for what an Odoo
   target replacement on that lane would do, before any apply. The route builds
@@ -1153,6 +1163,15 @@ verification.
   (`production-backup-authority-read` / `-dry-run` / `-apply`). The private
   payload carries the Proxmox coordinates; output shows only record ids,
   revisions, kinds and the `authority_digest` apply is bound to.
+- `GET /v1/private-health-endpoints/records` and
+  `POST /v1/private-health-endpoints/apply`: Bounded local-extension paths for
+  the private health endpoint record a lane's `private_http` health check names
+  (`private-health-endpoint-read --product --context [--instance]` /
+  `-dry-run` / `-apply`, with `--payload-file` and `--reason`). The private
+  payload carries the endpoint key, scope and URL; output shows keys, scope and
+  status only. Apply requires the saved dry-run evidence,
+  `--expected-plan-digest`, reviewed acknowledgement and an idempotency key,
+  then reads the record back and compares its URL privately.
 - `GET .../environments/prod/promotion-status` and
   `POST .../environments/prod/promotion/dry-run` under `/v1/products/{product}`:
   Bounded local-extension reads and dry-runs (`product-promotion-status-read`,

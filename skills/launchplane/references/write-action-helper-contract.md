@@ -142,12 +142,18 @@ local extensions until the vendored artifact is refreshed.
   `requests[].last_plan.<unlisted field>`; the same drop and omit rules apply.
 - `target-replacement-operation-read --operation-id` calls
   `GET /v1/drivers/odoo/target-replacement/operations/{operation_id}` with no
-  query. The service authorizes it as `odoo_target_replacement_apply.execute`
-  on the operation's product, context and instance, so a caller without that
-  grant gets `authorization_denied`. It returns the operation's id, product,
+  query. The service authorizes it as `operations.read` on product
+  `launchplane` for the operation's context and instance, or as
+  `odoo_target_replacement_apply.execute` on the operation's product, context
+  and instance. The read grant returns a structured view without the request
+  or embedded result; the execute grant returns the full service record. The
+  helper projects either view. It returns the operation's id, product,
   context, instance, status, phase, attempt, deployment record id, the
   requested artifact id, created, updated, started, heartbeat and finished
-  times, and `error_code`; and, once a result exists, the deploy, post-deploy,
+  times, `error_code`, a bounded `error_description` using the existing
+  public-summary validator (the descriptive word `credential` is redacted),
+  and validated
+  `error_detail_keys` (env-key names only); and, once a result exists, the deploy, post-deploy,
   health, canonical and logo statuses, the deployment and release tuple ids,
   artifact id and image digest. Free-text error messages, on the operation and
   on the result, are dropped rather than filtered: they can name hosts, provider
@@ -329,6 +335,34 @@ and `POST /v1/production-backup-authority/apply`. They are authorized as
 - After apply the helper checks Launchplane's applied policy and target record
   ids against the saved dry-run, then reads the authority back and checks them
   again.
+
+### Private health endpoints
+
+`private-health-endpoint-read`, `private-health-endpoint-dry-run` and
+`private-health-endpoint-apply` call `GET /v1/private-health-endpoints/records`
+and `POST /v1/private-health-endpoints/apply`. They are authorized as
+`private_health_endpoint.read` and `.apply` on the record's product and
+context. A lane's `private_http` health check names one of these records by its
+`endpoint_key`.
+
+- `private-health-endpoint-read --product --context [--instance]` lists each
+  record's `endpoint_key`, product, context, instance, `status` (`active` or
+  `disabled`) and `updated_at`. The URL and the free-text `source_label` are
+  dropped.
+- The private payload file holds `endpoint_key`, `product`, `context`,
+  `instance` and `url`, with optional `status` (default `active`),
+  `source_label` and `schema_version`. Launchplane refuses a public URL. The
+  helper sets `updated_at`; a payload that carries it is refused. `--reason` is
+  required on both dry-run and apply and is part of what the review binds.
+- Launchplane does not bind the apply to the dry-run. The helper digests the
+  payload and reason with the planned key and scope into `plan_sha256`; pass
+  it as `--expected-plan-digest`. It refuses an apply whose payload or reason
+  differs from the reviewed one, and sends the reviewed dry-run's `updated_at`
+  so a retry with the same idempotency key replays instead of conflicting.
+- After apply the helper compares the applied record, and the record read back
+  from `GET /v1/private-health-endpoints/records/{endpoint_key}`, with the
+  reviewed key, scope, status and URL. Output reports `url_matches_review` and
+  never shows the URL.
 
 ### Product promotion status and dry-run
 
@@ -820,6 +854,26 @@ Stop and report on terminal or attention actions:
 
 Do not hardcode repositories, labels, tokens, protected branches, private hosts,
 or local file-backed product config in skill guidance or helper examples.
+
+## Product Path Check
+
+Use `path-check --product P --path testing|promote` first to ask whether the
+caller's own identity can take a product along that path. It makes one GET to
+`/v1/products/{product}/path-check` with the `path` query parameter, requiring
+`product_environment.read` on the product's lane contexts. This is a bounded
+local extension; it writes nothing and grants no authority.
+
+The service's `check` becomes `result`: product, path, overall state, blocked
+and unknown counts, and ordered steps with `step_id`, state, code, fixed
+description, fix kind, and record ids. Clear steps use `fix: none`; other fix
+kinds are `code`, `grant`, `owner_approval`, `client_acceptance`, `by_hand` and
+`wait`. Counts and overall state must agree with the steps, and the response
+must match the requested product and path. Unknown fields at every level,
+unsafe names or values, missing fields and invalid enums fail closed. Empty
+record-id lists are valid when the service has no record id for a step. Lists
+are limited to 50 steps and 50 record ids per step; oversized responses fail
+instead of omitting blockers. A successful read can still describe a blocked
+or unknown path; inspect `result.state` and every step before proposing action.
 
 ## Output Shape
 

@@ -19,7 +19,7 @@ import types
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from email.message import Message
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -2844,6 +2844,136 @@ def _run_product_read(
     return status, json.loads(output.getvalue()), calls
 
 
+def _path_check_response(path: str = "testing") -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "trace_id": "launchplane_req_path_check",
+        "check": {
+            "product": "example-product",
+            "path": path,
+            "state": "clear",
+            "blocked_count": 0,
+            "unknown_count": 0,
+            "steps": [
+                {
+                    "step_id": "profile_lane",
+                    "state": "clear",
+                    "code": "lane_recorded",
+                    "description": "The lane is recorded.",
+                    "fix": "none",
+                    "record_ids": [],
+                },
+                {
+                    "step_id": "testing_deploy" if path == "testing" else "backup_authority",
+                    "state": "clear",
+                    "code": "already_deployed" if path == "testing" else "backup_ready",
+                    "description": "The evidence is recorded.",
+                    "fix": "none",
+                    "record_ids": ["operation-example-1"],
+                },
+            ],
+        },
+    }
+
+
+def test_path_check_reads_both_paths_and_preserves_clear_blocked_unknown() -> None:
+    for path in ("testing", "promote"):
+        for state, fix, code in (
+            ("clear", "none", "already_deployed"),
+            ("blocked", "grant", "caller_lacks_promotion_grant"),
+            ("unknown", "wait", "reconcile_requests_unread"),
+        ):
+            response = _path_check_response(path)
+            check = response["check"]
+            check["state"] = state
+            check["blocked_count"] = int(state == "blocked")
+            check["unknown_count"] = int(state == "unknown")
+            check["steps"][1].update(state=state, fix=fix, code=code)
+            argv = ["path-check", "--product", check["product"], "--path", path]
+            status, payload, calls = _run_product_read(argv, response)
+            assert status == 0, payload
+            assert len(calls) == 1
+            route = contract.LOCAL_EXTENSION_ROUTES["path-check"]
+            assert calls[0]["path"] == route["path"].format(product=check["product"])
+            assert calls[0]["query"] == {"path": path}
+            assert payload["result"] == check
+            assert payload["summary"]["trace_id"] == response["trace_id"]
+
+    # Blockers and unread evidence must survive together, in service order.
+    response = _path_check_response()
+    check = response["check"]
+    check.update(state="blocked", blocked_count=1, unknown_count=1)
+    check["steps"][0].update(state="blocked", fix="by_hand")
+    check["steps"][1].update(state="unknown", fix="wait")
+    status, payload, _calls = _run_product_read(
+        ["path-check", "--product", check["product"], "--path", check["path"]], response
+    )
+    assert status == 0 and payload["result"] == check
+
+
+def test_path_check_refuses_unknown_fields_unsafe_values_and_incomplete_evidence() -> None:
+    mutations = (
+        lambda body: body.update(extra="private detail"),
+        lambda body: body["check"].update(extra="private detail"),
+        lambda body: body["check"]["steps"][0].update(provider_error="private detail"),
+        lambda body: body["check"]["steps"][0].update(secret_name="PRIVATE_SECRET"),
+        lambda body: body["check"]["steps"][0].update(description="Bearer abcdefghijklmnop"),
+        lambda body: body["check"]["steps"][0].update(description="https://private.example.invalid/x"),
+        lambda body: body["check"]["steps"][0].update(record_ids=["token=private-value"]),
+        lambda body: body["check"]["steps"][0].pop("state"),
+        lambda body: body["check"]["steps"][0].update(state="pending"),
+        lambda body: body["check"]["steps"][0].update(state=[]),
+        lambda body: body["check"]["steps"][0].update(fix="invent_access"),
+        lambda body: body["check"]["steps"][0].update(code={}),
+        lambda body: body["check"]["steps"][0].update(record_ids={}),
+        lambda body: body["check"].update(steps=[]),
+        lambda body: body["check"].update(steps=[None]),
+        lambda body: body["check"].update(blocked_count=1),
+        lambda body: body["check"].update(unknown_count=False),
+        lambda body: body["check"].update(state="blocked"),
+        lambda body: body["check"].update(path="rollback"),
+        lambda body: body["check"].update(path="promote"),
+        lambda body: body["check"].update(product="another-product"),
+    )
+    argv = ["path-check", "--product", "example-product", "--path", "testing"]
+    for mutate in mutations:
+        response = _path_check_response()
+        mutate(response)
+        status, payload, calls = _run_product_read(argv, response)
+        assert status == 1 and len(calls) == 1, payload
+        assert payload["status"] == "invalid" and not payload["result"], payload
+        for value in ("private detail", "PRIVATE_SECRET", "abcdefghijklmnop", "private.example", "private-value"):
+            assert value not in json.dumps(payload)
+
+
+def test_path_check_refuses_bad_selector_and_surfaces_read_denial() -> None:
+    status, payload, calls = _run_product_read(
+        ["path-check", "--product", "../admin", "--path", "testing"], _path_check_response()
+    )
+    assert status == 2 and not calls
+    assert payload["warnings"][0]["code"] == "invalid_product"
+    with redirect_stderr(io.StringIO()):
+        try:
+            _run_product_read(
+                ["path-check", "--product", "example-product", "--path", "rollback"], {}
+            )
+        except SystemExit as exc:
+            assert exc.code == 2
+        else:
+            raise AssertionError("Unsupported path was accepted")
+    denied = urllib.error.HTTPError(
+        "https://launchplane.example.invalid", 404, "Not found", Message(),
+        io.BytesIO(json.dumps({"status": "error", "trace_id": "launchplane_req_denied",
+                              "error": {"code": "not_found", "message": "private detail"}}).encode()),
+    )
+    status, payload, calls = _run_product_read(
+        ["path-check", "--product", "example-product", "--path", "testing"], denied
+    )
+    assert status == 1 and len(calls) == 1
+    assert not payload["result"] and "private detail" not in json.dumps(payload)
+    assert payload["summary"]["trace_id"] == "launchplane_req_denied"
+
+
 def test_product_environment_read_uses_path_route_and_projects_deploy_identity() -> None:
     argv = ["product-environment-read", "--product", "example-product", "--environment", "testing"]
     status, payload, calls = _run_product_read(argv, _product_environment_response())
@@ -3522,6 +3652,75 @@ def test_target_replacement_operation_read_keeps_progress_and_drops_error_text()
         assert private not in rendered, private
 
 
+def test_target_replacement_operation_read_projects_failure_details() -> None:
+    response = _target_replacement_operation_response()
+    source = response["operation"]
+    source.update(
+        error_code="deploy_blocked.compose_keys_missing",
+        error_description="The compose template requires settings the target does not provide.",
+        error_detail_keys=["EXAMPLE_SETTING", "EXAMPLE_FLAG"],
+    )
+    # operations.read returns a structured view with no request or embedded result.
+    source.pop("request")
+    source.pop("result")
+    source["free_text_omitted"] = True
+    response["result"] = None
+    argv = ["target-replacement-operation-read", "--operation-id", source["operation_id"]]
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    operation = payload["result"]["operation"]
+    for name in ("error_code", "error_description", "error_detail_keys"):
+        assert operation[name] == source[name]
+        assert f"operation.{name}" not in payload["result"]["dropped_field_paths"]
+    assert "error_message" not in operation
+    assert "operation.free_text_omitted" in payload["result"]["dropped_field_paths"]
+    source["error_description"] = (
+        "A setting the site's records would carry is a platform credential, which never "
+        "belongs in an app runtime."
+    )
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    description = payload["result"]["operation"]["error_description"]
+    assert description == source["error_description"].replace("credential", "[redacted]")
+    assert "operation.error_description" not in payload["result"]["dropped_field_paths"]
+
+
+def test_target_replacement_operation_read_bounds_failure_details() -> None:
+    response = _target_replacement_operation_response()
+    source = response["operation"]
+    source.update(
+        error_description="x" * 501,
+        error_detail_keys=["EXAMPLE_SETTING", "not a key", {"unexpected": "detail"}],
+    )
+    argv = ["target-replacement-operation-read", "--operation-id", source["operation_id"]]
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    operation = payload["result"]["operation"]
+    assert operation["error_description"] == ""
+    assert operation["error_detail_keys"] == ["EXAMPLE_SETTING"]
+    assert "operation.error_description" in payload["result"]["dropped_field_paths"]
+    assert "operation.error_detail_keys[]" in payload["result"]["dropped_field_paths"]
+    for description in ("credential=hunter2-example", "credential : hunter2-example"):
+        source["error_description"] = description
+        status, payload, _calls = _run_product_read(argv, response)
+        assert status == 0
+        assert payload["result"]["operation"]["error_description"] == ""
+        assert "hunter2-example" not in json.dumps(payload)
+        assert "operation.error_description" in payload["result"]["dropped_field_paths"]
+    for value in (None, [], "not a list", {"unexpected": "detail"}):
+        source["error_detail_keys"] = value
+        status, payload, _calls = _run_product_read(argv, response)
+        assert status == 0
+        assert payload["result"]["operation"]["error_detail_keys"] == []
+    source["error_detail_keys"] = [f"EXAMPLE_{i}" for i in range(300)]
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    assert payload["result"]["operation"]["error_detail_keys"] == source["error_detail_keys"][
+        :write_action.TARGET_REPLACEMENT_PLAN_MAX_LIST_ITEMS
+    ]
+    assert "operation.error_detail_keys[]" in payload["result"]["dropped_field_paths"]
+
+
 def test_target_replacement_operation_read_tolerates_a_pending_operation() -> None:
     response = _target_replacement_operation_response()
     operation = response["operation"]
@@ -3533,6 +3732,8 @@ def test_target_replacement_operation_read_tolerates_a_pending_operation() -> No
     assert status == 0
     assert payload["result"]["result"] is None
     assert payload["result"]["operation"]["status"] == "pending"
+    assert payload["result"]["operation"]["error_description"] == ""
+    assert payload["result"]["operation"]["error_detail_keys"] == []
     assert "operation.error_message" not in payload["result"]["dropped_field_paths"]
 
 
@@ -3552,6 +3753,9 @@ def test_target_replacement_operation_read_refuses_bad_ids_and_unsafe_values() -
         lambda body: body.update(extra="x"),
         lambda body: body["operation"].update(deployment_record_id="Bearer abcdefghijklmnop"),
         lambda body: body["operation"].update(product=None),
+        lambda body: body["operation"].update(error_description="Bearer abcdefghijklmnop"),
+        lambda body: body["operation"].update(error_detail_keys=["ghp_planted_example"]),
+        lambda body: body["operation"].update(error_detail_keys=[{"token": "planted"}]),
     ):
         mutated = _target_replacement_operation_response()
         mutate(mutated)
@@ -6089,6 +6293,229 @@ def test_dokploy_compose_target_hides_provider_ids_and_binds_the_payload() -> No
             assert payload["warnings"][0]["code"] == code
 
 
+PRIVATE_ENDPOINT_URL = "http://10.0.0.106:8001/healthz"
+
+
+def _private_endpoint_payload() -> dict[str, object]:
+    return {
+        "endpoint_key": "example-testing-runtime",
+        "product": "example",
+        "context": "example",
+        "instance": "testing",
+        "url": PRIVATE_ENDPOINT_URL,
+        "source_label": "lxc-106 private host",
+    }
+
+
+def _private_endpoint_record(**overrides: object) -> dict[str, object]:
+    record: dict[str, object] = {
+        "schema_version": 1,
+        **_private_endpoint_payload(),
+        "status": "active",
+        "updated_at": "2026-10-03T12:00:00Z",
+    }
+    record.update(overrides)
+    return record
+
+
+def _private_endpoint_response(mode: str = "dry-run", **record: object) -> dict[str, object]:
+    return {
+        "status": "accepted",
+        "trace_id": "launchplane_req_private_endpoint",
+        "records": {},
+        "result": {
+            "mode": mode,
+            "endpoint_key": "example-testing-runtime",
+            "endpoint_status": "applied" if mode == "apply" else "planned",
+            "record": _private_endpoint_record(**record),
+        },
+    }
+
+
+def _private_endpoint_read(**record: object) -> dict[str, object]:
+    return {
+        "status": "ok",
+        "trace_id": "launchplane_req_private_endpoint_read",
+        "record": _private_endpoint_record(**record),
+    }
+
+
+def test_private_health_endpoint_hides_the_url_and_binds_apply_to_the_review() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = _write_json(directory, "endpoint.json", _private_endpoint_payload())
+        dry_run_argv = [
+            "private-health-endpoint-dry-run",
+            "--payload-file",
+            payload_path,
+            "--reason",
+            "Monitor the testing lane privately.",
+        ]
+        status, evidence, posts, _reads = _run_main(dry_run_argv, post=_private_endpoint_response())
+        assert status == 0, evidence
+        assert posts[0]["path"] == "/v1/private-health-endpoints/apply"
+        body = posts[0]["body"]
+        assert body["mode"] == "dry-run"
+        assert body["endpoint"]["url"] == PRIVATE_ENDPOINT_URL
+        assert body["endpoint"]["status"] == "active"
+        assert "confirmation" not in body
+        printed = json.dumps(evidence)
+        for private in ("10.0.0.106", "8001", "healthz", "lxc-106", "Monitor the testing lane"):
+            assert private not in printed, private
+        assert evidence["result"]["record"]["endpoint_key"] == "example-testing-runtime"
+        digest = evidence["result"]["plan_sha256"]
+        reviewed_at = evidence["result"]["record"]["updated_at"]
+        evidence_path = _write_json(directory, "endpoint-dry-run.json", evidence)
+        apply_argv = [
+            "private-health-endpoint-apply",
+            "--payload-file",
+            payload_path,
+            "--reason",
+            "Monitor the testing lane privately.",
+            *_reviewed_apply_argv(digest, evidence_path),
+        ]
+        status, payload, posts, reads = _run_main(
+            apply_argv, post=_private_endpoint_response("apply"), read=_private_endpoint_read()
+        )
+        assert status == 0, payload
+        body = posts[0]["body"]
+        assert body["confirmation"] == write_action.PRIVATE_HEALTH_ENDPOINT_CONFIRMATION
+        assert posts[0]["idempotency_key"] == "apply-1"
+        # A retry with the same evidence sends the same body, so Launchplane can replay it.
+        assert body["endpoint"]["updated_at"] == reviewed_at
+        assert reads[0]["path"] == contract.internal_helper_path(
+            "private-health-endpoint-record-read"
+        ).format(endpoint_key="example-testing-runtime")
+        assert reads[0]["query"] == {"product": "example", "context": "example", "instance": "testing"}
+        assert payload["result"]["read_back_matches"] is True
+        assert "10.0.0.106" not in json.dumps(payload)
+
+        # Launchplane recorded a different URL than the reviewed payload.
+        status, payload, _posts, _reads = _run_main(
+            apply_argv,
+            post=_private_endpoint_response("apply", url="http://10.0.0.107:8001/healthz"),
+            read=_private_endpoint_read(),
+        )
+        assert (status, payload["status"]) == (1, "accepted_unverified")
+        assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
+        assert "10.0.0.107" not in json.dumps(payload)
+
+        # The record read back points somewhere else.
+        status, payload, _posts, _reads = _run_main(
+            apply_argv,
+            post=_private_endpoint_response("apply"),
+            read=_private_endpoint_read(url="http://10.0.0.107:8001/healthz"),
+        )
+        assert (status, payload["status"]) == (1, "accepted_unverified")
+        assert payload["result"]["read_back"]["url_matches_review"] is False
+        assert "10.0.0.107" not in json.dumps(payload)
+
+        # The record read back is another lane's, even though the URL agrees.
+        status, payload, _posts, _reads = _run_main(
+            apply_argv,
+            post=_private_endpoint_response("apply"),
+            read=_private_endpoint_read(instance="prod"),
+        )
+        assert (status, payload["status"]) == (1, "accepted_unverified")
+        assert payload["result"]["read_back_matches"] is False
+
+        # Evidence edited to vouch for a different payload still fails the reviewed digest.
+        swapped = {**_private_endpoint_payload(), "url": "http://10.0.0.107:8001/healthz"}
+        swapped_path = _write_json(directory, "endpoint-swapped.json", swapped)
+        forged = copy.deepcopy(evidence)
+        forged["request"]["payload_digest"] = write_action.metadata_review_digest(
+            {**swapped, "status": "active", "reason": "Monitor the testing lane privately."}
+        )
+        forged_path = _write_json(directory, "endpoint-forged.json", forged)
+        status, payload, posts, _reads = _run_main(
+            [
+                "private-health-endpoint-apply",
+                "--payload-file",
+                swapped_path,
+                "--reason",
+                "Monitor the testing lane privately.",
+                *_reviewed_apply_argv(digest, forged_path),
+            ],
+            post=_private_endpoint_response("apply"),
+            read=_private_endpoint_read(),
+        )
+        assert (status, posts) == (2, [])
+        assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
+
+        # A different reason than the reviewed one is a different change.
+        status, payload, posts, _reads = _run_main(
+            [*apply_argv[:4], "Another reason.", *apply_argv[5:]],
+            post=_private_endpoint_response("apply"),
+            read=_private_endpoint_read(),
+        )
+        assert (status, posts) == (2, [])
+        assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
+
+        changed = {**_private_endpoint_payload(), "url": "http://10.0.0.107:8001/healthz"}
+        _write_json(directory, "endpoint.json", changed)
+        status, payload, posts, _reads = _run_main(
+            apply_argv, post=_private_endpoint_response("apply"), read=_private_endpoint_read()
+        )
+        assert (status, posts) == (2, [])
+        assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
+
+        for mutate, code in (
+            (lambda data: data.update(updated_at="2026-10-03T12:00:00Z"), "unsupported_private_health_endpoint_field"),
+            (lambda data: data.update(url="ftp://10.0.0.106/health"), "private_url_required"),
+            (lambda data: data.pop("url"), "private_url_required"),
+            (lambda data: data.update(endpoint_key="../other"), "endpoint_key_required"),
+            (lambda data: data.pop("instance"), "instance_required"),
+            (lambda data: data.update(status="paused"), "invalid_private_health_endpoint_status"),
+        ):
+            bad = _private_endpoint_payload()
+            mutate(bad)
+            bad_path = _write_json(directory, "endpoint-bad.json", bad)
+            status, payload, posts, _reads = _run_main(
+                ["private-health-endpoint-dry-run", "--payload-file", bad_path, "--reason", "r"],
+                post=_private_endpoint_response(),
+            )
+            assert (status, posts) == (2, []), code
+            assert payload["warnings"][0]["code"] == code
+
+
+def test_private_health_endpoint_read_lists_keys_without_urls() -> None:
+    response = {
+        "status": "ok",
+        "trace_id": "launchplane_req_private_endpoints",
+        "product": "example",
+        "context": "example",
+        "instance": "testing",
+        "limit": 25,
+        "count": 1,
+        "records": [_private_endpoint_record(status="disabled")],
+    }
+    argv = ["private-health-endpoint-read", "--product", "example", "--context", "example"]
+    status, payload, _posts, reads = _run_main([*argv, "--instance", "testing"], read=response)
+    assert status == 0, payload
+    assert reads[0]["path"] == "/v1/private-health-endpoints/records"
+    assert reads[0]["query"] == {"product": "example", "context": "example", "instance": "testing"}
+    assert payload["result"]["records"] == [
+        {
+            "endpoint_key": "example-testing-runtime",
+            "product": "example",
+            "context": "example",
+            "instance": "testing",
+            "status": "disabled",
+            "updated_at": "2026-10-03T12:00:00Z",
+        }
+    ]
+    assert "10.0.0.106" not in json.dumps(payload)
+
+    status, payload, _posts, reads = _run_main(argv, read=response)
+    assert status == 0, payload
+    assert reads[0]["query"] == {"product": "example", "context": "example"}
+
+    # A field Launchplane adds later is refused rather than passed through.
+    leaked = {**response, "records": [{**_private_endpoint_record(), "host": "lxc-106"}]}
+    status, payload, _posts, _reads = _run_main(argv, read=leaked)
+    assert status == 1
+    assert "lxc-106" not in json.dumps(payload)
+
+
 def _promotion_status_response() -> dict[str, object]:
     availability = {
         "operation": "direct_dry_run",
@@ -6230,6 +6657,9 @@ def test_product_promotion_dry_run_never_accepts_a_live_result() -> None:
 
 def main() -> int:
     tests = [
+        test_path_check_reads_both_paths_and_preserves_clear_blocked_unknown,
+        test_path_check_refuses_unknown_fields_unsafe_values_and_incomplete_evidence,
+        test_path_check_refuses_bad_selector_and_surfaces_read_denial,
         test_product_owner_plan_projection_digests_the_reviewed_change,
         test_product_owner_dry_run_sends_normalized_login_to_the_product_route,
         test_product_owner_apply_checks_the_client_reapplies_and_reads_back,
@@ -6240,6 +6670,8 @@ def main() -> int:
         test_production_backup_authority_apply_binds_the_exact_reviewed_payload,
         test_production_backup_authority_read_keeps_state_and_record_ids,
         test_dokploy_compose_target_hides_provider_ids_and_binds_the_payload,
+        test_private_health_endpoint_hides_the_url_and_binds_apply_to_the_review,
+        test_private_health_endpoint_read_lists_keys_without_urls,
         test_product_promotion_status_keeps_the_fingerprint_and_drops_release_detail,
         test_product_promotion_dry_run_never_accepts_a_live_result,
         test_controller_branch_update_result_reaches_the_caller,
@@ -6273,6 +6705,8 @@ def main() -> int:
         test_reconcile_requests_read_keeps_the_decision_and_drops_the_rest,
         test_reconcile_requests_read_keeps_testing_operation_ids,
         test_target_replacement_operation_read_keeps_progress_and_drops_error_text,
+        test_target_replacement_operation_read_projects_failure_details,
+        test_target_replacement_operation_read_bounds_failure_details,
         test_target_replacement_operation_read_tolerates_a_pending_operation,
         test_target_replacement_operation_read_refuses_bad_ids_and_unsafe_values,
         test_target_replacement_plan_read_keeps_key_names_and_drops_text,

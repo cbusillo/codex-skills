@@ -60,11 +60,13 @@ READ_ONLY_OPERATIONS = {
     "product-environment-read",
     "product-activity-read",
     "product-profile-read",
+    "path-check",
     "preview-history-read",
     "reconcile-requests-read",
     "target-replacement-operation-read",
     "target-replacement-plan-read",
     "production-backup-authority-read",
+    "private-health-endpoint-read",
     "product-promotion-status-read",
 }
 MERGE_TRAIN_POLICY_IMPORT_ENVELOPE_FIELDS = {
@@ -2931,6 +2933,7 @@ TARGET_REPLACEMENT_OPERATION_OMITTED_FIELDS = frozenset(
     {
         "error_message",
         "schema_version",
+        "free_text_omitted",
         "idempotency_key",
         "idempotency_scope",
         "request_fingerprint",
@@ -2993,6 +2996,9 @@ TARGET_REPLACEMENT_RESULT_FIELDS = frozenset(
         "image_reference",
         "runtime_source",
         "error_message",
+        "error_code",
+        "error_description",
+        "error_detail_keys",
         *TARGET_REPLACEMENT_RESULT_STATUSES,
         *TARGET_REPLACEMENT_RESULT_IDS,
     }
@@ -3042,8 +3048,17 @@ def _project_target_replacement_result(
     return projected
 
 
+def _public_operation_error_description(value: object) -> str:
+    if not isinstance(value, str):
+        raise LaunchplaneSafetyError("invalid_response")
+    # Fixed service prose describes a credential refusal. Redact that word
+    # rather than loosening the public-summary policy; _FieldDrops checks the raw shape.
+    summary = re.sub(r"\bcredential\b(?!\s*[:=])", "[redacted]", value, flags=re.IGNORECASE)
+    return public_summary_string(summary)
+
+
 def _project_target_replacement_operation(provider_payload: dict[str, Any]) -> dict[str, object]:
-    """One Odoo target-replacement operation's progress and error code. Error messages,
+    """One Odoo target-replacement operation's progress and bounded failure details. Error messages,
     settings, URLs, provider target names and evidence payloads are dropped and listed by
     path; a secret-looking value in a kept field fails the read."""
     operation = _require_dict(provider_payload.get("operation"))
@@ -3075,6 +3090,10 @@ def _project_target_replacement_operation(provider_payload: dict[str, Any]) -> d
             "operation.request.artifact_id", public_identifier, request.get("artifact_id")
         ),
         "error_code": field("error_code", _public_dotted_code),
+        "error_description": field("error_description", _public_operation_error_description),
+        "error_detail_keys": _project_env_key_names(
+            operation.get("error_detail_keys"), path="operation.error_detail_keys", drops=drops
+        ),
     }
     for name in TARGET_REPLACEMENT_OPERATION_TIMESTAMPS:
         projected_operation[name] = field(
@@ -3792,6 +3811,11 @@ def _project_success_output(
         return records, _project_dokploy_compose_setup(
             provider_payload.get("result"), request=request
         )
+    if operation in {"private-health-endpoint-dry-run", "private-health-endpoint-apply"}:
+        records = _project_records(provider_payload.get("records"), set())
+        return records, _project_private_health_endpoint_plan(
+            provider_payload.get("result"), request=request
+        )
     if operation == "product-promotion-dry-run":
         # Record ids, release URLs and target names are not projected; the result keeps statuses.
         return {}, _project_product_promotion_dry_run(provider_payload.get("result"))
@@ -4016,6 +4040,18 @@ def summarize_success(
                 if operation == "dokploy-target-create-compose-dry-run"
                 else "Check read_back_matches, then add the lane record through the stable-lane "
                 "repair workflow."
+            )
+        elif operation in {
+            "private-health-endpoint-dry-run",
+            "private-health-endpoint-apply",
+        }:
+            summary["plan_sha256"] = result.get("plan_sha256")
+            summary["recommendation"] = (
+                "Save this redacted dry-run output, review the endpoint key and scope, then apply "
+                "the exact same private payload and reason with --expected-plan-digest."
+                if operation == "private-health-endpoint-dry-run"
+                else "Check read_back_matches, then name the endpoint_key in the lane's "
+                "private_http health check."
             )
         elif operation == "product-promotion-dry-run":
             summary["promotion_status"] = result.get("promotion_status")
@@ -4524,6 +4560,80 @@ def _summarize_product_read(
     return payload
 
 
+def _project_path_check(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    fields = {"product", "path", "state", "blocked_count", "unknown_count", "steps"}
+    step_fields = {"step_id", "state", "code", "description", "fix", "record_ids"}
+    states = ("clear", "blocked", "unknown")
+    fixes = ("none", "code", "grant", "owner_approval", "client_acceptance", "by_hand", "wait")
+    if set(source) != fields:
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    assert_public_safe_shape(source)
+    if source["path"] not in ("testing", "promote") or source["state"] not in states:
+        raise LaunchplaneSafetyError("invalid_response")
+    steps = source["steps"]
+    if not isinstance(steps, list) or not steps or len(steps) > 50:
+        raise LaunchplaneSafetyError("invalid_response")
+    projected_steps: list[dict[str, object]] = []
+    for value in steps:
+        step = _require_dict(value)
+        if set(step) != step_fields:
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        if step["state"] not in states or step["fix"] not in fixes:
+            raise LaunchplaneSafetyError("invalid_response")
+        if not isinstance(step["code"], str):
+            raise LaunchplaneSafetyError("invalid_response")
+        record_ids = step["record_ids"]
+        if not isinstance(record_ids, list) or len(record_ids) > 50:
+            raise LaunchplaneSafetyError("invalid_response")
+        projected_steps.append(
+            {
+                "step_id": public_identifier(step["step_id"]),
+                "state": step["state"],
+                "code": public_code(step["code"]),
+                "description": public_summary_string(step["description"]),
+                "fix": step["fix"],
+                "record_ids": [public_identifier(record_id) for record_id in record_ids],
+            }
+        )
+    blocked = sum(step["state"] == "blocked" for step in projected_steps)
+    unknown = sum(step["state"] == "unknown" for step in projected_steps)
+    state = "blocked" if blocked else "unknown" if unknown else "clear"
+    for field, count in (("blocked_count", blocked), ("unknown_count", unknown)):
+        if type(source[field]) is not int or source[field] != count:
+            raise LaunchplaneSafetyError("invalid_response")
+    if source["state"] != state:
+        raise LaunchplaneSafetyError("invalid_response")
+    return {
+        "product": public_identifier(source["product"]),
+        "path": source["path"],
+        "state": state,
+        "blocked_count": blocked,
+        "unknown_count": unknown,
+        "steps": projected_steps,
+    }
+
+
+def summarize_path_check(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    payload = _summarize_product_read(
+        operation="path-check",
+        request=request,
+        provider_payload=provider_payload,
+        result_key="check",
+        project=_project_path_check,
+        recommendation=(
+            "Read every blocked or unknown step before proposing the next action; "
+            "this read grants no authority."
+        ),
+    )
+    result = _require_dict(payload["result"])
+    if result["product"] != request["product"] or result["path"] != request["path"]:
+        raise LaunchplaneSafetyError("invalid_response")
+    return payload
+
+
 def summarize_product_environment_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
@@ -4626,7 +4736,8 @@ def summarize_target_replacement_operation_read(
         "launchplane_status": status,
         "trace_id": public_trace_id(provider_payload.get("trace_id")),
         "recommendation": (
-            "Read operation.status, phase and error_code first; the result statuses say "
+            "Read operation.status, phase, error_code, error_description and error_detail_keys "
+            "first; the result statuses say "
             "which deploy or verification step failed. Error messages are not returned."
         ),
     }
@@ -4704,6 +4815,7 @@ def execute_target_replacement_plan_read(*, args: argparse.Namespace) -> int:
 
 
 PRODUCT_READ_SUMMARIZERS = {
+    "path-check": summarize_path_check,
     "product-environment-read": summarize_product_environment_read,
     "product-activity-read": summarize_product_activity_read,
     "product-profile-read": summarize_product_profile_read,
@@ -4714,7 +4826,12 @@ PRODUCT_READ_SUMMARIZERS = {
 
 
 def execute_product_read(
-    *, args: argparse.Namespace, operation: str, request: dict[str, object], path: str
+    *,
+    args: argparse.Namespace,
+    operation: str,
+    request: dict[str, object],
+    path: str,
+    query: dict[str, str] | None = None,
 ) -> int:
     summarize = PRODUCT_READ_SUMMARIZERS[operation]
     settings = prepare_operator_settings(args=args, operation=operation, request=request)
@@ -4725,7 +4842,7 @@ def execute_product_read(
             service_url=settings["service_url"],
             path=path,
             settings=settings,
-            query={},
+            query=query or {},
             timeout=args.timeout,
         )
         emit(summarize(request=request, provider_payload=provider_payload))
@@ -6869,6 +6986,328 @@ def execute_production_backup_authority_read(
         return 1
 
 
+# Private health endpoints: the record a `private_http` health check names. The
+# URL is private by definition, so it is sent from the private payload, compared
+# with what Launchplane holds, and never printed. Launchplane does not bind an
+# apply to its dry-run; the helper digests the reviewed payload and plan instead.
+
+PRIVATE_HEALTH_ENDPOINT_PAYLOAD_FIELDS = {
+    "schema_version",
+    "endpoint_key",
+    "product",
+    "context",
+    "instance",
+    "url",
+    "status",
+    "source_label",
+}
+PRIVATE_HEALTH_ENDPOINT_RECORD_FIELDS = PRIVATE_HEALTH_ENDPOINT_PAYLOAD_FIELDS | {"updated_at"}
+PRIVATE_HEALTH_ENDPOINT_RESULT_FIELDS = {"mode", "endpoint_key", "endpoint_status", "record"}
+PRIVATE_HEALTH_ENDPOINT_LIST_FIELDS = {
+    "status",
+    "trace_id",
+    "product",
+    "context",
+    "instance",
+    "limit",
+    "count",
+    "records",
+}
+PRIVATE_HEALTH_ENDPOINT_STATUSES = {"active", "disabled"}
+PRIVATE_HEALTH_ENDPOINT_PLAN_STATUSES = {"dry-run": "planned", "apply": "applied"}
+PRIVATE_HEALTH_ENDPOINT_MAX_RECORDS = 100
+# Launchplane's typed confirmation for a private health endpoint apply; the reviewed
+# dry-run evidence and plan digest are what the helper checks before sending it.
+PRIVATE_HEALTH_ENDPOINT_CONFIRMATION = "APPLY LAUNCHPLANE PRIVATE HEALTH ENDPOINT"
+
+
+def _project_private_health_endpoint_record(value: object) -> dict[str, object]:
+    """Key, scope, status and update time; the URL and free-text source label are dropped."""
+    source = _require_dict(value)
+    if any(str(key) not in PRIVATE_HEALTH_ENDPOINT_RECORD_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    if source.get("status") not in PRIVATE_HEALTH_ENDPOINT_STATUSES:
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "endpoint_key": public_identifier(source.get("endpoint_key")),
+        "product": public_identifier(source.get("product")),
+        "context": public_identifier(source.get("context")),
+        "instance": public_identifier(source.get("instance")),
+        "status": source["status"],
+        "updated_at": _optional_text(source.get("updated_at")),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _private_health_endpoint_url(value: object) -> str:
+    """The record's URL, used only to compare with the reviewed payload; never printed."""
+    url = _require_dict(value).get("url")
+    if not isinstance(url, str):
+        raise LaunchplaneSafetyError("invalid_response")
+    return url.strip()
+
+
+PRIVATE_HEALTH_ENDPOINT_PLAN_FIELDS = ("endpoint_key", "product", "context", "instance", "status")
+
+
+def _private_health_endpoint_plan_sha256(payload_digest: str, record: dict[str, Any]) -> str:
+    """The route has no plan digest; bind the private payload to the planned record here."""
+    return _canonical_sha256(
+        {
+            "payload_digest": payload_digest,
+            **{field: record.get(field) for field in PRIVATE_HEALTH_ENDPOINT_PLAN_FIELDS},
+        }
+    )
+
+
+def _project_private_health_endpoint_plan(
+    result: object, *, request: dict[str, object] | None
+) -> dict[str, object]:
+    source = _require_dict(result)
+    if any(str(key) not in PRIVATE_HEALTH_ENDPOINT_RESULT_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    mode = _reviewed_plan_mode(source.get("mode"))
+    if source.get("endpoint_status") != PRIVATE_HEALTH_ENDPOINT_PLAN_STATUSES[mode]:
+        raise LaunchplaneSafetyError("invalid_response")
+    payload_digest = (request or {}).get("payload_digest")
+    if not isinstance(payload_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", payload_digest):
+        raise LaunchplaneSafetyError("invalid_response")
+    record = _project_private_health_endpoint_record(source.get("record"))
+    if public_identifier(source.get("endpoint_key")) != record["endpoint_key"]:
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "mode": mode,
+        "endpoint_key": record["endpoint_key"],
+        "endpoint_status": source["endpoint_status"],
+        "record": record,
+        "plan_sha256": _private_health_endpoint_plan_sha256(payload_digest, record),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def private_health_endpoint_payload(args: argparse.Namespace) -> dict[str, object]:
+    payload = read_payload_file(args.payload_file)
+    if any(key not in PRIVATE_HEALTH_ENDPOINT_PAYLOAD_FIELDS for key in payload):
+        raise ValueError("unsupported_private_health_endpoint_field")
+    if payload.get("schema_version", 1) != 1:
+        raise ValueError("unsupported_private_health_endpoint_schema_version")
+    for field in ("endpoint_key", "product", "context", "instance"):
+        value = payload.get(field)
+        # The key is a path segment on read-back; the scope is echoed in the output.
+        if not isinstance(value, str) or not PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(value.strip()):
+            raise ValueError(f"{field}_required")
+    url = payload.get("url")
+    # Launchplane refuses a public URL; the helper only checks it is an HTTP URL at all.
+    if not isinstance(url, str) or urllib.parse.urlsplit(url.strip()).scheme not in {
+        "http",
+        "https",
+    }:
+        raise ValueError("private_url_required")
+    if payload.get("status", "active") not in PRIVATE_HEALTH_ENDPOINT_STATUSES:
+        raise ValueError("invalid_private_health_endpoint_status")
+    if not isinstance(payload.get("source_label", ""), str):
+        raise ValueError("invalid_source_label")
+    return payload
+
+
+def private_health_endpoint_body(
+    args: argparse.Namespace, *, mode: str
+) -> tuple[dict[str, object], dict[str, object]]:
+    """The route body and the public request summary for a private endpoint payload."""
+    payload = private_health_endpoint_payload(args)
+    reason = _required_argument(args, "reason")
+    # Sorted, so a retry sends the same body however the payload file orders its keys.
+    endpoint = {
+        field: value.strip() if isinstance(value, str) else value
+        for field, value in sorted(payload.items())
+    }
+    endpoint.setdefault("status", "active")
+    request: dict[str, object] = {
+        "mode": mode,
+        "payload_source": "private_file",
+        "payload_digest": metadata_review_digest({**endpoint, "reason": reason}),
+        "endpoint_key": public_identifier(endpoint["endpoint_key"]),
+        "product": public_identifier(endpoint["product"]),
+        "context": public_identifier(endpoint["context"]),
+        "instance": public_identifier(endpoint["instance"]),
+        "endpoint_status": endpoint["status"],
+    }
+    endpoint["updated_at"] = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    body: dict[str, object] = {
+        "schema_version": 1,
+        "mode": mode,
+        "endpoint": endpoint,
+        "reason": reason,
+    }
+    if mode == "apply":
+        expected_plan_digest = _reviewed_apply_digest(args)
+        evidence, result = _load_reviewed_evidence(
+            args,
+            operation="private-health-endpoint-dry-run",
+            expected_digest=expected_plan_digest,
+            result_status=None,
+        )
+        reviewed_record = result.get("record")
+        if not isinstance(reviewed_record, dict):
+            raise ValueError("reviewed_dry_run_not_apply_eligible")
+        reviewed_updated_at = reviewed_record.get("updated_at")
+        # Recompute the reviewed digest from this payload, so neither an edited payload
+        # nor edited evidence can send a record the reviewer did not see.
+        if (
+            evidence["request"].get("payload_digest") != request["payload_digest"]
+            or _private_health_endpoint_plan_sha256(
+                cast(str, request["payload_digest"]), reviewed_record
+            )
+            != expected_plan_digest
+            or any(
+                reviewed_record.get(field) != endpoint[field]
+                for field in PRIVATE_HEALTH_ENDPOINT_PLAN_FIELDS
+            )
+            or not isinstance(reviewed_updated_at, str)
+            or not reviewed_updated_at
+        ):
+            raise ValueError("reviewed_dry_run_not_apply_eligible")
+        # Launchplane fingerprints the whole body for idempotency, so a retry of this
+        # reviewed apply must send the same timestamp: the one the reviewer saw.
+        endpoint["updated_at"] = reviewed_updated_at
+        body["confirmation"] = PRIVATE_HEALTH_ENDPOINT_CONFIRMATION
+    return body, request
+
+
+def read_private_health_endpoint(
+    *, settings: dict[str, str], endpoint: dict[str, Any], timeout: float
+) -> tuple[dict[str, object], str]:
+    """The public record, plus its URL for comparison only."""
+    path = internal_helper_path("private-health-endpoint-record-read").format(
+        endpoint_key=urllib.parse.quote(cast(str, endpoint["endpoint_key"]), safe="")
+    )
+    provider_payload = request_launchplane_read(
+        service_url=settings["service_url"],
+        path=path,
+        settings=settings,
+        query={field: cast(str, endpoint[field]) for field in ("product", "context", "instance")},
+        timeout=timeout,
+    )
+    if any(str(key) not in {"status", "trace_id", "record"} for key in provider_payload):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    record = provider_payload.get("record")
+    return _project_private_health_endpoint_record(record), _private_health_endpoint_url(record)
+
+
+def execute_private_health_endpoint_apply(
+    *, args: argparse.Namespace, request: dict[str, object], body: dict[str, object]
+) -> int:
+    endpoint = cast(dict[str, Any], body["endpoint"])
+    expected_plan_digest = args.expected_plan_digest.strip().lower()
+
+    def finish(
+        settings: dict[str, str], provider_payload: dict[str, Any], payload: dict[str, Any]
+    ) -> bool:
+        result = payload["result"]
+        applied_url = _private_health_endpoint_url(
+            _require_dict(provider_payload.get("result")).get("record")
+        )
+        applied_as_reviewed = (
+            result.get("endpoint_status") == "applied"
+            and result.get("plan_sha256") == expected_plan_digest
+            and applied_url == endpoint["url"]
+        )
+        if not applied_as_reviewed:
+            payload["warnings"].append(
+                warning(
+                    "applied_plan_differs_from_review",
+                    "Launchplane reported a different endpoint record than the reviewed dry-run.",
+                )
+            )
+        result["reviewed_plan_sha256"] = expected_plan_digest
+
+        def read() -> dict[str, object]:
+            public, url = read_private_health_endpoint(
+                settings=settings, endpoint=endpoint, timeout=args.timeout
+            )
+            # Compared here and never printed.
+            public["url_matches_review"] = url == endpoint["url"]
+            return public
+
+        read_back_ok = attach_read_back(
+            payload,
+            read=read,
+            matches=lambda observed: observed["url_matches_review"] is True
+            and all(
+                observed[field] == endpoint[field] for field in PRIVATE_HEALTH_ENDPOINT_PLAN_FIELDS
+            ),
+            label="private health endpoint",
+        )
+        return applied_as_reviewed and read_back_ok
+
+    return execute_verified_apply(
+        args=args,
+        operation="private-health-endpoint-apply",
+        request=request,
+        path=helper_command_path("private-health-endpoint-apply"),
+        body=body,
+        # Launchplane refuses a key that belongs to another product, context or instance.
+        preflight=lambda _settings: None,
+        finish=finish,
+        label="private health endpoint",
+    )
+
+
+def execute_private_health_endpoint_read(
+    *, args: argparse.Namespace, request: dict[str, object]
+) -> int:
+    operation = "private-health-endpoint-read"
+    settings = prepare_operator_settings(args=args, operation=operation, request=request)
+    if settings is None:
+        return 2
+    query = {"product": args.product, "context": args.context}
+    if args.instance:
+        query["instance"] = args.instance
+    try:
+        provider_payload = request_launchplane_read(
+            service_url=settings["service_url"],
+            path=helper_command_path(operation),
+            settings=settings,
+            query=query,
+            timeout=args.timeout,
+        )
+        if any(str(key) not in PRIVATE_HEALTH_ENDPOINT_LIST_FIELDS for key in provider_payload):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        records = provider_payload.get("records")
+        if not isinstance(records, list) or len(records) > PRIVATE_HEALTH_ENDPOINT_MAX_RECORDS:
+            raise LaunchplaneSafetyError("invalid_response")
+        status = public_code(provider_payload.get("status"), default="ok")
+        payload = base_payload(status=status, operation=operation, request=request)
+        payload["result"] = {
+            "count": len(records),
+            "records": [_project_private_health_endpoint_record(record) for record in records],
+        }
+        payload["summary"] = {
+            "launchplane_status": status,
+            "trace_id": public_trace_id(provider_payload.get("trace_id")),
+            "recommendation": (
+                "Name an active record's endpoint_key in the lane's private_http health check."
+            ),
+        }
+        assert_public_safe_shape(payload["summary"])
+        emit(payload)
+        return 0
+    except urllib.error.HTTPError as exc:
+        emit_http_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except LaunchplaneSafetyError as exc:
+        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except (OSError, TimeoutError, urllib.error.URLError):
+        emit_provider_unavailable(operation=operation, request=request)
+        return 1
+    except (ValueError, json.JSONDecodeError):
+        emit_invalid_response(operation=operation, request=request)
+        return 1
+
+
 # Product promotion: the operator status read and the direct dry-run. Launchplane
 # records an accepted dry-run for the identity, evidence fingerprint and bump; no
 # helper command sends a live promotion.
@@ -7291,6 +7730,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     product_profile_read.add_argument("--product", required=True)
 
+    path_check = subparsers.add_parser(
+        "path-check", help="Read every blocker on the caller's testing or promotion path."
+    )
+    path_check.add_argument("--product", required=True)
+    path_check.add_argument("--path", required=True, choices=("testing", "promote"))
+
     product_activity_read = subparsers.add_parser(
         "product-activity-read",
         help="Read a product's recent deployment, promotion and preview activity.",
@@ -7435,6 +7880,30 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "--payload-file", required=True, help="Private local JSON payload file."
         )
         _add_reviewed_apply_arguments(compose_target, apply=command.endswith("-apply"))
+
+    private_endpoint_read = subparsers.add_parser(
+        "private-health-endpoint-read",
+        help="List a lane's private health endpoint keys, status and scope, without URLs.",
+    )
+    private_endpoint_read.add_argument("--product", required=True)
+    private_endpoint_read.add_argument("--context", required=True)
+    private_endpoint_read.add_argument("--instance", default="")
+    for command, help_text in (
+        (
+            "private-health-endpoint-dry-run",
+            "Dry-run recording a private health endpoint from a private payload.",
+        ),
+        (
+            "private-health-endpoint-apply",
+            "Apply the reviewed private health endpoint bound to the saved dry-run digest.",
+        ),
+    ):
+        private_endpoint = subparsers.add_parser(command, help=help_text)
+        private_endpoint.add_argument(
+            "--payload-file", required=True, help="Private local JSON payload file."
+        )
+        private_endpoint.add_argument("--reason", required=True)
+        _add_reviewed_apply_arguments(private_endpoint, apply=command.endswith("-apply"))
 
     promotion_status_read = subparsers.add_parser(
         "product-promotion-status-read",
@@ -7759,6 +8228,17 @@ def main(argv: list[str]) -> int:
             return execute_product_read(
                 args=args, operation=args.command, request=request, path=path
             )
+        if args.command == "path-check":
+            path = _product_read_path(args.command, product=args.product)
+            request = {
+                "product": public_identifier(args.product),
+                "path": args.path,
+                "payload_source": "operator_argument",
+            }
+            return execute_product_read(
+                args=args, operation=args.command, request=request, path=path,
+                query={"path": args.path},
+            )
         if args.command == "product-profile-read":
             path = _product_read_path(args.command, product=args.product)
             request = {
@@ -7918,6 +8398,32 @@ def main(argv: list[str]) -> int:
             body, request = dokploy_compose_body(args, mode=mode)
             if mode == "apply":
                 return execute_dokploy_compose_apply(args=args, request=request, body=body)
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
+        if args.command == "private-health-endpoint-read":
+            request = {
+                "product": public_identifier(args.product),
+                "context": public_identifier(args.context),
+                "payload_source": "operator_argument",
+            }
+            if args.instance:
+                request["instance"] = public_identifier(args.instance)
+            return execute_private_health_endpoint_read(args=args, request=request)
+        if args.command in {
+            "private-health-endpoint-dry-run",
+            "private-health-endpoint-apply",
+        }:
+            mode = "apply" if args.command.endswith("-apply") else "dry-run"
+            body, request = private_health_endpoint_body(args, mode=mode)
+            if mode == "apply":
+                return execute_private_health_endpoint_apply(
+                    args=args, request=request, body=body
+                )
             return execute_post(
                 args=args,
                 operation=args.command,
