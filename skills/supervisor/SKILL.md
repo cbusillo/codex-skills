@@ -122,8 +122,8 @@ records that run.
 
 1. Match the ledger's session to its transcript, process, and terminal tab.
    Leave the Director's own sessions alone. Keep thread-only sessions without
-   a matched terminal open and record them in the ledger. Read the session's latest response
-   in its transcript: it must explicitly say `Safe to exit: yes`, and its work
+   a matched terminal open and record them in the ledger. Read the session's
+   latest response in its transcript: it must explicitly say `Safe to exit: yes`, and its work
    must be handed off on the item's issue. Never infer completion from silence,
    idleness, or the screen; Claude Code redraws its screen and can hide the
    close-out message. If later transcript activity resumes work, keep it open.
@@ -132,15 +132,19 @@ records that run.
    session and tab identity, before clearing it or closing the tab. Keep the
    tab open if the text cannot be recorded or its author is uncertain.
 3. A prompt for unfinished item work means the session is not finished; keep
-   it open. Resolve a pending close-out permission prompt only within the brief's existing authority;
-   never approve new scope or access to make a session exit. If the prompt
+   it open. Resolve a pending close-out permission prompt only after verifying
+   its exact action meets the brief and the owning skill's existing rules.
+   Use one-time approval only; never select an option that changes persistent
+   permissions. Never approve new scope or access to make a session exit. If the prompt
    needs the Director, leave the session open and include it in the next
    "needs the Director" list. After resolving a prompt, recheck the transcript
    and handoff before continuing, because the session may have resumed work.
 4. Immediately before sending keys, recheck the transcript, handoff, input
    line, and that the session is at its prompt with no turn running. Clear the
-   input line with Ctrl-U, then send `/exit` for Claude Code or `/quit` for
-   Codex into that terminal's input, never through `codex queue`. Wait for
+   input with Ctrl-U and verify the entire input is empty before sending
+   `/exit` for Claude Code or `/quit` for Codex into that terminal's input,
+   never through `codex queue`. If any input remains, keep the tab open.
+   Wait for
    that session's process to end. Verify it ended before closing
    the tab. If it is still running or its identity is uncertain, keep the tab
    open and record the next action in the ledger.
