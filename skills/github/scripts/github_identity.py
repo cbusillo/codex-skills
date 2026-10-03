@@ -35,29 +35,35 @@ class GitHubAppError(RuntimeError):
 
 
 class ContributorRepository(GitHubAppError):
-    """The App is not installed on a repository the automation's account does not own.
+    """The App is not installed on a repository of an account that did not register it.
 
-    There the supported identity is the person's own GitHub login, not a refusal.
+    There the supported identity is the person's own GitHub login, used only
+    when the caller opts in for the command with OWN_USER_OPT_IN.
     """
 
     def __init__(self, repository: str) -> None:
         super().__init__(
-            f"the GitHub App is not installed on {repository}, and its owner is not "
-            "the automation's account; act there as your own GitHub user"
+            f"the GitHub App is not installed on {repository}, which belongs to another "
+            "account than the one that registered the App"
         )
         self.repository = repository
 
 
 class NotInstalledForAutomation(GitHubAppError):
-    """The App is not installed on a repository of the automation's own accounts."""
+    """The App is not installed on a repository of the account that registered it."""
 
 
 # app-auth exits with these statuses so the shell wrappers can tell the cases
-# apart: act as the active human login (a ContributorRepository), or a definite
-# refusal in the automation's own repository (NotInstalledForAutomation), as
-# opposed to a failed lookup (1).
+# apart: the person's own login (a ContributorRepository), or a definite
+# refusal in the registering account's repository (NotInstalledForAutomation),
+# as opposed to a failed lookup (1).
 CONTRIBUTOR_EXIT_STATUS = 3
 NOT_INSTALLED_EXIT_STATUS = 4
+
+# Acting as the person's own GitHub user is a stop the agent asks its Director
+# about, so it runs only when the caller sets this for the command; a value in
+# local.env does not count.
+OWN_USER_OPT_IN = "GH_WITH_ENV_TOKEN_OWN_USER"
 
 
 class GitHubAppHTTPError(GitHubAppError):
@@ -552,8 +558,10 @@ def repository_installation_config(
     Each owner installs the App separately, so a repository outside the
     configured installation's account needs that owner's installation. When
     none covers it, return None; when one is required (writes), refuse on a
-    repository the automation's account owns, and raise ContributorRepository
-    elsewhere, where the person acts as their own GitHub user.
+    repository of the account that registered the App, and raise
+    ContributorRepository elsewhere, where the person may act as their own
+    GitHub user. An installation on another account's repositories does not
+    make that account's other repositories the automation's.
     """
     if not REPOSITORY_PATTERN.fullmatch(repository):
         raise GitHubAppError(f"invalid repository {repository!r}; expected OWNER/REPO")
@@ -576,7 +584,7 @@ def repository_installation_config(
                 ) from error
             if error.status == 404:
                 owner = repository.split("/", 1)[0].casefold()
-                if owner not in automation_accounts(config, now=current_time):
+                if owner != registering_account(config, now=current_time):
                     raise ContributorRepository(repository) from error
                 raise NotInstalledForAutomation(
                     f"the GitHub App is not installed on {repository}; "
@@ -595,11 +603,11 @@ def repository_installation_config(
     return replace(config, installation_id=str(installation_id))
 
 
-def automation_accounts(config: GitHubAppConfig, *, now: int | None = None) -> frozenset[str]:
-    """The accounts the automation writes for: the App's owner and every account it is installed on.
+def registering_account(config: GitHubAppConfig, *, now: int | None = None) -> str:
+    """The account that registered the App, case-folded.
 
-    A repository under one of them is the Director's, so a missing installation
-    there is a refusal; anywhere else it means acting as the person's own login.
+    A repository under it is the Director's, so a missing installation there is
+    a refusal; anywhere else it means the person's own login.
     """
     current_time = int(time.time() if now is None else now)
     app = _request_json(
@@ -609,37 +617,26 @@ def automation_accounts(config: GitHubAppConfig, *, now: int | None = None) -> f
     owner = app.get("owner") if isinstance(app, dict) else None
     if not isinstance(owner, dict) or not isinstance(owner.get("login"), str) or not owner["login"]:
         raise GitHubAppError("GitHub App identity response is missing the App owner")
-    accounts = {owner["login"].casefold()}
-    for page in range(1, 11):
-        installations = _request_json(
-            urllib.request.Request(
-                f"{config.api_url}/app/installations?per_page=100&page={page}",
-                method="GET",
-                headers=_app_headers(config, now=current_time),
-            ),
-            operation="installation list",
-        )
-        if not isinstance(installations, list):
-            raise GitHubAppError("GitHub App installation list returned an invalid response")
-        for installation in installations:
-            account = installation.get("account") if isinstance(installation, dict) else None
-            if not isinstance(account, dict) or not isinstance(account.get("login"), str) or not account["login"]:
-                raise GitHubAppError("GitHub App installation list is missing an account")
-            accounts.add(account["login"].casefold())
-        if len(installations) < 100:
-            return frozenset(accounts)
-    raise GitHubAppError("GitHub App installation list is too long to check repository ownership")
+    return owner["login"].casefold()
+
+
+def own_user_opted_in(environ: Mapping[str, str] | None = None) -> bool:
+    """Whether the caller opted in to acting as their own GitHub user for this command."""
+    values = os.environ if environ is None else environ
+    return values.get(OWN_USER_OPT_IN, "").casefold() in {"1", "true", "yes"}
 
 
 def acts_as_own_user(repository: str, environ: Mapping[str, str] | None = None) -> bool:
     """Whether writes to the repository run as the person's own GitHub login.
 
-    True only when a GitHub App is configured, it is not installed on the
-    repository, and the automation's account does not own it. Any other
-    outcome, including a failed lookup, is False, and the write helpers then
-    use the App or refuse as before.
+    True only when the caller opted in for the command, a GitHub App is
+    configured, it is not installed on the repository, and the account that
+    registered it does not own the repository. Any other outcome, including a
+    failed lookup, is False, and the write helpers then use the App or refuse.
     """
     values = os.environ if environ is None else environ
+    if not own_user_opted_in(values):
+        return False
     try:
         if str(configured_value("GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH", environ=values) or "").casefold() in {
             "1",
@@ -681,7 +678,7 @@ def github_app_auth(
 
     Without an installation on the repository, reads use the configured
     installation (public repositories stay readable); writes are refused, or
-    raise ContributorRepository outside the automation's accounts.
+    raise ContributorRepository outside the App's registering account.
     """
     current_time = int(time.time() if now is None else now)
     if repository:
@@ -733,7 +730,7 @@ def main() -> int:
         action="store_true",
         help=(
             "Refuse when no installation covers --repo instead of using the configured one (writes); "
-            f"exit {CONTRIBUTOR_EXIT_STATUS} when the automation's account does not own --repo."
+            f"exit {CONTRIBUTOR_EXIT_STATUS} when the account that registered the App does not own --repo."
         ),
     )
     subparsers.add_parser("app-check", help="Verify the configured App installation and print its bot login.")

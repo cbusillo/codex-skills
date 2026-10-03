@@ -39,6 +39,7 @@ def run_wrapper(
     identity: Path,
     *args: str,
     gh_command: Path | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = {
         "PATH": os.environ["PATH"],
@@ -50,6 +51,7 @@ def run_wrapper(
     }
     if gh_command is not None:
         env["GH_WITH_ENV_TOKEN_GH"] = str(gh_command)
+    env.update(extra_env or {})
     return subprocess.run(
         [str(SCRIPT), *args],
         env=env,
@@ -249,7 +251,7 @@ def test_app_installation_follows_the_target_repository() -> None:
         assert "not installed on other-owner/uncovered" in refused.stderr
 
 
-def test_write_to_another_owners_repository_without_installation_runs_as_the_person() -> None:
+def test_write_to_another_owners_repository_without_installation_runs_as_the_person_on_opt_in() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         env_file = root / "local.env"
@@ -283,15 +285,27 @@ def test_write_to_another_owners_repository_without_installation_runs_as_the_per
             "printf 'ran-with-token:%s\\n' \"${GH_TOKEN:-active-login}\"\n",
         )
         write_args = ("issue", "comment", "1", "-R", "director/catalog", "--body", "x")
+        opt_in = {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}
 
-        result = run_wrapper(env_file, unused, identity, *write_args, gh_command=fake_gh)
+        result = run_wrapper(env_file, unused, identity, *write_args, gh_command=fake_gh, extra_env=opt_in)
         assert result.returncode == 0, result.stderr
         assert result.stdout == "ran-with-token:active-login\n"
         assert "acting as your own GitHub user on director/catalog" in result.stderr
         assert "'contributor-login'" in result.stderr
 
+        # Without the caller's opt-in, including one only in local.env, refuse
+        # and name the opt-in.
+        for opted_in_env_file in (False, True):
+            if opted_in_env_file:
+                env_file.write_text(env_file.read_text() + "GH_WITH_ENV_TOKEN_OWN_USER=1\n")
+            refused = run_wrapper(env_file, unused, identity, *write_args, gh_command=fake_gh)
+            assert refused.returncode != 0
+            assert refused.stdout == ""
+            assert "GH_WITH_ENV_TOKEN_OWN_USER=1" in refused.stderr
+            assert "acting as your own GitHub user" not in refused.stderr
+
         env_file.write_text(env_file.read_text() + "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1\n")
-        required = run_wrapper(env_file, unused, identity, *write_args, gh_command=fake_gh)
+        required = run_wrapper(env_file, unused, identity, *write_args, gh_command=fake_gh, extra_env=opt_in)
         assert required.returncode != 0
         assert required.stdout == ""
         assert "refusing to act as your own GitHub user" in required.stderr
@@ -464,7 +478,7 @@ def main() -> None:
         test_empty_app_auth_response_fails_closed,
         test_app_auth_takes_precedence_and_runs_write_as_verified_app,
         test_app_installation_follows_the_target_repository,
-        test_write_to_another_owners_repository_without_installation_runs_as_the_person,
+        test_write_to_another_owners_repository_without_installation_runs_as_the_person_on_opt_in,
         test_app_actor_probe_synthesizes_include_response_without_user_endpoint,
         test_app_login_mismatch_fails_closed_for_write_and_check,
         test_app_login_comparison_is_case_insensitive,
