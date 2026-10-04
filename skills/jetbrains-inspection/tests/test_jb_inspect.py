@@ -2750,6 +2750,28 @@ class InspectionLaneExecutionTest(unittest.TestCase):
         self.assertEqual(compact["lanes"][0]["verdict"], "NOT_RUN")
         self.assertIn("--scope files", compact["agent_result"]["next_action"])
 
+    def test_unmatched_explicit_files_point_to_lane_matching(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            target = root / "README.md"
+            target.write_text("fixture\n", encoding="utf-8")
+            lanes = jb_inspect.parse_inspection_lanes(
+                {"lanes": [{"id": "python", "ide": "PyCharm", "include": ["**/*.py"]}]}
+            )
+            context = {
+                "repo_path": str(root), "worktree_root": str(root), "project_path": str(root),
+                "scope": "files", "_inspection_lanes": lanes,
+            }
+            args = helper_args(scope="files", files=[str(target)], max_files=None)
+            with patch.object(jb_inspect, "run_prepared_inspection") as inspect:
+                result = jb_inspect.run_configured_inspection_lanes(args, context)
+                compact = jb_inspect.compact_agent_result_payload(result, 1)
+                inspect.assert_not_called()
+        self.assertEqual(compact["selected_file_count"], 1)
+        self.assertEqual(compact["selection"]["unmatched_files"], [target.name])
+        self.assertEqual(compact["agent_result"]["verdict"], "UNKNOWN")
+        self.assertIn("lane include/exclude globs", compact["agent_result"]["next_action"])
+
     def test_repository_preparation_runs_once_before_multiple_active_lanes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -2925,6 +2947,7 @@ class InspectionLaneExecutionTest(unittest.TestCase):
             ([lane("green", "GREEN"), lane("red", "RED"), lane("unknown", "UNKNOWN")], "RED"),
             ([lane("green", "GREEN"), lane("unknown", "UNKNOWN")], "UNKNOWN"),
             ([lane("green", "GREEN"), lane("optional-red", "RED", required=False)], "GREEN"),
+            ([lane("optional-red", "RED", required=False)], "GREEN"),
             ([lane("empty", "NOT_RUN")], "UNKNOWN"),
             ([lane("invalid", None)], "UNKNOWN"),
         ]
@@ -8045,6 +8068,20 @@ class AgentInspectContractTest(unittest.TestCase):
                 if count == 0:
                     self.assertFalse(payload["agent_result"]["retry_policy"]["retry"])
                     self.assertIn("--scope files", payload["agent_result"]["next_action"])
+                    self.assertEqual(payload["agent_result"]["bucket"], "policy_required")
+                    self.assertEqual(payload["diagnostic"]["attribution_class"], "configuration_blocked")
+
+    def test_broad_scope_placeholder_zero_does_not_change_native_verdict(self):
+        for scope in ["whole_project", "directory"]:
+            with self.subTest(scope=scope):
+                payload = {"status": "clean", "context": {"scope": scope}}
+                original = jb_inspect.verdict_for_payload(payload)
+                payload["capture_diagnostic"] = {
+                    "scope_kind": scope, "scope_resolution_status": "project_scope",
+                    "scope_file_resolved_count": 0,
+                }
+                self.assertIsNone(jb_inspect.selected_inspection_file_count(payload))
+                self.assertEqual(jb_inspect.verdict_for_payload(payload), original)
 
     def emit_agent_payload(self, payload, helper_exit_code=None):
         output = io.StringIO()

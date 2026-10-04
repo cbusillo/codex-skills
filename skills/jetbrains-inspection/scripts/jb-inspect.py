@@ -2671,9 +2671,9 @@ def apply_multi_lane_verdict(payload: dict[str, Any]) -> dict[str, Any]:
         status = "inspection_lanes_unknown"
         affected = [str(lane.get("id")) for lane in unknown]
         next_action = f"Resolve the fail-closed outcome in required lane(s): {', '.join(affected)}."
-    elif required:
+    elif any(isinstance(lane, dict) and lane.get("verdict") != "NOT_RUN" for lane in lane_results):
         verdict = "GREEN"
-        reason = "all_required_lanes_green"
+        reason = "all_required_lanes_green" if required else "no_required_lane_files"
         bucket = "multi_lane_clean"
         status = "clean"
         next_action = "No inspection action required for the configured required lanes."
@@ -2682,10 +2682,16 @@ def apply_multi_lane_verdict(payload: dict[str, Any]) -> dict[str, Any]:
         reason = "no_required_lane_files"
         bucket = "multi_lane_unknown"
         status = "inspection_scope_empty"
-        next_action = (
-            "No files were inspected in required lanes. Select tracked files with --scope files and repeatable --file arguments. "
-            "changed_files covers working-tree changes, not committed branch changes."
-        )
+        if selected_inspection_file_count(payload) == 0:
+            next_action = (
+                "No files were selected. Select tracked files with --scope files and repeatable --file arguments. "
+                "changed_files covers working-tree changes, not committed branch changes."
+            )
+        else:
+            next_action = (
+                "No selected files reached an inspection lane. Review unmatched_files, excluded_files, and lane include/exclude globs. "
+                "Choose files supported by the configured lanes; explicit --scope files selectors override lane exclusions."
+            )
 
     retry_policies = [
         lane.get("retry_policy")
@@ -6993,6 +6999,7 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "language_sdk_missing",
         "profile_resolution_error",
         "inspection_lane_config_invalid",
+        "inspection_scope_empty",
         SEMANTIC_COVERAGE_MISSING_REASON,
         "untrusted_auto_open_root",
         *REPOSITORY_PREPARATION_TERMINAL_REASONS,
@@ -7419,6 +7426,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         "implicit_eap_selection",
         "profile_resolution_error",
         "inspection_lane_config_invalid",
+        "inspection_scope_empty",
         "repository_preparation_config_invalid",
         "repository_preparation_opted_out",
     }:
@@ -9056,6 +9064,12 @@ def selected_inspection_file_count(payload: dict[str, Any]) -> int | None:
         count = selection.get("selected_file_count")
     else:
         diagnostic = payload.get("capture_diagnostic")
+        context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+        scope = context.get("scope") or (diagnostic.get("scope_kind") if isinstance(diagnostic, dict) else None)
+        if scope in {"whole_project", "directory"}:
+            # Broad scopes report zero here as a placeholder; their native
+            # traversal proof establishes execution separately.
+            return None
         if isinstance(diagnostic, dict) and "scope_file_resolved_count" in diagnostic:
             count = diagnostic["scope_file_resolved_count"]
         else:
