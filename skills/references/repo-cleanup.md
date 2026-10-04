@@ -263,6 +263,8 @@ registration metadata is still compared for changes, including omitted
 checkouts' registration locks; their contents, status and operations are
 unexamined. `complete` and `repository.coverage` describe the requested scope,
 not those omitted checkouts. Smaller repositories retain the full Git probe.
+Revalidation and post-action verification retain the baseline's scoped mode
+even if an authorized worktree removal brings the count back to 64 or below.
 Malformed or over-limit registration lists still fail closed. Ownership,
 live-use, private-content and deletion-authorization rules still apply.
 Do not claim an all-disks audit from this repository-scoped report.

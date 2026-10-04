@@ -179,7 +179,8 @@ def assess(root: dict, repository: dict, runtime_bindings: list[dict]) -> None:
 
 def inventory(repo: str, roots: list[str], *, options: dict | None = None, key: bytes | None = None,
               content: bool = False, preserved: list[str] | None = None, offline: bool = False,
-              default_roots: bool = True, scoped_git: bool | None = None) -> dict:
+              default_roots: bool = True, scoped_git: bool | None = None,
+              force_scoped_git: bool = False) -> dict:
     options = {**LIMITS, **(options or {})}
     key = key or secrets.token_bytes(32)
     start = time.monotonic()
@@ -211,7 +212,8 @@ def inventory(repo: str, roots: list[str], *, options: dict | None = None, key: 
 
     runtime = probe_call(bindings, (preserved or [],), 2)
     result["bindings"] = runtime.get("result", [])
-    git_result = probe_call(cleanup_git.snapshot, (absolute(repo), key, not offline, git_roots), 20)
+    git_arguments = (absolute(repo), key, not offline, git_roots, force_scoped_git)
+    git_result = probe_call(cleanup_git.snapshot, git_arguments, 20)
     repository: dict[str, Any] = git_result.get("result", {"coverage": "unavailable", "error": git_result.get("error")})
     result["repository"] = repository
     if not requested and default_roots:
@@ -252,7 +254,7 @@ def inventory(repo: str, roots: list[str], *, options: dict | None = None, key: 
             root["disposition"] = "Keep" if root["coverage"] == "completed" else "Could not check"
         result["roots"].append(root)
     # Changes in HEAD, refs, registrations, locks or repository state invalidate the entire observation.
-    final_git = probe_call(cleanup_git.snapshot, (absolute(repo), key, not offline, git_roots), 20)
+    final_git = probe_call(cleanup_git.snapshot, git_arguments, 20)
     stable_git = "result" in final_git and git_core(repository) == git_core(final_git["result"])
     result["git_stable"] = stable_git
     if not stable_git:
@@ -375,7 +377,8 @@ def check_manifest(before: dict, *, removed: list[str] | None = None,
     current = inventory(before["repo_argument"], targets, options=before["options"],
                         key=bytes.fromhex(before["_key"]), content=True, preserved=before["preserve_roots"],
                         offline=before["offline"], default_roots=False,
-                        scoped_git=before.get("scoped_git", False))
+                        scoped_git=before.get("scoped_git", False),
+                        force_scoped_git=before["repository"].get("worktree_coverage", {}).get("scope") == "explicit_roots")
     if not current["complete"]:
         errors.append("current_coverage_incomplete")
     if git_core(before["repository"], removed_set, move_map) != git_core(current["repository"]):

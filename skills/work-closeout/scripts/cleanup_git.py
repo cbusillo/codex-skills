@@ -102,12 +102,13 @@ def operation_state(directory: str) -> list[dict]:
 
 
 def snapshot(repo: str, key: bytes, remote_probe: bool = True,
-             roots: list[str] | None = None) -> dict:
+             roots: list[str] | None = None, force_scoped: bool = False) -> dict:
     root = git_text(repo, "rev-parse", "--show-toplevel")
     common = git_text(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
     start_registrations = registrations(root)
     selected = start_registrations
-    if roots is not None and len(start_registrations) > MAX_WORKTREES:
+    scoped = roots is not None and (force_scoped or len(start_registrations) > MAX_WORKTREES)
+    if scoped:
         resolved_roots = [os.path.realpath(path) for path in roots]
         selected = [item for item in start_registrations if any(
             path == item["path"] or path.startswith(item["path"].rstrip(os.sep) + os.sep)
@@ -189,7 +190,7 @@ def snapshot(repo: str, key: bytes, remote_probe: bool = True,
             "default_branch": default_branch, "default_branch_evidence": "live" if default_branch else "unknown",
             "refs": refs, "ref_coverage": coverage, "remotes": remotes, "worktrees": worktrees,
             "registrations": start_registrations,
-            "worktree_coverage": {"scope": "explicit_roots" if roots is not None else "all_registered",
+            "worktree_coverage": {"scope": "explicit_roots" if scoped else "all_registered",
                                   "inspected_count": len(selected),
                                   "excluded_count": len(start_registrations) - len(selected),
                                   "global": "excluded" if len(selected) < len(start_registrations) else "completed"},

@@ -276,6 +276,14 @@ class CleanupContracts(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("git_postcondition_changed", result["errors"])
 
+    def test_scoped_removal_verification_retains_scope_across_registration_boundary(self):
+        with patch.object(cleanup_git, "git", self.registration_fixture(cleanup_git.MAX_WORKTREES + 1)):
+            before = self.inventory(self.worktree)
+        run_git(self.repo, "worktree", "remove", str(self.worktree))
+        with patch.object(cleanup_git, "git", self.registration_fixture(cleanup_git.MAX_WORKTREES)):
+            result = cleanup.check_manifest(before, removed=[str(self.worktree)])
+        self.assertTrue(result["ok"], result["errors"])
+
     def test_active_skills_runtime_is_kept(self):
         home = self.base / "host"
         home.mkdir()
