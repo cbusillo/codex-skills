@@ -397,8 +397,9 @@ def test_cli_requires_explicit_trace_source() -> None:
         }}])
         result = subprocess.run([sys.executable, str(SCRIPT), "--root", str(root)],
                                 capture_output=True, text=True, check=True)
-        if not json.loads(result.stdout):
-            raise AssertionError("explicit root should still extract trace candidates")
+        payload = json.loads(result.stdout)
+        if payload["source_file_count"] != 1 or not payload["candidates"]:
+            raise AssertionError(f"explicit root should extract the synthetic trace: {payload}")
 
 
 def main() -> int:
