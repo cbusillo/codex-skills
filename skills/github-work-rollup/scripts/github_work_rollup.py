@@ -2400,11 +2400,6 @@ def focus_area_heading(payload: dict[str, Any]) -> str:
     category_labels: list[str] = []
     for label in portfolio_labels:
         normalized = label.casefold()
-        if "every code" in normalized:
-            for category in ("Every Code", "Skills") if "skill" in normalized else ("Every Code Product",):
-                if category not in category_labels:
-                    category_labels.append(category)
-            continue
         if "skill" in normalized:
             category = "Skills"
         else:
@@ -2412,8 +2407,7 @@ def focus_area_heading(payload: dict[str, Any]) -> str:
         if category and category not in category_labels:
             category_labels.append(category)
     if category_labels:
-        category_order = {"Every Code Product": 0, "Every Code": 1, "Skills": 2}
-        ordered_categories = sorted(category_labels, key=lambda category: (category_order.get(category, 99), category))
+        ordered_categories = sorted(category_labels, key=lambda category: (category != "Skills", category.casefold()))
         return f"{prose_join(ordered_categories[:3])} Impact"
     label = focus_area_label(payload)
     return f"{label} Impact"

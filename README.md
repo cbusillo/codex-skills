@@ -667,6 +667,10 @@ identity without performing a write:
 skills/github/scripts/gh-with-env-token --check
 ```
 
+`--check` requires a configured App or user token. With no token it fails
+explicitly, even when active-auth fallback is allowed; use `gh auth status`
+to inspect active local authentication. It does not accept a `gh` command.
+
 GitHub writes require a configured automation identity and token and never
 change to the active local `gh` account implicitly. Set
 `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` only for an explicitly approved

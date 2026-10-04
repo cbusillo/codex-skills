@@ -386,7 +386,24 @@ def test_linked_status_reference_lowers_confidence_but_cited_preference_stays() 
         raise AssertionError(f"a preference that cites a linked reference should stay medium: {durable}")
 
 
+def test_cli_requires_explicit_trace_source() -> None:
+    result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+    if result.returncode != 2 or "provide trace paths or --root" not in result.stderr or result.stdout:
+        raise AssertionError(f"omitted source must refuse without scanning: {result}")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_trace(root, [{"type": "response_item", "payload": {
+            "type": "message", "role": "user", "content": [{"type": "input_text", "text": "Always prefer uv for Python commands."}]
+        }}])
+        result = subprocess.run([sys.executable, str(SCRIPT), "--root", str(root)],
+                                capture_output=True, text=True, check=True)
+        payload = json.loads(result.stdout)
+        if payload["source_file_count"] != 1 or not payload["candidates"]:
+            raise AssertionError(f"explicit root should extract the synthetic trace: {payload}")
+
+
 def main() -> int:
+    test_cli_requires_explicit_trace_source()
     test_skips_session_meta_base_instructions()
     test_context_window_preserves_neighboring_turns()
     test_classifies_people_local_llm_and_friction()

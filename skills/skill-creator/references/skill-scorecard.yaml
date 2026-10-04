@@ -1359,7 +1359,7 @@ skills:
         dimension: routing
         gate: conditional
         scenario: >-
-          upstream-convergence/tests/exec-harness/explicit-invocation.json
+          skill-creator/evaluations/exec-harness/upstream-convergence-explicit-invocation.json
         baseline:
           outcome: pass
           score: 1000
