@@ -116,6 +116,15 @@ run details, the helper fails closed instead of rediscovering the run through a
 workflow list filtered by time, name, or unsupported CLI fields. Use the
 `watch --run-id <id>` subcommand to recover an already-known run.
 
+PR and workflow watchers use 60-second active defaults and positive jitter.
+The workflow default clips to a shorter requested timeout, ending without an
+extra poll. They honor a longer `x-poll-interval` response header. Automation workflow run
+and job GETs reuse the shared private conditional cache, including 304 bodies;
+identity and protected-environment reads remain fresh. An unavailable cache falls
+back to the same live transport, actor checks and shared cooldown. Completed GETs
+are not repeated when cache persistence fails. Cache-lock waits and poll waits stay inside
+the workflow deadline and do not start another read when that deadline expires.
+
 Every `status=waiting` poll immediately reads `pending_deployments`. Reviewer
 waits report environment names, eligible reviewer identities, wait timers, and
 `current_user_can_approve`. Eligible review is submitted only for explicitly
@@ -528,7 +537,9 @@ says to or when the task affects readiness, deploy, security, or shared quality.
 
 When the merged repository is bound into an active local runtime, such as a
 skills checkout behind `$CODE_HOME/skills`, `$CODEX_HOME/skills`,
-`~/.code/skills`, or a link under Claude Code's `skills` folder, run the
+`~/.code/skills`, `~/.agents/skills` (whole-catalog link),
+`~/.agents/skills/shared` (installer binding), or a link under Claude Code's
+`skills` folder, run the
 landed repo-local runtime reconciler after the final landing SHA is known. Use
 the merge result's `merge.sha` or a fresh merged-PR view's `mergeCommitOid`,
 never the PR head SHA:

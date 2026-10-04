@@ -302,14 +302,17 @@ tooling (`scripts/`, `.github/`) stays at the root and is not part of an
 install.
 
 The repository's runtime reconciler checks `$CODE_HOME/skills`, then
-`$CODEX_HOME/skills`, then `~/.code/skills`, then each entry under Claude Code's
+`$CODEX_HOME/skills`, then `~/.code/skills`, then `~/.agents/skills` and
+`~/.agents/skills/shared`, then each entry under Claude Code's
 `skills` folder (`$CLAUDE_CONFIG_DIR` or `~/.claude`). It acts on one that is a
 worktree of the same clone as the merged worktree, preferring one already on
 the default branch, and lists every binding it looked at in the receipt's
-`bindings_checked`. A separate clone is not matched. It does not discover an
-`~/.agents/skills`-only installation. For that installation, verify and refresh
-the clean default-branch checkout through the normal GitHub post-merge checkout
-workflow. A reconciler `not_applicable` result does not prove it is current.
+`bindings_checked`. Both `~/.agents` layouts work for Codex-only installs, and
+the cleanup helper protects these same bindings. Legacy `~/.codex/skills` links
+are discovered through `$CODEX_HOME/skills` when `CODEX_HOME` is set; the unset
+fallback is tracked in [codex-skills#1186](https://github.com/cbusillo/codex-skills/issues/1186).
+A separate clone is not matched. A reconciler
+`not_applicable` result does not prove the runtime checkout is current.
 
 Treat the checkout behind the active `skills` path as a runtime checkout: keep
 it clean, on `main`, and current with `origin/main`. Use linked task worktrees

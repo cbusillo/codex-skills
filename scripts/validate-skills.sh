@@ -90,6 +90,9 @@ if ! printf '%s\0' "${helper_tests[@]}" | xargs -0 -n 1 -P "$helper_jobs" bash -
 	*.py) run=(uv run "$1") ;;
 	*) run=("$1") ;;
 	esac
+	# Each offline helper owns its retry state, including fake CLI children.
+	# Live GitHub commands outside this gate retain machine-wide coordination.
+	export GITHUB_RETRY_STATE_DIR="$log.retry-state"
 	if "${run[@]}" >"$log" 2>&1; then
 		printf "ok %s (%ss)\n" "$1" "$((SECONDS - started))"
 	else
