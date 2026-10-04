@@ -368,14 +368,18 @@ if [[ "$1" == "commit" ]]; then
 	printf 'commit_tokens=%s|%s|%s\n' \
 		"${CODEX_GITHUB_TOKEN:-}" "${GH_TOKEN:-}" "${GITHUB_TOKEN:-}" \
 		>>"$GH_ISSUE_ENV_LOG"
-elif [[ "$1 $2 $3" == "remote get-url origin" ]]; then
-	printf 'git@github.com:owner/repo.git\n'
-elif [[ "$1 $2 $3 ${4:-} ${5:-}" == "remote get-url --push --all origin" ]]; then
+elif [[ "$1 $2" == "config --get-all" ]]; then
+	printf '%s\n' "${FAKE_REMOTE_URL:-git@github.com:owner/repo.git}"
+elif [[ "$1 $2" == "remote get-url" && "$3" != --push ]]; then
+	printf '%s\n' "${FAKE_REMOTE_URL:-git@github.com:owner/repo.git}"
+elif [[ "$1 $2 $3 ${4:-}" == "remote get-url --push --all" ]]; then
 	printf '%s\n' "${FAKE_PUSH_URL:-$(cat "$GH_ISSUE_ENV_LOG.remote")}"
-elif [[ "$1 $2 $3" == "remote set-url origin" ]]; then
+elif [[ "$1 $2" == "remote set-url" ]]; then
+	printf 'selected_remote=%s remote=%s\n' "$3" "$4" >>"$GH_ISSUE_ENV_LOG"
 	printf 'remote=%s\n' "$4" >>"$GH_ISSUE_ENV_LOG"
 	printf '%s\n' "$4" >"$GH_ISSUE_ENV_LOG.remote"
 elif [[ "$*" == "-c credential.helper= -c http.https://github.com/owner/repo.git.extraHeader= push "* ]]; then
+	printf 'push_args=%s\n' "$*" >>"$GH_ISSUE_ENV_LOG"
 	printf 'askpass=%s prompt=%s token=%s\n' \
 		"${GIT_ASKPASS:-}" "${GIT_TERMINAL_PROMPT:-}" \
 		"$("$GIT_ASKPASS" 'Password for https://github.com: ')" >>"$GH_ISSUE_ENV_LOG"
@@ -564,7 +568,7 @@ assert_push_refused() {
 		echo "error: git-push-as-bot must refuse: $message" >&2
 		exit 1
 	fi
-	grep -q "$message" "$stderr_log"
+	grep -q -- "$message" "$stderr_log"
 	if grep -qE '^(askpass=|push-with-other-config)' "$env_log"; then
 		echo "error: git-push-as-bot pushed after refusing: $message" >&2
 		exit 1
@@ -598,8 +602,128 @@ assert_push_refused "origin pushes to 'https://github.com/owner/repo.git git@git
 	FAKE_PUSH_URL=$'https://github.com/owner/repo.git\ngit@github.com:owner/repo.git'
 for refused_destination in "git@github.com:owner/repo.git HEAD" "upstream branch" "--repo=upstream branch" "--repo upstream" "-u branch"; do
 	read -r -a refused_push_args <<<"$refused_destination"
-	assert_push_refused 'pushes only to origin' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
+	assert_push_refused 'pushes only to origin\|--repo overrides' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
 done
+# Explicit named remotes use the same App/token isolation and restore only
+# the selected remote. Both publication and deletion are supported.
+for named_push in "-u branch" "--delete branch"; do
+	read -r -a named_push_args <<<"$named_push"
+	: >"$env_log"
+	PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" \
+		CODEX_AUTOMATION_LOGIN='Fixture-App[bot]' \
+		GIT_PUSH_AS_BOT_IDENTITY_HELPER="$tmpdir/fake-app-identity.py" \
+		GIT_PUSH_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
+		GH_ISSUE_ENV_LOG="$env_log" \
+		"$repo_root/github/scripts/git-push-as-bot" --remote fork "${named_push_args[@]}" >/dev/null
+	grep -q "push_args=.* push fork $named_push" "$env_log"
+	grep -q '^askpass=.* prompt=0 token=app-installation-token$' "$env_log"
+	grep -q '^push_env=||||$' "$env_log"
+	grep -q '^selected_remote=fork remote=git@github.com:owner/repo.git$' "$env_log"
+	if grep -q '^selected_remote=origin ' "$env_log"; then
+		echo "error: named remote push mutated origin" >&2
+		exit 1
+	fi
+done
+refused_push_args=(--remote fork branch)
+assert_push_refused 'fork pushes to' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env" FAKE_PUSH_URL=git@github.com:owner/repo.git
+assert_push_refused 'fork pushes to' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env" FAKE_PUSH_URL=$'https://github.com/owner/repo.git\ngit@github.com:owner/repo.git'
+assert_push_refused 'GitHub App authentication failed' CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" FAKE_APP_IDENTITY_FAIL=1
+assert_push_refused 'refusing to push as your own GitHub user' CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" FAKE_APP_CONTRIBUTOR=1 GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1
+for remote_url in https://example.invalid/owner/repo.git https://github.com/owner/repo/extra https://github.com/owner/repo?token=fixture; do
+	assert_push_refused 'selected remote' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env" FAKE_REMOTE_URL="$remote_url"
+done
+for override in --repo=https://github.com/other/repo.git --repo=origin; do
+	refused_push_args=(--remote fork branch "$override")
+	assert_push_refused '--repo overrides' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
+done
+refused_push_args=(-u --remote fork branch)
+assert_push_refused 'use --remote NAME as the first two arguments' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
+refused_push_args=(--remote=fork -u branch)
+assert_push_refused 'use --remote NAME as the first two arguments' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
+refused_push_args=(--remote)
+assert_push_refused 'requires a configured remote name' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
+refused_push_args=(--remote https://github.com/owner/repo.git branch)
+assert_push_refused 'requires a configured remote name' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
+# Real Git configuration proves the URL checks and restoration, while the
+# transport stub prevents network access and records an attempted push.
+real_git=$(command -v git)
+real_repo="$tmpdir/named-remote-repo"
+"$real_git" init -q "$real_repo"
+"$real_git" -C "$real_repo" remote add origin https://github.com/upstream/template.git
+"$real_git" -C "$real_repo" remote add fork git@github.com:owner/repo.git
+cat >"$tmpdir/config-git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ " $* " == *" push "* ]]; then
+	printf 'push_args=%s\n' "$*" >>"$GH_ISSUE_ENV_LOG"
+	exit "${FAKE_PUSH_EXIT:-0}"
+fi
+exec "$REAL_PUSH_TEST_GIT" -C "$REAL_PUSH_TEST_REPO" "$@"
+EOF
+chmod +x "$tmpdir/config-git"
+run_config_push() {
+	env CODEX_SKILLS_ENV_FILE="$tmpdir/token.env" \
+		GIT_PUSH_AS_BOT_GIT="$tmpdir/config-git" GIT_PUSH_AS_BOT_GH="$tmpdir/login-gh" \
+		REAL_PUSH_TEST_GIT="$real_git" REAL_PUSH_TEST_REPO="$real_repo" \
+		GH_ISSUE_ENV_LOG="$env_log" "$@" \
+		"$repo_root/github/scripts/git-push-as-bot" --remote fork --delete branch
+}
+assert_remote_restored() {
+	[[ "$("$real_git" -C "$real_repo" remote get-url origin)" == https://github.com/upstream/template.git ]]
+	[[ "$("$real_git" -C "$real_repo" config remote.fork.url)" == git@github.com:owner/repo.git ]]
+}
+: >"$env_log"
+run_config_push
+assert_remote_restored
+if run_config_push FAKE_PUSH_EXIT=17; then
+	echo "error: helper hid failed named-remote push" >&2
+	exit 1
+fi
+assert_remote_restored
+for config_guard in pushurl rewrite; do
+	expected_stored_url=git@github.com:owner/repo.git
+	if [[ "$config_guard" == pushurl ]]; then
+		"$real_git" -C "$real_repo" config remote.fork.pushurl git@github.com:owner/repo.git
+	else
+		expected_stored_url=https://github.com/owner/repo.git
+		"$real_git" -C "$real_repo" remote set-url fork "$expected_stored_url"
+		"$real_git" -C "$real_repo" config url.git@github.com:.insteadOf https://github.com/
+	fi
+	: >"$env_log"
+	if run_config_push 2>"$stderr_log"; then
+		echo "error: helper accepted $config_guard" >&2
+		exit 1
+	fi
+	grep -q 'refusing to push without the automation token' "$stderr_log"
+	[[ ! -s "$env_log" ]]
+	[[ "$("$real_git" -C "$real_repo" config remote.fork.url)" == "$expected_stored_url" ]]
+	if [[ "$config_guard" == pushurl ]]; then
+		"$real_git" -C "$real_repo" config --unset remote.fork.pushurl
+	else
+		"$real_git" -C "$real_repo" config --unset url.git@github.com:.insteadOf
+	fi
+	"$real_git" -C "$real_repo" remote set-url fork git@github.com:owner/repo.git
+	assert_remote_restored
+done
+# Missing or multiply configured remotes fail before mutating config or pushing.
+"$real_git" -C "$real_repo" remote remove fork
+: >"$env_log"
+if run_config_push 2>"$stderr_log"; then
+	echo "error: helper accepted an unconfigured named remote" >&2
+	exit 1
+fi
+grep -q "no configured URL for remote 'fork'" "$stderr_log"
+[[ ! -s "$env_log" ]]
+"$real_git" -C "$real_repo" remote add fork git@github.com:owner/repo.git
+"$real_git" -C "$real_repo" remote set-url --add fork https://github.com/owner/another.git
+before_urls=$("$real_git" -C "$real_repo" config --get-all remote.fork.url)
+if run_config_push 2>"$stderr_log"; then
+	echo "error: helper accepted multiple stored URLs" >&2
+	exit 1
+fi
+grep -q 'exactly one stored URL' "$stderr_log"
+[[ "$("$real_git" -C "$real_repo" config --get-all remote.fork.url)" == "$before_urls" ]]
+[[ ! -s "$env_log" ]]
 refused_push_args=(-u origin branch)
 printf 'GITHUB_APP_ID=1\nCODEX_GITHUB_TOKEN=codex-token\n' >"$tmpdir/partial-app.env"
 assert_push_refused 'incomplete GitHub App configuration' \
