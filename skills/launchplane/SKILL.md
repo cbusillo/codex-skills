@@ -679,7 +679,8 @@ operation map rather than adding duplicate literals.
 The merge-train policy import, repository inventory, product expected configuration,
 generic-web deploy-recovery, Odoo addon-settings, integration-allowances,
 testing-hold, product-repository-identity, product-environment-read,
-product-activity-read, product-profile-read, path-check, preview-history-read,
+product-activity-read, protected-artifacts-read, product-profile-read, path-check,
+preview-history-read,
 reconcile-requests-read, product-secret-bindings-read,
 target-replacement-operation-read, target-replacement-plan-read, `product-owner-*`,
 `product-image-repository-*`, `dokploy-target-create-compose-*`,
@@ -960,7 +961,7 @@ verification.
   product-config intent preflight, private local product-config dry-run/apply,
   guarded merge-train policy
   import, repository inventory read/dry-run/apply, product environment,
-  activity, preview, reconcile and secret-binding metadata reads, Odoo
+  activity, protected-artifact, preview, reconcile and secret-binding metadata reads, Odoo
   target-replacement operation and plan reads, Client, image repository,
   Dokploy compose target, production backup authority and private health
   endpoint dry-run/apply with read-back, product promotion status and dry-run, and
@@ -1028,6 +1029,14 @@ verification.
   runtime identity with its deployment record id, health status, and recent
   deployment, promotion and backup-gate events with their record ids. Settings,
   secrets, actions, URLs and provider target names are dropped.
+- `GET /v1/artifacts/protected`: Bounded local-extension read
+  (`protected-artifacts-read --product P [--context C]`) of protected artifacts:
+  per-entry reason, context, instance, artifact id, source record type and id,
+  and image digest. It returns sanitized warning texts, total entry and warning
+  counts, and truncation flags. Image reference lists, URLs and other provider fields are
+  dropped. Artifact ids may themselves be image references; credential-bearing
+  registry userinfo is refused. Use this diagnostic projection to explain retention; truncated
+  output is not a complete retention set for registry cleanup.
 - `GET /v1/product-profiles/{product}`: Bounded local-extension read
   (`product-profile-read --product`) for who a product's Client is and its
   `production_use`: `prelaunch` skips Client release review, while `live` and
