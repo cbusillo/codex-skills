@@ -36,6 +36,7 @@ fi
 gh_command=${GH_WITH_ENV_TOKEN_GH:-gh}
 print_auth_account=0
 check_auth=0
+write_actor_repository=
 require_automation_auth=0
 require_automation_auth_from_process=0
 stdout_file=$(mktemp)
@@ -71,6 +72,14 @@ while [ "$#" -gt 0 ]; do
 	--check)
 		check_auth=1
 		shift
+		;;
+	--write-actor-for)
+		if [ "$#" -lt 2 ] || [ -z "${2:-}" ] || [ -n "$write_actor_repository" ]; then
+			echo "error: --write-actor-for requires one OWNER/REPO" >&2
+			exit 2
+		fi
+		write_actor_repository=$2
+		shift 2
 		;;
 	--require-automation-auth)
 		require_automation_auth=1
@@ -777,7 +786,10 @@ repository_from_reference() {
 app_auth_for_command() {
 	target_repo=$(target_repository "$@")
 	require_installation=
-	if [ -n "$target_repo" ] && is_write_command "$@"; then
+	if [ -n "$write_actor_repository" ]; then
+		target_repo=$write_actor_repository
+		require_installation=1
+	elif [ -n "$target_repo" ] && is_write_command "$@"; then
 		require_installation=1
 	fi
 	set -- app-auth
@@ -794,6 +806,26 @@ app_auth_for_command() {
 	fi
 }
 
+# Resolve the same repository identity as a write, but delegate only a GET
+# actor probe. Comment selection must know the writer before reading authors.
+if [ -n "$write_actor_repository" ]; then
+	case "$write_actor_repository" in
+	*[!a-zA-Z0-9_./-]* | */*/* | /* | */ | ./* | ../* | */. | */..)
+		echo "error: --write-actor-for requires OWNER/REPO" >&2
+		exit 2
+		;;
+	*/*) ;;
+	*)
+		echo "error: --write-actor-for requires OWNER/REPO" >&2
+		exit 2
+		;;
+	esac
+	if ! is_actor_probe "$@"; then
+		echo "error: --write-actor-for accepts only a GET /user actor probe" >&2
+		exit 2
+	fi
+fi
+
 # github_identity.CONTRIBUTOR_EXIT_STATUS: the App is not installed on the
 # target repository and the account that registered it does not own it.
 contributor_exit_status=3
@@ -808,11 +840,11 @@ act_as_own_user() {
 		return 2
 	fi
 	if [ "$require_automation_auth" -eq 1 ]; then
-		echo "error: $own_user_repository is not the automation's repository and this command requires configured automation authentication; refusing to act as your own GitHub user" >&2
+		echo "error: permission denied: $own_user_repository is not the automation's repository and this command requires configured automation authentication; refusing to act as your own GitHub user" >&2
 		return 1
 	fi
 	if [ "$own_user_opt_in" -ne 1 ]; then
-		echo "error: the GitHub App is not installed on $own_user_repository and another account owns it; writing there as your own GitHub user needs your Director's approval and GH_WITH_ENV_TOKEN_OWN_USER=1 on this command" >&2
+		echo "error: permission denied: the GitHub App is not installed on $own_user_repository and another account owns it; writing there as your own GitHub user needs your Director's approval and GH_WITH_ENV_TOKEN_OWN_USER=1 on this command" >&2
 		return 1
 	fi
 	own_login=$(active_auth_login)
@@ -844,7 +876,7 @@ if [ "$app_variable_count" -gt 0 ]; then
 	app_auth_status=0
 	app_auth_output=$(app_auth_for_command "$@") || app_auth_status=$?
 	if [ "$app_auth_status" -eq "$contributor_exit_status" ]; then
-		act_as_own_user "$(target_repository "$@")" "$@"
+		act_as_own_user "${write_actor_repository:-$(target_repository "$@")}" "$@"
 		exit $?
 	fi
 	if [ "$app_auth_status" -ne 0 ]; then

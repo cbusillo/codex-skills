@@ -7,10 +7,12 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Callable
 
 
 SCRIPT = Path(__file__).with_name("gh-with-env-token")
@@ -414,6 +416,166 @@ def test_app_actor_probe_synthesizes_include_response_without_user_endpoint() ->
         assert direct.stdout == '{"login":"catalog-app[bot]","type":"Bot"}\n'
 
 
+def test_write_actor_probe_preserves_repository_authorization() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        env_file = root / "local.env"
+        env_file.write_text(
+            "GITHUB_APP_ID=12345\nGITHUB_APP_INSTALLATION_ID=67890\n"
+            "GITHUB_APP_PRIVATE_KEY_PATH=/fake/app.pem\nCODEX_AUTOMATION_LOGIN='catalog-app[bot]'\n"
+        )
+        identity = root / "identity.py"
+        write(identity,
+              "import sys\n"
+              "repo = sys.argv[sys.argv.index('--repo') + 1] if '--repo' in sys.argv else ''\n"
+              "if '--require-installation' in sys.argv and repo == 'director/catalog':\n"
+              "    raise SystemExit(3)\n"
+              "if '--require-installation' in sys.argv and repo == 'registrar/missing':\n"
+              "    print('refused missing installation in registering account', file=sys.stderr)\n"
+              "    raise SystemExit(4)\n"
+              "print('catalog-app[bot]')\nprint('installation-token')\n")
+        unused = root / "unused.py"
+        write(unused, "raise AssertionError('must not delegate a write or App /user probe')\n")
+        fake_gh = root / "gh"
+        write(fake_gh,
+              "#!/bin/sh\n"
+              "[ -z \"${GH_TOKEN:-}${GITHUB_TOKEN:-}${CODEX_GITHUB_TOKEN:-}\" ] || exit 42\n"
+              "case \"$*\" in\n"
+              "'api user --jq .login') echo contributor-login ;;\n"
+              "'api --include /user --method GET') printf 'HTTP/2.0 200\\r\\n\\r\\n{\"login\":\"contributor-login\"}\\n' ;;\n"
+              "*) exit 43 ;;\nesac\n")
+        args = ("--write-actor-for", "director/catalog", "api", "--include", "/user", "--method", "GET")
+        result = run_wrapper(env_file, unused, identity, *args, gh_command=fake_gh,
+                             extra_env={"GH_WITH_ENV_TOKEN_OWN_USER": "1", "GH_TOKEN": "ambient-token"})
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout.split("\n\n", 1)[1])["login"] == "contributor-login", result.stdout
+        assert "acting as your own GitHub user on director/catalog" in result.stderr
+        for opt_in, diagnostic in (
+            ({}, "GH_WITH_ENV_TOKEN_OWN_USER=1"),
+            ({"GH_WITH_ENV_TOKEN_OWN_USER": "1", "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "1"},
+             "requires configured automation authentication"),
+        ):
+            refused = run_wrapper(env_file, unused, identity, *args, gh_command=unused, extra_env=opt_in)
+            assert refused.returncode != 0 and not refused.stdout, refused
+            assert diagnostic in refused.stderr, refused.stderr
+        for repo, exit_code in (("installed/catalog", 0), ("registrar/missing", 4)):
+            result = run_wrapper(env_file, unused, identity, "--write-actor-for", repo, *args[2:],
+                                 gh_command=unused, extra_env={"GH_WITH_ENV_TOKEN_OWN_USER": "1"})
+            assert result.returncode == exit_code, result.stderr
+            if exit_code == 0:
+                assert json.loads(result.stdout.split("\n\n", 1)[1])["login"] == "catalog-app[bot]", result.stdout
+                assert "acting as your own" not in result.stderr
+
+
+def test_write_actor_probe_rejects_non_probe_commands_before_authentication() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        unused = root / "unused.py"
+        write(unused, "raise AssertionError('invalid probe must fail before any authentication or command')\n")
+        for args in (
+            ("--write-actor-for",),
+            ("--write-actor-for", "", "api", "/user"),
+            ("--write-actor-for", "invalid", "api", "/user"),
+            ("--write-actor-for", "director/catalog", "api", "/user", "--method", "POST"),
+            ("--write-actor-for", "director/catalog", "issue", "comment", "42", "--body", "x"),
+            ("--write-actor-for", "director/catalog", "api", "/repos/director/catalog"),
+        ):
+            result = run_wrapper(root / "missing.env", unused, unused, *args, gh_command=unused)
+            assert result.returncode == 2 and not result.stdout, result
+
+
+def test_comment_cli_selects_own_user_through_real_wrapper() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        env_file = root / "local.env"
+        env_file.write_text(
+            "GITHUB_APP_ID=12345\nGITHUB_APP_INSTALLATION_ID=67890\n"
+            "GITHUB_APP_PRIVATE_KEY_PATH=/fake/app.pem\nCODEX_AUTOMATION_LOGIN='catalog-app[bot]'\n"
+        )
+        identity = root / "identity.py"
+        write(identity, "import os, sys\n"
+              "with open(os.environ['FIXTURE_IDENTITY_CALLS'], 'a') as stream:\n"
+              "    stream.write('lookup\\n')\n"
+              "if '--require-installation' in sys.argv:\n    raise SystemExit(3)\n"
+              "print('catalog-app[bot]')\nprint('installation-token')\n")
+        fake_gh = root / "gh"
+        write(fake_gh, f"#!{sys.executable}\n"
+              "import json, os, sys\n"
+              "args = sys.argv[1:]\n"
+              "if args == ['api', 'user', '--jq', '.login']:\n"
+              "    assert not os.environ.get('GH_TOKEN')\n"
+              "    print('contributor-login')\n    raise SystemExit()\n"
+              "method = args[args.index('--method') + 1]\n"
+              "path = next(arg for arg in args if arg.startswith('/'))\n"
+              "with open(os.environ['FIXTURE_CALLS'], 'a') as stream:\n"
+              "    stream.write(json.dumps([method, path]) + '\\n')\n"
+              "item = {'id': 20, 'user': {'login': 'contributor-login'}, 'body': 'replacement',\n"
+              "'html_url': 'https://github.com/director/catalog/issues/42#issuecomment-20',\n"
+              "'issue_url': 'https://api.github.com/repos/director/catalog/issues/42'}\n"
+              "if path == '/user':\n"
+              "    assert not os.environ.get('GH_TOKEN')\n"
+              "    result = {'login': 'contributor-login'}\n"
+              "elif method == 'GET' and '/issues/42/comments?' in path:\n"
+              "    assert os.environ.get('GH_TOKEN') == 'installation-token'\n"
+              "    result = [dict(item, id=30, user={'login': 'catalog-app[bot]'}), item]\n"
+              "elif method == 'GET':\n    result = item\n"
+              "else:\n"
+              "    assert method == 'PATCH' and path.endswith('/comments/20')\n"
+              "    assert not os.environ.get('GH_TOKEN')\n"
+              "    assert json.load(sys.stdin)['body'] == 'replacement'\n"
+              "    result = item\n"
+              "print('HTTP/2.0 200\\r\\n' + 'content-type: application/json\\r\\n\\r\\n' + json.dumps(result))\n")
+        body_file = root / "body.md"
+        body_file.write_text("replacement")
+        calls_file = root / "calls.jsonl"
+        env = {
+            "PATH": os.environ["PATH"], "HOME": directory,
+            "CODEX_SKILLS_ENV_FILE": str(env_file),
+            "GH_WITH_ENV_TOKEN_IDENTITY_HELPER": str(identity),
+            "GH_WITH_ENV_TOKEN_PYTHON": sys.executable,
+            "GH_WITH_ENV_TOKEN_GH": str(fake_gh),
+            "GH_WITH_ENV_TOKEN_OWN_USER": "1", "FIXTURE_CALLS": str(calls_file),
+            "GH_COMMENT_GH": str(SCRIPT),
+            "GITHUB_RETRY_STATE_DIR": str(root / "retry-state"),
+            "FIXTURE_IDENTITY_CALLS": str(root / "identity-calls.log"),
+        }
+        for options in (("--edit-last", "--create-if-none"), ("--edit-comment", "20")):
+            calls_file.write_text("")
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT.with_name("github_comment.py")), "issue", "42",
+                 "--repo", "director/catalog", "--body-file", str(body_file), *options],
+                env=env, text=True, capture_output=True, timeout=10, check=False,
+            )
+            assert result.returncode == 0, (result.stdout, result.stderr)
+            payload = json.loads(result.stdout)
+            assert payload["actor"] == payload["expected_actor"] == "contributor-login", payload
+            assert payload["comment"]["id"] == 20, payload
+            calls = [json.loads(line) for line in calls_file.read_text().splitlines()]
+            assert calls[-1] == ["PATCH", "/repos/director/catalog/issues/comments/20"], calls
+            assert not any(method == "POST" for method, _path in calls), calls
+        for refusal in ({"GH_WITH_ENV_TOKEN_OWN_USER": "0"},
+                        {"GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "1"}):
+            identity_calls = root / "identity-calls.log"
+            identity_calls.write_text("")
+            calls_file.write_text("")
+            refused_env = {**env, **refusal, "GITHUB_RETRY_MAX_ATTEMPTS": "2",
+                           "GITHUB_RETRY_MAX_WAIT_SECONDS": "5"}
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT.with_name("github_comment.py")), "issue", "42",
+                 "--repo", "director/catalog", "--body-file", str(body_file), "--edit-last"],
+                env=refused_env, text=True, capture_output=True, timeout=10, check=False,
+            )
+            assert result.returncode != 0, result.stdout
+            payload = json.loads(result.stdout)
+            assert payload["error_code"] == "permission_denied", payload
+            assert payload["retry_eligible"] is False, payload
+            assert payload["retryable"] is False, payload
+            assert payload["write_outcome"] == "not_started", payload
+            assert payload["attempts"] == 1, payload
+            assert identity_calls.read_text().splitlines() == ["lookup"], identity_calls.read_text()
+            assert calls_file.read_text() == "", calls_file.read_text()
+
+
 def test_app_login_mismatch_fails_closed_for_write_and_check() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -528,8 +690,11 @@ def test_app_actor_probe_does_not_fabricate_other_paths_or_writes() -> None:
 
 
 def main() -> None:
-    tests = [
+    tests: list[Callable[[], None]] = [
         test_check_reports_app_identity_and_source,
+        test_write_actor_probe_preserves_repository_authorization,
+        test_write_actor_probe_rejects_non_probe_commands_before_authentication,
+        test_comment_cli_selects_own_user_through_real_wrapper,
         test_check_preserves_user_token_fallback_when_app_is_absent,
         test_no_token_check_fails_explicitly_without_running_gh,
         test_check_rejects_commands_before_active_auth_fallback,
