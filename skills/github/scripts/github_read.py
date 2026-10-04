@@ -15,12 +15,11 @@ import os
 import pathlib
 import re
 import subprocess
-import sys
 import tempfile
 import time
 import urllib.parse
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import Any, NoReturn, Optional
 
 import github_api as github_api_core
 import github_identity
@@ -420,7 +419,7 @@ class GitHubReader:
 
         return items if limit is None else items[:limit]
 
-    def invalid_response(self, component: str, message: str) -> None:
+    def invalid_response(self, component: str, message: str) -> NoReturn:
         self.mark_degraded(component, "invalid_response", message)
         raise GitHubReadShapeError(message)
 
@@ -527,7 +526,7 @@ def path_with_query(path: str, params: dict[str, Any]) -> str:
 
 
 def replace_query_params(path: str, params: dict[str, Any]) -> str:
-    parsed = urllib.parse.urlsplit(path)
+    parsed = urllib.parse.urlsplit(path, scheme="")
     replacements = {str(key): str(value) for key, value in params.items()}
     query = [
         (key, value)
