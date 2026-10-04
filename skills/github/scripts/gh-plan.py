@@ -2046,7 +2046,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         issue, status, comments, can_update = claim_snapshot(args.issue, repo)
         previous_status = status
         check_agent(issue)
-        conflicts, owned = github_plan_claim.discussion_evidence(status, comments, claim)
+        conflicts, owned = github_plan_claim.discussion_evidence(status, comments, claim, resume_from=args.resume_from)
         if conflicts:
             refuse(conflicts)
         check_wait(issue, status)
@@ -2095,7 +2095,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         # Check the discussion again before touching status or labels.
         issue, status, comments, can_update = claim_snapshot(args.issue, repo)
         check_agent(issue)
-        conflicts, observed = github_plan_claim.discussion_evidence(status, comments, claim)
+        conflicts, observed = github_plan_claim.discussion_evidence(status, comments, claim, resume_from=args.resume_from)
         if conflicts:
             refuse(conflicts)
         check_wait(issue, status)
@@ -2124,7 +2124,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         actor = label_result.get("actor") or actor
         final, final_status, final_comments, _ = claim_snapshot(args.issue, repo)
         check_agent(final)
-        conflicts, observed = github_plan_claim.discussion_evidence(final_status, final_comments, claim)
+        conflicts, observed = github_plan_claim.discussion_evidence(final_status, final_comments, claim, resume_from=args.resume_from)
         if conflicts:
             refuse(conflicts)
         refresh_preflight(final_comments)

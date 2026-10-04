@@ -794,6 +794,73 @@ class ClaimTests(unittest.TestCase):
         self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": OTHER["branch"]}]
         self.run_claim()
 
+    def released_status_fixture(self, release="Released claim 1"):
+        self.args.resume_from = 1
+        self.comments = [
+            {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT},
+             "created_at": OTHER["claimed_at"]},
+            {"id": 2, "body": release, "user": {"login": TEST_BOT},
+             "created_at": "2026-10-01T00:01:00Z"},
+        ]
+        self.issue["body"] += (
+            f"State: Active; owned by {OTHER['worker']}.\nSession: {OTHER['session']}\n"
+            f"Branch: {OTHER['branch']}\n" + CLAIM.marker(OTHER)
+        )
+        self.inventory["local_branches"] = [OTHER["branch"]]
+        self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": OTHER["branch"]}]
+
+    def test_resume_replaces_exact_released_status_and_posts_successor_claim(self):
+        for release in ("Released claim 1", "Released claim 1. Source work landed."):
+            with self.subTest(release=release):
+                self.setUp()
+                self.released_status_fixture(release)
+                previous = PLAN.read_plan_sections(self.issue)[0]["Current Status"]
+                self.run_claim()
+                output = self.emitted.call_args.args[0]
+                self.assertEqual(output["previous_current_status"], previous)
+                self.assertEqual(CLAIM.records(self.issue["body"]), [output["claim"]])
+                self.assertIn("metadata_readback", output["completed_steps"])
+                self.assertEqual(len(self.comments), 3)
+
+    def test_resume_preserves_unproven_or_competing_status_and_artifacts(self):
+        for change in ("no_resume", "wrong_author", "wrong_id", "id_suffix", "before_marker",
+                       "missing_time", "edited_source", "different_marker", "extra_status",
+                       "extra_comment", "other_branch", "live_peer"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.released_status_fixture()
+                if change == "no_resume": self.args.resume_from = None
+                if change == "wrong_author": self.comments[1]["user"]["login"] = "someone-else"
+                if change == "wrong_id": self.comments[1]["body"] = "Released claim 11"
+                if change == "id_suffix": self.comments[1]["body"] = "Released claim 1.other"
+                if change == "before_marker": self.comments[1]["created_at"] = "2026-09-30T00:00:00Z"
+                if change == "missing_time": del self.comments[1]["created_at"]
+                if change == "edited_source": self.comments[0]["updated_at"] = "2026-10-01T00:02:00Z"
+                if change == "different_marker":
+                    self.issue["body"] = self.issue["body"].replace(CLAIM.marker(OTHER), CLAIM.marker({**OTHER, "session": "new-session"}))
+                if change == "extra_status": self.issue["body"] += "\nOwned by another-worker\nSession: another-session"
+                if change == "extra_comment": self.compete({**OTHER, "session": "new-session"})
+                if change == "other_branch": self.inventory["local_branches"].append("work/other-issue-42")
+                if change == "live_peer": self.inventory["sessions"] = [{"sessionId": "peer", "cwd": "/retained/issue-42"}]
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_resume_readback_refuses_new_status_owner_after_post(self):
+        self.released_status_fixture()
+        self.after_post = lambda: self.issue.update(body=self.issue["body"] + "\n" + CLAIM.marker({**OTHER, "session": "peer"}))
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+        self.assertIn("post", self.events)
+        self.assertNotIn("status", self.events)
+
+    def test_period_release_works_without_status_and_with_refresh_handoff(self):
+        self.comments = [{"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
+                         {"id": 2, "body": "Released claim 1. Work finished.", "user": {"login": TEST_BOT}}]
+        self.run_claim()
+        self.setUp()
+        self.refresh_fixture()
+        self.comments[2]["body"] = "Released claim 1.\nHandoff: PR #99 and #100."
+        self.run_claim()
+
     def test_resume_cannot_override_current_owner(self):
         self.comments = [{"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": "bot"}}]
         self.args.resume_from = 1

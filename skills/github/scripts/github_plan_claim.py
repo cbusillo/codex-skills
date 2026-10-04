@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import json
 import pathlib
 import re
@@ -62,17 +63,62 @@ def same_owner(record: dict[str, str], claim: dict[str, str]) -> bool:
             and record.get("refresh_pr") == claim.get("refresh_pr"))
 
 
+def released_claim_id(text: str) -> int | None:
+    """Read an exact first-line release, including a sentence-ending period."""
+    match = re.match(r"Released claim (\d+)(?:\.(?=\s|$)|\s|$)", text)
+    return int(match.group(1)) if match else None
+
+
+def resumed_status(status: str, comments: list[dict[str, Any]], source_id: int | None) -> str:
+    """Discard only an exact status marker superseded by its author's release."""
+    if source_id is None:
+        return status
+    source = next((c for c in comments if c.get("id") == source_id), None)
+    if source is None:
+        return status
+    source_records = records(source.get("body") or "")
+    if len(source_records) != 1 or source_records[0] not in records(status):
+        return status
+    record = source_records[0]
+    author = (source.get("user") or {}).get("login")
+    if not author:
+        return status
+    for release in comments[comments.index(source) + 1:]:
+        if ((release.get("user") or {}).get("login") != author
+                or released_claim_id(release.get("body") or "") != source_id):
+            continue
+        try:
+            released_at = datetime.fromisoformat(release["created_at"])
+            marker_at = datetime.fromisoformat(record["claimed_at"])
+            source_at = datetime.fromisoformat(source.get("updated_at") or source["created_at"])
+            if released_at <= max(marker_at, source_at):
+                continue
+        except (KeyError, ValueError, TypeError):
+            continue
+        # Remove the marker and only its own identity assertions. Remaining
+        # markers and unstructured ownership still go through the normal scan.
+        status = "\n".join(line for line in status.splitlines()
+                           if records(line) != [record])
+        status = re.sub(rf"(?i)\b(?:owned|claimed) by {re.escape(record['worker'])}(?![\w-])", "", status)
+        for field, key in (("Worker", "worker"), ("Session", "session")):
+            status = re.sub(rf"(?im)^\s*{field}:\s*{re.escape(record[key])}\.?\s*$", "", status)
+        return status
+    return status
+
+
 def references_issue(text: str, number: int) -> bool:
     return bool(re.search(rf"(?i)(?:\bissue[-_ /#]?|\bgo[-_ ]?|\bagy[-_]|#|/issues/){number}(?!\d)", text)
                 or re.search(rf"(?:^|/){number}[-_]", text))
 
 
 def discussion_evidence(
-    status: str, comments: list[dict[str, Any]], claim: dict[str, str]
+    status: str, comments: list[dict[str, Any]], claim: dict[str, str], *, resume_from: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     """Old claims remain ambiguous until explicitly released; age is never a lease."""
     conflicts: list[dict[str, Any]] = []
     owned = []
+    original_status = status
+    status = resumed_status(status, comments, resume_from)
     status_records = records(status)
     for record in status_records:
         if same_owner(record, claim):
@@ -92,7 +138,7 @@ def discussion_evidence(
         "",
         status,
     )
-    if not status_records and re.search(
+    if (not status_records or status != original_status) and re.search(
         r"(?im)owned by|claimed by|\bworker\s*:|\bsession\s*:",
         ownership_status,
     ):
@@ -113,10 +159,10 @@ def discussion_evidence(
             # A reused token cannot release a different native session.
             if len(prior_sessions) <= 1:
                 released[worker, author] = index
-        match_id = re.match(r"Released claim (\d+)(?:\s|$)", comment.get("body") or "")
-        if match_id:
+        release_id = released_claim_id(comment.get("body") or "")
+        if release_id is not None:
             author = (comment.get("user") or {}).get("login", "")
-            released_ids[int(match_id.group(1)), author] = index
+            released_ids[release_id, author] = index
     for index, comment in enumerate(comments):
         text = comment.get("body") or ""
         parsed = records(text)
@@ -202,7 +248,8 @@ def retained_branch(comments: list[dict[str, Any]], comment_id: int) -> str:
         if (comment.get("user") or {}).get("login") != author:
             continue
         first = (comment.get("body") or "").splitlines()[0:1]
-        if first in ([f"Released claim {comment_id}"], [f"Released by {parsed[0]['worker']}"]):
+        if (released_claim_id(comment.get("body") or "") == comment_id
+                or first == [f"Released by {parsed[0]['worker']}"]):
             return parsed[0]["branch"]
     raise ValueError("Resume source claim has not been released by its author")
 
@@ -230,7 +277,7 @@ def refresh_handoff(
     source_index, handoff_index = comments.index(source), comments.index(handoff)
     if handoff_index <= source_index or not any(
         (c.get("user") or {}).get("login") == author
-        and (c.get("body") or "").splitlines()[:1] == [f"Released claim {source_id}"]
+        and released_claim_id(c.get("body") or "") == source_id
         for c in comments[source_index + 1:handoff_index + 1]
     ):
         raise ValueError("Refresh requires an exact source-claim release before or in the handoff")
@@ -241,7 +288,7 @@ def refresh_handoff(
                   and re.search(rf"\bclaim {source_id}(?!\d)", handoff_text)
                   and re.search(rf"(?<![\w-]){re.escape(source_record['session'])}(?![\w-])", handoff_text)
                   and not records(handoff_text))
-    if not (handoff_text.splitlines()[:1] == [f"Released claim {source_id}"] or standalone):
+    if not (released_claim_id(handoff_text) == source_id or standalone):
         raise ValueError("Refresh handoff must identify the exact released source claim")
     empty = {"local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}
     permitted = {source_branch}
