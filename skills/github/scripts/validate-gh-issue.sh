@@ -637,7 +637,9 @@ for override in --repo=https://github.com/other/repo.git --repo=origin; do
 	assert_push_refused '--repo overrides' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
 done
 refused_push_args=(-u --remote fork branch)
-assert_push_refused 'put --remote NAME first' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
+assert_push_refused 'use --remote NAME as the first two arguments' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
+refused_push_args=(--remote=fork -u branch)
+assert_push_refused 'use --remote NAME as the first two arguments' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
 refused_push_args=(--remote)
 assert_push_refused 'requires a configured remote name' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
 refused_push_args=(--remote https://github.com/owner/repo.git branch)
@@ -703,6 +705,25 @@ for config_guard in pushurl rewrite; do
 	"$real_git" -C "$real_repo" remote set-url fork git@github.com:owner/repo.git
 	assert_remote_restored
 done
+# Missing or multiply configured remotes fail before mutating config or pushing.
+"$real_git" -C "$real_repo" remote remove fork
+: >"$env_log"
+if run_config_push 2>"$stderr_log"; then
+	echo "error: helper accepted an unconfigured named remote" >&2
+	exit 1
+fi
+grep -q "no configured URL for remote 'fork'" "$stderr_log"
+[[ ! -s "$env_log" ]]
+"$real_git" -C "$real_repo" remote add fork git@github.com:owner/repo.git
+"$real_git" -C "$real_repo" remote set-url --add fork https://github.com/owner/another.git
+before_urls=$("$real_git" -C "$real_repo" config --get-all remote.fork.url)
+if run_config_push 2>"$stderr_log"; then
+	echo "error: helper accepted multiple stored URLs" >&2
+	exit 1
+fi
+grep -q 'exactly one stored URL' "$stderr_log"
+[[ "$("$real_git" -C "$real_repo" config --get-all remote.fork.url)" == "$before_urls" ]]
+[[ ! -s "$env_log" ]]
 refused_push_args=(-u origin branch)
 printf 'GITHUB_APP_ID=1\nCODEX_GITHUB_TOKEN=codex-token\n' >"$tmpdir/partial-app.env"
 assert_push_refused 'incomplete GitHub App configuration' \

@@ -57,7 +57,7 @@ for argument in "$@"; do
 	fi
 	case $argument in
 	--remote | --remote=*)
-		echo "error: put --remote NAME first, followed by push options and refspecs" >&2
+		echo "error: use --remote NAME as the first two arguments, followed by push options and refspecs" >&2
 		exit 1 ;;
 	--repo | --repo=*)
 		echo "error: --repo overrides are unsupported; use --remote NAME" >&2
@@ -91,7 +91,10 @@ same_login() {
 }
 
 # get-url expands insteadOf rules. Restore the stored value, not that expansion.
-stored_remote_url=$("$git_bin" config --get-all "remote.$selected_remote.url")
+if ! stored_remote_url=$("$git_bin" config --get-all "remote.$selected_remote.url"); then
+	echo "error: no configured URL for remote '$selected_remote'; check git remote -v" >&2
+	exit 1
+fi
 case "$stored_remote_url" in
 '' | *'
 '*)
