@@ -414,7 +414,9 @@ Current Status and post `Released claim <claim-comment-id>` through the same bot
 identity. Release affects that exact comment, not another worker's
 record or retained branch/worktree evidence; those still need ordinary
 ownership and preservation review.
-The first release line may end its exact ID with a period and handoff prose.
+The first release line is exactly `Released claim <id>`, or ends its exact ID
+with a period followed by optional handoff prose. Conditional prose after a
+bare ID does not release ownership.
 
 Use a unique worker token per native session. Legacy `Released by <worker>`
 comments are accepted only when the earlier structured claims for that token
@@ -427,7 +429,9 @@ worker line and worker/session fields are accepted when the source author's
 exact-ID release is newer than both
 the marker's claimed-at time and the source comment's last edit. Missing or
 invalid timestamps remain uncertain ownership. The successor claim replaces
-that stale status on normal readback; the original status remains quoted in
+automation-managed stale status on normal readback; contributor-owned status
+stays intact, with the successor's claim in a comment. Unstructured ownership
+outside the helper-generated fields still refuses. The original status remains quoted in
 the successor's claim comment. Only the exact retained branch, worktree, and
 PR evidence is accepted; other Current Status ownership, unreleased comments,
 other artifacts, and visible peer sessions still refuse. Records on another issue must use that

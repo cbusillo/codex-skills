@@ -65,7 +65,8 @@ def same_owner(record: dict[str, str], claim: dict[str, str]) -> bool:
 
 def released_claim_id(text: str) -> int | None:
     """Read an exact first-line release, including a sentence-ending period."""
-    match = re.match(r"Released claim (\d+)(?:\.(?=\s|$)|\s|$)", text)
+    first = text.splitlines()[:1]
+    match = re.fullmatch(r"Released claim (\d+)(?:\.(?:\s.*)?|[ \t]*)", first[0]) if first else None
     return int(match.group(1)) if match else None
 
 

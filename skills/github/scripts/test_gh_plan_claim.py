@@ -823,9 +823,9 @@ class ClaimTests(unittest.TestCase):
                 self.assertEqual(len(self.comments), 3)
 
     def test_resume_preserves_unproven_or_competing_status_and_artifacts(self):
-        for change in ("no_resume", "wrong_author", "wrong_id", "id_suffix", "before_marker",
+        for change in ("no_resume", "wrong_author", "wrong_id", "id_suffix", "conditional_release", "before_marker", "same_time",
                        "missing_time", "naive_time", "edited_source", "different_marker", "extra_status",
-                       "worker_prefix", "reused_inline_worker", "extra_comment", "other_branch", "live_peer"):
+                       "worker_prefix", "state_worker_prefix", "reused_inline_worker", "extra_comment", "other_branch", "live_peer"):
             with self.subTest(change=change):
                 self.setUp()
                 self.released_status_fixture()
@@ -833,7 +833,9 @@ class ClaimTests(unittest.TestCase):
                 if change == "wrong_author": self.comments[1]["user"]["login"] = "someone-else"
                 if change == "wrong_id": self.comments[1]["body"] = "Released claim 11"
                 if change == "id_suffix": self.comments[1]["body"] = "Released claim 1.other"
+                if change == "conditional_release": self.comments[1]["body"] = "Released claim 1 once PR #99 merges"
                 if change == "before_marker": self.comments[1]["created_at"] = "2026-09-30T00:00:00Z"
+                if change == "same_time": self.comments[1]["created_at"] = OTHER["claimed_at"]
                 if change == "missing_time": del self.comments[1]["created_at"]
                 if change == "naive_time": self.comments[1]["created_at"] = "2026-10-01T00:01:00"
                 if change == "edited_source": self.comments[0]["updated_at"] = "2026-10-01T00:02:00Z"
@@ -841,6 +843,7 @@ class ClaimTests(unittest.TestCase):
                     self.issue["body"] = self.issue["body"].replace(CLAIM.marker(OTHER), CLAIM.marker({**OTHER, "session": "new-session"}))
                 if change == "extra_status": self.issue["body"] += "\nOwned by another-worker\nSession: another-session"
                 if change == "worker_prefix": self.issue["body"] += "\nOwned by trial-b.review"
+                if change == "state_worker_prefix": self.issue["body"] = self.issue["body"].replace("owned by trial-b.", "owned by trial-b.review.")
                 if change == "reused_inline_worker": self.issue["body"] += "\nalso owned by trial-b (session s2)"
                 if change == "extra_comment": self.compete({**OTHER, "session": "new-session"})
                 if change == "other_branch": self.inventory["local_branches"].append("work/other-issue-42")
@@ -880,6 +883,12 @@ class ClaimTests(unittest.TestCase):
         self.refresh_fixture()
         self.comments[2]["body"] = "Released claim 1.\nHandoff: PR #99 and #100."
         self.run_claim()
+
+    def test_conditional_release_does_not_authorize_retained_branch_or_refresh(self):
+        self.refresh_fixture()
+        self.comments[2]["body"] = "Released claim 1 once PR #99 merges\nHandoff: PR #99 and #100."
+        with self.assertRaises(PLAN.PlanError): self.run_claim()
+        self.assert_no_writes()
 
     def test_resume_cannot_override_current_owner(self):
         self.comments = [{"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": "bot"}}]
