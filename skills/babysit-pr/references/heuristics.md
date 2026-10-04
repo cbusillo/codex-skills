@@ -28,7 +28,7 @@ If uncertain, inspect failed logs once before choosing rerun.
 2. If there are failed checks:
    - Diagnose first.
    - If checks are still pending but an individual job has already failed: fetch that job's logs and diagnose now.
-   - If branch-related: follow [Fixes And Pushes](../SKILL.md#fixes-and-pushes), then fix locally, commit, push.
+   - If branch-related: fix, commit, and push under [Fixes And Pushes](../SKILL.md#fixes-and-pushes).
    - If likely flaky/unrelated and all checks for the current SHA are terminal: rerun failed jobs.
    - If likely flaky/unrelated and not safely rerunnable: stop and report the blocker; do not edit unrelated tests, build scripts, CI configuration, dependency pins, or infrastructure code.
    - If checks are still pending and no failed job is available yet: wait.
