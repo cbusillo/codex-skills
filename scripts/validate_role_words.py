@@ -91,7 +91,7 @@ def prose_lines(text: str) -> Iterable[tuple[int, str]]:
             fence = ""
         if not fence or fence_quote_depth:
             line = BLOCKQUOTE.sub("", line)
-        if not fence and quote_depth != previous_quote_depth:
+        if not fence and quote_depth > previous_quote_depth:
             previous = ""
         previous_quote_depth = quote_depth
         if number == 1 and line.strip() == "---":

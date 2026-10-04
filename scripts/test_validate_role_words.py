@@ -76,6 +76,7 @@ def test_flags_blockquote_and_hyphen_wraps() -> None:
         ("> The policy\n> administrator approves.", "policy administrator"),
         ("The policy-\nadministrator approves.", "policy-administrator"),
         ("> > The POLICY-  \n> > administrators approve.", "POLICY-administrators"),
+        ("> The signed-in policy\nadministrator approves access.", "policy administrator"),
     ):
         found = module.findings(text)
         if found != [(2, expected_word)]:
@@ -92,6 +93,12 @@ def test_never_carries_prose_across_fences() -> None:
         text = f"The repository\n{fence}\ncode\n{fence}\nowner approves."
         if module.findings(text) != [(5, "owner")]:
             raise AssertionError(module.findings(text))
+    text = "> The policy\n> ```\n> code\n> ```\n> administrator approves."
+    if module.findings(text):
+        raise AssertionError(module.findings(text))
+    text = "> The repository\n> ```\n> code\n> ```\n> owner approves."
+    if module.findings(text) != [(5, "owner")]:
+        raise AssertionError(module.findings(text))
 
 
 def test_allows_wrapped_github_sense() -> None:
@@ -100,6 +107,7 @@ def test_allows_wrapped_github_sense() -> None:
         "> The repository\n> owner applies the ruleset.",
         "The repository-\nowner applies the ruleset.",
         "> The repository-\n> owner applies the ruleset.",
+        "> Ask the repository\nowner to apply the ruleset.",
     ):
         if module.findings(text):
             raise AssertionError(module.findings(text))
