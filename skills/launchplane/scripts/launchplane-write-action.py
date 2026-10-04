@@ -6853,7 +6853,7 @@ def read_dokploy_target(
         "domains": _domain_set(tracked.get("domains")),
         "healthcheck_path": str(tracked.get("healthcheck_path") or ""),
         "live_domains": live_provider.get("domains", []),
-        "live_target_id": live_provider.get("target_id"),
+        "live_target_id": live_provider.get("id"),
         "live_target_type": live_provider.get("target_type"),
         "tracked_source": {field: tracked.get(field) for field in (
             "source_type", "custom_git_url", "custom_git_branch", "compose_path",
@@ -6949,7 +6949,11 @@ def execute_verified_apply(
     except urllib.error.HTTPError as exc:
         if post_attempted and operation in DOKPLOY_COMPOSE_DOMAIN_COMMANDS and exc.code == 400:
             # The service also uses this 400 for provider failures after partial writes.
-            error = summarize_http_error(operation=operation, request=request, exc=exc)
+            try:
+                error = summarize_http_error(operation=operation, request=request, exc=exc)
+            except LaunchplaneSafetyError:
+                emit(_apply_outcome_unknown(operation=operation, request=request, label=label))
+                return 1
             if _require_dict(error["summary"]).get("error_code") == "invalid_dokploy_target_setup":
                 unknown = _apply_outcome_unknown(operation=operation, request=request, label=label)
                 _require_dict(unknown["summary"]).update({

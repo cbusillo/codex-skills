@@ -391,7 +391,9 @@ domains, and provider-reported hosts (plus HTTPS and port for reconcile).
 `read_back_matches: true` proves that record/provider read-back, not a network
 request, public TLS, upstream certificate settings or the site's runtime identity.
 Prune verification conservatively refuses to report success while any provider
-route still reports a requested host. Verify the network path separately before
+route still reports a requested host. The current inspect service omits an empty
+domains list; the helper treats that omission as no domains, relying on its
+compose inspection to enumerate provider routes. Verify the network path separately before
 cutover. Stop on `accepted_unverified` or `outcome_unknown`; inspect before any
 retry, because a route may already have changed. Apply HTTP 400
 `invalid_dokploy_target_setup` also reports `outcome_unknown`: that service code

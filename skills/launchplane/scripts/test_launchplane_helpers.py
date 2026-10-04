@@ -6874,7 +6874,7 @@ def _domain_inspect(operation: str, after: bool = False) -> dict[str, Any]:
     if operation == "prune-compose-domain" and not after or operation == "reconcile-compose-domain" and after:
         domains.append("public.example.invalid")
     response["inspect"]["tracked_target"]["domains"] = domains
-    response["inspect"]["provider"] = {"target_id": "compose-private-9", "target_type": "compose",
+    response["inspect"]["provider"] = {"id": "compose-private-9", "target_id": "compose-private-9", "target_type": "compose",
                                         "domains": [{"host": domain, "port": 8069, "https": True} for domain in domains]}
     return response
 
@@ -6939,6 +6939,16 @@ def test_compose_domain_review_apply_and_read_back() -> None:
             assert result["summary"]["error_code"] == "invalid_dokploy_target_setup"
             assert result["summary"]["trace_id"] == "launchplane_req_partial"
             assert "private.example.invalid" not in json.dumps(result)
+            malformed = urllib.error.HTTPError("https://private.invalid", 400, "private", Message(), io.BytesIO(json.dumps({
+                "trace_id": "https://private.example.invalid/token", "error": {"code": "invalid_dokploy_target_setup"},
+            }).encode()))
+            status, result, posts, _ = run(_domain_inspect(operation, True), malformed)
+            assert status == 1 and result["status"] == "outcome_unknown" and len(posts) == 1
+            assert "private.example.invalid" not in json.dumps(result)
+            changed = _domain_inspect(operation, True)
+            changed["inspect"]["provider"]["id"] = "other-compose"
+            status, result, _, _ = run(changed)
+            assert status == 1 and result["result"]["read_back_matches"] is False
             # A surviving mixed-case host or conflicting duplicate route is not verified.
             changed = _domain_inspect(operation, True)
             changed["inspect"]["provider"]["domains"].append({
