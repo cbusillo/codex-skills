@@ -35,10 +35,16 @@ def check_branch(tip: str, base: str) -> None:
                 return
             raise ValueError("branch contains a commit without the automation identity")
         first, second = parents
-        subprocess.run(["git", "merge-base", "--is-ancestor", second, base], check=True)
+        ancestry = subprocess.run(["git", "merge-base", "--is-ancestor", second, base])
+        if ancestry.returncode == 1:
+            raise ValueError("merge's second parent is outside base history")
+        ancestry.check_returncode()
         # Exit status rejects conflicts; comparing trees rejects extra edits even
         # when the merge's author or message happens to look like automation.
-        merged_tree = git("merge-tree", "--write-tree", first, second).splitlines()[0]
+        try:
+            merged_tree = git("merge-tree", "--write-tree", first, second).splitlines()[0]
+        except subprocess.CalledProcessError as exc:
+            raise ValueError("merge cannot be reproduced without conflicts") from exc
         if merged_tree != git("rev-parse", f"{current}^{{tree}}"):
             raise ValueError("merge contains changes beyond a clean base merge")
         current = first

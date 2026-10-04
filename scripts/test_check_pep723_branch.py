@@ -85,7 +85,7 @@ class BranchGuardTests(unittest.TestCase):
         self.commit_file("human.txt", "keep me", "human edit")
         self.run_git("switch", "automation")
         self.run_git("merge", "--no-ff", "human", "-m", "merge human branch")
-        with self.assertRaises(subprocess.CalledProcessError):
+        with self.assertRaisesRegex(ValueError, "outside base history"):
             check_branch("HEAD", "main")
 
     def test_rejects_conflict_resolution(self) -> None:
@@ -93,7 +93,7 @@ class BranchGuardTests(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             self.run_git("merge", "--no-ff", "main")
         self.commit_file("dependency.py", "manual resolution", "resolve conflict")
-        with self.assertRaises(subprocess.CalledProcessError):
+        with self.assertRaisesRegex(ValueError, "without conflicts"):
             check_branch("HEAD", "main")
 
     def test_rejects_missing_marker_or_wrong_author(self) -> None:

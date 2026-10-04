@@ -50,6 +50,8 @@ and requires an identical tree and no conflicts. GitHub's clean Update-branch
 merges therefore permit refresh; human commits, custom merge edits, conflict
 resolutions, and merges from outside the base history refuse replacement.
 PR ownership checks and the push's exact force-with-lease still apply.
+Different merge-engine results, including rename detection after a base
+refactor, also refuse replacement rather than discard an unproven tree.
 
 Review this policy when Python 3.12 changes upstream support phase, a new Ubuntu
 LTS runner reaches GA, repository code requires a newer uv feature, a core CLI
