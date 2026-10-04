@@ -124,7 +124,7 @@ def test_graphql_json_uses_bounded_shared_graphql_transport() -> None:
             "query($number: Int!) { repository { pullRequest(number: $number) { reviewDecision } } }",
             {"number": 7},
             step="review_readiness",
-            retry_policy=github_read.github_api_core.RetryPolicy(max_wait_seconds=1, max_attempts=1),
+            retry_policy=github_read.github_api_core.RetryPolicy(max_wait_seconds=1, max_attempts=1, state_dir=Path(os.environ["GITHUB_RETRY_STATE_DIR"])),
         )
     assert result.ok is True
     command = run.call_args.args[0]
@@ -845,8 +845,36 @@ def test_text_log_capability_probe_failure_is_visible() -> None:
         assert "private configuration detail" not in json.dumps(diagnostics)
 
 
+def test_poll_delay_respects_server_interval_and_adds_only_positive_jitter() -> None:
+    assert github_read.poll_interval({"x-poll-interval": "90"}) == 90
+    for value in ("nan", "inf", "-1", "bogus"):
+        assert github_read.poll_interval({"x-poll-interval": value}) == 0
+    with patch.object(github_read.random, "uniform", return_value=2.0):
+        assert github_read.poll_delay(60, 90) == 92
+
+
+def test_cache_honors_poll_interval_across_readers_and_304() -> None:
+    first = process(include_output({"value": 1}, headers={"etag": '"v1"', "x-poll-interval": "60"}))
+    unchanged = process(include_output(None, status=304, headers={"x-poll-interval": "120"}), returncode=1)
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"GITHUB_READ_CACHE_DIR": tmp}):
+        with patch("subprocess.run", side_effect=[first, unchanged]) as run, patch.object(time, "time", return_value=1000):
+            reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="github.pr.watch", cache_enabled=True)
+            assert reader.get_json("/poll", step="first") == {"value": 1}
+            with patch.object(time, "time", return_value=1030):
+                assert reader.get_json("/poll", step="coalesced") == {"value": 1}
+                assert run.call_count == 1
+            with patch.object(time, "time", return_value=1061):
+                assert reader.get_json("/poll", step="revalidated") == {"value": 1}
+            with patch.object(time, "time", return_value=1150):
+                another = github_read.GitHubReader(gh_cmd="fake-gh", operation="github.pr.watch", cache_enabled=True)
+                assert another.get_json("/poll", step="later") == {"value": 1}
+            assert run.call_count == 2
+
+
 def main() -> None:
     tests = [
+        test_poll_delay_respects_server_interval_and_adds_only_positive_jitter,
+        test_cache_honors_poll_interval_across_readers_and_304,
         test_issue_reader_paginates_and_filters_pull_requests,
         test_present_terminal_link_header_does_not_fabricate_next_page,
         test_request_diagnostics_include_quota_and_request_id,
@@ -886,7 +914,8 @@ def main() -> None:
     failed: list[str] = []
     for test in tests:
         try:
-            test()
+            with tempfile.TemporaryDirectory() as state_dir, patch.dict(os.environ, {"GITHUB_RETRY_STATE_DIR": state_dir}):
+                test()
             print(f"ok {test.__name__}")
         except Exception as exc:
             print(f"FAIL {test.__name__}: {exc}", file=sys.stderr)

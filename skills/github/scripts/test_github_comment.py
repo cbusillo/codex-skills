@@ -980,7 +980,7 @@ def test_exact_comment_cli_preserves_files_and_conflict_envelope() -> None:
             encoding="utf-8",
         )
         fake_gh.chmod(0o755)
-        env = {**os.environ, "GH_COMMENT_GH": str(fake_gh), "GH_PR_GH": str(fake_gh), "COMMENT_TEST_SAVED": str(saved)}
+        env = {**os.environ, "GH_COMMENT_GH": str(fake_gh), "GH_PR_GH": str(fake_gh), "COMMENT_TEST_SAVED": str(saved), "GITHUB_RETRY_STATE_DIR": str(root / "retry-state")}
         scripts = pathlib.Path(__file__).parent
         for script, prefix in (("github_comment.py", ["issue", "42", "--repo", "owner/repo"]), ("gh-pr.py", ["--repo", "owner/repo", "comment", "42"])):
             argv = [sys.executable, str(scripts / script), *prefix, "--edit-comment", "11", "--body-file", str(replacement), "--expected-body-file", str(prior), "--expected-updated-at", "2026-07-16T12:00:00Z"]

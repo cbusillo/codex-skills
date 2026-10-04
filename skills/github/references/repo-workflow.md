@@ -116,6 +116,12 @@ run details, the helper fails closed instead of rediscovering the run through a
 workflow list filtered by time, name, or unsupported CLI fields. Use the
 `watch --run-id <id>` subcommand to recover an already-known run.
 
+PR and workflow watchers use 60-second active defaults and positive jitter.
+They honor a longer `x-poll-interval` response header. Automation workflow run
+and job GETs reuse the shared private conditional cache, including 304 bodies;
+identity and protected-environment reads remain fresh. Poll waits stay inside
+the workflow deadline and do not start another read when that deadline expires.
+
 Every `status=waiting` poll immediately reads `pending_deployments`. Reviewer
 waits report environment names, eligible reviewer identities, wait timers, and
 `current_user_can_approve`. Eligible review is submitted only for explicitly

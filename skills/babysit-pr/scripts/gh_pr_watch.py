@@ -1405,6 +1405,7 @@ def collect_snapshot(args):
             "current_sha_retries_used": retries_used,
             "max_flaky_retries": args.max_flaky_retries,
         },
+        "minimum_poll_seconds": max((github_read.poll_interval(result.headers) for result in reader.results), default=0.0),
         "read_diagnostics": {
             "pr": pr_diagnostic,
             "checks": checks_diagnostic,
@@ -1527,6 +1528,7 @@ def run_watch(args):
         else:
             poll_seconds = getattr(args, "green_poll_seconds", 300)
 
+        poll_seconds = github_read.poll_delay(poll_seconds, snapshot.get("minimum_poll_seconds", 0.0))
         print_event(
             "snapshot",
             {

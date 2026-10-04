@@ -20,6 +20,12 @@ import gh_pr_watch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolated_github_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("GITHUB_RETRY_STATE_DIR", str(tmp_path / "retry"))
+    monkeypatch.setenv("GITHUB_READ_CACHE_DIR", str(tmp_path / "cache"))
+
+
 def sample_pr() -> dict[str, Any]:
     return {
         "number": 123,
@@ -92,6 +98,7 @@ def sample_rest_view(**overrides):
 class ReviewReader:
     def __init__(self, body=None, *, degraded_reasons=None):
         self.body = body
+        self.results = []
         self.requests = [{"ok": True, "status": 200}]
         self.degraded_reasons = list(degraded_reasons or [])
         self.degraded = None
@@ -1148,12 +1155,13 @@ def test_run_watch_keeps_polling_open_ready_to_merge_pr(monkeypatch):
         if len(sleeps) >= 2:
             raise StopWatch
 
+    monkeypatch.setattr(gh_pr_watch.github_read.random, "uniform", lambda _low, _high: 2.0)
     monkeypatch.setattr(gh_pr_watch.time, "sleep", fake_sleep)
 
     with pytest.raises(StopWatch):
         gh_pr_watch.run_watch(argparse.Namespace(poll_seconds=30))
 
-    assert sleeps == [30, 300]
+    assert sleeps == [32, 302]
     assert [event for event, _ in events] == ["snapshot", "snapshot"]
 
 
@@ -1193,14 +1201,15 @@ def test_run_watch_reports_chosen_sleep_interval(monkeypatch, stop_action):
         assert payload["next_poll_seconds"] == seconds
         sleeps.append(seconds)
 
+    monkeypatch.setattr(gh_pr_watch.github_read.random, "uniform", lambda _low, _high: 2.0)
     monkeypatch.setattr(gh_pr_watch.time, "sleep", fake_sleep)
 
     assert gh_pr_watch.run_watch(args) == 0
-    assert sleeps == [
+    assert sleeps == [value + 2 for value in [
         args.poll_seconds, args.green_poll_seconds,
         args.poll_seconds, args.green_poll_seconds,
         args.poll_seconds, args.poll_seconds, args.poll_seconds,
-    ]
+    ]]
     assert [event for event, _ in events] == ["snapshot"] * 8 + ["stop"]
 
 

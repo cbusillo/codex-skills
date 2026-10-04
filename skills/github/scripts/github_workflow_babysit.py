@@ -24,6 +24,7 @@ from typing import Any, Protocol
 
 import github_api as github_api_core
 import github_identity
+import github_read
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -35,7 +36,7 @@ EXPECTED_AUTOMATION_LOGIN = github_identity.automation_login()
 DISPATCH_API_VERSION = "2026-03-10"
 DEFAULT_TIMEOUT_SECONDS = 1800.0
 MAX_TIMEOUT_SECONDS = 7200.0
-DEFAULT_POLL_INTERVAL_SECONDS = 15.0
+DEFAULT_POLL_INTERVAL_SECONDS = 60.0
 MAX_INPUT_FILE_BYTES = 64 * 1024
 MAX_WORKFLOW_INPUTS = 25
 MAX_APPROVAL_COMMENT_LENGTH = 500
@@ -150,6 +151,7 @@ class GitHubWorkflowClient:
         self.automation_login: str | None = None
         self.reviewer_login: str | None = None
         self.last_run_reference: RunReference | None = None
+        self.minimum_poll_seconds = 0.0
         self._request_count = 0
         self._operation_counts: Counter[str] = Counter()
         self._retry_attempts = 0
@@ -369,19 +371,32 @@ class GitHubWorkflowClient:
         else:
             raise WorkflowBabysitError("invalid_auth_role", f"unsupported GitHub auth role: {role}")
 
-        result = github_api_core.call_gh_with_retry(
-            method,
-            path,
-            body,
-            gh_cmd=gh_cmd,
-            gh_prefix_args=gh_prefix_args,
-            api_version=api_version,
-            operation=operation,
-            actor=actor,
-            expected_actor=expected_actor,
-            bucket="rest_core",
-            deadline_at=self.deadline_at,
-        )
+        if method == "GET" and role == "automation" and operation in {
+            "github.workflow.run.read", "github.workflow.jobs.read"
+        }:
+            reader = github_read.GitHubReader(
+                gh_cmd=gh_cmd, gh_prefix_args=gh_prefix_args,
+                operation=operation, actor=actor, expected_actor=expected_actor,
+                strict_actor=True, cache_enabled=True, deadline_at=self.deadline_at,
+            )
+            try:
+                result = reader.request(method, path, step=operation)
+            except github_read.GitHubReadError as exc:
+                result = exc.result
+        else:
+            result = github_api_core.call_gh_with_retry(
+                method,
+                path,
+                body,
+                gh_cmd=gh_cmd,
+                gh_prefix_args=gh_prefix_args,
+                api_version=api_version,
+                operation=operation,
+                actor=actor,
+                expected_actor=expected_actor,
+                bucket="rest_core",
+                deadline_at=self.deadline_at,
+            )
         self._record_result(result, operation)
         if result.ok:
             return result
@@ -393,6 +408,7 @@ class GitHubWorkflowClient:
         )
 
     def _record_result(self, result: github_api_core.ApiResult, operation: str) -> None:
+        self.minimum_poll_seconds = max(self.minimum_poll_seconds, github_read.poll_interval(result.headers))
         self._request_count += 1
         self._operation_counts[operation] += 1
         if result.retry_summary is not None:
@@ -504,6 +520,15 @@ class WorkflowBabysitter:
         previous_progress_key: str | None = None
 
         while True:
+            if polls and self.clock() >= deadline:
+                return timeout_result(
+                    run=run, run_url=run_url,
+                    actors=actors_payload(automation_login, reviewer_login),
+                    authorized_environments=authorized_environments,
+                    approvals=approvals, polls=polls,
+                    elapsed_seconds=self.clock() - started_at,
+                    last_diagnosis=last_diagnosis,
+                )
             polls += 1
             run = self.client.get_run(run_id)
             run_url = run.run_url or run_url
@@ -615,7 +640,9 @@ class WorkflowBabysitter:
                         elapsed_seconds=self.clock() - started_at,
                         last_diagnosis=last_diagnosis,
                     )
-                self.sleep(min(poll_interval_seconds, remaining))
+                self.sleep(min(github_read.poll_delay(
+                poll_interval_seconds, getattr(self.client, "minimum_poll_seconds", 0.0)
+            ), remaining))
                 continue
 
             remaining = deadline - self.clock()
@@ -630,7 +657,9 @@ class WorkflowBabysitter:
                     elapsed_seconds=self.clock() - started_at,
                     last_diagnosis=last_diagnosis,
                 )
-            self.sleep(min(poll_interval_seconds, remaining))
+            self.sleep(min(github_read.poll_delay(
+                poll_interval_seconds, getattr(self.client, "minimum_poll_seconds", 0.0)
+            ), remaining))
 
 
 def protected_environment_decision(
