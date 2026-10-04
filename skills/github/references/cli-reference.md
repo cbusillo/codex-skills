@@ -915,9 +915,14 @@ for that command, after its Director approved writing there. Without it the
 write is refused with a message naming the opt-in, and a value in `local.env`
 does not count. With it, stderr carries
 `notice: acting as your own GitHub user on OWNER/REPO`; Python
-helpers report that login as the actor. New comments also retain the resolved
-login as their expected response actor, including readback after an uncertain
-write, so an authorized switch from the bot is not reported as a failure.
+helpers report that login as the actor. Comments resolve the repository's write
+identity before edit-last selection, exact-comment author checks, or body
+deduplication, and retain it for request fingerprints and uncertain-write
+readback. An edit reports the authenticated writer as `actor` and preserves
+the original author separately in `comment.author`.
+The read-only `--write-actor-for OWNER/REPO` wrapper prefix supports only a
+GET `/user` actor probe; it applies the same installation, own-user opt-in,
+and required-automation checks as a write without sending a mutation.
 `git-push-as-bot` pushes there with
 the active login's token, `git-commit-as-bot` keeps the person's own git
 identity, and `gh-pr.py create` requires `--body-file` and appends
