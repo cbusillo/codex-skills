@@ -2407,7 +2407,7 @@ def focus_area_heading(payload: dict[str, Any]) -> str:
         if category and category not in category_labels:
             category_labels.append(category)
     if category_labels:
-        ordered_categories = sorted(category_labels, key=str.casefold)
+        ordered_categories = sorted(category_labels, key=lambda category: (category != "Skills", category.casefold()))
         return f"{prose_join(ordered_categories[:3])} Impact"
     label = focus_area_label(payload)
     return f"{label} Impact"

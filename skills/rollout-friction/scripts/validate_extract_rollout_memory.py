@@ -387,7 +387,7 @@ def test_linked_status_reference_lowers_confidence_but_cited_preference_stays() 
 
 
 def test_cli_requires_explicit_trace_source() -> None:
-    result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True, check=False)
+    result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
     if result.returncode != 2 or "provide trace paths or --root" not in result.stderr or result.stdout:
         raise AssertionError(f"omitted source must refuse without scanning: {result}")
     with tempfile.TemporaryDirectory() as tmp:

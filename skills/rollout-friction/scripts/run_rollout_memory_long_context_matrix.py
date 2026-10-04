@@ -11,7 +11,6 @@ import argparse
 import hashlib
 import json
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Any

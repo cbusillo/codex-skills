@@ -2106,7 +2106,7 @@ def test_render_executive_brief_keeps_mixed_focus_heading_specific() -> None:
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
-    assert "## Agent Product Issues and Skills Impact" in rendered
+    assert "## Skills and Agent Product Issues Impact" in rendered
     assert "## Agent Product Issues Impact" not in rendered
 
 
@@ -2140,16 +2140,23 @@ def test_render_executive_brief_mixed_focus_heading_is_order_stable() -> None:
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
-    assert "## Agent Product Issues and Skills Impact" in rendered
-    assert "## Skills and Agent Product Issues Impact" not in rendered
+    assert "## Skills and Agent Product Issues Impact" in rendered
+    assert "## Agent Product Issues and Skills Impact" not in rendered
 
 
 def test_focus_heading_treats_retired_product_labels_as_supplied_data() -> None:
     # Historical input is readable without restoring its old product taxonomy.
     sections = [{"name": "Every Code Product Issues"}, {"name": "Skills"}]
-    expected = " and ".join(section["name"] for section in sections) + " Impact"
+    expected = " and ".join(section["name"] for section in sections[::-1]) + " Impact"
     assert github_work_rollup.focus_area_heading({"priority_sections": sections}) == expected
     assert github_work_rollup.focus_area_heading({"priority_sections": sections[::-1]}) == expected
+
+
+def test_focus_heading_keeps_skills_visible_with_four_areas() -> None:
+    areas = ["Billing", "Launchplane", "Odoo", "Skills"]
+    payload = {"priority_sections": [{"name": area} for area in areas]}
+    expected = f"Skills, {areas[0]}, and {areas[1]} Impact"
+    assert github_work_rollup.focus_area_heading(payload) == expected
 
 
 def test_render_executive_brief_theme_titles_use_key_phrases_without_semicolon_soup() -> None:
