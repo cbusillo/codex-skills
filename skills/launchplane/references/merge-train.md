@@ -93,8 +93,10 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   Unchanged controller phases poll less often, up to five minutes, and respect
   the shared low-budget floor. A generic `github_request_failed` refusal probes
   the quota-free `/rate_limit` endpoint through the target repository's
-  installation; confirmed zero core quota waits until
-  reset within the driver's deadline, without spending its helper-failure budget.
+  installation. Zero local core quota permits one wait to reset per refusal
+  streak, within the driver's deadline, without spending its helper-failure budget.
+  This is evidence about the local App; the controller can use another identity.
+  Further refusals retain the failure budget until the controller makes progress.
   Other refusals retain their existing failure budget.
   At the deadline, final read-back has one fixed 15-second grace window;
   controller mutations and stack-finish passes keep the original deadline.

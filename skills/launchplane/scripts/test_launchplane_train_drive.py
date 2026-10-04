@@ -166,7 +166,23 @@ class TrainDriveTests(unittest.TestCase):
             code = train_drive.main(["--repo", REPO, "--pr", "7"])
         stop = json.loads(output.getvalue())
         self.assertEqual((code, stop["event"], stop["payload"]["outcome"]), (train_drive.EXIT_CODES["error"], "stop", "error"))
-        self.assertEqual(stop["payload"]["cause"], "permission_denied")
+        self.assertEqual(stop["payload"]["read_failure_cause"], "permission_denied")
+
+    def test_auth_refusal_after_target_lands_preserves_the_landing(self) -> None:
+        api = train_drive.github_read.github_api_core
+        result = api.ApiResult(ok=False, status=403, body=None, failure=api.FailureDetail(
+            cause="permission_denied", message="fixture refusal", retryable=False, fallback_eligible=False, disposition="stop"
+        ))
+        train = FakeTrain([_response("idle")], merge_after={7: 0})
+        io = train.io()
+        io.merged_since = lambda *_args: (_ for _ in ()).throw(train_drive.github_read.GitHubReadError(
+            "fixture refusal", result=result, diagnostics={}
+        ))
+        events = []
+        outcome = train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10000), io,
+                                    lambda event, payload: events.append((event, payload)))
+        self.assertEqual((outcome, events[-1][1]["landing_sha"]), ("landed", "sha-7"))
+        self.assertEqual(events[-1][1]["companion_evidence"], "unavailable")
 
     def test_final_landing_reads_have_one_fixed_grace_deadline(self) -> None:
         with patch.object(train_drive.github_read, "GitHubReader") as reader_class:
@@ -204,16 +220,31 @@ class TrainDriveTests(unittest.TestCase):
             self.assertEqual(run.call_args.kwargs["timeout"], 10)
 
     def test_primary_exhaustion_waits_past_the_refusal_budget(self) -> None:
-        train = FakeTrain([_refusal("github_request_failed", http_status=502)] * 6 + [_response("land_batch")],
-                          merge_after={7: 7})
+        outcomes = []
+        for wait_for_quota in (False, True):
+            train = FakeTrain([_refusal("github_request_failed", http_status=502)], merge_after={7: 2})
+            def controller(*_args):
+                train.calls += 1
+                return _refusal("github_request_failed", http_status=502) if train.clock < 3600 else _response("land_batch")
+            train.pull_request = lambda *_args: {"state": "open", "merged": train.clock >= 3600 and train.calls >= 2,
+                                                 "merge_commit_sha": "landed"}
+            io = train.io()
+            io.controller = controller
+            io.quota_wait = (lambda: max(0, 3600 - train.clock)) if wait_for_quota else lambda: 0
+            outcome = train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10000), io, lambda *_args: None)
+            outcomes.append(outcome)
+        self.assertEqual(outcomes, ["error", "landed"])
+
+    def test_local_quota_does_not_mask_repeated_unrelated_controller_failures(self) -> None:
+        train = FakeTrain([_refusal("github_request_failed", http_status=502)])
         io = train.io()
-        io.quota_wait = lambda: 60
+        io.quota_wait = lambda: 3600
         events = []
-        outcome = train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10000),
-                                    io, lambda event, payload: events.append((event, payload)))
-        self.assertEqual((outcome, train.calls), ("landed", 7))
-        waits = [payload for event, payload in events if event == "snapshot" and payload["controller_action"] == "github_primary_limit_wait"]
-        self.assertEqual(len(waits), 6)
+        outcome = train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10000), io,
+                                    lambda event, payload: events.append((event, payload)))
+        self.assertEqual(outcome, "error")
+        self.assertEqual(events[-1][1]["reason"], "merge-train controller kept refusing")
+        self.assertLess(train.clock, 10000)
 
     def test_confirmed_primary_wait_obeys_the_driver_deadline(self) -> None:
         train = FakeTrain([_refusal("github_request_failed", http_status=502)])

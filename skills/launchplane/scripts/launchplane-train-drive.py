@@ -93,6 +93,7 @@ class DriveState:
     lease_held: dict[str, Any] | None = None
     candidate_active: bool = False
     unchanged_passes: int = 0
+    quota_waited: bool = False
 
 
 def _pause(settings: DriveSettings, io: DriveIO, state: DriveState, *, minimum: float = 0.0) -> None:
@@ -106,6 +107,17 @@ def _pause(settings: DriveSettings, io: DriveIO, state: DriveState, *, minimum: 
 
 def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, Any]], None]) -> str:
     state = DriveState(batch={settings.number})
+    try:
+        return _drive(settings, io, state, emit)
+    except github_read.GitHubReadError as error:
+        detail = {"read_failure_cause": error.result.failure.cause if error.result.failure else "read_failed",
+                  "request_id": error.result.request_id}
+        if settings.number in state.landed:
+            return _stop(settings, state, emit, "landed", companion_evidence="unavailable", **detail)
+        return _stop(settings, state, emit, "error", reason="GitHub read refused", **detail)
+
+
+def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callable[[str, dict[str, Any]], None]) -> str:
     started = io.now()
     pass_number = 0
     while True:
@@ -140,9 +152,10 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
         if response.get("status") not in {"accepted", "ok"}:
             state.candidate_active = False
             snapshot = _snapshot(settings, state, "controller_refused", response)
-            if snapshot["error_code"] == "github_request_failed":
+            if snapshot["error_code"] == "github_request_failed" and not state.quota_waited:
                 wait = io.quota_wait()
                 if wait > 0:
+                    state.quota_waited = True
                     snapshot["controller_action"] = "github_primary_limit_wait"
                     snapshot["retry_after_seconds"] = wait
                     emit("snapshot", snapshot)
@@ -164,6 +177,7 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
             _pause(settings, io, state)
             continue
         state.helper_failures = 0
+        state.quota_waited = False
         state.lease_held = None
         result = response.get("result") or {}
         action = str(result.get("controller_action") or "")
@@ -520,12 +534,7 @@ def main(argv: list[str]) -> int:
         poll_seconds=args.poll_seconds,
         allow_branch_update=args.allow_branch_update,
     )
-    try:
-        outcome = drive(settings, live_io(args.helper_timeout, deadline_at=settings.deadline, repository_context=settings.repository), emit)
-    except github_read.GitHubReadError as error:
-        outcome = _stop(settings, DriveState(batch={settings.number}), emit, "error",
-                        reason="GitHub read refused", cause=error.result.failure.cause if error.result.failure else "read_failed",
-                        request_id=error.result.request_id)
+    outcome = drive(settings, live_io(args.helper_timeout, deadline_at=settings.deadline, repository_context=settings.repository), emit)
     return EXIT_CODES[outcome]
 
 

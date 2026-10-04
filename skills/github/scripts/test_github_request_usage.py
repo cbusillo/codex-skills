@@ -84,6 +84,21 @@ class UsageTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(transport.call_count, 2)
 
+    def test_enterprise_host_and_non_core_bucket_are_separate(self):
+        for resource, remaining, limit in (("core", 4000, 5000), ("code_search", 0, 10)):
+            usage.record_response(method="GET", path="/repos/example/app", status=200, host="enterprise.example.invalid",
+                                  headers={"x-ratelimit-resource": resource, "x-ratelimit-limit": str(limit),
+                                           "x-ratelimit-remaining": str(remaining), "x-ratelimit-reset": "7200"},
+                                  operation="github.read", actor="fixture-bot", now=1000)
+        with patch.dict(os.environ, {"GH_HOST": "enterprise.example.invalid"}):
+            self.assertEqual(usage.polling_floor(actor="fixture-bot", repository="example/app", now=1000), 0)
+            usage.record_response(method="GET", path="/repos/example/app", status=200, host="enterprise.example.invalid",
+                                  headers={"x-ratelimit-resource": "core", "x-ratelimit-limit": "5000",
+                                           "x-ratelimit-remaining": "800", "x-ratelimit-reset": "7200"},
+                                  operation="github.read", actor="fixture-bot", now=1000)
+            self.assertEqual(usage.polling_floor(actor="fixture-bot", repository="example/app", now=1000), 300)
+            self.assertEqual(usage.polling_floor(host="github.com", actor="fixture-bot", repository="example/app", now=1000), 0)
+
     def test_accounting_failure_leaves_transport_success_intact(self):
         with patch("github_request_usage._private_open", side_effect=OSError("disk full")), patch(
             "subprocess.run", return_value=reply()

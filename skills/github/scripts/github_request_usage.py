@@ -73,6 +73,8 @@ def record_response(
         repository = None
     resource = headers.get("x-ratelimit-resource")
     bucket = {"core": "rest_core", "graphql": "graphql", "search": "search"}.get(resource, bucket)
+    if resource and resource not in {"core", "graphql", "search"}:
+        bucket = resource if re.fullmatch(r"[a-z_]+", resource) else "unknown"
     quota = {name: _integer(headers.get(f"x-ratelimit-{name}")) for name in ("limit", "remaining", "reset", "used")}
     caller = pathlib.Path(os.environ.get("GITHUB_REQUEST_CALLER") or sys.argv[0]).name
     receipt = {
@@ -110,8 +112,9 @@ def record_response(
         pass
 
 
-def quota_snapshot(*, host: str = "github.com", actor: str | None = None, repository: str | None = None) -> dict[str, Any]:
+def quota_snapshot(*, host: str | None = None, actor: str | None = None, repository: str | None = None) -> dict[str, Any]:
     actor = actor or github_identity.automation_login()
+    host = host or os.environ.get("GH_HOST") or "github.com"
     if not actor:
         return {}
     try:
@@ -124,7 +127,7 @@ def quota_snapshot(*, host: str = "github.com", actor: str | None = None, reposi
     return {}
 
 
-def polling_floor(*, host: str = "github.com", actor: str | None = None, repository: str | None = None, now: float | None = None) -> float:
+def polling_floor(*, host: str | None = None, actor: str | None = None, repository: str | None = None, now: float | None = None) -> float:
     """Reserve the final fifth of core quota for useful reads and writes."""
     quota = quota_snapshot(host=host, actor=actor, repository=repository)
     limit, remaining, reset = (_integer(quota.get(key)) for key in ("limit", "remaining", "reset"))

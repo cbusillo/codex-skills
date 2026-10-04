@@ -111,7 +111,7 @@ PR watchers back off unchanged pending snapshots to their quiet interval,
 returning to the active interval when evidence changes. Shared core-budget
 evidence at or below 20% remaining adds a five-minute polling floor until reset.
 Budget evidence is scoped by host, App actor, repository owner (installation)
-and quota bucket, so different owners' installations cannot overwrite it.
+and quota bucket, so one installation cannot overwrite another's evidence.
 This slows PR/workflow/train polls without delaying writes or changing identity,
 permission checks, write reconciliation or the existing bounded reset waits.
 Receipts are retained for retrospective measurement; the pilot's closeout must
