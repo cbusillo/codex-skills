@@ -1048,8 +1048,8 @@ def deep_merge(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]
     return merged
 
 
-def repo_config_path(repo: str | None) -> pathlib.Path | None:
-    candidates: list[pathlib.Path] = []
+def repo_config_path(repo: str | None, *, checkout: str | pathlib.Path | None = None) -> pathlib.Path | None:
+    candidates: list[pathlib.Path] = [pathlib.Path(checkout).expanduser()] if checkout is not None else []
     root = git_root()
     if root:
         candidates.append(root)
@@ -1067,12 +1067,12 @@ def repo_config_path(repo: str | None) -> pathlib.Path | None:
     return None
 
 
-def load_config(repo: str | None = None) -> dict[str, Any]:
+def load_config(repo: str | None = None, *, checkout: str | pathlib.Path | None = None) -> dict[str, Any]:
     config = dict(DEFAULT_CONFIG)
     workspace_config = workspace_config_path()
     if workspace_config.exists():
         config = deep_merge(config, json.loads(workspace_config.read_text()))
-    repo_config = repo_config_path(repo)
+    repo_config = repo_config_path(repo, checkout=checkout) if checkout is not None else repo_config_path(repo)
     if repo_config and repo_config.exists():
         data = json.loads(repo_config.read_text())
         if isinstance(data.get("planning"), dict):
@@ -1914,7 +1914,8 @@ def cmd_claim(args: argparse.Namespace) -> None:
     claim_comment: dict[str, Any] = {}
     inventory: dict[str, Any] = {}
     previous_status = ""
-    config = load_config(issue_repo)
+    planning_checkout = getattr(args, "planning_checkout", None)
+    config = load_config(issue_repo, checkout=planning_checkout) if planning_checkout else load_config(issue_repo)
 
     def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False) -> None:
         status_state = next_plan_status(waiting_issue, load_config(target_repo) if target else config)
@@ -1963,8 +1964,10 @@ def cmd_claim(args: argparse.Namespace) -> None:
             source_comments, args.resume_from, handoff_id, target_pulls, target_number,
             issue_repo=issue_repo, issue_number=number, target_repo=target_repo,
         )
+        if claim["branch"] in permitted:
+            raise PlanError("Conflict refresh requires a new task branch, separate from every retained PR/source branch")
         for pull in target_pulls:
-            if (pull.get("head") or {}).get("ref") not in permitted:
+            if (pull.get("head") or {}).get("ref") not in permitted and pull.get("state") != "closed":
                 continue
             _, target = get_issue(str(pull["number"]), target_repo)
             if target.get("state") != pull.get("state") or "pull_request" not in target:

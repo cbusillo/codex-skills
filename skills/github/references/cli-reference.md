@@ -441,7 +441,8 @@ uv run <skill-dir>/scripts/gh-plan.py claim <canonical-issue-url> \
 ```
 
 For a planning issue in another repository, both repositories receive their
-own ownership inventory. Supply `--planning-checkout /path/to/planning-repo`
+own ownership inventory and planning label configuration. Supply
+`--planning-checkout /path/to/planning-repo`
 when its verified checkout is not discoverable through repository configuration.
 The remote identity is checked; inventory covers that checkout's registered
 worktrees and remote heads, not every clone or Codex peer. No worktree is
@@ -465,21 +466,25 @@ The named PR identities bind their current branches to that finished session's
 handoff, including split branches that differ from the original claim branch.
 Only open or merged same-repository PRs independently linked to the canonical
 issue and named in that handoff count as retained artifacts; a closed unmerged
-PR does not. The refresh target itself must still be open. Cross-repository
+PR does not. A superseded closed PR with no remaining artifacts is ignored,
+while its unreleased claims and unaccounted branches/worktrees still refuse.
+The refresh target itself must still be open. Cross-repository
 links must qualify the canonical issue, since bare `#123` belongs to the PR
 repository. Merged siblings may retain their branches/worktrees without
 requiring cleanup to refresh the remaining PR. The helper reads the
 issue and those PR discussions, local/remote branches, registered worktrees,
 and available peer sessions again during readback. Unreleased claims, active
 Current Status, live peers on retained worktrees, unaccounted artifacts, and
-races still refuse. Sibling references identify retained artifacts and do not authorize refreshing
-those siblings. A refresh claim records its target PR so recovering it
+races still refuse. Sibling references identify retained artifacts and do not
+authorize refreshing those siblings. A refresh claim records its target PR so recovering it
 cannot silently become a general implementation claim.
 
 This route grants no refresh, push, merge, cleanup, or takeover authority.
 Verify the finished-session handoff and existing conflict-refresh authorization
 first. On confirmed claim success, create your own new linked task worktree;
-leave the original worktree and its lease intact. From that new task branch, push explicitly to the verified existing PR head
+leave the original worktree and its lease intact. Reusing any retained
+PR/source branch as the new task branch refuses. From that new task branch,
+push explicitly to the verified existing PR head
 with a normal fast-forward refspec (`task-branch:pr-head-branch`) under the
 brief's authority; never check out the PR branch in two worktrees or force-push.
 Recheck its live head before integrating and pushing so a concurrent update

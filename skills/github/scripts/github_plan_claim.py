@@ -259,8 +259,9 @@ def refresh_handoff(
             continue
         if ((pull.get("base") or {}).get("repo") or {}).get("full_name", "").casefold() != target_repo.casefold():
             continue
-        # The PR must independently link the canonical planning issue.
-        if not artifact_evidence(empty, [{**pull, "head": {"ref": ""}}], issue_number, {},
+        # Classify only the issue reference, independently of branch evidence
+        # or lifecycle state (open/merged admission was checked above).
+        if not artifact_evidence(empty, [{**pull, "head": {"ref": ""}, "state": "open"}], issue_number, {},
                                  own_record=False, repo=issue_repo, inventory_repo=target_repo):
             continue
         permitted.add(branch)
@@ -323,6 +324,15 @@ def artifact_evidence(
         linked = bool(re.search(ownership_reference, body))
         titled = local_references and bool(re.search(rf"(?<![\w/])#{number}(?!\d)", title))
         if explicit_url or linked or titled or (local_references and references_issue(branch, number)):
+            if pull.get("state") == "closed":
+                # Closed PRs are not open ownership evidence. Preserve any
+                # unaccounted local/remote artifacts even for nonnumeric names.
+                present = branch in inventory["local_branches"] or branch in inventory["remote_branches"] or any(
+                    tree["branch"] == branch for tree in inventory["worktrees"]
+                )
+                if present and not permitted(branch):
+                    conflicts.append({"source": "closed_pr_artifacts", "number": pull["number"], "branch": branch})
+                continue
             same_repo = not retained_repo or all(
                 ((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() == retained_repo.casefold()
                 for side in ("head", "base")

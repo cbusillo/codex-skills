@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -109,7 +110,7 @@ class ClaimTests(unittest.TestCase):
                             EXPECTED_ACTOR=TEST_BOT,
                             collect_paged_rest_items=self.read_pages, rest_edit_issue=self.edit,
                             comment_route=lambda: ("bot", "bot-gh", TEST_BOT),
-                            load_config=lambda repo: copy.deepcopy(self.configs.get(repo, PLAN.DEFAULT_CONFIG)), emit=self.emitted, api_json=self.read_api), \
+                            load_config=lambda repo, **_: copy.deepcopy(self.configs.get(repo, PLAN.DEFAULT_CONFIG)), emit=self.emitted, api_json=self.read_api), \
                 patch.object(CLAIM, "local_inventory", side_effect=self.inventory_for), \
                 patch.object(PLAN.github_identity, "configured_bot_logins", return_value=[TEST_BOT]), \
                 patch.object(PLAN.github_comment_core, "comment", side_effect=self.post), \
@@ -303,6 +304,52 @@ class ClaimTests(unittest.TestCase):
                 resolved = PLAN.load_config("owner/some-repo")
                 self.assertEqual(PLAN.repo_config_path("owner/some-repo"), config)
             self.assertEqual(resolved["labels"]["active"], "custom-active")
+
+    def test_closed_superseded_pr_without_artifacts_does_not_hold_refresh(self):
+        self.refresh_fixture()
+        self.comments[-1]["body"] += " Closed #98 in favor of #99."
+        old = {**copy.deepcopy(self.pulls[0]), "number": 98, "state": "closed", "merged_at": None,
+               "head": {"ref": "work/old", "repo": {"full_name": "owner/repo"}}}
+        self.closed_pulls[98] = old
+        self.targets["98"] = {**self.targets["99"], "number": 98, "state": "closed"}
+        self.target_comments["/repos/owner/repo/issues/98/comments"] = []
+        self.run_claim()
+        self.target_comments["/repos/owner/repo/issues/98/comments"].append({"id": 40, "body": CLAIM.marker(OTHER)})
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+
+    def test_closed_superseded_pr_still_preserves_unaccounted_artifacts(self):
+        self.refresh_fixture()
+        self.comments[-1]["body"] += " Closed #98 in favor of #99."
+        old = {**copy.deepcopy(self.pulls[0]), "number": 98, "state": "closed", "merged_at": None,
+               "head": {"ref": "work/old", "repo": {"full_name": "owner/repo"}}}
+        self.closed_pulls[98] = old
+        self.targets["98"] = {**self.targets["99"], "number": 98, "state": "closed"}
+        self.target_comments["/repos/owner/repo/issues/98/comments"] = []
+        self.inventory["local_branches"].append(old["head"]["ref"])
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+        self.assertEqual(caught.exception.payload["competing_evidence"][0]["source"], "closed_pr_artifacts")
+        self.assert_no_writes()
+
+    def test_explicit_planning_checkout_supplies_custom_configuration(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            config = root / ".github" / "github.json"
+            config.parent.mkdir()
+            source = {"planning": {"labels": {"active": "custom-active"}}}
+            config.write_text(json.dumps(source))
+            with patch.object(PLAN, "git_root", return_value=None), patch.object(PLAN, "repo_from_git", side_effect=lambda p: "other/plans" if p == root else None), \
+                    patch.object(PLAN, "workspace_config_path", return_value=root / "missing-workspace-config"):
+                resolved = PLAN.load_config("other/plans", checkout=root)
+            self.assertEqual(resolved["labels"]["active"], source["planning"]["labels"]["active"])
+
+    def test_refresh_requires_own_new_task_branch(self):
+        for branch in ("work/issue-42-original", "work/issue-42-audits", "work/issue-42-fixtures"):
+            with self.subTest(branch=branch):
+                self.setUp()
+                self.refresh_fixture()
+                self.args.branch = branch
+                with self.assertRaises(PLAN.PlanError): self.run_claim()
+                self.assert_no_writes()
 
     def test_plain_resume_still_refuses_released_split_pr_artifacts(self):
         self.refresh_fixture()
