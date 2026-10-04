@@ -523,6 +523,8 @@ def test_reconcile_finds_codex_only_installer_bindings_and_preserves_dirty_runti
     if dirty:
         assert proc.returncode != 0
         assert receipt["status"] == "blocked"
+        assert receipt["reason_code"] == "runtime_dirty"
+        assert receipt["blockers"] == ["runtime_dirty"]
         assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
     else:
         assert proc.returncode == 0
