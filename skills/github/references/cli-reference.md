@@ -977,6 +977,19 @@ the configured automation account. The push helper picks credentials the same
 way as the wrapper: a configured GitHub App first, then `CODEX_GITHUB_TOKEN`,
 `GH_TOKEN`, and `GITHUB_TOKEN`.
 
+`git-push-as-bot [options] origin <refspec>` remains the default. When
+`origin` points at upstream and the owner's repository is a named remote, use
+`git-push-as-bot --remote public -u work/task` or
+`git-push-as-bot --remote fork --delete work/task`. Put `--remote NAME` first;
+the remaining arguments are push options and refspecs, without another remote.
+The helper resolves that configured remote to a GitHub owner/repository, selects
+and verifies its credentials, temporarily uses its HTTPS URL, checks all its
+push URLs, and restores its fetch URL on exit. It refuses non-GitHub targets,
+URL operands, `--repo` overrides, multiple push destinations, and credential
+rewrites to another transport. Use this route instead of environment URL
+rewrites or renaming remotes to get around a refusal. Existing App-installation,
+automation-identity and explicit own-user authorization rules still apply.
+
 Planning helpers preserve the selected actor when authentication or quota
 failures occur. Set `GH_PLAN_SKIP_BOT=1` for explicitly authorized temporary
 active-account planning work, or reserve `GH_PLAN_ALLOW_ACTIVE_FIRST=1` for
