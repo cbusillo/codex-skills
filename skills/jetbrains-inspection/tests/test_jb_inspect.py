@@ -13733,6 +13733,27 @@ class Issue458RegressionTest(unittest.TestCase):
         self.assertEqual(payload["verdict"], "UNKNOWN")
         self.assertEqual(payload["verdict_reason"], jb_inspect.SEMANTIC_COVERAGE_TRUNCATED_REASON)
 
+    def test_disk_freshness_recovery_survives_bounded_retry(self):
+        for exit_reason in ("disk_psi_content_mismatch", "scoped_file_unavailable", "scoped_psi_unavailable", "scoped_disk_read_failed"):
+            for exhausted in (False, True):
+                with self.subTest(exit_reason=exit_reason, exhausted=exhausted):
+                    payload = {
+                        "status": "capture_incomplete", "capture_incomplete": True,
+                        "capture_incomplete_reason": "inspection_inputs_changed",
+                        "capture_diagnostic": {"exit_reason": exit_reason},
+                        "retry_exhausted": exhausted, "internal_retry_count": int(exhausted),
+                        "total_problems": 0, "problems": [],
+                    }
+                    jb_inspect.apply_verdict(payload)
+                    result = payload["agent_result"]
+                    self.assertEqual(result["verdict"], "UNKNOWN")
+                    self.assertEqual(payload["verdict_reason"], "inspection_inputs_changed")
+                    self.assertEqual(result["retry_policy"]["retry"], not exhausted)
+                    self.assertIn("Reload from Disk", result["next_action"])
+                    self.assertIn("modification time", result["next_action"])
+                    if exhausted:
+                        self.assertIn("Stop retrying", result["next_action"])
+
     def test_inspection_inputs_changed_is_retryable_and_attributed(self):
         payload = {
             "status": "capture_incomplete",

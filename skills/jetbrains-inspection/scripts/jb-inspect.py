@@ -6746,6 +6746,21 @@ UNKNOWN_RETRY_ACTION = "Wait for IDE/capture readiness to settle, then retry onc
 UNKNOWN_TERMINAL_ACTION = "Stop retrying this result and report the helper diagnostic payload. Resolve the reported IDE/plugin or ownership prerequisite before any further assessment."
 
 
+def disk_freshness_recovery(reason: str, payload: dict[str, Any]) -> str | None:
+    diagnostic = payload.get("capture_diagnostic")
+    if reason != "inspection_inputs_changed" or not isinstance(diagnostic, dict):
+        return None
+    if diagnostic.get("exit_reason") not in {
+        "disk_psi_content_mismatch", "scoped_file_unavailable", "scoped_psi_unavailable", "scoped_disk_read_failed",
+    }:
+        return None
+    return (
+        "Resolve the scoped file and save intended editor changes. Synchronize it in the exact IDE project "
+        "using Reload from Disk, or rewrite it with an updated modification time, before a fresh inspection. "
+        "Retries alone cannot repair a timestamp-preserving disk/PSI mismatch."
+    )
+
+
 def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     reason = normalize_reason(reason)
     if reason == "ide_memory_exhausted":
@@ -6847,6 +6862,9 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     if reason == "current_run_psi_churn":
         return "Save documents and rerun inspection after the IDE finishes updating PSI state."
     if reason == "inspection_inputs_changed":
+        recovery = disk_freshness_recovery(reason, payload)
+        if recovery:
+            return recovery
         return "Wait for same-worktree writers and IDE indexing/project-model updates to settle, then rerun after project files, VCS state, and inspection settings stop changing."
     if reason == "language_sdk_missing":
         return language_sdk_missing_next_action(payload)
@@ -7289,6 +7307,9 @@ def compact_inspection_proof(payload: dict[str, Any]) -> dict[str, Any]:
 def exhausted_retry_next_action(reason: str, payload: dict[str, Any]) -> str:
     retry_count = max(0, int(payload.get("internal_retry_count") or 0))
     readiness = payload.get("internal_retry_readiness") if isinstance(payload.get("internal_retry_readiness"), dict) else {}
+    recovery = disk_freshness_recovery(reason, payload)
+    if recovery:
+        return "Stop retrying this result and report the diagnostic payload. " + recovery
     if payload.get("internal_retry_skipped") is True:
         return (
             "The helper withheld its internal retry because IDE readiness did not remain stable. Stop retrying this result and report "
