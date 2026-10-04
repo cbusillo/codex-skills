@@ -17,6 +17,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+import github_client
 import github_milestone as github_milestone_core
 
 
@@ -54,6 +55,8 @@ def compact_list_issue(repo: str, issue: dict[str, Any]) -> dict[str, Any]:
         "repo": repo,
         "number": issue.get("number"),
         "title": issue.get("title"),
+        "author": (issue.get("user") or {}).get("login") or issue.get("author"),
+        "author_is_bot": (issue.get("user") or {}).get("type") == "Bot",
         "state": state.upper() if isinstance(state, str) else state,
         "created_at": issue.get("created_at") or issue.get("createdAt"),
         "updated_at": issue.get("updated_at") or issue.get("updatedAt"),
@@ -235,7 +238,8 @@ def rank_next_candidates(
     }
 
     def milestone_rank(candidate: dict[str, Any]) -> tuple[int, str, int]:
-        milestone = candidate.get("milestone")
+        request = candidate.get("client_request")
+        milestone = {"title": request["milestone"], "state": "open"} if request else candidate.get("milestone")
         if not isinstance(milestone, dict) or milestone.get("state") != "open":
             return len(listed_order) + 1, "9999-12-31T00:00:00Z", 0
         if direction_milestones is not None:
@@ -274,6 +278,7 @@ def discussion_snapshot(issue: dict[str, Any], comments: list[dict[str, Any]], *
     """Carry the discussion, not a guess about arbitrary human prose, to selection."""
     snapshot = {
         "body": issue.get("body") or "",
+        "author": (issue.get("user") or {}).get("login") or issue.get("author"),
         "updated_at": issue.get("updated_at"),
         "comments": [{
             "id": comment.get("id"), "author": (comment.get("user") or {}).get("login"),
@@ -339,6 +344,8 @@ def overall_milestone_context(
     repository_milestones: dict[str, list[str] | None],
 ) -> dict[str, Any]:
     """Explain established waypoint links without changing eligibility or rank."""
+    if item.get("client_request"):
+        return {"state": "matched", "titles": [item["client_request"]["milestone"]], "source": "recorded_product_client", "basis": "client_request"}
     if item.get("via") and (item.get("milestone") or {}).get("title") in milestone_titles:
         return {"state": "matched", "titles": [item["milestone"]["title"]], "source": "native_track_path"}
     parent_keys = {(p["repo"].casefold(), p["number"]) for p in (item.get("discussion") or {}).get("parents", [])}
@@ -453,12 +460,55 @@ def tooling_capacity_context(
     return {"admitted": True, "reason": "all_milestones_waiting_on_people", "milestone_wait_count": len(frontier)}
 
 
+def with_client_milestone(
+    entry: dict[str, Any], graph: dict[str, Any], *, milestone_titles: list[str],
+    repository_clients: dict[str, dict[str, Any]] | None,
+    repository_waypoints: dict[str, list[str] | None] | None,
+    director_owner: str | None, bot_logins: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    if entry.get("via") or director_owner is None or entry["repo"].split("/")[0].casefold() != director_owner.casefold():
+        return entry
+    record = next((value for key, value in (repository_clients or {}).items()
+                   if key.casefold() == entry["repo"].casefold()), None)
+    waypoints = next((value for key, value in (repository_waypoints or {}).items()
+                      if key.casefold() == entry["repo"].casefold()), None)
+    if not github_client.is_client_issue(entry, record, bot_logins=bot_logins):
+        return entry
+    native_titles = {(item.get("milestone") or {}).get("title")
+                     for item in [*graph.get("candidates", []), *graph.get("excluded", [])]
+                     if item["repo"].casefold() == entry["repo"].casefold() and item.get("via")
+                     and (item.get("milestone") or {}).get("state") == "open"}
+    if not native_titles and not graph.get("dependency_context", {}).get("complete"):
+        return entry
+    eligible = [title for title in milestone_titles if title not in graph.get("completed_milestones", [])
+                and title in (native_titles if native_titles else waypoints or [])]
+    assigned = (entry.get("milestone") or {}).get("title")
+    if not eligible or assigned in graph.get("completed_milestones", []):
+        return entry
+    if assigned:
+        if (entry.get("milestone") or {}).get("state") != "open":
+            return entry
+        if assigned in eligible:
+            title = assigned
+        elif assigned not in milestone_titles and assigned in (waypoints or []) and native_titles:
+            title = eligible[0]
+        else:
+            return entry
+    else:
+        title = eligible[0]
+    return {**entry, "client_request": {"source": record["source"], "milestone": title, "ranking_only": True,
+                                      "basis": "native_track" if native_titles else "exact_listed_title_match"}}
+
+
 def rank_portfolio_work(
     graph: dict[str, Any], discoveries: list[dict[str, Any]], *,
     milestone_titles: list[str], selection_context: dict[str, Any] | None = None,
     repository_milestones: dict[str, list[str] | None] | None = None,
     repository_waypoints: dict[str, list[str] | None] | None = None,
     coverage_complete: bool = False,
+    repository_clients: dict[str, dict[str, Any]] | None = None,
+    director_owner: str | None = None,
+    bot_logins: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Share final evidence handling across adapters without inferring permission.
 
@@ -468,6 +518,14 @@ def rank_portfolio_work(
     coverage_complete attests the milestone graph, independently of portfolio
     discovery bounds. Inspected discoveries still contribute milestone evidence.
     """
+    def client_milestone(entry: dict[str, Any]) -> dict[str, Any]:
+        return with_client_milestone(entry, graph, milestone_titles=milestone_titles,
+                                     repository_clients=repository_clients, repository_waypoints=repository_waypoints,
+                                     director_owner=director_owner, bot_logins=bot_logins)
+
+    graph = {**graph, "candidates": [client_milestone(item) for item in graph.get("candidates", [])],
+             "excluded": [client_milestone(item) for item in graph.get("excluded", [])]}
+    discoveries = [client_milestone(item) for item in discoveries]
     context = validate_selection_context(selection_context or {})
     capacity = tooling_capacity_context(
         graph, discoveries, milestone_titles=milestone_titles, context=context,
@@ -526,10 +584,10 @@ def rank_portfolio_work(
             item["review_required"] = "current_ownership_evidence_incomplete"
         else:
             category = review.get("category")
-            if item.get("via") and category != "live_incident":
+            if (item.get("via") or item.get("client_request")) and category != "live_incident":
                 category = "milestone"
             occurrences = review.get("stop_occurrences") or []
-            if category not in {"live_incident", "milestone", "repeated_stop_tooling", "own_project"} or (category == "milestone" and not item.get("via")):
+            if category not in {"live_incident", "milestone", "repeated_stop_tooling", "own_project"} or (category == "milestone" and not (item.get("via") or item.get("client_request"))):
                 item["review_required"] = "direction_eligibility"
             else:
                 stop_count = len({url for url in occurrences if isinstance(url, str) and url.startswith("https://")}) if isinstance(occurrences, list) else 0
@@ -550,8 +608,8 @@ def rank_portfolio_work(
     rank_next_candidates(candidates, direction_milestones=milestone_titles)
     priority = {"live_incident": 0, "milestone": 1, "repeated_stop_tooling": 2, "own_project": 3}
     candidates.sort(key=lambda candidate: (
-        0 if is_live_breakage(candidate) else (4 if candidate.get("tooling_admission_rule") == "all_milestones_waiting_on_people" else priority.get(candidate.get("category"), 1 if candidate.get("via") else 5)),
-        -candidate.get("recorded_stop_count", 0) if capacity["admitted"] and candidate.get("category") == "repeated_stop_tooling" and not is_live_breakage(candidate) else (candidate["rank"] if candidate.get("via") else candidate.get("repository_rank", candidate["rank"])),
+        0 if is_live_breakage(candidate) else (4 if candidate.get("tooling_admission_rule") == "all_milestones_waiting_on_people" else priority.get(candidate.get("category"), 1 if candidate.get("via") or candidate.get("client_request") else 5)),
+        -candidate.get("recorded_stop_count", 0) if capacity["admitted"] and candidate.get("category") == "repeated_stop_tooling" and not is_live_breakage(candidate) else (candidate["rank"] if candidate.get("via") or candidate.get("client_request") else candidate.get("repository_rank", candidate["rank"])),
         str(candidate.get("created_at") or ""), candidate["repo"].casefold(), candidate["number"],
     ))
     for rank, item in enumerate(candidates, 1):

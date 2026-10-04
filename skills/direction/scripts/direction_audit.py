@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["PyYAML==6.0.3"]
 # ///
 """Read-only audit of a repository's DIRECTION.md against GitHub state.
 
@@ -30,7 +30,7 @@ if str(GITHUB_SCRIPTS) not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from skills.github.scripts import github_identity, github_rulesets
+from skills.github.scripts import github_client, github_identity, github_rulesets
 
 REQUIRED_HEADINGS = ("Purpose", "Stop Boundaries", "Journey", "Retired", "Milestones")
 ESCALATION_LABEL = "direction"
@@ -161,9 +161,13 @@ def audit(
     rulesets_unavailable: bool = False,
     audit_since: dt.datetime | None = None,
     capacity: dict[str, Any] | None = None,
+    client: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     limits: list[dict[str, Any]] = []
+    client_context = {key: value for key, value in (client or {"status": "not_supplied"}).items() if key != "login"}
+    if client and client.get("status") in {"unavailable", "ambiguous"}:
+        limits.append({"kind": "client_identity_unavailable", "detail": "Client quote exemptions could not be established; identity is unavailable or ambiguous."})
     audit_since = audit_since or now - dt.timedelta(days=7)
     if truncated:
         findings.append({"kind": "coverage_incomplete", "detail": "a bounded read was truncated or unavailable; drift beyond verified coverage is unreported", "listings": sorted(truncated)})
@@ -278,7 +282,8 @@ def audit(
         admission_actor = issue.get("_milestone_admitted_by")
         non_owner_admitted = admission_actor is not None and admission_actor != owner.lower()
         bot_authored_without_known_admission = author in bots and admission_actor is None
-        if (not issue.get("_admission_unknown") and milestone_title in milestone_lines
+        if (not github_client.is_client_issue(issue, client, bot_logins=tuple(bots))
+                and not issue.get("_admission_unknown") and milestone_title in milestone_lines
                 and (non_owner_admitted or bot_authored_without_known_admission)):
             quotes = direction_quotes(str(issue.get("body") or ""))
             if not quotes:
@@ -331,6 +336,7 @@ def audit(
         "findings": findings,
         "limits": limits,
         "counts": _counts(findings),
+        "client_context": client_context,
     }
     if capacity is not None:
         result["capacity"] = capacity
@@ -905,6 +911,14 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(error))
         return 1
 
+    configured_bots = github_identity.configured_bot_logins()
+    client = github_client.recorded_client(repo) if any(
+        ((issue.get("milestone") or {}).get("title") in milestone_lines
+         and (issue.get("user") or {}).get("login")
+         and (issue.get("user") or {}).get("type") != "Bot"
+         and (issue.get("user") or {})["login"].casefold() not in {str(login).casefold() for login in (automation, *configured_bots) if login})
+        for issue in issues
+    ) else None
     result = audit(
         direction_text=direction_text,
         milestones=milestones,
@@ -917,10 +931,11 @@ def main(argv: list[str] | None = None) -> int:
         truncated=truncated,
         rulesets=rulesets,
         rulesets_unavailable=rulesets is None,
-        bot_logins=github_identity.configured_bot_logins(),
+        bot_logins=configured_bots,
         expected_automation=github_identity.automation_login(),
         owner_identity_explicit=owner_reader or args.automation is not None,
         capacity=capacity,
+        client=client,
     )
     result.update({"repo": repo, "direction_source": f"{repo}:DIRECTION.md@default-branch", "read_only": True})
     result["audit_since"] = audit_since.isoformat().replace("+00:00", "Z")
