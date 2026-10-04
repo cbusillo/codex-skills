@@ -372,8 +372,11 @@ and continue independent work.
 
 Unstructured Current Status ownership evidence remains fail-closed for `Owned by`,
 `Claimed by`, and worker/session fields, including informal prose and Markdown.
-Resource responsibility sentences assigning entries, records, or resources to
-one actor for evidence and another for disposition approval are not worker claims.
+Recognized responsibility sentences start a line with entries, records, or
+resources, optionally prefixed by `Remaining`, a two-group count, or `provider-only`.
+`After these proposals,` may precede that resource subject. They assign one actor
+for evidence and another for disposition approval; these are not worker claims.
+Other resource-prose shapes remain ambiguous and refuse conservatively.
 Other ownership assertions in the same status, structured claims, and unreleased
 claim comments still refuse independently.
 

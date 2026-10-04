@@ -182,6 +182,7 @@ class ClaimTests(unittest.TestCase):
         for status in (
             "Remaining records are owned by engineering for evidence and Chris for disposition approval",
             "Remaining resources are owned by engineering for evidence and Chris for production disposition approval.",
+            "Entries owned by another-worker for evidence and Chris for disposition approval.",
         ):
             with self.subTest(status=status):
                 conflicts, owned = CLAIM.discussion_evidence(status, [], OWNER)
