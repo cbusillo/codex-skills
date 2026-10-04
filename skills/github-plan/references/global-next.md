@@ -28,8 +28,10 @@ Read for `next` in a repository owner's direction repository, including explicit
    `.local/people.yaml` entry with relationship kind or role `client`. Global
    people entries, staff, customers, bot aliases and another product's Client
    do not establish this match. A readable record with no Client does not fall
-   back. Ambiguous mappings remain unclassified. `client_context` reports the
-   source status without publishing private identity mappings.
+   back. Ambiguous mappings remain unclassified. `client_context` reports source status and omits the Client login.
+   The full selection output still associates an issue author with its Client
+   classification: keep it private, or redact the author and Client marker
+   before publishing outside the approved context.
 
    A native Track path for the same product repository supplies its overall
    milestone (a local listed product milestone may map onto that Track);

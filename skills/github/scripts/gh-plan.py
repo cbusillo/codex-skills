@@ -2825,8 +2825,6 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
             if raw_issue is None:
                 issue_actor, raw_issue = get_issue(str(number), issue_repo)
                 actor = issue_actor or actor
-            if (raw_issue.get("user") or {}).get("login") and (raw_issue.get("user") or {}).get("type") != "Bot" and str((raw_issue.get("user") or {}).get("login")).casefold() not in {login.casefold() for login in client_bot_logins} and issue_repo.split("/")[0].casefold() == repo.split("/")[0].casefold() and issue_repo.casefold() not in client_records:
-                client_records[issue_repo.casefold()] = github_client.recorded_client(issue_repo)
             if issue_repo not in contexts:
                 target_config = load_config(issue_repo)
                 focus_actor, focus_values, focus_context = next_focus_context(issue_repo, target_config)

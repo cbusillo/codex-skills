@@ -59,7 +59,9 @@ def overlay_client(repo_root: Path | None) -> dict[str, Any]:
     # who the Client of this repository is, and bot aliases are not human Clients.
     from skills.people.scripts.resolve_person import load_people, PeopleConfigError
     try:
-        _, people = load_people(repo_root / ".local" / "people.yaml", source_scope="repo")
+        status, people = load_people(repo_root / ".local" / "people.yaml", source_scope="repo")
+        if status == "no_index":
+            return {"status": "unavailable", "source": "repo_people_overlay"}
     except (OSError, PeopleConfigError):
         return {"status": "unavailable", "source": "repo_people_overlay"}
     clients = []

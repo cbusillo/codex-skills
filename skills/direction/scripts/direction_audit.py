@@ -911,7 +911,14 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(error))
         return 1
 
-    client = github_client.recorded_client(repo) if any((issue.get("user") or {}).get("login") for issue in issues) else None
+    configured_bots = github_identity.configured_bot_logins()
+    client = github_client.recorded_client(repo) if any(
+        ((issue.get("milestone") or {}).get("title") in milestone_lines
+         and (issue.get("user") or {}).get("login")
+         and (issue.get("user") or {}).get("type") != "Bot"
+         and (issue.get("user") or {})["login"].casefold() not in {str(login).casefold() for login in (automation, *configured_bots) if login})
+        for issue in issues
+    ) else None
     result = audit(
         direction_text=direction_text,
         milestones=milestones,
@@ -924,7 +931,7 @@ def main(argv: list[str] | None = None) -> int:
         truncated=truncated,
         rulesets=rulesets,
         rulesets_unavailable=rulesets is None,
-        bot_logins=github_identity.configured_bot_logins(),
+        bot_logins=configured_bots,
         expected_automation=github_identity.automation_login(),
         owner_identity_explicit=owner_reader or args.automation is not None,
         capacity=capacity,

@@ -38,6 +38,7 @@ def test_launchplane_record_wins_and_readable_empty_does_not_fallback() -> None:
 def test_private_overlay_requires_one_explicit_repository_client() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
+        assert client.overlay_client(root)["status"] == "unavailable"
         overlay = root / ".local/people.yaml"
         overlay.parent.mkdir()
         overlay.write_text("version: 1\npeople:\n  - id: staff\n    display_name: Staff\n    relationship: {kind: collaborator}\n    contacts: {github: {username: staff}}\n")
@@ -63,6 +64,18 @@ def test_local_overlay_is_read_only_after_origin_matches() -> None:
         return SimpleNamespace(stdout="git@github.com:someone-else/product.git\n", returncode=0)
     with patch.object(client.subprocess, "run", side_effect=git):
         assert client.local_repository(REPO) is None
+
+
+def test_matching_primary_and_sibling_origins_select_only_that_repository() -> None:
+    from types import SimpleNamespace
+    def git(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        if "rev-parse" in command:
+            return SimpleNamespace(stdout="/checkouts/current/.git\n", returncode=0)
+        repo = "example/current" if command[2] == "/checkouts/current" else REPO
+        return SimpleNamespace(stdout=f"git@github.com:{repo}.git\n", returncode=0)
+    with patch.object(client.subprocess, "run", side_effect=git):
+        assert client.local_repository("example/current") == Path("/checkouts/current")
+        assert client.local_repository(REPO) == Path("/checkouts/product")
 
 
 def main() -> None:
