@@ -32,6 +32,14 @@ move that guidance into `AGENTS.md` or workflow metadata.
 
 ## Local Infrastructure Docs
 
+Cross-repository planning uses this route when private operational context is
+needed and `.github/github.json` is absent or its `relatedRepos`/`docs` routes
+do not cover that context. Preserve explicit repo routes for the scope they
+declare; consult local context only for the missing operational facts. Read
+task-relevant documentation, not an unrestricted inventory of private repos.
+Ordinary code planning with sufficient checked-in evidence needs no local
+infrastructure lookup.
+
 For questions whose correct answer depends on how this specific private/local
 environment is configured or accessed, read `$CODE_HOME/local-context.toml`,
 falling back to `$CODEX_HOME/local-context.toml` and then

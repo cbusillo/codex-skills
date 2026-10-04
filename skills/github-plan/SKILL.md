@@ -254,6 +254,16 @@ For graph paths, scope, or incomplete coverage, read
 
 ## Create Or Update A Plan
 
+When planning needs this environment's infrastructure, access paths, or private
+operational ownership, use `docs-lookup` before searching for related repositories.
+Keep configured `relatedRepos` and `docs` routes authoritative for their declared
+scope. Missing metadata, or routes that do not cover the needed context, call
+for `docs-lookup`'s configured local-context check; absence alone does not trigger
+it for ordinary source work. The local docs source supplies task-specific context,
+not a repository inventory. Keep private identities and routing details out of
+public plans. If neither route is configured, report the local documentation
+configuration gap and continue independent planning from checked-in evidence.
+
 Read `.local/github-plan.md` when present before creating, routing, or updating
 plans. Resolve people through the optional `people` skill and local overlays;
 absence of people context is normal. Verify unknown actors' claims and

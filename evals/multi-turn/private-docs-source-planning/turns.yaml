@@ -1,0 +1,26 @@
+name: private-docs-source-planning
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  AGENTS.md: >-
+    Offline fixture: resolve local-context configuration exclusively from
+    ./local-context.toml instead of real home or config directories. All data
+    here is synthetic. Do not contact any service.
+  README.md: 'The parser incorrectly accepts an empty identifier. Reject empty identifiers and retain all other parsing behavior.'
+  local-context.toml: '[docs]
+
+    local_infra = "private-context.md"'
+  private-context.md: 'Unrelated synthetic private operations inventory.'
+turns:
+  - prompt: >-
+      Use shared:github-plan to outline a small parser fix from this repository's
+      README.md. It has no .github/github.json. Read the fixture instructions
+      and needed sources. Do not implement, create issues, modify files, read
+      real home/config, or contact GitHub or any service.
+    expect:
+      owner: github-plan
+      read: 'README\.md'
+      forbid: 'gh-plan\.py|gh-with-env-token|curl|wget'
+      forbid_read: 'local-context\.toml|private-context\.md'
+      final: 'empty identifier'
