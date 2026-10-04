@@ -41,6 +41,7 @@ FAILED_RUN_CONCLUSIONS = {
 }
 REVIEW_BOT_LOGIN_KEYWORDS = {
     "codex",
+    "github-advanced-security",
 }
 
 
@@ -89,6 +90,101 @@ query($owner: String!, $name: String!, $number: Int!) {
   }
 }
 """.strip()
+
+
+REVIEW_THREADS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    nameWithOwner
+    pullRequest(number: $number) {
+      number url headRefOid
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id isResolved isOutdated
+          comments(first: 100) {
+            pageInfo { hasNextPage }
+            nodes { databaseId commit { oid } }
+          }
+        }
+      }
+    }
+  }
+}
+""".strip()
+
+
+def fetch_review_threads(pr, comments, reader):
+    """Re-read resolution for actionable inline bots, even after comments are seen."""
+    ids = {item["id"] for item in comments if is_actionable_review_bot_login(item["author"])}
+    evidence = {"status": "available", "head_sha": pr["head_sha"], "threads": []}
+    if not ids or pr["closed"] or pr["merged"]:
+        return evidence
+    if reader is None:
+        reader = watcher_reader()
+    owner, name = pr["repo"].split("/", 1)
+    cursor = None
+    matched = set()
+    for _ in range(10):
+        result = reader.graphql_json(
+            REVIEW_THREADS_QUERY,
+            {"owner": owner, "name": name, "number": pr["number"], "cursor": cursor},
+            step="review_threads", operation="github.pr.review_threads",
+            retry_policy=github_api.RetryPolicy(max_wait_seconds=2.0, max_attempts=1),
+            deadline_at=time.time() + 2.0,
+        )
+        body = result.body if result.ok else None
+        repository = body.get("data", {}).get("repository") if isinstance(body, dict) and isinstance(body.get("data"), dict) else None
+        item = repository.get("pullRequest") if isinstance(repository, dict) else None
+        if (
+            not isinstance(body, dict) or body.get("errors")
+            or not isinstance(item, dict)
+            or str(repository.get("nameWithOwner") or "").casefold() != pr["repo"].casefold()
+            or item.get("number") != pr["number"] or item.get("url") != pr["url"]
+            or item.get("headRefOid") != pr["head_sha"]
+            or any(reason.get("component") == "actor" for reason in reader.degraded_reasons)
+        ):
+            break
+        connection = item.get("reviewThreads")
+        if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list):
+            break
+        for thread in connection["nodes"]:
+            if not isinstance(thread, dict) or type(thread.get("isResolved")) is not bool or type(thread.get("isOutdated")) is not bool or not thread.get("id"):
+                break
+            thread_comments = thread.get("comments")
+            if not isinstance(thread_comments, dict) or not isinstance(thread_comments.get("nodes"), list) or thread_comments.get("pageInfo", {}).get("hasNextPage") is not False:
+                break
+            for comment in thread_comments["nodes"]:
+                if not isinstance(comment, dict):
+                    break
+                comment_id = str(comment.get("databaseId") or "")
+                if comment_id in ids:
+                    matched.add(comment_id)
+                    commit = comment.get("commit")
+                    commit_sha = commit.get("oid") if isinstance(commit, dict) else None
+                    evidence["threads"].append({
+                        "id": thread["id"], "comment_id": comment_id,
+                        "is_resolved": thread["isResolved"], "is_outdated": thread["isOutdated"],
+                        "commit_sha": commit_sha, "head_sha": pr["head_sha"],
+                        "matches_current_head": commit_sha == pr["head_sha"],
+                    })
+            else:
+                continue
+            break
+        else:
+            page = connection.get("pageInfo", {})
+            if page.get("hasNextPage") is False:
+                if matched == ids:
+                    return evidence
+                break
+            next_cursor = page.get("endCursor")
+            if page.get("hasNextPage") is True and next_cursor and next_cursor != cursor:
+                cursor = next_cursor
+                continue
+        break
+    evidence["status"] = "unknown"
+    reader.mark_degraded("review_threads", "incomplete_review_threads", "Review-thread resolution could not be proven for the current head")
+    return evidence
 
 
 class GhCommandError(RuntimeError):
@@ -952,6 +1048,13 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
     issue_items = normalize_issue_comments(issue_payload)
     review_comment_items = normalize_review_comments(review_comment_payload)
     review_items = normalize_reviews(review_payload)
+    threads = fetch_review_threads(pr, review_comment_items, reader)
+    pr["review_threads"] = threads
+    by_comment = {thread["comment_id"]: thread for thread in threads["threads"]}
+    for item in review_comment_items:
+        item["head_sha"] = pr["head_sha"]
+        if item["id"] in by_comment:
+            item["thread"] = by_comment[item["id"]]
     all_items = issue_items + review_comment_items + review_items
 
     seen_issue = {str(x) for x in state.get("seen_issue_comment_ids") or []}
@@ -1002,6 +1105,8 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
             continue
 
         kind = item["kind"]
+        if kind == "review_comment" and item.get("thread", {}).get("is_resolved") is True:
+            continue
         if kind == "issue_comment" and item_id in seen_issue:
             continue
         if kind == "review_comment" and item_id in seen_review_comment:
@@ -1091,6 +1196,9 @@ def is_pr_ready_to_merge(pr, checks_summary, new_review_items):
     if checks_summary["failed_count"] > 0 or checks_summary["pending_count"] > 0:
         return False
     if new_review_items:
+        return False
+    threads = pr.get("review_threads", {})
+    if threads.get("status") == "unknown" or any(not thread["is_resolved"] for thread in threads.get("threads", [])):
         return False
     availability = pr.get("metadata_availability")
     if not isinstance(availability, dict) or not all(
@@ -1190,6 +1298,11 @@ def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_i
 
     if new_review_items:
         actions.append("process_review_comment")
+    threads = pr.get("review_threads", {})
+    if threads.get("status") == "unknown":
+        actions.append("review_thread_resolution_unavailable")
+    elif any(not thread["is_resolved"] for thread in threads.get("threads", [])):
+        actions.append("resolve_review_threads")
 
     if checks_summary.get("evidence_complete") is not True:
         actions.append("check_evidence_incomplete")

@@ -139,3 +139,18 @@ both layers use the same automation identity route.
 - `status`
 - `conclusion`
 - `html_url`
+
+### Automated inline review threads
+
+Inline Codex and GitHub Advanced Security comments are actionable review
+inventory. When those comments exist, the watcher reads GraphQL `reviewThreads`
+with the REST repository, PR number, URL, and head SHA pinned on every page.
+`pr.review_threads` retains thread IDs, resolution, outdated state, comment
+commit SHA, and whether that commit matches the current head. Resolved comments
+are omitted from new feedback. Unresolved threads remain a `resolve_review_threads`
+action after their comment IDs have been seen; old-head findings require
+verification on the current head before changing code, but still need disposition
+before GitHub can allow a merge. Missing, mismatched, or truncated resolution
+evidence emits `review_thread_resolution_unavailable` and cannot prove readiness.
+Thread pagination is bounded to ten pages; a thread with over 100 comments is
+reported incomplete.

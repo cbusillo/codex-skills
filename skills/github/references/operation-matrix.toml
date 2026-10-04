@@ -315,6 +315,26 @@ source_refs = ["babysit-pr/scripts/gh_pr_watch.py:query_review_readiness", "gith
 test_refs = ["babysit-pr/scripts/test_gh_pr_watch.py:test_review_readiness_query_distinguishes_nullable_decision", "babysit-pr/scripts/test_gh_pr_watch.py:test_review_readiness_partial_error_is_unknown"]
 
 [[operations]]
+id = "github.pr.review_threads"
+capabilities = ["pull_requests_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
+entrypoint = "babysit-pr/scripts/gh_pr_watch.py review inventory"
+intent = "Read automated inline review-thread resolution pinned to the exact current PR head."
+current_transport = "gh_cli_graphql"
+selected_transport = "gh_cli_graphql"
+endpoint_or_command = "POST /graphql with paginated pullRequest reviewThreads pinned to repository, number, URL, and headRefOid"
+quota_bucket = "graphql"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "GraphQL is intentionally retained only for the bounded review inventory because REST does not expose authoritative reviewDecision, required approval accounting, code-owner requirements, or dismissal state."
+source_refs = ["babysit-pr/scripts/gh_pr_watch.py:fetch_review_threads", "github/scripts/github_read.py:graphql_json"]
+test_refs = ["babysit-pr/scripts/test_gh_pr_watch.py:test_security_threads_survive_seen_comments", "babysit-pr/scripts/test_gh_pr_watch.py:test_incomplete_security_threads_never_prove_ready"]
+
+[[operations]]
 id = "github.pr.create"
 capabilities = ["pull_requests_write", "issues_write", "projects_write"]
 permission_mode = "input_dependent"
@@ -2059,6 +2079,6 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github-work-rollup/scripts/github_unanswered_comments.py" = "ca855657a3e3e47dad5080b48d0525a817dfbd29151e5ed84decdbd1f78fdc74"
 "github-work-rollup/scripts/github_work_rollup.py" = "060d94372bd3f94bda5eba59ad2e984da14e69aa8a8e687df36807d0147296d6"
 "github-work-rollup/scripts/verify_work_brief.py" = "379cfec37182c96c01ac5ae2b930ca7cdd9fc34a1bacba5f5f3510d918f9074c"
-"babysit-pr/scripts/gh_pr_watch.py" = "4866268db9cb15da6ab4dac9ef189c784cfee9f5a9efcc1d7d16996c256580a1"
+"babysit-pr/scripts/gh_pr_watch.py" = "4ae6911610f861ed1e1e6c3dc20699785858537ac1e822f449f5852a1196e345"
 "direction/scripts/direction_audit.py" = "e7485d480307adf5cd8ef7cc7cc7aa4648076cc1bbc09a16d649d9c3060b3b36"
 "github/scripts/github_plan_claim.py" = "a111cd3100cd7fc619fe8231c440aca7a8301799f325767c1c5030a02840d05c"
