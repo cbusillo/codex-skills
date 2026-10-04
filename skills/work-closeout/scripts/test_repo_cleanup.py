@@ -237,13 +237,15 @@ class CleanupContracts(unittest.TestCase):
                 binding = skills / "shared" if nested else skills
                 binding.parent.mkdir(parents=True, exist_ok=True)
                 binding.symlink_to(catalog, target_is_directory=True)
-                if nested:
-                    (skills / "personal").mkdir()
-                with patch.dict(os.environ, environment):
-                    report = self.inventory(self.worktree)
-                self.assertIn("skills_runtime", report["roots"][0]["holds"])
-                self.assertEqual(report["roots"][0]["disposition"], "Keep")
-                binding.unlink()
+                try:
+                    if nested:
+                        (skills / "personal").mkdir()
+                    with patch.dict(os.environ, environment):
+                        report = self.inventory(self.worktree)
+                    self.assertIn("skills_runtime", report["roots"][0]["holds"])
+                    self.assertEqual(report["roots"][0]["disposition"], "Keep")
+                finally:
+                    binding.unlink()
 
     def test_absent_and_unreadable_roots_have_explicit_coverage(self):
         absent = self.base / "absent-volume"
