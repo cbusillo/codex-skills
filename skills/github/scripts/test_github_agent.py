@@ -108,11 +108,13 @@ class AgentTests(unittest.TestCase):
 
             leaves = [next_tests.global_issue("someone/product", n, labels=[f"agent:{other}"])
                       for n in range(2, 12)]
+            leaves.append(next_tests.global_issue("someone/product", 12, labels=[f"agent:{family}"]))
             edges = {(root["repo"], 1): next_tests.relationships(sub_issues=leaves)}
             with next_tests.global_fixture([root], leaves, edges) as (module, result, _):
                 args = next_tests.next_args(scan_limit=2)
                 args.agent = family
                 module.cmd_next(args)
+            self.assertFalse(result["candidates"])
             self.assertEqual(result["evaluated"], 2 * args.scan_limit)
             self.assertTrue(result["graph_context"]["truncated"])
             self.assertFalse(result["graph_context"]["complete"])

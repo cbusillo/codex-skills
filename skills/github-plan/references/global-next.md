@@ -225,7 +225,10 @@ other-family issues. Those issues retain dependency, parent-wait and milestone
 capacity evidence before the final family filter. Graph nodes consume the
 ordinary allowance unless a freshly read assignment uses the remaining
 other-family allowance; the graph stops when the ordinary allowance is exhausted.
-Thus graph reads remain bounded by twice `--scan-limit`. Discovery keeps its
-existing held-repository and marked-incident allowances. Omitted work still
+Thus graph reads remain bounded by twice `--scan-limit`. After the other-family
+allowance fills, additional other-family graph nodes spend the ordinary allowance
+and can still leave an eligible leaf unseen; raise `--scan-limit` when needed.
+Discovery keeps its existing held-repository and marked-incident allowances,
+so it evaluates at most three times `--scan-limit` issues plus marked incidents. Omitted work still
 reports incomplete coverage and known omitted milestones still prevent capacity
 admission. Unknown or conflicting assignments consume the ordinary allowance.
