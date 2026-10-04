@@ -56,6 +56,7 @@ def compact_list_issue(repo: str, issue: dict[str, Any]) -> dict[str, Any]:
         "number": issue.get("number"),
         "title": issue.get("title"),
         "author": (issue.get("user") or {}).get("login") or issue.get("author"),
+        "author_is_bot": (issue.get("user") or {}).get("type") == "Bot",
         "state": state.upper() if isinstance(state, str) else state,
         "created_at": issue.get("created_at") or issue.get("createdAt"),
         "updated_at": issue.get("updated_at") or issue.get("updatedAt"),
@@ -459,6 +460,46 @@ def tooling_capacity_context(
     return {"admitted": True, "reason": "all_milestones_waiting_on_people", "milestone_wait_count": len(frontier)}
 
 
+def with_client_milestone(
+    entry: dict[str, Any], graph: dict[str, Any], *, milestone_titles: list[str],
+    repository_clients: dict[str, dict[str, Any]] | None,
+    repository_waypoints: dict[str, list[str] | None] | None,
+    director_owner: str | None, bot_logins: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    if entry.get("via") or director_owner is None or entry["repo"].split("/")[0].casefold() != director_owner.casefold():
+        return entry
+    record = next((value for key, value in (repository_clients or {}).items()
+                   if key.casefold() == entry["repo"].casefold()), None)
+    waypoints = next((value for key, value in (repository_waypoints or {}).items()
+                      if key.casefold() == entry["repo"].casefold()), None)
+    if not github_client.is_client_issue(entry, record, bot_logins=bot_logins):
+        return entry
+    native_titles = {(item.get("milestone") or {}).get("title")
+                     for item in [*graph.get("candidates", []), *graph.get("excluded", [])]
+                     if item["repo"].casefold() == entry["repo"].casefold() and item.get("via")
+                     and (item.get("milestone") or {}).get("state") == "open"}
+    if not native_titles and not graph.get("dependency_context", {}).get("complete"):
+        return entry
+    eligible = [title for title in milestone_titles if title not in graph.get("completed_milestones", [])
+                and title in (native_titles if native_titles else waypoints or [])]
+    assigned = (entry.get("milestone") or {}).get("title")
+    if not eligible or assigned in graph.get("completed_milestones", []):
+        return entry
+    if assigned:
+        if (entry.get("milestone") or {}).get("state") != "open":
+            return entry
+        if assigned in eligible:
+            title = assigned
+        elif assigned not in milestone_titles and assigned in (waypoints or []) and native_titles:
+            title = eligible[0]
+        else:
+            return entry
+    else:
+        title = eligible[0]
+    return {**entry, "client_request": {"source": record["source"], "milestone": title, "ranking_only": True,
+                                      "basis": "native_track" if native_titles else "exact_listed_title_match"}}
+
+
 def rank_portfolio_work(
     graph: dict[str, Any], discoveries: list[dict[str, Any]], *,
     milestone_titles: list[str], selection_context: dict[str, Any] | None = None,
@@ -467,6 +508,7 @@ def rank_portfolio_work(
     coverage_complete: bool = False,
     repository_clients: dict[str, dict[str, Any]] | None = None,
     director_owner: str | None = None,
+    bot_logins: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Share final evidence handling across adapters without inferring permission.
 
@@ -477,35 +519,9 @@ def rank_portfolio_work(
     discovery bounds. Inspected discoveries still contribute milestone evidence.
     """
     def client_milestone(entry: dict[str, Any]) -> dict[str, Any]:
-        if director_owner is None or entry["repo"].split("/")[0].casefold() != director_owner.casefold():
-            return entry
-        record = next((value for key, value in (repository_clients or {}).items()
-                       if key.casefold() == entry["repo"].casefold()), None)
-        waypoints = next((value for key, value in (repository_waypoints or {}).items()
-                          if key.casefold() == entry["repo"].casefold()), None)
-        if not github_client.is_client_issue(entry, record):
-            return entry
-        native_titles = {(item.get("milestone") or {}).get("title")
-                         for item in [*graph.get("candidates", []), *graph.get("excluded", [])]
-                         if item["repo"].casefold() == entry["repo"].casefold() and item.get("via")
-                         and (item.get("milestone") or {}).get("state") == "open"}
-        eligible = [title for title in milestone_titles if title not in graph.get("completed_milestones", [])
-                    and title in (native_titles if native_titles else waypoints or [])]
-        assigned = (entry.get("milestone") or {}).get("title")
-        if not eligible or assigned in graph.get("completed_milestones", []):
-            return entry
-        if assigned:
-            if (entry.get("milestone") or {}).get("state") != "open":
-                return entry
-            if assigned in eligible:
-                title = assigned
-            elif assigned not in milestone_titles and assigned in (waypoints or []) and native_titles:
-                title = eligible[0]
-            else:
-                return entry
-        else:
-            title = eligible[0]
-        return {**entry, "client_request": {"source": record["source"], "milestone": title, "ranking_only": True}}
+        return with_client_milestone(entry, graph, milestone_titles=milestone_titles,
+                                     repository_clients=repository_clients, repository_waypoints=repository_waypoints,
+                                     director_owner=director_owner, bot_logins=bot_logins)
 
     graph = {**graph, "candidates": [client_milestone(item) for item in graph.get("candidates", [])],
              "excluded": [client_milestone(item) for item in graph.get("excluded", [])]}

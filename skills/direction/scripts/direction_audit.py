@@ -282,7 +282,7 @@ def audit(
         admission_actor = issue.get("_milestone_admitted_by")
         non_owner_admitted = admission_actor is not None and admission_actor != owner.lower()
         bot_authored_without_known_admission = author in bots and admission_actor is None
-        if (not github_client.is_client_issue(issue, client)
+        if (not github_client.is_client_issue(issue, client, bot_logins=tuple(bots))
                 and not issue.get("_admission_unknown") and milestone_title in milestone_lines
                 and (non_owner_admitted or bot_authored_without_known_admission)):
             quotes = direction_quotes(str(issue.get("body") or ""))

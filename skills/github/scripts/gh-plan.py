@@ -2809,6 +2809,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     issues = issues[:NEXT_PLAN_INVENTORY_LIMIT]
     seeds = {(repo.casefold(), item["number"]): {**item, "repo": repo} for item in issues}
     client_records: dict[str, dict[str, Any]] = {}
+    client_bot_logins = github_identity.configured_bot_logins()
     contexts: dict[str, tuple[dict[str, Any], dict[str, str]]] = {}
     focus_contexts: dict[str, dict[str, Any]] = {}
     nodes: dict[tuple[str, int], dict[str, Any]] = {}
@@ -2824,7 +2825,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
             if raw_issue is None:
                 issue_actor, raw_issue = get_issue(str(number), issue_repo)
                 actor = issue_actor or actor
-            if (raw_issue.get("user") or {}).get("login") and issue_repo.split("/")[0].casefold() == repo.split("/")[0].casefold() and issue_repo.casefold() not in client_records:
+            if (raw_issue.get("user") or {}).get("login") and (raw_issue.get("user") or {}).get("type") != "Bot" and str((raw_issue.get("user") or {}).get("login")).casefold() not in {login.casefold() for login in client_bot_logins} and issue_repo.split("/")[0].casefold() == repo.split("/")[0].casefold() and issue_repo.casefold() not in client_records:
                 client_records[issue_repo.casefold()] = github_client.recorded_client(issue_repo)
             if issue_repo not in contexts:
                 target_config = load_config(issue_repo)
@@ -2934,6 +2935,25 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         inventory, discovery = discover_direction_work(repo, args, selection_context=selection_context, capacity_evidence=capacity_evidence)
         seen = {(item["repo"].casefold(), item["number"]) for item in [*ranked["candidates"], *ranked["excluded"]] if item.get("exclusion") != "outside_direction_tracks"}
         inventory = [item for item in inventory if (item["repo"].casefold(), item["number"]) not in seen]
+        waypoints = {source["repo"]: repository_direction_milestones(source)
+                     for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)}
+        # Already-inventoried Client requests are milestone evidence even when
+        # the scan budget leaves them unevaluated. Resolve each eligible repo once.
+        for item in inventory:
+            name = item["repo"]
+            native = any(entry["repo"].casefold() == name.casefold() and entry.get("via")
+                         for entry in [*ranked["candidates"], *ranked["excluded"]])
+            if not native and not set(waypoints.get(name) or []).intersection(titles):
+                continue
+            author = (item.get("user") or {}).get("login")
+            if (author and (item.get("user") or {}).get("type") != "Bot"
+                    and author.casefold() not in {login.casefold() for login in client_bot_logins}
+                    and name.casefold() not in client_records):
+                client_records[name.casefold()] = github_client.recorded_client(name)
+        inventory = [github_direction_next.with_client_milestone(
+            item, ranked, milestone_titles=titles, repository_clients=client_records,
+            repository_waypoints=waypoints, director_owner=repo.split("/")[0], bot_logins=client_bot_logins,
+        ) for item in inventory]
         scanned = github_direction_next.discovery_scan(inventory, args.scan_limit, selection_context)
         scanned_keys = {(item["repo"].casefold(), item["number"]) for item in scanned}
         skipped_counts: dict[str, int] = {}
@@ -2942,7 +2962,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
             if (item["repo"].casefold(), item["number"]) not in scanned_keys:
                 # Inventory already identifies title-matched milestone work;
                 # an ordinary scan bound must not erase that known frontier.
-                if (item.get("milestone") or {}).get("title") in titles:
+                if (item.get("milestone") or {}).get("title") in titles or item.get("client_request"):
                     unevaluated_milestones.append(compact_list_issue(item["repo"], item))
                 if not github_direction_next.repository_hold(selection_context, item["repo"]):
                     skipped_counts[item["repo"]] = skipped_counts.get(item["repo"], 0) + 1
@@ -3006,7 +3026,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     portfolio = github_direction_next.rank_portfolio_work(
         ranked, discoveries, milestone_titles=titles, selection_context=selection_context,
         coverage_complete=scope is None and graph_coverage["complete"] and not unevaluated_milestones and not incomplete_milestone_sources,
-        repository_clients=client_records, director_owner=repo.split("/")[0],
+        repository_clients=client_records, director_owner=repo.split("/")[0], bot_logins=client_bot_logins,
         repository_milestones={source["repo"]: direction_milestone_titles(source["direction"]) if source.get("direction") else None for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
         repository_waypoints={source["repo"]: repository_direction_milestones(source) for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
     )

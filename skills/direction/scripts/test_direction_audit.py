@@ -389,6 +389,7 @@ def test_main_preserves_closed_audit_cutoff_and_stamps_scan_start() -> None:
                       "gh_json": fetch,
                       "dt": types.SimpleNamespace(datetime=Clock, timezone=dt.timezone, timedelta=dt.timedelta),
                   }),
+                  patch.object(module.github_client, "recorded_client", return_value={"status": "none", "source": "fixture"}),
                   patch.dict(vars(module.github_identity), {"configured_bot_logins": lambda: ("bot",)}),
                   redirect_stdout(output)):
                 assert module.main(["--repo", "o/r", "--automation", "bot", "--gh", "fixture-gh"]) == 3
@@ -1118,6 +1119,8 @@ def test_only_product_client_issues_are_exempt_from_admission_quotes() -> None:
     assert "milestone_issue_quote_missing" not in kinds(run(module, issues=[request], client=client))
     for record in (None, {"status": "none"}, {**client, "login": "another-client"}):
         assert "milestone_issue_quote_missing" in kinds(run(module, issues=[request], client=record))
+    automation = {**request, "user": {"login": "bot"}}
+    assert "milestone_issue_quote_missing" in kinds(run(module, issues=[automation], client={**client, "login": "bot"}))
     staff = {**request, "user": {"login": "staff"}}
     assert "milestone_issue_quote_missing" in kinds(run(module, issues=[staff], client=client))
     # The exemption affects only admission quotes; other drift is still reported.

@@ -92,6 +92,8 @@ def recorded_client(repo: str) -> dict[str, Any]:
                                "product-profile-read", "--product", product)
         if (response or {}).get("status") in {"ok", "available"}:
             profile = (response or {}).get("result") or {}
+            if not profile.get("repository"):
+                return {"status": "unavailable", "source": "launchplane"}
             if (str(profile.get("repository") or "").casefold() != repo.casefold()
                     or profile.get("product") != product):
                 return {"status": "ambiguous", "source": "launchplane"}
@@ -104,7 +106,10 @@ def recorded_client(repo: str) -> dict[str, Any]:
     return overlay_client(local_repository(repo))
 
 
-def is_client_issue(issue: dict[str, Any], client: dict[str, Any] | None) -> bool:
+def is_client_issue(issue: dict[str, Any], client: dict[str, Any] | None, *, bot_logins: tuple[str, ...] = ()) -> bool:
     author = issue.get("author") or (issue.get("user") or {}).get("login")
+    bots = {login.casefold() for login in bot_logins}
     return bool(client and client.get("status") == "recorded" and isinstance(author, str)
+                and author.casefold() not in bots and not issue.get("author_is_bot")
+                and (issue.get("user") or {}).get("type") != "Bot"
                 and author.casefold() == client.get("login") and "pull_request" not in issue)

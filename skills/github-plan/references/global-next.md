@@ -48,8 +48,13 @@ Read for `next` in a repository owner's direction repository, including explicit
    the overall Order or another product's priority, enqueue work, merge, promote,
    grant access, or count as acceptance. A request that changes a milestone
    must be escalated as a `direction` issue. Service callers supply
-   `director_owner` and freshly resolved `repository_clients`; omitting the owner
-   keeps Client ranking disabled.
+   `director_owner` and freshly resolved `repository_clients`; omitting the Director's GitHub account
+   keeps Client ranking disabled. Configured automation logins and GitHub Bot
+   authors never qualify as human Clients. `client_request.basis` distinguishes
+   native Track placement from a shared waypoint; an incomplete graph does not
+   permit the waypoint fallback. Existing native-path candidates keep their
+   native evidence. Already-inventoried Client requests omitted by the scan
+   budget prevent spare-capacity tooling admission until reviewed.
 5. Select under the Director's direction: live incidents first, listed milestones
    in order, other tooling with two linked occurrences of the stop it fixes, or
    when every milestone candidate waits on a person and provider capacity would

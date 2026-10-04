@@ -2115,7 +2115,7 @@ def test_client_requests_rank_with_product_without_changing_order_or_authority()
     assert {item["number"] for item in result["available_candidates"][2:]} == {21, 22, 23}
     selected = result["available_candidates"][1]
     assert selected["category"] == "milestone"
-    assert selected["client_request"] == {"source": "launchplane", "milestone": "Second", "ranking_only": True}
+    assert selected["client_request"] == {"source": "launchplane", "milestone": "Second", "ranking_only": True, "basis": "exact_listed_title_match"}
     assert selected["labels"] == []
     assert client["milestone"] is None  # ranker never mutates the source request
     assert all("client_request" not in item for item in result["candidates"] if item["number"] in {21, 22, 23})
@@ -2125,6 +2125,9 @@ def test_client_requests_rank_with_product_without_changing_order_or_authority()
     assert "client_request" not in shared.rank_portfolio_work(graph, [external], **external_kwargs)["candidates"][-1]
     completed = {**graph, "completed_milestones": ["Second"]}
     assert "client_request" not in shared.rank_portfolio_work(completed, [client], **kwargs)["candidates"][-1]
+    incomplete = {**graph, "dependency_context": {"complete": False}}
+    assert "client_request" not in shared.rank_portfolio_work(incomplete, [client], **kwargs)["candidates"][-1]
+    assert "client_request" not in shared.rank_portfolio_work(graph, [client], **kwargs, bot_logins=("client",))["candidates"][-1]
     # Full discussion, current review, holds and ownership still fence Client work.
     unreviewed = shared.rank_portfolio_work(graph, [client], **kwargs)
     assert unreviewed["available_candidates"] == []
@@ -2182,7 +2185,26 @@ def test_client_track_precedence_keeps_real_membership_and_completed_assignments
     assert item["milestone"] == old["milestone"]
 
 
+def test_unscanned_client_request_prevents_spare_capacity_admission() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    wait = {**global_issue("someone/site", 10, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Client testing."), "user": {"login": "client"}}
+    tools = [global_issue("someone/tools", number) for number in (20, 21, 22)]
+    request = {**global_issue("someone/site", 30), "user": {"login": "client"}}
+    with global_fixture(roots, [wait], {("someone/direction", 1): relationships(sub_issues=[wait])}, discovered=[*tools, request]) as (module, result, _reads):
+        with patch.object(module.github_client, "recorded_client", return_value={"status": "recorded", "source": "launchplane", "login": "client"}):
+            module.cmd_next(next_args(scan_limit=3))
+            items = {item["number"]: item for item in [*result["candidates"], *result["excluded"]]}
+            context = {"issues": {"someone/site#10": reviewed(items[10], "waiting", waiting_on="person"),
+                                  "someone/tools#20": reviewed(items[20], category="repeated_stop_tooling")}}
+            with patch.object(module, "next_selection_context", return_value=context):
+                module.cmd_next(next_args(scan_limit=3))
+            assert result["tooling_capacity_context"]["admitted"] is False
+            assert [item["number"] for item in result["discovery_context"]["unevaluated_milestone_issues"]] == [30]
+            assert result["available_candidates"] == []
+
+
 TESTS = [
+    test_unscanned_client_request_prevents_spare_capacity_admission,
     test_client_track_precedence_keeps_real_membership_and_completed_assignments,
     test_client_requests_rank_with_product_without_changing_order_or_authority,
     test_client_requests_inherit_native_product_track_and_still_need_reviews,
