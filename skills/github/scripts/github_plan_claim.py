@@ -64,10 +64,38 @@ def same_owner(record: dict[str, str], claim: dict[str, str]) -> bool:
 
 
 def released_claim_id(text: str) -> int | None:
-    """Read an exact first-line release, including a sentence-ending period."""
+    """Read a first-line release or a standalone final release paragraph."""
     first = text.splitlines()[:1]
     match = re.fullmatch(r"Released claim (\d+)(?:\.(?:\s.*)?|[ \t]*)", first[0]) if first else None
-    return int(match.group(1)) if match else None
+    if match:
+        return int(match.group(1))
+    # Helpers append this transport marker; it is not handoff prose.
+    text = re.sub(r"\n\s*<!-- github-skill-operation:[0-9a-f]+ -->\s*$", "", text).rstrip()
+    lines = text.splitlines()
+    if len(lines) < 3 or lines[-2].strip():
+        return None
+    match = re.fullmatch(r"Released claim (\d+)\.?[ \t]*", lines[-1])
+    if not match:
+        return None
+    # A final line inside an unclosed code fence or HTML comment is an example,
+    # not a release. Quoted and indented directives never match the exact line.
+    fence = None
+    in_comment = False
+    for line in lines[:-1]:
+        if fence:
+            if re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*", line):
+                fence = None
+            continue
+        if in_comment:
+            in_comment = "-->" not in line
+            continue
+        if "<!--" in line:
+            in_comment = "-->" not in line.split("<!--", 1)[1]
+            continue
+        opener = re.match(r" {0,3}(`{3,}|~{3,})", line)
+        if opener:
+            fence = opener.group(1)
+    return int(match.group(1)) if not fence and not in_comment else None
 
 
 def resumed_status(status: str, comments: list[dict[str, Any]], source_id: int | None) -> str:
@@ -289,7 +317,9 @@ def refresh_handoff(
                   and re.search(rf"\bclaim {source_id}(?!\d)", handoff_text)
                   and re.search(rf"(?<![\w-]){re.escape(source_record['session'])}(?![\w-])", handoff_text)
                   and not records(handoff_text))
-    if not (released_claim_id(handoff_text) == source_id or standalone):
+    # An embedded release proves release, not the identity of the handoff.
+    first_line_release = released_claim_id(handoff_text.splitlines()[0] if handoff_text else "")
+    if not (first_line_release == source_id or standalone):
         raise ValueError("Refresh handoff must identify the exact released source claim")
     empty = {"local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}
     permitted = {source_branch}

@@ -418,6 +418,12 @@ The first release line is exactly `Released claim <id>`, or ends its exact ID
 with a period followed by optional handoff prose. Conditional prose after a
 bare ID does not release ownership.
 
+An exact release may also be a standalone final paragraph after the handoff
+prose, optionally followed by the helper's operation marker. It must be an
+unquoted, unindented `Released claim <id>` line (an ending period is allowed);
+fenced examples, inline mentions, conditional releases, and later prose do not
+count. The same author must post it after the source claim.
+
 Use a unique worker token per native session. Legacy `Released by <worker>`
 comments are accepted only when the earlier structured claims for that token
 all belong to one session; reuse requires exact comment-ID releases.
@@ -476,6 +482,13 @@ checks are at GitHub identity level; verify the actual finished-session handoff
 before invoking the route because several sessions can share that identity.
 Every open PR on a retained branch must be named in this handoff and authored
 by the source author, including a new PR on the original source branch.
+An embedded release alone does not establish this handoff identity. For an old
+handoff with a different opening, the supported recovery is a new same-author
+`Handoff from <source-worker>` comment after release, naming the source claim,
+native source session, and every retained PR. Verify the finished session and
+retained artifacts before posting it; preserve the original records and use the
+new comment ID with `--handoff-comment`. A release posted after the old handoff
+does not validate that old handoff retroactively.
 Unmentioned same-bot PRs also refuse.
 The named PR identities bind their current branches to that finished session's
 handoff, including split branches that differ from the original claim branch.

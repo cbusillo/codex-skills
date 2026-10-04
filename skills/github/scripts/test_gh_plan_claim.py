@@ -890,6 +890,81 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(PLAN.PlanError): self.run_claim()
         self.assert_no_writes()
 
+    def test_embedded_release_recovers_reported_finished_session(self):
+        # repairshopr_api#102: the release follows the Owner question/handoff.
+        self.comments = [
+            {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
+            {"id": 2, "body": "Owner question: Verify live-host usage?\n\n"
+             "Source session finished without implementation.\n\nReleased claim 1\n\n"
+             "<!-- github-skill-operation:ebe51a4db859c979eaa963fb10af11b5 -->\n",
+             "user": {"login": TEST_BOT}},
+        ]
+        self.run_claim()
+        self.assertEqual(len(self.comments), 3)
+        self.assertIn("claim_readback", self.emitted.call_args.args[0]["completed_steps"])
+
+    def test_embedded_release_resumes_exact_status_with_retained_branch(self):
+        self.released_status_fixture("Finished session handoff.\n\nReleased claim 1.")
+        self.run_claim()
+        self.assertEqual(CLAIM.records(self.issue["body"]), [self.emitted.call_args.args[0]["claim"]])
+
+    def test_embedded_release_preserves_ownership_and_artifact_guards(self):
+        for change in ("foreign", "wrong_id", "earlier", "other_claim", "artifact", "live_peer"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.released_status_fixture("Finished session handoff.\n\nReleased claim 1")
+                if change == "foreign": self.comments[1]["user"]["login"] = "stranger"
+                if change == "wrong_id": self.comments[1]["body"] += "1"
+                if change == "earlier": self.comments.reverse()
+                if change == "other_claim": self.compete({**OTHER, "session": "peer"})
+                if change == "artifact": self.inventory["local_branches"].append("work/other-issue-42")
+                if change == "live_peer": self.inventory["sessions"] = [{"sessionId": "peer", "cwd": "/retained/issue-42"}]
+                with self.assertRaises(PLAN.PlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_release_examples_and_incidental_text_do_not_reclaim(self):
+        for release in (
+            "> Released claim 1", "    Released claim 1", "`Released claim 1`",
+            "- Released claim 1", "Example: Released claim 1", "Released claim 1 once CI passes",
+            "Released claim 1. Work finished.", "Released claim 1.other",
+            "```text\n\nReleased claim 1\n```", "~~~\n\nReleased claim 1\n~~~",
+            "```text\n\nReleased claim 1", "~~~~text\n~~~\n\nReleased claim 1",
+            "<!-- Example:\n\nReleased claim 1", "Released claim 1\n\nOther handoff prose.",
+        ):
+            with self.subTest(release=release):
+                self.setUp()
+                self.comments = [
+                    {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
+                    {"id": 2, "body": "Source handoff.\n\n" + release, "user": {"login": TEST_BOT}},
+                ]
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_refresh_embedded_release_requires_explicit_source_identity(self):
+        self.refresh_fixture()
+        self.comments[2]["body"] = (
+            "Handoff from trial-b\nSource claim 1; Session: session-b; PR #99 and #100.\n\nReleased claim 1"
+        )
+        self.run_claim()
+        self.assertEqual(self.emitted.call_args.args[0]["claim"]["refresh_pr"], self.args.refresh_pr)
+
+    def test_late_release_does_not_validate_reported_malformed_handoff(self):
+        # launchplane#2693: release recognition must not erase handoff identity.
+        for embedded in (False, True):
+            with self.subTest(embedded=embedded):
+                self.setUp()
+                self.refresh_fixture()
+                self.comments[2]["body"] = "LP-2693-D1 handoff: PR #99 and #100; source work finished."
+                if embedded: self.comments[2]["body"] += "\n\nReleased claim 1"
+                self.comments.append({"id": 4, "body": "Released claim 1", "user": {"login": TEST_BOT}})
+                with self.assertRaises(PLAN.PlanError): self.run_claim()
+                self.assert_no_writes()
+                # Recovery is a new same-author handoff bound to the source record,
+                # after its release, not rewriting the old comment or source claim.
+                self.comments.append({"id": 5, "body": "Handoff from trial-b\nSource claim 1; Session: session-b; PR #99 and #100", "user": {"login": TEST_BOT}})
+                self.args.handoff_comment = 5
+                self.run_claim()
+
     def test_resume_cannot_override_current_owner(self):
         self.comments = [{"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": "bot"}}]
         self.args.resume_from = 1
