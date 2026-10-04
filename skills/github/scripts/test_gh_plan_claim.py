@@ -351,6 +351,19 @@ class ClaimTests(unittest.TestCase):
                 with self.assertRaises(PLAN.PlanError): self.run_claim()
                 self.assert_no_writes()
 
+    def test_new_pr_on_released_source_branch_is_not_retained_ownership(self):
+        for author in (TEST_BOT, "stranger"):
+            with self.subTest(author=author):
+                self.setUp()
+                self.refresh_fixture()
+                self.pulls.append({**copy.deepcopy(self.pulls[0]), "number": 101,
+                                   "user": {"login": author},
+                                   "head": {"ref": "work/issue-42-original", "repo": {"full_name": "owner/repo"}}})
+                self.targets["101"] = {**self.targets["99"], "number": 101}
+                self.target_comments["/repos/owner/repo/issues/101/comments"] = []
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
     def test_plain_resume_still_refuses_released_split_pr_artifacts(self):
         self.refresh_fixture()
         self.args.refresh_pr = self.args.handoff_comment = None

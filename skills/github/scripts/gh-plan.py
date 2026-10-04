@@ -1966,7 +1966,12 @@ def cmd_claim(args: argparse.Namespace) -> None:
         )
         if claim["branch"] in permitted:
             raise PlanError("Conflict refresh requires a new task branch, separate from every retained PR/source branch")
+        source_author = next(c for c in source_comments if c.get("id") == args.resume_from)["user"]["login"]
         for pull in target_pulls:
+            if ((pull.get("head") or {}).get("ref") in permitted and pull.get("state") == "open"
+                    and (pull["number"] not in named or (pull.get("user") or {}).get("login") != source_author)):
+                refuse([{"source": "open_pr", "number": pull["number"], "branch": pull["head"]["ref"],
+                         "certainty": "not_in_source_handoff"}])
             if (pull.get("head") or {}).get("ref") not in permitted and pull.get("state") != "closed":
                 continue
             _, target = get_issue(str(pull["number"]), target_repo)
