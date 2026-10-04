@@ -16,6 +16,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT = Path(__file__).with_name("reconcile-runtime-checkout.py")
 
@@ -45,6 +47,7 @@ class RuntimeFixture:
         repo: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
         env = os.environ.copy()
+        env["HOME"] = str(self.code_home.parent / "host-home")
         env["CODE_HOME"] = str(code_home or self.code_home)
         env["CODEX_HOME"] = str(self.code_home.parent / "ignored-codex-home")
         env["CLAUDE_CONFIG_DIR"] = str(self.code_home.parent / "no-claude-config")
@@ -165,6 +168,7 @@ def build_runtime_fixture(tmp_path: Path, *, helper_in_initial: bool = True) -> 
     git(landing, "push", "origin", "main")
 
     code_home.mkdir()
+    (tmp_path / "host-home").mkdir()
     (code_home / "skills").symlink_to(runtime, target_is_directory=True)
     return RuntimeFixture(
         repo=repo,
@@ -493,6 +497,40 @@ def test_reconcile_finds_a_claude_code_binding_when_no_codex_home_exists(tmp_pat
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
 
 
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("dirty", [False, True])
+def test_reconcile_finds_codex_only_installer_bindings_and_preserves_dirty_runtime(
+    tmp_path: Path, nested: bool, dirty: bool,
+) -> None:
+    fixture = build_runtime_fixture(tmp_path / "fixture")
+    skills = fixture.code_home.parent / "host-home" / ".agents" / "skills"
+    binding = skills / "shared" if nested else skills
+    binding.parent.mkdir(parents=True)
+    binding.symlink_to(fixture.runtime, target_is_directory=True)
+    if nested:
+        # Personal skills coexist with the installer binding.
+        (skills / "personal").mkdir()
+    if dirty:
+        (fixture.runtime / ".gitignore").write_text("local edit\n")
+    before = git(fixture.runtime, "status", "--porcelain")
+
+    proc, receipt = fixture.run(code_home=tmp_path / "no-code-home")
+
+    assert receipt["applicable"] is True
+    assert receipt["runtime_home_source"] == (
+        "HOME/.agents/skills/shared" if nested else "HOME/.agents/skills"
+    )
+    if dirty:
+        assert proc.returncode != 0
+        assert receipt["status"] == "blocked"
+        assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
+    else:
+        assert proc.returncode == 0
+        assert receipt["status"] == "synchronized"
+        assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
+    assert git(fixture.runtime, "status", "--porcelain") == before
+
+
 def test_reconcile_reports_the_primary_binding_when_no_host_binds_this_repository(tmp_path: Path) -> None:
     fixture = build_runtime_fixture(tmp_path / "fixture")
 
@@ -548,6 +586,4 @@ def test_reconcile_prefers_the_install_over_a_linked_work_in_progress_worktree(t
 
 
 if __name__ == "__main__":
-    import pytest
-
     raise SystemExit(pytest.main([__file__]))

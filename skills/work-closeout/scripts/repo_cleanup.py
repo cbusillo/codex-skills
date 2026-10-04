@@ -63,6 +63,7 @@ def skills_runtime_paths() -> list[str]:
     """Every place a supported host binds the catalog; the reconciler checks the same ones."""
     homes = [os.environ.get("CODE_HOME"), os.environ.get("CODEX_HOME"), "~/.code"]
     paths = [absolute(home) + "/skills" for home in homes if home]
+    paths.extend((absolute("~/.agents/skills"), absolute("~/.agents/skills/shared")))
     # Claude Code loads a catalog linked under its skills folder by any name the user chose.
     claude_skills = absolute(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude") + "/skills"
     try:
