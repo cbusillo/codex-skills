@@ -81,7 +81,12 @@ uv run skills/supervisor/scripts/iterm_tab.py send --session-id <iterm-session-i
 ```
 
 Use one dedicated Supervisor window, never the window with the most tabs. The
-helper restores the previous tab after launch. Launch files contain the exact
+`new` creates the tab in the background without selecting it or moving keyboard
+focus. It waits up to 10 seconds for that exact tab's session, refreshing the
+iTerm hierarchy before launching. If the session never appears, the refusal
+names the tab for inspection; do not create another tab or replay the launch
+without checking it. `window` still restores the previous tab after creation.
+Launch files contain the exact
 brief and account/model settings already authorized, without the Discord
 channels flag; `--account-provider` can choose the account instead (see
 below). Run one agent invocation, without restart loops or commands
