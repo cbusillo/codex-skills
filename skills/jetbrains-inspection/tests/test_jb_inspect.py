@@ -2722,6 +2722,34 @@ class InspectionLaneExecutionTest(unittest.TestCase):
         self.assertEqual(result["lane_results"][0]["verdict"], "NOT_RUN")
         self.assertEqual(result["lane_results"][0]["cleanup"]["reason"], "lane_empty")
 
+    def test_clean_committed_branch_has_unknown_empty_changed_files_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            (root / "check.py").write_text("print('committed')\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(
+                ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                 "commit", "-qm", "fixture"], cwd=root, check=True,
+            )
+            lanes = jb_inspect.parse_inspection_lanes(
+                {"lanes": [{"id": "python", "ide": "PyCharm", "include": ["**/*.py"]}]}
+            )
+            context = {
+                "repo_path": str(root), "worktree_root": str(root), "project_path": str(root),
+                "scope": "changed_files", "_inspection_lanes": lanes,
+            }
+            args = helper_args(scope="changed_files", changed_files_mode="all",
+                               include_unversioned=True, max_files=None)
+            with patch.object(jb_inspect, "run_prepared_inspection") as inspect:
+                result = jb_inspect.run_configured_inspection_lanes(args, context)
+                compact = jb_inspect.compact_agent_result_payload(result, 1)
+                inspect.assert_not_called()
+        self.assertEqual(compact["selected_file_count"], 0)
+        self.assertEqual(compact["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(compact["lanes"][0]["verdict"], "NOT_RUN")
+        self.assertIn("--scope files", compact["agent_result"]["next_action"])
+
     def test_repository_preparation_runs_once_before_multiple_active_lanes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -2897,7 +2925,7 @@ class InspectionLaneExecutionTest(unittest.TestCase):
             ([lane("green", "GREEN"), lane("red", "RED"), lane("unknown", "UNKNOWN")], "RED"),
             ([lane("green", "GREEN"), lane("unknown", "UNKNOWN")], "UNKNOWN"),
             ([lane("green", "GREEN"), lane("optional-red", "RED", required=False)], "GREEN"),
-            ([lane("empty", "NOT_RUN")], "GREEN"),
+            ([lane("empty", "NOT_RUN")], "UNKNOWN"),
             ([lane("invalid", None)], "UNKNOWN"),
         ]
         for lanes, expected in cases:
@@ -7974,6 +8002,50 @@ class LifecycleTest(unittest.TestCase):
 
 
 class AgentInspectContractTest(unittest.TestCase):
+    def test_documented_repeatable_files_selectors_reach_inspection(self):
+        paths = ["src/first.py", "src/file with spaces.py"]
+        output = io.StringIO()
+        with (
+            patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect", "--scope", "files",
+                                      "--file", paths[0], "--file", paths[1]]),
+            patch.object(jb_inspect, "build_context", return_value={"scope": "files"}),
+            patch.object(jb_inspect, "command_run", return_value={"status": "clean"}) as inspect,
+            patch.object(jb_inspect, "log_assessment_records"),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(jb_inspect.main(), 0)
+        self.assertEqual(inspect.call_args.args[0].files, paths)
+        self.assertEqual(inspect.call_args.args[0].scope, "files")
+        self.assertNotEqual(json.loads(output.getvalue())["diagnostic"]["error_reason"],
+                            jb_inspect.AGENT_USAGE_ERROR_REASON)
+
+    def test_combined_file_flags_report_shell_argument_hint(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "agent-inspect", "--scope", "files",
+             "--file a.py --file b.py"],
+            capture_output=True, text=True, check=False,
+        )
+        payload = json.loads(result.stdout)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(payload["agent_result"]["verdict"], "UNKNOWN")
+        self.assertIn("--file a.py --file b.py", payload["diagnostic"]["error_message"])
+        self.assertIn("array", payload["diagnostic"]["hint"])
+        self.assertFalse(payload["agent_result"]["retry_policy"]["retry"])
+
+    def test_single_ide_reports_scope_count_and_rejects_empty_scope(self):
+        for count, expected in [(0, "UNKNOWN"), (3, "UNKNOWN"), (None, "GREEN")]:
+            with self.subTest(count=count):
+                _, payload = self.emit_agent_payload({
+                    "status": "clean",
+                    "context": {"scope": "changed_files"},
+                    "capture_diagnostic": {"scope_file_resolved_count": count},
+                })
+                self.assertEqual(payload["selected_file_count"], count)
+                self.assertEqual(payload["agent_result"]["verdict"], expected)
+                if count == 0:
+                    self.assertFalse(payload["agent_result"]["retry_policy"]["retry"])
+                    self.assertIn("--scope files", payload["agent_result"]["next_action"])
+
     def emit_agent_payload(self, payload, helper_exit_code=None):
         output = io.StringIO()
         with redirect_stdout(output), patch.object(jb_inspect, "log_assessment_records"):

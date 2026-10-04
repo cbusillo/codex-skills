@@ -35,6 +35,8 @@ override and still runs the selected fixture in its lane. Non-empty lanes run
 sequentially with an exact `files` scope and independent route, session, cleanup,
 mutation, IDE, and plugin provenance. Required lanes aggregate deterministically:
 any `RED` wins, otherwise any `UNKNOWN` wins, otherwise the result is `GREEN`.
+When no required lane runs, the aggregate is `UNKNOWN` with
+`no_required_lane_files`; empty selection does not prove inspection readiness.
 Optional-lane failures remain visible without changing the required-lane
 aggregate. When `lanes` is absent, the existing single-IDE path remains
 unchanged.
