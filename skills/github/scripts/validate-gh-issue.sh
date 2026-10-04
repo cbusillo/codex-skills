@@ -368,6 +368,8 @@ if [[ "$1" == "commit" ]]; then
 	printf 'commit_tokens=%s|%s|%s\n' \
 		"${CODEX_GITHUB_TOKEN:-}" "${GH_TOKEN:-}" "${GITHUB_TOKEN:-}" \
 		>>"$GH_ISSUE_ENV_LOG"
+elif [[ "$1 $2" == "config --get-all" ]]; then
+	printf '%s\n' "${FAKE_REMOTE_URL:-git@github.com:owner/repo.git}"
 elif [[ "$1 $2" == "remote get-url" && "$3" != --push ]]; then
 	printf '%s\n' "${FAKE_REMOTE_URL:-git@github.com:owner/repo.git}"
 elif [[ "$1 $2 $3 ${4:-}" == "remote get-url --push --all" ]]; then
@@ -634,6 +636,8 @@ for override in --repo=https://github.com/other/repo.git --repo=origin; do
 	refused_push_args=(--remote fork branch "$override")
 	assert_push_refused '--repo overrides' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
 done
+refused_push_args=(-u --remote fork branch)
+assert_push_refused 'put --remote NAME first' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
 refused_push_args=(--remote)
 assert_push_refused 'requires a configured remote name' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
 refused_push_args=(--remote https://github.com/owner/repo.git branch)
@@ -675,9 +679,12 @@ if run_config_push FAKE_PUSH_EXIT=17; then
 fi
 assert_remote_restored
 for config_guard in pushurl rewrite; do
+	expected_stored_url=git@github.com:owner/repo.git
 	if [[ "$config_guard" == pushurl ]]; then
 		"$real_git" -C "$real_repo" config remote.fork.pushurl git@github.com:owner/repo.git
 	else
+		expected_stored_url=https://github.com/owner/repo.git
+		"$real_git" -C "$real_repo" remote set-url fork "$expected_stored_url"
 		"$real_git" -C "$real_repo" config url.git@github.com:.insteadOf https://github.com/
 	fi
 	: >"$env_log"
@@ -687,11 +694,13 @@ for config_guard in pushurl rewrite; do
 	fi
 	grep -q 'refusing to push without the automation token' "$stderr_log"
 	[[ ! -s "$env_log" ]]
+	[[ "$("$real_git" -C "$real_repo" config remote.fork.url)" == "$expected_stored_url" ]]
 	if [[ "$config_guard" == pushurl ]]; then
 		"$real_git" -C "$real_repo" config --unset remote.fork.pushurl
 	else
 		"$real_git" -C "$real_repo" config --unset url.git@github.com:.insteadOf
 	fi
+	"$real_git" -C "$real_repo" remote set-url fork git@github.com:owner/repo.git
 	assert_remote_restored
 done
 refused_push_args=(-u origin branch)

@@ -56,6 +56,9 @@ for argument in "$@"; do
 		continue
 	fi
 	case $argument in
+	--remote | --remote=*)
+		echo "error: put --remote NAME first, followed by push options and refspecs" >&2
+		exit 1 ;;
 	--repo | --repo=*)
 		echo "error: --repo overrides are unsupported; use --remote NAME" >&2
 		exit 1 ;;
@@ -87,6 +90,14 @@ same_login() {
 	[ "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" ]
 }
 
+# get-url expands insteadOf rules. Restore the stored value, not that expansion.
+stored_remote_url=$("$git_bin" config --get-all "remote.$selected_remote.url")
+case "$stored_remote_url" in
+'' | *'
+'*)
+	echo "error: selected remote must have exactly one stored URL" >&2
+	exit 1 ;;
+esac
 remote_url=$("$git_bin" remote get-url "$selected_remote")
 case "$remote_url" in
 git@github.com:*)
@@ -221,7 +232,7 @@ askpass_dir=$(mktemp -d "${TMPDIR:-/tmp}/git-push-as-bot.XXXXXX")
 askpass=$askpass_dir/askpass
 
 cleanup() {
-	"$git_bin" remote set-url "$selected_remote" "$remote_url" >/dev/null 2>&1 || true
+	"$git_bin" remote set-url "$selected_remote" "$stored_remote_url" >/dev/null 2>&1 || true
 	rm -rf "$askpass_dir"
 }
 trap cleanup EXIT

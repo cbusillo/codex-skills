@@ -978,7 +978,7 @@ way as the wrapper: a configured GitHub App first, then `CODEX_GITHUB_TOKEN`,
 `GH_TOKEN`, and `GITHUB_TOKEN`.
 
 `git-push-as-bot [options] origin <refspec>` remains the default. When
-`origin` points at upstream and the owner's repository is a named remote, use
+`origin` points at upstream and the Director's repository is a named remote, use
 `git-push-as-bot --remote public -u work/task` or
 `git-push-as-bot --remote fork --delete work/task`. Put `--remote NAME` first;
 the remaining arguments are push options and refspecs, without another remote.
