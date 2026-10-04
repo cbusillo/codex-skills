@@ -206,6 +206,8 @@ without unrelated changes; surface it instead.
 
 ## Fixes And Pushes
 
+- For a branch-caused CI fix, read [CI Failure Diagnosis](../github/references/repo-workflow.md#ci-failure-diagnosis)
+  and apply its pattern-sweep instruction before pushing.
 - Work on the PR head branch. Before editing or pushing, check the current
   branch, the default branch, and the PR head. Never patch or push a default,
   shared, release, or protected head directly; use a task branch and the
