@@ -67,6 +67,16 @@ def args(**overrides: object) -> argparse.Namespace:
     return argparse.Namespace(**defaults)
 
 
+def preflight_response(command: list[str]) -> subprocess.CompletedProcess[str] | None:
+    if command[1:] == ["--check"]:
+        return completed(command, "GitHub automation actor: example-user (source: configured_token)\n")
+    if command[1:3] == ["api", "--method"] and command[4].startswith("repos/"):
+        return completed(command, command[4].removeprefix("repos/"))
+    if command[1:5] == ["api", "--method", "GET", "search/issues"] and "per_page=1" in command:
+        return completed(command, {"total_count": 0, "items": []})
+    return None
+
+
 def empty_enrichment_response(command: list[str]) -> subprocess.CompletedProcess[str] | None:
     if command[1:3] in (["release", "list"], ["run", "list"]):
         return completed(command, [])
@@ -223,15 +233,68 @@ def test_resolve_recipient_profile_skips_ambiguous_matches(tmp_path: Path) -> No
     assert any("matched multiple people" in warning for warning in settings["collection_warnings"])
 
 
+@pytest.mark.parametrize("source,actor", [("github_app", "example-app[bot]"), ("configured_token", "example-user")])
+@pytest.mark.parametrize("scope", [{"repo": ["example-org/example-repo"]}, {"repo_owner": ["example-org"]}, {"subject": ["example-user"]}])
+def test_preflight_checks_scoped_access_and_reports_actor(
+    monkeypatch: pytest.MonkeyPatch, source: str, actor: str, scope: dict[str, list[str]],
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[1:] == ["--check"]:
+            return completed(command, f"GitHub automation actor: {actor} (source: {source})\n")
+        if command[1:3] == ["repo", "list"]:
+            return completed(command, [{"nameWithOwner": "example-org/example-repo"}])
+        if response := preflight_response(command):
+            return response
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    payload = github_work_rollup.github_preflight(github_work_rollup.resolve_settings(args(**scope), {}))
+
+    assert payload["ok"] is True
+    assert payload["actor"] == actor
+    assert len(calls) == 2
+    assert len(payload["checks"]) == len(calls)
+    assert calls[1][1:3] == (["repo", "list"] if "repo_owner" in scope else ["api", "--method"])
+    if "repo" in scope:
+        assert calls[1][3:5] == ["GET", "repos/example-org/example-repo"]
+    if "subject" in scope:
+        assert calls[1][3:5] == ["GET", "search/issues"]
+        assert "q=author:example-user" in calls[1]
+    assert not any(command[1:3] in (["auth", "status"], ["api", "user"]) for command in calls)
+
+
+@pytest.mark.parametrize("failed_auth", [True, False])
+def test_preflight_failure_stops_before_collection(monkeypatch: pytest.MonkeyPatch, failed_auth: bool) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[1:] == ["--check"] and not failed_auth:
+            return completed(command, "GitHub automation actor: example-app[bot] (source: github_app)\n")
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="Resource not accessible by integration (HTTP 403)")
+
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    with pytest.raises(github_work_rollup.RollupError, match="HTTP 403"):
+        github_work_rollup.collect_rollup(github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"]), {}))
+    assert len(calls) == (1 if failed_auth else 2)
+
+
+def test_preflight_rejects_success_without_actor(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(github_work_rollup, "run", lambda command: completed(command, ""))
+    with pytest.raises(github_work_rollup.RollupError, match="returned no actor"):
+        github_work_rollup.github_preflight(github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"]), {}))
+
+
 def test_collect_rollup_allows_subject_only_scope(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        if command[1:3] == ["auth", "status"]:
-            return completed(command, "")
-        if command[1:3] == ["api", "user"]:
-            return completed(command, {"login": "example-user"})
+        if response := preflight_response(command):
+            return response
         if command[1:5] == ["api", "--method", "GET", "search/issues"]:
             return completed(
                 command,
@@ -272,10 +335,8 @@ def test_repo_scoped_rollup_does_not_search_external_subjects_by_default(monkeyp
 
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        if command[1:3] == ["auth", "status"]:
-            return completed(command, "")
-        if command[1:3] == ["api", "user"]:
-            return completed(command, {"login": "example-user"})
+        if response := preflight_response(command):
+            return response
         if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
             return completed(command, [])
         if response := empty_enrichment_response(command):
@@ -294,10 +355,8 @@ def test_repo_scoped_rollup_does_not_search_external_subjects_by_default(monkeyp
 
 def test_collect_rollup_attaches_recipient_profile(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        if command[1:3] == ["auth", "status"]:
-            return completed(command, "")
-        if command[1:3] == ["api", "user"]:
-            return completed(command, {"login": "example-user"})
+        if response := preflight_response(command):
+            return response
         if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
             return completed(command, [])
         if response := empty_enrichment_response(command):
@@ -328,10 +387,8 @@ def test_collect_rollup_attaches_derived_repo_context(monkeypatch: pytest.Monkey
 
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        if command[1:3] == ["auth", "status"]:
-            return completed(command, "")
-        if command[1:3] == ["api", "user"]:
-            return completed(command, {"login": "example-user"})
+        if response := preflight_response(command):
+            return response
         if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
             return completed(command, [])
         if command[1:3] == ["repo", "view"]:
@@ -380,10 +437,8 @@ def test_collect_rollup_attaches_derived_repo_context(monkeypatch: pytest.Monkey
 
 def test_missing_readme_context_does_not_pollute_limitations(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        if command[1:3] == ["auth", "status"]:
-            return completed(command, "")
-        if command[1:3] == ["api", "user"]:
-            return completed(command, {"login": "example-user"})
+        if response := preflight_response(command):
+            return response
         if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
             return completed(command, [])
         if command[1:3] == ["repo", "view"]:
@@ -461,10 +516,8 @@ def test_subject_search_filters_bots_when_disabled(monkeypatch: pytest.MonkeyPat
 
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        if command[1:3] == ["auth", "status"]:
-            return completed(command, "")
-        if command[1:3] == ["api", "user"]:
-            return completed(command, {"login": "example-user"})
+        if response := preflight_response(command):
+            return response
         if command[1:3] == ["api", "--method"]:
             return completed(
                 command,
@@ -500,10 +553,8 @@ def test_subject_search_pages_until_collection_limit(monkeypatch: pytest.MonkeyP
 
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        if command[1:3] == ["auth", "status"]:
-            return completed(command, "")
-        if command[1:3] == ["api", "user"]:
-            return completed(command, {"login": "example-user"})
+        if response := preflight_response(command):
+            return response
         if command[1:3] == ["api", "--method"]:
             query = command[command.index("-f") + 1]
             if not query.startswith("q=author:"):
@@ -549,10 +600,8 @@ def test_subject_search_pages_until_collection_limit(monkeypatch: pytest.MonkeyP
 
 def test_subject_search_surfaces_incomplete_results(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        if command[1:3] == ["auth", "status"]:
-            return completed(command, "")
-        if command[1:3] == ["api", "user"]:
-            return completed(command, {"login": "example-user"})
+        if response := preflight_response(command):
+            return response
         if command[1:3] == ["api", "--method"]:
             return completed(command, {"total_count": 12, "incomplete_results": True, "items": []})
         if response := empty_enrichment_response(command):
@@ -572,10 +621,8 @@ def test_repo_collection_filters_bots_when_disabled(monkeypatch: pytest.MonkeyPa
 
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        if command[1:3] == ["auth", "status"]:
-            return completed(command, "")
-        if command[1:3] == ["api", "user"]:
-            return completed(command, {"login": "example-user"})
+        if response := preflight_response(command):
+            return response
         if command[1:3] == ["pr", "list"] and "--state" in command and command[command.index("--state") + 1] == "open":
             return completed(
                 command,
@@ -675,10 +722,8 @@ def test_github_commands_are_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        if command[1:3] == ["auth", "status"]:
-            return completed(command, "")
-        if command[1:3] == ["api", "user"]:
-            return completed(command, {"login": "example-user"})
+        if response := preflight_response(command):
+            return response
         if command[1:3] == ["repo", "list"]:
             return completed(command, [{"nameWithOwner": "example-org/example-repo", "isArchived": False}])
         if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
@@ -693,15 +738,15 @@ def test_github_commands_are_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
     github_work_rollup.collect_rollup(settings)
 
     allowed = {
-        ("auth", "status"),
-        ("api", "user"),
+        ("--check",),
+        ("api", "--method"),
         ("repo", "list"),
         ("pr", "list"),
         ("issue", "list"),
         ("release", "list"),
         ("run", "list"),
     }
-    assert {(command[1], command[2]) for command in calls} <= allowed
+    assert {tuple(command[1:3]) for command in calls} <= allowed
     list_commands = [command for command in calls if command[1:3] in (["pr", "list"], ["issue", "list"])]
     assert list_commands
     assert all("--search" in command for command in list_commands)
@@ -1125,10 +1170,8 @@ def test_collect_releases_and_workflows(monkeypatch: pytest.MonkeyPatch) -> None
     calls = []
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        if command[1:3] == ["auth", "status"]:
-            return completed(command, "")
-        if command[1:3] == ["api", "user"]:
-            return completed(command, {"login": "example-user"})
+        if response := preflight_response(command):
+            return response
         if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
             return completed(command, [])
         if command[1:3] == ["release", "list"]:
@@ -1205,10 +1248,8 @@ def test_collection_uses_deep_limits_before_render_limits(monkeypatch: pytest.Mo
 
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        if command[1:3] == ["auth", "status"]:
-            return completed(command, "")
-        if command[1:3] == ["api", "user"]:
-            return completed(command, {"login": "example-user"})
+        if response := preflight_response(command):
+            return response
         if command[1:3] == ["pr", "list"]:
             return completed(command, [])
         if command[1:3] == ["issue", "list"]:
@@ -1254,10 +1295,8 @@ def test_collection_uses_deep_limits_before_render_limits(monkeypatch: pytest.Mo
 
 def test_collection_limit_warnings_only_at_deep_caps(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        if command[1:3] == ["auth", "status"]:
-            return completed(command, "")
-        if command[1:3] == ["api", "user"]:
-            return completed(command, {"login": "example-user"})
+        if response := preflight_response(command):
+            return response
         if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
             return completed(command, [])
         if command[1:3] == ["release", "list"]:
@@ -1308,10 +1347,8 @@ def test_operator_layout_collects_same_enrichment_data(monkeypatch: pytest.Monke
 
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        if command[1:3] == ["auth", "status"]:
-            return completed(command, "")
-        if command[1:3] == ["api", "user"]:
-            return completed(command, {"login": "example-user"})
+        if response := preflight_response(command):
+            return response
         if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
             return completed(command, [])
         if response := empty_enrichment_response(command):
@@ -1461,10 +1498,8 @@ def test_executive_activity_comparison_allows_truncation_warnings(monkeypatch: p
 
 def test_executive_collection_surfaces_release_and_workflow_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        if command[1:3] == ["auth", "status"]:
-            return completed(command, "")
-        if command[1:3] == ["api", "user"]:
-            return completed(command, {"login": "example-user"})
+        if response := preflight_response(command):
+            return response
         if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
             return completed(command, [])
         if command[1:3] in (["release", "list"], ["run", "list"]):
