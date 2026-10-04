@@ -64,10 +64,49 @@ def same_owner(record: dict[str, str], claim: dict[str, str]) -> bool:
 
 
 def released_claim_id(text: str) -> int | None:
-    """Read an exact first-line release, including a sentence-ending period."""
+    """Read a first-line release or a standalone final release paragraph."""
     first = text.splitlines()[:1]
     match = re.fullmatch(r"Released claim (\d+)(?:\.(?:\s.*)?|[ \t]*)", first[0]) if first else None
-    return int(match.group(1)) if match else None
+    if match:
+        return int(match.group(1))
+    text = "\n".join(line if line.strip() else "" for line in text.splitlines())
+    # Helpers append this transport marker; it is not handoff prose.
+    text = re.sub(r"\n\s*<!-- github-skill-operation:[0-9a-f]+ -->\s*$", "", text).rstrip()
+    lines = text.splitlines()
+    if len(lines) < 3 or lines[-2].strip():
+        return None
+    match = re.fullmatch(r"Released claim (\d+)\.?[ \t]*", lines[-1])
+    if not match:
+        return None
+    preceding = text.rsplit("\n\n", 1)[0].rstrip()
+    paragraph = preceding.rsplit("\n\n", 1)[-1].strip()
+    if preceding.endswith(":") or re.match(r"(?i)(?:if|after|once|when|unless|until)\b", paragraph):
+        return None
+    # A final line inside an unclosed code fence or raw HTML block is an example,
+    # not a release. Quoted and indented directives never match the exact line.
+    fence = None
+    html_end = None
+    for line in lines[:-1]:
+        if fence:
+            if re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*", line):
+                fence = None
+            continue
+        if html_end:
+            if html_end in line.casefold():
+                html_end = None
+            continue
+        if "<!--" in line:
+            if "-->" not in line.split("<!--", 1)[1]:
+                html_end = "-->"
+            continue
+        html = re.match(r" {0,3}<(pre|code|blockquote|details|script|style|textarea)[\s>]", line, re.IGNORECASE)
+        if html and f"</{html.group(1).casefold()}>" not in line.casefold():
+            html_end = f"</{html.group(1).casefold()}>"
+            continue
+        opener = re.match(r" {0,3}(`{3,}|~{3,})", line)
+        if opener:
+            fence = opener.group(1)
+    return int(match.group(1)) if not fence and not html_end else None
 
 
 def resumed_status(status: str, comments: list[dict[str, Any]], source_id: int | None) -> str:
@@ -168,7 +207,8 @@ def discussion_evidence(
         text = comment.get("body") or ""
         parsed = records(text)
         author = (comment.get("user") or {}).get("login", "")
-        if released_ids.get((comment.get("id"), author), -1) > index:
+        comment_id = comment.get("id")
+        if comment_id is not None and released_ids.get((comment_id, author), -1) > index:
             continue
         legacy = re.match(r"Claimed by (\S+)", text)
         if legacy and not parsed:
@@ -289,7 +329,9 @@ def refresh_handoff(
                   and re.search(rf"\bclaim {source_id}(?!\d)", handoff_text)
                   and re.search(rf"(?<![\w-]){re.escape(source_record['session'])}(?![\w-])", handoff_text)
                   and not records(handoff_text))
-    if not (released_claim_id(handoff_text) == source_id or standalone):
+    # An embedded release proves release, not the identity of the handoff.
+    first_line_release = released_claim_id(handoff_text.splitlines()[0] if handoff_text else "")
+    if not (first_line_release == source_id or standalone):
         raise ValueError("Refresh handoff must identify the exact released source claim")
     empty = {"local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}
     permitted = {source_branch}
@@ -327,8 +369,8 @@ def artifact_evidence(
 ) -> list[dict[str, Any]]:
     conflicts = []
     local_references = inventory_repo is None or inventory_repo.casefold() == repo.casefold()
-    def permitted(branch: str) -> bool:
-        return (own_record and branch == claim["branch"]) or branch == retained or branch in (retained_branches or set())
+    def permitted(candidate_branch: str) -> bool:
+        return (own_record and candidate_branch == claim["branch"]) or candidate_branch == retained or candidate_branch in (retained_branches or set())
 
     for source in ("local_branches", "remote_branches"):
         for branch in inventory[source]:
