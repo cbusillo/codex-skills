@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
@@ -40,6 +42,13 @@ class ClaimTests(unittest.TestCase):
         self.issue = {"repo": "owner/repo", "number": 42, "title": "Repair", "state": "open",
                       "user": {"login": TEST_BOT}, "labels": [],
                       "body": PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n\n## Objective\n\nKeep me\n\n## Current Status\n\nState: Open, not started.\n"}
+        self.args.planning_checkout = None
+        self.targets = {}
+        self.closed_pulls = {}
+        self.api_failure = None
+        self.configs = {}
+        self.planning_inventory = None
+        self.target_comments = {}
         self.comments = []
         self.inventory = {"worktrees": [], "local_branches": [], "remote_branches": [], "sessions": [],
                           "session_coverage": {"codex": {"status": "unavailable"}, "claude": {"status": "available"}}}
@@ -50,17 +59,34 @@ class ClaimTests(unittest.TestCase):
         self.after_status = lambda: None
         self.emitted = Mock()
 
-    def get_issue(self, *_):
+    def get_issue(self, ref, repo):
         self.events.append("read_issue")
-        return "bot", copy.deepcopy(self.issue)
+        issue = copy.deepcopy(self.targets.get(str(ref), self.issue))
+        issue["repo"], issue["number"] = PLAN.issue_ref(ref, repo)
+        return "bot", issue
+
+    def read_api(self, _method, path, **_):
+        n = int(path.rsplit("/", 1)[1])
+        if self.api_failure:
+            raise PLAN.PlanError("Unavailable", api_result=self.api_failure)
+        if n not in self.closed_pulls:
+            raise PLAN.PlanError("Not found", api_result={"status": 404})
+        return "bot", copy.deepcopy(self.closed_pulls[n])
+
+    def inventory_for(self, repo, _number, **_):
+        if repo == "other/plans" and self.planning_inventory is not None:
+            return copy.deepcopy(self.planning_inventory)
+        return copy.deepcopy(self.inventory)
 
     def read_pages(self, path, **_):
         self.events.append("read_comments" if path.endswith("comments") else "read_pulls")
-        items = self.comments if path.endswith("comments") else self.blockers if path.endswith("blocked_by") else self.pulls
+        items = self.target_comments.get(path, self.comments) if path.endswith("comments") else self.blockers if path.endswith("blocked_by") else self.pulls
+        if path == "/repos/other/plans/pulls": items = []
         return "bot", copy.deepcopy(items)
 
     def post(self, _kind, _number, body, **_):
         self.events.append("post")
+        self.post_route = (_kind, _number, _["repo"])
         comment_id = len(self.comments) + 1
         self.comments.append({"id": comment_id, "body": body, "user": {"login": TEST_BOT}})
         self.after_post()
@@ -84,8 +110,8 @@ class ClaimTests(unittest.TestCase):
                             EXPECTED_ACTOR=TEST_BOT,
                             collect_paged_rest_items=self.read_pages, rest_edit_issue=self.edit,
                             comment_route=lambda: ("bot", "bot-gh", TEST_BOT),
-                            load_config=lambda _: copy.deepcopy(PLAN.DEFAULT_CONFIG), emit=self.emitted), \
-                patch.object(CLAIM, "local_inventory", return_value=self.inventory), \
+                            load_config=lambda repo, **_: copy.deepcopy(self.configs.get(repo, PLAN.DEFAULT_CONFIG)), emit=self.emitted, api_json=self.read_api), \
+                patch.object(CLAIM, "local_inventory", side_effect=self.inventory_for), \
                 patch.object(PLAN.github_identity, "configured_bot_logins", return_value=[TEST_BOT]), \
                 patch.object(PLAN.github_comment_core, "comment", side_effect=self.post), \
                 patch.object(PLAN.github_issue_core, "edit_issue", side_effect=self.labels):
@@ -96,6 +122,332 @@ class ClaimTests(unittest.TestCase):
 
     def assert_no_writes(self):
         self.assertFalse(set(self.events).intersection({"post", "status", "labels"}))
+
+    def refresh_fixture(self):
+        source = {**OTHER, "branch": "work/issue-42-original"}
+        self.args.refresh_pr = "https://github.com/owner/repo/pull/99"
+        self.args.handoff_comment = 3
+        self.args.resume_from = 1
+        self.comments = [
+            {"id": 1, "body": CLAIM.marker(source), "user": {"login": TEST_BOT}},
+            {"id": 2, "body": "trial-b implementation split under claim 1, session session-b: work/issue-42-audits owns audits; work/issue-42-fixtures will own fixtures", "user": {"login": TEST_BOT}},
+            {"id": 3, "body": "Released claim 1\n\nSource handoff: PR #99 and #100 are reviewed; work is finished.", "user": {"login": TEST_BOT}},
+        ]
+        self.pulls = [
+            {"number": n, "state": "open", "user": {"login": TEST_BOT}, "title": "Repair", "body": "Refs #42", "head": {"ref": branch, "repo": {"full_name": "owner/repo"}},
+             "base": {"repo": {"full_name": "owner/repo"}}}
+            for n, branch in [(99, "work/issue-42-audits"), (100, "work/issue-42-fixtures")]
+        ]
+        for pull in self.pulls:
+            n = pull["number"]
+            self.targets[str(n)] = {**copy.deepcopy(self.issue), "number": n, "pull_request": {}, "body": "Refs #42"}
+            self.target_comments[f"/repos/owner/repo/issues/{n}/comments"] = []
+        self.inventory["local_branches"] = [p["head"]["ref"] for p in self.pulls]
+        self.inventory["remote_branches"] = list(self.inventory["local_branches"])
+        self.inventory["worktrees"] = [{"path": "/retained/" + p["head"]["ref"].split("/")[-1], "branch": p["head"]["ref"]} for p in self.pulls]
+
+    def test_authorized_split_pr_refresh_claim_succeeds_with_release_and_handoff(self):
+        self.refresh_fixture()
+        self.run_claim()
+        output = self.emitted.call_args.args[0]
+        self.assertEqual(output["claim"]["refresh_pr"], self.args.refresh_pr)
+        self.assertIn("Conflict-only refresh:", self.comments[-1]["body"])
+        self.assertTrue(CLAIM.same_owner(CLAIM.records(self.issue["body"])[0], output["claim"]))
+
+    def test_refresh_supports_original_branch_and_cross_repository_planning_issue(self):
+        self.refresh_fixture()
+        self.args.issue = "other/plans#42"
+        self.args.planning_checkout = "/verified/plans"
+        self.planning_inventory = {"worktrees": [], "local_branches": [], "remote_branches": [], "sessions": []}
+        self.comments[2]["body"] = "Released claim 1\nHandoff: owner/repo#99 and https://github.com/owner/repo/pull/100"
+        previous = self.pulls[0]["head"]["ref"]
+        self.pulls[0]["head"]["ref"] = CLAIM.records(self.comments[0]["body"])[0]["branch"]
+        for key in ("local_branches", "remote_branches"):
+            self.inventory[key] = [self.pulls[0]["head"]["ref"] if b == previous else b for b in self.inventory[key]]
+        self.inventory["worktrees"][0]["branch"] = self.pulls[0]["head"]["ref"]
+        for pull in self.pulls:
+            pull["body"] = "Refs other/plans#42"
+        self.run_claim()
+        self.assertEqual(self.emitted.call_args.args[0]["claim"]["refresh_pr"], self.args.refresh_pr)
+
+    def test_refresh_cross_repository_bare_pr_number_is_not_evidence(self):
+        self.refresh_fixture()
+        self.args.issue = "other/plans#42"
+        self.args.planning_checkout = "/verified/plans"
+        self.planning_inventory = {"worktrees": [], "local_branches": [], "remote_branches": [], "sessions": []}
+        for pull in self.pulls: pull["body"] = "Refs other/plans#42"
+        with self.assertRaises(PLAN.PlanError): self.run_claim()
+        self.assert_no_writes()
+
+    def test_refresh_fork_cannot_hide_behind_retained_branch_name(self):
+        self.refresh_fixture()
+        self.pulls.append({**copy.deepcopy(self.pulls[0]), "number": 101})
+        self.pulls[-1]["head"]["repo"]["full_name"] = "stranger/repo"
+        self.targets["101"] = {**self.targets["99"], "number": 101}
+        self.target_comments["/repos/owner/repo/issues/101/comments"] = []
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+        self.assert_no_writes()
+
+    def cross_repository_fixture(self):
+        self.refresh_fixture()
+        self.args.issue = "other/plans#42"
+        self.args.planning_checkout = "/verified/plans"
+        self.planning_inventory = {"worktrees": [], "local_branches": [], "remote_branches": [], "sessions": []}
+        self.comments[2]["body"] = "Released claim 1\nHandoff: owner/repo#99 and owner/repo#100"
+        for pull in self.pulls: pull["body"] = "Refs other/plans#42"
+
+    def test_cross_repository_pr_must_link_qualified_canonical_issue(self):
+        self.cross_repository_fixture()
+        self.pulls[0]["body"] = "Fixes #42"
+        with self.assertRaises(PLAN.PlanError): self.run_claim()
+        self.assert_no_writes()
+
+    def test_cross_repository_target_local_issue_artifacts_are_unrelated(self):
+        self.cross_repository_fixture()
+        self.inventory["local_branches"].append("work/unrelated-issue-42")
+        self.pulls.append({"number": 101, "body": "Fixes #42", "head": {"ref": "work/unrelated-issue-42"}})
+        self.run_claim()
+        self.assertEqual(self.post_route, ("issue", 42, "other/plans"))
+
+    def test_cross_repository_planning_inventory_preserves_actual_owner(self):
+        self.cross_repository_fixture()
+        self.planning_inventory["worktrees"] = [{"branch": "work/other-42", "path": "/planning/issue-42"}]
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+        self.assert_no_writes()
+
+    def test_refresh_merged_sibling_remains_retained_without_cleanup(self):
+        self.refresh_fixture()
+        sibling = self.pulls.pop()
+        sibling.update(state="closed", merged_at="2026-10-02T01:00:00Z")
+        self.closed_pulls[sibling["number"]] = sibling
+        self.targets[str(sibling["number"])]["state"] = "closed"
+        self.run_claim()
+        self.assertIn(sibling["head"]["ref"], self.inventory["local_branches"])
+
+    def test_refresh_closed_unmerged_sibling_still_refuses_retained_artifacts(self):
+        self.refresh_fixture()
+        sibling = self.pulls.pop()
+        sibling.update(state="closed", merged_at=None)
+        self.closed_pulls[sibling["number"]] = sibling
+        self.targets[str(sibling["number"])]["state"] = "closed"
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+        self.assert_no_writes()
+
+    def test_refresh_case_variant_recovers_same_scope(self):
+        self.refresh_fixture()
+        self.args.refresh_pr = "https://github.com/Owner/Repo/pull/99"
+        self.run_claim()
+        self.args.refresh_pr = self.args.refresh_pr.lower()
+        self.run_claim()
+        self.assertEqual(self.events.count("post"), 1)
+
+    def test_generic_bot_rollup_cannot_become_session_handoff(self):
+        self.refresh_fixture()
+        self.comments.append({"id": 4, "body": "Status: claim 1 covered PR #99 and #100", "user": {"login": TEST_BOT}})
+        self.args.handoff_comment = 4
+        with self.assertRaises(PLAN.PlanError): self.run_claim()
+        self.assert_no_writes()
+
+    def test_standalone_source_session_handoff_requires_explicit_provenance(self):
+        self.refresh_fixture()
+        self.comments.append({"id": 4, "body": "Handoff from trial-b\nSource claim 1; Session: session-b; PR #99 and #100", "user": {"login": TEST_BOT}})
+        self.args.handoff_comment = 4
+        self.run_claim()
+
+    def test_cross_repository_uses_canonical_planning_label_configuration(self):
+        self.cross_repository_fixture()
+        self.configs["other/plans"] = copy.deepcopy(PLAN.DEFAULT_CONFIG)
+        self.configs["other/plans"]["labels"]["active"] = "custom-active"
+        self.run_claim()
+        self.assertIn(self.configs["other/plans"]["labels"]["active"], PLAN.normalize_labels(self.issue["labels"]))
+
+    def test_retained_sibling_metadata_denial_stops_without_writing(self):
+        self.refresh_fixture()
+        self.pulls.pop()
+        self.api_failure = {"status": 403}
+        with self.assertRaises(PLAN.PlanError): self.run_claim()
+        self.assert_no_writes()
+
+    def test_refresh_preserves_target_recorded_wait(self):
+        self.refresh_fixture()
+        self.targets["99"]["body"] += "\n\n## Current Status\n\nState: Parked.\nWaiting for: Merge train."
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_wait_unresolved")
+        self.assert_no_writes()
+        self.args.wait_resolved = "Existing conflict-refresh authorization resolves this wait for source work only."
+        self.run_claim()
+
+    def test_planning_checkout_inventory_reads_and_verifies_exact_git_identity(self):
+        planning_path = Path("/verified/plans")
+        def git_read(argv, *, cwd=None):
+            self.assertEqual(cwd, planning_path)
+            return "https://github.com/other/plans.git" if argv[1] == "remote" else ""
+        with patch.object(CLAIM, "run_read", side_effect=git_read), patch.object(CLAIM.shutil, "which", return_value=None):
+            inventory = CLAIM.local_inventory("other/plans", 42, cwd=planning_path)
+        self.assertEqual(inventory["issue"], 42)
+        with patch.object(CLAIM, "run_read", return_value="https://github.com/wrong/repo.git"):
+            with self.assertRaises(ValueError): CLAIM.local_inventory("other/plans", 42, cwd=planning_path)
+
+    def test_mixed_case_issue_url_remains_competing_ownership(self):
+        self.pulls = [{"number": 101, "body": "https://github.com/Owner/Repo/issues/42", "head": {"ref": "work/unrelated"}}]
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+        self.assert_no_writes()
+
+    def test_repo_configuration_identity_is_case_insensitive(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            config = root / ".github" / "github.json"
+            config.parent.mkdir()
+            config.write_text('{"planning":{"labels":{"active":"custom-active"}}}')
+            with patch.object(PLAN, "git_root", return_value=root), patch.object(PLAN, "repo_from_git", return_value="Owner/Some-Repo"), \
+                    patch.object(PLAN, "workspace_config_path", return_value=root / "missing-workspace-config"):
+                resolved = PLAN.load_config("owner/some-repo")
+                self.assertEqual(PLAN.repo_config_path("owner/some-repo"), config)
+            self.assertEqual(resolved["labels"]["active"], "custom-active")
+
+    def test_closed_superseded_pr_without_artifacts_does_not_hold_refresh(self):
+        self.refresh_fixture()
+        self.comments[-1]["body"] += " Closed #98 in favor of #99."
+        old = {**copy.deepcopy(self.pulls[0]), "number": 98, "state": "closed", "merged_at": None,
+               "head": {"ref": "work/old", "repo": {"full_name": "owner/repo"}}}
+        self.closed_pulls[98] = old
+        self.targets["98"] = {**self.targets["99"], "number": 98, "state": "closed"}
+        self.target_comments["/repos/owner/repo/issues/98/comments"] = []
+        self.run_claim()
+        self.target_comments["/repos/owner/repo/issues/98/comments"].append({"id": 40, "body": CLAIM.marker(OTHER)})
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+
+    def test_closed_superseded_pr_still_preserves_unaccounted_artifacts(self):
+        self.refresh_fixture()
+        self.comments[-1]["body"] += " Closed #98 in favor of #99."
+        old = {**copy.deepcopy(self.pulls[0]), "number": 98, "state": "closed", "merged_at": None,
+               "head": {"ref": "work/old", "repo": {"full_name": "owner/repo"}}}
+        self.closed_pulls[98] = old
+        self.targets["98"] = {**self.targets["99"], "number": 98, "state": "closed"}
+        self.target_comments["/repos/owner/repo/issues/98/comments"] = []
+        self.inventory["local_branches"].append(old["head"]["ref"])
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+        self.assertEqual(caught.exception.payload["competing_evidence"][0]["source"], "closed_pr_artifacts")
+        self.assert_no_writes()
+
+    def test_explicit_planning_checkout_supplies_custom_configuration(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            config = root / ".github" / "github.json"
+            config.parent.mkdir()
+            source = {"planning": {"labels": {"active": "custom-active"}}}
+            config.write_text(json.dumps(source))
+            with patch.object(PLAN, "git_root", return_value=None), patch.object(PLAN, "repo_from_git", side_effect=lambda p: "other/plans" if p == root else None), \
+                    patch.object(PLAN, "workspace_config_path", return_value=root / "missing-workspace-config"):
+                resolved = PLAN.load_config("other/plans", checkout=root)
+            self.assertEqual(resolved["labels"]["active"], source["planning"]["labels"]["active"])
+
+    def test_refresh_requires_own_new_task_branch(self):
+        for branch in ("work/issue-42-original", "work/issue-42-audits", "work/issue-42-fixtures"):
+            with self.subTest(branch=branch):
+                self.setUp()
+                self.refresh_fixture()
+                self.args.branch = branch
+                with self.assertRaises(PLAN.PlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_new_pr_on_released_source_branch_is_not_retained_ownership(self):
+        for author in (TEST_BOT, "stranger"):
+            with self.subTest(author=author):
+                self.setUp()
+                self.refresh_fixture()
+                self.pulls.append({**copy.deepcopy(self.pulls[0]), "number": 101,
+                                   "user": {"login": author},
+                                   "head": {"ref": "work/issue-42-original", "repo": {"full_name": "owner/repo"}}})
+                self.targets["101"] = {**self.targets["99"], "number": 101}
+                self.target_comments["/repos/owner/repo/issues/101/comments"] = []
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_plain_resume_still_refuses_released_split_pr_artifacts(self):
+        self.refresh_fixture()
+        self.args.refresh_pr = self.args.handoff_comment = None
+        with self.assertRaises(PLAN.ClassifiedPlanError):
+            self.run_claim()
+        self.assert_no_writes()
+
+    def test_refresh_requires_all_evidence_flags(self):
+        for flag in ("refresh_pr", "handoff_comment", "resume_from"):
+            with self.subTest(flag=flag):
+                self.setUp()
+                self.refresh_fixture()
+                setattr(self.args, flag, None)
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+
+    def test_refresh_rejects_incomplete_or_foreign_handoff(self):
+        for change in ("no_release", "foreign_release", "foreign_handoff", "missing_target", "foreign_pr", "unbound_handoff", "missing_link", "fork", "closed", "before_release"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.refresh_fixture()
+                if change == "no_release": self.comments[-1]["body"] = "Source handoff: PR #99 and #100"
+                if change == "foreign_release":
+                    self.comments[-1]["body"] = "Released claim 1"
+                    self.comments[-1]["user"]["login"] = "stranger"
+                    self.comments.append({"id": 4, "body": "Source handoff: PR #99 and #100", "user": {"login": TEST_BOT}})
+                    self.args.handoff_comment = 4
+                if change == "foreign_handoff": self.comments[-1]["user"]["login"] = "stranger"
+                if change == "missing_target": self.comments[-1]["body"] = "Released claim 1\nPR #100"
+                if change == "foreign_pr": self.pulls[0]["user"]["login"] = "stranger"
+                if change == "unbound_handoff":
+                    self.comments.append({"id": 4, "body": "Unrelated handoff: PR #99 and #100", "user": {"login": TEST_BOT}})
+                    self.args.handoff_comment = 4
+                if change == "missing_link": self.pulls[0]["body"] = "No implementation reference"
+                if change == "fork": self.pulls[0]["head"]["repo"]["full_name"] = "stranger/repo"
+                if change == "closed": self.pulls.pop(0)
+                if change == "before_release":
+                    self.comments[1]["body"] += "\nPR #99"
+                    self.args.handoff_comment = 2
+                with self.assertRaises(PLAN.PlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_refresh_retains_new_or_unaccounted_artifacts(self):
+        self.refresh_fixture()
+        self.pulls.append({"number": 101, "body": "Refs #42", "head": {"ref": "work/other-42"}})
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+        self.assert_no_writes()
+
+    def test_refresh_active_ownership_refuses_on_issue_target_or_sibling(self):
+        for place in ("issue", "target", "sibling", "session"):
+            with self.subTest(place=place):
+                self.setUp()
+                self.refresh_fixture()
+                if place == "issue": self.compete()
+                if place in ("target", "sibling"):
+                    n = 99 if place == "target" else 100
+                    self.target_comments[f"/repos/owner/repo/issues/{n}/comments"] = [{"id": 40, "body": CLAIM.marker(OTHER)}]
+                if place == "session":
+                    self.inventory["sessions"] = [{"sessionId": "active-peer", "cwd": self.inventory["worktrees"][0]["path"], "name": "plain name", "state": "running"}]
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_refresh_readback_race_releases_only_new_claim(self):
+        self.refresh_fixture()
+        self.after_post = lambda: self.target_comments["/repos/owner/repo/issues/99/comments"].append({"id": 40, "body": CLAIM.marker(OTHER)})
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+        self.assertEqual(caught.exception.payload["claim_recovery"]["release_own_claim"]["comment_id"], 4)
+        self.assertNotIn("status", self.events)
+
+    def test_refresh_readback_new_pr_is_competing_evidence(self):
+        self.refresh_fixture()
+        self.after_post = lambda: self.pulls.append({"number": 101, "body": "Refs #42", "head": {"ref": "work/new-42"}})
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+        self.assertNotIn("status", self.events)
+
+    def test_refresh_metadata_recovery_preserves_scope(self):
+        self.refresh_fixture()
+        self.run_claim()
+        self.run_claim()
+        self.assertEqual(self.events.count("post"), 1)
+        self.args.refresh_pr = self.args.handoff_comment = None
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+
 
     def test_success_records_and_reads_back_before_metadata(self):
         self.run_claim()

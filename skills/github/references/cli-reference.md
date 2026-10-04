@@ -426,6 +426,74 @@ Status, unreleased comments, other artifacts, and visible peer sessions still
 refuse. This flag supplies no cleanup or takeover authority: apply Choose Work's
 verified-handoff and preservation rules before passing it.
 
+For an explicitly authorized **conflict-only refresh** of a finished session's
+PR, claim its **canonical open planning issue**, even when the brief names only
+the PR. Run from a checkout of the PR's repository:
+
+```bash
+uv run <skill-dir>/scripts/gh-plan.py claim <canonical-issue-url> \
+  --worker <worker-token> --session <native-session-id> \
+  --branch work/<new-task-slug> --next-action "Conflict-only refresh of <PR>" \
+  --resume-from <released-claim-comment-id> \
+  --refresh-pr https://github.com/OWNER/REPO/pull/123 \
+  --handoff-comment <handoff-comment-id> \
+  --wait-resolved "<verified evidence resolving the recorded wait for this refresh>"
+```
+
+For a planning issue in another repository, both repositories receive their
+own ownership inventory and planning label configuration. Supply
+`--planning-checkout /path/to/planning-repo`
+when its verified checkout is not discoverable through repository configuration.
+The remote identity is checked; inventory covers that checkout's registered
+worktrees and remote heads, not every clone or Codex peer. No worktree is
+adopted or mutated there.
+
+The source claim and handoff must be on that planning issue. The source author
+must have posted an exact `Released claim <id>` before or in the handoff, and
+the handoff must name the target PR. A same-repository `#123`, qualified
+`OWNER/REPO#123`, or full PR URL identifies it; cross-repository handoffs require
+a qualified reference. The open PR must independently link the planning issue
+and use a head and base in the PR's repository; fork refreshes are not supported.
+The issue and target PR's recorded waits still require verified resolution.
+
+The handoff must start with the exact `Released claim <id>` line, or with
+`Handoff from <source-worker>` and include the exact claim ID and native source
+session ID. A generic bot rollup or refresh claim is not a handoff. Authorship
+checks are at GitHub identity level; verify the actual finished-session handoff
+before invoking the route because several sessions can share that identity.
+Every open PR on a retained branch must be named in this handoff and authored
+by the source author, including a new PR on the original source branch.
+Unmentioned same-bot PRs also refuse.
+The named PR identities bind their current branches to that finished session's
+handoff, including split branches that differ from the original claim branch.
+Only open or merged same-repository PRs independently linked to the canonical
+issue and named in that handoff count as retained artifacts; a closed unmerged
+PR does not. A superseded closed PR with no remaining artifacts is ignored,
+while its unreleased claims and unaccounted branches/worktrees still refuse.
+The refresh target itself must still be open. Cross-repository
+links must qualify the canonical issue, since bare `#123` belongs to the PR
+repository. Merged siblings may retain their branches/worktrees without
+requiring cleanup to refresh the remaining PR. The helper reads the
+issue and those PR discussions, local/remote branches, registered worktrees,
+and available peer sessions again during readback. Unreleased claims, active
+Current Status, live peers on retained worktrees, unaccounted artifacts, and
+races still refuse. Sibling references identify retained artifacts and do not
+authorize refreshing those siblings. A refresh claim records its target PR so recovering it
+cannot silently become a general implementation claim.
+
+This route grants no refresh, push, merge, cleanup, or takeover authority.
+Verify the finished-session handoff and existing conflict-refresh authorization
+first. On confirmed claim success, create your own new linked task worktree;
+leave the original worktree and its lease intact. Reusing any retained
+PR/source branch as the new task branch refuses. From that new task branch,
+push explicitly to the verified existing PR head
+with a normal fast-forward refspec (`task-branch:pr-head-branch`) under the
+brief's authority; never check out the PR branch in two worktrees or force-push.
+Recheck its live head before integrating and pushing so a concurrent update
+is preserved. Then release the new issue claim
+with its exact comment ID. Direct `claim <PR>` remains unsupported; the
+canonical issue is the durable ownership and status record.
+
 A refused write/readback race includes `claim_recovery.release_own_claim` when
 this invocation posted a claim. Post its exact `Released claim <comment-id>`
 body through the same bot to release only that comment, then preserve the
