@@ -11,6 +11,11 @@ import json
 import re
 from pathlib import Path
 
+MEMORY_CITATION_TAIL = re.compile(
+    r"^<oai-mem-citation>(?:(?!</?oai-mem-citation>).)*"
+    r"^</oai-mem-citation>\s*\Z",
+    re.MULTILINE | re.DOTALL,
+)
 SAFE = re.compile(r"^(?:\*\*)?Safe to exit: yes\.?(?:\*\*)?$")
 
 
@@ -164,7 +169,9 @@ def summarize(records: list[dict], harness: str) -> dict:
                 result.update(
                     at_turn_end=True, turn_end=kind, timestamp=record.get("timestamp")
                 )
-    lines = result["last_text"].strip().splitlines()
+    # Citation metadata may follow the verdict; retain the raw response for readers.
+    verdict_text = MEMORY_CITATION_TAIL.sub("", result["last_text"])
+    lines = verdict_text.strip().splitlines()
     result["safe_verdict"] = bool(
         lines
         and SAFE.fullmatch(re.sub(r"^[-*] ", "", lines[-1].strip()).replace("**", ""))

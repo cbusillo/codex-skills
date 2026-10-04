@@ -122,6 +122,48 @@ class TranscriptTests(unittest.TestCase):
                 session_record.summarize(records + [tail], "codex")["safe_verdict"]
             )
 
+    def test_memory_citation_tail_preserves_verdict_constraints(self):
+        records = session_record.read_jsonl(
+            Path(__file__).parent / "fixtures/codex-closeout-memory-citation.jsonl"
+        )
+        response = records[1]["payload"]["content"][0]["text"]
+        citation = response[response.index("<oai-mem-citation>"):]
+        self.assertTrue(session_record.summarize(records, "codex")["safe_verdict"])
+        for text in (
+            "> Safe to exit: yes",
+            '"Safe to exit: yes"',
+            "Not Safe to exit: yes",
+            "Safe to exit: no",
+            "Safe to exit: yes, if CI passes",
+            "If CI passes:\n  Safe to exit: yes, conditional",
+            "```text\nSafe to exit: yes",
+            "Safe to exit: yes\nStill doing work",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(session_record.summarize(
+                    [event("agent_message", message=text + "\n\n" + citation),
+                     event("task_complete")], "codex"
+                )["safe_verdict"])
+        for suffix in (
+            citation + "Still doing work",
+            citation.replace("</oai-mem-citation>", ""),
+            citation.replace("<oai-mem-citation>", "> <oai-mem-citation>"),
+            citation + citation,
+        ):
+            with self.subTest(suffix=suffix):
+                self.assertFalse(session_record.summarize(
+                    [event("agent_message", message="Safe to exit: yes\n\n" + suffix),
+                     event("task_complete")], "codex"
+                )["safe_verdict"])
+        self.assertFalse(session_record.summarize(
+            [event("agent_message", message=citation), event("task_complete")],
+            "codex"
+        )["safe_verdict"])
+        for tail in (event("turn_aborted"), event("task_started"),
+                     event("user_message", message="continue"), event("function_call")):
+            with self.subTest(tail=tail):
+                self.assertFalse(session_record.summarize(records + [tail], "codex")["safe_verdict"])
+
     def test_codex_response_item_text_and_usage(self):
         records = [
             event(
@@ -335,6 +377,28 @@ class LedgerTests(unittest.TestCase):
         terminal.async_get_variable.return_value = "/dev/ttys999"
         with self.assertRaises(ValueError):
             asyncio.run(close_ttys.close(app, entry, True, True, True))
+
+    def test_memory_citation_fixture_through_status_candidates_and_close(self):
+        fixture = Path(__file__).parent / "fixtures/codex-closeout-memory-citation.jsonl"
+        self.transcript.write_text(fixture.read_text())
+        result = status.snapshot(self.ledger)[0]
+        self.assertTrue(result["safe_verdict"])
+        self.assertIn("<oai-mem-citation>", result["last_text"])
+        self.assertTrue(finished_map.candidates(self.ledger)[0]["candidate"])
+        entry = session_record.load_ledger(self.ledger)[0]
+        terminal = SimpleNamespace(
+            session_id="term1",
+            async_get_variable=AsyncMock(return_value="ttys001"),
+            async_close=AsyncMock(),
+        )
+        app = SimpleNamespace(terminal_windows=[
+            SimpleNamespace(tabs=[SimpleNamespace(sessions=[terminal])])
+        ])
+        with patch.object(close_ttys, "inventory", return_value=[(20, "ttys001", "-zsh")]):
+            self.assertTrue(asyncio.run(close_ttys.close(app, entry, False, True, True))["dry_run"])
+            terminal.async_close.assert_not_awaited()
+            asyncio.run(close_ttys.close(app, entry, True, True, True))
+        terminal.async_close.assert_awaited_once_with(force=False)
 
     def test_activity_race_keeps_tab(self):
         entry = session_record.load_ledger(self.ledger)[0]
