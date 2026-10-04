@@ -48,8 +48,8 @@ def test_private_provider_approval_requires_confirmed_providers() -> None:
     module = load_module()
     try:
         module.require_private_provider_approval(
-            Namespace(allow_private_cloud=True, confirm_private_provider=["claude"]),
-            {"name": "gpt", "provider": "code-llm", "model": "gpt-5.4"},
+            Namespace(allow_private_cloud=True, confirm_private_provider=[]),
+            {"name": "review", "provider": "claude", "model": "opus"},
         )
     except module.MatrixBlocked as exc:
         if exc.status != "blocked_approval":
@@ -60,9 +60,9 @@ def test_private_provider_approval_requires_confirmed_providers() -> None:
     module.require_private_provider_approval(
         Namespace(
             allow_private_cloud=True,
-            confirm_private_provider=["code-llm", "claude"],
+            confirm_private_provider=["claude"],
         ),
-        {"name": "gpt", "provider": "code-llm", "model": "gpt-5.4"},
+        {"name": "review", "provider": "claude", "model": "opus"},
     )
 
 
@@ -72,7 +72,7 @@ def test_skip_existing_does_not_require_provider_approval() -> None:
         root = Path(tmp)
         prompts = write_prompts(root)
         existing = root / "matrix.jsonl"
-        variant = {"name": "gpt", "provider": "code-llm", "model": "gpt-5.4"}
+        variant = {"name": "review", "provider": "claude", "model": "opus"}
         payload, summary = module.prepare_payload(prompts, ("tiny", 10_000))
         prompt = module.selected_note_text(payload)
         summary["prompt_sha256"] = module.sha256_text(prompt)
@@ -96,7 +96,7 @@ def test_skip_existing_does_not_require_provider_approval() -> None:
                 "--budget",
                 "tiny=10000",
                 "--variant",
-                "gpt=code-llm:gpt-5.4",
+                "review=claude:opus",
                 "--output-jsonl",
                 str(existing),
                 "--skip-existing",
@@ -120,7 +120,7 @@ def test_dry_run_plans_matrix_row() -> None:
             payload,
             prompt,
             summary,
-            {"name": "gpt", "provider": "code-llm", "model": "gpt-5.4"},
+            {"name": "review", "provider": "claude", "model": "opus"},
             Namespace(dry_run=True),
         )
     if row["status"] != "planned" or row["candidate_count"] != 1:
@@ -133,7 +133,7 @@ def test_prompt_too_large_row() -> None:
     summary = module.prompt_too_large_summary(Path("prompts.jsonl"), ("tiny", 10), error)
     row = module.prompt_too_large_row(
         summary,
-        {"name": "gpt", "provider": "code-llm", "model": "gpt-5.4"},
+        {"name": "review", "provider": "claude", "model": "opus"},
         error,
     )
     if row["status"] != "prompt_too_large" or row["prompt_chars"] != 0:
@@ -154,54 +154,6 @@ def test_command_error_message_uses_stdout() -> None:
     message = module.command_error_message(exc)
     if "Usage credits required" not in message:
         raise AssertionError(f"expected stdout in command error message: {message}")
-
-
-def test_request_code_llm_writes_prompt_to_message_file() -> None:
-    import unittest.mock
-
-    module = load_module()
-    prompt = "candidate review data\n" * 500
-    captured: dict[str, object] = {}
-
-    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        message_file_index = command.index("--message-file")
-        prompt_path = Path(command[message_file_index + 1])
-        captured["command"] = command
-        captured["prompt_content"] = prompt_path.read_text(encoding="utf-8")
-        return subprocess.CompletedProcess(command, 0, stdout='{"reviewed_candidate_ids": []}', stderr="")
-
-    args = Namespace(schema_file=None, max_seconds=30.0)
-    with unittest.mock.patch.object(module.subprocess, "run", fake_run):
-        content = module.request_code_llm("gpt-5.4", prompt, args)
-
-    if content != '{"reviewed_candidate_ids": []}':
-        raise AssertionError(f"unexpected extracted content: {content}")
-    if captured.get("prompt_content") != prompt:
-        raise AssertionError("code llm request should write the full prompt to --message-file")
-    command = captured.get("command")
-    if not isinstance(command, list) or "--message-file" not in command:
-        raise AssertionError(f"code llm request should use --message-file: {captured}")
-
-
-def test_request_code_llm_avoids_agent_context_file_transport() -> None:
-    import unittest.mock
-
-    module = load_module()
-
-    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        for forbidden in ("agent.create", "context_files", "context-files", "--context-file", "--context-files"):
-            if forbidden in command:
-                raise AssertionError(f"code llm matrix runs must not use {forbidden}: {command}")
-        if "--message-file" not in command:
-            raise AssertionError(f"code llm matrix runs must pass prompt via --message-file: {command}")
-        return subprocess.CompletedProcess(command, 0, stdout='{"reviewed_candidate_ids": []}', stderr="")
-
-    args = Namespace(schema_file=None, max_seconds=30.0)
-    with unittest.mock.patch.object(module.subprocess, "run", fake_run):
-        content = module.request_code_llm("gpt-5.4", "some prompt content", args)
-
-    if content != '{"reviewed_candidate_ids": []}':
-        raise AssertionError(f"unexpected extracted content: {content}")
 
 
 def test_request_claude_uses_stdin_without_agent_context_files() -> None:
@@ -230,21 +182,6 @@ def test_request_claude_uses_stdin_without_agent_context_files() -> None:
         raise AssertionError(f"unexpected extracted content: {content}")
     if captured.get("input") != prompt:
         raise AssertionError(f"claude matrix runs should send the prompt via stdin: {captured}")
-
-
-def test_code_llm_command_uses_message_file() -> None:
-    module = load_module()
-    command = module.code_llm_command("gpt-5.4", Path("prompt.txt"), ["--schema-file", "schema.json"])
-    if command[:3] != ["code", "llm", "request"]:
-        raise AssertionError(f"code llm command should use the direct request CLI: {command}")
-    if "--message-file" not in command or "--message" in command:
-        raise AssertionError(f"code llm command should use file-backed prompt input: {command}")
-    message_file_index = command.index("--message-file")
-    if command[message_file_index + 1] != "prompt.txt":
-        raise AssertionError(f"prompt path should immediately follow --message-file: {command}")
-    for forbidden in ("agent.create", "context_files", "context-files", "--context-file", "--context-files"):
-        if forbidden in command:
-            raise AssertionError(f"code llm matrix runs must not use {forbidden}: {command}")
 
 
 def test_persists_matrix_output_artifacts() -> None:
@@ -276,6 +213,7 @@ def test_default_schema_is_strict_object() -> None:
 
 
 def test_existing_rows_are_keyed_by_budget_and_variant() -> None:
+    # Historical Every Code results stay readable; they do not enable execution.
     module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "results.jsonl"
@@ -368,18 +306,55 @@ def test_retry_status_removes_default_skip_status() -> None:
         raise AssertionError("retry-status should make passed rows runnable again")
 
 
+def test_rejects_retired_transport_before_execution() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        prompts = write_prompts(Path(tmp))
+        for flags in ([], ["--dry-run"], ["--allow-private-cloud"]):
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), str(prompts), "--variant", "old=code-llm:gpt-5.4", *flags],
+                capture_output=True, text=True, check=False,
+            )
+            if result.returncode == 0 or "retired" not in result.stderr or result.stdout:
+                raise AssertionError(f"retired transport must refuse before matrix execution: {result}")
+
+
+def test_default_matrix_uses_current_transport() -> None:
+    import unittest.mock
+
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        prompts = write_prompts(Path(tmp))
+        with unittest.mock.patch.object(sys, "argv", [str(SCRIPT), str(prompts), "--dry-run"]):
+            variants = module.parse_args().parsed_variants
+        if not variants:
+            raise AssertionError("default matrix must retain a usable review path")
+        for variant in variants:
+            # Exercise transport dispatch, rather than pinning a model name in the test.
+            payload, summary = module.prepare_payload(prompts, ("tiny", 10_000))
+            prompt = module.selected_note_text(payload)
+            summary["prompt_sha256"] = module.sha256_text(prompt)
+            content = json.dumps({**{key: [] for key in module.default_schema()["required"]},
+                                  "reviewed_candidate_ids": ["memcand_a"]})
+            args = Namespace(dry_run=False, allow_private_cloud=True,
+                             confirm_private_provider=[variant["provider"]], output_dir=None)
+            with unittest.mock.patch.object(module, "request_claude", return_value=content) as request:
+                row = module.run_or_plan(payload, prompt, summary, variant, args)
+            request.assert_called_once_with(variant["model"], prompt, args)
+            if row["status"] != "passed":
+                raise AssertionError(f"default transport did not produce a valid review: {row}")
+
+
 def main() -> int:
     test_parse_variant()
+    test_rejects_retired_transport_before_execution()
+    test_default_matrix_uses_current_transport()
     test_private_provider_approval_requires_confirmed_providers()
     test_skip_existing_does_not_require_provider_approval()
     test_dry_run_plans_matrix_row()
     test_prompt_too_large_row()
     test_classifies_access_and_budget_errors()
     test_command_error_message_uses_stdout()
-    test_request_code_llm_writes_prompt_to_message_file()
-    test_request_code_llm_avoids_agent_context_file_transport()
     test_request_claude_uses_stdin_without_agent_context_files()
-    test_code_llm_command_uses_message_file()
     test_persists_matrix_output_artifacts()
     test_default_schema_is_strict_object()
     test_existing_rows_are_keyed_by_budget_and_variant()
