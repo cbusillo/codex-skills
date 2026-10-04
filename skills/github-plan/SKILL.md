@@ -160,11 +160,11 @@ Apply assignments only after the installed skills support this convention.
 
 `next --agent claude|codex` selects that family and unlabeled issues, and reports
 other-family issues as `assigned_elsewhere`. Without the flag, the helper detects
-the active harness from session environment markers (Codex takes precedence in
-a Codex child launched from Claude). For a Claude child inheriting Codex markers,
-pass `--agent claude` explicitly. When detection is unavailable or both routing
-labels are present, labeled issues remain excluded; identify the running family
-with `--agent`, or resolve the conflicting assignment.
+the active harness when only one family’s session markers are present. A child
+can inherit its parent’s markers; when both families are present, pass
+`--agent claude|codex` for the actual running family. When detection is unavailable
+or both routing labels are present, labeled issues remain excluded; identify the
+running family with `--agent`, or resolve the conflicting assignment.
 
 Before `go`, `claim` checks the labels again and stops on a mismatch, naming the
 label. An explicit Director override for this session permits

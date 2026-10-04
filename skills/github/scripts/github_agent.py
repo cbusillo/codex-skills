@@ -23,11 +23,10 @@ def running_agent(explicit: str | None = None, *, environ: Mapping[str, str] | N
             raise ValueError(f"Unknown agent family: {explicit}")
         return explicit
     env = os.environ if environ is None else environ
-    # A Codex child can inherit its launching Claude harness's environment.
-    if env.get("CODEX_THREAD_ID") or env.get("CODEX_SESSION_ID"):
-        return "codex"
-    if env.get("CLAUDE_CODE_SESSION_ID") or env.get("CLAUDECODE"):
-        return "claude"
+    codex = bool(env.get("CODEX_THREAD_ID") or env.get("CODEX_SESSION_ID"))
+    claude = bool(env.get("CLAUDE_CODE_SESSION_ID") or env.get("CLAUDECODE"))
+    if codex != claude:
+        return "codex" if codex else "claude"
     return None
 
 

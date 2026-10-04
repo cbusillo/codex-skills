@@ -20,7 +20,9 @@ class AgentTests(unittest.TestCase):
         self.assertIsNone(agent.running_agent(environ={}))
         self.assertEqual(agent.running_agent(environ={"CLAUDECODE": "1"}), "claude")
         inherited = {"CLAUDECODE": "1", "CODEX_THREAD_ID": "session"}
-        self.assertEqual(agent.running_agent(environ=inherited), "codex")
+        self.assertIsNone(agent.running_agent(environ=inherited))
+        self.assertEqual(agent.running_agent("codex", environ=inherited), "codex")
+        self.assertIsNotNone(agent.exclusion({"labels": ["agent:codex"]}, agent.running_agent(environ=inherited)))
         self.assertEqual(agent.running_agent("claude", environ=inherited), "claude")
 
     def test_local_next_both_directions_before_limit(self):
