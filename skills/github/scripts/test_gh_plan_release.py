@@ -219,17 +219,31 @@ class ReleaseTests(unittest.TestCase):
 
     def test_split_pr_live_peer_refuses_release(self):
         self.refresh_setup()
-        self.f.inventory["sessions"] = [{"sessionId": "split-peer", "cwd": "/retained/issue-42-audits"}]
+        self.f.inventory["sessions"] = [{"sessionId": "split-peer", "cwd": "/retained/issue-42-audits/skills"}]
         with self.assertRaisesRegex(PLAN.PlanError, "live peer"): self.run_release()
         self.f.assert_no_writes()
 
-    def test_retained_pr_commit_after_release_restores_source_conflict(self):
-        self.refresh_setup()
-        self.f.comments[2]["body"] = "Prior PR #99 and #100 handoff lacks a release"
-        self.run_release()
-        self.commit_date = "2026-10-04T00:00:00Z"
+    def test_successor_push_does_not_resurrect_the_abandoned_owner(self):
+        self.refresh_setup(); self.run_release()
         self.f.args.handoff_comment = self.f.comments[-1]["id"]
-        with self.assertRaisesRegex(PLAN.PlanError, "ownership evidence"):
+        self.successor()
+        successor_id = self.f.comments[-1]["id"]
+        self.commit_date = "2026-10-04T00:00:00Z"
+        self.f.comments.append(self.comment(successor_id + 1, f"Released claim {successor_id}", "2026-10-05T00:00:00Z"))
+        self.f.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n\n## Current Status\n\nState: Released handoff."
+        self.f.args.worker = "next-successor"
+        self.f.args.session = "next-native-session"
+        self.f.args.branch = "work/follow-on-42"
+        self.successor()
+        self.assertEqual(self.f.emitted.call_args.args[0]["claim"]["session"], "next-native-session")
+
+    def test_hidden_checked_pr_is_not_a_visible_refresh_handoff(self):
+        self.refresh_setup()
+        self.f.pulls[0]["head"]["ref"] = CLAIM.records(self.f.comments[0]["body"])[0]["branch"]
+        self.args.retained_pr = [self.args.retained_pr[1]]
+        self.run_release()
+        self.f.args.handoff_comment = self.f.comments[-1]["id"]
+        with self.assertRaisesRegex(PLAN.PlanError, "attested in the released handoff"):
             self.successor()
 
     def test_dry_run_is_reviewable_and_writes_nothing(self):

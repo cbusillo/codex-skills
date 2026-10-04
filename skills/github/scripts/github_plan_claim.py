@@ -262,6 +262,9 @@ def retained_branch(comments: list[dict[str, Any]], comment_id: int) -> str:
 
 
 def handoff_pr_numbers(text: str, *, issue_repo: str, target_repo: str) -> set[int]:
+    # Machine receipts describe checks, not the Supervisor's visible PR handoff.
+    text = "\n".join(line for line in text.splitlines()
+                     if not line.startswith("<!-- github-plan:abandoned-release "))
     qualified = rf"(?:https://github\.com/{re.escape(target_repo)}/pull/|(?<![\w/]){re.escape(target_repo)}#)([1-9]\d*)(?!\d)"
     numbers = {int(m.group(1)) for m in re.finditer(qualified, text, re.IGNORECASE)}
     if issue_repo.casefold() == target_repo.casefold():

@@ -1878,16 +1878,6 @@ def claim_snapshot(ref: str, repo: str) -> tuple[dict[str, Any], str, list[dict[
                 if evidence.get("issue_url") == f"https://api.github.com/repos/{evidence_repo}/issues/{evidence_number}":
                     github_plan_release.validate_evidence(receipt, evidence, (release_comment.get("user") or {}).get("login", ""))
                     valid = True
-                    for pr_url in receipt["checked_prs"]:
-                        pr_match = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/([1-9]\d*)", pr_url)
-                        if not pr_match or pr_match.group(1).casefold() != issue["repo"].casefold():
-                            valid = False
-                            break
-                        _, retained_pull = api_json("GET", f"/repos/{issue['repo']}/pulls/{pr_match.group(2)}", bucket="rest_core", failed_step="claim_release_retained_pr")
-                        _, head_commit = api_json("GET", f"/repos/{issue['repo']}/commits/{retained_pull['head']['sha']}", bucket="rest_core", failed_step="claim_release_retained_head")
-                        if github_plan_release.stamp(head_commit["commit"]["committer"]["date"]) >= github_plan_release.stamp(receipt["evidence_at"]):
-                            valid = False
-                            break
         except PlanError as exc:
             if plan_error_status(exc) not in {403, 404}:
                 raise
@@ -1927,9 +1917,12 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         _, fresh_evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}", bucket="rest_core", failed_step="release_evidence_readback")
         if fresh_evidence != evidence:
             raise PlanError("Session-ended evidence changed during release")
-        related = [next((c for c in comments if c.get("id") == n), None) for n in args.related_claim_comment]
-        if any(c is None for c in related) or args.claim_comment in args.related_claim_comment:
-            raise PlanError("Related ownership comment is missing or repeats the structured source")
+        related = []
+        for related_id in args.related_claim_comment:
+            related_comment = next((c for c in comments if c.get("id") == related_id), None)
+            if related_comment is None or related_id == args.claim_comment:
+                raise PlanError("Related ownership comment is missing or repeats the structured source")
+            related.append(related_comment)
         source_branch = github_plan_release.source_record(source)["branch"]
         _, open_pulls = collect_paged_rest_items(f"/repos/{issue['repo']}/pulls", query={"state": "open"},
             bucket="rest_core", step_prefix="release_source_branch_prs")
@@ -1956,8 +1949,11 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             commit_at = github_plan_release.stamp(head_commit["commit"]["committer"]["date"])
             if commit_at >= github_plan_release.stamp(ended[0]):
                 raise PlanError("Retained PR has commit activity after the cited session-ended evidence")
+        release_actor = expected_actor
+        if release_actor is None:
+            raise PlanError("Release requires the configured source automation identity")
         body = github_plan_release.prepare_release(source, evidence, comments, inventory,
-            actor=expected_actor, role=args.role, releaser_session=args.session,
+            actor=release_actor, role=args.role, releaser_session=args.session,
             evidence_url=args.evidence_comment, retained_prs=args.retained_pr, related=related,
             checked_prs=checked_prs, retained_branches=retained_branches)
         return issue, comments, inventory, body, related
