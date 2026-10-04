@@ -169,8 +169,12 @@ repository visibility before treating a missing direction file as unadopted,
 preserves unreadable entries and unrelated marker state, and creates a private
 backup beside the marker before removing confirmed entries. Unknown entries
 remain for a later audit with the required read access; they are not evidence
-of adoption. When the Director independently approves removing a named
-repository whose repository read returns HTTP 404, add
+of adoption. Turn, audit, and cleanup writes share a sidecar lock and replace
+the marker atomically. Cleanup refuses if the marker changed during its
+preview; a writer arriving after its final read waits until cleanup finishes,
+then updates the resulting marker. Keep the `.lock` file in place so concurrent
+writers keep using the same lock. When the Director independently approves
+removing a named repository whose repository read returns HTTP 404, add
 `--remove-missing-repo OWNER/REPO` to both preview and apply, repeating it for
 each approved name. A 404 alone, including under `--gh gh`, never establishes
 that a repository is gone. Exit 3 reports unknown entries even when confirmed removals were

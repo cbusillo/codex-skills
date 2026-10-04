@@ -10,6 +10,8 @@ from __future__ import annotations
 import datetime as dt
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import types
@@ -389,7 +391,7 @@ def test_main_preserves_closed_audit_cutoff_and_stamps_scan_start() -> None:
                       "gh_json": fetch,
                       "dt": types.SimpleNamespace(datetime=Clock, timezone=dt.timezone, timedelta=dt.timedelta),
                   }),
-                  patch.object(module.github_client, "recorded_client", return_value={"status": "none", "source": "fixture"}),
+                  patch.dict(vars(module.github_client), {"recorded_client": lambda *_args, **_kwargs: {"status": "none", "source": "fixture"}}),
                   patch.dict(vars(module.github_identity), {"configured_bot_logins": lambda: ("bot",)}),
                   redirect_stdout(output)):
                 assert module.main(["--repo", "o/r", "--automation", "bot", "--gh", "fixture-gh"]) == 3
@@ -493,6 +495,94 @@ def test_prune_rejects_malformed_input_and_concurrent_marker_edits() -> None:
         else:
             raise AssertionError("concurrent change was overwritten")
         assert marker.read_text() == changed
+
+
+def test_prune_preserves_writer_started_after_final_read() -> None:
+    module = load()
+    for kind in ("turn", "audit"):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = (Path(tmp) / "marker.json").resolve()
+            original = b'{"turn":"earlier", "audits":{"o/missing":"a"}, "other":true}\n'
+            marker.write_bytes(original)
+            ready = Path(tmp) / "ready"
+            writer: subprocess.Popen[str] | None = None
+            reads = 0
+
+            def read(path: Path) -> bytes:
+                nonlocal reads, writer
+                with path.open("rb") as stream:
+                    value = stream.read()
+                if path == marker:
+                    reads += 1
+                    if reads == 2:
+                        writer = subprocess.Popen([
+                            sys.executable, "-c",
+                            "import datetime as dt, sys; from pathlib import Path; "
+                            "sys.path.insert(0, sys.argv[1]); import direction_mark as mark; "
+                            "Path(sys.argv[3]).write_text('ready'); "
+                            "now=dt.datetime(2026,10,4,tzinfo=dt.timezone.utc); "
+                            "mark.mark_turn(Path(sys.argv[2]),now) if sys.argv[4]=='turn' "
+                            "else mark.mark_audit(Path(sys.argv[2]),'o/new',now)",
+                            str(SCRIPT.parent), str(marker), str(ready), kind,
+                        ], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        import time
+
+                        deadline = time.monotonic() + 5
+                        while not ready.exists() and writer.poll() is None and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                        assert ready.exists(), "concurrent writer never started"
+                        try:
+                            writer.wait(timeout=1)
+                        except subprocess.TimeoutExpired:
+                            pass  # A serialized writer finishes after cleanup releases its lock.
+                return value
+
+            def fetch(args: list[str]) -> dict[str, Any]:
+                if args[1].endswith("/contents/DIRECTION.md"):
+                    raise module.AuditError("HTTP 404")
+                return {"full_name": "o/missing"}
+
+            try:
+                with patch.object(Path, "read_bytes", read):
+                    result = module.prune_unadopted(marker, fetch=fetch, apply=True)
+                assert writer is not None
+                stdout, stderr = writer.communicate(timeout=5)
+                assert writer.returncode == 0, (stdout, stderr)
+                after = json.loads(marker.read_text())
+                assert after["turn"] == "2026-10-04T00:00:00Z", after
+                assert after["audits"] == ({"o/new": after["turn"]} if kind == "audit" else {})
+                assert after["other"] is True
+                assert Path(result["backup"]).read_bytes() == original
+                assert Path(result["backup"]).stat().st_mode & 0o777 == 0o600
+            finally:
+                if writer is not None and writer.poll() is None:
+                    writer.kill()
+                    writer.communicate()
+
+
+def test_interrupted_prune_preserves_marker_and_exact_backup() -> None:
+    module = load()
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        original = b'{"turn":"earlier", "audits":{"o/missing":"a"}}\n'
+        marker.write_bytes(original)
+
+        def fetch(_args: list[str]) -> Any:
+            raise module.AuditError("HTTP 404")
+
+        with patch.object(os, "replace", side_effect=OSError("interrupted replace")):
+            try:
+                module.prune_unadopted(marker, fetch=fetch, apply=True, remove_missing_repos=("o/missing",))
+            except OSError:
+                pass
+            else:
+                raise AssertionError("replacement failure was hidden")
+        assert marker.read_bytes() == original
+        backups = list(Path(tmp).glob("*.backup-*"))
+        assert len(backups) == 1
+        assert backups[0].read_bytes() == original
+        assert backups[0].stat().st_mode & 0o777 == 0o600
+        assert list(Path(tmp).glob("*.pending-*")) == []
 
 
 def test_prune_does_not_confuse_repository_digits_with_http_status() -> None:
