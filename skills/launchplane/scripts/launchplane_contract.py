@@ -403,6 +403,26 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/dokploy-targets/setup",
         "mode": "apply",
     },
+    "dokploy-target-reconcile-compose-domain-dry-run": {
+        "method": "POST",
+        "path": "/v1/dokploy-targets/setup",
+        "mode": "dry-run",
+    },
+    "dokploy-target-reconcile-compose-domain-apply": {
+        "method": "POST",
+        "path": "/v1/dokploy-targets/setup",
+        "mode": "apply",
+    },
+    "dokploy-target-prune-compose-domain-dry-run": {
+        "method": "POST",
+        "path": "/v1/dokploy-targets/setup",
+        "mode": "dry-run",
+    },
+    "dokploy-target-prune-compose-domain-apply": {
+        "method": "POST",
+        "path": "/v1/dokploy-targets/setup",
+        "mode": "apply",
+    },
     "private-health-endpoint-read": {
         "method": "GET",
         "path": "/v1/private-health-endpoints/records",

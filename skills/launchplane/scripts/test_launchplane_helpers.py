@@ -6849,6 +6849,126 @@ def test_redacted_reasons_allow_matching_reviewed_apply() -> None:
             assert write_action.testing_hold_body(args, mode="apply")["reason"] == reason
 
 
+
+def _domain_setup_response(operation: str, mode: str = "dry-run") -> dict[str, Any]:
+    response = _compose_response(mode, "compose-private-9")
+    response["result"]["operation"] = operation
+    response["result"]["instance"] = "prod"
+    response["result"]["setup"] = {
+        "applied": mode == "apply",
+        "target_record": {"target_type": "compose", "domains": ["private.example.invalid"]},
+        "target_id_record": {"target_id": "compose-private-9"},
+        "domains": ["public.example.invalid"],
+        "warnings": ["private.example.invalid provider details"],
+    }
+    if operation == "reconcile-compose-domain":
+        response["result"]["setup"]["runtime_port"] = 8069
+    else:
+        response["result"]["setup"].update(matched_domain_ids=["private-route-id"], deleted_domain_ids=[], missing_domains=[])
+    return response
+
+
+def _domain_inspect(operation: str, after: bool = False) -> dict[str, Any]:
+    response = _inspect_response()
+    domains = ["private.example.invalid"]
+    if operation == "prune-compose-domain" and not after or operation == "reconcile-compose-domain" and after:
+        domains.append("public.example.invalid")
+    response["inspect"]["tracked_target"]["domains"] = domains
+    response["inspect"]["provider"] = {"id": "compose-private-9", "target_id": "compose-private-9", "target_type": "compose",
+                                        "domains": [{"host": domain, "port": 8069, "https": True} for domain in domains]}
+    return response
+
+
+def test_compose_domain_review_apply_and_read_back() -> None:
+    for operation in ("reconcile-compose-domain", "prune-compose-domain"):
+        with TemporaryDirectory(dir=Path.home()) as directory:
+            private = {"context": "example", "instance": "prod", "reason": "Adjust private.example.invalid routes",
+                       "domains": ["public.example.invalid"]}
+            if operation == "reconcile-compose-domain":
+                private["runtime_port"] = 8069
+            path = _write_json(directory, "payload.json", private)
+            dry = f"dokploy-target-{operation}-dry-run"
+            status, evidence, posts, reads = _run_main([dry, "--payload-file", path], post=_domain_setup_response(operation))
+            assert status == 0 and reads == [], evidence
+            assert posts[0]["body"] == {**private, "product": "launchplane", "operation": operation, "mode": "dry-run"}
+            assert posts[0]["path"] == contract.helper_command_path(dry)
+            assert "confirmation" not in posts[0]["body"]
+            saved = _write_json(directory, "review.json", evidence)
+            argv = [f"dokploy-target-{operation}-apply", "--payload-file", path,
+                    *_reviewed_apply_argv(evidence["result"]["plan_sha256"], saved)]
+            def run(after: dict[str, Any], post: object = None) -> tuple[Any, ...]:
+                snapshots = iter([_domain_inspect(operation), after])
+                return _run_main(argv, post=post or _domain_setup_response(operation, "apply"), read=lambda _: next(snapshots))
+            status, result, posts, reads = run(_domain_inspect(operation, True))
+            assert status == 0 and result["result"]["read_back_matches"] is True, result
+            assert len(posts) == 1 and len(reads) == 2
+            assert posts[0]["body"]["confirmation"] == write_action.DOKPLOY_TARGET_SETUP_CONFIRMATION
+            for hidden in ("public.example.invalid", "private.example.invalid", "compose-private-9", "private-route-id"):
+                assert hidden not in json.dumps(evidence) and hidden not in json.dumps(result)
+            # A provider route failure cannot be hidden by the tracked record.
+            changed = _domain_inspect(operation, True)
+            changed["inspect"]["provider"] = _domain_inspect(operation)["inspect"]["provider"]
+            status, result, _, _ = run(changed)
+            assert status == 1 and result["status"] == "accepted_unverified"
+            assert result["result"]["read_back_matches"] is False
+            # Unrelated tracked domains must survive both operations.
+            changed = _domain_inspect(operation, True)
+            changed["inspect"]["tracked_target"]["domains"].remove("private.example.invalid")
+            status, result, _, _ = run(changed)
+            assert status == 1 and result["status"] == "accepted_unverified"
+            status, result, posts, _ = _run_main(argv, post=_domain_setup_response(operation, "apply"), read=_inspect_response("changed-compose"))
+            assert status == 1 and result["status"] == "stale" and not posts
+            # No request may apply changed input or missing review acknowledgement.
+            _write_json(directory, "payload.json", {**private, "domains": ["changed.example.invalid"]})
+            status, _, posts, _ = _run_main(argv)
+            assert status == 2 and not posts
+            _write_json(directory, "payload.json", private)
+            status, _, posts, _ = _run_main([arg for arg in argv if arg != "--reviewed-dry-run"])
+            assert status == 2 and not posts
+            # Ambiguous provider outcomes stop without replaying the mutation.
+            status, result, posts, reads = run(_domain_inspect(operation, True), TimeoutError())
+            assert status == 1 and result["status"] == "outcome_unknown" and len(posts) == 1 and len(reads) == 1
+            # The setup service can report a 400 after a partial provider mutation.
+            error = urllib.error.HTTPError("https://private.invalid", 400, "private", Message(), io.BytesIO(json.dumps({
+                "trace_id": "launchplane_req_partial", "error": {
+                    "code": "invalid_dokploy_target_setup", "message": "private.example.invalid partially changed",
+                },
+            }).encode()))
+            status, result, posts, reads = run(_domain_inspect(operation, True), error)
+            assert status == 1 and result["status"] == "outcome_unknown" and len(posts) == 1 and len(reads) == 1
+            assert result["summary"]["error_code"] == "invalid_dokploy_target_setup"
+            assert result["summary"]["trace_id"] == "launchplane_req_partial"
+            assert "private.example.invalid" not in json.dumps(result)
+            malformed = urllib.error.HTTPError("https://private.invalid", 400, "private", Message(), io.BytesIO(json.dumps({
+                "trace_id": "https://private.example.invalid/token", "error": {"code": "invalid_dokploy_target_setup"},
+            }).encode()))
+            status, result, posts, _ = run(_domain_inspect(operation, True), malformed)
+            assert status == 1 and result["status"] == "outcome_unknown" and len(posts) == 1
+            assert "private.example.invalid" not in json.dumps(result)
+            changed = _domain_inspect(operation, True)
+            changed["inspect"]["provider"]["id"] = "other-compose"
+            status, result, _, _ = run(changed)
+            assert status == 1 and result["result"]["read_back_matches"] is False
+            # A surviving mixed-case host or conflicting duplicate route is not verified.
+            changed = _domain_inspect(operation, True)
+            changed["inspect"]["provider"]["domains"].append({
+                "host": "PUBLIC.EXAMPLE.INVALID", "port": 9999, "https": True,
+            })
+            status, result, _, _ = run(changed)
+            assert status == 1 and result["result"]["read_back_matches"] is False
+            # Placement, credential fields and empty/invalid hosts never reach HTTP.
+            for field, value in (("target_id", "private-id"), ("token", "private-token"), ("domains", []),
+                                 ("domains", ["https://example.invalid"]), ("domains", ["duplicate", "duplicate"])):
+                bad = _write_json(directory, "bad.json", {**private, field: value})
+                status, _, posts, _ = _run_main([dry, "--payload-file", bad])
+                assert status == 2 and not posts, field
+            if operation == "reconcile-compose-domain":
+                for port in (True, 0, 65536, "8069"):
+                    bad = _write_json(directory, "bad.json", {**private, "runtime_port": port})
+                    status, _, posts, _ = _run_main([dry, "--payload-file", bad])
+                    assert status == 2 and not posts
+
+
 def main() -> int:
     tests = [
         test_operator_free_text_redacts_credentials_and_urls,
@@ -6867,6 +6987,7 @@ def main() -> int:
         test_production_backup_authority_apply_binds_the_exact_reviewed_payload,
         test_production_backup_authority_read_keeps_state_and_record_ids,
         test_dokploy_compose_target_hides_provider_ids_and_binds_the_payload,
+        test_compose_domain_review_apply_and_read_back,
         test_compose_source_create_reads_back_repository_branch_and_path,
         test_compose_source_completion_binds_source_and_existing_target,
         test_private_health_endpoint_hides_the_url_and_binds_apply_to_the_review,
