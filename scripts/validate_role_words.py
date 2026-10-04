@@ -100,20 +100,23 @@ def prose_lines(text: str) -> Iterable[tuple[int, str]]:
         if in_frontmatter:
             if line.strip() == "---":
                 in_frontmatter = False
+                previous = ""
                 continue
             # Descriptions, purposes, and policy messages are prose, including
             # their folded continuation lines; argv, paths, and other metadata
-            # are not.
+            # are not. Carry stays within a single prose field.
             indent = len(line) - len(line.lstrip())
             key = FRONTMATTER_PROSE.match(line)
             if key:
                 prose_indent = len(key.group(1))
+                previous = ""
             elif (
                 prose_indent is None
                 or indent <= prose_indent
                 or FRONTMATTER_KEY.match(line)
             ):
                 prose_indent = None
+                previous = ""
                 continue
         opening = FENCE.match(line)
         if fence:

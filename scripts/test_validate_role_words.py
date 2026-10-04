@@ -70,6 +70,48 @@ def test_flags_folded_frontmatter_prose() -> None:
         raise AssertionError(module.findings(text))
 
 
+def test_frontmatter_carry_stops_at_boundaries() -> None:
+    module = load_module()
+    for qualifier, expected in (("repository", [(4, "owner")]), ("policy", [])):
+        word = "owner" if qualifier == "repository" else "administrator"
+        text = f"---\ndescription: Sync the {qualifier}\n---\n{word} approves."
+        if module.findings(text) != expected:
+            raise AssertionError(module.findings(text))
+        # Skipped metadata and a separate prose field also end the carry.
+        for boundary in ("argv: [sync]", "purpose: >-"):
+            text = (
+                f"---\ndescription: Sync the {qualifier}\n{boundary}\n"
+                f"  {word} approves.\n---\n"
+            )
+            expected = (
+                [(4, "owner")]
+                if boundary.startswith("purpose:") and word == "owner"
+                else []
+            )
+            if module.findings(text) != expected:
+                raise AssertionError(module.findings(text))
+        text = (
+            f"---\ndescription: Sync the {qualifier}\nargv: [sync]\n"
+            f"purpose: {word} approves.\n---\n"
+        )
+        expected = [(4, "owner")] if word == "owner" else []
+        if module.findings(text) != expected:
+            raise AssertionError(module.findings(text))
+
+
+def test_preserves_carry_within_folded_frontmatter_fields() -> None:
+    module = load_module()
+    for field in ("description", "purpose", "message"):
+        for separator in ("", "-"):
+            text = f"---\n{field}: >-\n  Ask the policy{separator}\n  administrator first.\n---\n"
+            expected_word = "policy-administrator" if separator else "policy administrator"
+            if module.findings(text) != [(4, expected_word)]:
+                raise AssertionError(module.findings(text))
+            text = f"---\n{field}: >-\n  Ask the repository{separator}\n  owner first.\n---\n"
+            if module.findings(text):
+                raise AssertionError(module.findings(text))
+
+
 def test_flags_blockquote_and_hyphen_wraps() -> None:
     module = load_module()
     for text, expected_word in (
@@ -171,6 +213,8 @@ def main() -> int:
     test_flags_frontmatter_description_only()
     test_flags_wrapped_policy_administrator()
     test_flags_folded_frontmatter_prose()
+    test_frontmatter_carry_stops_at_boundaries()
+    test_preserves_carry_within_folded_frontmatter_fields()
     test_flags_blockquote_and_hyphen_wraps()
     test_never_carries_prose_across_fences()
     test_allows_wrapped_github_sense()
