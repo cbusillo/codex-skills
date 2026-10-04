@@ -46,6 +46,28 @@ async def send(session, text, submit=True):
         await session.async_send_text("\r", suppress_broadcast=True)
 
 
+async def wait_for_session(app, tab, timeout=10.0):
+    """Refresh only the created tab's identity until its session is available."""
+    if tab is None:
+        raise ValueError("new tab identity unavailable; run list and inspect before retrying")
+    tab_id = tab.tab_id
+    try:
+        async with asyncio.timeout(timeout):
+            while True:
+                if tab.current_session:
+                    return tab.current_session
+                await app.async_refresh()
+                tab = app.get_tab_by_id(tab_id)
+                if tab is None:
+                    raise ValueError(f"new tab {tab_id} closed before its session was available")
+                if not tab.current_session:
+                    await asyncio.sleep(0.1)
+    except TimeoutError as error:
+        raise ValueError(
+            f"new tab {tab_id} has no session after {timeout:g}s; inspect it before retrying"
+        ) from error
+
+
 def with_account(command_text, choice):
     """Prefix one agent invocation with the chosen account's environment."""
     if "\n" in command_text:
@@ -130,18 +152,17 @@ async def operate(app, args):
             command_text = with_account(command_text, choice)
         elif getattr(args, "account", None):
             raise ValueError("--account needs --account-provider")
-        tab = await windows[0].async_create_tab()
-        if not tab.current_session:
-            raise ValueError("new tab has no session; inspect it before retrying")
-        await send(tab.current_session, command_text)
+        tab = await windows[0].async_create_tab(select=False)
+        session = await wait_for_session(app, tab)
+        await send(session, command_text)
         result = {
             "window_id": windows[0].window_id,
             "tab_id": tab.tab_id,
-            "session_id": tab.current_session.session_id,
+            "session_id": session.session_id,
         }
         if choice:
             result["account"] = account_choice.public(choice)
-    if previous_tab:
+    if args.command == "window" and previous_tab:
         await previous_tab.async_select()
     return result
 
