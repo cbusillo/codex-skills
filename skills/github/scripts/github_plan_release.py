@@ -51,6 +51,7 @@ def prepare_release(
     source: dict[str, Any], evidence: dict[str, Any], comments: list[dict[str, Any]],
     inventory: dict[str, Any], *, actor: str, role: str, releaser_session: str,
     evidence_url: str, retained_prs: list[str], related: list[dict[str, Any]],
+    checked_prs: list[str] | None = None, retained_branches: set[str] | None = None,
 ) -> str:
     record = source_record(source)
     if not actor or (source.get("user") or {}).get("login") != actor:
@@ -60,7 +61,7 @@ def prepare_release(
     if (evidence.get("user") or {}).get("login") != actor:
         raise ValueError("Session-ended evidence must be authored by the configured automation identity")
     text = evidence.get("body") or ""
-    if text.splitlines()[:1] != [f"Closed session {record['session']}"] or "Safe to exit: yes" not in text:
+    if text.splitlines()[:1] != [f"Closed session {record['session']}"] or "Safe to exit: yes" not in text.splitlines():
         raise ValueError("Evidence must be a closed-session attestation naming the exact native session and Safe to exit: yes")
     ended = re.findall(r"(?m)^Ended at: (\S+)$", text)
     if len(ended) != 1:
@@ -71,7 +72,7 @@ def prepare_release(
     check_activity(comments, source, cutoff)
     if any(s.get("sessionId") == record["session"] for s in inventory["sessions"]):
         raise ValueError("Source session is still visible in the active native session inventory")
-    retained_paths = {pathlib.Path(t["path"]).resolve() for t in inventory["worktrees"] if t["branch"] == record["branch"]}
+    retained_paths = {pathlib.Path(t["path"]).resolve() for t in inventory["worktrees"] if t["branch"] in {record["branch"], *(retained_branches or set())}}
     if any(pathlib.Path(s.get("cwd") or "/").resolve() in retained_paths for s in inventory["sessions"]):
         raise ValueError("A live peer is using the source claim's retained worktree")
     for comment in related:
@@ -84,6 +85,7 @@ def prepare_release(
                "evidence_url": evidence_url, "evidence_at": cutoff.isoformat(),
                "evidence_updated_at": evidence.get("updated_at") or evidence["created_at"], "role": role,
                "releaser_session": releaser_session, "retained_prs": retained_prs,
+               "checked_prs": checked_prs or [],
                "related_ids": [c["id"] for c in related]}
     return (f"Released claim {source['id']}\n\n"
             f"Closed-session release by {role}; source worker {record['worker']}, native session {record['session']}.\n"
@@ -101,13 +103,15 @@ def receipt_for(comment: dict[str, Any]) -> dict[str, Any] | None:
     try:
         receipt = json.loads(lines[0][len("<!-- " + RELEASE_MARKER):-len(" -->")])
         if not isinstance(receipt, dict) or not all(key in receipt for key in (
-            "source_id", "source", "evidence_url", "evidence_at", "evidence_updated_at", "role", "releaser_session")):
+            "source_id", "source", "evidence_url", "evidence_at", "evidence_updated_at", "role", "releaser_session", "checked_prs")):
             return None
         if (type(receipt["source_id"]) is not int or not isinstance(receipt["source"], dict)
                 or not all(isinstance(receipt["source"].get(k), str) and receipt["source"][k] for k in ("worker", "session", "branch", "claimed_at"))
                 or receipt["role"] not in {"supervisor", "direction"} or not receipt["releaser_session"]
                 or receipt["releaser_session"] == receipt["source"]["session"]
-                or not isinstance(receipt["evidence_url"], str)):
+                or not isinstance(receipt["evidence_url"], str)
+                or not isinstance(receipt["checked_prs"], list)
+                or not all(isinstance(url, str) for url in receipt["checked_prs"])):
             return None
         stamp(receipt["evidence_at"])
         stamp(receipt["evidence_updated_at"])
@@ -132,7 +136,7 @@ def validate_evidence(receipt: dict[str, Any], evidence: dict[str, Any], author:
     ended = re.findall(r"(?m)^Ended at: (\S+)$", text)
     if ((evidence.get("user") or {}).get("login") != author
             or text.splitlines()[:1] != [f"Closed session {receipt['source']['session']}"]
-            or "Safe to exit: yes" not in text
+            or "Safe to exit: yes" not in text.splitlines()
             or len(ended) != 1 or stamp(ended[0]) != stamp(receipt["evidence_at"])
             or stamp(evidence.get("updated_at") or evidence.get("created_at")) != stamp(receipt["evidence_updated_at"])):
         raise ValueError("Closed-session evidence changed or no longer attests this release")

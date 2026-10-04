@@ -451,7 +451,8 @@ to the source automation identity. The release comment is the new handoff for
 `claim --resume-from <original-id> --refresh-pr <url> --handoff-comment <release-id>`.
 Unmentioned siblings, live retained-worktree peers and other ownership still
 refuse. Commit activity newer than the cited closure refuses for listed PRs and every
-open PR on the source branch; verify
+open PR on the source branch; these checked PR heads are also re-read when a
+successor claims. Verify
 the newer session's actual handoff rather than moving the closure timestamp.
 
 Renewed source claims or source edits after closure refuse the release and

@@ -24,7 +24,7 @@ class ReleaseTests(unittest.TestCase):
         self.f.comments = [self.comment(1, CLAIM.marker(fixtures.OTHER), "2026-10-01T00:00:00Z")]
         self.evidence = self.comment(88,
             "Closed session session-b\nEnded at: 2026-10-02T00:00:00Z\n"
-            "Transcript-verified Safe to exit: yes; Supervisor closed this exact session.\n"
+            "Safe to exit: yes\nTranscript verified; Supervisor closed this exact session.\n"
             "Handoff: https://github.com/owner/repo/issues/42#issuecomment-2",
             "2026-10-02T01:00:00Z")
         self.evidence["issue_url"] = "https://api.github.com/repos/owner/control/issues/884"
@@ -217,15 +217,30 @@ class ReleaseTests(unittest.TestCase):
                 with self.assertRaises(PLAN.PlanError): self.run_release()
                 self.f.assert_no_writes()
 
+    def test_split_pr_live_peer_refuses_release(self):
+        self.refresh_setup()
+        self.f.inventory["sessions"] = [{"sessionId": "split-peer", "cwd": "/retained/issue-42-audits"}]
+        with self.assertRaisesRegex(PLAN.PlanError, "live peer"): self.run_release()
+        self.f.assert_no_writes()
+
+    def test_retained_pr_commit_after_release_restores_source_conflict(self):
+        self.refresh_setup()
+        self.f.comments[2]["body"] = "Prior PR #99 and #100 handoff lacks a release"
+        self.run_release()
+        self.commit_date = "2026-10-04T00:00:00Z"
+        self.f.args.handoff_comment = self.f.comments[-1]["id"]
+        with self.assertRaisesRegex(PLAN.PlanError, "ownership evidence"):
+            self.successor()
+
     def test_dry_run_is_reviewable_and_writes_nothing(self):
         self.args.dry_run = True
         self.run_release()
         self.f.assert_no_writes()
         self.assertEqual(CLAIM.released_claim_id(self.f.emitted.call_args.args[0]["release_body"]), 1)
 
-    def test_renewed_activity_invalidates_existing_release_at_successor_claim(self):
+    def test_source_edit_invalidates_existing_release_at_successor_claim(self):
         self.run_release()
-        self.f.comments.append(self.comment(8, CLAIM.marker(fixtures.OTHER), "2026-10-04T00:00:00Z"))
+        self.f.comments[0]["updated_at"] = "2026-10-04T00:00:00Z"
         with self.assertRaisesRegex(PLAN.PlanError, "ownership evidence"):
             self.f.args.resume_from = 1
             with patch.object(self.f, "read_api", side_effect=self.api):

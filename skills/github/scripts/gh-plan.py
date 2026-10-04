@@ -1878,6 +1878,16 @@ def claim_snapshot(ref: str, repo: str) -> tuple[dict[str, Any], str, list[dict[
                 if evidence.get("issue_url") == f"https://api.github.com/repos/{evidence_repo}/issues/{evidence_number}":
                     github_plan_release.validate_evidence(receipt, evidence, (release_comment.get("user") or {}).get("login", ""))
                     valid = True
+                    for pr_url in receipt["checked_prs"]:
+                        pr_match = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/([1-9]\d*)", pr_url)
+                        if not pr_match or pr_match.group(1).casefold() != issue["repo"].casefold():
+                            valid = False
+                            break
+                        _, retained_pull = api_json("GET", f"/repos/{issue['repo']}/pulls/{pr_match.group(2)}", bucket="rest_core", failed_step="claim_release_retained_pr")
+                        _, head_commit = api_json("GET", f"/repos/{issue['repo']}/commits/{retained_pull['head']['sha']}", bucket="rest_core", failed_step="claim_release_retained_head")
+                        if github_plan_release.stamp(head_commit["commit"]["committer"]["date"]) >= github_plan_release.stamp(receipt["evidence_at"]):
+                            valid = False
+                            break
         except PlanError as exc:
             if plan_error_status(exc) not in {403, 404}:
                 raise
@@ -1925,7 +1935,9 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             bucket="rest_core", step_prefix="release_source_branch_prs")
         branch_prs = [f"https://github.com/{issue['repo']}/pull/{p['number']}" for p in open_pulls
             if (p.get("head") or {}).get("ref") == source_branch]
-        for url in dict.fromkeys([*args.retained_pr, *branch_prs]):
+        checked_prs = list(dict.fromkeys([*args.retained_pr, *branch_prs]))
+        retained_branches = set()
+        for url in checked_prs:
             match = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/([1-9]\d*)", url)
             if not match or match.group(1).casefold() != issue["repo"].casefold():
                 raise PlanError("Retained PR must be an exact same-repository PR URL")
@@ -1936,6 +1948,7 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                     or any(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != issue["repo"].casefold() for side in ("head", "base"))
                     or not github_plan_claim.artifact_evidence(empty, [{**pull, "head": {"ref": ""}, "state": "open"}], issue["number"], {}, own_record=False, repo=issue["repo"])):
                 raise PlanError("Retained PR must independently link the canonical issue and belong to the source automation identity")
+            retained_branches.add(pull["head"]["ref"])
             ended = re.findall(r"(?m)^Ended at: (\S+)$", evidence.get("body") or "")
             if len(ended) != 1:
                 raise PlanError("Closed-session attestation must record Ended at")
@@ -1945,7 +1958,8 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                 raise PlanError("Retained PR has commit activity after the cited session-ended evidence")
         body = github_plan_release.prepare_release(source, evidence, comments, inventory,
             actor=expected_actor, role=args.role, releaser_session=args.session,
-            evidence_url=args.evidence_comment, retained_prs=args.retained_pr, related=related)
+            evidence_url=args.evidence_comment, retained_prs=args.retained_pr, related=related,
+            checked_prs=checked_prs, retained_branches=retained_branches)
         return issue, comments, inventory, body, related
     try:
         issue, comments, inventory, body, related = preflight()
@@ -1961,9 +1975,6 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         release_id = result["comment"]["id"]
         if not any(c.get("id") == release_id and (c.get("body") or "").startswith(body) for c in comments) or fresh_body != body:
             raise PlanError("Release readback changed; preserve records and inspect before any retry")
-        if any(c.get("id") == release_id and github_plan_release.receipt_for(c) is None
-               for c in github_plan_release.effective_comments(comments)):
-            raise PlanError("Source activity invalidated the posted release; source ownership remains live")
         completed.append("release_readback")
         related_results = []
         for comment in related:

@@ -2075,7 +2075,7 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github/scripts/github_app_setup.py" = "752a8c6d16f8117271700a616a506dabc80528544f5315a1d15d67ab141ec4c4"
 "github/scripts/gh-comment" = "21ecb30d4d60b61c760f1df630fd6b56347873709bba2d05b7f32f9222fa4656"
 "github/scripts/gh-issue" = "2589d7e258872b5dc2609ceb581053b2daae205156ac360d1a84a2f49eb0f01f"
-"github/scripts/gh-plan.py" = "8424b2e4410cc7505494617d7c46bbfb7b843ea4d7979aaaa5ed2491ecab8024"
+"github/scripts/gh-plan.py" = "ffc005e04265988608b89d6c9c399c668d70ee92c6d1944c04a9383c37785364"
 "github/scripts/gh-pr.py" = "d58b23c06d224c485dc493561c7fd91835c2c65a9df5c5555f1368fbaab11a81"
 "github/scripts/gh-rulesets.py" = "0b6cfb046b92b6adce65841dd27eccd12884709753769744887c3e0376ce5748"
 "github/scripts/git-commit-as-bot" = "517fad723e60df546a32577f2ff459de218ed3f90773d09f922b4689b282dc67"
@@ -2102,5 +2102,4 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "babysit-pr/scripts/gh_pr_watch.py" = "4ae6911610f861ed1e1e6c3dc20699785858537ac1e822f449f5852a1196e345"
 "direction/scripts/direction_audit.py" = "e7485d480307adf5cd8ef7cc7cc7aa4648076cc1bbc09a16d649d9c3060b3b36"
 "github/scripts/github_plan_claim.py" = "02972b94895b552b0b9acbfde3d77b178e664b9b38d141dd6354af914edaee48"
-
 "github/scripts/github_plan_release.py" = "23e334369bd1caebfbad012fa913cdaa5604aa52727c6d8b8a6d857e821d47d8"
