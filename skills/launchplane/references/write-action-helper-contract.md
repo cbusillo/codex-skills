@@ -393,7 +393,9 @@ request, public TLS, upstream certificate settings or the site's runtime identit
 Prune verification conservatively refuses to report success while any provider
 route still reports a requested host. Verify the network path separately before
 cutover. Stop on `accepted_unverified` or `outcome_unknown`; inspect before any
-retry, because a route may already have changed. No automatic apply retry runs.
+retry, because a route may already have changed. Apply HTTP 400
+`invalid_dokploy_target_setup` also reports `outcome_unknown`: that service code
+can follow partial provider changes, not just input validation. No automatic apply retry runs.
 Live-site applies and base-URL changes retain their Director and release gates.
 
 ### Lane record

@@ -6928,6 +6928,24 @@ def test_compose_domain_review_apply_and_read_back() -> None:
             # Ambiguous provider outcomes stop without replaying the mutation.
             status, result, posts, reads = run(_domain_inspect(operation, True), TimeoutError())
             assert status == 1 and result["status"] == "outcome_unknown" and len(posts) == 1 and len(reads) == 1
+            # The setup service can report a 400 after a partial provider mutation.
+            error = urllib.error.HTTPError("https://private.invalid", 400, "private", Message(), io.BytesIO(json.dumps({
+                "trace_id": "launchplane_req_partial", "error": {
+                    "code": "invalid_dokploy_target_setup", "message": "private.example.invalid partially changed",
+                },
+            }).encode()))
+            status, result, posts, reads = run(_domain_inspect(operation, True), error)
+            assert status == 1 and result["status"] == "outcome_unknown" and len(posts) == 1 and len(reads) == 1
+            assert result["summary"]["error_code"] == "invalid_dokploy_target_setup"
+            assert result["summary"]["trace_id"] == "launchplane_req_partial"
+            assert "private.example.invalid" not in json.dumps(result)
+            # A surviving mixed-case host or conflicting duplicate route is not verified.
+            changed = _domain_inspect(operation, True)
+            changed["inspect"]["provider"]["domains"].append({
+                "host": "PUBLIC.EXAMPLE.INVALID", "port": 9999, "https": True,
+            })
+            status, result, _, _ = run(changed)
+            assert status == 1 and result["result"]["read_back_matches"] is False
             # Placement, credential fields and empty/invalid hosts never reach HTTP.
             for field, value in (("target_id", "private-id"), ("token", "private-token"), ("domains", []),
                                  ("domains", ["https://example.invalid"]), ("domains", ["duplicate", "duplicate"])):

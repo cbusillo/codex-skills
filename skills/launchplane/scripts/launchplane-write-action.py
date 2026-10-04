@@ -6556,7 +6556,6 @@ def compose_domain_body(
         "instance": public_identifier(payload["instance"]),
         "setup_operation": operation,
         "domain_count": len(domains),
-        "domains_sha256": _canonical_sha256(sorted(domains)),
         "runtime_port": payload.get("runtime_port"),
     }
     if mode == "apply":
@@ -6595,7 +6594,6 @@ def _project_compose_domain_setup(
         or source.get("instance") != request.get("instance")
         or not isinstance(domains, list) or not all(isinstance(domain, str) for domain in domains)
         or len(domains) != request.get("domain_count")
-        or _canonical_sha256(sorted(domains)) != request.get("domains_sha256")
         or source.get("mode") != request.get("mode")
         or source.get("applied") is not (request.get("mode") == "apply")
         or setup.get("applied") is not source.get("applied")
@@ -6671,10 +6669,17 @@ def execute_compose_domain_apply(
             if not isinstance(live, list) or not all(isinstance(route, dict) and isinstance(route.get("host"), str) for route in live):
                 raise LaunchplaneSafetyError("invalid_response")
             routes = cast(list[dict[str, object]], live)
-            routes_match = all(
-                any(route["host"] == domain and route.get("port") == body["runtime_port"] and route.get("https") is True for route in routes)
+            routes_by_host = {
+                domain: [route for route in routes if str(route["host"]).strip().lower() == domain]
                 for domain in requested_domains
-            ) if reconcile else not any(route["host"] in requested_domains for route in routes)
+            }
+            routes_match = all(
+                bool(matches) and all(
+                    route.get("port") == body["runtime_port"] and route.get("https") is True
+                    for route in matches
+                )
+                for matches in routes_by_host.values()
+            ) if reconcile else not any(routes_by_host.values())
             return {
                 **public, "binding_matches_review": binding_matches(public, private),
                 "tracked_domains_match": private["domains"] == expected_domains,
@@ -6942,6 +6947,18 @@ def execute_verified_apply(
         emit(payload)
         return 0 if verified else 1
     except urllib.error.HTTPError as exc:
+        if post_attempted and operation in DOKPLOY_COMPOSE_DOMAIN_COMMANDS and exc.code == 400:
+            # The service also uses this 400 for provider failures after partial writes.
+            error = summarize_http_error(operation=operation, request=request, exc=exc)
+            if _require_dict(error["summary"]).get("error_code") == "invalid_dokploy_target_setup":
+                unknown = _apply_outcome_unknown(operation=operation, request=request, label=label)
+                _require_dict(unknown["summary"]).update({
+                    field: error["summary"][field] for field in ("http_status", "trace_id", "error_code")
+                })
+                emit(unknown)
+            else:
+                emit(error)
+            return 1
         # A gateway error after the POST began may follow a write Launchplane completed.
         if post_attempted and (exc.code >= 500 or exc.code == 408):
             unknown = _apply_outcome_unknown(operation=operation, request=request, label=label)
