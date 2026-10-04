@@ -37,7 +37,7 @@ ALLOWED = re.compile(
     re.IGNORECASE,
 )
 # A qualifier or "policy" at a line ending carries over to wrapped prose.
-TRAILING_QUALIFIER = re.compile(rf"\b(?:{QUALIFIER}|policy)(?:-)?\s*$", re.IGNORECASE)
+TRAILING_QUALIFIER = re.compile(rf"\b(?:{QUALIFIER}|policy)-?\s*$", re.IGNORECASE)
 
 BLOCKQUOTE = re.compile(r"^\s*(?:>\s*)+")
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
@@ -116,7 +116,6 @@ def prose_lines(text: str) -> Iterable[tuple[int, str]]:
                 or FRONTMATTER_KEY.match(line)
             ):
                 prose_indent = None
-                previous = ""
                 continue
         opening = FENCE.match(line)
         if fence:

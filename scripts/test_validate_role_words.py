@@ -77,26 +77,16 @@ def test_frontmatter_carry_stops_at_boundaries() -> None:
         text = f"---\ndescription: Sync the {qualifier}\n---\n{word} approves."
         if module.findings(text) != expected:
             raise AssertionError(module.findings(text))
-        # Skipped metadata and a separate prose field also end the carry.
-        for boundary in ("argv: [sync]", "purpose: >-"):
+        # A separate prose field ends carry, with or without skipped metadata.
+        for boundary in ("purpose: >-", "argv: [sync]\npurpose: >-"):
             text = (
                 f"---\ndescription: Sync the {qualifier}\n{boundary}\n"
                 f"  {word} approves.\n---\n"
             )
-            expected = (
-                [(4, "owner")]
-                if boundary.startswith("purpose:") and word == "owner"
-                else []
-            )
+            expected_line = 4 if boundary.startswith("purpose:") else 5
+            expected = [(expected_line, "owner")] if word == "owner" else []
             if module.findings(text) != expected:
                 raise AssertionError(module.findings(text))
-        text = (
-            f"---\ndescription: Sync the {qualifier}\nargv: [sync]\n"
-            f"purpose: {word} approves.\n---\n"
-        )
-        expected = [(4, "owner")] if word == "owner" else []
-        if module.findings(text) != expected:
-            raise AssertionError(module.findings(text))
 
 
 def test_preserves_carry_within_folded_frontmatter_fields() -> None:
