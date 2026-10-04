@@ -423,14 +423,14 @@ all belong to one session; reuse requires exact comment-ID releases.
 After a verified retained-work handoff, use `--resume-from <claim-comment-id>`.
 The source must be one structured claim explicitly released by its author.
 An identical structured Current Status marker and its helper-generated active
-owner line and worker/session fields
-are accepted when the source author's exact-ID release is newer than both
+worker line and worker/session fields are accepted when the source author's
+exact-ID release is newer than both
 the marker's claimed-at time and the source comment's last edit. Missing or
 invalid timestamps remain uncertain ownership. The successor claim replaces
 that stale status on normal readback; the original status remains quoted in
-the successor's claim comment. Only the exact retained branch, worktree, and PR evidence is accepted;
-other Current Status ownership, unreleased comments, other artifacts, and
-visible peer sessions still refuse. Records on another issue must use that
+the successor's claim comment. Only the exact retained branch, worktree, and
+PR evidence is accepted; other Current Status ownership, unreleased comments,
+other artifacts, and visible peer sessions still refuse. Records on another issue must use that
 canonical planning issue's supported handoff route.
 This flag supplies no cleanup or takeover authority: apply Choose Work's
 verified-handoff and preservation rules before passing it.
