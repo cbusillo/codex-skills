@@ -461,7 +461,9 @@ The handoff must start with the exact `Released claim <id>` line, or with
 session ID. A generic bot rollup or refresh claim is not a handoff. Authorship
 checks are at GitHub identity level; verify the actual finished-session handoff
 before invoking the route because several sessions can share that identity.
-PR authorship must match the source author.
+Every open PR on a retained branch must be named in this handoff and authored
+by the source author, including a new PR on the original source branch.
+Unmentioned same-bot PRs also refuse.
 The named PR identities bind their current branches to that finished session's
 handoff, including split branches that differ from the original claim branch.
 Only open or merged same-repository PRs independently linked to the canonical
