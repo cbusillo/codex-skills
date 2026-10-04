@@ -601,8 +601,15 @@ if [[ "$json_output" -eq 1 ]]; then
           enabled: false,
           warnings: [{code: "missing_launchplane_metadata", message: "Launchplane metadata is not configured for this repo."}]
         }
+      elif ($config.data.launchplane | type) != "object" then
+        {
+          status: "invalid",
+          enabled: false,
+          warnings: [{code: "invalid_launchplane_metadata", message: "Launchplane metadata must be an object."}]
+        }
       else
         ($config.data.launchplane) as $lp |
+        (if ($lp.context | type) == "object" then $lp.context else {} end) as $context |
         {
           status: (if ($lp.enabled // false) then "configured" else "disabled" end),
           enabled: ($lp.enabled // false),
@@ -611,9 +618,14 @@ if [[ "$json_output" -eq 1 ]]; then
             operatorUrlEnv: ($lp.service.operatorUrlEnv // null),
             localConfigExample: ($lp.service.localConfigExample // null)
           },
+          routing: {
+            product: ($lp.product // null),
+            context: (if ($lp.context | type) == "string" then $lp.context else null end),
+            publicName: ($lp.publicName // null)
+          },
           context: {
-            enabled: ($lp.context.enabled // false),
-            helper: ($lp.context.helper // null)
+            enabled: ($context.enabled // false),
+            helper: ($context.helper // null)
           },
           operator: {
             enabled: ($lp.operator.enabled // false),
@@ -628,6 +640,9 @@ if [[ "$json_output" -eq 1 ]]; then
             githubActionsRunner: ($lp.mergeTrain.githubActionsRunner // null)
           },
           warnings: ([
+            if $lp.context != null and (["object", "string"] | index($lp.context | type)) == null then
+              {code: "invalid_launchplane_context", message: "Launchplane context must be a routing string or helper object."}
+            else empty end,
             if ($lp.enabled // false) and (($lp.service.publicUrl // null) != null) then
               {code: "committed_service_url", message: "Launchplane service.publicUrl should not be committed; use env or private operator config for concrete service URLs."}
             else empty end,
@@ -637,7 +652,7 @@ if [[ "$json_output" -eq 1 ]]; then
             if ($lp.enabled // false) and (present($lp.service.operatorUrlEnv // "") | not) then
               {code: "missing_operator_url_env", message: "Launchplane service.operatorUrlEnv is missing."}
             else empty end,
-            if ($lp.context.enabled // false) and (present($lp.context.helper // "") | not) then
+            if ($context.enabled // false) and (present($context.helper // "") | not) then
               {code: "missing_context_helper", message: "Launchplane context helper path is missing."}
             else empty end,
             if ($lp.operator.enabled // false) and (present($lp.operator.helper // "") | not) then
@@ -691,7 +706,7 @@ if [[ "$json_output" -eq 1 ]]; then
       },
       deployHealth: $health[0]
     }'
-  exit 0
+  exit $?
 fi
 
 if [[ "$fetch_first" -eq 1 ]]; then
@@ -751,12 +766,15 @@ if [[ -n "$config_path" ]]; then
       "status: not_configured"
     else
       .launchplane as $lp |
+      (if ($lp.context | type) == "object" then $lp.context else {} end) as $context |
       [
         "status: " + (if ($lp.enabled // false) then "configured" else "disabled" end),
         "contextUrlEnv: " + ($lp.service.contextUrlEnv // ""),
         "operatorUrlEnv: " + ($lp.service.operatorUrlEnv // ""),
         "localConfigExample: " + ($lp.service.localConfigExample // ""),
-        "contextHelper: " + ($lp.context.helper // ""),
+        "routingProduct: " + ($lp.product // ""),
+        "routingContext: " + (if ($lp.context | type) == "string" then $lp.context else "" end),
+        "contextHelper: " + ($context.helper // ""),
         "operatorHelper: " + ($lp.operator.helper // ""),
         "operatorRequiresPrivateConfig: " + (($lp.operator.requiresPrivateConfig // true) | tostring),
         "mergeTrainEnabled: " + (($lp.mergeTrain.enabled // false) | tostring),
