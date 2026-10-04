@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name("direction_mark.py")
 HOOK = Path(__file__).resolve().parents[3] / "hooks" / "direction_check_hook.py"
-NOW = dt.datetime(2026, 9, 22, 12, 0, 30, 123456, dt.timezone.utc)
+NOW = dt.datetime(2026, 9, 22, 12, second=30, microsecond=123456, tzinfo=dt.timezone.utc)
 
 
 def load(path: Path, name: str) -> Any:
