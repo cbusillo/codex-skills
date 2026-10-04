@@ -468,6 +468,18 @@ class ReviewWithModelTests(unittest.TestCase):
                 self.assertIn("redacted", json.dumps(result))
                 self.assertNotIn("not JSON", json.dumps(result))
 
+    def test_openai_redacts_escaped_error_body_and_long_token_before_truncating(self) -> None:
+        self.install("codex", FAKE_CODEX)
+        for stderr in (r'body: {\"refresh_token\":\"private-escaped-value\"}',
+                       "token=" + "private-long-value-" * 50):
+            with self.subTest(stderr=stderr):
+                code, result = self.review("openai", FAKE_CODEX_EVENTS="", FAKE_CODEX_EXIT="1",
+                                           FAKE_CODEX_STDERR=stderr)
+                self.assertEqual((code, result["ok"]), (1, False))
+                self.assertNotIn("private-", result["detail"])
+                self.assertIn("redacted", result["detail"])
+                self.assertLessEqual(len(result["detail"]), 400)
+
     def test_openai_recovered_stream_error_does_not_discard_a_completed_review(self) -> None:
         self.install("codex", FAKE_CODEX)
         events = [

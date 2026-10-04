@@ -101,9 +101,11 @@ def failed(provider: str, error: str, **extra: Any) -> dict[str, Any]:
 
 def openai_error_detail(message: str) -> str:
     """Bound CLI error text without including credential values or URL parameters."""
+    # HTTP error bodies in tracing may quote JSON a second time.
+    message = re.sub(r"\\([\"'])", r"\1", message)
     message = re.sub(r"https?://[^\s]+", "[redacted URL]", message)
     message = re.sub(r"(?i)\bBearer\s+[^\s]+", "Bearer [redacted]", message)
-    message = re.sub(r"(?i)\b([a-z0-9_-]*(?:api[_-]?key|token|password|secret|credential))"
+    message = re.sub(r"(?i)(?<![a-z0-9_-])([a-z0-9_-]*(?:api[_-]?key|token|password|secret|credential))"
                      r"([\"']?\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
                      r"\1\2[redacted]", message)
     message = re.sub(r"\b(?:sk-|gh[pousr]_|github_pat_)[A-Za-z0-9_-]+", "[redacted]", message)
