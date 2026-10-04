@@ -82,6 +82,11 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
+if [ "$check_auth" -eq 1 ] && [ "$#" -ne 0 ]; then
+	echo "error: --check does not accept a gh command" >&2
+	exit 2
+fi
+
 if [ -f "$env_file" ]; then
 	set -a
 	# shellcheck disable=SC1090
@@ -880,6 +885,10 @@ if [ -z "${GH_TOKEN:-}" ]; then
 	if refuse_active_auth_fallback "no automation gh token found"; then
 		exit 1
 	fi
+	if [ "$check_auth" -eq 1 ]; then
+		echo "error: --check needs a configured automation credential; configure a GitHub App or CODEX_GITHUB_TOKEN, or use gh auth status to inspect active local authentication" >&2
+		exit 1
+	fi
 	fallback_login=$(active_auth_login)
 	echo "warning: no automation gh token found; explicitly authorized active-auth fallback; using the active gh account '${fallback_login:-unknown}'" >&2
 	if [ "$print_auth_account" -eq 1 ]; then
@@ -898,10 +907,6 @@ if [ "$auth_source" = github_app ] && is_actor_probe "$@"; then
 fi
 
 if [ "$check_auth" -eq 1 ]; then
-	if [ "$#" -ne 0 ]; then
-		echo "error: --check does not accept a gh command" >&2
-		exit 2
-	fi
 	check_account
 	exit $?
 fi

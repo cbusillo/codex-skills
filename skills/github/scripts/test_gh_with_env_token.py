@@ -106,6 +106,64 @@ def test_check_preserves_user_token_fallback_when_app_is_absent() -> None:
         assert result.stdout == "GitHub automation actor: automation-user (source: user_token)\n"
 
 
+def test_no_token_check_fails_explicitly_without_running_gh() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        unused = root / "unused.py"
+        write(unused, "raise AssertionError('should not run')\n")
+        fake_gh = root / "gh"
+        called = root / "called"
+        write(fake_gh, f"#!/bin/sh\ntouch '{called}'\nprintf 'GitHub CLI help\\n'\n")
+        for extra_env in (
+            {"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1"},
+            {"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1", "CODEX_AUTOMATION_LOGIN": "expected-bot"},
+            {},
+            {"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1", "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "1"},
+        ):
+            result = run_wrapper(root / "missing.env", unused, unused, "--check",
+                                 gh_command=fake_gh, extra_env=extra_env)
+            assert result.returncode == 1, result
+            assert result.stdout == ""
+            assert "configure" in result.stderr
+            assert not called.exists(), result
+
+
+def test_check_rejects_commands_before_active_auth_fallback() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        unused = root / "unused.py"
+        write(unused, "raise AssertionError('should not run')\n")
+        fake_gh = root / "gh"
+        called = root / "called"
+        write(fake_gh, f"#!/bin/sh\ntouch '{called}'\n")
+        result = run_wrapper(root / "missing.env", unused, unused,
+                             "--check", "issue", "comment", "1", "--body", "x",
+                             gh_command=fake_gh,
+                             extra_env={"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1"})
+        assert result.returncode == 2, result
+        assert "--check does not accept a gh command" in result.stderr
+        assert not called.exists(), result
+
+
+def test_no_token_command_preserves_authorized_active_auth_fallback() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        unused = root / "unused.py"
+        write(unused, "raise AssertionError('should not run')\n")
+        fake_gh = root / "gh"
+        write(fake_gh, "#!/bin/sh\n"
+              "[ -z \"${GH_TOKEN:-}${GITHUB_TOKEN:-}${CODEX_GITHUB_TOKEN:-}\" ] || exit 41\n"
+              "if [ \"$*\" = 'api user --jq .login' ]; then echo active-login; exit 0; fi\n"
+              "[ \"$*\" = 'pr view 1' ] || exit 42\n"
+              "printf 'pull request details\\n'\n")
+        result = run_wrapper(root / "missing.env", unused, unused, "pr", "view", "1",
+                             gh_command=fake_gh,
+                             extra_env={"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1"})
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "pull request details\n"
+        assert "'active-login'" in result.stderr
+
+
 def test_partial_app_configuration_fails_closed() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -473,6 +531,9 @@ def main() -> None:
     tests = [
         test_check_reports_app_identity_and_source,
         test_check_preserves_user_token_fallback_when_app_is_absent,
+        test_no_token_check_fails_explicitly_without_running_gh,
+        test_check_rejects_commands_before_active_auth_fallback,
+        test_no_token_command_preserves_authorized_active_auth_fallback,
         test_partial_app_configuration_fails_closed,
         test_app_auth_failure_never_falls_back_to_active_user,
         test_empty_app_auth_response_fails_closed,
