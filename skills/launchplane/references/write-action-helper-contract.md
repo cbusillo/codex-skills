@@ -111,10 +111,10 @@ local extensions until the vendored artifact is refreshed.
   `GET /v1/artifacts/protected` with the product and optional context query.
   It returns up to 100 entries with reason, context, instance, artifact id,
   source record type and id, and image digest, plus up to 50 warning texts
-  sanitized by the operator-text rules. `entry_count` and `warning_count`
+  sanitized by `public_operator_text`. `entry_count` and `warning_count`
   describe the full response; `entries_truncated` and `warnings_truncated`
   disclose omitted rows. Unknown entry fields and image reference lists are
-  dropped. Malformed selected fields fail the read. This diagnostic projection
+  dropped. Malformed retained fields fail the read. This diagnostic projection
   is not a complete registry-cleanup retention set when truncated.
 - `product-profile-read --product` calls `GET /v1/product-profiles/{product}`
   and returns the product's Client GitHub login and review label, `production_use`,
