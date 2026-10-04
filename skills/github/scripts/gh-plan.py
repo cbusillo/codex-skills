@@ -1085,12 +1085,6 @@ def labels(config: dict[str, Any], *keys: str) -> list[str]:
     return [config["labels"][key] for key in keys]
 
 
-def manager_for_repo(config: dict[str, Any], repo: str) -> str | None:
-    workflow = config.get("workflow") or {}
-    repo_managers = workflow.get("repo_managers") or {}
-    return resolve_manager_value(repo_managers.get(repo) or workflow.get("default_manager"))
-
-
 def resolve_manager_value(value: Any) -> str | None:
     if not value:
         return None
@@ -1105,12 +1099,6 @@ def resolve_manager_value(value: Any) -> str | None:
 def resolve_required_manager_value(value: Any) -> str | None:
     raw_value = str(value).strip() if value else ""
     return resolve_manager_value(raw_value)
-
-
-def selected_manager_value(explicit_value: Any, config: dict[str, Any], repo: str) -> str | None:
-    if explicit_value:
-        return resolve_required_manager_value(explicit_value)
-    return manager_for_repo(config, repo)
 
 
 def resolve_person_for_project(value: str) -> str | None:
@@ -2258,17 +2246,17 @@ def cmd_create(args: argparse.Namespace) -> None:
             project_steps.append("add_project_item")
             added_item = json.loads(added_stdout) if added_stdout.strip() else {}
             added_item_id = added_item.get("id") if isinstance(added_item, dict) else None
-            project_fields_set = set_project_fields(
-                owner=owner,
-                project_ref=project,
-                issue_url=issue_url,
-                config=config,
-                focus=args.focus,
-                manager=selected_manager_value(args.manager, config, repo),
-                finish_line=args.finish_line,
-                item_id=added_item_id,
-                recoverable=True,
-            )
+            if args.focus or args.manager:
+                project_fields_set = set_project_fields(
+                    owner=owner,
+                    project_ref=project,
+                    issue_url=issue_url,
+                    config=config,
+                    focus=args.focus,
+                    manager=resolve_required_manager_value(args.manager),
+                    item_id=added_item_id,
+                    recoverable=True,
+                )
         except PlanError as exc:
             completed_steps.extend(project_steps)
             owner = project_config.get("owner") or repo.split("/", 1)[0]
@@ -3389,6 +3377,8 @@ def set_project_fields(
     item_id: str | None = None,
     recoverable: bool = False,
 ) -> dict[str, Any]:
+    if not any((focus, manager, finish_line)):
+        return {"updated": {}}
     actor, project_number, project = project_meta(owner, project_ref, recoverable=recoverable)
     fields = project_fields(owner, project_number, recoverable=recoverable)
     item = find_project_item(owner, project_number, issue_url, item_id=item_id, recoverable=recoverable)
@@ -3541,11 +3531,6 @@ def cmd_close(args: argparse.Namespace) -> None:
                 )
                 updated["Status"] = "Done"
                 project_steps.append("set_project_status")
-            focus_field = fields.get((config.get("project_fields") or {}).get("focus", "Focus"))
-            if focus_field:
-                clear_project_field(project=project_data, item=item, field=focus_field)
-                updated["Focus"] = None
-                project_steps.append("clear_project_focus")
             project_result = {"project": project_data.get("title"), "updated": updated}
         except PlanError as exc:
             completed_steps.extend(project_steps)
@@ -4227,9 +4212,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project")
     p.add_argument("--force", action="store_true")
     p.add_argument("--plan-status", choices=["active", "blocked", "waiting", "stale", "done", "none"], default="active")
-    p.add_argument("--focus", choices=["Now", "Next", "Waiting", "Later"])
-    p.add_argument("--manager")
-    p.add_argument("--finish-line")
+    p.add_argument("--focus", choices=["Now", "Next", "Waiting", "Later"], help="Explicit Project field edit; not part of routine planning")
+    p.add_argument("--manager", help="Explicit Project field edit; configured managers are not copied")
+    p.add_argument("--finish-line", help="Set the issue body's Finish Line only")
     p.set_defaults(func=cmd_create)
 
     p = sub.add_parser("update-section", help="Patch one markdown section")
@@ -4281,7 +4266,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project")
     p.set_defaults(func=cmd_project_add)
 
-    p = sub.add_parser("project-set", help="Set human workflow Project fields")
+    p = sub.add_parser("project-set", help="Set explicitly requested Project fields (no default writes)")
     p.add_argument("issue")
     p.add_argument("--owner")
     p.add_argument("--project")

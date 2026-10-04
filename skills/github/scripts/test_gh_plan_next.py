@@ -157,7 +157,6 @@ def test_next_excludes_non_actionable_states_with_reasons() -> None:
         (issue(2, labels=["plan", "plan:done"]), None, relationships(), "completed"),
         (issue(3, labels=["plan", "plan:stale"]), None, relationships(), "stale_needs_review"),
         (issue(4, labels=["plan", "plan:waiting"]), None, relationships(), "waiting"),
-        (issue(5), "Later", relationships(), "later_focus"),
         (issue(6, labels=["plan", "plan:blocked"]), None, relationships(), "label_blocked_without_native_edge"),
         (issue(7), None, relationships(sub_issues=[related(70)]), "delegated_to_open_sub_issues"),
     ]
@@ -179,6 +178,30 @@ def test_next_excludes_non_actionable_states_with_reasons() -> None:
         relationship_error="dependency endpoint unavailable",
     )
     assert unknown["exclusion"] == "unknown_dependencies"
+
+
+def test_stale_project_focus_does_not_hide_ready_work() -> None:
+    module = load_module()
+    for focus in ("Waiting", "Later"):
+        ready = issue(5) | {"body": "## Current Status\n\nState: Active.\n"}
+        disposition, result = module.evaluate_next_plan(
+            ready, config=module.DEFAULT_CONFIG, focus=focus, relationships=relationships(),
+        )
+        assert disposition == "candidate", result
+        assert result["focus"] == focus, result
+        node = module.github_direction_next.evaluate_direction_node(
+            ready, config=module.DEFAULT_CONFIG, focus=focus, relationships=relationships(),
+        )
+        assert "exclusion" not in node["item"], node
+        assert not node["waiting"], node
+        for waiting in (
+            ready | {"labels": [{"name": "plan:waiting"}]},
+            ready | {"body": "## Current Status\n\nState: Waiting.\nWaiting for: testing.\n"},
+        ):
+            node = module.github_direction_next.evaluate_direction_node(
+                waiting, config=module.DEFAULT_CONFIG, focus=focus, relationships=relationships(),
+            )
+            assert node["item"]["exclusion"] == "waiting", node
 
 
 def test_next_closed_milestone_is_context_not_exclusion() -> None:
@@ -2255,6 +2278,7 @@ TESTS = [
     test_portfolio_inventory_failure_and_scan_bound_never_claim_full_coverage,
     test_next_beta_rc_stable_chain_respects_native_blockers,
     test_next_excludes_non_actionable_states_with_reasons,
+    test_stale_project_focus_does_not_hide_ready_work,
     test_next_closed_milestone_is_context_not_exclusion,
     test_next_ranking_uses_direction_then_dependencies_then_oldest_created,
     test_next_ranking_without_direction_uses_milestone_creation_order,

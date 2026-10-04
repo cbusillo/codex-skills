@@ -339,8 +339,8 @@ checks below as relevant.
 ## Plan Hygiene
 
 - Use `github-plan` plus the sibling `github` helpers to update the active
-  issue's `Current Status`, finish line, blockers, and Project fields before
-  parking work.
+  issue's `Current Status`, finish line, labels, and blockers before parking
+  work. Projects display that record; the close flow sets automatic Status.
 - For issue-backed work that is resolved without a merged PR, close the owning
   issue with a concise evidence-backed comment, or leave it open with the current
   blocker and next action. Do not rely on a local summary as the only record.
@@ -360,11 +360,10 @@ checks below as relevant.
   assumptions in the GitHub plan issue.
 - Before declaring safe to exit after closing or merging implementation work,
   inspect the remaining open GitHub issues labeled `plan` and verify their
-  labels and Project status/focus fields match their `Current Status`:
-  `plan:active`, `plan:blocked`, `plan:waiting`, `plan:stale`, or `plan:done`.
-  Re-read the issue or Project item after updating because labels and board
-  fields can drift independently. The main LLM owns the final label/status
-  decision and any mutations. For large issue sets, a read-only agent may
+  labels match their `Current Status`: `plan:active`, `plan:blocked`,
+  `plan:waiting`, `plan:stale`, or `plan:done`. Verify automatic Project Status
+  reflects closure. Re-read the issue after updating; leave manual Project fields
+  untouched. The main LLM owns the final label/status decision and any mutations. For large issue sets, a read-only agent may
   summarize likely mismatches, but the main LLM must make and verify the final
   updates.
 - If workflow metadata changes are deferred, record the exact `.github/github.json`

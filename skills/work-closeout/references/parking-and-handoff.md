@@ -57,12 +57,10 @@ temporary cleanup manifest alone is not durable parking. If no authorized route
 exists, retain the original work, name the missing choice, and continue any
 independent authorized cleanup.
 
-When configured Focus lanes are part of the durable planning surface, make sure
-the owning item's lane reflects the closeout state: `Now` for the active finish,
-`Waiting` for blocked work or work awaiting an external decision/event,
-or `Next`/`Later` for deferred work. For completed planning issues, use the
-`github-plan` close flow so done labels and Project focus are updated together.
-Do not leave the lane stale when parking or closing a workstream.
+Keep the owning issue's Current Status, labels, and native relationships current
+when parking work. Projects remain automatic views; do not maintain manual
+Focus, Manager, Finish Line, or roadmap fields. For completed planning issues,
+use the `github-plan` close flow so done labels and Project Status are updated.
 
 ## Handoff Surfaces
 
