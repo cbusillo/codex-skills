@@ -316,6 +316,67 @@ class CleanupRunnerTests(unittest.TestCase):
         self.assertIs(report["attribution"]["turn_context"]["sandbox_policy"]["network_access"], True)
         self.assertFalse(any(self.private.iterdir()))
 
+    @unittest.skipUnless(os.name == "posix", "process-group cleanup requires POSIX")
+    def test_stop_group_observes_exit_when_signal_delivery_exhausts_deadline(self) -> None:
+        spec = importlib.util.spec_from_file_location("cleanup_runner_delayed_signal", SCRIPT)
+        runner = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(runner)
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print('ready', flush=True); time.sleep(30)"],
+            stdout=subprocess.PIPE, text=True, start_new_session=True,
+        )
+        real_killpg = os.killpg
+        clock = 0.0
+
+        def delayed_killpg(group: int, sig: int) -> None:
+            nonlocal clock
+            real_killpg(group, sig)
+            if sig in (runner.signal.SIGTERM, runner.signal.SIGKILL):
+                if sig == runner.signal.SIGKILL:
+                    process.wait(timeout=2)
+                # Model a scheduler pause consuming the observation window.
+                clock += 1.0
+
+        try:
+            assert process.stdout is not None
+            self.assertEqual("ready\n", process.stdout.readline())
+            with (
+                mock.patch.object(runner.os, "killpg", side_effect=delayed_killpg),
+                mock.patch.object(runner.time, "monotonic", side_effect=lambda: clock),
+            ):
+                runner.stop_group(process)
+            with self.assertRaises(ProcessLookupError):
+                real_killpg(process.pid, 0)
+        finally:
+            try:
+                real_killpg(process.pid, runner.signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=2)
+            if process.stdout is not None:
+                process.stdout.close()
+
+    def test_unconfirmed_process_group_stop_retains_private_auth_home(self) -> None:
+        case, outcome = self.write_case(name="cleanup-unconfirmed-stop", prompts=["noop"])
+        spec = importlib.util.spec_from_file_location("cleanup_runner_unconfirmed_stop", SCRIPT)
+        runner = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(runner)
+        argv = [
+            str(SCRIPT), str(case), "--codex-bin", str(self.fake),
+            "--artifact-root", str(self.base), "--private-root", str(self.private),
+        ]
+        with (
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.dict(os.environ, {"CODEX_HOME": str(self.auth_home)}),
+            mock.patch.object(runner, "stop_group", side_effect=runner.ProcessCleanupError("owned Codex process group did not stop")),
+            self.assertRaisesRegex(runner.ProcessCleanupError, "private auth home retained"),
+        ):
+            runner.main()
+        self.assertTrue(any(self.private.rglob("auth.json")))
+        self.assertFalse(outcome.exists())
+
     def test_oversized_and_malformed_output_leave_no_raw_capture(self) -> None:
         for mode in ("oversized", "oversized-native", "malformed"):
             with self.subTest(mode=mode):
