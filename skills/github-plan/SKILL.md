@@ -161,7 +161,8 @@ Apply assignments only after the installed skills support this convention.
 `next --agent claude|codex` selects that family and unlabeled issues, and reports
 other-family issues as `assigned_elsewhere`. Without the flag, the helper detects
 the active harness from session environment markers (Codex takes precedence in
-a Codex child launched from Claude). When detection is unavailable or both routing
+a Codex child launched from Claude). For a Claude child inheriting Codex markers,
+pass `--agent claude` explicitly. When detection is unavailable or both routing
 labels are present, labeled issues remain excluded; identify the running family
 with `--agent`, or resolve the conflicting assignment.
 

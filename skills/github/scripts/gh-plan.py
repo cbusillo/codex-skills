@@ -1891,6 +1891,9 @@ def cmd_claim(args: argparse.Namespace) -> None:
         raise PlanError("Claim next action must be a nonempty single line")
     if args.wait_resolved is not None and (not args.wait_resolved.strip() or any(c in args.wait_resolved for c in "\n\r")):
         raise PlanError("Wait resolution must record existing evidence on one line")
+    override_input = getattr(args, "agent_override", None)
+    if override_input is not None and (not override_input.strip() or any(c in override_input for c in "\n\r")):
+        raise PlanError("Agent override must record the Director decision on one nonempty line")
     if subprocess.run(["git", "check-ref-format", "--branch", args.branch],
                       capture_output=True).returncode:
         raise PlanError("Claim branch is not a valid Git branch")
@@ -2513,8 +2516,17 @@ def cmd_next(args: argparse.Namespace) -> None:
     inventory_truncated = len(issues) > NEXT_PLAN_INVENTORY_LIMIT
     issues = issues[:NEXT_PLAN_INVENTORY_LIMIT]
     inventory_count = len(issues)
+    agent = github_agent.running_agent(getattr(args, "agent", None))
+    routed_issues: list[dict[str, Any]] = []
+    routing_excluded: list[dict[str, Any]] = []
     for issue in issues:
         issue["repo"] = repo
+        mismatch = github_agent.exclusion(compact_list_issue(repo, issue), agent)
+        if mismatch:
+            routing_excluded.append(mismatch)
+        else:
+            routed_issues.append(issue)
+    issues = routed_issues
     rank_next_candidates(issues, direction_milestones=direction_milestones)
     scan_truncated = len(issues) > args.scan_limit
     issues = issues[: args.scan_limit]
@@ -2522,7 +2534,7 @@ def cmd_next(args: argparse.Namespace) -> None:
     project_actor, focus_by_url, focus_context = next_focus_context(repo, config)
     actor = actor or project_actor
     candidates: list[dict[str, Any]] = []
-    excluded: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = routing_excluded
     dependency_degraded_count = 0
     for issue in issues:
         issue_url = issue.get("html_url") or issue.get("url")
@@ -2564,9 +2576,6 @@ def cmd_next(args: argparse.Namespace) -> None:
                 evaluated["truncated_relationships"] = truncated_relationships
         (candidates if disposition == "candidate" else excluded).append(evaluated)
 
-    routing = {"candidates": candidates, "excluded": excluded}
-    github_agent.filter_selection(routing, github_agent.running_agent(getattr(args, "agent", None)))
-    candidates = routing["candidates"]
     rank_next_candidates(candidates, direction_milestones=direction_milestones)
     if direction_milestones is not None:
         listed = set(direction_milestones)
@@ -2630,7 +2639,7 @@ def cmd_next(args: argparse.Namespace) -> None:
         "inventory_limit": NEXT_PLAN_INVENTORY_LIMIT,
         "candidates": candidates[: args.limit],
         "candidate_count": len(candidates),
-        "running_agent": routing["running_agent"],
+        "running_agent": agent,
         "excluded": excluded,
         "notes": notes,
     })

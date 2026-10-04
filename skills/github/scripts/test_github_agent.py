@@ -24,7 +24,8 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(agent.running_agent("claude", environ=inherited), "claude")
 
     def test_local_next_both_directions_before_limit(self):
-        for family, other in (("codex", "claude"), ("claude", "codex")):
+        for family, other, scan in (("codex", "claude", 1), ("claude", "codex", 1),
+                                    ("codex", "claude", 50), ("claude", "codex", 50)):
             module = next_tests.load_module()
             items = [next_tests.issue(1, labels=["plan", f"agent:{other}"]),
                      next_tests.issue(2, labels=["plan", f"agent:{family}"]),
@@ -38,9 +39,9 @@ class AgentTests(unittest.TestCase):
                                 read_next_issue_relationships=lambda *_: ("bot", next_tests.relationships(), []),
                                 emit=result.update):
                 module.cmd_next(Namespace(repo="owner/repo", agent=family, milestone=None,
-                                          limit=1, scan_limit=50))
+                                          limit=1, scan_limit=scan))
             self.assertEqual([item["number"] for item in result["candidates"]], [2])
-            self.assertEqual(result["candidate_count"], 2)
+            self.assertEqual(result["candidate_count"], min(2, scan))
             self.assertEqual(result["excluded"][0]["agent_labels"], [f"agent:{other}"])
 
     def test_global_next_both_directions(self):

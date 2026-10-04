@@ -123,6 +123,12 @@ class ClaimTests(unittest.TestCase):
         self.assertIn(self.args.agent_override, self.comments[0]["body"])
         self.assertIn("agent:claude", PLAN.normalize_labels(self.issue["labels"]))
 
+    def test_multiline_override_is_rejected_before_writes(self):
+        self.args.agent_override = "Director approved\nClaimed by another-worker"
+        with self.assertRaises(PLAN.PlanError):
+            self.run_claim()
+        self.assert_no_writes()
+
     def test_assignment_changed_during_claim_retains_release_recovery(self):
         self.args.agent = "codex"
         self.after_post = lambda: self.issue.update(labels=[{"name": "agent:claude"}])
