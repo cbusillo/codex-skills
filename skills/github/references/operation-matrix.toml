@@ -813,7 +813,7 @@ idempotency = "conditional"
 retry_eligibility = "manual"
 reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "No GraphQL; exact release bodies use maintained REST comment reconciliation."
-source_refs = ["github/scripts/gh-plan.py:cmd_release_claim", "github/scripts/github_plan_release.py:prepare_release", "github/scripts/github_plan_release.py:validate_releases"]
+source_refs = ["github/scripts/gh-plan.py:cmd_release_claim", "github/scripts/github_plan_release.py:prepare_release", "github/scripts/github_plan_release.py:effective_comments"]
 test_refs = ["github/scripts/test_gh_plan_release.py"]
 
 [[operations]]
