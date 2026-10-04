@@ -1168,6 +1168,76 @@ def test_controller_client_timeout_is_not_a_service_outage_and_never_retries() -
     assert payload["warnings"][0]["code"] == "provider_unavailable"
 
 
+def _conflict_probe_response(probe: object, action: str = "plan_candidate") -> dict[str, Any]:
+    return {
+        "status": "accepted", "trace_id": "launchplane_req_probe", "records": {},
+        "result": {"controller_action": action, "conflict_probe": probe},
+    }
+
+
+def test_controller_conflict_probe_preserves_planning_and_update_branch_evidence() -> None:
+    held_out = {
+        "pull_request_number": 43, "head_sha": "b" * 40,
+        "reason": "entry_conflict", "conflicts_with": [42],
+    }
+    for probe, mutate in (
+        ({"status": "will_run", "pull_request_numbers": [42, 43, 44]}, False),
+        ({"status": "ran", "pull_request_numbers": [42, 43, 44], "held_out": [held_out]}, True),
+        ({"status": "ran", "pull_request_numbers": [42, 43], "held_out": []}, True),
+        ({"status": "ran", "pull_request_numbers": [43], "held_out": [
+            {**held_out, "conflicts_with": []},
+        ]}, True),
+    ):
+        status, payload = _run_controller_response(_conflict_probe_response(probe), mutate=mutate)
+        assert status == 0
+        assert payload["status"] == "accepted"
+        assert payload["result"]["conflict_probe"] == probe
+        assert payload["summary"]["controller_action"] == "plan_candidate"
+    for probe in (None, {"status": "will_run", "pull_request_numbers": [42, 43]}):
+        response = _conflict_probe_response(probe, "update_branch")
+        response["result"]["branch_update_result"] = {"status": "updated"}
+        status, payload = _run_controller_response(response, mutate=True)
+        assert status == 0
+        assert payload["result"]["conflict_probe"] == probe
+        assert payload["summary"]["controller_action"] == "update_branch"
+        assert payload["result"]["branch_update_result"] == {"status": "updated"}
+    response = _conflict_probe_response(None)
+    del response["result"]["conflict_probe"]
+    assert "conflict_probe" not in _run_controller_response(response)[1]["result"]
+
+
+def test_controller_conflict_probe_rejects_malformed_and_unsafe_evidence() -> None:
+    probe = {"status": "ran", "pull_request_numbers": [42, 43], "held_out": [{
+        "pull_request_number": 43, "head_sha": "b" * 40,
+        "reason": "entry_conflict", "conflicts_with": [42],
+    }]}
+    invalid = [False, [], "ran", {}, {**probe, "extra": "private-probe-value"}]
+    for key, value in (
+        ("status", []), ("status", "Bearer private-probe-value"),
+        ("pull_request_numbers", {}), ("pull_request_numbers", [True]),
+        ("pull_request_numbers", [0]), ("held_out", {}), ("held_out", [None]),
+    ):
+        invalid.append({**probe, key: value})
+    for key, value in (
+        ("pull_request_number", True), ("pull_request_number", 0),
+        ("head_sha", None), ("head_sha", "ghp_privateprobevalue"),
+        ("reason", []), ("reason", "Bearer private-probe-value"),
+        ("conflicts_with", "42"), ("conflicts_with", [False]),
+        ("conflicts_with", [0]), ("extra", "private-probe-value"),
+        ("token", "private-probe-value"),
+    ):
+        invalid.append({**probe, "held_out": [{**probe["held_out"][0], key: value}]})
+    for malformed in invalid:
+        status, payload = _run_controller_response(_conflict_probe_response(malformed), mutate=True)
+        assert status == 1, malformed
+        assert payload["status"] == "invalid"
+        assert payload["result"] == {}
+        assert "private-probe-value" not in json.dumps(payload)
+    response = _conflict_probe_response(probe)
+    response["result"]["unexpected"] = "private-probe-value"
+    assert _run_controller_response(response)[0] == 1
+
+
 def test_controller_rejected_response_keeps_only_safe_trace_and_code() -> None:
     for code_source in ("top", "error", "blocking_reason"):
         response: dict[str, Any] = {
@@ -6880,6 +6950,8 @@ def main() -> int:
         test_controller_timeout_covers_slow_dry_run_and_mutation_and_keeps_override,
         test_controller_block_and_reconciliation_preserve_durable_diagnostics,
         test_controller_client_timeout_is_not_a_service_outage_and_never_retries,
+        test_controller_conflict_probe_preserves_planning_and_update_branch_evidence,
+        test_controller_conflict_probe_rejects_malformed_and_unsafe_evidence,
         test_controller_rejected_response_keeps_only_safe_trace_and_code,
         test_controller_http_error_keeps_safe_identifiers_without_raw_error_text,
         test_merge_train_queue_distinguishes_eligible_empty_and_unavailable,

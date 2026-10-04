@@ -92,6 +92,10 @@ credential-redacted diagnostics; OpenAI's malformed stdout is never excerpted.
 
 - Run `uv run scripts/review_with_model.py check --repo <repo>` to see which
   providers can read the repository from this machine before spending a review.
+- Anthropic and Google diff scratch stays inside the authorized checkout and is
+  removed after the run. Anthropic permission failures report `denied_targets`
+  with the read tool and a bounded path when the CLI supplies one; search
+  patterns and other tool inputs are omitted. A denied read remains a failure.
 - Google uses `read_file` (`view_file`) for file reads, including
   successive line ranges for large files. If a shell command is refused, the
   helper reads only that run's saved conversation to name the command and

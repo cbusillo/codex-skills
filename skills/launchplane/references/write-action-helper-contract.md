@@ -1005,6 +1005,12 @@ provider dictionary pass-through:
   identities, and arbitrary provider fields are omitted. Missing queue fields
   stay absent; they are not projected as an empty or eligible queue. Malformed
   supplied queue fields and unsafe text fail closed.
+  An optional `conflict_probe` preserves `null` when no probe was needed, or
+  projects its status and probed PR numbers. When supplied, `held_out` entries
+  expose only PR number, head SHA, reason code, and the preceding PR numbers
+  they conflict with (an empty list means a conflict with the base). Dry-run
+  probes can omit `held_out`. Unknown probe or held-out fields, malformed PR
+  numbers, and unsafe values fail closed, including on `update_branch` results.
 - `product-config-preflight`, `product-config-dry-run`, and
   `product-config-apply` may emit only intent status, reason code,
   safe-to-execute, next action, managed binding keys, runtime key-safety finding
