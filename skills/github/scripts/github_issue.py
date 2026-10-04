@@ -21,6 +21,7 @@ from typing import Any, Callable, Optional
 
 import github_api as github_api_core
 import github_comment
+import github_agent
 import github_identity
 import github_milestone as github_milestone_core
 
@@ -628,6 +629,7 @@ def create_issue(
     *,
     repo: Optional[str] = None,
     labels: Optional[list[str]] = None,
+    agent: Optional[str] = None,
     assignees: Optional[list[str]] = None,
     milestone: Optional[str] = None,
     gh_cmd: str = DEFAULT_GH,
@@ -651,6 +653,11 @@ def create_issue(
             expected_actor=expected_actor,
             failed_step="input_validation",
         )
+    try:
+        normalized_labels = github_agent.creation_labels(_split_values(labels), agent)
+    except ValueError as exc:
+        raise _local_error(str(exc), operation=operation, cause="validation_error",
+                           expected_actor=expected_actor, failed_step="input_validation") from exc
     resolved_repo = _resolve_repo(repo, gh_cmd=gh_cmd, operation=operation)
     retry_summaries: list[github_api_core.RetrySummary] = []
     actor = _authenticated_actor(
@@ -660,7 +667,38 @@ def create_issue(
         retry_summaries=retry_summaries,
     )
     steps = ["resolve_actor"]
-    normalized_labels = _split_values(labels)
+    for label in github_agent.assignment_labels(normalized_labels):
+        label_path = f"/repos/{resolved_repo}/labels/{urllib.parse.quote(label, safe='')}"
+        api_kwargs = dict(gh_cmd=gh_cmd, operation=operation, actor=actor,
+                          expected_actor=expected_actor, completed_steps=steps,
+                          retry_summaries=retry_summaries)
+        try:
+            _call_api("GET", label_path, None, failed_step="read_agent_label", is_write=False, **api_kwargs)
+        except IssueError as exc:
+            if not exc.api_result or exc.api_result.get("status") != 404:
+                raise
+
+            def reconcile_label(_failed, context, path=label_path, name=label):
+                result = github_api_core.call_gh_with_retry(
+                    "GET", path, None, gh_cmd=gh_cmd, operation=operation,
+                    actor=actor, expected_actor=expected_actor, is_write=False,
+                    bucket="rest_core", deadline_at=context.deadline_at,
+                    retry_policy=context.retry_policy, retry_runtime=context.retry_runtime,
+                )
+                if result.ok and isinstance(result.body, dict) and str(result.body.get("name", "")).casefold() == name:
+                    return github_api_core.ReconciliationDecision("matched", body=result.body)
+                return github_api_core.ReconciliationDecision("no_match" if result.status == 404 else "failed")
+
+            try:
+                _call_api("POST", f"/repos/{resolved_repo}/labels",
+                          {"name": label, **github_agent.LABEL_DEFS[label]},
+                          failed_step="create_agent_label", is_write=True,
+                          reconcile=reconcile_label, **api_kwargs)
+            except IssueError as create_error:
+                if not create_error.api_result or create_error.api_result.get("status") != 422:
+                    raise
+                _call_api("GET", label_path, None, failed_step="reconcile_agent_label", is_write=False, **api_kwargs)
+            steps.append("ensure_agent_label")
     normalized_assignees = _normalize_assignees(assignees, actor)
     milestone_number = None
     if milestone is not None:
@@ -1329,6 +1367,7 @@ def build_parser() -> argparse.ArgumentParser:
     create = sub.add_parser("create")
     create.add_argument("title")
     create.add_argument("-R", "--repo")
+    create.add_argument("--agent", choices=github_agent.FAMILIES)
     create.add_argument("-l", "--label", action="append", default=[])
     create.add_argument("-a", "--assignee", action="append", default=[])
     create.add_argument("-m", "--milestone")
@@ -1502,6 +1541,7 @@ def main() -> int:
                 _read_stdin(),
                 repo=args.repo,
                 labels=args.label,
+                agent=args.agent,
                 assignees=args.assignee,
                 milestone=args.milestone,
                 expected_actor=expected_actor,
