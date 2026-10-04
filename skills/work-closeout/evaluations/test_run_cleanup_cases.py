@@ -369,7 +369,10 @@ class CleanupRunnerTests(unittest.TestCase):
         ]
         with (
             mock.patch.object(sys, "argv", argv),
-            mock.patch.dict(os.environ, {"CODEX_HOME": str(self.auth_home)}),
+            mock.patch.dict(os.environ, {
+                "CODEX_HOME": str(self.auth_home),
+                "UV_PYTHON_INSTALL_DIR": str(self.uv_python),
+            }),
             mock.patch.object(runner, "stop_group", side_effect=runner.ProcessCleanupError("owned Codex process group did not stop")),
             self.assertRaisesRegex(runner.ProcessCleanupError, "private auth home retained"),
         ):
