@@ -28,7 +28,9 @@ docs and authority. Route by source of truth, not provider name.
    only when useful.
 2. Check `AGENTS.md` before external docs for local architecture or operations.
    For private operational or credential questions, follow step 3 before
-   product-repo clues or fallback searches.
+   unrouted product-repo clues or fallback searches. Explicit `docs` routes
+   remain authoritative for their declared scope; consult local context for
+   operational facts they do not provide.
    Use `.github/github.json`'s `docs` paths as primary repo-local routes:
    `docs.index` first, then relevant semantic paths such as architecture,
    operations, style, or policies. Fall back to repo-root search and README
@@ -37,13 +39,19 @@ docs and authority. Route by source of truth, not provider name.
    instructions/metadata, record a repo-docs follow-up.
 3. Before technology-specific routing or any private/local operational or
    credential discovery, read [the routing guide](references/routing.md).
-   Check its configured local context route before inferring authority from a
-   product repo, provider dashboard, deployment platform, or browser session.
-   Private DNS/Cloudflare and secret-location requests start there, never with
-   product `.env` files, shell history, or common token locations. Missing
+   For private operational facts missing from explicit repo docs routes,
+   check its configured local context before inferring authority from unrouted
+   product clues, provider dashboards, deployment platforms, or browser sessions.
+   Credential location lookup always uses the configured local credentials index,
+   even when repo docs mention token locations.
+   When explicit docs routes do not cover them, private DNS/Cloudflare requests
+   start there. Never start private operational or credential discovery by
+   scanning product `.env` files, shell history, or common token locations. Missing
    required context is a configuration gap to report, not permission to guess.
-4. Prefer sources in order: configured local operational context for this
-   environment; repo docs/source for project behavior; official product docs;
+4. Honor explicit repo documentation routes for their declared scope and the
+   credential index-first rule. Use configured local context for missing private
+   operational facts. For other lookup, prefer repo docs/source for project
+   behavior; official product docs;
    official API references, release/migration notes, changelogs and source;
    registries for package metadata/version facts; trusted community sources
    only when official docs are missing/incomplete or the user wants ecosystem

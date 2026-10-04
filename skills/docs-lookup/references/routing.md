@@ -32,6 +32,15 @@ move that guidance into `AGENTS.md` or workflow metadata.
 
 ## Local Infrastructure Docs
 
+Use this route when private operational context is
+needed and `.github/github.json` is absent or its `docs` routes
+do not cover that context. Related repo names alone declare no operational
+authority. Preserve explicit repo routes for the scope they
+declare; consult local context only for the missing operational facts. Read
+task-relevant documentation, not an unrestricted inventory of private repos.
+Ordinary code planning with sufficient checked-in evidence needs no local
+infrastructure lookup.
+
 For questions whose correct answer depends on how this specific private/local
 environment is configured or accessed, read `$CODE_HOME/local-context.toml`,
 falling back to `$CODEX_HOME/local-context.toml` and then
@@ -48,7 +57,7 @@ operations source of truth. Treat the local docs path as private local context:
 Private DNS and Cloudflare requests are local-infrastructure routes when they
 depend on this environment's zones, accounts, credentials, or verification
 records. For example, if a product repo needs a Bing verification CNAME or TXT
-record, use `[docs].local_infra` to find the private DNS/Cloudflare authority;
+record, follow the scoped routing above to find the private DNS/Cloudflare authority;
 do not start by scanning product repo `.env` files, shell history, or common
 provider-token locations. After the docs/access path is known, use `infra-ops`
 for live record inspection, mutation, rollback, and verification.
@@ -58,6 +67,7 @@ routes too. Use `[docs].local_infra` to find that environment's credentials
 index, which records each credential's holder, each storage location, a read-only validation
 check, and the rotation path. Then read the owning repo's declared key names in
 its checked-in `.env.example` and the `env` block of its `.github/github.json`.
+Repo documentation that mentions a token location does not replace this index.
 Read a value only from the location the index names, never print it, and pass
 it to a command through standard input rather than an argument. If the index
 has no entry, say so before searching, search narrowly by key name, and route a
