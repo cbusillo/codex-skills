@@ -376,6 +376,16 @@ competing evidence. Age never expires a claim. Do not bypass a refusal by
 changing the worker, tool, or identity; ask the Director about ambiguous ownership
 and continue independent work.
 
+Unstructured Current Status ownership evidence remains fail-closed for `Owned by`,
+`Claimed by`, and worker/session fields, including informal prose and Markdown.
+Recognized responsibility sentences start a line with entries, records, or
+resources, optionally prefixed by `Remaining`, a two-group count, or `provider-only`.
+`After these proposals,` may precede that resource subject. They assign one actor
+for evidence and another for disposition approval; these are not worker claims.
+Other resource-prose shapes remain ambiguous and refuse conservatively.
+Other ownership assertions in the same status, structured claims, and unreleased
+claim comments still refuse independently.
+
 An issue URL on a PR body line starting exactly `Code follow-ups recorded
 without starting implementation:` is context-only. Title or branch ownership,
 implementation references (`Refs`, `Fixes`, `Closes`, `Resolves`, including full
