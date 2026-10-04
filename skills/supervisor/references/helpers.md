@@ -165,7 +165,11 @@ login, including the desktop app's.
 ## Finished-session shutdown stages
 
 `finished_map.py` offers candidates only. Its conservative last-line parser
-rejects quoted, negated, conditional and aborted verdicts. A complete Claude local `/exit` record sequence preserves
+rejects quoted, negated, conditional and aborted verdicts. The shared parser used
+by status, candidates and terminal closure ignores one complete trailing
+`<oai-mem-citation>` block when evaluating the verdict, while retaining the full
+response in status output. Text after the block or an incomplete block remains
+unrecognized. A complete Claude local `/exit` record sequence preserves
 the preceding verdict; other commands or new work invalidate it. Read the transcript
 and issue handoff yourself under the skill's full shutdown procedure; an
 unrecognized format remains manual verification, never permission to close.
