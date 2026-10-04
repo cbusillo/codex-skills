@@ -470,6 +470,10 @@ Classify failures before acting:
   incidents, or timeouts without code-specific evidence
 - ambiguous: inspect once manually and report what evidence is missing
 
+When a branch-related failure fits a pattern, such as case sensitivity, paths,
+or naming, search all files covered by the failing check for the same pattern
+before pushing a fix.
+
 The diagnosis helper uses the same paged REST check reader as `gh-pr.py`, then
 reads workflow-run metadata, latest-attempt jobs, and individual job logs over
 REST. JSON output preserves the existing count and check fields and adds
