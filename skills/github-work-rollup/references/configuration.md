@@ -6,6 +6,13 @@ config overrides defaults. Use
 [`github-work-rollup.local.example.yaml`](github-work-rollup.local.example.yaml)
 for the public-safe shape. Keep private values in ignored local files.
 
+The collector verifies authentication with `gh-with-env-token --check`, which
+supports App installation tokens and configured user tokens and reports the
+actor in the evidence JSON. It then checks read access to the first configured
+repository and repository owner, or issue search for a subject-only scope.
+`GITHUB_WORK_ROLLUP_GH` overrides must support the wrapper's `--check` command
+and its actor output. Failed authentication or scope checks stop collection.
+
 Supported config fields:
 
 - `timezone`
@@ -51,4 +58,3 @@ the workstream remains "Example Workstream" and the initiative is "Example
 Initiative". If these
 fields are absent, executive rendering infers a workstream from item titles, but
 explicit metadata is more reliable.
-

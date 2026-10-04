@@ -679,20 +679,30 @@ def comparison_summary(current: dict[str, int], previous: dict[str, int], window
 
 
 def github_preflight(settings: dict[str, Any]) -> dict[str, Any]:
-    checks = []
-    for command in ([GH, "auth", "status"], [GH, "api", "user", "--jq", "{login:.login,id:.id,name:.name}"]):
-        result = run(command)
-        checks.append(command_summary(command, result))
-        if result.returncode != 0:
-            raise RollupError(f"GitHub preflight failed: {' '.join(command)}\n{trim(result.stderr or result.stdout)}")
+    command = [GH, "--check"]
+    result = run(command)
+    checks = [command_summary(command, result)]
+    if result.returncode != 0:
+        raise RollupError(f"GitHub preflight failed: {' '.join(command)}\n{trim(result.stderr or result.stdout)}")
+    actor_match = re.search(r"^GitHub automation actor: (\S+) \(source: [^)]+\)$", result.stdout, re.MULTILINE)
+    if actor_match is None:
+        raise RollupError("GitHub preflight failed: authentication check returned no actor")
+    repos = settings.get("repositories") or []
     owners = settings.get("repo_owners") or []
+    subjects = settings.get("subjects") or []
+    scope_commands = []
+    if repos:
+        scope_commands.append([GH, "api", "--method", "GET", f"repos/{repos[0]}", "--jq", ".full_name"])
     if owners:
-        command = [GH, "repo", "list", owners[0], "--limit", "1", "--json", "nameWithOwner"]
+        scope_commands.append([GH, "repo", "list", owners[0], "--limit", "1", "--json", "nameWithOwner"])
+    if subjects and not repos and not owners:
+        scope_commands.append([GH, "api", "--method", "GET", "search/issues", "-f", f"q=author:{subjects[0]}", "-f", "per_page=1"])
+    for command in scope_commands:
         result = run(command)
         checks.append(command_summary(command, result))
         if result.returncode != 0:
-            raise RollupError(f"GitHub repo preflight failed for {owners[0]}: {trim(result.stderr or result.stdout)}")
-    return {"ok": True, "checks": checks}
+            raise RollupError(f"GitHub scope preflight failed: {' '.join(command)}\n{trim(result.stderr or result.stdout)}")
+    return {"ok": True, "actor": actor_match.group(1), "checks": checks}
 
 
 def resolve_repositories(settings: dict[str, Any]) -> list[str]:
@@ -1507,7 +1517,7 @@ def failure_payload(settings: dict[str, Any], error: str) -> dict[str, Any]:
         "timezone": settings["timezone"],
         "report_recipient": settings["report_recipient"],
         "error": error,
-        "next_step": "Run `gh auth status` and verify the configured repo/owner is accessible.",
+        "next_step": "Run `gh-with-env-token --check` and verify the configured repo/owner/subject is accessible.",
     }
 
 
