@@ -2977,6 +2977,7 @@ def test_protected_artifacts_read_empty_invalid_and_denied() -> None:
         lambda body: body["protected_artifacts"].update(warnings=["Protected artifact user:ab/cd@registry.example/app:tag has no manifest."]),
         lambda body: body["protected_artifacts"]["entries"][0].update(image_digest="user:pass@host"),
         lambda body: body["protected_artifacts"]["entries"][0].update(instance="user:pass@host"),
+        lambda body: body["protected_artifacts"].update(warnings=["Protected artifact 1://user:pass@host is missing."]),
         lambda body: body.update(unexpected="private-field"),
     ):
         body = _protected_artifacts_response()

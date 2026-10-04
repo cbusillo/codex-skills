@@ -2570,11 +2570,11 @@ def _protected_artifact_identifier(value: object) -> str:
 
 
 def _protected_artifact_warning(value: object) -> str:
-    if isinstance(value, str):
-        for reference in value.split():
-            if "@" in reference and "://" not in reference:
-                _protected_artifact_identifier(reference)
-    return public_operator_text(value)
+    warning = public_operator_text(value)
+    for reference in warning.split():
+        if "@" in reference:
+            _protected_artifact_identifier(reference)
+    return warning
 
 
 def _protected_artifact_lane(value: object, *, optional: bool = False) -> str:
