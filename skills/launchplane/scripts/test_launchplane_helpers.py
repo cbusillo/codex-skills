@@ -1427,7 +1427,7 @@ def test_current_launchplane_service_response_shapes() -> None:
         "pull_request_numbers": [42],
     }
     for entries in ([{"pull_request_number": True}], [{"pull_request_number": 42}, {"status": "pending"}]):
-        projected = write_action._project_merge_component({"entries": entries})
+        projected = write_action._project_merge_component({"entries": entries}, include_membership=True)
         assert "pull_request_numbers" not in projected
         assert projected["entries_count"] == len(entries)
 
