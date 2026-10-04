@@ -110,8 +110,12 @@ set a temporary `GITHUB_RETRY_STATE_DIR`, which also isolates these receipts.
 PR watchers back off unchanged pending snapshots to their quiet interval,
 returning to the active interval when evidence changes. Shared core-budget
 evidence at or below 20% remaining adds a five-minute polling floor until reset.
+Budget evidence is scoped by host, App actor, repository owner (installation)
+and quota bucket, so different owners' installations cannot overwrite it.
 This slows PR/workflow/train polls without delaying writes or changing identity,
 permission checks, write reconciliation or the existing bounded reset waits.
+Receipts are retained for retrospective measurement; the pilot's closeout must
+decide retention after preserving its acceptance evidence.
 See [GitHub's conditional-request guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests).
 
 ### Shared Retry Policy

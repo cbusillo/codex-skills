@@ -642,7 +642,7 @@ class WorkflowBabysitter:
                         last_diagnosis=last_diagnosis,
                     )
                 delay = github_read.poll_delay(
-                    poll_interval_seconds, getattr(self.client, "minimum_poll_seconds", 0.0)
+                    poll_interval_seconds, getattr(self.client, "minimum_poll_seconds", 0.0), repository=getattr(self.client, "repo", None)
                 )
                 self.sleep(min(delay, remaining))
                 continue
@@ -660,7 +660,7 @@ class WorkflowBabysitter:
                     last_diagnosis=last_diagnosis,
                 )
             delay = github_read.poll_delay(
-                poll_interval_seconds, getattr(self.client, "minimum_poll_seconds", 0.0)
+                poll_interval_seconds, getattr(self.client, "minimum_poll_seconds", 0.0), repository=getattr(self.client, "repo", None)
             )
             self.sleep(min(delay, remaining))
 

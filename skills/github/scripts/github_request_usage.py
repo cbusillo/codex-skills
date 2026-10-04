@@ -46,8 +46,11 @@ def _private_open(path: pathlib.Path):
     return os.fdopen(descriptor, "a+", encoding="utf-8")
 
 
-def _budget_path(host: str, actor: str, bucket: str) -> pathlib.Path:
-    digest = hashlib.sha256(f"{host}\0{actor.casefold()}\0{bucket}".encode()).hexdigest()
+def _budget_path(host: str, actor: str, bucket: str, repository: str | None) -> pathlib.Path:
+    # One App installation per repository owner; the same App actor can serve
+    # several installations. Unknown/default scope must not overwrite one.
+    owner = repository.split("/", 1)[0].casefold() if repository else "configured-installation"
+    digest = hashlib.sha256(f"{host}\0{actor.casefold()}\0{owner}\0{bucket}".encode()).hexdigest()
     return state_dir() / "request-usage" / f"budget-{digest}.json"
 
 
@@ -77,7 +80,9 @@ def record_response(
         "repository": repository, "host": host, "actor": actor, "bucket": bucket,
         "method": method.upper(), "status": status,
         "request_id": headers.get("x-github-request-id"), "quota": quota,
-        "primary_requests": None if bucket == "graphql" else int(status != 304 and parts != ["rate_limit"]),
+        "primary_requests": None if bucket == "graphql" else int(
+            status != 304 and parts != ["rate_limit"] and not (status in {403, 429} and quota["remaining"] == 0)
+        ),
     }
     try:
         directory = state_dir() / "request-usage"
@@ -85,7 +90,7 @@ def record_response(
             fcntl.flock(stream, fcntl.LOCK_EX)
             stream.write(json.dumps(receipt, separators=(",", ":")) + "\n")
         if actor and quota["limit"] and quota["remaining"] is not None and quota["reset"]:
-            with _private_open(_budget_path(host, actor, bucket)) as stream:
+            with _private_open(_budget_path(host, actor, bucket, repository)) as stream:
                 fcntl.flock(stream, fcntl.LOCK_EX)
                 stream.seek(0)
                 try:
@@ -105,12 +110,12 @@ def record_response(
         pass
 
 
-def quota_snapshot(*, host: str = "github.com", actor: str | None = None) -> dict[str, Any]:
+def quota_snapshot(*, host: str = "github.com", actor: str | None = None, repository: str | None = None) -> dict[str, Any]:
     actor = actor or github_identity.automation_login()
     if not actor:
         return {}
     try:
-        with _budget_path(host, actor, "rest_core").open(encoding="utf-8") as stream:
+        with _budget_path(host, actor, "rest_core", repository).open(encoding="utf-8") as stream:
             fcntl.flock(stream, fcntl.LOCK_SH)
             quota = json.load(stream)
         return quota if isinstance(quota, dict) else {}
@@ -119,9 +124,9 @@ def quota_snapshot(*, host: str = "github.com", actor: str | None = None) -> dic
     return {}
 
 
-def polling_floor(*, host: str = "github.com", actor: str | None = None, now: float | None = None) -> float:
+def polling_floor(*, host: str = "github.com", actor: str | None = None, repository: str | None = None, now: float | None = None) -> float:
     """Reserve the final fifth of core quota for useful reads and writes."""
-    quota = quota_snapshot(host=host, actor=actor)
+    quota = quota_snapshot(host=host, actor=actor, repository=repository)
     limit, remaining, reset = (_integer(quota.get(key)) for key in ("limit", "remaining", "reset"))
     timestamp = time.time() if now is None else now
     if limit and remaining is not None and reset and reset > timestamp and remaining <= limit * 0.2:

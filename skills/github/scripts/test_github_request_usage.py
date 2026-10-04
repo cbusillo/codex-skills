@@ -48,7 +48,7 @@ class UsageTests(unittest.TestCase):
         consumers = usage.report(since=0, now=1100)["consumers"]
         self.assertEqual(len(consumers), 1)
         self.assertEqual(consumers[0]["http_requests"], 3)
-        self.assertEqual(consumers[0]["primary_requests"], 2)
+        self.assertEqual(consumers[0]["primary_requests"], 1)
         self.assertEqual(consumers[0]["not_modified"], 1)
         self.assertEqual((consumers[0]["helper"], consumers[0]["repository"]), ("gh_pr_watch.py", "example/app"))
         ledger = next(pathlib.Path(self.directory.name).rglob("*.jsonl"))
@@ -63,10 +63,15 @@ class UsageTests(unittest.TestCase):
                                   headers={"x-ratelimit-limit": "5000", "x-ratelimit-remaining": str(remaining),
                                            "x-ratelimit-reset": "7200"},
                                   operation="github.read", actor="fixture-bot", now=1000)
-        self.assertEqual(usage.polling_floor(actor="fixture-bot", now=1000), 300)
-        self.assertEqual(usage.polling_floor(actor="fixture-bot", now=7200), 0)
-        self.assertEqual(usage.polling_floor(actor="other", now=1000), 0)
-        command = [sys.executable, "-c", "import github_request_usage as u; print(u.polling_floor(actor='fixture-bot', now=1000))"]
+        usage.record_response(method="GET", path="/repos/different-owner/app", status=200,
+                              headers={"x-ratelimit-limit": "5000", "x-ratelimit-remaining": "5000", "x-ratelimit-reset": "7300"},
+                              operation="github.read", actor="fixture-bot", now=1000)
+        self.assertEqual(usage.polling_floor(actor="fixture-bot", repository="example/app", now=1000), 300)
+        self.assertEqual(usage.polling_floor(actor="fixture-bot", repository="example/other", now=1000), 300)
+        self.assertEqual(usage.polling_floor(actor="fixture-bot", repository="different-owner/app", now=1000), 0)
+        self.assertEqual(usage.polling_floor(actor="fixture-bot", repository="example/app", now=7200), 0)
+        self.assertEqual(usage.polling_floor(actor="other", repository="example/app", now=1000), 0)
+        command = [sys.executable, "-c", "import github_request_usage as u; print(u.polling_floor(actor='fixture-bot', repository='example/app', now=1000))"]
         child = subprocess.run(command, cwd=pathlib.Path(__file__).parent, capture_output=True, text=True, check=True)
         self.assertEqual(float(child.stdout), 300)
 
@@ -74,7 +79,7 @@ class UsageTests(unittest.TestCase):
         with patch("subprocess.run", return_value=reply(remaining=10, reset=2_000_000_000)) as transport:
             github_api.call_gh("GET", "/repos/example/app", expected_actor="fixture-bot")
             with patch("github_read.random.uniform", return_value=0):
-                self.assertEqual(github_read.poll_delay(60), 300)
+                self.assertEqual(github_read.poll_delay(60, repository="example/app"), 300)
             result = github_api.call_gh("POST", "/repos/example/app/issues", {"title": "new"}, expected_actor="fixture-bot")
         self.assertTrue(result.ok)
         self.assertEqual(transport.call_count, 2)

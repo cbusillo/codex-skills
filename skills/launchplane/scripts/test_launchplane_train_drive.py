@@ -109,6 +109,7 @@ class TrainDriveTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         environment = patch.dict(os.environ, {"GITHUB_RETRY_STATE_DIR": directory.name,
+                                               "GITHUB_READ_CACHE_DIR": directory.name + "/cache",
                                                "CODEX_SKILLS_ENV_FILE": "/missing/train-fixture"})
         environment.start()
         self.addCleanup(environment.stop)
@@ -121,10 +122,71 @@ class TrainDriveTests(unittest.TestCase):
                 "remaining": remaining, "reset": reset
             }}})
         ).encode(), stderr=b"GitHub automation actor: fixture-bot (source: github_app)") for remaining in (10, 0)]
-        with patch.dict(os.environ, {"CODEX_AUTOMATION_LOGIN": "fixture-bot"}), patch("subprocess.run", side_effect=responses):
-            io = train_drive.live_io(180, deadline_at=reset + 100)
+        with patch.dict(os.environ, {"CODEX_AUTOMATION_LOGIN": "fixture-bot"}), patch("subprocess.run", side_effect=responses) as run:
+            io = train_drive.live_io(180, deadline_at=reset + 100, repository_context=REPO)
             self.assertEqual(io.quota_wait(), 0)
             self.assertGreater(io.quota_wait(), 0)
+            self.assertEqual(run.call_args.args[0][:2], ["env", f"GH_REPO={REPO}"])
+
+    def test_other_candidate_membership_keeps_target_landing_reads(self) -> None:
+        train = FakeTrain([_response("observe_candidate", candidate={"candidate_sha": "other", "pull_request_numbers": [8]})],
+                          merge_after={7: 2})
+        outcome, _ = _drive(train)
+        self.assertEqual((outcome, train.calls), ("landed", 2))
+
+    def test_lease_refusal_clears_candidate_ownership(self) -> None:
+        train = FakeTrain([
+            _response("observe_candidate", candidate={"candidate_sha": "ours", "pull_request_numbers": [7]}),
+            _refusal(train_drive.LEASE_HELD_CODE),
+        ], merge_after={7: 2})
+        outcome, _ = _drive(train)
+        self.assertEqual((outcome, train.calls), ("landed", 2))
+
+    def test_cli_auth_failure_emits_error_stop_instead_of_traceback(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+        import json
+        api = train_drive.github_read.github_api_core
+        result = api.ApiResult(ok=False, status=403, body=None, failure=api.FailureDetail(
+            cause="permission_denied", message="fixture refusal", retryable=False, fallback_eligible=False, disposition="stop"
+        ))
+        io = FakeTrain([_response("idle")]).io()
+        io.pull_request = lambda *_args: (_ for _ in ()).throw(train_drive.github_read.GitHubReadError(
+            "fixture refusal", result=result, diagnostics={}
+        ))
+        output = StringIO()
+        with patch.object(train_drive, "live_io", return_value=io), redirect_stdout(output):
+            code = train_drive.main(["--repo", REPO, "--pr", "7"])
+        stop = json.loads(output.getvalue())
+        self.assertEqual((code, stop["event"], stop["payload"]["outcome"]), (train_drive.EXIT_CODES["error"], "stop", "error"))
+        self.assertEqual(stop["payload"]["cause"], "permission_denied")
+
+    def test_final_landing_reads_have_one_fixed_grace_deadline(self) -> None:
+        with patch.object(train_drive.github_read, "GitHubReader") as reader_class:
+            io = train_drive.live_io(180, deadline_at=1000)
+            reader = reader_class.return_value
+            io.finish_reads()
+            first = reader.deadline_at
+            io.finish_reads()
+            self.assertEqual(first, reader.deadline_at)
+            self.assertGreater(first, 1000)
+            self.assertLess(first, 1060)
+
+    def test_final_read_can_confirm_a_landing_after_normal_deadline_expires(self) -> None:
+        import json
+        api = train_drive.github_read.github_api_core
+        response = subprocess.CompletedProcess([], 0, stdout=(
+            'HTTP/2 200\ncontent-type: application/json\n\n' + json.dumps({"merged": True, "state": "closed", "merge_commit_sha": "landed"})
+        ).encode(), stderr=b"GitHub automation actor: fixture-bot (source: github_app)")
+        with patch.dict(os.environ, {"CODEX_AUTOMATION_LOGIN": "fixture-bot"}), patch("time.time", return_value=1000), patch.object(
+            api, "default_retry_runtime", return_value=api.RetryRuntime(now=lambda: 1000)
+        ), patch("subprocess.run", return_value=response) as run:
+            io = train_drive.live_io(180, deadline_at=999)
+            self.assertIsNone(io.pull_request(REPO, 7))
+            self.assertEqual(run.call_count, 0)
+            io.finish_reads()
+            self.assertEqual(io.pull_request(REPO, 7)["merge_commit_sha"], "landed")
+            self.assertEqual(run.call_count, 1)
 
     def test_controller_subprocess_is_bounded_by_the_parent_deadline(self) -> None:
         with patch("time.time", return_value=1000), patch("subprocess.run", return_value=subprocess.CompletedProcess(
@@ -155,7 +217,7 @@ class TrainDriveTests(unittest.TestCase):
         self.assertEqual((outcome, train.clock, train.calls), ("error", 120, 1))
 
     def test_observed_candidate_does_not_poll_batch_prs(self) -> None:
-        waiting = _response("observe_candidate", candidate={"candidate_sha": "abc"}, **_queue((7, []), (8, []), (9, [])))
+        waiting = _response("observe_candidate", candidate={"candidate_sha": "abc", "pull_request_numbers": [7, 8, 9]}, **_queue((7, []), (8, []), (9, [])))
         train = FakeTrain([waiting] * 8 + [_response("land_batch")], merge_after={7: 9, 8: 9, 9: 9})
         reads = []
         original = train.pull_request

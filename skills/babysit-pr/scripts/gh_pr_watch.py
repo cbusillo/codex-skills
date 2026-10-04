@@ -1537,7 +1537,7 @@ def run_watch(args):
         else:
             poll_seconds = getattr(args, "green_poll_seconds", 300)
 
-        poll_seconds = github_read.poll_delay(poll_seconds, snapshot.get("minimum_poll_seconds", 0.0))
+        poll_seconds = github_read.poll_delay(poll_seconds, snapshot.get("minimum_poll_seconds", 0.0), repository=pr.get("repo"))
         print_event(
             "snapshot",
             {

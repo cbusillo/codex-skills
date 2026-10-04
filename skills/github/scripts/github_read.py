@@ -51,8 +51,8 @@ def poll_interval(headers: dict[str, str]) -> float:
     return value if math.isfinite(value) and value > 0 else 0.0
 
 
-def poll_delay(interval: float, minimum: float = 0.0) -> float:
-    base = max(interval, minimum, github_request_usage.polling_floor())
+def poll_delay(interval: float, minimum: float = 0.0, *, repository: Optional[str] = None) -> float:
+    base = max(interval, minimum, github_request_usage.polling_floor(repository=repository))
     return base + random.uniform(0.0, min(3.0, base * 0.1))
 
 
@@ -106,7 +106,7 @@ class ConditionalResponseCache:
         scope = hashlib.sha256(
             f"{github_api_core.DEFAULT_HOST}\0{reader.expected_actor.casefold()}".encode()
         ).hexdigest()
-        return cls(root, scope=scope)
+        return cls(root, scope=scope, coalesce_seconds=reader.cache_coalesce_seconds)
 
     def _key(self, path: str, headers: dict[str, str]) -> str:
         representation = "\n".join(
@@ -237,6 +237,7 @@ class GitHubReader:
         gh_prefix_args: Optional[list[str]] = None,
         strict_actor: bool = False,
         cache_enabled: bool = False,
+        cache_coalesce_seconds: float = 5.0,
         deadline_at: Optional[float] = None,
     ) -> None:
         self.gh_cmd = gh_cmd
@@ -247,6 +248,7 @@ class GitHubReader:
         self.gh_prefix_args = list(gh_prefix_args or [])
         self.strict_actor = strict_actor
         self.cache_enabled = cache_enabled
+        self.cache_coalesce_seconds = cache_coalesce_seconds
         self.deadline_at = deadline_at
         self.completed_steps: list[str] = []
         self.requests: list[dict[str, Any]] = []

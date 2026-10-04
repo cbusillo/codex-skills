@@ -46,6 +46,7 @@ import github_read
 EXIT_CODES = {"landed": 0, "failed": 1, "needs_owner": 2, "error": 3}
 LEASE_HELD_CODE = "merge_train_controller_lease_held"
 FAILING_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
+TERMINAL_READ_FAILURES = {"invalid_credentials", "permission_denied", "actor_mismatch", "unconfigured_identity"}
 
 
 @dataclass
@@ -59,6 +60,7 @@ class DriveIO:
     # Numbers of ready-to-merge PRs merged at or after an epoch time.
     merged_since: Callable[[str, float], list[int]] = lambda _repository, _since: []
     quota_wait: Callable[[], float] = lambda: 0.0
+    finish_reads: Callable[[], None] = lambda: None
     now: Callable[[], float] = time.time
     sleep: Callable[[float], None] = time.sleep
 
@@ -97,6 +99,7 @@ def _pause(settings: DriveSettings, io: DriveIO, state: DriveState, *, minimum: 
     delay = github_read.poll_delay(
         min(settings.poll_seconds * 2 ** min(state.unchanged_passes, 10), max(settings.poll_seconds, 300.0)),
         minimum,
+        repository=settings.repository,
     )
     io.sleep(min(delay, max(0.0, settings.deadline - io.now())))
 
@@ -106,6 +109,8 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
     started = io.now()
     pass_number = 0
     while True:
+        if io.now() >= settings.deadline:
+            io.finish_reads()
         # The controller observes an admitted candidate and reports its landing.
         # Do not separately poll every PR in that batch while checks run.
         outcome = None if state.candidate_active and io.now() < settings.deadline else _record_landings(settings, io, state, emit)
@@ -132,6 +137,7 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
             _pause(settings, io, state)
             continue
         if response.get("status") not in {"accepted", "ok"}:
+            state.candidate_active = False
             snapshot = _snapshot(settings, state, "controller_refused", response)
             if snapshot["error_code"] == "github_request_failed":
                 wait = io.quota_wait()
@@ -162,7 +168,10 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
         action = str(result.get("controller_action") or "")
         state.unchanged_passes = min(state.unchanged_passes + 1, 10) if action == state.last_action else 0
         candidate = result.get("candidate") or {}
-        state.candidate_active = action == "observe_candidate" and bool(candidate.get("candidate_sha"))
+        state.candidate_active = (
+            action == "observe_candidate" and bool(candidate.get("candidate_sha"))
+            and settings.number in (candidate.get("pull_request_numbers") or [])
+        )
         _remember_batch(result, state)
         if action in {"execute_stack_collapse", "admit_collapsed_root"}:
             state.stack_seen = True
@@ -275,17 +284,20 @@ def _finish_landing(
     emit: Callable[[str, dict[str, Any]], None],
     started: float,
 ) -> None:
+    io.finish_reads()
     # A stack root lands before its children are resolved; let the controller
     # finish that batch, but never start driving unrelated work.
     if state.stack_seen:
         for finish_pass in range(settings.max_stack_finish_passes):
+            if io.now() >= settings.deadline:
+                break
             key = f"train-drive-{settings.repository.replace('/', '-')}-{settings.number}-finish-{finish_pass}-{int(io.now())}"
             response = io.controller(settings.repository, settings.base_branch, key)
             action = str(((response or {}).get("result") or {}).get("controller_action") or "")
             emit("snapshot", _snapshot(settings, state, action or "helper_unavailable", response))
             if action in {"batch_landed", "idle"}:
                 break
-            io.sleep(settings.poll_seconds)
+            _pause(settings, io, state)
     # Batch companions may be missing from projected evidence; report every
     # ready-to-merge PR that merged while this driver ran.
     for number in io.merged_since(settings.repository, started):
@@ -358,17 +370,17 @@ def _run_json(command: list[str], timeout: float) -> Any | None:
         return None
 
 
-def live_io(helper_timeout: float, *, deadline_at: float | None = None) -> DriveIO:
+def live_io(helper_timeout: float, *, deadline_at: float | None = None, repository_context: str | None = None) -> DriveIO:
     reader = github_read.GitHubReader(
         gh_cmd=str(GH_WITH_ENV_TOKEN), expected_actor=github_identity.automation_login(),
-        operation="github.train.drive", cache_enabled=True, deadline_at=deadline_at,
+        operation="github.train.drive", cache_enabled=True, cache_coalesce_seconds=0.0, deadline_at=deadline_at,
     )
     def controller(repository: str, base_branch: str, key: str) -> dict[str, Any] | None:
         remaining = max(0.0, deadline_at - time.time()) if deadline_at is not None else helper_timeout + 60
         if remaining <= 0:
             return {"status": "no_response", "failure": "deadline_reached"}
         command = [
-            "uv", "run", str(WRITE_ACTION), "--timeout", str(min(helper_timeout, remaining)),
+            "uv", "run", str(WRITE_ACTION), "--timeout", str(min(helper_timeout, max(0.01, remaining - 2))),
             "merge-train-controller-run-once", "--repo", repository, "--base-branch", base_branch,
             "--mutate", "--idempotency-key", key,
         ]
@@ -391,9 +403,7 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None) -> Drive
         except github_read.GitHubReadError as error:
             # Keep authentication and permission refusals terminal. A primary
             # throttle has already waited within the inherited deadline.
-            if error.result.failure and error.result.failure.cause in {
-                "invalid_credentials", "permission_denied", "actor_mismatch", "unconfigured_identity",
-            }:
+            if error.result.failure and error.result.failure.cause in TERMINAL_READ_FAILURES:
                 raise
             return None
         if not isinstance(payload, dict):
@@ -414,7 +424,9 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None) -> Drive
         try:
             payload = reader.paged_json(f"/repos/{repository}/commits/{sha}/check-runs",
                                         step_prefix="candidate_checks", collection_key="check_runs")
-        except github_read.GitHubReadError:
+        except github_read.GitHubReadError as error:
+            if error.result.failure and error.result.failure.cause in TERMINAL_READ_FAILURES:
+                raise
             return None
         return [{"name": run.get("name", ""), "conclusion": run["conclusion"], "url": run.get("details_url", "")}
                 for run in payload if run.get("conclusion") in FAILING_CONCLUSIONS]
@@ -424,7 +436,9 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None) -> Drive
             payload = reader.get_json(
                 f"/repos/{repository}/pulls?state=closed&sort=updated&direction=desc&per_page=50", step="merged_since"
             )
-        except github_read.GitHubReadError:
+        except github_read.GitHubReadError as error:
+            if error.result.failure and error.result.failure.cause in TERMINAL_READ_FAILURES:
+                raise
             return []
         if not isinstance(payload, list):
             return []
@@ -443,8 +457,11 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None) -> Drive
         # Launchplane currently projects upstream failures as github_request_failed.
         # /rate_limit is quota-free: verify exhaustion rather than treating every
         # 502 as a throttle or weakening the ordinary refusal budget.
+        if not repository_context:
+            return 0.0
         probe = github_read.GitHubReader(
-            gh_cmd=str(GH_WITH_ENV_TOKEN), expected_actor=github_identity.automation_login(),
+            gh_cmd="env", gh_prefix_args=[f"GH_REPO={repository_context}", str(GH_WITH_ENV_TOKEN)],
+            expected_actor=github_identity.automation_login(),
             operation="github.api.rate_limit", deadline_at=min(deadline_at or time.time() + 60, time.time() + 60),
         )
         try:
@@ -458,6 +475,12 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None) -> Drive
                 return max(0.0, reset + 3.0 - time.time())
         return 0.0
 
+    def finish_reads() -> None:
+        # Only final read-back gets a fixed, bounded grace window. Mutations
+        # and reset waits retain the original drive deadline.
+        if deadline_at is not None:
+            reader.deadline_at = deadline_at + 15.0
+
     return DriveIO(
         controller=controller,
         pull_request=pull_request,
@@ -465,6 +488,7 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None) -> Drive
         failing_checks=failing_checks,
         merged_since=merged_since,
         quota_wait=quota_wait,
+        finish_reads=finish_reads,
     )
 
 
@@ -495,7 +519,12 @@ def main(argv: list[str]) -> int:
         poll_seconds=args.poll_seconds,
         allow_branch_update=args.allow_branch_update,
     )
-    outcome = drive(settings, live_io(args.helper_timeout, deadline_at=settings.deadline), emit)
+    try:
+        outcome = drive(settings, live_io(args.helper_timeout, deadline_at=settings.deadline, repository_context=settings.repository), emit)
+    except github_read.GitHubReadError as error:
+        outcome = _stop(settings, DriveState(batch={settings.number}), emit, "error",
+                        reason="GitHub read refused", cause=error.result.failure.cause if error.result.failure else "read_failed",
+                        request_id=error.result.request_id)
     return EXIT_CODES[outcome]
 
 
