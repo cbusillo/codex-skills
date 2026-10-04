@@ -409,7 +409,7 @@ without repeating the executing loop or overdue-audit reminder.
 
 ### Session alerts
 
-Inline dotfiles hook configurations can preview `--refresh-instructions --show-diff` and merge the generated `catalog_alert_toml` into their authoritative `config.toml` source, retaining personal hooks and native trust. Refresh recognizes current inline alerts without writing that source. Regular configurations can use the hook-only migration described above.
+Inline dotfiles hook configurations can preview `--refresh-instructions --show-diff` and replace managed alert entries in place with the generated `catalog_alert_toml` in their authoritative `config.toml` source. Remove obsolete duplicate alert groups while retaining unrelated hooks, group positions, and native trust. Refresh recognizes current inline alerts without writing that source. Regular configurations can use the hook-only migration described above.
 
 The same catalog hook source registers advisory `Stop` alerts on both harnesses
 and `Interrupt` alerts on Codex (verified against 0.159.2). Claude Code has no native Interrupt event, and

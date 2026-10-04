@@ -222,22 +222,32 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             bound = any(
                 isinstance(group, dict) and isinstance(group.get("hooks"), list)
                 and any(isinstance(handler, dict) and (
-                    handler.get("statusMessage") in (sync.HOOK_LABEL, "codex-skills session start")
+                    handler.get("statusMessage") in (sync.HOOK_LABEL, "codex-skills session start",
+                                                     "codex-skills stop alert", "codex-skills interrupt alert")
                     or any(str(ROOT / "hooks" / script) in str(handler.get("command", ""))
-                           for script in ("command_policy_hook.py", "direction_check_hook.py"))
+                           for script in ("command_policy_hook.py", "direction_check_hook.py", "session_alert_hook.py"))
                 ) for handler in group["hooks"])
                 for event, groups in inline.items() if event != "state" and isinstance(groups, list)
                 for group in groups
             ) if isinstance(inline, dict) else False
             if bound:
                 generated = json.loads(sync.render_codex_hook_content({}, hook_path, ROOT, alerts_only=True))["hooks"]
-                current = all(isinstance(inline.get(event), list) and all(group in inline[event] for group in groups)
-                              for event, groups in generated.items())
+                current = True
+                for event, groups in generated.items():
+                    label = groups[0]["hooks"][0]["statusMessage"]
+                    existing = inline.get(event, [])
+                    managed = [group for group in existing if (
+                        isinstance(group, dict) and isinstance(group.get("hooks"), list)
+                        and any(isinstance(handler, dict) and handler.get("statusMessage") == label
+                                for handler in group["hooks"])
+                    )] if isinstance(existing, list) else None
+                    if managed != groups:
+                        current = False
                 if current:
                     hook_preview = [{"path": str(config_path), "state": "current"}]
                 else:
                     entry = {"path": str(config_path), "state": "skipped",
-                             "reason": "Inline catalog alerts need reconciliation; preview --refresh-instructions --show-diff and merge catalog_alert_toml into the config.toml source, preserving unrelated hooks and trust, then review through /hooks and run catalog_runtime.py --update. Regular configurations can instead migrate with scripts/sync-global-instructions.py --codex-hook --hooks-only"}
+                             "reason": "Inline catalog alerts need reconciliation; preview --refresh-instructions --show-diff and replace managed alert entries in place with catalog_alert_toml in the config.toml source, removing obsolete duplicates while preserving unrelated hooks, group positions and native trust, then review through /hooks and run catalog_runtime.py --update. Regular configurations can instead migrate with scripts/sync-global-instructions.py --codex-hook --hooks-only"}
                     if show_diff:
                         import tomlkit
                         entry["catalog_alert_toml"] = tomlkit.dumps({"hooks": generated})
