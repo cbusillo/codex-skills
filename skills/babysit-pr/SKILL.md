@@ -101,6 +101,10 @@ For each snapshot:
 2. **Review feedback first** (`process_review_comment`, `address_review_changes`):
    handle it under [Review feedback](#review-feedback) before acting on CI, so a
    fix commit replaces the SHA instead of rerunning checks on the old one.
+   `resolve_review_threads` means addressed automated findings still need thread
+   resolution; follow [Review Feedback](#review-feedback).
+   `review_thread_resolution_unavailable` means resolution evidence is incomplete;
+   keep watching and do not offer a merge from that snapshot.
    Client feedback actions (`address_owner_review_changes`, `owner_*`,
    `review_owner_feedback_history`): read
    [Client feedback](references/owner-feedback.md) before acting.

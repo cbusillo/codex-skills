@@ -1366,5 +1366,29 @@ def test_multiple_bot_comments_count_as_one_thread():
     assert {c["comment_id"] for c in evidence["threads"][0]["comments"]} == {"17", "18"}
 
 
+def test_resolved_comments_do_not_replay_after_graphql_failure(monkeypatch):
+    pr = sample_pr()
+    comment = {"id": 17, "user": {"login": "github-advanced-security[bot]"}, "body": "CodeQL finding"}
+    monkeypatch.setattr(gh_pr_watch, "gh_api_list_paginated", lambda endpoint, **kwargs: [comment] if endpoint.endswith("/comments") and "/pulls/" in endpoint else [])
+    body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
+        "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
+        "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": [{
+            "id": "thread17", "isResolved": True, "isOutdated": False,
+            "comments": {"pageInfo": {"hasNextPage": False}, "nodes": [{"databaseId": 17, "commit": {"oid": pr["head_sha"]}}]},
+        }]},
+    }}}}
+    reader = ReviewReader(body=body)
+    state = {}
+    assert gh_pr_watch.fetch_new_review_items(pr, state, True, reader=reader) == []
+    reader.body = {"errors": [{"message": "transient error"}]}
+    assert gh_pr_watch.fetch_new_review_items(pr, state, False, reader=reader) == []
+    assert pr["review_threads"]["status"] == "unknown"
+    # Reopening remains a persistent blocker, despite the now-seen comment.
+    reader.body = body
+    body["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"][0]["isResolved"] = False
+    assert gh_pr_watch.fetch_new_review_items(pr, state, False, reader=reader) == []
+    assert "resolve_review_threads" in gh_pr_watch.recommend_actions(pr, sample_checks(), [], [], [], 0, 3)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

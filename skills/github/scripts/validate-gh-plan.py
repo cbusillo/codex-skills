@@ -5330,12 +5330,13 @@ def test_rule_violation_wrapped_required_check_rejection_stops_without_cooldown(
 def test_comments_only_rejection_stops_without_cooldown() -> None:
     required_check_rejection_stops_without_cooldown(
         "Repository rule violations found\n\nAll comments must be resolved.",
-        cause="unresolved_review_threads", next_action="resolve_review_threads",
+        cause="unresolved_review_threads", next_action="resolve_review_threads", hint_fragment="review threads",
     )
 
 
 def required_check_rejection_stops_without_cooldown(
     message: str, cause: str = "required_status_checks_expected", next_action: str = "wait_for_required_checks",
+    hint_fragment: str = "gh-pr.py checks",
 ) -> None:
     pr = load_pr_module()
     calls: list[str] = []
@@ -5409,7 +5410,7 @@ def required_check_rejection_stops_without_cooldown(
             assert rejected_payload["fallback_eligible"] is False, rejected_payload
             assert rejected_payload["recommended_next_action"] == next_action, rejected_payload
             assert rejected_payload["reconciliation"] is None, rejected_payload
-            assert rejected_payload["hint"], rejected_payload
+            assert hint_fragment in rejected_payload["hint"], rejected_payload
             assert sum("/pulls/12/merge" in call for call in rejected_calls) == 1, rejected_calls
             assert sum("/pulls/12" in call and "/merge" not in call for call in rejected_calls) == 1, rejected_calls
             assert list(retry_state_path.glob("*.json")) == [], list(retry_state_path.glob("*"))

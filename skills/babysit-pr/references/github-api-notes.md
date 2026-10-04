@@ -146,7 +146,11 @@ Inline Codex and GitHub Advanced Security comments are actionable review
 inventory. When those comments exist, the watcher reads GraphQL `reviewThreads`
 with the REST repository, PR number, URL, and head SHA pinned on every page.
 `pr.review_threads` retains thread IDs, resolution, outdated state, comment
-commit SHA, and whether that commit matches the current head. Resolved comments
+anchor commit SHA, and whether that anchor matches the current head. GitHub can
+advance the anchor commit when a line still applies after a push:
+`matches_current_head: true` does not prove the bot analyzed that head. Verify
+the finding against the current code and its original review/snapshot revision
+before acting, even when the anchor matches. Resolved comments
 are omitted from new feedback. Unresolved threads remain a `resolve_review_threads`
 action after their comment IDs have been seen; old-head findings require
 verification on the current head before changing code, and still need disposition

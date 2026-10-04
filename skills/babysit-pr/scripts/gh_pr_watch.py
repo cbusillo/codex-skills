@@ -1113,6 +1113,7 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
 
         kind = item["kind"]
         if kind == "review_comment" and item.get("thread", {}).get("is_resolved") is True:
+            seen_review_comment.add(item_id)
             continue
         if kind == "issue_comment" and item_id in seen_issue:
             continue
