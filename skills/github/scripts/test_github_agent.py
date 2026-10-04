@@ -64,6 +64,109 @@ class AgentTests(unittest.TestCase):
             self.assertTrue(any(item.get("number") == 2 and item["exclusion"] == "assigned_elsewhere"
                                 for item in result["excluded"]))
 
+    def test_global_graph_budget_preserves_both_family_leaves(self):
+        for family, other in (("codex", "claude"), ("claude", "codex")):
+            root = next_tests.track("someone/direction", 1, "First")
+            leaves = [next_tests.global_issue("someone/product", 2, labels=[f"agent:{other}"]),
+                      next_tests.global_issue("someone/product", 3, labels=[f"agent:{family}"])]
+            edges = {(root["repo"], 1): next_tests.relationships(sub_issues=leaves)}
+            with next_tests.global_fixture([root], leaves, edges) as (module, result, _):
+                args = next_tests.next_args(scan_limit=2)
+                args.agent = family
+                module.cmd_next(args)
+            self.assertEqual([item["number"] for item in result["candidates"]], [3])
+            self.assertFalse(result["graph_context"]["truncated"])
+            self.assertTrue(any(item.get("number") == 2 and item["exclusion"] == "assigned_elsewhere"
+                                for item in result["excluded"]))
+
+    def test_discovery_budget_preserves_both_family_leaves(self):
+        for family, other in (("codex", "claude"), ("claude", "codex")):
+            leaves = [next_tests.global_issue("someone/product", 2, labels=[f"agent:{other}"]),
+                      next_tests.global_issue("someone/product", 3, labels=[f"agent:{family}"])]
+            with next_tests.global_fixture([], [], {}, discovered=leaves) as (module, result, _):
+                args = next_tests.next_args(scan_limit=1)
+                args.agent = family
+                module.cmd_next(args)
+            self.assertEqual([item["number"] for item in result["candidates"]], [3])
+            self.assertTrue(result["discovery_context"]["complete"])
+            self.assertTrue(any(item.get("number") == 2 and item["exclusion"] == "assigned_elsewhere"
+                                for item in result["excluded"]))
+
+    def test_family_graph_allowance_is_bounded_and_traverses_dependencies(self):
+        for family, other in (("codex", "claude"), ("claude", "codex")):
+            root = next_tests.track("someone/direction", 1, "First")
+            parent = next_tests.global_issue("someone/product", 2, labels=[f"agent:{other}"])
+            blocker = next_tests.global_issue("someone/product", 3, labels=[f"agent:{family}"])
+            edges = {(root["repo"], 1): next_tests.relationships(sub_issues=[parent]),
+                     (parent["repo"], 2): next_tests.relationships(blocked_by=[blocker])}
+            with next_tests.global_fixture([root], [parent, blocker], edges) as (module, result, _):
+                args = next_tests.next_args(scan_limit=2)
+                args.agent = family
+                module.cmd_next(args)
+            self.assertEqual([item["number"] for item in result["candidates"]], [3])
+            self.assertEqual(result["candidates"][0]["via"][-1]["relationship"], "blocked_by")
+
+            leaves = [next_tests.global_issue("someone/product", n, labels=[f"agent:{other}"])
+                      for n in range(2, 12)]
+            leaves.append(next_tests.global_issue("someone/product", 12, labels=[f"agent:{family}"]))
+            edges = {(root["repo"], 1): next_tests.relationships(sub_issues=leaves)}
+            with next_tests.global_fixture([root], leaves, edges) as (module, result, _):
+                args = next_tests.next_args(scan_limit=2)
+                args.agent = family
+                module.cmd_next(args)
+            self.assertFalse(result["candidates"])
+            self.assertEqual(result["evaluated"], 2 * args.scan_limit)
+            self.assertTrue(result["graph_context"]["truncated"])
+            self.assertFalse(result["graph_context"]["complete"])
+
+    def test_family_discovery_omissions_preserve_milestone_and_parent_waits(self):
+        for family, other in (("codex", "claude"), ("claude", "codex")):
+            parent = next_tests.global_issue("someone/product", 10,
+                labels=["plan:waiting"], body="## Current Status\nWaiting for: Owner testing")
+            leaves = [next_tests.global_issue("someone/product", n, labels=[f"agent:{other}"])
+                      for n in (2, 3)]
+            leaves[1]["milestone"] = next_tests.milestone_data(1, "First", created_at="2026-01-01T00:00:00Z")
+            child = next_tests.global_issue("someone/product", 4, labels=[f"agent:{family}"])
+            edges = {(parent["repo"], 10): next_tests.relationships(sub_issues=[child])}
+            with next_tests.global_fixture([], [parent], edges, discovered=[*leaves, child]) as (module, result, _):
+                args = next_tests.next_args(scan_limit=1)
+                args.agent = family
+                module.cmd_next(args)
+            self.assertFalse(result["candidates"])
+            self.assertTrue(any(item.get("number") == 4 and item["exclusion"] == "parent_waiting"
+                                for item in result["excluded"]))
+            self.assertEqual([item["number"] for item in result["discovery_context"]["unevaluated_milestone_issues"]], [3])
+            self.assertFalse(result["candidate_coverage"]["complete"])
+            self.assertFalse(result["tooling_capacity_context"]["admitted"])
+
+    def test_other_family_frontier_still_controls_capacity_admission(self):
+        for family, other in (("codex", "claude"), ("claude", "codex")):
+            roots = [next_tests.track("someone/direction", 1, "First"),
+                     next_tests.track("someone/direction", 2, "Second")]
+            leaves = [next_tests.global_issue("someone/business", 10, labels=[f"agent:{other}"]),
+                      next_tests.global_issue("someone/business", 11, labels=[f"agent:{family}"])]
+            tool = next_tests.global_issue("someone/tools", 20, labels=[f"agent:{family}"])
+            edges = {(root["repo"], root["number"]): next_tests.relationships(sub_issues=[leaf])
+                     for root, leaf in zip(roots, leaves)}
+            with next_tests.global_fixture(roots, leaves, edges, discovered=[tool]) as (module, result, _):
+                args = next_tests.next_args(scan_limit=3)
+                args.agent = family
+                module.cmd_next(args)
+                items = {item["number"]: item for item in [*result["candidates"], *result["excluded"]]}
+                context = {"issues": {
+                    **{f"someone/business#{n}": next_tests.reviewed(items[n], "waiting", waiting_on="person")
+                       for n in (10, 11)},
+                    "someone/tools#20": next_tests.reviewed(items[20], category="repeated_stop_tooling"),
+                }}
+                with patch.object(module, "next_selection_context", return_value=context):
+                    module.cmd_next(args)
+                    self.assertTrue(result["tooling_capacity_context"]["admitted"])
+                    self.assertIn(20, [item["number"] for item in result["available_candidates"]])
+                    context["issues"]["someone/business#10"]["state"] = "underway"
+                    module.cmd_next(args)
+                    self.assertFalse(result["tooling_capacity_context"]["admitted"])
+                    self.assertNotIn(20, [item["number"] for item in result["available_candidates"]])
+
     def test_unknown_and_conflicting_assignment_require_resolution(self):
         self.assertIsNone(agent.exclusion({"labels": []}, None))
         self.assertIsNotNone(agent.exclusion({"labels": ["agent:codex"]}, None))
