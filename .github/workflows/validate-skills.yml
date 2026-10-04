@@ -68,12 +68,13 @@ jobs:
               'skills/openai-docs/scripts/test_fetch_codex_manual.py',
           ]
           node = shutil.which('node')
+          tracer = shutil.which('strace')
           with tempfile.TemporaryDirectory() as directory:
               root = pathlib.Path(directory)
               wrapper = root / 'node'
               trace_root = root / 'traces'
               trace_root.mkdir()
-              wrapper.write_text('#!/bin/bash\nexec strace -f -ttt -T -o "' + str(trace_root) + '/node-$$" ' + node + ' "$@"\n')
+              wrapper.write_text('#!/bin/bash\nexec ' + tracer + ' -f -ttt -T -o "' + str(trace_root) + '/node-$$" ' + node + ' "$@"\n')
               wrapper.chmod(0o700)
               import os
               env = dict(os.environ, PATH=str(root) + ':' + os.environ['PATH'])
