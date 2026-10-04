@@ -1289,7 +1289,7 @@ def test_security_threads_survive_seen_comments(monkeypatch, resolved, outdated,
     thread = pr["review_threads"]["threads"][0]
     assert thread["is_resolved"] is resolved
     assert thread["is_outdated"] is outdated
-    assert thread["matches_current_head"] is (comment_sha == pr["head_sha"])
+    assert thread["comments"][0]["matches_current_head"] is (comment_sha == pr["head_sha"])
     actions = gh_pr_watch.recommend_actions(pr, sample_checks(), [], [], second, 0, 3)
     assert ("ready_to_merge" in actions) is resolved
     assert ("resolve_review_threads" in actions) is (not resolved)
@@ -1345,6 +1345,25 @@ def test_security_thread_pagination_pins_every_page():
     assert len(evidence["threads"]) == 1
     assert [variables["cursor"] for variables in reader.variables] == [None, "next"]
     assert all(variables["number"] == pr["number"] for variables in reader.variables)
+
+
+def test_multiple_bot_comments_count_as_one_thread():
+    pr = sample_pr()
+    body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
+        "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
+        "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": [{
+            "id": "thread17", "isResolved": False, "isOutdated": False,
+            "comments": {"pageInfo": {"hasNextPage": False}, "nodes": [
+                {"databaseId": i, "commit": {"oid": pr["head_sha"]}} for i in (17, 18)
+            ]},
+        }]},
+    }}}}
+    evidence = gh_pr_watch.fetch_review_threads(pr, [
+        {"id": str(i), "author": "github-advanced-security[bot]"} for i in (17, 18)
+    ], ReviewReader(body=body))
+    assert evidence["status"] == "available"
+    assert len(evidence["threads"]) == 1
+    assert {c["comment_id"] for c in evidence["threads"][0]["comments"]} == {"17", "18"}
 
 
 if __name__ == "__main__":

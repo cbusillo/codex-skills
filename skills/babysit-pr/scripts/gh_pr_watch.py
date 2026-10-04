@@ -154,6 +154,10 @@ def fetch_review_threads(pr, comments, reader):
             thread_comments = thread.get("comments")
             if not isinstance(thread_comments, dict) or not isinstance(thread_comments.get("nodes"), list) or thread_comments.get("pageInfo", {}).get("hasNextPage") is not False:
                 break
+            thread_evidence = {
+                "id": thread["id"], "is_resolved": thread["isResolved"],
+                "is_outdated": thread["isOutdated"], "head_sha": pr["head_sha"], "comments": [],
+            }
             for comment in thread_comments["nodes"]:
                 if not isinstance(comment, dict):
                     break
@@ -162,13 +166,13 @@ def fetch_review_threads(pr, comments, reader):
                     matched.add(comment_id)
                     commit = comment.get("commit")
                     commit_sha = commit.get("oid") if isinstance(commit, dict) else None
-                    evidence["threads"].append({
-                        "id": thread["id"], "comment_id": comment_id,
-                        "is_resolved": thread["isResolved"], "is_outdated": thread["isOutdated"],
-                        "commit_sha": commit_sha, "head_sha": pr["head_sha"],
+                    thread_evidence["comments"].append({
+                        "comment_id": comment_id, "commit_sha": commit_sha,
                         "matches_current_head": commit_sha == pr["head_sha"],
                     })
             else:
+                if thread_evidence["comments"]:
+                    evidence["threads"].append(thread_evidence)
                 continue
             break
         else:
@@ -1050,7 +1054,10 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
     review_items = normalize_reviews(review_payload)
     threads = fetch_review_threads(pr, review_comment_items, reader)
     pr["review_threads"] = threads
-    by_comment = {thread["comment_id"]: thread for thread in threads["threads"]}
+    by_comment = {
+        comment["comment_id"]: {**thread, **comment}
+        for thread in threads["threads"] for comment in thread["comments"]
+    }
     for item in review_comment_items:
         item["head_sha"] = pr["head_sha"]
         if item["id"] in by_comment:

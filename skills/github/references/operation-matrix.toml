@@ -330,7 +330,7 @@ mutation_class = "read"
 idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "fresh_read"
-retained_graphql_rationale = "GraphQL is intentionally retained only for the bounded review inventory because REST does not expose authoritative reviewDecision, required approval accounting, code-owner requirements, or dismissal state."
+retained_graphql_rationale = "GraphQL exposes review-thread resolution absent from REST inline comments."
 source_refs = ["babysit-pr/scripts/gh_pr_watch.py:fetch_review_threads", "github/scripts/github_read.py:graphql_json"]
 test_refs = ["babysit-pr/scripts/test_gh_pr_watch.py:test_security_threads_survive_seen_comments", "babysit-pr/scripts/test_gh_pr_watch.py:test_incomplete_security_threads_never_prove_ready"]
 
