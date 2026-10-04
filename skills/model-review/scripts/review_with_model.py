@@ -198,7 +198,17 @@ def review_anthropic(prompt: str, repo: Path, model: str | None, timeout: int, _
         return failed("anthropic", "claude reported an error", detail=str(payload.get("result"))[:400])
     if payload.get("permission_denials"):
         tools = sorted({str(item.get("tool_name", "?")) for item in payload["permission_denials"]})
-        return failed("anthropic", f"claude was denied: {', '.join(tools)}", denied=tools)
+        # Only report read targets, never search patterns, file contents, or arbitrary tool inputs.
+        targets = []
+        for item in payload["permission_denials"]:
+            tool = item.get("tool_name")
+            inputs = item.get("tool_input")
+            if tool in {"Read", "Grep", "Glob"} and isinstance(inputs, dict):
+                path = inputs.get("file_path" if tool == "Read" else "path")
+                if isinstance(path, str) and path:
+                    targets.append({"tool": tool, "path": openai_error_detail(path)})
+        return failed("anthropic", f"claude was denied: {', '.join(tools)}", denied=tools,
+                      denied_targets=targets)
     models = sorted(payload.get("modelUsage") or {})
     return {
         "ok": True,
@@ -377,8 +387,9 @@ def branch_diff(repo: Path) -> bytes:
 def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: int) -> dict[str, Any]:
     if shutil.which(PROVIDERS[provider]) is None:
         return failed(provider, f"`{PROVIDERS[provider]}` is not installed", installed=False)
-    # Google's diff must be under its allowed read root; other providers use system scratch.
-    scratch_options = {"dir": repo} if provider == "google" else {}
+    # File-tool reviewers need the generated diff under their authorized read root.
+    # Do not change TMPDIR: child tools such as uv would leave locks in the checkout.
+    scratch_options = {"dir": repo} if provider in {"google", "anthropic"} else {}
     try:
         with tempfile.TemporaryDirectory(prefix=".model-review-", **scratch_options) as scratch:
             diff = branch_diff(repo)
