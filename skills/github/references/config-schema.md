@@ -252,6 +252,12 @@ Common top-level keys:
   capabilities. It must not contain tokens, cookies, secret values, concrete
   Launchplane service URLs, private credential paths, provider payloads,
   product/runtime endpoints, or plaintext runtime configuration.
+  Product repositories may also carry routing-only `product`, `publicName`,
+  and a string `context` identifying their Launchplane mapping. This does not
+  enable a local context helper or grant runtime authority. Catalog helper
+  configuration uses an object `context` with `enabled` and `helper` instead.
+  The snapshot preserves routing fields under `launchplane.routing` and helper
+  configuration under `launchplane.context`.
   `mergeTrain.githubActionsRunner.revisionEvidenceFields` names the per-run
   GitHub/Launchplane response fields that carry workflow, candidate, and landing
   revisions; it is a field-path contract, not a place to persist one run's SHA
