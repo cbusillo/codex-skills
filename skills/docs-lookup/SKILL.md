@@ -44,9 +44,9 @@ docs and authority. Route by source of truth, not provider name.
    product clues, provider dashboards, deployment platforms, or browser sessions.
    Credential location lookup always uses the configured local credentials index,
    even when repo docs mention token locations.
-   When explicit docs routes do not cover them, private DNS/Cloudflare and
-   secret-location requests start there, never with
-   product `.env` files, shell history, or common token locations. Missing
+   When explicit docs routes do not cover them, private DNS/Cloudflare requests
+   start there. Never start private operational or credential discovery by
+   scanning product `.env` files, shell history, or common token locations. Missing
    required context is a configuration gap to report, not permission to guess.
 4. Honor explicit repo documentation routes for their declared scope and the
    credential index-first rule. Use configured local context for missing private

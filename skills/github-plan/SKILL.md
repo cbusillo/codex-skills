@@ -143,7 +143,7 @@ docs assign.
 If a declared route answers the task, use it without opening the local docs
 fallback.
 When the task needs this environment's infrastructure, access paths, or private
-operational ownership and those routes do not provide the needed context, use
+operational ownership and those routes do not provide the needed context,
 load `docs-lookup` before reading configured private documentation or searching
 for more repositories. Missing metadata alone
 does not require private lookup for ordinary source work; do not read private

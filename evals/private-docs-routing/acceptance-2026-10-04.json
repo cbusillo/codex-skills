@@ -405,5 +405,14 @@
     "evals/multi-turn/private-docs-missing-metadata/turns.yaml": "3f8582227dea7579cbd27fd979c4369fac528d677090f9371ebc42e424e002f2",
     "evals/multi-turn/private-docs-source-planning/turns.yaml": "f068f0ec3dec3aed420ac99d9ed4ad744a9251baaa4fda7f02301b7e1076fb29",
     "evals/multi-turn/private-docs-unconfigured/turns.yaml": "f3e0bd80b852b019648cfecae4736ab8be51c11c601b3ca1b2c4bf248510b16a"
+  },
+  "post_qualification_edits": {
+    "reason": "Final source review requested removal of use load grammar and the conditional secret-location wording that conflicted with the preserved mandatory credentials index. The review found no blocker and required no trial rerun.",
+    "evidence_scope": "Execution results and changed_guidance_sha256 remain pinned to tested guidance_sha. The final grammar/clarity edit is covered by static checks and final-head independent review.",
+    "final_guidance_sha256": {
+      "skills/github-plan/SKILL.md": "29461fccf11f0f7e2d8363749ec3a5ca676156cd467d3603443210cc426750f4",
+      "skills/docs-lookup/SKILL.md": "ed1494f9d14ba9e83ffd4c621f0a86181d065f4151bed39bf6a77a9498501297",
+      "skills/docs-lookup/references/routing.md": "3c458f19cd21f00fa9a59a3a2e311d180059130f52da2d80e204570a1df52b69"
+    }
   }
 }
