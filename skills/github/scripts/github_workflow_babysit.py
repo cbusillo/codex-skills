@@ -518,9 +518,10 @@ class WorkflowBabysitter:
         polls = 0
         last_diagnosis: dict[str, Any] | None = None
         previous_progress_key: str | None = None
+        run: RunSnapshot | None = None
 
         while True:
-            if polls and self.clock() >= deadline:
+            if run is not None and self.clock() >= deadline:
                 return timeout_result(
                     run=run, run_url=run_url,
                     actors=actors_payload(automation_login, reviewer_login),
@@ -640,9 +641,10 @@ class WorkflowBabysitter:
                         elapsed_seconds=self.clock() - started_at,
                         last_diagnosis=last_diagnosis,
                     )
-                self.sleep(min(github_read.poll_delay(
-                poll_interval_seconds, getattr(self.client, "minimum_poll_seconds", 0.0)
-            ), remaining))
+                delay = github_read.poll_delay(
+                    poll_interval_seconds, getattr(self.client, "minimum_poll_seconds", 0.0)
+                )
+                self.sleep(min(delay, remaining))
                 continue
 
             remaining = deadline - self.clock()
@@ -657,9 +659,10 @@ class WorkflowBabysitter:
                     elapsed_seconds=self.clock() - started_at,
                     last_diagnosis=last_diagnosis,
                 )
-            self.sleep(min(github_read.poll_delay(
+            delay = github_read.poll_delay(
                 poll_interval_seconds, getattr(self.client, "minimum_poll_seconds", 0.0)
-            ), remaining))
+            )
+            self.sleep(min(delay, remaining))
 
 
 def protected_environment_decision(

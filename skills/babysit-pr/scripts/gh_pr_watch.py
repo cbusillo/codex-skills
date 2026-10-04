@@ -15,6 +15,7 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -1392,7 +1393,7 @@ def collect_snapshot(args):
     state["last_snapshot_at"] = int(time.time())
     save_state(state_path, state)
 
-    snapshot = {
+    snapshot: dict[str, Any] = {
         "pr": pr,
         "checks": checks_summary,
         "failed_runs": failed_runs,

@@ -154,7 +154,20 @@ class ConditionalResponseCache:
         body_path, lock_path = self._paths(path, headers)
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         with lock_path.open("a+", encoding="utf-8") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            if reader.deadline_at is None:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            else:
+                while True:
+                    remaining = reader.deadline_at - time.time()
+                    if remaining <= 0:
+                        # The shared transport returns the parent deadline failure
+                        # without starting a remote call.
+                        return reader._transport_request(method, path, step=step)
+                    try:
+                        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        time.sleep(min(0.05, remaining))
             cached = self._read(body_path)
             now = time.time()
             if cached and now - float(cached.get("validated_at") or 0) > self.max_age_seconds:
@@ -187,21 +200,28 @@ class ConditionalResponseCache:
                 else:
                     cached["validated_at"] = time.time()
                     cached["headers"] = {**cached["headers"], **result.headers}
-                    self._write(body_path, cached)
+                    cache_status = "revalidated"
+                    try:
+                        self._write(body_path, cached)
+                    except OSError:
+                        cache_status = "unavailable"
                     result.ok = True
                     result.body = cached["body"]
-                    result.headers = {**dict(cached["headers"]), **result.headers, "x-codex-cache": "revalidated"}
+                    result.headers = {**dict(cached["headers"]), **result.headers, "x-codex-cache": cache_status}
                     result.failure = None
                     return result
             if result.ok and result.status == 200:
                 etag = result.headers.get("etag")
                 modified = result.headers.get("last-modified")
                 if isinstance(etag, str) or isinstance(modified, str):
-                    self._write(body_path, {
-                        "schema": self.schema_version, "body": result.body,
-                        "headers": result.headers, "etag": etag, "last_modified": modified,
-                        "validated_at": time.time(),
-                    })
+                    try:
+                        self._write(body_path, {
+                            "schema": self.schema_version, "body": result.body,
+                            "headers": result.headers, "etag": etag, "last_modified": modified,
+                            "validated_at": time.time(),
+                        })
+                    except OSError:
+                        result.headers["x-codex-cache"] = "unavailable"
             return result
 
 
@@ -333,7 +353,13 @@ class GitHubReader:
 
     def request(self, method: str, path: str, *, step: str) -> github_api_core.ApiResult:
         cache = ConditionalResponseCache.from_reader(self) if method.upper() == "GET" else None
-        result = cache.request(self, method, path, step=step) if cache else self._transport_request(method, path, step=step)
+        try:
+            result = cache.request(self, method, path, step=step) if cache else self._transport_request(method, path, step=step)
+        except OSError:
+            # Caching is an optional read optimization. Preserve transport,
+            # actor checks and shared cooldowns when cache storage is unusable.
+            result = self._transport_request(method, path, step=step)
+            result.headers["x-codex-cache"] = "unavailable"
         self._record_result(result, method=method, path=path, step=step)
         if not result.ok:
             message = result.failure.message if result.failure else "GitHub REST read failed"

@@ -119,7 +119,9 @@ workflow list filtered by time, name, or unsupported CLI fields. Use the
 PR and workflow watchers use 60-second active defaults and positive jitter.
 They honor a longer `x-poll-interval` response header. Automation workflow run
 and job GETs reuse the shared private conditional cache, including 304 bodies;
-identity and protected-environment reads remain fresh. Poll waits stay inside
+identity and protected-environment reads remain fresh. An unavailable cache falls
+back to the same live transport, actor checks and shared cooldown. Completed GETs
+are not repeated when cache persistence fails. Cache-lock waits and poll waits stay inside
 the workflow deadline and do not start another read when that deadline expires.
 
 Every `status=waiting` poll immediately reads `pending_deployments`. Reviewer

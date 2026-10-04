@@ -1020,7 +1020,7 @@ def test_exact_edit_supports_enterprise_api_thread_urls() -> None:
         github_api.DEFAULT_HOST = original_host
 
 
-TESTS = [
+TESTS: list[Callable[[], None]] = [
     test_exact_edit_supports_enterprise_api_thread_urls,
     test_exact_comment_cli_preserves_files_and_conflict_envelope,
     test_exact_edits_keep_interleaved_session_comments_separate,

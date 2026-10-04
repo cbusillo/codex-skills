@@ -23,7 +23,7 @@ import types
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from unittest.mock import patch
 
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
@@ -2919,7 +2919,7 @@ def test_malformed_cooldown_state_is_removed() -> None:
 
 
 def main() -> None:
-    tests = [
+    tests: list[Callable[[], None]] = [
         # parse_gh_include_output
         test_parse_success_200_json_body,
         test_parse_204_no_body,

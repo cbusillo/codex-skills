@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Any
 
@@ -752,6 +753,7 @@ def test_collect_snapshot_emits_review_request_and_session_degradation(monkeypat
         degraded_reasons=[{"component": "actor", "code": "actor_changed"}]
     )
     reader.requests = [{"step": "review_readiness", "ok": True, "bucket": "graphql"}]
+    reader.results = [SimpleNamespace(headers={"x-poll-interval": "90"})]
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *args, **kwargs: pr)
     monkeypatch.setattr(gh_pr_watch, "load_state", lambda path: ({}, True))
     monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
@@ -784,6 +786,8 @@ def test_collect_snapshot_emits_review_request_and_session_degradation(monkeypat
         "status": "unknown", "source": "transport", "requirement": "unknown"
     }
     assert review_diagnostic["degradedReasons"] == reader.degraded_reasons
+
+    assert snapshot["minimum_poll_seconds"] == 90
 
 
 def test_recommend_actions_prioritizes_review_comments():
@@ -1166,13 +1170,15 @@ def test_run_watch_keeps_polling_open_ready_to_merge_pr(monkeypatch):
 
 
 @pytest.mark.parametrize("stop_action", ["stop_pr_closed", "stop_exhausted_retries"])
-def test_run_watch_reports_chosen_sleep_interval(monkeypatch, stop_action):
+@pytest.mark.parametrize("server_floor", [0, 90])
+def test_run_watch_reports_chosen_sleep_interval(monkeypatch, stop_action, server_floor):
     args = argparse.Namespace(poll_seconds=17, green_poll_seconds=83)
-    green = {
+    green: dict[str, Any] = {
         "pr": sample_pr(),
         "checks": sample_checks(),
         "new_review_items": [],
         "actions": ["ready_to_merge"],
+        "minimum_poll_seconds": server_floor,
     }
     changed_green = {**green, "pr": {**sample_pr(), "head_sha": "new-head"}}
     pending = {
@@ -1205,7 +1211,7 @@ def test_run_watch_reports_chosen_sleep_interval(monkeypatch, stop_action):
     monkeypatch.setattr(gh_pr_watch.time, "sleep", fake_sleep)
 
     assert gh_pr_watch.run_watch(args) == 0
-    assert sleeps == [value + 2 for value in [
+    assert sleeps == [max(value, server_floor) + 2 for value in [
         args.poll_seconds, args.green_poll_seconds,
         args.poll_seconds, args.green_poll_seconds,
         args.poll_seconds, args.poll_seconds, args.poll_seconds,

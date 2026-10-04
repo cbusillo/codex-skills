@@ -31,6 +31,9 @@ workflow_babysit = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = workflow_babysit
 SPEC.loader.exec_module(workflow_babysit)
 
+import github_api  # noqa: E402
+import github_read  # noqa: E402
+
 
 class ManualClock:
     def __init__(self) -> None:
@@ -45,6 +48,7 @@ class ManualClock:
 
 class FakeWorkflowClient:
     repo = "example/repo"
+    minimum_poll_seconds = 0.0
 
     def __init__(
         self,
@@ -215,7 +219,7 @@ class WorkflowBabysitterTests(unittest.TestCase):
         client.minimum_poll_seconds = 90.0
         clock = ManualClock()
         babysitter = workflow_babysit.WorkflowBabysitter(client, clock=clock.now, sleep=clock.sleep)
-        with mock.patch.object(workflow_babysit.github_read.random, "uniform", return_value=2.0):
+        with mock.patch.object(github_read.random, "uniform", return_value=2.0):
             result = babysitter.watch(run_id=123, run_url=None, authorized_environments=frozenset(),
                                      approval_comment="unused", timeout_seconds=80, poll_interval_seconds=60)
         self.assertEqual(clock.value, 80)
@@ -225,19 +229,31 @@ class WorkflowBabysitterTests(unittest.TestCase):
     def test_workflow_poll_uses_conditional_read_without_caching_identity(self) -> None:
         client = workflow_babysit.GitHubWorkflowClient("example/repo", expected_automation_login="automation-bot", deadline_at=9999999999)
         client.automation_login = "automation-bot"
-        api = workflow_babysit.github_api_core
+        api = github_api
         first = api.ApiResult(ok=True, status=200, body={"value": 1}, headers={"etag": '"v1"', "x-poll-interval": "60"})
         unchanged = api.ApiResult(ok=False, status=304, body=None, headers={})
         with mock.patch.object(api, "call_gh_with_retry", side_effect=[first, unchanged]) as call:
-            with mock.patch.object(workflow_babysit.github_read.time, "time", return_value=1000):
+            with mock.patch.object(github_read.time, "time", return_value=1000):
                 client._call("GET", "/repos/example/repo/actions/runs/123", role="automation", operation="github.workflow.run.read", actor="automation-bot", expected_actor="automation-bot")
-            with mock.patch.object(workflow_babysit.github_read.time, "time", return_value=1061):
+            with mock.patch.object(github_read.time, "time", return_value=1061):
                 result = client._call("GET", "/repos/example/repo/actions/runs/123", role="automation", operation="github.workflow.run.read", actor="automation-bot", expected_actor="automation-bot")
             self.assertEqual(result.body, {"value": 1})
             self.assertEqual(call.call_args.kwargs["extra_headers"]["If-None-Match"], '"v1"')
             self.assertEqual(call.call_args.kwargs["deadline_at"], client.deadline_at)
             self.assertEqual(call.call_args.kwargs["gh_prefix_args"], ["--require-automation-auth"])
         self.assertEqual(client.minimum_poll_seconds, 60)
+        # Repeated identity and protected-environment reads must stay fresh.
+        for role, path, operation in (
+            ("automation", "/user", "github.workflow.actor.read"),
+            ("reviewer", "/repos/example/repo/actions/runs/123/pending_deployments", "github.workflow.pending_deployments.read"),
+        ):
+            with mock.patch.object(api, "call_gh_with_retry", return_value=first) as fresh:
+                for _ in range(2):
+                    client._call("GET", path, role=role, operation=operation,
+                                 actor="automation-bot", expected_actor="automation-bot")
+                self.assertEqual(fresh.call_count, 2)
+                self.assertNotIn("extra_headers", fresh.call_args.kwargs)
+
 
     def test_waiting_approvable_environment_is_approved_and_completes(self) -> None:
         client = FakeWorkflowClient(
