@@ -506,7 +506,10 @@ competitor's record.
 - `create <title>`: Create a new plan issue. Exact-title dedupe uses REST issue
   search, labels are ensured through REST, and the shared issue helper creates
   the issue with reconciliation evidence for unknown write outcomes. Supports
-  `--title` (flag), `--body`, `--plan-status`, `--focus`, and `--finish-line`.
+  `--title` (flag), `--body`, `--plan-status`, and `--finish-line` (issue body
+  only). Configured Projects still enroll new issues. Manual fields are not
+  synchronized by default; `--focus` and `--manager` are explicit edits, and
+  configured Manager defaults are ignored.
 - `update-section <issue> <section>`: Patch a single markdown section.
 - `link|unlink <issue> <rel> <target>`: Manage native `blocked-by`, `blocks`,
   or `subissue` relationships. `related` edits a body note instead and follows
@@ -525,8 +528,9 @@ competitor's record.
   reaction time, or edit history fails closed. Then it
   retains and reports remaining relationships, closes with the distinct
   `not_planned` state reason, and does not present superseded work as completed.
-  Optional Project `Done`/Focus synchronization remains before issue closure so
-  the Project item can still be found. If closure then fails, the result reports
+  Optional Project Status=Done synchronization remains before issue closure so
+  the Project item can still be found; manual fields remain untouched. If closure
+  then fails, the result reports
   that split Project state explicitly. Confirmed or read-reconciled issue
   closure is the commit point for `plan:done`, `plan:active` removal, and an
   optional close comment. Exact same-body comments by the acting identity are
@@ -753,9 +757,10 @@ fields from the shared API layer. Use these commands instead of raw
 - `project-list --owner <owner>`: List Projects.
 - `project-add <issue> --project <name>`: Add issue to a Project and return the
   Project item id when GitHub provides one.
-- `project-set <issue>`: Update Project fields (`--focus`, `--manager`,
+- `project-set <issue>`: Apply explicitly requested Project fields (`--focus`, `--manager`,
   `--finish-line`). Pass `--item-id <id>` when using the id returned by
-  `project-add` so the helper can skip lookup-sensitive rediscovery.
+  `project-add` so the helper can skip lookup-sensitive rediscovery. Without any
+  field values, it performs no Project reads or writes.
 
 Project commands preflight GraphQL quota, cache Project metadata within the run,
 and classify recoverable failures with `error_code` values such as
@@ -831,7 +836,7 @@ changes append `close_issue` or `reopen_issue` to `completed_steps`.
 REST database id, and sends `state_reason=duplicate` plus `duplicate_issue_id`
 in the close PATCH. It is mutually exclusive with `--reason`. For completed durable
 plan issues, use
-`scripts/gh-plan.py close --comment-file` so plan labels and Project focus stay
+`scripts/gh-plan.py close --comment-file` so plan labels and Project Status stay
 in sync.
 
 For timeline comments, use `scripts/gh-pr.py comment --body-file` in PR-centric

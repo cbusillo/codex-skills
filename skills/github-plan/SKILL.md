@@ -19,7 +19,7 @@ commands:
   - name: github-plan-create
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "create", "<title>", "--body-file", "<file>"]
-    purpose: Creates a durable plan issue with helper-owned labels and Project fields.
+    purpose: Creates a durable plan issue with helper-owned labels and optional Project enrollment.
   - name: github-plan-update-section
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "update-section", "<issue>", "Current Status", "--body-file", "<file>"]
@@ -27,7 +27,7 @@ commands:
   - name: github-plan-project-set
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Next"]
-    purpose: Updates configured Project fields through the planning helper.
+    purpose: Applies only explicitly requested Project field edits; routine planning uses automatic views.
   - name: github-plan-close
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "close", "<issue>", "--comment-file", "<file>"]
@@ -95,7 +95,7 @@ policy:
         - kind: script
           path: ../github/scripts/gh-plan.py
           example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Now"]
-          purpose: Updates planning Project fields through configured names and values.
+          purpose: Applies a Director-requested Project field edit through configured names and values.
     - id: prefer-gh-plan-helper-for-planning-graphql
       match:
         shell_regex: "\\bgh\\s+api\\s+graphql\\b.*\\b(updateProjectV2ItemFieldValue|addProjectV2ItemById|deleteProjectV2Item|addSubIssue|removeSubIssue|createLinkedBranch|markIssueAsDuplicate)\\b"
@@ -105,7 +105,7 @@ policy:
         - kind: script
           path: ../github/scripts/gh-plan.py
           example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Next"]
-          purpose: Updates Project fields with helper-owned config and rate-limit handling.
+          purpose: Applies explicitly requested Project edits with helper-owned config and rate-limit handling.
         - kind: script
           path: ../github/scripts/gh-plan.py
           example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "link", "<issue>", "blocked-by", "<target>"]
@@ -368,12 +368,13 @@ with the concrete condition.
 For a blocking non-issue condition, say `Blocked by: No native issue blocker;
 waiting for ...`.
 
-When Projects are configured or requested, use the small set of human-facing
-fields and Focus lanes in [Projects and roadmaps](../github/references/github-projects.md).
-Prefer one `Now` item unless the Director chooses parallel work. Read that reference
-when using a Project or local context surface, including synchronization or
-access failures; views never replace the issue graph. If a configured context
-helper is useful, read its Local Context Views guidance before running `index`.
+When Projects are configured or requested, use them as automatic views of the
+issue graph. Do not maintain Focus, Manager, Finish Line, or roadmap dates in
+Projects. Read [Project views](../github/references/github-projects.md) when
+using a Project or local context surface, including explicit field requests,
+synchronization, or access failures; views never replace the issue graph. If a
+configured context helper is useful, read its Local Context Views guidance before
+running `index`.
 
 ## Keep The Plan Current
 
@@ -383,8 +384,8 @@ superseding issues: reconnect the next action to the current plan. Update Curren
 Status only when durable recovery state materially changes; a passing checkpoint
 needs no artifact.
 
-If scope changes, reconcile the canonical issue, sub-issues, blockers, labels,
-and configured Focus before pivoting. Classify discoveries as current scope,
+If scope changes, reconcile the canonical issue, sub-issues, blockers, and labels
+before pivoting. Classify discoveries as current scope,
 sub-issue, blocker, related context, or later work. Record Director decisions so a
 future session does not ask again. Keep detailed implementation evidence in
 the PR and recovery-critical state in the issue.
@@ -407,10 +408,10 @@ parent/children and blockers, and its finish line and next action match reality.
 
 For completed durable plan issues, use `gh-plan.py close`. It owns `plan:done`
 labels, cleanup of stale `plan:active`, `plan:blocked`, `plan:waiting`, and
-`plan:stale` labels, and Project focus updates. The generic
+`plan:stale` labels, and Project Status on close. The generic
 `github/scripts/gh-issue close` helper is for non-plan issues, or when the plan
 helper is unavailable. Closing a durable plan with the generic issue helper can
-leave planning labels or Project fields stale.
+leave planning labels or Project Status stale.
 It also skips the relationship and not-planned decision preflight; perform those
 checks below yourself before using that fallback. For reaction approval, read
 the comment's `lastEditedAt` (must be explicitly null) and all reaction pages

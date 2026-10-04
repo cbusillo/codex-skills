@@ -1648,6 +1648,73 @@ def test_create_uses_rest_dedupe_and_shared_issue_create() -> None:
     assert any(call["path"].startswith("/search/issues?") for call in api_calls), api_calls
 
 
+def test_create_project_enrollment_does_not_copy_manual_fields() -> None:
+    for focus, manager in ((None, None), ("Next", None), (None, "Requested manager")):
+        plan = load_plan_module()
+        config = {
+            "labels": {"plan": "plan", "active": "plan:active"},
+            "projects": {"enabled": True, "owner": "owner", "default_project": "Roadmap"},
+            "workflow": {"default_manager": "Default manager", "repo_managers": {"owner/repo": "Repo manager"}},
+        }
+        issue = {"repo": "owner/repo", "number": 10, "title": "Plan", "state": "open",
+                 "url": "https://github.com/owner/repo/issues/10", "labels": []}
+        field_calls: list[dict[str, Any]] = []
+        project_calls: list[list[str]] = []
+        create_call: dict[str, Any] = {}
+        plan.load_config = lambda _repo: config
+        plan.find_existing_plan_issues = lambda *_a, **_k: ("automation-gh", [])
+        plan.ensure_labels = lambda *_a, **_k: ("automation-gh", [])
+        plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
+        plan.resolve_project = lambda *_a, **_k: ("automation-gh", 7, {"title": "Roadmap"})
+        plan.ensure_graphql_budget = lambda **_k: None
+
+        def enroll(project_argv: list[str], **_kwargs: Any) -> tuple[str, str, str]:
+            project_calls.append(project_argv)
+            assert project_argv[:2] == ["project", "item-add"], project_argv
+            return "automation-gh", '{"id": "new-item"}', ""
+
+        def fields(**kwargs: Any) -> dict[str, Any]:
+            field_calls.append(kwargs)
+            return {"updated": {}}
+
+        def create(title: str, body: str, **_kwargs: Any) -> dict[str, Any]:
+            create_call.update(title=title, body=body)
+            return issue
+
+        plan.run_raw = enroll
+        plan.set_project_fields = fields
+        args = plan.build_parser().parse_args([
+            "--repo", "owner/repo", "create", "Plan", "--finish-line", "Ship the change",
+            *(["--focus", focus] if focus else []), *(["--manager", manager] if manager else []),
+        ])
+        output = StringIO()
+        with patched_issue_core(plan, create_issue=create), redirect_stdout(output):
+            plan.cmd_create(args)
+        payload = json.loads(output.getvalue())
+        assert plan.section_map(create_call["body"])["Finish Line"] == "Ship the change", create_call
+        assert len(project_calls) == 1 and issue["url"] in project_calls[0], project_calls
+        assert "sync_project" in payload["completed_steps"], payload
+        if focus or manager:
+            assert len(field_calls) == 1, field_calls
+            assert field_calls[0]["focus"] == focus, field_calls
+            assert field_calls[0]["manager"] == manager, field_calls
+            assert field_calls[0].get("finish_line") is None, field_calls
+            assert field_calls[0]["item_id"] == "new-item", field_calls
+        else:
+            assert field_calls == [], field_calls
+            assert payload["project_fields"] == {}, payload
+
+
+def test_project_set_without_values_does_not_read_or_write_project() -> None:
+    plan = load_plan_module()
+    plan.project_meta = lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("No field request needs no Project API"))
+    result = plan.set_project_fields(
+        owner="owner", project_ref="Roadmap", issue_url="https://github.com/owner/repo/issues/10",
+        config={"workflow": {"default_manager": "Default manager"}},
+    )
+    assert result["updated"] == {}, result
+
+
 def test_create_dedupes_exact_rest_search_without_writes() -> None:
     plan = load_plan_module()
     calls: list[dict[str, Any]] = []
@@ -2575,7 +2642,7 @@ def test_close_known_failure_reports_project_split_and_stops_metadata() -> None:
             assert exc.payload["recovery"]["issue_closed"] is False, exc.payload
             assert exc.payload["recovery"]["completion_metadata"] == "not_started", exc.payload
             assert exc.payload["recovery"]["project_state"] == "synchronized_before_close", exc.payload
-            assert exc.payload["project"]["updated"] == {"Status": "Done", "Focus": None}, exc.payload
+            assert exc.payload["project"]["updated"] == {"Status": "Done"}, exc.payload
         else:
             raise AssertionError("known close failure should stop before completion metadata")
     close_index = next(index for index, call in enumerate(calls) if call[0] == "close")
@@ -3389,7 +3456,11 @@ def test_close_syncs_project_before_closing_issue() -> None:
     assert payload["ok"] is True, payload
     issue_close_index = next(i for i, call in enumerate(calls) if call[0] == "issue-close")
     project_edit_indices = [i for i, call in enumerate(calls) if call[0] == "project"]
-    assert project_edit_indices, calls
+    assert len(project_edit_indices) == 1, calls
+    status_edit = calls[project_edit_indices[0]][1]
+    assert status_edit[status_edit.index("--field-id") + 1] == "status-field", calls
+    assert "--clear" not in status_edit, calls
+    assert payload["project"]["updated"] == {"Status": "Done"}, payload
     assert max(project_edit_indices) < issue_close_index, calls
 
 
@@ -6728,6 +6799,8 @@ def main() -> None:
         test_raw_manager_values_do_not_resolve_through_people,
         test_manager_for_repo_resolves_person_ref_to_project_label_when_available,
         test_create_uses_rest_dedupe_and_shared_issue_create,
+        test_create_project_enrollment_does_not_copy_manual_fields,
+        test_project_set_without_values_does_not_read_or_write_project,
         test_create_dedupes_exact_rest_search_without_writes,
         test_create_issue_failure_preserves_compound_recovery_evidence,
         test_create_surfaces_reconciled_shared_issue_evidence,
