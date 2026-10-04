@@ -456,6 +456,18 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertEqual((code, result["detail"]), (1, event["message"]))
         self.assertNotIn("stderr_detail", result)
 
+    def test_openai_cli_failures_redact_env_and_json_credentials(self) -> None:
+        self.install("codex", FAKE_CODEX)
+        for events in (json.dumps({"type": "error", "message": 'HTTP failure: "refresh_token": "private-json-value"'}),
+                       "not JSON"):
+            with self.subTest(events=events):
+                code, result = self.review("openai", FAKE_CODEX_EVENTS=events, FAKE_CODEX_EXIT="1",
+                                           FAKE_CODEX_STDERR="OPENAI_API_KEY=private-env-value")
+                self.assertEqual((code, result["ok"]), (1, False))
+                self.assertNotIn("private-", json.dumps(result))
+                self.assertIn("redacted", json.dumps(result))
+                self.assertNotIn("not JSON", json.dumps(result))
+
     def test_openai_recovered_stream_error_does_not_discard_a_completed_review(self) -> None:
         self.install("codex", FAKE_CODEX)
         events = [

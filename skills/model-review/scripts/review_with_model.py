@@ -103,8 +103,8 @@ def openai_error_detail(message: str) -> str:
     """Bound CLI error text without including credential values or URL parameters."""
     message = re.sub(r"https?://[^\s]+", "[redacted URL]", message)
     message = re.sub(r"(?i)\bBearer\s+[^\s]+", "Bearer [redacted]", message)
-    message = re.sub(r"(?i)\b(api[_-]?key|access[_-]?token|token|password|secret|credential)"
-                     r"(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+    message = re.sub(r"(?i)\b([a-z0-9_-]*(?:api[_-]?key|token|password|secret|credential))"
+                     r"([\"']?\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
                      r"\1\2[redacted]", message)
     message = re.sub(r"\b(?:sk-|gh[pousr]_|github_pat_)[A-Za-z0-9_-]+", "[redacted]", message)
     return message[-400:]
