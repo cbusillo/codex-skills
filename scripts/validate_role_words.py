@@ -37,8 +37,9 @@ ALLOWED = re.compile(
     re.IGNORECASE,
 )
 # A qualifier or "policy" at a line ending carries over to wrapped prose.
-TRAILING_QUALIFIER = re.compile(rf"\b(?:{QUALIFIER}|policy)\s*$", re.IGNORECASE)
+TRAILING_QUALIFIER = re.compile(rf"\b(?:{QUALIFIER}|policy)(?:-)?\s*$", re.IGNORECASE)
 
+BLOCKQUOTE = re.compile(r"^\s*(?:>\s*)+")
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
 FRONTMATTER_PROSE = re.compile(r"^(\s*)(?:-\s+)?(?:description|purpose|message):")
 FRONTMATTER_KEY = re.compile(r"^\s*(?:-\s+)?[\w-]+:(?:\s|$)")
@@ -81,6 +82,7 @@ def prose_lines(text: str) -> Iterable[tuple[int, str]]:
     prose_indent: int | None = None
     previous = ""
     for number, line in enumerate(text.splitlines(), start=1):
+        line = BLOCKQUOTE.sub("", line)
         if number == 1 and line.strip() == "---":
             in_frontmatter = True
             continue
@@ -109,6 +111,7 @@ def prose_lines(text: str) -> Iterable[tuple[int, str]]:
             continue
         if opening:
             fence = opening.group(1)
+            previous = ""
             continue
         line, in_comment = strip_comments(line, in_comment)
         line = INLINE_CODE.sub(" ", line)
@@ -117,7 +120,9 @@ def prose_lines(text: str) -> Iterable[tuple[int, str]]:
         carried = TRAILING_QUALIFIER.search(previous)
         previous = line
         if carried:
-            line = carried.group().strip() + " " + line.lstrip()
+            prefix = carried.group().strip()
+            separator = "" if prefix.endswith("-") else " "
+            line = prefix + separator + line.lstrip()
         yield number, ALLOWED.sub(" ", line)
 
 
