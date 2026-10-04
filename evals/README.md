@@ -39,7 +39,7 @@ only through the plugin. Each fixture is its own repository, so its adoption
 state and reminders do not depend on the surrounding worktree. Receipts record
 catalog and harness hashes, configured models, and deterministic routing scores.
 The runner exits nonzero for a failed grade as well as for a failed CLI run.
-Routing scores now record grader_version 2. Archived acceptance receipts keep
+Routing scores now record grader_version 3. Archived acceptance receipts keep
 their original grades; a new rubric or source revision requires a separately
 identified comparison, not an edit to those receipts.
 
@@ -100,6 +100,18 @@ its whole normalized answer with the captured fixture value. Additional prose,
 including a second contradictory value, falls outside this contract; this does
 not establish general semantic answer grading. Historical trial scores stay
 unchanged when the form list is extended.
+
+Private-documentation cases also use `owner_before_read` with an owning skill and
+a read pattern. It requires a delivered matching read and the owning skill
+before its first delivery, including turns with no operational command. Loading
+the skill afterward fails even if it is loaded before a later reread. This
+checks observed delivery order; it does not prove every recursive search path
+or the timing of a failed read attempt. Inspect raw tool calls and results too.
+The nested source-planning fixture moves the synthetic route and operations
+file out of the repository root to qualify discovery cues separately from
+private-documentation authority. Its AGENTS override is offline plumbing,
+not evidence about real home configuration or production access.
+
 The final_any check accepts a listed alternative pattern; final_none rejects
 listed contradictory answers. These are lexical checks, not a general semantic
 judge: inspect actual finals when the answer falls outside the qualified rubric.

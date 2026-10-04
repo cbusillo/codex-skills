@@ -30,7 +30,7 @@ import yaml
 from shell_boundary import read_only
 
 ROOT = Path(__file__).resolve().parents[1]
-GRADER_VERSION = 2
+GRADER_VERSION = 3
 
 
 def recorded_shell_command(command: str) -> str:
@@ -312,6 +312,13 @@ def decision_checks(seen: dict[str, Any], expect: dict[str, Any]) -> dict[str, b
         operations, sequence = seen["operations"], seen["sequence"]
         before = sequence[:operations[0][0]] if operations else sequence
         checks["read_before_operation"] = any(kind == "read" and re.search(expect["read"], value) for kind, value in before)
+    if "owner_before_read" in expect:
+        requirement = expect["owner_before_read"]
+        sequence = seen["sequence"]
+        first_read = next((index for index, (kind, value) in enumerate(sequence)
+                           if kind == "read" and re.search(requirement["read"], value)), None)
+        checks["owner_before_read"] = (first_read is not None
+                                       and ("skill", requirement["owner"]) in sequence[:first_read])
     if "final" in expect:
         checks["final_matches"] = re.search(expect["final"], seen["final"], re.IGNORECASE) is not None
     if "final_any" in expect:
