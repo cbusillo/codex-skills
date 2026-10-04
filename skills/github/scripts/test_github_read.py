@@ -157,10 +157,10 @@ def test_conditional_cache_reuses_304_body_and_scopes_query_and_identity() -> No
             assert one.get_json("/repos/o/r/pulls/1?per_page=100&page=1", step="one") == {"value": "first"}
             two = github_read.GitHubReader(gh_cmd="fake-gh", expected_actor="fixture-automation", operation="github.pr.watch", cache_enabled=True)
             # Force past the short coalescing window: this models a later poll.
-            with patch("github_read.time.time", return_value=time.time() + 10):
+            with patch.object(time, "time", return_value=time.time() + 10):
                 assert two.get_json("/repos/o/r/pulls/1?per_page=100&page=1", step="two") == {"value": "first"}
             three = github_read.GitHubReader(gh_cmd="fake-gh", expected_actor="fixture-automation", operation="github.pr.watch", cache_enabled=True)
-            with patch("github_read.time.time", return_value=time.time() + 20):
+            with patch.object(time, "time", return_value=time.time() + 20):
                 assert three.get_json("/repos/o/r/pulls/1?per_page=100&page=1", step="three") == {"value": "second"}
             other = github_read.GitHubReader(gh_cmd="fake-gh", expected_actor="other-actor", operation="github.pr.watch", cache_enabled=True)
             assert other.get_json("/repos/o/r/pulls/1?per_page=100&page=2", step="other") == {"value": "page-two"}
