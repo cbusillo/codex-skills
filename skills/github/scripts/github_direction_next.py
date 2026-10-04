@@ -17,6 +17,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+import github_agent
 import github_client
 import github_milestone as github_milestone_core
 
@@ -40,12 +41,23 @@ def is_live_breakage(issue: dict[str, Any]) -> bool:
     return LIVE_BREAKAGE_LABEL in {name.casefold() for name in normalize_labels(issue.get("labels"))}
 
 
-def discovery_scan(inventory: list[dict[str, Any]], scan_limit: int, selection_context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Owner-marked incidents do not consume the ordinary discovery allowance."""
-    incidents = [item for item in inventory if is_live_breakage(item)]
-    ordinary = [item for item in inventory if not is_live_breakage(item) and not repository_hold(selection_context or {}, item["repo"])]
-    held = [item for item in inventory if not is_live_breakage(item) and repository_hold(selection_context or {}, item["repo"])]
-    return incidents + ordinary[:scan_limit] + held[:scan_limit]
+def discovery_scan(inventory: list[dict[str, Any]], scan_limit: int, selection_context: dict[str, Any] | None = None, *, agent: str | None = None) -> list[dict[str, Any]]:
+    """Keep bounded evidence allowances separate from selectable discovery."""
+    counts = {"ordinary": 0, "held": 0, "other_family": 0}
+    incidents = []
+    scanned = []
+    for item in inventory:
+        if is_live_breakage(item):
+            incidents.append(item)
+            continue
+        mismatch = github_agent.exclusion(item, agent)
+        bucket = ("held" if repository_hold(selection_context or {}, item["repo"]) else
+                  "other_family" if mismatch and mismatch["exclusion"] == "assigned_elsewhere" else
+                  "ordinary")
+        if counts[bucket] < scan_limit:
+            counts[bucket] += 1
+            scanned.append(item)
+    return incidents + scanned
 
 
 def compact_list_issue(repo: str, issue: dict[str, Any]) -> dict[str, Any]:
@@ -713,6 +725,7 @@ def rank_direction_work(
     read_node: Callable[[str, int], dict[str, Any]],
     scan_limit: int,
     completed_milestone_titles: list[str] | None = None,
+    agent: str | None = None,
 ) -> dict[str, Any]:
     """Walk ordered Track issues through native blockers and sub-issues.
 
@@ -722,6 +735,8 @@ def rank_direction_work(
     Tracking issues are containers even when their summary label says waiting;
     an ordinary waiting issue remains excluded. Candidates retain their original
     issue milestone and the native path that gives them their overall priority.
+    A known other-family assignment has its own scan_limit allowance, preserving
+    portfolio evidence without spending the ordinary allowance prematurely.
     """
     order = {title: index for index, title in enumerate(milestone_titles)}
     completed = set(completed_milestone_titles or [])
@@ -742,6 +757,8 @@ def rank_direction_work(
     seen: set[tuple[str, int]] = set()
     degraded = 0
     truncated = False
+    ordinary_evaluated = 0
+    other_family_evaluated = 0
     # A stack keeps even a deep dependency chain within the explicit scan bound.
     pending: list[tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], bool]] = [
         (root, root["milestone"], [], True) for root in reversed(tracks)
@@ -759,11 +776,16 @@ def rank_direction_work(
             continue
         if key in seen:
             continue
-        if len(seen) >= scan_limit:
+        if ordinary_evaluated >= scan_limit:
             truncated = True
             break
         seen.add(key)
         node = read_node(ref["repo"], ref["number"])
+        mismatch = github_agent.exclusion(node["item"], agent)
+        if mismatch and mismatch["exclusion"] == "assigned_elsewhere" and other_family_evaluated < scan_limit:
+            other_family_evaluated += 1
+        else:
+            ordinary_evaluated += 1
         item = {
             **node["item"],
             "blocked_by": node.get("blockers") or [],

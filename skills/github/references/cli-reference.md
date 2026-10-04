@@ -529,7 +529,9 @@ review decision. Missing people/conditions remain unknown. Whole-plan waiting
 states stop that branch, while a partial wait in an active parent does not hide
 its independent work. Read the selected issue's full discussion before acting.
 
-The global `--scan-limit` bounds unique graph nodes, not just roots. Cycles,
+The global `--scan-limit` bounds unique graph nodes, not just roots, with a
+separate allowance of the same size for other-family evidence when the running
+family is known (at most twice the limit in total). Cycles,
 missing tracking issues, inaccessible nodes, and truncated reads are explicit;
 `dependency_context.complete=false` means the answer is partial. Missing or
 unreadable direction never silently falls back to product-repository ranking.
@@ -557,7 +559,11 @@ beside the ranked list; `rank_portfolio_work` alone cannot find omitted issues.
 inventory and issue reads; neither proves active ownership. `--repo-limit`
 (default 100), `--repository-issue-limit` (100), and `--comment-limit` (100) bound
 the new sources. `--scan-limit` separately bounds graph nodes and discovered issue
-evaluations of ordinary issues. Issues labeled `live-breakage` after a Director
+evaluations of ordinary issues. Other-family discoveries use a separate allowance
+of the same size; they retain dependency, parent-wait and capacity evidence before
+the final family filter. Unknown and conflicting assignments use the ordinary
+allowance. See [global selection](../../github-plan/references/global-next.md)
+for the graph stopping rule and the existing held-repository allowance. Issues labeled `live-breakage` after a Director
 incident decision are evaluated outside that discovery allowance and ranked
 first among possible work, while normal holds, blockers, waits, and ownership
 review still apply. When an ordinary repository issue list is truncated, a

@@ -218,3 +218,14 @@ They exclude work in the held repository while preserving native paths to
 independent work in other repositories; they do not invent cross-repository holds.
 Keep snapshots private when they contain session or operational context. Ordinary
 read-only `next` does not write a snapshot, update an issue, or start a worker.
+
+For an explicitly selected or unambiguously detected agent family, the graph and
+repository-discovery scans each reserve a separate `--scan-limit` allowance for
+other-family issues. Those issues retain dependency, parent-wait and milestone
+capacity evidence before the final family filter. Graph nodes consume the
+ordinary allowance unless a freshly read assignment uses the remaining
+other-family allowance; the graph stops when the ordinary allowance is exhausted.
+Thus graph reads remain bounded by twice `--scan-limit`. Discovery keeps its
+existing held-repository and marked-incident allowances. Omitted work still
+reports incomplete coverage and known omitted milestones still prevent capacity
+admission. Unknown or conflicting assignments consume the ordinary allowance.

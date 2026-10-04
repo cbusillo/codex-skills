@@ -2944,6 +2944,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     ranked = github_direction_next.rank_direction_work(
         roots, milestone_titles=titles, read_node=read_node,
         scan_limit=args.scan_limit, completed_milestone_titles=completed_titles,
+        agent=github_agent.running_agent(getattr(args, "agent", None)),
     )
     ranked["dependency_context"]["relationship_limit"] = NEXT_RELATIONSHIP_LIMIT
     if inventory_truncated or milestones_truncated:
@@ -2985,7 +2986,10 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
             item, ranked, milestone_titles=titles, repository_clients=client_records,
             repository_waypoints=waypoints, director_owner=repo.split("/")[0], bot_logins=client_bot_logins,
         ) for item in inventory]
-        scanned = github_direction_next.discovery_scan(inventory, args.scan_limit, selection_context)
+        scanned = github_direction_next.discovery_scan(
+            inventory, args.scan_limit, selection_context,
+            agent=github_agent.running_agent(getattr(args, "agent", None)),
+        )
         scanned_keys = {(item["repo"].casefold(), item["number"]) for item in scanned}
         skipped_counts: dict[str, int] = {}
         capacity_unevaluated = len(inventory) - len(scanned)
