@@ -450,9 +450,14 @@ def test_write_actor_probe_preserves_repository_authorization() -> None:
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout.split("\n\n", 1)[1])["login"] == "contributor-login", result.stdout
         assert "acting as your own GitHub user on director/catalog" in result.stderr
-        for opt_in in ({}, {"GH_WITH_ENV_TOKEN_OWN_USER": "1", "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "1"}):
+        for opt_in, diagnostic in (
+            ({}, "GH_WITH_ENV_TOKEN_OWN_USER=1"),
+            ({"GH_WITH_ENV_TOKEN_OWN_USER": "1", "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "1"},
+             "requires configured automation authentication"),
+        ):
             refused = run_wrapper(env_file, unused, identity, *args, gh_command=unused, extra_env=opt_in)
             assert refused.returncode != 0 and not refused.stdout, refused
+            assert diagnostic in refused.stderr, refused.stderr
         for repo, exit_code in (("installed/catalog", 0), ("registrar/missing", 4)):
             result = run_wrapper(env_file, unused, identity, "--write-actor-for", repo, *args[2:],
                                  gh_command=unused, extra_env={"GH_WITH_ENV_TOKEN_OWN_USER": "1"})
@@ -488,7 +493,9 @@ def test_comment_cli_selects_own_user_through_real_wrapper() -> None:
             "GITHUB_APP_PRIVATE_KEY_PATH=/fake/app.pem\nCODEX_AUTOMATION_LOGIN='catalog-app[bot]'\n"
         )
         identity = root / "identity.py"
-        write(identity, "import sys\n"
+        write(identity, "import os, sys\n"
+              "with open(os.environ['FIXTURE_IDENTITY_CALLS'], 'a') as stream:\n"
+              "    stream.write('lookup\\n')\n"
               "if '--require-installation' in sys.argv:\n    raise SystemExit(3)\n"
               "print('catalog-app[bot]')\nprint('installation-token')\n")
         fake_gh = root / "gh"
@@ -530,6 +537,7 @@ def test_comment_cli_selects_own_user_through_real_wrapper() -> None:
             "GH_WITH_ENV_TOKEN_OWN_USER": "1", "FIXTURE_CALLS": str(calls_file),
             "GH_COMMENT_GH": str(SCRIPT),
             "GITHUB_RETRY_STATE_DIR": str(root / "retry-state"),
+            "FIXTURE_IDENTITY_CALLS": str(root / "identity-calls.log"),
         }
         for options in (("--edit-last", "--create-if-none"), ("--edit-comment", "20")):
             calls_file.write_text("")
@@ -545,6 +553,27 @@ def test_comment_cli_selects_own_user_through_real_wrapper() -> None:
             calls = [json.loads(line) for line in calls_file.read_text().splitlines()]
             assert calls[-1] == ["PATCH", "/repos/director/catalog/issues/comments/20"], calls
             assert not any(method == "POST" for method, _path in calls), calls
+        for refusal in ({"GH_WITH_ENV_TOKEN_OWN_USER": "0"},
+                        {"GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "1"}):
+            identity_calls = root / "identity-calls.log"
+            identity_calls.write_text("")
+            calls_file.write_text("")
+            refused_env = {**env, **refusal, "GITHUB_RETRY_MAX_ATTEMPTS": "2",
+                           "GITHUB_RETRY_MAX_WAIT_SECONDS": "5"}
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT.with_name("github_comment.py")), "issue", "42",
+                 "--repo", "director/catalog", "--body-file", str(body_file), "--edit-last"],
+                env=refused_env, text=True, capture_output=True, timeout=10, check=False,
+            )
+            assert result.returncode != 0, result.stdout
+            payload = json.loads(result.stdout)
+            assert payload["error_code"] == "permission_denied", payload
+            assert payload["retry_eligible"] is False, payload
+            assert payload["retryable"] is False, payload
+            assert payload["write_outcome"] == "not_started", payload
+            assert payload["attempts"] == 1, payload
+            assert identity_calls.read_text().splitlines() == ["lookup"], identity_calls.read_text()
+            assert calls_file.read_text() == "", calls_file.read_text()
 
 
 def test_app_login_mismatch_fails_closed_for_write_and_check() -> None:

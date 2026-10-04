@@ -840,11 +840,11 @@ act_as_own_user() {
 		return 2
 	fi
 	if [ "$require_automation_auth" -eq 1 ]; then
-		echo "error: $own_user_repository is not the automation's repository and this command requires configured automation authentication; refusing to act as your own GitHub user" >&2
+		echo "error: permission denied: $own_user_repository is not the automation's repository and this command requires configured automation authentication; refusing to act as your own GitHub user" >&2
 		return 1
 	fi
 	if [ "$own_user_opt_in" -ne 1 ]; then
-		echo "error: the GitHub App is not installed on $own_user_repository and another account owns it; writing there as your own GitHub user needs your Director's approval and GH_WITH_ENV_TOKEN_OWN_USER=1 on this command" >&2
+		echo "error: permission denied: the GitHub App is not installed on $own_user_repository and another account owns it; writing there as your own GitHub user needs your Director's approval and GH_WITH_ENV_TOKEN_OWN_USER=1 on this command" >&2
 		return 1
 	fi
 	own_login=$(active_auth_login)
