@@ -99,7 +99,7 @@ def resumed_status(status: str, comments: list[dict[str, Any]], source_id: int |
         # markers and unstructured ownership still go through the normal scan.
         status = "\n".join(line for line in status.splitlines()
                            if records(line) != [record])
-        status = re.sub(rf"(?i)\b(?:owned|claimed) by {re.escape(record['worker'])}(?![\w-])", "", status)
+        status = re.sub(rf"(?im)^\s*State:\s*Active;\s*owned by {re.escape(record['worker'])}\.?\s*$", "State: Active", status)
         for field, key in (("Worker", "worker"), ("Session", "session")):
             status = re.sub(rf"(?im)^\s*{field}:\s*{re.escape(record[key])}\.?\s*$", "", status)
         return status

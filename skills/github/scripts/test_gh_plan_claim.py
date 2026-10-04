@@ -824,8 +824,8 @@ class ClaimTests(unittest.TestCase):
 
     def test_resume_preserves_unproven_or_competing_status_and_artifacts(self):
         for change in ("no_resume", "wrong_author", "wrong_id", "id_suffix", "before_marker",
-                       "missing_time", "edited_source", "different_marker", "extra_status",
-                       "extra_comment", "other_branch", "live_peer"):
+                       "missing_time", "naive_time", "edited_source", "different_marker", "extra_status",
+                       "worker_prefix", "reused_inline_worker", "extra_comment", "other_branch", "live_peer"):
             with self.subTest(change=change):
                 self.setUp()
                 self.released_status_fixture()
@@ -835,10 +835,13 @@ class ClaimTests(unittest.TestCase):
                 if change == "id_suffix": self.comments[1]["body"] = "Released claim 1.other"
                 if change == "before_marker": self.comments[1]["created_at"] = "2026-09-30T00:00:00Z"
                 if change == "missing_time": del self.comments[1]["created_at"]
+                if change == "naive_time": self.comments[1]["created_at"] = "2026-10-01T00:01:00"
                 if change == "edited_source": self.comments[0]["updated_at"] = "2026-10-01T00:02:00Z"
                 if change == "different_marker":
                     self.issue["body"] = self.issue["body"].replace(CLAIM.marker(OTHER), CLAIM.marker({**OTHER, "session": "new-session"}))
                 if change == "extra_status": self.issue["body"] += "\nOwned by another-worker\nSession: another-session"
+                if change == "worker_prefix": self.issue["body"] += "\nOwned by trial-b.review"
+                if change == "reused_inline_worker": self.issue["body"] += "\nalso owned by trial-b (session s2)"
                 if change == "extra_comment": self.compete({**OTHER, "session": "new-session"})
                 if change == "other_branch": self.inventory["local_branches"].append("work/other-issue-42")
                 if change == "live_peer": self.inventory["sessions"] = [{"sessionId": "peer", "cwd": "/retained/issue-42"}]
@@ -850,6 +853,23 @@ class ClaimTests(unittest.TestCase):
         self.after_post = lambda: self.issue.update(body=self.issue["body"] + "\n" + CLAIM.marker({**OTHER, "session": "peer"}))
         with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
         self.assertIn("post", self.events)
+        self.assertNotIn("status", self.events)
+
+    def test_resume_final_readback_refuses_reintroduced_released_marker(self):
+        self.released_status_fixture()
+        self.after_status = lambda: self.issue.update(body=PLAN.replace_issue_plan_section(self.issue, "Current Status", CLAIM.marker(OTHER)))
+        with self.assertRaises(PLAN.PlanError): self.run_claim()
+        self.assertIn("status", self.events)
+        self.assertFalse(self.emitted.called)
+
+    def test_resume_preserves_read_only_status_and_claims_in_comment(self):
+        self.released_status_fixture()
+        self.issue["user"]["login"] = "contributor"
+        original = self.issue["body"].replace(PLAN.PLAN_MANAGED_PROVENANCE_MARKER, "")
+        self.issue["body"] = original
+        self.run_claim()
+        self.assertEqual(self.issue["body"], original)
+        self.assertEqual(self.emitted.call_args.args[0]["current_status_location"], "claim_comment")
         self.assertNotIn("status", self.events)
 
     def test_period_release_works_without_status_and_with_refresh_handoff(self):
