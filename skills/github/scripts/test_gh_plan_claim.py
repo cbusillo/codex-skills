@@ -904,6 +904,16 @@ class ClaimTests(unittest.TestCase):
         self.run_claim()
         self.assertEqual(len(self.comments), 4)
         self.assertIn("claim_readback", self.emitted.call_args.args[0]["completed_steps"])
+        # Release is ownership proof. Task authority is verified by the caller;
+        # the helper gates recorded waits, not the presence of decision comments.
+        self.setUp()
+        self.comments = [
+            {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
+            {"id": 2, "body": "Owner question: Verify live-host usage?\n\nReleased claim 1",
+             "user": {"login": TEST_BOT}},
+        ]
+        self.run_claim()
+        self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
 
     def test_embedded_release_resumes_exact_status_with_retained_branch(self):
         self.released_status_fixture("Finished session handoff.\r\n\r\nReleased claim 1.")
@@ -938,6 +948,8 @@ class ClaimTests(unittest.TestCase):
             "<!-- Example:\n\nReleased claim 1", "Released claim 1\n\nOther handoff prose.",
             "If you approve, post:\n\nReleased claim 1", "After PR #99 merges:\n\nReleased claim 1",
             "After PR #99 merges:\r\n\r\nReleased claim 1",
+            "Owner question: approve?\n\nIf approved, post:\n \nReleased claim 1",
+            "Post this:\n\t\nReleased claim 1",
             "Once CI passes, release this claim.\n\nReleased claim 1",
             "<pre>\n\nReleased claim 1", "<details><summary>Example</summary>\n\nReleased claim 1",
             "<blockquote>\n\nReleased claim 1",
@@ -982,7 +994,8 @@ class ClaimTests(unittest.TestCase):
     def test_embedded_release_does_not_resolve_recorded_owner_wait(self):
         self.released_status_fixture("Finished session handoff.\n\nReleased claim 1")
         self.issue["body"] += "\nWaiting for: Owner approval of the live-host check."
-        with self.assertRaises(PLAN.PlanError): self.run_claim()
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_wait_unresolved")
         self.assert_no_writes()
 
     def test_resume_cannot_override_current_owner(self):

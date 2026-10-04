@@ -427,6 +427,8 @@ Conditional text on the release line, a preceding paragraph starting with
 with a colon also refuses. Use a separate first-line release when the embedded
 format is ambiguous. The same author must post it after the source claim;
 release does not resolve a recorded wait or authorize the next task's actions.
+Use one exact-ID release per comment; a first-line release takes precedence
+over a final release paragraph.
 
 Use a unique worker token per native session. Legacy `Released by <worker>`
 comments are accepted only when the earlier structured claims for that token

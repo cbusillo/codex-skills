@@ -69,7 +69,7 @@ def released_claim_id(text: str) -> int | None:
     match = re.fullmatch(r"Released claim (\d+)(?:\.(?:\s.*)?|[ \t]*)", first[0]) if first else None
     if match:
         return int(match.group(1))
-    text = "\n".join(text.splitlines())
+    text = "\n".join(line if line.strip() else "" for line in text.splitlines())
     # Helpers append this transport marker; it is not handoff prose.
     text = re.sub(r"\n\s*<!-- github-skill-operation:[0-9a-f]+ -->\s*$", "", text).rstrip()
     lines = text.splitlines()
