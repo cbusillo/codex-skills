@@ -2882,6 +2882,99 @@ def test_product_environment_read_refuses_bad_segments_and_unsafe_values() -> No
         assert not payload["result"]
 
 
+
+def _protected_artifacts_response() -> dict[str, Any]:
+    return {
+        "status": "ok", "trace_id": "launchplane_req_protected",
+        "protected_artifacts": {
+            "product": "example-product", "context": "example-context",
+            "entries": [{
+                "reason": "previous-good-deployment", "context": "example-context",
+                "instance": "prod", "artifact_id": "ghcr.io/example/app:sha-old",
+                "source_record_type": "deployment", "source_record_id": "deployment-old",
+                "image_digest": "sha256:" + "a" * 64,
+                "image_repository": "private-registry.example.invalid/app",
+                "image_references": ["private-registry.example.invalid/app:tag"],
+                "private_extra": "private-entry-field",
+            }],
+            "warnings": [
+                "Protected artifact ghcr.io/example/app:sha-old from deployment has no stored artifact manifest; cleanup consumers must still treat the artifact id as protected.",
+            ],
+        },
+    }
+
+
+def test_protected_artifacts_read_projection_and_query() -> None:
+    response = _protected_artifacts_response()
+    for context in (None, "example-context"):
+        argv = ["protected-artifacts-read", "--product", "example-product"]
+        query = {"product": "example-product"}
+        if context:
+            argv += ["--context", context]
+            query["context"] = context
+        status, payload, calls = _run_product_read(argv, response)
+        assert status == 0
+        route = contract.LOCAL_EXTENSION_ROUTES["protected-artifacts-read"]
+        assert route["method"] == "GET" and route["mode"] == "read"
+        assert calls[0]["path"] == route["path"] and calls[0]["query"] == query
+        assert "protected-artifacts-read" in write_action.READ_ONLY_OPERATIONS
+        result = payload["result"]
+        original = response["protected_artifacts"]["entries"][0]
+        assert result["entries"][0] == {
+            key: original[key] for key in (
+                "reason", "context", "instance", "artifact_id", "source_record_type",
+                "source_record_id", "image_digest",
+            )
+        }
+        assert result["warnings"] == response["protected_artifacts"]["warnings"]
+        assert result["warning_count"] == 1 and result["entry_count"] == 1
+        assert not result["entries_truncated"] and not result["warnings_truncated"]
+        assert "private-registry" not in json.dumps(payload)
+        assert "private-entry-field" not in json.dumps(payload)
+
+
+def test_protected_artifacts_read_bounds_and_sanitizes_warnings() -> None:
+    response = _protected_artifacts_response()
+    inventory = response["protected_artifacts"]
+    inventory["entries"] *= write_action.PROTECTED_ARTIFACTS_MAX_ENTRIES + 1
+    inventory["warnings"] = ["Warning at https://private.example.invalid/path password=secret-value"] * (
+        write_action.PROTECTED_ARTIFACTS_MAX_WARNINGS + 1
+    )
+    status, payload, _ = _run_product_read(["protected-artifacts-read", "--product", "example-product"], response)
+    assert status == 0
+    result = payload["result"]
+    assert result["entry_count"] == len(inventory["entries"])
+    assert result["warning_count"] == len(inventory["warnings"])
+    assert len(result["entries"]) == write_action.PROTECTED_ARTIFACTS_MAX_ENTRIES
+    assert len(result["warnings"]) == write_action.PROTECTED_ARTIFACTS_MAX_WARNINGS
+    assert result["entries_truncated"] and result["warnings_truncated"]
+    assert "private.example" not in json.dumps(payload) and "secret-value" not in json.dumps(payload)
+
+
+def test_protected_artifacts_read_empty_invalid_and_denied() -> None:
+    argv = ["protected-artifacts-read", "--product", "example-product"]
+    response = _protected_artifacts_response()
+    response["protected_artifacts"].update(entries=[], warnings=[])
+    status, payload, _ = _run_product_read(argv, response)
+    assert status == 0 and payload["result"]["entry_count"] == 0
+    for change in (
+        lambda body: body["protected_artifacts"].update(entries="bad"),
+        lambda body: body["protected_artifacts"].update(warnings="bad"),
+        lambda body: body["protected_artifacts"]["entries"][0].update(artifact_id="Bearer abcdefghijklmnop"),
+        lambda body: body.update(unexpected="private-field"),
+    ):
+        body = _protected_artifacts_response()
+        change(body)
+        status, payload, _ = _run_product_read(argv, body)
+        assert status == 1 and payload["status"] == "invalid" and not payload["result"]
+    status, payload, _ = _run_product_read(argv, urllib.error.HTTPError(
+        "https://launchplane.example.invalid/v1/artifacts/protected", 403, "Forbidden", Message(),
+        io.BytesIO(json.dumps({"error": {"code": "authorization_denied", "message": "private-error"}}).encode()),
+    ))
+    assert status == 1 and "private-error" not in json.dumps(payload)
+    status, payload, calls = _run_product_read([*argv, "--context", "bad?query=1"], response)
+    assert status != 0 and not calls
+
 def _product_activity_event(index: int) -> dict[str, object]:
     return {
         "event_id": f"deployment:deployment-example-testing-{index}",
@@ -6709,6 +6802,9 @@ def main() -> int:
         test_product_environment_read_uses_path_route_and_projects_deploy_identity,
         test_product_environment_read_refuses_bad_segments_and_unsafe_values,
         test_product_activity_read_bounds_events_and_record_links,
+        test_protected_artifacts_read_projection_and_query,
+        test_protected_artifacts_read_bounds_and_sanitizes_warnings,
+        test_protected_artifacts_read_empty_invalid_and_denied,
         test_product_activity_read_keeps_real_events_and_drops_odd_fields,
         test_product_activity_read_reports_http_denial_as_read_error,
         test_preview_history_read_derives_launchplanes_preview_id,

@@ -59,6 +59,7 @@ READ_ONLY_OPERATIONS = {
     "testing-hold-read",
     "product-environment-read",
     "product-activity-read",
+    "protected-artifacts-read",
     "product-profile-read",
     "path-check",
     "preview-history-read",
@@ -2553,6 +2554,42 @@ def _project_product_activity(value: object) -> dict[str, object]:
     return projected
 
 
+
+PROTECTED_ARTIFACTS_MAX_ENTRIES = 100
+PROTECTED_ARTIFACTS_MAX_WARNINGS = 50
+
+
+def _project_protected_artifacts(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    entries = source.get("entries")
+    warnings = source.get("warnings")
+    if not isinstance(entries, list) or not isinstance(warnings, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected_entries: list[dict[str, object]] = []
+    for value in entries[:PROTECTED_ARTIFACTS_MAX_ENTRIES]:
+        entry = _require_dict(value)
+        projected_entries.append({
+            "reason": public_code(entry.get("reason")),
+            "context": public_identifier(entry.get("context")),
+            "instance": _optional_identifier(entry.get("instance")),
+            "artifact_id": _project_artifact_reference(entry.get("artifact_id")),
+            "source_record_type": public_code(entry.get("source_record_type")),
+            "source_record_id": public_identifier(entry.get("source_record_id")),
+            "image_digest": _optional_identifier(entry.get("image_digest")),
+        })
+    projected = {
+        "product": public_identifier(source.get("product")),
+        "context": _optional_identifier(source.get("context")),
+        "entries": projected_entries,
+        "entry_count": len(entries),
+        "entries_truncated": len(entries) > PROTECTED_ARTIFACTS_MAX_ENTRIES,
+        "warnings": [public_operator_text(warning) for warning in warnings[:PROTECTED_ARTIFACTS_MAX_WARNINGS]],
+        "warning_count": len(warnings),
+        "warnings_truncated": len(warnings) > PROTECTED_ARTIFACTS_MAX_WARNINGS,
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
 def _public_origin_url(value: object) -> str:
     """Only the scheme and host of a public https URL; a path or query could carry a
     credential."""
@@ -4598,6 +4635,22 @@ def summarize_product_activity_read(
     )
 
 
+
+def summarize_protected_artifacts_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    return _summarize_product_read(
+        operation="protected-artifacts-read",
+        request=request,
+        provider_payload=provider_payload,
+        result_key="protected_artifacts",
+        project=_project_protected_artifacts,
+        recommendation=(
+            "This bounded projection explains artifact protection; truncated results "
+            "are not a complete retention set for registry cleanup."
+        ),
+    )
+
 def summarize_preview_history_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
@@ -4757,6 +4810,7 @@ PRODUCT_READ_SUMMARIZERS = {
     "path-check": summarize_path_check,
     "product-environment-read": summarize_product_environment_read,
     "product-activity-read": summarize_product_activity_read,
+    "protected-artifacts-read": summarize_protected_artifacts_read,
     "product-profile-read": summarize_product_profile_read,
     "preview-history-read": summarize_preview_history_read,
     "reconcile-requests-read": summarize_reconcile_requests_read,
@@ -7780,6 +7834,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     product_activity_read.add_argument("--product", required=True)
 
+    protected_artifacts_read = subparsers.add_parser(
+        "protected-artifacts-read",
+        help="Read bounded protected-artifact entries and sanitized warnings.",
+    )
+    protected_artifacts_read.add_argument("--product", required=True)
+    protected_artifacts_read.add_argument("--context")
+
     preview_history_read = subparsers.add_parser(
         "preview-history-read",
         help=(
@@ -8281,6 +8342,15 @@ def main(argv: list[str]) -> int:
             }
             return execute_product_read(
                 args=args, operation=args.command, request=request, path=path
+            )
+        if args.command == "protected-artifacts-read":
+            query = {"product": public_identifier(args.product)}
+            if args.context is not None:
+                query["context"] = public_identifier(args.context)
+            request = {**query, "payload_source": "operator_argument"}
+            return execute_product_read(
+                args=args, operation=args.command, request=request,
+                path=helper_command_path(args.command), query=query,
             )
         if args.command == "product-activity-read":
             path = _product_read_path(args.command, product=args.product)
