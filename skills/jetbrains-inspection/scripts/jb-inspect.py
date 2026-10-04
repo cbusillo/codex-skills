@@ -654,6 +654,11 @@ def emit_agent_usage_error(parser_error: str) -> int:
         "error_reason": AGENT_USAGE_ERROR_REASON,
         "verdict_next_action": AGENT_USAGE_NEXT_ACTION,
     }
+    if message.startswith("unrecognized arguments: --file "):
+        payload["hint"] = (
+            "If --file options were assembled in one shell string, the shell may have passed it as one argument. "
+            'Use an array, for example args=(--file "a.py" --file "b.py"), then "${args[@]}".'
+        )
     return emit_agent_result(payload, command="agent-inspect", helper_exit_code=2)
 
 
@@ -2666,12 +2671,27 @@ def apply_multi_lane_verdict(payload: dict[str, Any]) -> dict[str, Any]:
         status = "inspection_lanes_unknown"
         affected = [str(lane.get("id")) for lane in unknown]
         next_action = f"Resolve the fail-closed outcome in required lane(s): {', '.join(affected)}."
-    else:
+    elif any(isinstance(lane, dict) and lane.get("verdict") != "NOT_RUN" for lane in lane_results):
         verdict = "GREEN"
         reason = "all_required_lanes_green" if required else "no_required_lane_files"
         bucket = "multi_lane_clean"
         status = "clean"
         next_action = "No inspection action required for the configured required lanes."
+    else:
+        verdict = "UNKNOWN"
+        reason = "no_required_lane_files"
+        bucket = "multi_lane_unknown"
+        status = "inspection_scope_empty"
+        if selected_inspection_file_count(payload) == 0:
+            next_action = (
+                "No files were selected. Select tracked files with --scope files and repeatable --file arguments. "
+                "changed_files covers working-tree changes, not committed branch changes."
+            )
+        else:
+            next_action = (
+                "No selected files reached an inspection lane. Review unmatched_files, excluded_files, and lane include/exclude globs. "
+                "Choose files supported by the configured lanes; explicit --scope files selectors override lane exclusions."
+            )
 
     retry_policies = [
         lane.get("retry_policy")
@@ -6472,6 +6492,17 @@ def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
             "verdict_next_action": next_action_for_unknown(reason, payload),
         }
 
+    if selected_inspection_file_count(payload) == 0:
+        return {
+            "verdict": "UNKNOWN",
+            "verdict_reason": "inspection_scope_empty",
+            "verdict_message": "The inspection scope resolved to zero files.",
+            "verdict_next_action": (
+                "Select tracked files with --scope files and repeatable --file arguments. "
+                "changed_files covers working-tree changes, not committed branch changes."
+            ),
+        }
+
     deployment_verdict = broad_scope_deployment_verdict(payload)
     if deployment_verdict is not None:
         return deployment_verdict
@@ -6968,6 +6999,7 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "language_sdk_missing",
         "profile_resolution_error",
         "inspection_lane_config_invalid",
+        "inspection_scope_empty",
         SEMANTIC_COVERAGE_MISSING_REASON,
         "untrusted_auto_open_root",
         *REPOSITORY_PREPARATION_TERMINAL_REASONS,
@@ -7394,6 +7426,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         "implicit_eap_selection",
         "profile_resolution_error",
         "inspection_lane_config_invalid",
+        "inspection_scope_empty",
         "repository_preparation_config_invalid",
         "repository_preparation_opted_out",
     }:
@@ -9025,6 +9058,26 @@ def emit_agent_result(
     return 0
 
 
+def selected_inspection_file_count(payload: dict[str, Any]) -> int | None:
+    selection = payload.get("lane_selection")
+    if isinstance(selection, dict):
+        count = selection.get("selected_file_count")
+    else:
+        diagnostic = payload.get("capture_diagnostic")
+        context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+        scope = (diagnostic.get("scope_kind") if isinstance(diagnostic, dict) else None) or context.get("scope")
+        if scope in {"whole_project", "directory"}:
+            # Broad scopes report zero here as a placeholder; their native
+            # traversal proof establishes execution separately.
+            return None
+        if isinstance(diagnostic, dict) and "scope_file_resolved_count" in diagnostic:
+            count = diagnostic["scope_file_resolved_count"]
+        else:
+            coverage = payload.get("semantic_coverage") or {}
+            count = coverage.get("resolved_file_count") if isinstance(coverage, dict) else None
+    return count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None
+
+
 def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int) -> dict[str, Any]:
     if isinstance(payload.get("lane_results"), list):
         return compact_multi_lane_agent_result_payload(payload, helper_exit_code)
@@ -9093,6 +9146,7 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
         "agent_result": agent_result,
         "helper_exit_code": helper_exit_code,
         "scope": context.get("scope"),
+        "selected_file_count": selected_inspection_file_count(payload),
         "finding_count": total_problems,
         "problems_shown": problems_shown,
         "findings": compact_findings,
@@ -9157,6 +9211,7 @@ def compact_multi_lane_agent_result_payload(payload: dict[str, Any], helper_exit
         "agent_result": agent_result,
         "helper_exit_code": helper_exit_code,
         "scope": payload.get("lane_selection", {}).get("scope"),
+        "selected_file_count": selected_inspection_file_count(payload),
         "finding_count": total_findings,
         "findings": findings,
         "findings_limit": 20,

@@ -282,6 +282,16 @@ when an inspection would be disproportionate.
 
 ## Scope Selection
 
+`changed_files` covers working-tree changes, not committed branch changes.
+For a committed change, use `--scope files` with a repeatable `--file` for each
+tracked file. When constructing shell arguments, use an array such as
+`args=(--file "src/a.py" --file "src/b.py")` and pass `"${args[@]}"`; a string
+of flags can reach the helper as one argument, especially in zsh.
+The compact result reports `selected_file_count` (null when unavailable).
+Selection counts describe the requested scope, not successful IDE execution;
+read the verdict and lane provenance too. A scope that resolves to zero files,
+or runs no lane, is UNKNOWN and supplies file-selection or lane-matching advice.
+
 Start narrow while iterating: changed files, touched files, or touched directory.
 For final readiness, apply repository requirements and the whole-project
 inspection default and exceptions in
