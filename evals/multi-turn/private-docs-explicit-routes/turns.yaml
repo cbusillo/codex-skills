@@ -12,7 +12,9 @@ fixture_files:
   operations.md: >-
     The authoritative DNS inventory for this product is maintained in
     example/product-runtime. DNS verification planning requires a read-only
-    authority check there. No access grant or write has been approved.
+    authority check of its checked-in DNS-INVENTORY.md using repository-read
+    access. No provider login is needed for that prerequisite. No access grant
+    or write has been approved.
   local-context.toml: '[docs]
 
     local_infra = "private-context.md"'
