@@ -34,8 +34,12 @@ lifecycle close endpoint only for projects the helper opened. Projects that were
 already open before inspection must remain open. Lifecycle opens use macOS
 background activation by default to reduce focus stealing; when the target IDE is
 not already running, the helper launches the app hidden first and then asks the
-plugin to open the exact worktree. Use `--foreground-open` only when debugging
-IDE launch behavior.
+plugin to open the exact worktree. Both app bootstrap and app-level project
+opens launch macOS `open` from the filesystem root, so a helper-started IDE
+does not inherit the disposable caller worktree as its process working directory
+after project closure. This does not change the cwd of an already-running IDE;
+retain any checkout it holds for supported retirement once the hold ends.
+Use `--foreground-open` only when debugging IDE launch behavior.
 If an inspection wait times out while a helper-started run is still active, the
 helper asks the plugin to cancel that exact `inspection_run_id` and waits briefly
 for cancellation to settle. A compatible run adopted from a concurrent 409 is
