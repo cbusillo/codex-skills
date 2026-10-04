@@ -421,8 +421,12 @@ bare ID does not release ownership.
 An exact release may also be a standalone final paragraph after the handoff
 prose, optionally followed by the helper's operation marker. It must be an
 unquoted, unindented `Released claim <id>` line (an ending period is allowed);
-fenced examples, inline mentions, conditional releases, and later prose do not
-count. The same author must post it after the source claim.
+fenced or raw HTML examples, inline mentions, and later prose do not count.
+Conditional text on the release line, a preceding paragraph starting with
+`If`, `After`, `Once`, `When`, `Unless`, or `Until`, or an introduction ending
+with a colon also refuses. Use a separate first-line release when the embedded
+format is ambiguous. The same author must post it after the source claim;
+release does not resolve a recorded wait or authorize the next task's actions.
 
 Use a unique worker token per native session. Legacy `Released by <worker>`
 comments are accepted only when the earlier structured claims for that token
@@ -483,12 +487,14 @@ before invoking the route because several sessions can share that identity.
 Every open PR on a retained branch must be named in this handoff and authored
 by the source author, including a new PR on the original source branch.
 An embedded release alone does not establish this handoff identity. For an old
-handoff with a different opening, the supported recovery is a new same-author
+handoff with a different opening, have the source session record a new
 `Handoff from <source-worker>` comment after release, naming the source claim,
-native source session, and every retained PR. Verify the finished session and
-retained artifacts before posting it; preserve the original records and use the
-new comment ID with `--handoff-comment`. A release posted after the old handoff
-does not validate that old handoff retroactively.
+native source session, and every retained PR, and linking its original handoff
+and release comments. Use supported session routing to reach that session;
+another session sharing its bot login must not impersonate it. When the source
+session cannot record this, retained-work recovery remains blocked. Preserve
+the original records and use the new comment ID with `--handoff-comment`.
+A release posted after the old handoff does not validate it retroactively.
 Unmentioned same-bot PRs also refuse.
 The named PR identities bind their current branches to that finished session's
 handoff, including split branches that differ from the original claim branch.

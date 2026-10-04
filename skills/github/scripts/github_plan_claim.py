@@ -69,6 +69,7 @@ def released_claim_id(text: str) -> int | None:
     match = re.fullmatch(r"Released claim (\d+)(?:\.(?:\s.*)?|[ \t]*)", first[0]) if first else None
     if match:
         return int(match.group(1))
+    text = "\n".join(text.splitlines())
     # Helpers append this transport marker; it is not handoff prose.
     text = re.sub(r"\n\s*<!-- github-skill-operation:[0-9a-f]+ -->\s*$", "", text).rstrip()
     lines = text.splitlines()
@@ -77,25 +78,35 @@ def released_claim_id(text: str) -> int | None:
     match = re.fullmatch(r"Released claim (\d+)\.?[ \t]*", lines[-1])
     if not match:
         return None
-    # A final line inside an unclosed code fence or HTML comment is an example,
+    preceding = text.rsplit("\n\n", 1)[0].rstrip()
+    paragraph = preceding.rsplit("\n\n", 1)[-1].strip()
+    if preceding.endswith(":") or re.match(r"(?i)(?:if|after|once|when|unless|until)\b", paragraph):
+        return None
+    # A final line inside an unclosed code fence or raw HTML block is an example,
     # not a release. Quoted and indented directives never match the exact line.
     fence = None
-    in_comment = False
+    html_end = None
     for line in lines[:-1]:
         if fence:
             if re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*", line):
                 fence = None
             continue
-        if in_comment:
-            in_comment = "-->" not in line
+        if html_end:
+            if html_end in line.casefold():
+                html_end = None
             continue
         if "<!--" in line:
-            in_comment = "-->" not in line.split("<!--", 1)[1]
+            if "-->" not in line.split("<!--", 1)[1]:
+                html_end = "-->"
+            continue
+        html = re.match(r" {0,3}<(pre|code|blockquote|details|script|style|textarea)(?:\s|>)", line, re.IGNORECASE)
+        if html and f"</{html.group(1).casefold()}>" not in line.casefold():
+            html_end = f"</{html.group(1).casefold()}>"
             continue
         opener = re.match(r" {0,3}(`{3,}|~{3,})", line)
         if opener:
             fence = opener.group(1)
-    return int(match.group(1)) if not fence and not in_comment else None
+    return int(match.group(1)) if not fence and not html_end else None
 
 
 def resumed_status(status: str, comments: list[dict[str, Any]], source_id: int | None) -> str:

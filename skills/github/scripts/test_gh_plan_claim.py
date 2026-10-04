@@ -898,13 +898,15 @@ class ClaimTests(unittest.TestCase):
              "Source session finished without implementation.\n\nReleased claim 1\n\n"
              "<!-- github-skill-operation:ebe51a4db859c979eaa963fb10af11b5 -->\n",
              "user": {"login": TEST_BOT}},
+            {"id": 3, "body": "Owner decision: The later read-only inventory is approved; no host changes.",
+             "user": {"login": "owner"}},
         ]
         self.run_claim()
-        self.assertEqual(len(self.comments), 3)
+        self.assertEqual(len(self.comments), 4)
         self.assertIn("claim_readback", self.emitted.call_args.args[0]["completed_steps"])
 
     def test_embedded_release_resumes_exact_status_with_retained_branch(self):
-        self.released_status_fixture("Finished session handoff.\n\nReleased claim 1.")
+        self.released_status_fixture("Finished session handoff.\r\n\r\nReleased claim 1.")
         self.run_claim()
         self.assertEqual(CLAIM.records(self.issue["body"]), [self.emitted.call_args.args[0]["claim"]])
 
@@ -915,7 +917,11 @@ class ClaimTests(unittest.TestCase):
                 self.released_status_fixture("Finished session handoff.\n\nReleased claim 1")
                 if change == "foreign": self.comments[1]["user"]["login"] = "stranger"
                 if change == "wrong_id": self.comments[1]["body"] += "1"
-                if change == "earlier": self.comments.reverse()
+                if change == "earlier":
+                    self.comments.reverse()
+                    self.issue["body"] = PLAN.template_body("Repair")
+                    self.args.resume_from = None
+                    self.inventory = {**self.inventory, "local_branches": [], "worktrees": []}
                 if change == "other_claim": self.compete({**OTHER, "session": "peer"})
                 if change == "artifact": self.inventory["local_branches"].append("work/other-issue-42")
                 if change == "live_peer": self.inventory["sessions"] = [{"sessionId": "peer", "cwd": "/retained/issue-42"}]
@@ -930,6 +936,11 @@ class ClaimTests(unittest.TestCase):
             "```text\n\nReleased claim 1\n```", "~~~\n\nReleased claim 1\n~~~",
             "```text\n\nReleased claim 1", "~~~~text\n~~~\n\nReleased claim 1",
             "<!-- Example:\n\nReleased claim 1", "Released claim 1\n\nOther handoff prose.",
+            "If you approve, post:\n\nReleased claim 1", "After PR #99 merges:\n\nReleased claim 1",
+            "After PR #99 merges:\r\n\r\nReleased claim 1",
+            "Once CI passes, release this claim.\n\nReleased claim 1",
+            "<pre>\n\nReleased claim 1", "<details><summary>Example</summary>\n\nReleased claim 1",
+            "<blockquote>\n\nReleased claim 1",
         ):
             with self.subTest(release=release):
                 self.setUp()
@@ -964,6 +975,15 @@ class ClaimTests(unittest.TestCase):
                 self.comments.append({"id": 5, "body": "Handoff from trial-b\nSource claim 1; Session: session-b; PR #99 and #100", "user": {"login": TEST_BOT}})
                 self.args.handoff_comment = 5
                 self.run_claim()
+                output = self.emitted.call_args.args[0]
+                self.assertEqual(output["claim"]["refresh_pr"], self.args.refresh_pr)
+                self.assertEqual(CLAIM.records(self.comments[-1]["body"]), [output["claim"]])
+
+    def test_embedded_release_does_not_resolve_recorded_owner_wait(self):
+        self.released_status_fixture("Finished session handoff.\n\nReleased claim 1")
+        self.issue["body"] += "\nWaiting for: Owner approval of the live-host check."
+        with self.assertRaises(PLAN.PlanError): self.run_claim()
+        self.assert_no_writes()
 
     def test_resume_cannot_override_current_owner(self):
         self.comments = [{"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": "bot"}}]
