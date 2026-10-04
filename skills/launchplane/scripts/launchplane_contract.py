@@ -303,6 +303,11 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/products/{product}/path-check",
         "mode": "read",
     },
+    "protected-artifacts-read": {
+        "method": "GET",
+        "path": "/v1/artifacts/protected",
+        "mode": "read",
+    },
     "product-activity-read": {
         "method": "GET",
         "path": "/v1/products/{product}/activity",
