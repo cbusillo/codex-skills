@@ -5327,7 +5327,17 @@ def test_rule_violation_wrapped_required_check_rejection_stops_without_cooldown(
     )
 
 
-def required_check_rejection_stops_without_cooldown(message: str) -> None:
+def test_comments_only_rejection_stops_without_cooldown() -> None:
+    required_check_rejection_stops_without_cooldown(
+        "Repository rule violations found\n\nAll comments must be resolved.",
+        cause="unresolved_review_threads", next_action="resolve_review_threads", hint_fragment="review threads",
+    )
+
+
+def required_check_rejection_stops_without_cooldown(
+    message: str, cause: str = "required_status_checks_expected", next_action: str = "wait_for_required_checks",
+    hint_fragment: str = "gh-pr.py checks",
+) -> None:
     pr = load_pr_module()
     calls: list[str] = []
     ready = False
@@ -5393,14 +5403,14 @@ def required_check_rejection_stops_without_cooldown(message: str) -> None:
             rejected_calls = list(calls)
             assert rejected.returncode == 1, rejected
             rejected_payload = json.loads(rejected.stdout)
-            assert rejected_payload["failure"]["cause"] == "required_status_checks_expected", rejected_payload
+            assert rejected_payload["failure"]["cause"] == cause, rejected_payload
             assert rejected_payload["observed_merge_capability"]["observed_outcome"] == "rejected", rejected_payload
             assert rejected_payload["observed_merge_capability"]["authority"] == "unknown", rejected_payload
             assert rejected_payload["write_outcome"] == "rejected", rejected_payload
             assert rejected_payload["fallback_eligible"] is False, rejected_payload
-            assert rejected_payload["recommended_next_action"] == "wait_for_required_checks", rejected_payload
+            assert rejected_payload["recommended_next_action"] == next_action, rejected_payload
             assert rejected_payload["reconciliation"] is None, rejected_payload
-            assert "gh-pr.py checks" in rejected_payload["hint"], rejected_payload
+            assert hint_fragment in rejected_payload["hint"], rejected_payload
             assert sum("/pulls/12/merge" in call for call in rejected_calls) == 1, rejected_calls
             assert sum("/pulls/12" in call and "/merge" not in call for call in rejected_calls) == 1, rejected_calls
             assert list(retry_state_path.glob("*.json")) == [], list(retry_state_path.glob("*"))
@@ -6790,6 +6800,7 @@ def main() -> None:
         test_pr_helper_merge_semantic_rejection_exits_nonzero,
         test_required_check_rejection_stops_without_cooldown_until_readiness_changes,
         test_rule_violation_wrapped_required_check_rejection_stops_without_cooldown,
+        test_comments_only_rejection_stops_without_cooldown,
         test_ambiguous_405_reconciles_same_head_before_bounded_retry,
         test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets,
         test_check_read_403_and_blocked_metadata_do_not_claim_merge_denial,

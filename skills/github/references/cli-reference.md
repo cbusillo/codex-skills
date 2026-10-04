@@ -1000,3 +1000,13 @@ Avoid passing escaped `\n` through shell-quoted `--body`. Also avoid unquoted
 heredocs like `<<EOF` for Markdown bodies: shell command substitution runs
 inside backticks before the body reaches GitHub. Use `<<'EOF'` for literal
 Markdown when a heredoc is necessary.
+
+### Comments-only merge rejection
+
+An HTTP405 containing only `All comments must be resolved.`, optionally under
+GitHub's `Repository rule violations found` heading, returns
+`unresolved_review_threads`, `write_outcome: rejected`, and
+`recommended_next_action: resolve_review_threads`. It makes one merge PUT and
+writes no shared retry cooldown. Resolve the PR review threads before another
+merge attempt. Mixed-rule and other ambiguous HTTP405 responses retain bounded
+retry and exact-head reconciliation.

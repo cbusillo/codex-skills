@@ -1265,5 +1265,130 @@ def test_failed_jobs_include_direct_logs_endpoint(monkeypatch):
     ]
 
 
+
+
+@pytest.mark.parametrize("resolved,outdated,comment_sha", [(False, False, "abc123"), (False, True, "old"), (True, False, "abc123")])
+def test_security_threads_survive_seen_comments(monkeypatch, resolved, outdated, comment_sha):
+    pr = sample_pr()
+    comment = {"id": 17, "user": {"login": "github-advanced-security[bot]"}, "body": "CodeQL finding", "commit_id": comment_sha}
+    monkeypatch.setattr(gh_pr_watch, "gh_api_list_paginated", lambda endpoint, **kwargs: [comment] if endpoint.endswith("/comments") and "/pulls/" in endpoint else [])
+    body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
+        "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
+        "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": [{
+            "id": "thread17", "isResolved": resolved, "isOutdated": outdated,
+            "comments": {"pageInfo": {"hasNextPage": False}, "nodes": [{"databaseId": 17, "commit": {"oid": comment_sha}}]},
+        }]},
+    }}}}
+    reader = ReviewReader(body=body)
+    state = {}
+    first = gh_pr_watch.fetch_new_review_items(pr, state, True, reader=reader)
+    assert len(first) == (0 if resolved else 1)
+    # A subsequent snapshot has no new comments, but unresolved threads still block.
+    second = gh_pr_watch.fetch_new_review_items(pr, state, False, reader=reader)
+    assert second == []
+    thread = pr["review_threads"]["threads"][0]
+    assert thread["is_resolved"] is resolved
+    assert thread["is_outdated"] is outdated
+    assert thread["comments"][0]["matches_current_head"] is (comment_sha == pr["head_sha"])
+    actions = gh_pr_watch.recommend_actions(pr, sample_checks(), [], [], second, 0, 3)
+    assert ("ready_to_merge" in actions) is resolved
+    assert ("resolve_review_threads" in actions) is (not resolved)
+
+
+@pytest.mark.parametrize("fault", ["head", "errors", "truncated", "missing_comment", "missing_resolution"])
+def test_incomplete_security_threads_never_prove_ready(fault):
+    pr = sample_pr()
+    item = {"number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
+            "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": [{
+                "id": "thread17", "isResolved": False, "isOutdated": False,
+                "comments": {"pageInfo": {"hasNextPage": False}, "nodes": [{"databaseId": 17, "commit": {"oid": pr["head_sha"]}}]},
+            }]}}
+    body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": item}}}
+    if fault == "head":
+        item["headRefOid"] = "different"
+    elif fault == "errors":
+        body["errors"] = [{"message": "unavailable"}]
+    elif fault == "truncated":
+        item["reviewThreads"]["nodes"][0]["comments"]["pageInfo"]["hasNextPage"] = True
+    elif fault == "missing_comment":
+        item["reviewThreads"]["nodes"] = []
+    else:
+        del item["reviewThreads"]["nodes"][0]["isResolved"]
+    pr["review_threads"] = gh_pr_watch.fetch_review_threads(pr, [{"id": "17", "author": "github-advanced-security[bot]"}], ReviewReader(body=body))
+    assert pr["review_threads"]["status"] == "unknown"
+    actions = gh_pr_watch.recommend_actions(pr, sample_checks(), [], [], [], 0, 3)
+    assert "ready_to_merge" not in actions
+    assert "review_thread_resolution_unavailable" in actions
+
+
+def test_security_thread_pagination_pins_every_page():
+    pr = sample_pr()
+    class PagedReader(ReviewReader):
+        def __init__(self):
+            super().__init__()
+            self.variables = []
+
+        def graphql_json(self, query, variables, **kwargs):
+            self.variables.append(variables)
+            last = variables["cursor"] == "next"
+            self.body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
+                "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
+                "reviewThreads": {"pageInfo": {"hasNextPage": not last, "endCursor": "next"}, "nodes": [{
+                    "id": "thread17", "isResolved": False, "isOutdated": False,
+                    "comments": {"pageInfo": {"hasNextPage": False}, "nodes": [{"databaseId": 17, "commit": {"oid": pr["head_sha"]}}]},
+                }] if last else []},
+            }}}}
+            return super().graphql_json(query, variables, **kwargs)
+    reader = PagedReader()
+    evidence = gh_pr_watch.fetch_review_threads(pr, [{"id": "17", "author": "github-advanced-security[bot]"}], reader)
+    assert evidence["status"] == "available"
+    assert len(evidence["threads"]) == 1
+    assert [variables["cursor"] for variables in reader.variables] == [None, "next"]
+    assert all(variables["number"] == pr["number"] for variables in reader.variables)
+
+
+def test_multiple_bot_comments_count_as_one_thread():
+    pr = sample_pr()
+    body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
+        "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
+        "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": [{
+            "id": "thread17", "isResolved": False, "isOutdated": False,
+            "comments": {"pageInfo": {"hasNextPage": False}, "nodes": [
+                {"databaseId": i, "commit": {"oid": pr["head_sha"]}} for i in (17, 18)
+            ]},
+        }]},
+    }}}}
+    evidence = gh_pr_watch.fetch_review_threads(pr, [
+        {"id": str(i), "author": "github-advanced-security[bot]"} for i in (17, 18)
+    ], ReviewReader(body=body))
+    assert evidence["status"] == "available"
+    assert len(evidence["threads"]) == 1
+    assert {c["comment_id"] for c in evidence["threads"][0]["comments"]} == {"17", "18"}
+
+
+def test_resolved_comments_do_not_replay_after_graphql_failure(monkeypatch):
+    pr = sample_pr()
+    comment = {"id": 17, "user": {"login": "github-advanced-security[bot]"}, "body": "CodeQL finding"}
+    monkeypatch.setattr(gh_pr_watch, "gh_api_list_paginated", lambda endpoint, **kwargs: [comment] if endpoint.endswith("/comments") and "/pulls/" in endpoint else [])
+    body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
+        "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
+        "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": [{
+            "id": "thread17", "isResolved": True, "isOutdated": False,
+            "comments": {"pageInfo": {"hasNextPage": False}, "nodes": [{"databaseId": 17, "commit": {"oid": pr["head_sha"]}}]},
+        }]},
+    }}}}
+    reader = ReviewReader(body=body)
+    state = {}
+    assert gh_pr_watch.fetch_new_review_items(pr, state, True, reader=reader) == []
+    reader.body = {"errors": [{"message": "transient error"}]}
+    assert gh_pr_watch.fetch_new_review_items(pr, state, False, reader=reader) == []
+    assert pr["review_threads"]["status"] == "unknown"
+    # Reopening remains a persistent blocker, despite the now-seen comment.
+    reader.body = body
+    body["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"][0]["isResolved"] = False
+    assert gh_pr_watch.fetch_new_review_items(pr, state, False, reader=reader) == []
+    assert "resolve_review_threads" in gh_pr_watch.recommend_actions(pr, sample_checks(), [], [], [], 0, 3)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
