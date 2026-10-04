@@ -44,8 +44,9 @@ docs and authority. Route by source of truth, not provider name.
    Private DNS/Cloudflare and secret-location requests start there, never with
    product `.env` files, shell history, or common token locations. Missing
    required context is a configuration gap to report, not permission to guess.
-4. Prefer sources in order: configured local operational context for this
-   environment; repo docs/source for project behavior; official product docs;
+4. Honor explicit repo documentation routes for their declared scope. For
+   missing private operational facts, prefer configured local context for this
+   environment; otherwise repo docs/source for project behavior; official product docs;
    official API references, release/migration notes, changelogs and source;
    registries for package metadata/version facts; trusted community sources
    only when official docs are missing/incomplete or the user wants ecosystem

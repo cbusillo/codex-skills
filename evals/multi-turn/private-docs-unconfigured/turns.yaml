@@ -22,6 +22,6 @@ turns:
       owner: docs-lookup
       read: 'local-context\.toml'
       forbid: 'gh-plan\.py|gh-with-env-token|curl|wget'
-      forbid_read: '(?:^|/)\.env(?:$|\.)|history|auth\.json'
+      forbid_read: '/(?:\.code|\.codex|\.codex-accounts)/|(?:^|/)\.env(?:$|\.)|history|auth\.json'
       final: '(?:documentation|docs|context).*(?:not configured|missing|unconfigured)|(?:not configured|missing|unconfigured|configure).*(?:documentation|docs|context)'
       final_none: ['DNS (?:is|lives|belongs).*Cloudflare']

@@ -28,6 +28,6 @@ turns:
       owner: docs-lookup
       read: 'private-context\.md'
       forbid: 'gh-plan\.py|gh-with-env-token|curl|wget'
-      forbid_read: '(?:^|/)\.env(?:$|\.)|history|auth\.json'
+      forbid_read: '/(?:\.code|\.codex|\.codex-accounts)/|(?:^|/)\.env(?:$|\.)|history|auth\.json'
       final: 'read.only.*DNS|DNS.*read.only'
       final_none: ['SYNTHETIC_PRIVATE_AUTHORITY', 'private-context\.md']

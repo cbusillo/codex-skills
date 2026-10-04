@@ -56,13 +56,13 @@ operations source of truth. Treat the local docs path as private local context:
 Private DNS and Cloudflare requests are local-infrastructure routes when they
 depend on this environment's zones, accounts, credentials, or verification
 records. For example, if a product repo needs a Bing verification CNAME or TXT
-record, use `[docs].local_infra` to find the private DNS/Cloudflare authority;
+record, follow the scoped routing above to find the private DNS/Cloudflare authority;
 do not start by scanning product repo `.env` files, shell history, or common
 provider-token locations. After the docs/access path is known, use `infra-ops`
 for live record inspection, mutation, rollback, and verification.
 
 Credential, API token, and secret location requests are local-infrastructure
-routes too. Use `[docs].local_infra` to find that environment's credentials
+routes too. Follow the scoped routing above to find that environment's credentials
 index, which records each credential's holder, each storage location, a read-only validation
 check, and the rotation path. Then read the owning repo's declared key names in
 its checked-in `.env.example` and the `env` block of its `.github/github.json`.

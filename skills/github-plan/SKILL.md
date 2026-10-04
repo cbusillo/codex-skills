@@ -1,6 +1,6 @@
 ---
 name: github-plan
-description: Use when the user asks for a plan, what's next / what is next in a plan or workstream, how work fits the plan, plan direction/alignment, durable work tracking, roadmap, workstream planning, GitHub issue-backed planning, issue graphs, parent issues, sub-issues, blockers, milestones, Projects, or replacing local plans with GitHub issues. Think in chat first, then keep long-running work aligned over time by updating Current Status, blockers, relationships, and issue graph state as reality changes.
+description: Use when the user asks for a plan, what's next / what is next in a plan or workstream, how work fits the plan, plan direction/alignment, durable work tracking, roadmap, workstream planning, GitHub issue-backed planning, issue graphs, parent issues, sub-issues, blockers, milestones, Projects, or replacing local plans with GitHub issues. Use declared repo docs before private operational lookup; use docs-lookup only for missing operational context. Think in chat first, then keep long-running work aligned over time by updating Current Status, blockers, relationships, and issue graph state as reality changes.
 metadata:
   short-description: Plan durable work in GitHub issues
 commands:
@@ -136,6 +136,18 @@ Apply [task scope and authorization](../references/execution-scope.md) and
 Use `github` for PRs, Actions, and landing; use `direction` for changes to
 `DIRECTION.md` or the Director's waypoints.
 
+Before private operational lookup during planning, read `.github/github.json` when present and use
+its `relatedRepos` and task-relevant `docs` routes for their declared scope.
+When the task needs this environment's infrastructure, access paths, or private
+operational ownership and those routes do not provide the needed context, use
+`docs-lookup` before searching for more repositories. Missing metadata alone
+does not require private lookup for ordinary source work; do not read local
+context or its docs unless the task needs those operational facts. The local
+docs source supplies task-specific context, not a repository inventory. Keep
+private identities and routing details out of public plans. If neither route
+is configured, report the local documentation configuration gap and continue
+independent planning from checked-in evidence.
+
 Run the maintained planning helper from the client repository, using this
 skill's base directory for the path:
 
@@ -253,18 +265,6 @@ For graph paths, scope, or incomplete coverage, read
 [Planning: Next Work](../github/references/cli-reference.md#planning-next-work).
 
 ## Create Or Update A Plan
-
-For cross-repository planning, read `.github/github.json` when present and use
-its `relatedRepos` and task-relevant `docs` routes for their declared scope.
-When the task needs this environment's infrastructure, access paths, or private
-operational ownership and those routes do not provide the needed context, use
-`docs-lookup` before searching for more repositories. Missing metadata alone
-does not require private lookup for ordinary source work; do not read local
-context or its docs unless the task needs those operational facts. The local
-docs source supplies task-specific context, not a repository inventory. Keep
-private identities and routing details out of public plans. If neither route
-is configured, report the local documentation configuration gap and continue
-independent planning from checked-in evidence.
 
 Read `.local/github-plan.md` when present before creating, routing, or updating
 plans. Resolve people through the optional `people` skill and local overlays;
