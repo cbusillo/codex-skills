@@ -72,7 +72,7 @@ def preflight_response(command: list[str]) -> subprocess.CompletedProcess[str] |
         return completed(command, "GitHub automation actor: example-user (source: configured_token)\n")
     if command[1:3] == ["api", "--method"] and command[4].startswith("repos/"):
         return completed(command, command[4].removeprefix("repos/"))
-    if command[1:5] == ["api", "--method", "GET", "search/issues"] and "per_page=1" in command:
+    if command[1:5] == ["api", "--method", "GET", "search/issues"] and not any(field.startswith("page=") for field in command):
         return completed(command, {"total_count": 0, "items": []})
     return None
 
@@ -548,7 +548,8 @@ def test_subject_search_filters_bots_when_disabled(monkeypatch: pytest.MonkeyPat
     assert payload["buckets"] == {}
 
 
-def test_subject_search_pages_until_collection_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("collection_limit", [101, 150])
+def test_subject_search_pages_until_collection_limit(monkeypatch: pytest.MonkeyPatch, collection_limit: int) -> None:
     calls: list[list[str]] = []
 
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -562,11 +563,11 @@ def test_subject_search_pages_until_collection_limit(monkeypatch: pytest.MonkeyP
             page_field = next(item for item in command if item.startswith("page="))
             page = int(page_field.split("=", 1)[1])
             start = (page - 1) * 100
-            count = 100 if page == 1 else 50
+            count = min(100, collection_limit - start)
             return completed(
                 command,
                 {
-                    "total_count": 150,
+                    "total_count": collection_limit,
                     "items": [
                         {
                             "number": start + i,
@@ -587,14 +588,14 @@ def test_subject_search_pages_until_collection_limit(monkeypatch: pytest.MonkeyP
         raise AssertionError(f"unexpected command: {command}")
 
     monkeypatch.setattr(github_work_rollup, "run", fake_run)
-    settings = github_work_rollup.resolve_settings(args(subject=["cli-user"], limit_items=10, collection_limit_items=150), {})
+    settings = github_work_rollup.resolve_settings(args(subject=["cli-user"], limit_items=10, collection_limit_items=collection_limit), {})
 
     payload = github_work_rollup.collect_rollup(settings)
 
     search_commands = [command for command in calls if command[1:3] == ["api", "--method"] and "q=author:cli-user updated:>=2026-06-01" in command]
     assert [field for command in search_commands for field in command if field.startswith("page=")] == ["page=1", "page=2"]
-    assert [field for command in search_commands for field in command if field.startswith("per_page=")] == ["per_page=100", "per_page=50"]
-    assert payload["summary"]["recent_activity"] == 150
+    assert [field for command in search_commands for field in command if field.startswith("per_page=")] == ["per_page=100", f"per_page={collection_limit - 100}"]
+    assert payload["summary"]["recent_activity"] == collection_limit
     assert not any("Subject search" in note for note in payload["limitations"])
 
 
@@ -747,6 +748,7 @@ def test_github_commands_are_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
         ("run", "list"),
     }
     assert {tuple(command[1:3]) for command in calls} <= allowed
+    assert all(command[3] == "GET" for command in calls if command[1:3] == ["api", "--method"])
     list_commands = [command for command in calls if command[1:3] in (["pr", "list"], ["issue", "list"])]
     assert list_commands
     assert all("--search" in command for command in list_commands)

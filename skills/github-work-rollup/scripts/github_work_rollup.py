@@ -1517,7 +1517,7 @@ def failure_payload(settings: dict[str, Any], error: str) -> dict[str, Any]:
         "timezone": settings["timezone"],
         "report_recipient": settings["report_recipient"],
         "error": error,
-        "next_step": "Run `gh auth status` and verify the configured repo/owner is accessible.",
+        "next_step": "Run `gh-with-env-token --check` and verify the configured repo/owner/subject is accessible.",
     }
 
 
