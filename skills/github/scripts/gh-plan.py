@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["PyYAML==6.0.3"]
 # ///
 """Compact GitHub issue planning helper for Codex skills."""
 
@@ -27,6 +27,7 @@ import github_comment as github_comment_core
 import github_issue as github_issue_core
 import github_milestone as github_milestone_core
 import github_identity
+import github_client
 import github_direction_next
 import github_plan_claim
 from github_direction_next import (
@@ -2807,6 +2808,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     inventory_truncated = len(issues) > NEXT_PLAN_INVENTORY_LIMIT
     issues = issues[:NEXT_PLAN_INVENTORY_LIMIT]
     seeds = {(repo.casefold(), item["number"]): {**item, "repo": repo} for item in issues}
+    client_records: dict[str, dict[str, Any]] = {}
     contexts: dict[str, tuple[dict[str, Any], dict[str, str]]] = {}
     focus_contexts: dict[str, dict[str, Any]] = {}
     nodes: dict[tuple[str, int], dict[str, Any]] = {}
@@ -2822,6 +2824,8 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
             if raw_issue is None:
                 issue_actor, raw_issue = get_issue(str(number), issue_repo)
                 actor = issue_actor or actor
+            if (raw_issue.get("user") or {}).get("login") and issue_repo.split("/")[0].casefold() == repo.split("/")[0].casefold() and issue_repo.casefold() not in client_records:
+                client_records[issue_repo.casefold()] = github_client.recorded_client(issue_repo)
             if issue_repo not in contexts:
                 target_config = load_config(issue_repo)
                 focus_actor, focus_values, focus_context = next_focus_context(issue_repo, target_config)
@@ -3002,10 +3006,12 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     portfolio = github_direction_next.rank_portfolio_work(
         ranked, discoveries, milestone_titles=titles, selection_context=selection_context,
         coverage_complete=scope is None and graph_coverage["complete"] and not unevaluated_milestones and not incomplete_milestone_sources,
+        repository_clients=client_records, director_owner=repo.split("/")[0],
         repository_milestones={source["repo"]: direction_milestone_titles(source["direction"]) if source.get("direction") else None for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
         repository_waypoints={source["repo"]: repository_direction_milestones(source) for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
     )
     ranked.update(portfolio)
+    ranked["client_context"] = {key: {field: value for field, value in record.items() if field != "login"} for key, record in client_records.items()}
     ranked["candidates"] = ranked["candidates"][:args.limit]
     ranked["available_candidates"] = ranked["available_candidates"][:args.limit]
     ranked["graph_context"] = graph_coverage

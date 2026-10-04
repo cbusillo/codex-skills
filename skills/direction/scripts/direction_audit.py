@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["PyYAML==6.0.3"]
 # ///
 """Read-only audit of a repository's DIRECTION.md against GitHub state.
 
@@ -30,7 +30,7 @@ if str(GITHUB_SCRIPTS) not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from skills.github.scripts import github_identity, github_rulesets
+from skills.github.scripts import github_client, github_identity, github_rulesets
 
 REQUIRED_HEADINGS = ("Purpose", "Stop Boundaries", "Journey", "Retired", "Milestones")
 ESCALATION_LABEL = "direction"
@@ -161,6 +161,7 @@ def audit(
     rulesets_unavailable: bool = False,
     audit_since: dt.datetime | None = None,
     capacity: dict[str, Any] | None = None,
+    client: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     limits: list[dict[str, Any]] = []
@@ -278,7 +279,8 @@ def audit(
         admission_actor = issue.get("_milestone_admitted_by")
         non_owner_admitted = admission_actor is not None and admission_actor != owner.lower()
         bot_authored_without_known_admission = author in bots and admission_actor is None
-        if (not issue.get("_admission_unknown") and milestone_title in milestone_lines
+        if (not github_client.is_client_issue(issue, client)
+                and not issue.get("_admission_unknown") and milestone_title in milestone_lines
                 and (non_owner_admitted or bot_authored_without_known_admission)):
             quotes = direction_quotes(str(issue.get("body") or ""))
             if not quotes:
@@ -905,6 +907,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(error))
         return 1
 
+    client = github_client.recorded_client(repo) if any((issue.get("user") or {}).get("login") for issue in issues) else None
     result = audit(
         direction_text=direction_text,
         milestones=milestones,
@@ -921,6 +924,7 @@ def main(argv: list[str] | None = None) -> int:
         expected_automation=github_identity.automation_login(),
         owner_identity_explicit=owner_reader or args.automation is not None,
         capacity=capacity,
+        client=client,
     )
     result.update({"repo": repo, "direction_source": f"{repo}:DIRECTION.md@default-branch", "read_only": True})
     result["audit_since"] = audit_since.isoformat().replace("+00:00", "Z")
