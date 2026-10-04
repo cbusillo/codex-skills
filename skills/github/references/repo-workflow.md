@@ -456,6 +456,8 @@ two PRs deep or expensive checks would rerun at every layer.
 ## CI Failure Diagnosis
 
 When checks fail, inspect logs before guessing from check names or status alone.
+When a failure fits a pattern, such as case sensitivity, paths, or naming, search
+the whole affected path for the same pattern before pushing a fix.
 
 ```sh
 <skill-dir>/scripts/github-ci-diagnose.py --pr <number-or-url>
