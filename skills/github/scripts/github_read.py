@@ -11,8 +11,10 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 import pathlib
+import random
 import re
 import subprocess
 import tempfile
@@ -38,6 +40,19 @@ MERGE_STATE_STATUS = {
     "unknown": "UNKNOWN",
     "unstable": "UNSTABLE",
 }
+
+
+def poll_interval(headers: dict[str, str]) -> float:
+    try:
+        value = float(headers.get("x-poll-interval", 0))
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) and value > 0 else 0.0
+
+
+def poll_delay(interval: float, minimum: float = 0.0) -> float:
+    base = max(interval, minimum)
+    return base + random.uniform(0.0, min(3.0, base * 0.1))
 
 
 class GitHubReadError(Exception):
@@ -139,7 +154,20 @@ class ConditionalResponseCache:
         body_path, lock_path = self._paths(path, headers)
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         with lock_path.open("a+", encoding="utf-8") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            if reader.deadline_at is None:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            else:
+                while True:
+                    remaining = reader.deadline_at - time.time()
+                    if remaining <= 0:
+                        # The shared transport returns the parent deadline failure
+                        # without starting a remote call.
+                        return reader._transport_request(method, path, step=step)
+                    try:
+                        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        time.sleep(min(0.05, remaining))
             cached = self._read(body_path)
             now = time.time()
             if cached and now - float(cached.get("validated_at") or 0) > self.max_age_seconds:
@@ -148,7 +176,7 @@ class ConditionalResponseCache:
                     body_path.unlink()
                 except OSError:
                     pass
-            if cached and now - float(cached.get("validated_at") or 0) <= self.coalesce_seconds:
+            if cached and now - float(cached.get("validated_at") or 0) <= max(self.coalesce_seconds, poll_interval(cached["headers"])):
                 result = github_api_core.ApiResult(
                     ok=True, status=200, body=cached["body"], headers=dict(cached["headers"]),
                     operation=reader.operation, actor=reader.expected_actor,
@@ -170,22 +198,30 @@ class ConditionalResponseCache:
                     # one unconditioned recovery request while holding the lock.
                     result = reader._transport_request(method, path, step=step, extra_headers=headers)
                 else:
-                    cached["validated_at"] = now
-                    self._write(body_path, cached)
+                    cached["validated_at"] = time.time()
+                    cached["headers"] = {**cached["headers"], **result.headers}
+                    cache_status = "revalidated"
+                    try:
+                        self._write(body_path, cached)
+                    except OSError:
+                        cache_status = "unavailable"
                     result.ok = True
                     result.body = cached["body"]
-                    result.headers = {**dict(cached["headers"]), **result.headers, "x-codex-cache": "revalidated"}
+                    result.headers = {**dict(cached["headers"]), **result.headers, "x-codex-cache": cache_status}
                     result.failure = None
                     return result
             if result.ok and result.status == 200:
                 etag = result.headers.get("etag")
                 modified = result.headers.get("last-modified")
                 if isinstance(etag, str) or isinstance(modified, str):
-                    self._write(body_path, {
-                        "schema": self.schema_version, "body": result.body,
-                        "headers": result.headers, "etag": etag, "last_modified": modified,
-                        "validated_at": now,
-                    })
+                    try:
+                        self._write(body_path, {
+                            "schema": self.schema_version, "body": result.body,
+                            "headers": result.headers, "etag": etag, "last_modified": modified,
+                            "validated_at": time.time(),
+                        })
+                    except OSError:
+                        result.headers["x-codex-cache"] = "unavailable"
             return result
 
 
@@ -200,6 +236,7 @@ class GitHubReader:
         gh_prefix_args: Optional[list[str]] = None,
         strict_actor: bool = False,
         cache_enabled: bool = False,
+        deadline_at: Optional[float] = None,
     ) -> None:
         self.gh_cmd = gh_cmd
         self.expected_actor = expected_actor
@@ -209,6 +246,7 @@ class GitHubReader:
         self.gh_prefix_args = list(gh_prefix_args or [])
         self.strict_actor = strict_actor
         self.cache_enabled = cache_enabled
+        self.deadline_at = deadline_at
         self.completed_steps: list[str] = []
         self.requests: list[dict[str, Any]] = []
         self.results: list[github_api_core.ApiResult] = []
@@ -239,7 +277,7 @@ class GitHubReader:
             is_write=False,
             extra_headers=extra_headers,
             retry_policy=retry_policy,
-            deadline_at=deadline_at,
+            deadline_at=self.deadline_at if deadline_at is None else deadline_at,
             allow_escape_sequences=allow_escape_sequences,
         )
 
@@ -315,7 +353,13 @@ class GitHubReader:
 
     def request(self, method: str, path: str, *, step: str) -> github_api_core.ApiResult:
         cache = ConditionalResponseCache.from_reader(self) if method.upper() == "GET" else None
-        result = cache.request(self, method, path, step=step) if cache else self._transport_request(method, path, step=step)
+        try:
+            result = cache.request(self, method, path, step=step) if cache else self._transport_request(method, path, step=step)
+        except OSError:
+            # Caching is an optional read optimization. Preserve transport,
+            # actor checks and shared cooldowns when cache storage is unusable.
+            result = self._transport_request(method, path, step=step)
+            result.headers["x-codex-cache"] = "unavailable"
         self._record_result(result, method=method, path=path, step=step)
         if not result.ok:
             message = result.failure.message if result.failure else "GitHub REST read failed"

@@ -15,6 +15,7 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -1392,7 +1393,7 @@ def collect_snapshot(args):
     state["last_snapshot_at"] = int(time.time())
     save_state(state_path, state)
 
-    snapshot = {
+    snapshot: dict[str, Any] = {
         "pr": pr,
         "checks": checks_summary,
         "failed_runs": failed_runs,
@@ -1405,6 +1406,7 @@ def collect_snapshot(args):
             "current_sha_retries_used": retries_used,
             "max_flaky_retries": args.max_flaky_retries,
         },
+        "minimum_poll_seconds": max((github_read.poll_interval(result.headers) for result in reader.results), default=0.0),
         "read_diagnostics": {
             "pr": pr_diagnostic,
             "checks": checks_diagnostic,
@@ -1527,6 +1529,7 @@ def run_watch(args):
         else:
             poll_seconds = getattr(args, "green_poll_seconds", 300)
 
+        poll_seconds = github_read.poll_delay(poll_seconds, snapshot.get("minimum_poll_seconds", 0.0))
         print_event(
             "snapshot",
             {

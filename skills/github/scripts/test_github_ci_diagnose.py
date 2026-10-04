@@ -15,6 +15,14 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
+
+os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
+os.environ["CODEX_AUTOMATION_LOGIN"] = "fixture-automation"
+os.environ["CODEX_AUTOMATION_EMAIL"] = "fixture-automation@example.invalid"
+os.environ["GH_WITH_ENV_TOKEN_EXPECTED_LOGIN"] = "fixture-automation"
+
+import github_api  # noqa: E402
 
 
 SCRIPT = Path(__file__).with_name("github-ci-diagnose.py")
@@ -139,6 +147,8 @@ def run_fixture(
             "GITHUB_CI_DIAGNOSE_GH": str(fake_gh),
             "FAKE_GH_RESPONSES": str(responses_path),
             "FAKE_GH_LOG": str(log_path),
+            "GITHUB_RETRY_STATE_DIR": str(root / "retry-state"),
+            "CODEX_SKILLS_ENV_FILE": str(root / "missing.env"),
         }
         command = [sys.executable, str(SCRIPT), "--repo", "."]
         if github_repo:
@@ -152,8 +162,9 @@ def run_fixture(
             env=env,
             capture_output=True,
             text=True,
+            timeout=20,
         )
-        calls = log_path.read_text(encoding="utf-8").splitlines()
+        calls = log_path.read_text(encoding="utf-8").splitlines() if log_path.exists() else []
         return process, calls
 
 
@@ -302,8 +313,29 @@ def test_primary_branch_match_skips_inaccessible_upstream() -> None:
     assert not any("/repos/private/r/pulls" in call for call in calls)
 
 
+def test_fixture_ignores_inherited_live_cooldown() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp)
+        policy = github_api.RetryPolicy(state_dir=state_dir)
+        store = github_api.SharedCooldownStore(state_dir)
+        actor = github_api.github_identity.automation_login()
+        key = github_api._cooldown_key("github.com", actor, "rest_core")
+        store.publish(key, ready_at=github_api.time.time() + 120,
+                      cause="secondary_rate_limited", now=github_api.time.time(), policy=policy)
+        before = {path.name: path.read_bytes() for path in state_dir.iterdir()}
+        with patch.dict(os.environ, {"GITHUB_RETRY_STATE_DIR": str(state_dir),
+                                   "GITHUB_RETRY_MAX_WAIT_SECONDS": "2"}):
+            process, calls = run_fixture(base_responses())
+        payload = json.loads(process.stdout)
+        assert payload["failingCount"] == 1, payload
+        assert payload["diagnostics"]["degraded"] is False, payload
+        assert len(calls) == 7, calls
+        assert {path.name: path.read_bytes() for path in state_dir.iterdir()} == before
+
+
 def main() -> None:
     tests = [
+        test_fixture_ignores_inherited_live_cooldown,
         test_failing_check_uses_rest_metadata_and_job_log,
         test_job_reader_maps_check_name_when_url_has_no_job_id,
         test_missing_run_permission_degrades_but_keeps_log_evidence,

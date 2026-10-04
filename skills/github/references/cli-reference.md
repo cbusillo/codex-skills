@@ -111,6 +111,10 @@ The production defaults allow one primary GitHub reset window:
   `$CODE_HOME/state/github-retry`, then `$CODEX_HOME/state/github-retry`, then
   `~/.code/state/github-retry`.
 
+Offline fake-CLI fixtures must set `GITHUB_RETRY_STATE_DIR` to their own temporary
+directory. The catalog validation gate gives each helper test a separate directory;
+live commands keep the default shared cooldown.
+
 Advanced bounded-backoff and state-lifecycle controls are
 `GITHUB_RETRY_BASE_BACKOFF_SECONDS`, `GITHUB_RETRY_MAX_BACKOFF_SECONDS`,
 `GITHUB_RETRY_WAIT_SLICE_SECONDS`, `GITHUB_RETRY_LOCK_POLL_SECONDS`,

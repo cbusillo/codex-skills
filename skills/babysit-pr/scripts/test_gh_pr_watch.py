@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,12 @@ os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env
 
 import gh_pr_watch
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolated_github_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("GITHUB_RETRY_STATE_DIR", str(tmp_path / "retry"))
+    monkeypatch.setenv("GITHUB_READ_CACHE_DIR", str(tmp_path / "cache"))
 
 
 def sample_pr() -> dict[str, Any]:
@@ -92,6 +99,7 @@ def sample_rest_view(**overrides):
 class ReviewReader:
     def __init__(self, body=None, *, degraded_reasons=None):
         self.body = body
+        self.results = []
         self.requests = [{"ok": True, "status": 200}]
         self.degraded_reasons = list(degraded_reasons or [])
         self.degraded = None
@@ -745,6 +753,7 @@ def test_collect_snapshot_emits_review_request_and_session_degradation(monkeypat
         degraded_reasons=[{"component": "actor", "code": "actor_changed"}]
     )
     reader.requests = [{"step": "review_readiness", "ok": True, "bucket": "graphql"}]
+    reader.results = [SimpleNamespace(headers={"x-poll-interval": "90"})]
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *args, **kwargs: pr)
     monkeypatch.setattr(gh_pr_watch, "load_state", lambda path: ({}, True))
     monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
@@ -777,6 +786,8 @@ def test_collect_snapshot_emits_review_request_and_session_degradation(monkeypat
         "status": "unknown", "source": "transport", "requirement": "unknown"
     }
     assert review_diagnostic["degradedReasons"] == reader.degraded_reasons
+
+    assert snapshot["minimum_poll_seconds"] == 90
 
 
 def test_recommend_actions_prioritizes_review_comments():
@@ -1148,23 +1159,26 @@ def test_run_watch_keeps_polling_open_ready_to_merge_pr(monkeypatch):
         if len(sleeps) >= 2:
             raise StopWatch
 
+    monkeypatch.setattr(gh_pr_watch.github_read.random, "uniform", lambda _low, _high: 2.0)
     monkeypatch.setattr(gh_pr_watch.time, "sleep", fake_sleep)
 
     with pytest.raises(StopWatch):
         gh_pr_watch.run_watch(argparse.Namespace(poll_seconds=30))
 
-    assert sleeps == [30, 300]
+    assert sleeps == [32, 302]
     assert [event for event, _ in events] == ["snapshot", "snapshot"]
 
 
 @pytest.mark.parametrize("stop_action", ["stop_pr_closed", "stop_exhausted_retries"])
-def test_run_watch_reports_chosen_sleep_interval(monkeypatch, stop_action):
+@pytest.mark.parametrize("server_floor", [0, 90])
+def test_run_watch_reports_chosen_sleep_interval(monkeypatch, stop_action, server_floor):
     args = argparse.Namespace(poll_seconds=17, green_poll_seconds=83)
-    green = {
+    green: dict[str, Any] = {
         "pr": sample_pr(),
         "checks": sample_checks(),
         "new_review_items": [],
         "actions": ["ready_to_merge"],
+        "minimum_poll_seconds": server_floor,
     }
     changed_green = {**green, "pr": {**sample_pr(), "head_sha": "new-head"}}
     pending = {
@@ -1193,14 +1207,15 @@ def test_run_watch_reports_chosen_sleep_interval(monkeypatch, stop_action):
         assert payload["next_poll_seconds"] == seconds
         sleeps.append(seconds)
 
+    monkeypatch.setattr(gh_pr_watch.github_read.random, "uniform", lambda _low, _high: 2.0)
     monkeypatch.setattr(gh_pr_watch.time, "sleep", fake_sleep)
 
     assert gh_pr_watch.run_watch(args) == 0
-    assert sleeps == [
+    assert sleeps == [max(value, server_floor) + 2 for value in [
         args.poll_seconds, args.green_poll_seconds,
         args.poll_seconds, args.green_poll_seconds,
         args.poll_seconds, args.poll_seconds, args.poll_seconds,
-    ]
+    ]]
     assert [event for event, _ in events] == ["snapshot"] * 8 + ["stop"]
 
 
