@@ -32,7 +32,7 @@ move that guidance into `AGENTS.md` or workflow metadata.
 
 ## Local Infrastructure Docs
 
-Cross-repository planning uses this route when private operational context is
+Use this route when private operational context is
 needed and `.github/github.json` is absent or its `relatedRepos`/`docs` routes
 do not cover that context. Preserve explicit repo routes for the scope they
 declare; consult local context only for the missing operational facts. Read

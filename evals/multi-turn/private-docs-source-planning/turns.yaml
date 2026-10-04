@@ -24,6 +24,6 @@ turns:
       owner: github-plan
       read: 'README\.md'
       forbid: 'gh-plan\.py|gh-with-env-token|curl|wget'
-      forbid_read: '/(?:\.code|\.codex|\.codex-accounts)/|local-context\.toml|private-context\.md'
+      forbid_read: '/(?:\.code|\.codex|\.codex-accounts)/|private-context\.md'
       final: 'empty identifier'
       final_none: ['SYNTHETIC_UNRELATED_AUTHORITY']

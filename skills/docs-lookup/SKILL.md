@@ -41,7 +41,8 @@ docs and authority. Route by source of truth, not provider name.
    credential discovery, read [the routing guide](references/routing.md).
    Check its configured local context route before inferring authority from a
    product repo, provider dashboard, deployment platform, or browser session.
-   Private DNS/Cloudflare and secret-location requests start there, never with
+   When explicit docs routes do not cover them, private DNS/Cloudflare and
+   secret-location requests start there, never with
    product `.env` files, shell history, or common token locations. Missing
    required context is a configuration gap to report, not permission to guess.
 4. Honor explicit repo documentation routes for their declared scope. For

@@ -141,8 +141,8 @@ its `relatedRepos` and task-relevant `docs` routes for their declared scope.
 When the task needs this environment's infrastructure, access paths, or private
 operational ownership and those routes do not provide the needed context, use
 `docs-lookup` before searching for more repositories. Missing metadata alone
-does not require private lookup for ordinary source work; do not read local
-context or its docs unless the task needs those operational facts. The local
+does not require private lookup for ordinary source work; do not read private
+operational docs unless the task needs those operational facts. The local
 docs source supplies task-specific context, not a repository inventory. Keep
 private identities and routing details out of public plans. If neither route
 is configured, report the local documentation configuration gap and continue
