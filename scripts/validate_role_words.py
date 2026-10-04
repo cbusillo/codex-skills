@@ -41,6 +41,7 @@ TRAILING_QUALIFIER = re.compile(rf"\b(?:{QUALIFIER}|policy)(?:-)?\s*$", re.IGNOR
 
 BLOCKQUOTE = re.compile(r"^\s*(?:>\s*)+")
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
+FENCE_CLOSE = re.compile(r"^\s*(`{3,}|~{3,})\s*$")
 FRONTMATTER_PROSE = re.compile(r"^(\s*)(?:-\s+)?(?:description|purpose|message):")
 FRONTMATTER_KEY = re.compile(r"^\s*(?:-\s+)?[\w-]+:(?:\s|$)")
 INLINE_CODE = re.compile(r"(`+).*?\1")
@@ -77,15 +78,22 @@ def strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
 
 def prose_lines(text: str) -> Iterable[tuple[int, str]]:
     fence = ""
-    fence_in_blockquote = False
+    fence_quote_depth = 0
+    previous_quote_depth = 0
     in_comment = False
     in_frontmatter = False
     prose_indent: int | None = None
     previous = ""
     for number, line in enumerate(text.splitlines(), start=1):
         quote_prefix = BLOCKQUOTE.match(line)
-        if not fence or fence_in_blockquote:
+        quote_depth = quote_prefix.group().count(">") if quote_prefix else 0
+        if fence and quote_depth < fence_quote_depth:
+            fence = ""
+        if not fence or fence_quote_depth:
             line = BLOCKQUOTE.sub("", line)
+        if not fence and quote_depth != previous_quote_depth:
+            previous = ""
+        previous_quote_depth = quote_depth
         if number == 1 and line.strip() == "---":
             in_frontmatter = True
             continue
@@ -109,12 +117,18 @@ def prose_lines(text: str) -> Iterable[tuple[int, str]]:
                 continue
         opening = FENCE.match(line)
         if fence:
-            if opening and opening.group(1)[0] == fence[0] and len(opening.group(1)) >= len(fence):
+            closing = FENCE_CLOSE.match(line)
+            if (
+                quote_depth == fence_quote_depth
+                and closing
+                and closing.group(1)[0] == fence[0]
+                and len(closing.group(1)) >= len(fence)
+            ):
                 fence = ""
             continue
         if opening:
             fence = opening.group(1)
-            fence_in_blockquote = quote_prefix is not None
+            fence_quote_depth = quote_depth
             previous = ""
             continue
         line, in_comment = strip_comments(line, in_comment)

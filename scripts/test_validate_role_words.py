@@ -113,6 +113,27 @@ def test_quoted_fence_literals_stay_inside_unquoted_code() -> None:
             raise AssertionError(module.findings(text))
 
 
+def test_quote_boundaries_do_not_hide_role_prose() -> None:
+    module = load_module()
+    for text, expected in (
+        ("> ```bash\n> make\n\nAsk the owner.", [(4, "owner")]),
+        ("Settings live in the repository\n> Owner approval is required.", [(2, "Owner")]),
+        ("> Settings live in the repository\n>> Owner approval is required.", [(2, "Owner")]),
+    ):
+        if module.findings(text) != expected:
+            raise AssertionError(module.findings(text))
+
+
+def test_only_matching_bare_fences_close_code() -> None:
+    module = load_module()
+    for text, expected_line in (
+        ("> ```markdown\n> > ```bash\n> > run as operator\n> > ```\n> ```\nOwner approves.", 6),
+        ("```markdown\n```bash\nrun as operator\n```\nOwner approves.", 5),
+    ):
+        if module.findings(text) != [(expected_line, "Owner")]:
+            raise AssertionError(module.findings(text))
+
+
 def test_allows_github_sense_and_code() -> None:
     module = load_module()
     text = "\n".join(
@@ -146,6 +167,8 @@ def main() -> int:
     test_never_carries_prose_across_fences()
     test_allows_wrapped_github_sense()
     test_quoted_fence_literals_stay_inside_unquoted_code()
+    test_quote_boundaries_do_not_hide_role_prose()
+    test_only_matching_bare_fences_close_code()
     test_allows_github_sense_and_code()
     print("ok test-validate-role-words")
     return 0
