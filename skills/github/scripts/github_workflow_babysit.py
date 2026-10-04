@@ -1277,8 +1277,8 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--poll-interval-seconds",
         type=float,
-        default=DEFAULT_POLL_INTERVAL_SECONDS,
-        help="Polling interval, greater than zero and no greater than the overall timeout.",
+        default=None,
+        help="Polling interval, greater than zero and no greater than the timeout; default 60 seconds, clipped to a shorter timeout.",
     )
 
 
@@ -1293,6 +1293,8 @@ def validate_runtime_arguments(args: argparse.Namespace) -> tuple[frozenset[str]
             "invalid_argument",
             f"--timeout-seconds must be greater than zero and at most {int(MAX_TIMEOUT_SECONDS)}",
         )
+    if args.poll_interval_seconds is None:
+        args.poll_interval_seconds = min(DEFAULT_POLL_INTERVAL_SECONDS, args.timeout_seconds)
     if (
         not math.isfinite(args.poll_interval_seconds)
         or args.poll_interval_seconds <= 0

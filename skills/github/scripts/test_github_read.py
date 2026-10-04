@@ -904,14 +904,17 @@ def test_cache_storage_failure_falls_back_to_same_deadline_and_actor() -> None:
         root = Path(tmp) / "cache"
         root.write_text("not a directory")
         reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="github.workflow.run.read",
-                                         cache_enabled=True, strict_actor=True, deadline_at=time.time() + 10)
+                                         cache_enabled=True, strict_actor=True, actor="fixture-automation", deadline_at=time.time() + 10)
         with patch.dict(os.environ, {"GITHUB_READ_CACHE_DIR": str(root)}), patch(
             "subprocess.run", return_value=process(include_output({"value": 1}))
-        ) as remote:
+        ) as remote, patch.object(github_read.github_api_core, "call_gh_with_retry", wraps=github_read.github_api_core.call_gh_with_retry) as transport:
             result = reader.request("GET", "/poll", step="poll")
             assert result.body == {"value": 1}
             assert result.headers["x-codex-cache"] == "unavailable"
             assert remote.call_count == 1
+            assert transport.call_args.kwargs["deadline_at"] == reader.deadline_at
+            assert transport.call_args.kwargs["actor"] == reader.request_actor
+            assert transport.call_args.kwargs["expected_actor"] == reader.expected_actor
         # Storage fallback must not return a cached success for permission errors.
         with patch.dict(os.environ, {"GITHUB_READ_CACHE_DIR": str(root)}), patch(
             "subprocess.run", return_value=process(include_output({"message": "Resource not accessible by integration"}, status=403), returncode=1)

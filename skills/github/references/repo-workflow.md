@@ -117,7 +117,8 @@ workflow list filtered by time, name, or unsupported CLI fields. Use the
 `watch --run-id <id>` subcommand to recover an already-known run.
 
 PR and workflow watchers use 60-second active defaults and positive jitter.
-They honor a longer `x-poll-interval` response header. Automation workflow run
+The workflow default clips to a shorter requested timeout, ending without an
+extra poll. They honor a longer `x-poll-interval` response header. Automation workflow run
 and job GETs reuse the shared private conditional cache, including 304 bodies;
 identity and protected-environment reads remain fresh. An unavailable cache falls
 back to the same live transport, actor checks and shared cooldown. Completed GETs

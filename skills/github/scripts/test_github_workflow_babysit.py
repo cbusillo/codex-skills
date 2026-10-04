@@ -214,6 +214,22 @@ class WorkflowBabysitterTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
+    def test_short_timeout_uses_a_bounded_default_poll_interval(self) -> None:
+        args = workflow_babysit.parse_args([
+            "watch", "--repo", "example/repo", "--run-id", "123", "--timeout-seconds", "30",
+        ])
+        workflow_babysit.validate_runtime_arguments(args)
+        self.assertEqual(args.poll_interval_seconds, min(workflow_babysit.DEFAULT_POLL_INTERVAL_SECONDS, args.timeout_seconds))
+        clock = ManualClock()
+        client = FakeWorkflowClient(runs=[run_snapshot("in_progress")])
+        babysitter = workflow_babysit.WorkflowBabysitter(client, clock=clock.now, sleep=clock.sleep)
+        result = babysitter.watch(run_id=123, run_url=None, authorized_environments=frozenset(),
+                                 approval_comment="unused", timeout_seconds=args.timeout_seconds,
+                                 poll_interval_seconds=args.poll_interval_seconds)
+        self.assertEqual(result["outcome"], "bounded_timeout")
+        self.assertEqual(clock.value, args.timeout_seconds)
+        self.assertEqual(result["polls"], 1)
+
     def test_poll_jitter_respects_server_minimum_and_deadline(self) -> None:
         client = FakeWorkflowClient(runs=[run_snapshot("in_progress"), run_snapshot("completed", conclusion="success")])
         client.minimum_poll_seconds = 90.0
