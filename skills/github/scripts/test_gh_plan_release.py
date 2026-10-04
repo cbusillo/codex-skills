@@ -229,6 +229,7 @@ class ReleaseTests(unittest.TestCase):
         self.successor()
         successor_id = self.f.comments[-1]["id"]
         self.commit_date = "2026-10-04T00:00:00Z"
+        self.f.pulls[0]["head"]["sha"] = "fixture-successor-head"
         self.f.comments.append(self.comment(successor_id + 1, f"Released claim {successor_id}", "2026-10-05T00:00:00Z"))
         self.f.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n\n## Current Status\n\nState: Released handoff."
         self.f.args.worker = "next-successor"
