@@ -1881,6 +1881,7 @@ def claim_snapshot(ref: str, repo: str) -> tuple[dict[str, Any], str, list[dict[
 def cmd_claim(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     issue_repo, number = issue_ref(args.issue, repo)
+    issue_repo = issue_repo.casefold()
     claim = {key: getattr(args, key) for key in ("worker", "session", "branch")}
     for key, value in claim.items():
         if not value or re.search(r"\s|[<>]", value):
@@ -1901,7 +1902,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         target_match = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/([1-9]\d*)", refresh_pr)
         if not target_match:
             raise PlanError("--refresh-pr must be an exact GitHub pull request URL")
-        target_repo, target_number = target_match.group(1), int(target_match.group(2))
+        target_repo, target_number = target_match.group(1).casefold(), int(target_match.group(2))
     if refresh_pr:
         claim["refresh_pr"] = f"https://github.com/{target_repo}/pull/{target_number}"
     claim["claimed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -1909,10 +1910,10 @@ def cmd_claim(args: argparse.Namespace) -> None:
     claim_comment: dict[str, Any] = {}
     inventory: dict[str, Any] = {}
     previous_status = ""
-    config = load_config(repo)
+    config = load_config(issue_repo)
 
-    def check_wait(waiting_issue: dict[str, Any], waiting_status: str) -> None:
-        status_state = next_plan_status(waiting_issue, config)
+    def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False) -> None:
+        status_state = next_plan_status(waiting_issue, load_config(target_repo) if target else config)
         reports = github_direction_next.waiting_records(
             compact_issue(waiting_issue),
             "\n".join(
@@ -1939,6 +1940,21 @@ def cmd_claim(args: argparse.Namespace) -> None:
             f"/repos/{target_repo}/pulls", query={"state": "open"},
             bucket="rest_core", step_prefix="refresh_open_prs",
         )
+        handoff = next((c for c in source_comments if c.get("id") == handoff_id), None)
+        named = github_plan_claim.handoff_pr_numbers(
+            (handoff or {}).get("body") or "", issue_repo=issue_repo, target_repo=target_repo,
+        )
+        # Fetch only named PRs absent from the open inventory, rather than the
+        # repository's complete closed history. A non-PR issue reference is 404.
+        for missing in sorted(named - {p["number"] for p in target_pulls}):
+            try:
+                _, retained_pull = api_json("GET", f"/repos/{target_repo}/pulls/{missing}",
+                                            bucket="rest_core", failed_step="refresh_retained_pr")
+            except PlanError as exc:
+                if (exc.api_result or {}).get("status") != 404:
+                    raise
+                continue
+            target_pulls.append(retained_pull)
         permitted = github_plan_claim.refresh_handoff(
             source_comments, args.resume_from, handoff_id, target_pulls, target_number,
             issue_repo=issue_repo, issue_number=number, target_repo=target_repo,
@@ -1947,7 +1963,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
             if (pull.get("head") or {}).get("ref") not in permitted:
                 continue
             _, target = get_issue(str(pull["number"]), target_repo)
-            if target.get("state") != "open" or "pull_request" not in target:
+            if target.get("state") != pull.get("state") or "pull_request" not in target:
                 raise PlanError("Refresh handoff PR changed or closed during ownership preflight")
             sections, _ = read_plan_sections(target)
             _, target_comments = collect_paged_rest_items(
@@ -1958,13 +1974,30 @@ def cmd_claim(args: argparse.Namespace) -> None:
             if competing:
                 refuse(competing)
             if pull["number"] == target_number:
-                check_wait(target, sections.get("Current Status", ""))
+                check_wait(target, sections.get("Current Status", ""), target=True)
         target_inventory = github_plan_claim.local_inventory(target_repo, target_number)
         _, own_comments = github_plan_claim.discussion_evidence("", source_comments, claim)
         for checked_number, checked_repo in ((target_number, target_repo), (number, issue_repo)):
             competing = github_plan_claim.artifact_evidence(
                 target_inventory, target_pulls, checked_number, claim, own_record=bool(own_comments),
                 retained_branches=permitted, retained_repo=target_repo, repo=checked_repo,
+                inventory_repo=target_repo,
+            )
+            if competing:
+                refuse(competing)
+        if issue_repo.casefold() != target_repo.casefold():
+            planning_checkout = getattr(args, "planning_checkout", None)
+            config_path = repo_config_path(issue_repo) if not planning_checkout else None
+            planning_path = pathlib.Path(planning_checkout) if planning_checkout else config_path.parent.parent if config_path else None
+            if planning_path is None:
+                raise PlanError("Cross-repository refresh requires a verified planning checkout; pass --planning-checkout PATH")
+            planning_inventory = github_plan_claim.local_inventory(issue_repo, number, cwd=planning_path)
+            _, planning_pulls = collect_paged_rest_items(
+                f"/repos/{issue_repo}/pulls", query={"state": "open"},
+                bucket="rest_core", step_prefix="refresh_planning_prs",
+            )
+            competing = github_plan_claim.artifact_evidence(
+                planning_inventory, planning_pulls, number, claim, own_record=bool(own_comments), repo=issue_repo,
             )
             if competing:
                 refuse(competing)
@@ -2010,7 +2043,8 @@ def cmd_claim(args: argparse.Namespace) -> None:
         conflicts = github_plan_claim.artifact_evidence(inventory, pulls, number, claim,
                                                        own_record=bool(owned), retained=retained, repo=issue_repo,
                                                        retained_branches=retained_branches,
-                                                       retained_repo=target_repo if refresh_pr else None)
+                                                       retained_repo=target_repo if refresh_pr else None,
+                                                       inventory_repo=target_repo)
         if conflicts:
             refuse(conflicts)
         completed.append("ownership_preflight")
@@ -4107,6 +4141,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--resume-from", type=int, help="Released structured claim comment ID for verified retained-work handoff")
     p.add_argument("--refresh-pr", help="Authorized conflict-only PR refresh URL; claim its canonical issue")
     p.add_argument("--handoff-comment", type=int, help="Source-author handoff comment ID on the canonical issue")
+    p.add_argument("--planning-checkout", help="Canonical planning repository checkout for cross-repository ownership inventory")
     p.add_argument("--wait-resolved", help="Existing resolution evidence for a recorded wait/hold; grants no new authority")
     p.set_defaults(func=cmd_claim)
 

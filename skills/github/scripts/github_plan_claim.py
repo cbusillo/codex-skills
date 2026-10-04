@@ -151,20 +151,20 @@ def run_read(argv: list[str], *, cwd: pathlib.Path | None = None) -> str:
     return result.stdout
 
 
-def local_inventory(repo: str, number: int) -> dict[str, Any]:
-    remote = run_read(["git", "remote", "get-url", "origin"]).strip()
+def local_inventory(repo: str, number: int, *, cwd: pathlib.Path | None = None) -> dict[str, Any]:
+    remote = run_read(["git", "remote", "get-url", "origin"], cwd=cwd).strip()
     if not re.search(rf"[:/]{re.escape(repo)}(?:\.git)?$", remote, re.IGNORECASE):
         raise ValueError("Run claim from a checkout of the target repository")
     worktrees = []
-    for block in run_read(["git", "worktree", "list", "--porcelain"]).strip().split("\n\n"):
+    for block in run_read(["git", "worktree", "list", "--porcelain"], cwd=cwd).strip().split("\n\n"):
         fields = dict(line.split(" ", 1) for line in block.splitlines() if " " in line)
         branch = fields.get("branch", "").removeprefix("refs/heads/")
         path = fields.get("worktree", "")
         worktrees.append({"branch": branch, "path": path})
-    local = run_read(["git", "for-each-ref", "--format=%(refname:short)", "refs/heads"]).splitlines()
+    local = run_read(["git", "for-each-ref", "--format=%(refname:short)", "refs/heads"], cwd=cwd).splitlines()
     remote_branches = [
         line.split("\t", 1)[1].removeprefix("refs/heads/")
-        for line in run_read(["git", "ls-remote", "--heads", "origin"]).splitlines()
+        for line in run_read(["git", "ls-remote", "--heads", "origin"], cwd=cwd).splitlines()
     ]
     sessions: list[dict[str, Any]] = []
     coverage: dict[str, Any] = {"codex": {"status": "unavailable", "reason": "no CLI peer inventory"}}
@@ -207,6 +207,14 @@ def retained_branch(comments: list[dict[str, Any]], comment_id: int) -> str:
     raise ValueError("Resume source claim has not been released by its author")
 
 
+def handoff_pr_numbers(text: str, *, issue_repo: str, target_repo: str) -> set[int]:
+    qualified = rf"(?:https://github\.com/{re.escape(target_repo)}/pull/|(?<![\w/]){re.escape(target_repo)}#)([1-9]\d*)(?!\d)"
+    numbers = {int(m.group(1)) for m in re.finditer(qualified, text, re.IGNORECASE)}
+    if issue_repo.casefold() == target_repo.casefold():
+        numbers.update(int(m.group(1)) for m in re.finditer(r"(?<![\w/#])#([1-9]\d*)(?!\d)", text))
+    return numbers
+
+
 def refresh_handoff(
     comments: list[dict[str, Any]], source_id: int, handoff_id: int,
     pulls: list[dict[str, Any]], target_number: int, *, issue_repo: str,
@@ -227,21 +235,23 @@ def refresh_handoff(
     ):
         raise ValueError("Refresh requires an exact source-claim release before or in the handoff")
 
-    def mentions_pr(text: str, number: int) -> bool:
-        qualified = rf"(?:https://github\.com/{re.escape(target_repo)}/pull/|{re.escape(target_repo)}#){number}(?!\d)"
-        return bool(re.search(qualified, text) or (issue_repo.casefold() == target_repo.casefold()
-                    and re.search(rf"(?<![\w/#])#{number}(?!\d)", text)))
-
     handoff_text = handoff.get("body") or ""
-    if not (handoff_text.splitlines()[:1] == [f"Released claim {source_id}"]
-            or re.search(rf"\bclaim {source_id}(?!\d)", handoff_text)):
+    source_record = records(source["body"])[0]
+    standalone = (handoff_text.splitlines()[:1] == [f"Handoff from {source_record['worker']}"]
+                  and re.search(rf"\bclaim {source_id}(?!\d)", handoff_text)
+                  and re.search(rf"(?<![\w-]){re.escape(source_record['session'])}(?![\w-])", handoff_text)
+                  and not records(handoff_text))
+    if not (handoff_text.splitlines()[:1] == [f"Released claim {source_id}"] or standalone):
         raise ValueError("Refresh handoff must identify the exact released source claim")
     empty = {"local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}
     permitted = {source_branch}
     target_found = False
+    named = handoff_pr_numbers(handoff_text, issue_repo=issue_repo, target_repo=target_repo)
     for pull in pulls:
         branch = (pull.get("head") or {}).get("ref", "")
-        if not mentions_pr(handoff.get("body") or "", pull["number"]):
+        if pull["number"] not in named:
+            continue
+        if pull.get("state") != "open" and not (pull.get("state") == "closed" and pull.get("merged_at")):
             continue
         if (pull.get("user") or {}).get("login") != author:
             continue
@@ -251,10 +261,10 @@ def refresh_handoff(
             continue
         # The PR must independently link the canonical planning issue.
         if not artifact_evidence(empty, [{**pull, "head": {"ref": ""}}], issue_number, {},
-                                 own_record=False, repo=issue_repo):
+                                 own_record=False, repo=issue_repo, inventory_repo=target_repo):
             continue
         permitted.add(branch)
-        target_found |= pull["number"] == target_number
+        target_found |= pull["number"] == target_number and pull.get("state") == "open"
     if not target_found:
         raise ValueError("Refresh target must be an open same-repository PR linked to the issue and attested in the released handoff")
     return permitted
@@ -264,17 +274,19 @@ def artifact_evidence(
     inventory: dict[str, Any], pulls: list[dict[str, Any]], number: int,
     claim: dict[str, str], *, own_record: bool, retained: str | None = None, repo: str = "",
     retained_branches: set[str] | None = None, retained_repo: str | None = None,
+    inventory_repo: str | None = None,
 ) -> list[dict[str, Any]]:
     conflicts = []
+    local_references = inventory_repo is None or inventory_repo.casefold() == repo.casefold()
     def permitted(branch: str) -> bool:
         return (own_record and branch == claim["branch"]) or branch == retained or branch in (retained_branches or set())
 
     for source in ("local_branches", "remote_branches"):
         for branch in inventory[source]:
-            if references_issue(branch, number) and not permitted(branch):
+            if local_references and references_issue(branch, number) and not permitted(branch):
                 conflicts.append({"source": source, "branch": branch, "certainty": "current_or_stale"})
     for tree in inventory["worktrees"]:
-        if references_issue(tree["branch"] + "/" + pathlib.Path(tree["path"]).name, number):
+        if local_references and references_issue(tree["branch"] + "/" + pathlib.Path(tree["path"]).name, number):
             if not permitted(tree["branch"]):
                 conflicts.append({"source": "worktree", **tree, "certainty": "current_or_stale"})
     paths = {str(pathlib.Path(t["path"]).resolve()) for t in inventory["worktrees"]}
@@ -284,7 +296,7 @@ def artifact_evidence(
         if session.get("sessionId") == claim["session"]:
             continue
         cwd = str(pathlib.Path(session.get("cwd") or "/").resolve())
-        if cwd in retained_paths or (cwd in paths and references_issue((session.get("name") or "") + "/" + pathlib.Path(cwd).name, number)):
+        if cwd in retained_paths or (local_references and cwd in paths and references_issue((session.get("name") or "") + "/" + pathlib.Path(cwd).name, number)):
             conflicts.append({"source": "claude_session", "session": session.get("sessionId"),
                               "state": session.get("state") or session.get("status")})
     for pull in pulls:
@@ -294,7 +306,9 @@ def artifact_evidence(
         issue_url = rf"https://github\.com/{re.escape(repo)}/issues/{number}"
         # Only the explicitly unstarted follow-up line is contextual.
         # Other URLs, titles, branches and implementation references still hold.
-        issue_reference = rf"(?:#{number}|{re.escape(repo)}#{number}|{issue_url})(?!\d)"
+        issue_reference = rf"(?:{re.escape(repo)}#{number}|{issue_url})(?!\d)"
+        if local_references:
+            issue_reference = rf"(?:#{number}|{issue_reference})(?!\d)"
         ownership_reference = (
             rf"(?i)(?<![\w])(?:__)?(?:refs?|fix(?:es|ed)?|clos(?:e|es|ed)|resolv(?:e|es|ed)|implement(?:s|ed|ing)?)"
             rf"(?:\*\*|__)?\s*:?(?:\*\*|__)?\s+(?:{issue_reference}|<{issue_url}(?!\d)[^>]*>|"
@@ -307,8 +321,8 @@ def artifact_evidence(
         )
         explicit_url = bool(repo and re.search(issue_url + r"(?!\d)", title + "\n" + ownership_body))
         linked = bool(re.search(ownership_reference, body))
-        titled = bool(re.search(rf"(?<![\w/])#{number}(?!\d)", title))
-        if explicit_url or linked or titled or references_issue(branch, number):
+        titled = local_references and bool(re.search(rf"(?<![\w/])#{number}(?!\d)", title))
+        if explicit_url or linked or titled or (local_references and references_issue(branch, number)):
             same_repo = not retained_repo or all(
                 ((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() == retained_repo.casefold()
                 for side in ("head", "base")

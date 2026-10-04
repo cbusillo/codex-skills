@@ -434,6 +434,11 @@ uv run <skill-dir>/scripts/gh-plan.py claim <canonical-issue-url> \
   --wait-resolved "<verified evidence resolving the recorded wait for this refresh>"
 ```
 
+For a planning issue in another repository, both repositories receive their
+own ownership inventory. Supply `--planning-checkout /path/to/planning-repo`
+when its verified checkout is not discoverable through repository configuration.
+The remote identity is checked; no worktree is adopted or mutated there.
+
 The source claim and handoff must be on that planning issue. The source author
 must have posted an exact `Released claim <id>` before or in the handoff, and
 the handoff must name the target PR. A same-repository `#123`, qualified
@@ -442,12 +447,20 @@ a qualified reference. The open PR must independently link the planning issue
 and use a head and base in the PR's repository; fork refreshes are not supported.
 The issue and target PR's recorded waits still require verified resolution.
 
-The handoff must identify the exact source claim (its release line or an
-explicit `claim <id>` reference). PR authorship must match the source author.
+The handoff must start with the exact `Released claim <id>` line, or with
+`Handoff from <source-worker>` and include the exact claim ID and native source
+session ID. A generic bot rollup or refresh claim is not a handoff. Authorship
+checks are at GitHub identity level; verify the actual finished-session handoff
+before invoking the route because several sessions can share that identity.
+PR authorship must match the source author.
 The named PR identities bind their current branches to that finished session's
 handoff, including split branches that differ from the original claim branch.
-Only open, same-repository PRs independently linked to the canonical issue and
-named in that handoff count as retained artifacts. The helper reads the
+Only open or merged same-repository PRs independently linked to the canonical
+issue and named in that handoff count as retained artifacts; a closed unmerged
+PR does not. The refresh target itself must still be open. Cross-repository
+links must qualify the canonical issue, since bare `#123` belongs to the PR
+repository. Merged siblings may retain their branches/worktrees without
+requiring cleanup to refresh the remaining PR. The helper reads the
 issue and those PR discussions, local/remote branches, registered worktrees,
 and available peer sessions again during readback. Unreleased claims, active
 Current Status, live peers on retained worktrees, unaccounted artifacts, and
@@ -457,8 +470,11 @@ cannot silently become a general implementation claim.
 This route grants no refresh, push, merge, cleanup, or takeover authority.
 Verify the finished-session handoff and existing conflict-refresh authorization
 first. On confirmed claim success, create your own new linked task worktree;
-leave the original worktree and its lease intact. Update the existing PR branch
-only under the brief's explicit authority, then release the new issue claim
+leave the original worktree and its lease intact. From that new task branch, push explicitly to the verified existing PR head
+with a normal fast-forward refspec (`task-branch:pr-head-branch`) under the
+brief's authority; never check out the PR branch in two worktrees or force-push.
+Recheck its live head before integrating and pushing so a concurrent update
+is preserved. Then release the new issue claim
 with its exact comment ID. Direct `claim <PR>` remains unsupported; the
 canonical issue is the durable ownership and status record.
 
