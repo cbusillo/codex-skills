@@ -1204,6 +1204,33 @@ def test_legacy_process_result_merges_outer_and_delegated_failure_evidence() -> 
     assert result.failure.failed_step == "update_comment"
 
 
+def test_call_gh_preserves_delegated_failure_and_outer_context() -> None:
+    stdout = json.dumps({
+        "ok": False,
+        "failure": {
+            "cause": "validation_error",
+            "message": "Invalid wrapper argument",
+            "retryable": False,
+            "completed_steps": ["wrapper_preflight"],
+            "failed_step": "input_validation",
+        },
+    })
+    for method, outcome in (("GET", None), ("PATCH", "unknown")):
+        result = _call(
+            method, fake_stdout=stdout, returncode=2,
+            completed_steps=["resolve_actor"], failed_step="update_comment",
+        )
+        assert result.ok is False, result.as_dict()
+        assert result.failure.cause == "validation_error", result.as_dict()
+        assert result.failure.retryable is False, result.as_dict()
+        assert result.failure.write_outcome == outcome, result.as_dict()
+        assert result.completed_steps == ["resolve_actor", "wrapper_preflight"], result.as_dict()
+        assert result.failed_step == "update_comment", result.as_dict()
+        assert result.failure.failed_step == "input_validation", result.as_dict()
+    success = _call("GET", fake_stdout=stdout, returncode=0)
+    assert success.ok is True and success.body == json.loads(stdout), success.as_dict()
+
+
 def test_legacy_write_rate_limit_is_rejected_and_retryable() -> None:
     failure = _api.classify_legacy_failure(
         "GraphQL: API rate limit already exceeded",
@@ -2965,6 +2992,7 @@ def main() -> None:
         test_structured_legacy_response_wins_over_stderr_phrase,
         test_delegated_terminal_envelope_preserves_failure_evidence,
         test_legacy_process_result_merges_outer_and_delegated_failure_evidence,
+        test_call_gh_preserves_delegated_failure_and_outer_context,
         test_legacy_write_rate_limit_is_rejected_and_retryable,
         test_legacy_unknown_rate_limit_uses_probe_bucket,
         test_legacy_graphql_rate_limit_uses_probe_reset,

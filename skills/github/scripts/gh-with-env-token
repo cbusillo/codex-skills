@@ -123,23 +123,6 @@ readonly require_automation_auth
 
 expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-${CODEX_AUTOMATION_LOGIN:-}}
 
-# Capture stdin only when the command is going to read it, so the same body can
-# be replayed to the actor check and to the real call. Agent hosts leave stdin
-# open and idle; reading it unconditionally would wait forever for an end of
-# file that never comes. A command that reads stdin without saying so in its
-# arguments still inherits it, just without replay.
-reads_stdin=0
-for argument in "$@"; do
-	case $argument in
-	- | @- | *=@- | --with-token) reads_stdin=1 ;;
-	esac
-done
-
-if [ "$reads_stdin" -eq 1 ] && [ ! -t 0 ]; then
-	cat >"$stdin_file"
-	stdin_captured=1
-fi
-
 run_with_input() {
 	if [ "$stdin_captured" -eq 1 ]; then
 		"$@" <"$stdin_file"
@@ -818,7 +801,7 @@ app_auth_for_command() {
 # actor probe. Comment selection must know the writer before reading authors.
 if [ -n "$write_actor_repository" ]; then
 	case "$write_actor_repository" in
-	*[!a-zA-Z0-9_./-]* | */*/* | /* | */ | ./* | ../* | */. | */..)
+	*[!a-zA-Z0-9_./-]* | */*/* | /* | */ | ./* | ../* | */. | */.. | -*)
 		probe_validation_error "--write-actor-for requires OWNER/REPO"
 		;;
 	*/*) ;;
@@ -829,6 +812,23 @@ if [ -n "$write_actor_repository" ]; then
 	if ! is_actor_probe "$@"; then
 		probe_validation_error "--write-actor-for accepts only a GET /user actor probe"
 	fi
+fi
+
+# Capture stdin only after probe validation, when the command is going to read
+# it, so the same body can be replayed to the actor check and to the real call.
+# Agent hosts leave stdin open and idle; an invalid probe must fail without
+# waiting for an end of file. Commands that read stdin without saying so in
+# their arguments still inherit it, just without replay.
+reads_stdin=0
+for argument in "$@"; do
+	case $argument in
+	- | @- | *=@- | --with-token) reads_stdin=1 ;;
+	esac
+done
+
+if [ "$reads_stdin" -eq 1 ] && [ ! -t 0 ]; then
+	cat >"$stdin_file"
+	stdin_captured=1
 fi
 
 # github_identity.CONTRIBUTOR_EXIT_STATUS: the App is not installed on the
