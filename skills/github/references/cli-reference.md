@@ -370,12 +370,12 @@ competing evidence. Age never expires a claim. Do not bypass a refusal by
 changing the worker, tool, or identity; ask the Director about ambiguous ownership
 and continue independent work.
 
-Unstructured Current Status ownership evidence includes worker/session fields,
-`Claimed by`, bare `Owned by` lines, state ownership declarations, and prose
-assigning ownership of work, an issue, a task, implementation, or execution.
-Resource responsibility prose (for example, provider entries owned by engineering
-for evidence and the Director for disposition approval) is not a worker claim.
-Structured claims and unreleased claim comments still refuse independently.
+Unstructured Current Status ownership evidence remains fail-closed for `Owned by`,
+`Claimed by`, and worker/session fields, including informal prose and Markdown.
+Resource responsibility sentences assigning entries, records, or resources to
+one actor for evidence and another for disposition approval are not worker claims.
+Other ownership assertions in the same status, structured claims, and unreleased
+claim comments still refuse independently.
 
 An issue URL on a PR body line starting exactly `Code follow-ups recorded
 without starting implementation:` is context-only. Title or branch ownership,

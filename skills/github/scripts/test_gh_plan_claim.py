@@ -150,11 +150,26 @@ class ClaimTests(unittest.TestCase):
             "Claimed by another-worker",
             "Worker: another-worker",
             "Session: another-session",
+            "- Owned by another-worker",
+            "**Owned by** another-worker",
+            "State: Active\nCurrently owned by another-worker (session-x)",
+            "Status: Active; owned by another-worker",
+            "Repair owned by another-worker",
+            "Fix owned by another-worker",
+            "PR owned by another-worker",
+            "Work on v1.2 owned by another-worker",
+            "Owned by Launchplane engineering for evidence",
+            RESPONSIBILITY_STATUS + "\nCurrently owned by another-worker",
+            RESPONSIBILITY_STATUS + " Currently owned by another-worker",
+            "Entries owned by another-worker",
+            "Entries owned by another-worker; records owned by engineering for evidence and Chris for disposition approval.",
         ):
             with self.subTest(status=status):
                 self.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n\n## Current Status\n\n" + status
-                with self.assertRaises(PLAN.ClassifiedPlanError):
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assertEqual(caught.exception.payload["competing_evidence"][0]["source"], "current_status")
                 self.assert_no_writes()
 
     def test_stale_claim_is_not_expired(self):
