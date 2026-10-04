@@ -3811,6 +3811,10 @@ def _project_success_output(
         return records, _project_production_backup_authority_result(
             provider_payload.get("result")
         )
+    if operation in DOKPLOY_COMPOSE_DOMAIN_COMMANDS:
+        return _project_records(provider_payload.get("records"), set()), _project_compose_domain_setup(
+            provider_payload.get("result"), request=request or {}
+        )
     if operation in {
         "dokploy-target-create-compose-dry-run",
         "dokploy-target-create-compose-apply",
@@ -3998,6 +4002,14 @@ def summarize_success(
                 "reason with --expected-plan-digest."
                 if operation == "product-image-repository-dry-run"
                 else "Check read_back_matches before relying on the new image repository."
+            )
+        elif operation in DOKPLOY_COMPOSE_DOMAIN_COMMANDS:
+            summary["plan_sha256"] = result.get("plan_sha256")
+            summary["recommendation"] = (
+                "Save and review this dry-run, then apply the exact private payload with "
+                "--expected-plan-digest and the saved evidence."
+                if operation.endswith("-dry-run")
+                else "Check read_back_matches, then verify the network path separately."
             )
         elif operation in {
             "production-backup-authority-dry-run",
@@ -5965,6 +5977,11 @@ PRODUCTION_BACKUP_AUTHORITY_READ_FIELDS = {
 }
 PRODUCTION_BACKUP_AUTHORITY_STATES = {"ready", "missing", "invalid", "stale", "retired"}
 PRODUCTION_BACKUP_MAX_TARGETS = 20
+DOKPLOY_COMPOSE_DOMAIN_COMMANDS = {
+    f"dokploy-target-{operation}-{mode}"
+    for operation in ("reconcile-compose-domain", "prune-compose-domain")
+    for mode in ("dry-run", "apply")
+}
 DOKPLOY_COMPOSE_PAYLOAD_FIELDS = {
     "schema_version",
     "context",
@@ -6506,6 +6523,179 @@ def production_backup_authority_body(
     return body, request
 
 
+def compose_domain_body(
+    args: argparse.Namespace, *, mode: str
+) -> tuple[dict[str, object], dict[str, object]]:
+    payload = read_payload_file(args.payload_file)
+    operation = args.command.removeprefix("dokploy-target-").removesuffix("-apply").removesuffix("-dry-run")
+    allowed = {"schema_version", "context", "instance", "domains", "reason"}
+    if operation == "reconcile-compose-domain":
+        allowed.add("runtime_port")
+    if payload.keys() - allowed:
+        raise ValueError("unsupported_dokploy_target_field")
+    for field in ("context", "instance", "reason"):
+        if not isinstance(payload.get(field), str) or not str(payload[field]).strip():
+            raise ValueError(f"{field}_required")
+    domains = payload.get("domains")
+    if (
+        not isinstance(domains, list) or not 1 <= len(domains) <= 100
+        or any(not isinstance(domain, str) or len(domain) > 253 or not re.fullmatch(
+            r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*", domain
+        ) for domain in domains)
+        or len(set(domains)) != len(domains)
+    ):
+        raise ValueError("invalid_compose_domains")
+    if operation == "reconcile-compose-domain":
+        port = payload.get("runtime_port")
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError("invalid_runtime_port")
+    request: dict[str, object] = {
+        "mode": mode, "payload_source": "private_file",
+        "payload_digest": metadata_review_digest(payload),
+        "context": public_identifier(payload["context"]),
+        "instance": public_identifier(payload["instance"]),
+        "setup_operation": operation,
+        "domain_count": len(domains),
+        "domains_sha256": _canonical_sha256(sorted(domains)),
+        "runtime_port": payload.get("runtime_port"),
+    }
+    if mode == "apply":
+        evidence, reviewed = _load_reviewed_evidence(
+            args, operation=args.command.removesuffix("-apply") + "-dry-run",
+            expected_digest=_reviewed_apply_digest(args), result_status=None,
+        )
+        if (
+            evidence["request"].get("payload_digest") != request["payload_digest"]
+            or reviewed.get("operation") != operation
+            or reviewed.get("applied") is not False
+            or not isinstance(reviewed.get("binding_sha256"), str)
+        ):
+            raise ValueError("reviewed_dry_run_not_apply_eligible")
+    body = {**payload, "operation": operation, "product": "launchplane", "mode": mode}
+    if mode == "apply":
+        body["confirmation"] = DOKPLOY_TARGET_SETUP_CONFIRMATION
+    return body, request
+
+
+def _project_compose_domain_setup(
+    result: object, *, request: dict[str, object]
+) -> dict[str, object]:
+    source = _require_dict(result)
+    if source.keys() - DOKPLOY_COMPOSE_SETUP_RESULT_FIELDS:
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    operation = source.get("operation")
+    setup = _require_dict(source.get("setup"))
+    domains = setup.get("domains")
+    target_id = _dokploy_setup_target_id(source)
+    target = _require_dict(setup.get("target_record"))
+    if (
+        operation != request.get("setup_operation") or not target_id
+        or target.get("target_type") != "compose"
+        or source.get("context") != request.get("context")
+        or source.get("instance") != request.get("instance")
+        or not isinstance(domains, list) or not all(isinstance(domain, str) for domain in domains)
+        or len(domains) != request.get("domain_count")
+        or _canonical_sha256(sorted(domains)) != request.get("domains_sha256")
+        or source.get("mode") != request.get("mode")
+        or source.get("applied") is not (request.get("mode") == "apply")
+        or setup.get("applied") is not source.get("applied")
+        or (operation == "reconcile-compose-domain" and setup.get("runtime_port") != request.get("runtime_port"))
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected = {
+        "mode": source["mode"], "operation": operation,
+        "context": request["context"], "instance": request["instance"],
+        "applied": source["applied"], "domain_count": len(domains),
+        "runtime_port": request.get("runtime_port"),
+        "binding_sha256": _canonical_sha256(target_id),
+    }
+    for field in ("matched_domain_ids", "deleted_domain_ids", "missing_domains", "warnings"):
+        values = setup.get(field, [])
+        if not isinstance(values, list) or len(values) > 1000:
+            raise LaunchplaneSafetyError("invalid_response")
+        projected[field.removesuffix("s") + "_count"] = len(values)
+    projected["plan_sha256"] = _canonical_sha256({
+        "payload_digest": request["payload_digest"],
+        "operation": operation, "binding_sha256": projected["binding_sha256"],
+    })
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def execute_compose_domain_apply(
+    *, args: argparse.Namespace, request: dict[str, object], body: dict[str, object]
+) -> int:
+    _, reviewed = _load_reviewed_evidence(
+        args, operation=args.command.removesuffix("-apply") + "-dry-run",
+        expected_digest=_reviewed_apply_digest(args), result_status=None,
+    )
+    before: dict[str, object] = {}
+    requested_domains = _domain_set(body["domains"])
+    reconcile = body["operation"] == "reconcile-compose-domain"
+
+    def read(settings: dict[str, str]) -> tuple[dict[str, object], dict[str, object]]:
+        return read_dokploy_target(
+            settings=settings, context=cast(str, body["context"]),
+            instance=cast(str, body["instance"]), timeout=args.timeout,
+        )
+
+    def binding_matches(public: dict[str, object], private: dict[str, object]) -> bool:
+        ids = cast(set[str], private["target_ids"])
+        return (
+            public["status"] == "ok" and public["target_type"] == "compose"
+            and public["provider_target_record"] == "present" and len(ids) == 1
+            and private["live_target_type"] == "compose"
+            and private["live_target_id"] in ids
+            and all(target_id and _canonical_sha256(target_id) == reviewed["binding_sha256"] for target_id in ids)
+        )
+
+    def preflight(settings: dict[str, str]) -> dict[str, object] | None:
+        public, private = read(settings)
+        if not binding_matches(public, private):
+            return {
+                "error_code": "compose_binding_changed_since_review",
+                "recommendation": "The tracked binding changed since review; run a new dry-run.",
+            }
+        before.update(private)
+        return None
+
+    def finish(settings: dict[str, str], _provider: dict[str, Any], payload: dict[str, Any]) -> bool:
+        result = payload["result"]
+        applied_as_reviewed = result["plan_sha256"] == args.expected_plan_digest.strip().lower()
+        expected_domains = cast(frozenset[str], before["domains"])
+        expected_domains = expected_domains | requested_domains if reconcile else expected_domains - requested_domains
+
+        def read_back() -> dict[str, object]:
+            public, private = read(settings)
+            live = private["live_domains"]
+            if not isinstance(live, list) or not all(isinstance(route, dict) and isinstance(route.get("host"), str) for route in live):
+                raise LaunchplaneSafetyError("invalid_response")
+            routes = cast(list[dict[str, object]], live)
+            routes_match = all(
+                any(route["host"] == domain and route.get("port") == body["runtime_port"] and route.get("https") is True for route in routes)
+                for domain in requested_domains
+            ) if reconcile else not any(route["host"] in requested_domains for route in routes)
+            return {
+                **public, "binding_matches_review": binding_matches(public, private),
+                "tracked_domains_match": private["domains"] == expected_domains,
+                "provider_routes_match": routes_match,
+            }
+
+        read_back_ok = attach_read_back(
+            payload, read=read_back,
+            matches=lambda observed: all(observed[field] is True for field in (
+                "binding_matches_review", "tracked_domains_match", "provider_routes_match",
+            )), label="compose domain routes",
+        )
+        return applied_as_reviewed and read_back_ok
+
+    return execute_verified_apply(
+        args=args, operation=args.command, request=request,
+        path=helper_command_path(args.command), body=body,
+        preflight=preflight, finish=finish, label="compose domain routes",
+    )
+
+
 def dokploy_compose_payload(args: argparse.Namespace) -> dict[str, object]:
     payload = read_payload_file(args.payload_file)
     completion = args.command.startswith("dokploy-target-complete-compose-source-")
@@ -6657,6 +6847,9 @@ def read_dokploy_target(
         },
         "domains": _domain_set(tracked.get("domains")),
         "healthcheck_path": str(tracked.get("healthcheck_path") or ""),
+        "live_domains": live_provider.get("domains", []),
+        "live_target_id": live_provider.get("target_id"),
+        "live_target_type": live_provider.get("target_type"),
         "tracked_source": {field: tracked.get(field) for field in (
             "source_type", "custom_git_url", "custom_git_branch", "compose_path",
         )},
@@ -8059,6 +8252,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         )
         _add_reviewed_apply_arguments(compose_target, apply=command.endswith("-apply"))
 
+    for command in sorted(DOKPLOY_COMPOSE_DOMAIN_COMMANDS):
+        domain = subparsers.add_parser(command, help="Review or apply tracked compose web host routes.")
+        domain.add_argument("--payload-file", required=True, help="Private local JSON payload file.")
+        _add_reviewed_apply_arguments(domain, apply=command.endswith("-apply"))
+
     for mode in ("dry-run", "apply"):
         source = subparsers.add_parser(
             f"dokploy-target-complete-compose-source-{mode}",
@@ -8563,6 +8761,15 @@ def main(argv: list[str]) -> int:
                 path=helper_command_path(args.command),
                 request=request,
                 body=body,
+            )
+        if args.command in DOKPLOY_COMPOSE_DOMAIN_COMMANDS:
+            mode = "apply" if args.command.endswith("-apply") else "dry-run"
+            body, request = compose_domain_body(args, mode=mode)
+            if mode == "apply":
+                return execute_compose_domain_apply(args=args, request=request, body=body)
+            return execute_post(
+                args=args, operation=args.command, path=helper_command_path(args.command),
+                request=request, body=body,
             )
         if args.command in {
             "dokploy-target-create-compose-dry-run",

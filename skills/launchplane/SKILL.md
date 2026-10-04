@@ -684,7 +684,8 @@ preview-history-read,
 reconcile-requests-read, product-secret-bindings-read,
 target-replacement-operation-read, target-replacement-plan-read, `product-owner-*`,
 `product-image-repository-*`, `dokploy-target-create-compose-*`,
-`dokploy-target-complete-compose-source-*`, `production-backup-authority-*`,
+`dokploy-target-complete-compose-source-*`, `dokploy-target-reconcile-compose-domain-*`,
+`dokploy-target-prune-compose-domain-*`, `production-backup-authority-*`,
 `private-health-endpoint-*`, product-promotion-status-read and
 product-promotion-dry-run commands are explicit bounded local
 extensions because the vendored public

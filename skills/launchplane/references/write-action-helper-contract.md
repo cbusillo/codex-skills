@@ -359,6 +359,43 @@ helper reports `outcome_unknown`, retains the safe trace/code and sends no
 automatic retry. Require admin reconciliation before retrying under **any**
 key; never recreate, replace or silently adopt the target as recovery.
 
+### Compose web host routes
+
+`dokploy-target-reconcile-compose-domain-dry-run` / `-apply` and
+`dokploy-target-prune-compose-domain-dry-run` / `-apply` are bounded local
+extensions of `POST /v1/dokploy-targets/setup`, using the corresponding
+`reconcile-compose-domain` or `prune-compose-domain` operation. They act on an
+existing tracked compose; they do not create targets or change the base URL.
+Authorization remains `dokploy_target.plan` / `dokploy_target.setup`, with
+`dokploy_target.inspect` required for apply preflight and read-back.
+
+Provide a private JSON file outside the repository with `context`, `instance`,
+`domains` and a nonempty `reason`; `schema_version` is optional. Domains are
+unique lowercase hostnames (1–100); reconcile also requires `runtime_port`
+(1–65535). Prune refuses that port field. Placement, target ids, credentials and
+other fields are refused. Reconcile creates HTTPS web routes with Traefik's
+existing default certificate (`certificateType: none`); public TLS remains the
+external proxy's responsibility.
+
+Save and review the dry-run output, then apply the exact private payload using
+`--reviewed-dry-run`, `--expected-plan-digest` (the result's `plan_sha256`),
+`--dry-run-evidence-file` and a stable `--idempotency-key`. The helper digest
+binds the private payload and tracked compose id. Before apply, inspect must
+still identify that compose consistently across the tracked and provider-target
+records. This is a helper check, not server compare-and-swap.
+
+Output shows operation, scope, counts, port and digests only; domain names,
+provider ids and warnings, and the reason stay private. Apply inspects again to
+confirm the tracked domain addition/removal, preservation of unrelated tracked
+domains, and provider-reported hosts (plus HTTPS and port for reconcile).
+`read_back_matches: true` proves that record/provider read-back, not a network
+request, public TLS, upstream certificate settings or the site's runtime identity.
+Prune verification conservatively refuses to report success while any provider
+route still reports a requested host. Verify the network path separately before
+cutover. Stop on `accepted_unverified` or `outcome_unknown`; inspect before any
+retry, because a route may already have changed. No automatic apply retry runs.
+Live-site applies and base-URL changes retain their Director and release gates.
+
 ### Lane record
 
 Adding a lane to an existing product is the contract-backed
