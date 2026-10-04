@@ -57,12 +57,15 @@ def overlay_client(repo_root: Path | None) -> dict[str, Any]:
         return {"status": "unavailable", "source": "repo_people_overlay"}
     # Reuse the people schema and scope loader. Global identities never establish
     # who the Client of this repository is, and bot aliases are not human Clients.
-    from skills.people.scripts.resolve_person import load_people, PeopleConfigError
+    try:
+        from skills.people.scripts.resolve_person import load_people, PeopleConfigError
+    except ImportError:
+        return {"status": "unavailable", "source": "repo_people_overlay"}
     try:
         status, people = load_people(repo_root / ".local" / "people.yaml", source_scope="repo")
         if status == "no_index":
             return {"status": "unavailable", "source": "repo_people_overlay"}
-    except (OSError, PeopleConfigError):
+    except (OSError, UnicodeError, PeopleConfigError):
         return {"status": "unavailable", "source": "repo_people_overlay"}
     clients = []
     for person in people:

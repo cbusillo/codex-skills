@@ -53,6 +53,8 @@ def test_private_overlay_requires_one_explicit_repository_client() -> None:
         assert client.overlay_client(root)["status"] == "ambiguous"
         overlay.write_text("not: [valid")
         assert client.overlay_client(root)["status"] == "unavailable"
+        overlay.write_bytes(b"\xff")
+        assert client.overlay_client(root)["status"] == "unavailable"
 
 
 def test_local_overlay_is_read_only_after_origin_matches() -> None:
@@ -76,6 +78,17 @@ def test_matching_primary_and_sibling_origins_select_only_that_repository() -> N
     with patch.object(client.subprocess, "run", side_effect=git):
         assert client.local_repository("example/current") == Path("/checkouts/current")
         assert client.local_repository(REPO) == Path("/checkouts/product")
+
+
+def test_optional_people_helper_absence_does_not_stop_selection() -> None:
+    import builtins
+    original = builtins.__import__
+    def without_people(name: str, *args: object, **kwargs: object) -> object:
+        if name == "skills.people.scripts.resolve_person":
+            raise ImportError("Optional people skill not installed")
+        return original(name, *args, **kwargs)
+    with patch("builtins.__import__", side_effect=without_people):
+        assert client.overlay_client(Path("/fixture/repo"))["status"] == "unavailable"
 
 
 def main() -> None:
