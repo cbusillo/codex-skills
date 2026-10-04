@@ -55,7 +55,9 @@ jobs:
           set -euo pipefail
           uv run python - <<'PY'
           import concurrent.futures
+          import os
           import pathlib
+          import resource
           import shutil
           import subprocess
           import tempfile
@@ -74,10 +76,12 @@ jobs:
                   args = [node, '--version'] if index == 0 else [node, str(alias), '--invalid-test-argument']
                   if tracer:
                       args = [tracer, '-f', '-ttt', '-T', '-o', str(trace), *args]
+                  usage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
                   started = time.monotonic()
                   try:
                       result = subprocess.run(args, capture_output=True, timeout=5)
-                      print(index, 'elapsed:', time.monotonic() - started, 'rc:', result.returncode, flush=True)
+                      usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+                      print(index, 'elapsed:', time.monotonic() - started, 'rc:', result.returncode, 'cpu:', usage.ru_utime + usage.ru_stime - usage_before.ru_utime - usage_before.ru_stime, 'major_faults:', usage.ru_majflt - usage_before.ru_majflt, flush=True)
                   except subprocess.TimeoutExpired as error:
                       print(index, 'TIMEOUT:', time.monotonic() - started, 'stdout:', error.stdout, 'stderr:', error.stderr, flush=True)
                   if trace.exists():
@@ -91,7 +95,10 @@ jobs:
                                   continue
                               if duration > 0.1:
                                   print(index, 'slow syscall:', line, flush=True)
-              probe(0)
+              for index in range(-6, 1):
+                  with open(node, 'rb') as binary:
+                      os.posix_fadvise(binary.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+                  probe(index)
               with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
                   list(pool.map(probe, range(1, 21)))
           PY
