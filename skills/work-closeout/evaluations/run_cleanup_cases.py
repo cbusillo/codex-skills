@@ -327,6 +327,11 @@ def stop_group(process: subprocess.Popen[bytes]) -> None:
                 process.wait(timeout=0.75)
                 return
             time.sleep(0.025)
+        # Scheduling can consume the last observation window after delivery.
+        # Confirm absence once more before escalating or retaining auth state.
+        if not signal_group(process, 0, deadline):
+            process.wait(timeout=0.75)
+            return
     raise ProcessCleanupError("owned Codex process group did not stop")
 
 

@@ -29,6 +29,7 @@ import github_milestone as github_milestone_core
 import github_identity
 import github_direction_next
 import github_plan_claim
+import github_agent
 from github_direction_next import (
     normalize_labels,
     compact_list_issue,
@@ -114,6 +115,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "audit": "audit",
     },
     "label_defs": {
+        **github_agent.LABEL_DEFS,
         "plan": {"color": "5319e7", "description": "Durable planning issue"},
         "plan:active": {"color": "0e8a16", "description": "Plan is actionable now"},
         "plan:blocked": {"color": "d93f0b", "description": "Plan blocked by an open native dependency issue"},
@@ -1890,6 +1892,9 @@ def cmd_claim(args: argparse.Namespace) -> None:
         raise PlanError("Claim next action must be a nonempty single line")
     if args.wait_resolved is not None and (not args.wait_resolved.strip() or any(c in args.wait_resolved for c in "\n\r")):
         raise PlanError("Wait resolution must record existing evidence on one line")
+    override_input = getattr(args, "agent_override", None)
+    if override_input is not None and (not override_input.strip() or any(c in override_input for c in "\n\r")):
+        raise PlanError("Agent override must record the Director decision on one nonempty line")
     if subprocess.run(["git", "check-ref-format", "--branch", args.branch],
                       capture_output=True).returncode:
         raise PlanError("Claim branch is not a valid Git branch")
@@ -2003,6 +2008,17 @@ def cmd_claim(args: argparse.Namespace) -> None:
                 refuse(competing)
         return permitted
 
+    agent = github_agent.running_agent(getattr(args, "agent", None))
+    override = (getattr(args, "agent_override", None) or "").strip()
+
+    def check_agent(issue: dict[str, Any]) -> None:
+        mismatch = github_agent.exclusion(issue, agent)
+        if mismatch and not override:
+            names = ", ".join(mismatch["agent_labels"])
+            raise ClassifiedPlanError("agent_assignment_mismatch",
+                f"Issue carries {names}; running agent is {agent or 'unknown'}. Stop and use the assigned family, or --agent FAMILY to identify this harness. Only an explicit Director override permits --agent-override REASON.",
+                payload={"agent_labels": mismatch["agent_labels"], "running_agent": agent})
+
     def claim_recovery() -> dict[str, Any]:
         recovery = {}
         comment_id = (claim_comment.get("comment") or {}).get("id")
@@ -2021,6 +2037,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
     try:
         issue, status, comments, can_update = claim_snapshot(args.issue, repo)
         previous_status = status
+        check_agent(issue)
         conflicts, owned = github_plan_claim.discussion_evidence(status, comments, claim)
         if conflicts:
             refuse(conflicts)
@@ -2052,6 +2069,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         text = (
             f"Claimed by {claim['worker']}\n\nSession: {claim['session']}\nBranch: {claim['branch']}\n"
             f"Claimed at: {claim['claimed_at']}\nNext action: {args.next_action}\n\n"
+            + (f"Agent override (Director-authorized): {override}\n\n" if override else "")
             + github_plan_claim.marker(claim)
             + (f"\n\nConflict-only refresh: {claim['refresh_pr']}; released claim {args.resume_from}; handoff comment {handoff_id}." if refresh_pr else "")
             + (f"\n\nWait resolution: {args.wait_resolved}" if args.wait_resolved else "")
@@ -2068,6 +2086,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
             completed.append("post_claim")
         # Check the discussion again before touching status or labels.
         issue, status, comments, can_update = claim_snapshot(args.issue, repo)
+        check_agent(issue)
         conflicts, observed = github_plan_claim.discussion_evidence(status, comments, claim)
         if conflicts:
             refuse(conflicts)
@@ -2096,6 +2115,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         completed.append("update_labels")
         actor = label_result.get("actor") or actor
         final, final_status, final_comments, _ = claim_snapshot(args.issue, repo)
+        check_agent(final)
         conflicts, observed = github_plan_claim.discussion_evidence(final_status, final_comments, claim)
         if conflicts:
             refuse(conflicts)
@@ -2165,7 +2185,10 @@ def cmd_create(args: argparse.Namespace) -> None:
     base_labels = labels(config, "plan")
     if args.plan_status != "none":
         base_labels.extend(labels(config, args.plan_status))
-    extra_labels = args.label or []
+    try:
+        extra_labels = github_agent.creation_labels(args.label or [], getattr(args, "agent", None))
+    except ValueError as exc:
+        raise PlanError(str(exc)) from exc
     wanted_labels = list(dict.fromkeys(base_labels + extra_labels))
     _, created_base_labels = ensure_labels(
         repo,
@@ -2583,8 +2606,17 @@ def cmd_next(args: argparse.Namespace) -> None:
     inventory_truncated = len(issues) > NEXT_PLAN_INVENTORY_LIMIT
     issues = issues[:NEXT_PLAN_INVENTORY_LIMIT]
     inventory_count = len(issues)
+    agent = github_agent.running_agent(getattr(args, "agent", None))
+    routed_issues: list[dict[str, Any]] = []
+    routing_excluded: list[dict[str, Any]] = []
     for issue in issues:
         issue["repo"] = repo
+        mismatch = github_agent.exclusion(compact_list_issue(repo, issue), agent)
+        if mismatch:
+            routing_excluded.append(mismatch)
+        else:
+            routed_issues.append(issue)
+    issues = routed_issues
     rank_next_candidates(issues, direction_milestones=direction_milestones)
     scan_truncated = len(issues) > args.scan_limit
     issues = issues[: args.scan_limit]
@@ -2592,7 +2624,7 @@ def cmd_next(args: argparse.Namespace) -> None:
     project_actor, focus_by_url, focus_context = next_focus_context(repo, config)
     actor = actor or project_actor
     candidates: list[dict[str, Any]] = []
-    excluded: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = routing_excluded
     dependency_degraded_count = 0
     for issue in issues:
         issue_url = issue.get("html_url") or issue.get("url")
@@ -2697,6 +2729,7 @@ def cmd_next(args: argparse.Namespace) -> None:
         "inventory_limit": NEXT_PLAN_INVENTORY_LIMIT,
         "candidates": candidates[: args.limit],
         "candidate_count": len(candidates),
+        "running_agent": agent,
         "excluded": excluded,
         "notes": notes,
     })
@@ -3096,6 +3129,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         repository_waypoints={source["repo"]: repository_direction_milestones(source) for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
     )
     ranked.update(portfolio)
+    github_agent.filter_selection(ranked, github_agent.running_agent(getattr(args, "agent", None)))
     ranked["candidates"] = ranked["candidates"][:args.limit]
     ranked["available_candidates"] = ranked["available_candidates"][:args.limit]
     ranked["graph_context"] = graph_coverage
@@ -3706,7 +3740,7 @@ def cmd_project_list(args: argparse.Namespace) -> None:
 def cmd_ensure_labels(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     config = load_config(repo)
-    wanted = list(config["labels"].values())
+    wanted = list(dict.fromkeys([*config["labels"].values(), *github_agent.LABEL_DEFS]))
     actor, created = ensure_labels(repo, wanted, config)
     emit({"ok": True, "actor": actor, "repo": repo, "ensured": wanted, "created": created})
 
@@ -4134,6 +4168,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("claim", help="Recheck, record, and read back issue ownership before work")
     p.add_argument("issue")
+    p.add_argument("--agent", choices=github_agent.FAMILIES, help="Running family; defaults to harness detection")
+    p.add_argument("--agent-override", metavar="REASON", help="Record an explicit Director override for this session")
     p.add_argument("--worker", required=True)
     p.add_argument("--session", required=True)
     p.add_argument("--branch", required=True, help="Exact task branch the worktree helper will create; create it only after claim succeeds")
@@ -4150,6 +4186,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--title", dest="title_flag", help="Issue title (flag)")
     p.add_argument("--body")
     p.add_argument("--body-file")
+    p.add_argument("--agent", choices=github_agent.FAMILIES, help="Assign this issue to an agent family")
     p.add_argument("--label", action="append")
     p.add_argument("--milestone")
     p.add_argument("--project")
@@ -4184,6 +4221,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_deps)
 
     p = sub.add_parser("next", help="Rank the next actionable durable plans")
+    p.add_argument("--agent", choices=github_agent.FAMILIES, help="Running family; defaults to harness detection")
     p.add_argument("--milestone", help="Limit selection to one milestone by number or title")
     p.add_argument("--limit", type=positive_limit, default=5)
     p.add_argument("--scan-limit", type=positive_limit, default=50)
