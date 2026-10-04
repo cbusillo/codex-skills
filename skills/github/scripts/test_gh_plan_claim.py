@@ -15,6 +15,7 @@ import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -39,7 +40,7 @@ class ClaimTests(unittest.TestCase):
     def setUp(self):
         self.args = Namespace(repo="owner/repo", issue="42", worker=OWNER["worker"], session=OWNER["session"],
                               branch=OWNER["branch"], next_action="Implement the repair", resume_from=None, wait_resolved=None)
-        self.issue = {"repo": "owner/repo", "number": 42, "title": "Repair", "state": "open",
+        self.issue: dict[str, Any] = {"repo": "owner/repo", "number": 42, "title": "Repair", "state": "open",
                       "user": {"login": TEST_BOT}, "labels": [],
                       "body": PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n\n## Objective\n\nKeep me\n\n## Current Status\n\nState: Open, not started.\n"}
         self.args.planning_checkout = None
@@ -117,7 +118,9 @@ class ClaimTests(unittest.TestCase):
                 patch.object(PLAN.github_issue_core, "edit_issue", side_effect=self.labels):
             PLAN.cmd_claim(self.args)
 
-    def compete(self, record=OTHER):
+    def compete(self, record=None):
+        if record is None:
+            record = OTHER
         self.comments.append({"id": len(self.comments) + 1, "body": "Claimed by " + record["worker"] + "\n" + CLAIM.marker(record)})
 
     def assert_no_writes(self):

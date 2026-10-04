@@ -99,7 +99,7 @@ def released_claim_id(text: str) -> int | None:
             if "-->" not in line.split("<!--", 1)[1]:
                 html_end = "-->"
             continue
-        html = re.match(r" {0,3}<(pre|code|blockquote|details|script|style|textarea)(?:\s|>)", line, re.IGNORECASE)
+        html = re.match(r" {0,3}<(pre|code|blockquote|details|script|style|textarea)[\s>]", line, re.IGNORECASE)
         if html and f"</{html.group(1).casefold()}>" not in line.casefold():
             html_end = f"</{html.group(1).casefold()}>"
             continue
@@ -207,7 +207,8 @@ def discussion_evidence(
         text = comment.get("body") or ""
         parsed = records(text)
         author = (comment.get("user") or {}).get("login", "")
-        if released_ids.get((comment.get("id"), author), -1) > index:
+        comment_id = comment.get("id")
+        if comment_id is not None and released_ids.get((comment_id, author), -1) > index:
             continue
         legacy = re.match(r"Claimed by (\S+)", text)
         if legacy and not parsed:
@@ -368,8 +369,8 @@ def artifact_evidence(
 ) -> list[dict[str, Any]]:
     conflicts = []
     local_references = inventory_repo is None or inventory_repo.casefold() == repo.casefold()
-    def permitted(branch: str) -> bool:
-        return (own_record and branch == claim["branch"]) or branch == retained or branch in (retained_branches or set())
+    def permitted(candidate_branch: str) -> bool:
+        return (own_record and candidate_branch == claim["branch"]) or candidate_branch == retained or candidate_branch in (retained_branches or set())
 
     for source in ("local_branches", "remote_branches"):
         for branch in inventory[source]:
