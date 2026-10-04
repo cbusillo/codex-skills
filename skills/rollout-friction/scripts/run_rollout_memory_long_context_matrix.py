@@ -29,10 +29,6 @@ DEFAULT_VARIANTS = [
     "sonnet-1m=claude:claude-sonnet-4-6[1m]",
     "opus=claude:opus",
 ]
-DEFAULT_SYSTEM = (
-    "You are a strict selected-note memory reviewer. Return only JSON that matches the schema. "
-    "Do not quote raw private snippets. Copy candidate_id_manifest verbatim into reviewed_candidate_ids."
-)
 DEFAULT_SKIP_STATUSES = {"passed"}
 SUCCESS_STATUSES = {"passed", "planned", "skipped_existing"}
 
