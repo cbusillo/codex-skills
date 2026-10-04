@@ -129,6 +129,7 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
         key = f"train-drive-{settings.repository.replace('/', '-')}-{settings.number}-{pass_number}-{int(io.now())}"
         response = io.controller(settings.repository, settings.base_branch, key)
         if response is None or response.get("status") == "no_response":
+            state.candidate_active = False
             state.helper_failures += 1
             state.lease_held = None
             emit("snapshot", _snapshot(settings, state, "helper_unavailable", response))

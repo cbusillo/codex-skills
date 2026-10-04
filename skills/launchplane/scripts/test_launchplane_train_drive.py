@@ -142,6 +142,13 @@ class TrainDriveTests(unittest.TestCase):
         outcome, _ = _drive(train)
         self.assertEqual((outcome, train.calls), ("landed", 2))
 
+    def test_unavailable_controller_resumes_landing_reads(self) -> None:
+        train = FakeTrain([
+            _response("observe_candidate", candidate={"candidate_sha": "ours", "pull_request_numbers": [7]}), None,
+        ], merge_after={7: 2})
+        outcome, _ = _drive(train)
+        self.assertEqual((outcome, train.calls), ("landed", 2))
+
     def test_cli_auth_failure_emits_error_stop_instead_of_traceback(self) -> None:
         from contextlib import redirect_stdout
         from io import StringIO
