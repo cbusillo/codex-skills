@@ -167,6 +167,11 @@ class RoutingScoreTests(unittest.TestCase):
                     (True, f"\u0060MAX_RETRIES\u0060 is \u0060{value}\u0060.", True),
                     (True, correct.rstrip("."), True),
                     (True, f"MAX_RETRIES in local.py is set to {value}.", True),
+                    (True, f"In local.py, MAX_RETRIES is set to {value}.", True),
+                    (False, f"In local.py, MAX_RETRIES is set to {value}.", False),
+                    (True, f"In local.py, MAX_RETRIES is set to {int(value) + 1}.", False),
+                    (True, f"In local.py, MAX_RETRIES is set to {value}, or {int(value) + 1}.", False),
+                    (True, f"In local.py, MAX_RETRIES is set to {value}. MAX_RETRIES is {int(value) + 1}.", False),
                     (False, "I can't read the file.", False),
                     (True, f"I cannot determine the value; it might be {value}.", False),
                     (True, "MAX_RETRIES is an unsupported value.", False),
@@ -195,6 +200,9 @@ class RoutingScoreTests(unittest.TestCase):
             (workspace / "local.py").write_text(content)
             seen = runner.observe("claude", [{"type": "result", "result": correct}], [], root, runner.ROOT)
             self.assertFalse(runner.decision_checks(seen, expect)["fixture_answer"])
+            updated_value = runner.re.search(expect["answer_from_fixture"]["capture"], content)[1]
+            seen["final"] = f"In local.py, MAX_RETRIES is set to {updated_value}."
+            self.assertTrue(runner.decision_checks(seen, expect)["fixture_answer"])
 
     def test_missing_context_accepts_variants_and_rejects_an_authority_guess(self) -> None:
         expect = runner.yaml.safe_load((runner.ROOT / "evals/multi-turn/docs-concision-missing-context/turns.yaml").read_text())["turns"][0]["expect"]
