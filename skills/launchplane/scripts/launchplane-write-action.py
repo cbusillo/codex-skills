@@ -2570,11 +2570,11 @@ def _protected_artifact_identifier(value: object) -> str:
 
 
 def _protected_artifact_warning(value: object) -> str:
-    warning = public_operator_text(value)
-    for reference in warning.split():
-        if "@" in reference:
-            _protected_artifact_identifier(reference)
-    return warning
+    if isinstance(value, str):
+        for reference in value.split():
+            if "@" in reference and not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", reference):
+                _protected_artifact_identifier(reference)
+    return public_operator_text(value)
 
 
 def _protected_artifact_lane(value: object, *, optional: bool = False) -> str:

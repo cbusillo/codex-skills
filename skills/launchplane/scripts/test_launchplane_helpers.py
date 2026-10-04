@@ -2937,6 +2937,13 @@ def test_protected_artifacts_read_projection_and_query() -> None:
         response["protected_artifacts"]["entries"][0]["artifact_id"] = artifact
         status, payload, _ = _run_product_read(["protected-artifacts-read", "--product", "example-product"], response)
         assert status == 0 and payload["result"]["entries"][0]["artifact_id"] == artifact
+    artifact = "ghcr.io/example/app@sha256:" + "a1" * 32
+    response["protected_artifacts"]["entries"][0]["artifact_id"] = artifact
+    warning = f"Protected artifact {artifact} from deployment has no stored artifact manifest."
+    response["protected_artifacts"]["warnings"] = [warning]
+    status, payload, _ = _run_product_read(["protected-artifacts-read", "--product", "example-product"], response)
+    assert status == 0 and payload["result"]["entries"][0]["artifact_id"] == artifact
+    assert payload["result"]["warnings"] == [write_action.public_operator_text(warning)]
     # Active preview feedback can protect image references without an artifact id.
     response["protected_artifacts"]["entries"][0].update(artifact_id="", image_digest="", instance="")
     status, payload, _ = _run_product_read(["protected-artifacts-read", "--product", "example-product"], response)
