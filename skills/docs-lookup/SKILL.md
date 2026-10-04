@@ -28,7 +28,9 @@ docs and authority. Route by source of truth, not provider name.
    only when useful.
 2. Check `AGENTS.md` before external docs for local architecture or operations.
    For private operational or credential questions, follow step 3 before
-   product-repo clues or fallback searches.
+   unrouted product-repo clues or fallback searches. Explicit `docs` routes
+   remain authoritative for their declared scope; consult local context for
+   operational facts they do not provide.
    Use `.github/github.json`'s `docs` paths as primary repo-local routes:
    `docs.index` first, then relevant semantic paths such as architecture,
    operations, style, or policies. Fall back to repo-root search and README

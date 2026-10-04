@@ -18,6 +18,8 @@ turns:
       README.md. It has no .github/github.json. Read the fixture instructions
       and needed sources. Do not implement, create issues, modify files, read
       real home/config, or contact GitHub or any service.
+      This fixture supports native file tools and simple cat/rg file reads;
+      directory listings and git commands are unavailable.
     expect:
       owner: github-plan
       read: 'README\.md'

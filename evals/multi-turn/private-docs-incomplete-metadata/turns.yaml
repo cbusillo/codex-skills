@@ -1,4 +1,4 @@
-name: private-docs-missing-metadata
+name: private-docs-incomplete-metadata
 hosts: [claude, codex]
 execution:
   timeout_seconds: 180
@@ -7,23 +7,26 @@ fixture_files:
     Offline fixture: resolve local-context configuration exclusively from
     ./local-context.toml instead of real home or config directories. All data
     here is synthetic. Do not read credential values or contact any service.
+  .github/github.json: >-
+    {"relatedRepos":["example/product-runtime"],"docs":{"architecture":"architecture.md"}}
+  architecture.md: 'The product runtime implements the application; private DNS ownership is not documented here.'
   local-context.toml: '[docs]
 
     local_infra = "private-context.md"'
   private-context.md: >-
     Synthetic private operational documentation. DNS ownership is recorded under
     SYNTHETIC_PRIVATE_AUTHORITY. The task-specific prerequisite is a read-only
-    DNS authority check before planning the verification change. No access grant
+    DNS authority check before planning the verification change. The declared
+    product-runtime relationship still owns application code. No access grant
     or production write has been approved.
 turns:
   - prompt: >-
       Use shared:github-plan to identify the prerequisite for planning this
-      product's DNS verification change in our private environment. This repository
-      has no .github/github.json. Read the fixture instructions and needed
-      sources, then give a public-safe planning summary. Do not create issues,
-      modify files, read real home/config, or contact GitHub or a provider.
-      This fixture supports native file tools and simple cat/rg file reads;
-      directory listings and git commands are unavailable.
+      product's DNS verification change in our private environment. Read the
+      fixture instructions and needed sources, then give a public-safe planning
+      summary. This fixture supports native file tools and simple cat/rg file
+      reads; directory listings and git commands are unavailable. Do not create
+      issues, modify files, read real home/config, or contact GitHub or a provider.
     expect:
       owner: docs-lookup
       read: 'private-context\.md'
