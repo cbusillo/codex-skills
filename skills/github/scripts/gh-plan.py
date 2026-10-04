@@ -30,6 +30,7 @@ import github_identity
 import github_client
 import github_direction_next
 import github_plan_claim
+import github_plan_release
 import github_agent
 from github_direction_next import (
     normalize_labels,
@@ -87,6 +88,7 @@ PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
     "search": ("rest_api", "search", False),
     "show": ("rest_api", "rest_core", False),
     "claim": ("composite", "rest_core", True),
+    "release-claim": ("composite", "rest_core", True),
     "create": ("composite", "mixed", True),
     "update-section": ("rest_api", "rest_core", True),
     "link": ("rest_api", "rest_core", True),
@@ -1865,8 +1867,105 @@ def claim_snapshot(ref: str, repo: str) -> tuple[dict[str, Any], str, list[dict[
         f"/repos/{issue['repo']}/issues/{issue['number']}/comments",
         query={}, bucket="rest_core", step_prefix="claim_comments",
     )
+    for release_comment, receipt in github_plan_release.receipts(comments):
+        evidence_match = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/issues/([1-9]\d*)#issuecomment-([1-9]\d*)", receipt["evidence_url"])
+        if not evidence_match:
+            raise PlanError("Abandoned-release evidence URL is invalid")
+        evidence_repo, evidence_number, evidence_id = evidence_match.groups()
+        _, evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}", bucket="rest_core", failed_step="claim_release_evidence")
+        if evidence.get("issue_url") != f"https://api.github.com/repos/{evidence_repo}/issues/{evidence_number}":
+            raise PlanError("Abandoned-release evidence is not on its cited issue")
+        github_plan_release.validate_evidence(receipt, evidence, (release_comment.get("user") or {}).get("login", ""))
     can_update = provenance["section_updates_allowed"] and provenance["ownership"] != "contributor_unmanaged"
     return issue, sections.get("Current Status", ""), comments, can_update
+
+
+def cmd_release_claim(args: argparse.Namespace) -> None:
+    """Release a closed session through the same maintained comment transport."""
+    repo = default_repo(args.repo)
+    actor, gh_cmd, expected_actor = comment_route()
+    if not expected_actor or not args.confirm_session_ended:
+        raise PlanError("Release requires configured automation auth and --confirm-session-ended after verifying closure")
+    if not args.session or any(c in args.session for c in "\n\r"):
+        raise PlanError("Releaser must name its native session ID")
+    evidence_match = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/issues/([1-9]\d*)#issuecomment-([1-9]\d*)", args.evidence_comment)
+    if not evidence_match:
+        raise PlanError("Evidence must be an exact GitHub issue-comment URL")
+    evidence_repo, evidence_number, evidence_id = evidence_match.groups()
+    _, evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}", bucket="rest_core", failed_step="release_evidence")
+    if evidence.get("issue_url") != f"https://api.github.com/repos/{evidence_repo}/issues/{evidence_number}":
+        raise PlanError("Session-ended evidence is not on the cited issue")
+    completed = []
+    result = {}
+    # Fresh-read before writing and again after posting. Native peer coverage
+    # stays explicit; the caller attests closure for hosts without peer APIs.
+    def preflight():
+        issue, _status, comments, _can_update = claim_snapshot(args.issue, repo)
+        source = next((c for c in comments if c.get("id") == args.claim_comment), None)
+        if source is None:
+            raise PlanError("Source claim is missing from the canonical issue")
+        inventory = github_plan_claim.local_inventory(issue["repo"], issue["number"])
+        _, fresh_evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}", bucket="rest_core", failed_step="release_evidence_readback")
+        if fresh_evidence != evidence:
+            raise PlanError("Session-ended evidence changed during release")
+        related = [next((c for c in comments if c.get("id") == n), None) for n in args.related_claim_comment]
+        if any(c is None for c in related) or args.claim_comment in args.related_claim_comment:
+            raise PlanError("Related ownership comment is missing or repeats the structured source")
+        for url in args.retained_pr:
+            match = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/([1-9]\d*)", url)
+            if not match or match.group(1).casefold() != issue["repo"].casefold():
+                raise PlanError("Retained PR must be an exact same-repository PR URL")
+            _, pull = api_json("GET", f"/repos/{issue['repo']}/pulls/{match.group(2)}", bucket="rest_core", failed_step="release_retained_pr")
+            empty = {"local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}
+            if ((pull.get("user") or {}).get("login") != expected_actor
+                    or pull.get("state") != "open" and not pull.get("merged_at")
+                    or any(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != issue["repo"].casefold() for side in ("head", "base"))
+                    or not github_plan_claim.artifact_evidence(empty, [{**pull, "head": {"ref": ""}, "state": "open"}], issue["number"], {}, own_record=False, repo=issue["repo"])):
+                raise PlanError("Retained PR must independently link the canonical issue and belong to the source automation identity")
+            ended = re.findall(r"(?m)^Ended at: (\S+)$", evidence.get("body") or "")
+            if len(ended) != 1:
+                raise PlanError("Closed-session attestation must record Ended at")
+            _, head_commit = api_json("GET", f"/repos/{issue['repo']}/commits/{pull['head']['sha']}", bucket="rest_core", failed_step="release_retained_head")
+            commit_at = github_plan_release.stamp(head_commit["commit"]["committer"]["date"])
+            if commit_at >= github_plan_release.stamp(ended[0]):
+                raise PlanError("Retained PR has commit activity after the cited session-ended evidence")
+        body = github_plan_release.prepare_release(source, evidence, comments, inventory,
+            actor=expected_actor, role=args.role, releaser_session=args.session,
+            evidence_url=args.evidence_comment, retained_prs=args.retained_pr, related=related)
+        return issue, comments, inventory, body, related
+    try:
+        issue, comments, inventory, body, related = preflight()
+        completed.append("release_preflight")
+        if args.dry_run:
+            emit({"ok": True, "dry_run": True, "release_body": body, "related_ids": args.related_claim_comment,
+                  "session_coverage": inventory.get("session_coverage"), "completed_steps": completed})
+            return
+        result = github_comment_core.comment("issue", issue["number"], body, repo=issue["repo"],
+            gh_command=gh_cmd, expected_actor=expected_actor, completed_steps=completed, failed_step="post_release", dedupe_body=True)
+        completed.append("post_release")
+        issue, comments, inventory, fresh_body, related = preflight()
+        release_id = result["comment"]["id"]
+        if not any(c.get("id") == release_id and (c.get("body") or "").startswith(body) for c in comments) or fresh_body != body:
+            raise PlanError("Release readback changed; preserve records and inspect before any retry")
+        github_plan_release.validate_releases(comments)
+        completed.append("release_readback")
+        related_results = []
+        for comment in related:
+            related_results.append(github_comment_core.comment("issue", issue["number"],
+                f"Released claim {comment['id']}\n\nOwnership follow-up of claim {args.claim_comment}; closed-session release {result['comment']['url']}.",
+                repo=issue["repo"], gh_command=gh_cmd, expected_actor=expected_actor,
+                completed_steps=completed, failed_step="release_related_ownership", dedupe_body=True))
+        emit({"ok": True, "release_comment": result["comment"], "related_releases": related_results,
+              "source_claim": args.claim_comment, "session_coverage": inventory.get("session_coverage"),
+              "completed_steps": completed, "exclusive_lock": False})
+    except PlanError as exc:
+        exc.payload.update(completed_steps=completed, release_comment=result.get("comment", {}))
+        raise
+    except github_comment_core.CommentError as exc:
+        raise PlanError(str(exc), failure=exc.failure, api_result=exc.api_result,
+            payload={**exc.payload, "completed_steps": completed, "release_comment": result.get("comment", {})}) from exc
+    except (ValueError, KeyError, TypeError) as exc:
+        raise PlanError(str(exc), payload={"completed_steps": completed, "release_comment": result.get("comment", {})}) from exc
 
 
 def cmd_claim(args: argparse.Namespace) -> None:
@@ -4185,6 +4284,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--full", action="store_true", help="Include the entire body instead of selected sections")
     p.add_argument("--sections", nargs="+")
     p.set_defaults(func=cmd_show)
+
+    p = sub.add_parser("release-claim", help="Release an abandoned automation claim with verified closed-session evidence")
+    p.add_argument("issue")
+    p.add_argument("--claim-comment", type=int, required=True)
+    p.add_argument("--evidence-comment", required=True, help="Canonical closed-session attestation issue-comment URL")
+    p.add_argument("--role", choices=["supervisor", "direction"], required=True)
+    p.add_argument("--session", required=True, help="Releasing session's actual native ID")
+    p.add_argument("--confirm-session-ended", action="store_true", help="Attest verified closure, including unavailable peer inventory")
+    p.add_argument("--related-claim-comment", action="append", type=int, default=[])
+    p.add_argument("--retained-pr", action="append", default=[])
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_release_claim)
 
     p = sub.add_parser("claim", help="Recheck, record, and read back issue ownership before work")
     p.add_argument("issue")

@@ -797,6 +797,26 @@ source_refs = ["github/scripts/gh-plan.py:cmd_claim", "github/scripts/github_pla
 test_refs = ["github/scripts/test_github_agent.py", "github/scripts/test_gh_plan_claim.py:test_competing_worktree_refuses", "github/scripts/test_gh_plan_claim.py:test_current_status_owner_refuses_before_writes", "github/scripts/test_gh_plan_claim.py:test_stale_claim_is_not_expired", "github/scripts/test_gh_plan_claim.py:test_write_readback_race_stops_before_status", "github/scripts/test_gh_plan_claim.py:test_retry_same_session_repairs_without_duplicate_comment", "github/scripts/test_gh_plan_claim.py:test_authorized_split_pr_refresh_claim_succeeds_with_release_and_handoff", "github/scripts/test_gh_plan_claim.py:test_refresh_active_ownership_refuses_on_issue_target_or_sibling", "github/scripts/test_gh_plan_claim.py:test_refresh_readback_new_pr_is_competing_evidence"]
 
 [[operations]]
+id = "github.plan.release_claim"
+capabilities = ["issues_write", "pull_requests_read", "contents_read"]
+permission_mode = "fixed"
+permission_note = "Same configured automation identity as source claim; existing issue/comment and retained PR/commit reads suffice. No new grants or identity changes."
+entrypoint = "github/scripts/gh-plan.py release-claim"
+intent = "Record and read back abandoned-claim release using an exact closed-session attestation and fresh ownership/native peer checks; retain artifact and dependency guards."
+current_transport = "composite"
+selected_transport = "composite"
+endpoint_or_command = "Paged issue comments; GET evidence comment, retained PR and head commit; read-only Git/native peer inventory; shared deduplicated exact release comments and readback"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "mixed"
+idempotency = "conditional"
+retry_eligibility = "manual"
+reconciliation_strategy = "read_after_write"
+retained_graphql_rationale = "No GraphQL; exact release bodies use maintained REST comment reconciliation."
+source_refs = ["github/scripts/gh-plan.py:cmd_release_claim", "github/scripts/github_plan_release.py:prepare_release", "github/scripts/github_plan_release.py:validate_releases"]
+test_refs = ["github/scripts/test_gh_plan_release.py"]
+
+[[operations]]
 id = "github.plan.update_section"
 capabilities = ["issues_write"]
 permission_mode = "fixed"
@@ -2055,7 +2075,7 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github/scripts/github_app_setup.py" = "752a8c6d16f8117271700a616a506dabc80528544f5315a1d15d67ab141ec4c4"
 "github/scripts/gh-comment" = "21ecb30d4d60b61c760f1df630fd6b56347873709bba2d05b7f32f9222fa4656"
 "github/scripts/gh-issue" = "2589d7e258872b5dc2609ceb581053b2daae205156ac360d1a84a2f49eb0f01f"
-"github/scripts/gh-plan.py" = "9a7a3c4ab755226af0ff3220d1b6e52111b13feb3068e54c990e19fbacfc6d1c"
+"github/scripts/gh-plan.py" = "e4aa42173def5588dbbcffe9090c2fddefb4bc520376f9273ff7c66c60264ba0"
 "github/scripts/gh-pr.py" = "d58b23c06d224c485dc493561c7fd91835c2c65a9df5c5555f1368fbaab11a81"
 "github/scripts/gh-rulesets.py" = "0b6cfb046b92b6adce65841dd27eccd12884709753769744887c3e0376ce5748"
 "github/scripts/git-commit-as-bot" = "517fad723e60df546a32577f2ff459de218ed3f90773d09f922b4689b282dc67"
@@ -2082,3 +2102,5 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "babysit-pr/scripts/gh_pr_watch.py" = "4ae6911610f861ed1e1e6c3dc20699785858537ac1e822f449f5852a1196e345"
 "direction/scripts/direction_audit.py" = "e7485d480307adf5cd8ef7cc7cc7aa4648076cc1bbc09a16d649d9c3060b3b36"
 "github/scripts/github_plan_claim.py" = "02972b94895b552b0b9acbfde3d77b178e664b9b38d141dd6354af914edaee48"
+
+"github/scripts/github_plan_release.py" = "0985e674d0c0f3760ceb6b93b8ac025bcd40372fe48b7f97cc20793532f9773a"
