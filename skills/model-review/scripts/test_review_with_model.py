@@ -31,6 +31,7 @@ else
   printf '%s\\n' '{"type":"item.completed","item":{"type":"command_execution","status":"completed","exit_code":0}}'
 fi
 printf '%s' "$FAKE_ANSWER" > "$out"
+printf '%s' "$FAKE_CODEX_STDERR" >&2
 exit "${FAKE_CODEX_EXIT:-0}"
 """
 FAKE_CLAUDE = """#!/bin/sh
@@ -398,7 +399,11 @@ class ReviewWithModelTests(unittest.TestCase):
             with self.subTest(events=events):
                 code, result = self.review("openai", FAKE_ANSWER=refusal, FAKE_CODEX_EVENTS=events)
                 self.assertEqual((code, result["ok"], result["successful_commands"]), (1, False, 0))
-                self.assertIn("Do not forbid commands", result["error"])
+                if 'command_execution' in events:
+                    self.assertIn("attempted shell commands", result["error"])
+                    self.assertNotIn("Do not forbid commands", result["error"])
+                else:
+                    self.assertIn("Do not forbid commands", result["error"])
                 self.assertNotIn("response", result)
         code, result = self.review("openai", FAKE_ANSWER="none", FAKE_CODEX_EVENTS="not JSON")
         self.assertEqual((code, result["ok"]), (1, False))
@@ -423,6 +428,33 @@ class ReviewWithModelTests(unittest.TestCase):
                 code, result = self.review("openai", FAKE_CODEX_EVENTS=json.dumps(event), FAKE_CODEX_EXIT="1")
                 self.assertEqual((code, result["ok"]), (1, False))
                 self.assertEqual(result["detail"], event.get("message") or event["error"]["message"])
+
+    def test_openai_interrupted_reconnect_retains_distinct_stderr(self) -> None:
+        self.install("codex", FAKE_CODEX)
+        event = {"type": "error", "message": "Reconnecting... 2/5"}
+        code, result = self.review("openai", FAKE_CODEX_EVENTS=json.dumps(event),
+                                   FAKE_CODEX_EXIT="130", FAKE_CODEX_STDERR="interrupted by SIGINT")
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertIn("Reconnecting... 2/5", result["detail"])
+        self.assertIn("interrupted by SIGINT", result["stderr_detail"])
+
+    def test_openai_failure_details_are_bounded_and_redact_credentials(self) -> None:
+        self.install("codex", FAKE_CODEX)
+        event = {"type": "error", "message": "retry " * 100 + "token=private-provider-token"}
+        stderr = "connection failed " * 100 + "Bearer private-bearer https://example.test/?key=private-url-key"
+        code, result = self.review("openai", FAKE_CODEX_EVENTS=json.dumps(event),
+                                   FAKE_CODEX_EXIT="1", FAKE_CODEX_STDERR=stderr)
+        self.assertEqual((code, result["ok"]), (1, False))
+        for detail in (result["detail"], result["stderr_detail"]):
+            self.assertLessEqual(len(detail), 400)
+            self.assertIn("redacted", detail)
+            self.assertNotIn("private-", detail)
+        # When stderr repeats the provider error, keep one copy.
+        event["message"] = "usage limit reached"
+        code, result = self.review("openai", FAKE_CODEX_EVENTS=json.dumps(event),
+                                   FAKE_CODEX_EXIT="1", FAKE_CODEX_STDERR=event["message"] + "\n")
+        self.assertEqual((code, result["detail"]), (1, event["message"]))
+        self.assertNotIn("stderr_detail", result)
 
     def test_openai_recovered_stream_error_does_not_discard_a_completed_review(self) -> None:
         self.install("codex", FAKE_CODEX)

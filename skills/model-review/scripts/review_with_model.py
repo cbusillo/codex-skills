@@ -99,6 +99,17 @@ def failed(provider: str, error: str, **extra: Any) -> dict[str, Any]:
     return {"ok": False, "provider": provider, "error": error, **extra}
 
 
+def openai_error_detail(message: str) -> str:
+    """Bound CLI error text without including credential values or URL parameters."""
+    message = re.sub(r"https?://[^\s]+", "[redacted URL]", message)
+    message = re.sub(r"(?i)\bBearer\s+[^\s]+", "Bearer [redacted]", message)
+    message = re.sub(r"(?i)\b(api[_-]?key|access[_-]?token|token|password|secret|credential)"
+                     r"(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+                     r"\1\2[redacted]", message)
+    message = re.sub(r"\b(?:sk-|gh[pousr]_|github_pat_)[A-Za-z0-9_-]+", "[redacted]", message)
+    return message[-400:]
+
+
 def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scratch: Path) -> dict[str, Any]:
     answer = scratch / "answer.md"
     # `-s read-only` does not reach MCP servers: they run outside the sandbox, and a tool that calls
@@ -118,7 +129,7 @@ def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scra
             raise ValueError("event is not an object")
     except ValueError:
         if proc.returncode != 0:
-            return failed("openai", f"codex exited {proc.returncode}", detail=proc.stderr[-400:], **metadata)
+            return failed("openai", f"codex exited {proc.returncode}", detail=openai_error_detail(proc.stderr), **metadata)
         return failed("openai", "could not read codex's JSONL tool evidence", **metadata)
     errors = []
     turn_failed = False
@@ -137,24 +148,32 @@ def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scra
     # Retry notices also use `error`. Only a nonzero exit or terminal turn failure is decisive.
     if proc.returncode != 0 or turn_failed:
         return failed("openai", f"codex exited {proc.returncode}" if proc.returncode else "codex turn failed",
-                      detail=errors[-1][-400:] if errors else proc.stderr[-400:], **metadata)
+                      detail=openai_error_detail(errors[-1] if errors else proc.stderr), **metadata,
+                      **({"stderr_detail": openai_error_detail(proc.stderr)} if errors and proc.stderr.strip()
+                         and proc.stderr.strip() != errors[-1].strip() else {}))
     if not response.strip():
         return failed("openai", "the reviewer returned nothing", **metadata)
     # Codex's file access is through its sandboxed shell. A final message alone is not a review:
     # in particular, a prompt that forbids commands leaves it unable to read any source.
     commands = 0
+    attempted = False
     try:
         for event in events:
             item = event.get("item") or {}
+            if (event.get("type") in {"item.started", "item.completed"}
+                    and item.get("type") == "command_execution"):
+                attempted = True
             if (event.get("type") == "item.completed" and item.get("type") == "command_execution"
                     and item.get("status") == "completed" and item.get("exit_code") == 0):
                 commands += 1
     except (ValueError, AttributeError, TypeError):
         return failed("openai", "could not read codex's JSONL tool evidence", **metadata)
     if not commands:
-        return failed("openai", "the reviewer ran no successful shell commands; no file-read evidence. "
-                      "Do not forbid commands: Codex reads files through its read-only shell.", **metadata,
-                      successful_commands=0)
+        reason = ("the reviewer attempted shell commands but none succeeded; no file-read evidence. "
+                  "Check command failures, source paths, and sandbox refusals." if attempted else
+                  "the reviewer ran no successful shell commands; no file-read evidence. "
+                  "Do not forbid commands: Codex reads files through its read-only shell.")
+        return failed("openai", reason, **metadata, successful_commands=0)
     return {"ok": True, "provider": "openai", **metadata, "response": response,
             "successful_commands": commands}
 
