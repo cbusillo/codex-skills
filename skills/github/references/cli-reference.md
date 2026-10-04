@@ -284,8 +284,9 @@ uv run github/scripts/reconcile-runtime-checkout.py \
   --landing-sha <full-landing-sha>
 ```
 
-The helper checks every host binding: `CODE_HOME`, `CODEX_HOME`, `~/.code`, and
-each entry under Claude Code's `skills` folder (`CLAUDE_CONFIG_DIR` or
+The helper checks every host binding: `CODE_HOME`, `CODEX_HOME`, `~/.code`,
+`~/.agents/skills` (whole-catalog link), `~/.agents/skills/shared` (installer
+binding), and each entry under Claude Code's `skills` folder (`CLAUDE_CONFIG_DIR` or
 `~/.claude`). `bindings_checked` in the receipt lists each with its outcome; `matched` means a
 binding qualified, and the receipt's own `status` says what was reconciled. A
 work-in-progress worktree linked for testing does not shadow an install on the
