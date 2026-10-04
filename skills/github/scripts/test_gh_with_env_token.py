@@ -470,8 +470,17 @@ def test_write_actor_probe_preserves_repository_authorization() -> None:
 def test_write_actor_probe_rejects_non_probe_commands_before_authentication() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
+        env_file = root / "local.env"
+        env_file.write_text(
+            "GITHUB_APP_ID=12345\nGITHUB_APP_INSTALLATION_ID=67890\n"
+            "GITHUB_APP_PRIVATE_KEY_PATH=/fake/app.pem\n",
+            encoding="utf-8",
+        )
+        auth_calls = root / "auth-calls"
         unused = root / "unused.py"
-        write(unused, "raise AssertionError('invalid probe must fail before any authentication or command')\n")
+        write(unused, "from pathlib import Path\n"
+              f"Path({str(auth_calls)!r}).touch()\n"
+              "raise AssertionError('invalid probe must fail before any authentication or command')\n")
         for args in (
             ("--write-actor-for",),
             ("--write-actor-for", "", "api", "/user"),
@@ -480,8 +489,9 @@ def test_write_actor_probe_rejects_non_probe_commands_before_authentication() ->
             ("--write-actor-for", "director/catalog", "api", "/user", "--method", "POST"),
             ("--write-actor-for", "director/catalog", "issue", "comment", "42", "--body", "x"),
             ("--write-actor-for", "director/catalog", "api", "/repos/director/catalog"),
+            ("--check", "--write-actor-for", "director/catalog", "api", "/user"),
         ):
-            result = run_wrapper(root / "missing.env", SCRIPT.with_name("github_api.py"), unused,
+            result = run_wrapper(env_file, SCRIPT.with_name("github_api.py"), unused,
                                  *args, gh_command=unused)
             assert result.returncode == 2, result
             payload = json.loads(result.stdout)
@@ -489,6 +499,7 @@ def test_write_actor_probe_rejects_non_probe_commands_before_authentication() ->
             assert payload["retryable"] is False and payload["fallback_eligible"] is False, payload
             assert payload["write_outcome"] == "not_started", payload
             assert payload["failed_step"] == "input_validation", payload
+            assert not auth_calls.exists(), result
 
 
 def test_comment_cli_selects_own_user_through_real_wrapper() -> None:
