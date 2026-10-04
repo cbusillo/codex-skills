@@ -462,14 +462,14 @@ worktrees and remote heads, not every clone or Codex peer. No worktree is
 adopted or mutated there.
 
 The source claim and handoff must be on that planning issue. The source author
-must have posted an exact `Released claim <id>` before or in the handoff, and
+must have posted an exact-ID release as described above before or in the handoff, and
 the handoff must name the target PR. A same-repository `#123`, qualified
 `OWNER/REPO#123`, or full PR URL identifies it; cross-repository handoffs require
 a qualified reference. The open PR must independently link the planning issue
 and use a head and base in the PR's repository; fork refreshes are not supported.
 The issue and target PR's recorded waits still require verified resolution.
 
-The handoff must start with the exact `Released claim <id>` line, or with
+The handoff must start with the exact-ID release line described above, or with
 `Handoff from <source-worker>` and include the exact claim ID and native source
 session ID. A generic bot rollup or refresh claim is not a handoff. Authorship
 checks are at GitHub identity level; verify the actual finished-session handoff
