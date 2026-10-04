@@ -1867,15 +1867,24 @@ def claim_snapshot(ref: str, repo: str) -> tuple[dict[str, Any], str, list[dict[
         f"/repos/{issue['repo']}/issues/{issue['number']}/comments",
         query={}, bucket="rest_core", step_prefix="claim_comments",
     )
+    comments = github_plan_release.effective_comments(comments)
     for release_comment, receipt in github_plan_release.receipts(comments):
-        evidence_match = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/issues/([1-9]\d*)#issuecomment-([1-9]\d*)", receipt["evidence_url"])
-        if not evidence_match:
-            raise PlanError("Abandoned-release evidence URL is invalid")
-        evidence_repo, evidence_number, evidence_id = evidence_match.groups()
-        _, evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}", bucket="rest_core", failed_step="claim_release_evidence")
-        if evidence.get("issue_url") != f"https://api.github.com/repos/{evidence_repo}/issues/{evidence_number}":
-            raise PlanError("Abandoned-release evidence is not on its cited issue")
-        github_plan_release.validate_evidence(receipt, evidence, (release_comment.get("user") or {}).get("login", ""))
+        valid = False
+        try:
+            evidence_match = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/issues/([1-9]\d*)#issuecomment-([1-9]\d*)", receipt["evidence_url"])
+            if evidence_match:
+                evidence_repo, evidence_number, evidence_id = evidence_match.groups()
+                _, evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}", bucket="rest_core", failed_step="claim_release_evidence")
+                if evidence.get("issue_url") == f"https://api.github.com/repos/{evidence_repo}/issues/{evidence_number}":
+                    github_plan_release.validate_evidence(receipt, evidence, (release_comment.get("user") or {}).get("login", ""))
+                    valid = True
+        except PlanError as exc:
+            if plan_error_status(exc) not in {403, 404}:
+                raise
+        except (KeyError, TypeError, ValueError):
+            pass
+        if not valid:
+            comments = [github_plan_release.without_release(c) if c.get("id") == release_comment.get("id") else c for c in comments]
     can_update = provenance["section_updates_allowed"] and provenance["ownership"] != "contributor_unmanaged"
     return issue, sections.get("Current Status", ""), comments, can_update
 
@@ -1911,7 +1920,12 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         related = [next((c for c in comments if c.get("id") == n), None) for n in args.related_claim_comment]
         if any(c is None for c in related) or args.claim_comment in args.related_claim_comment:
             raise PlanError("Related ownership comment is missing or repeats the structured source")
-        for url in args.retained_pr:
+        source_branch = github_plan_release.source_record(source)["branch"]
+        _, open_pulls = collect_paged_rest_items(f"/repos/{issue['repo']}/pulls", query={"state": "open"},
+            bucket="rest_core", step_prefix="release_source_branch_prs")
+        branch_prs = [f"https://github.com/{issue['repo']}/pull/{p['number']}" for p in open_pulls
+            if (p.get("head") or {}).get("ref") == source_branch]
+        for url in dict.fromkeys([*args.retained_pr, *branch_prs]):
             match = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/([1-9]\d*)", url)
             if not match or match.group(1).casefold() != issue["repo"].casefold():
                 raise PlanError("Retained PR must be an exact same-repository PR URL")
@@ -1941,19 +1955,21 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                   "session_coverage": inventory.get("session_coverage"), "completed_steps": completed})
             return
         result = github_comment_core.comment("issue", issue["number"], body, repo=issue["repo"],
-            gh_command=gh_cmd, expected_actor=expected_actor, completed_steps=completed, failed_step="post_release", dedupe_body=True)
+            gh_cmd=gh_cmd, operation=CURRENT_OPERATION, expected_actor=expected_actor, completed_steps=completed, failed_step="post_release", dedupe_body=True)
         completed.append("post_release")
         issue, comments, inventory, fresh_body, related = preflight()
         release_id = result["comment"]["id"]
         if not any(c.get("id") == release_id and (c.get("body") or "").startswith(body) for c in comments) or fresh_body != body:
             raise PlanError("Release readback changed; preserve records and inspect before any retry")
-        github_plan_release.validate_releases(comments)
+        if any(c.get("id") == release_id and github_plan_release.receipt_for(c) is None
+               for c in github_plan_release.effective_comments(comments)):
+            raise PlanError("Source activity invalidated the posted release; source ownership remains live")
         completed.append("release_readback")
         related_results = []
         for comment in related:
             related_results.append(github_comment_core.comment("issue", issue["number"],
                 f"Released claim {comment['id']}\n\nOwnership follow-up of claim {args.claim_comment}; closed-session release {result['comment']['url']}.",
-                repo=issue["repo"], gh_command=gh_cmd, expected_actor=expected_actor,
+                repo=issue["repo"], gh_cmd=gh_cmd, operation=CURRENT_OPERATION, expected_actor=expected_actor,
                 completed_steps=completed, failed_step="release_related_ownership", dedupe_body=True))
         emit({"ok": True, "release_comment": result["comment"], "related_releases": related_results,
               "source_claim": args.claim_comment, "session_coverage": inventory.get("session_coverage"),

@@ -72,8 +72,8 @@ def released_claim_id(text: str) -> int | None:
 
 def resumed_status(status: str, comments: list[dict[str, Any]], source_id: int | None) -> str:
     """Discard only an exact status marker superseded by its author's release."""
-    from github_plan_release import validate_releases
-    validate_releases(comments)
+    from github_plan_release import effective_comments
+    comments = effective_comments(comments)
     if source_id is None:
         return status
     source = next((c for c in comments if c.get("id") == source_id), None)
@@ -118,8 +118,8 @@ def discussion_evidence(
     status: str, comments: list[dict[str, Any]], claim: dict[str, str], *, resume_from: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     """Old claims remain ambiguous until explicitly released; age is never a lease."""
-    from github_plan_release import validate_releases
-    validate_releases(comments)
+    from github_plan_release import effective_comments
+    comments = effective_comments(comments)
     conflicts: list[dict[str, Any]] = []
     owned = []
     original_status = status
@@ -239,8 +239,8 @@ def local_inventory(repo: str, number: int, *, cwd: pathlib.Path | None = None) 
 
 
 def retained_branch(comments: list[dict[str, Any]], comment_id: int) -> str:
-    from github_plan_release import validate_releases
-    validate_releases(comments)
+    from github_plan_release import effective_comments
+    comments = effective_comments(comments)
     original = next((c for c in comments if c.get("id") == comment_id), None)
     if original is None:
         raise ValueError("Resume source claim comment is missing")

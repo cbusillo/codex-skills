@@ -33,6 +33,7 @@ class ReleaseTests(unittest.TestCase):
             role="supervisor", session="supervisor-native-session", confirm_session_ended=True,
             related_claim_comment=[], retained_pr=[], dry_run=False)
         self.commit_date = "2026-10-01T23:00:00Z"
+        self.evidence_failure = None
         self.race = lambda: None
 
     @staticmethod
@@ -43,6 +44,8 @@ class ReleaseTests(unittest.TestCase):
     def api(self, method, path, **_kwargs):
         self.assertEqual(method, "GET")
         if "issues/comments/88" in path:
+            if self.evidence_failure:
+                raise PLAN.PlanError("Evidence unavailable", api_result={"status": self.evidence_failure})
             return "bot", copy.deepcopy(self.evidence)
         if "/commits/" in path:
             return "bot", {"commit": {"committer": {"date": self.commit_date}}}
@@ -63,7 +66,7 @@ class ReleaseTests(unittest.TestCase):
             comment_route=lambda: ("bot", "bot-gh", BOT), emit=self.f.emitted, api_json=self.api), \
             patch.object(PLAN.github_identity, "configured_bot_logins", return_value=[BOT]), \
             patch.object(CLAIM, "local_inventory", side_effect=self.f.inventory_for), \
-            patch.object(PLAN.github_comment_core, "comment", side_effect=self.post):
+            patch.object(PLAN.github_comment_core, "comment", autospec=True, side_effect=self.post):
             PLAN.cmd_release_claim(self.args)
 
     def successor(self):
@@ -77,7 +80,7 @@ class ReleaseTests(unittest.TestCase):
         self.args.related_claim_comment = [2]
         self.run_release()
         self.successor()
-        self.assertEqual(len(self.f.emitted.call_args.args[0]["claim"]), len(fixtures.OWNER))
+        self.assertEqual(self.f.emitted.call_args.args[0]["claim"]["session"], fixtures.OWNER["session"])
 
     def test_launchplane_missing_exact_release_becomes_claimable(self):
         self.run_release()
@@ -151,7 +154,7 @@ class ReleaseTests(unittest.TestCase):
     def test_edited_closure_attestation_invalidates_successor_claim(self):
         self.run_release()
         self.evidence["updated_at"] = "2026-10-04T00:00:00Z"
-        with self.assertRaisesRegex(PLAN.PlanError, "evidence changed"):
+        with self.assertRaisesRegex(PLAN.PlanError, "ownership evidence"):
             self.successor()
 
     def test_next_keeps_closed_blocker_history_without_excluding_for_open_dependency(self):
@@ -162,6 +165,58 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotIn("exclusion", result)
         self.assertEqual(relationships["blocked_by"][0]["number"], 1165)
 
+    def test_corrected_attestation_recovers_without_deleting_stale_release(self):
+        self.run_release()
+        self.evidence["updated_at"] = "2026-10-04T00:00:00Z"
+        self.run_release()
+        self.successor()
+
+    def test_unlisted_source_branch_pr_with_new_commit_activity_refuses(self):
+        self.refresh_setup()
+        self.f.pulls[0]["head"]["ref"] = CLAIM.records(self.f.comments[0]["body"])[0]["branch"]
+        self.args.retained_pr = []
+        self.commit_date = "2026-10-02T01:00:00Z"
+        with self.assertRaisesRegex(PLAN.PlanError, "commit activity after"): self.run_release()
+        self.f.assert_no_writes()
+
+    def test_untrusted_or_example_receipt_does_not_poison_claims(self):
+        for text in ("<!-- " + release.RELEASE_MARKER + "bad -->", "```\n<!-- " + release.RELEASE_MARKER + "bad -->\n```"):
+            with self.subTest(text=text):
+                self.setUp(); self.run_release()
+                self.f.comments.append(self.comment(9, text, "2026-10-03T01:00:00Z"))
+                self.successor()
+
+    def test_missing_evidence_restores_source_conflict_without_permanent_poison(self):
+        self.run_release()
+        self.evidence_failure = 404
+        with self.assertRaisesRegex(PLAN.PlanError, "ownership evidence"):
+            self.successor()
+        self.evidence_failure = None
+        self.successor()
+
+    def test_source_can_resume_after_an_invalidated_attestation(self):
+        self.run_release()
+        self.evidence["updated_at"] = "2026-10-04T00:00:00Z"
+        for key in ("worker", "session", "branch"):
+            setattr(self.f.args, key, fixtures.OTHER[key])
+        with patch.object(self.f, "read_api", side_effect=self.api):
+            self.f.run_claim()
+        self.assertEqual(self.f.emitted.call_args.args[0]["claim"]["session"], fixtures.OTHER["session"])
+
+    def test_evidence_location_timestamp_and_new_related_comment_refuse(self):
+        for mode in ("location", "timezone", "new_related", "closed_unmerged"):
+            with self.subTest(mode=mode):
+                self.setUp()
+                if mode == "location": self.evidence["issue_url"] = "https://api.github.com/repos/owner/control/issues/885"
+                if mode == "timezone": self.evidence["body"] = self.evidence["body"].replace("2026-10-02T00:00:00Z", "2026-10-02T00:00:00")
+                if mode == "new_related":
+                    self.f.comments.append(self.comment(2, "Claimed by trial-b capacity work", "2026-10-02T01:00:00Z"))
+                    self.args.related_claim_comment = [2]
+                if mode == "closed_unmerged":
+                    self.refresh_setup(); self.f.pulls[0]["state"] = "closed"
+                with self.assertRaises(PLAN.PlanError): self.run_release()
+                self.f.assert_no_writes()
+
     def test_dry_run_is_reviewable_and_writes_nothing(self):
         self.args.dry_run = True
         self.run_release()
@@ -171,7 +226,7 @@ class ReleaseTests(unittest.TestCase):
     def test_renewed_activity_invalidates_existing_release_at_successor_claim(self):
         self.run_release()
         self.f.comments.append(self.comment(8, CLAIM.marker(fixtures.OTHER), "2026-10-04T00:00:00Z"))
-        with self.assertRaisesRegex(PLAN.PlanError, "activity after"):
+        with self.assertRaisesRegex(PLAN.PlanError, "ownership evidence"):
             self.f.args.resume_from = 1
             with patch.object(self.f, "read_api", side_effect=self.api):
                 self.f.run_claim()

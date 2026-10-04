@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import pathlib
 import re
 from typing import Any
 
@@ -70,8 +71,8 @@ def prepare_release(
     check_activity(comments, source, cutoff)
     if any(s.get("sessionId") == record["session"] for s in inventory["sessions"]):
         raise ValueError("Source session is still visible in the active native session inventory")
-    retained_paths = {t["path"] for t in inventory["worktrees"] if t["branch"] == record["branch"]}
-    if any(s.get("cwd") in retained_paths for s in inventory["sessions"]):
+    retained_paths = {pathlib.Path(t["path"]).resolve() for t in inventory["worktrees"] if t["branch"] == record["branch"]}
+    if any(pathlib.Path(s.get("cwd") or "/").resolve() in retained_paths for s in inventory["sessions"]):
         raise ValueError("A live peer is using the source claim's retained worktree")
     for comment in related:
         if ((comment.get("user") or {}).get("login") != actor or claim.records(comment.get("body") or "")
@@ -92,27 +93,38 @@ def prepare_release(
             + "\n<!-- " + RELEASE_MARKER + json.dumps(receipt, sort_keys=True) + " -->")
 
 
+def receipt_for(comment: dict[str, Any]) -> dict[str, Any] | None:
+    text = re.sub(r"(?ms)^```[^\n]*\n.*?^```[^\n]*$", "", comment.get("body") or "")
+    lines = [line for line in text.splitlines() if line.startswith("<!-- " + RELEASE_MARKER)]
+    if len(lines) != 1 or not lines[0].endswith(" -->"):
+        return None
+    try:
+        receipt = json.loads(lines[0][len("<!-- " + RELEASE_MARKER):-len(" -->")])
+        if not isinstance(receipt, dict) or not all(key in receipt for key in (
+            "source_id", "source", "evidence_url", "evidence_at", "evidence_updated_at", "role", "releaser_session")):
+            return None
+        if (type(receipt["source_id"]) is not int or not isinstance(receipt["source"], dict)
+                or not all(isinstance(receipt["source"].get(k), str) and receipt["source"][k] for k in ("worker", "session", "branch", "claimed_at"))
+                or receipt["role"] not in {"supervisor", "direction"} or not receipt["releaser_session"]
+                or receipt["releaser_session"] == receipt["source"]["session"]
+                or not isinstance(receipt["evidence_url"], str)):
+            return None
+        stamp(receipt["evidence_at"])
+        stamp(receipt["evidence_updated_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return receipt
+
+
 def receipts(comments: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
-    found = []
-    for comment in comments:
-        lines = [line for line in (comment.get("body") or "").splitlines() if line.startswith("<!-- " + RELEASE_MARKER)]
-        if not lines:
-            continue
-        if len(lines) != 1 or not lines[0].endswith(" -->"):
-            raise ValueError("Malformed abandoned-release receipt")
-        try:
-            receipt = json.loads(lines[0][len("<!-- " + RELEASE_MARKER):-len(" -->")])
-            if not isinstance(receipt, dict) or not all(key in receipt for key in (
-                "source_id", "source", "evidence_url", "evidence_at", "evidence_updated_at", "role", "releaser_session")):
-                raise ValueError("Incomplete abandoned-release receipt")
-            if receipt["role"] not in {"supervisor", "direction"} or not receipt["releaser_session"]:
-                raise ValueError("Invalid abandoned-release attester")
-            stamp(receipt["evidence_at"])
-            stamp(receipt["evidence_updated_at"])
-        except (KeyError, TypeError) as exc:
-            raise ValueError("Malformed abandoned-release receipt") from exc
-        found.append((comment, receipt))
-    return found
+    return [(c, r) for c in comments if (r := receipt_for(c)) is not None]
+
+
+def without_release(comment: dict[str, Any]) -> dict[str, Any]:
+    # Keep any ownership assertions: an invalid receipt is not a release,
+    # rather than a permanent error or a way to hide a structured claim.
+    return {**comment, "body": "\n".join(line for line in (comment.get("body") or "").splitlines()
+        if not line.startswith("Released claim ") and not line.startswith("<!-- " + RELEASE_MARKER))}
 
 
 def validate_evidence(receipt: dict[str, Any], evidence: dict[str, Any], author: str) -> None:
@@ -126,15 +138,26 @@ def validate_evidence(receipt: dict[str, Any], evidence: dict[str, Any], author:
         raise ValueError("Closed-session evidence changed or no longer attests this release")
 
 
-def validate_releases(comments: list[dict[str, Any]]) -> None:
-    """A generated release ceases to be usable after renewed source activity."""
-    for release, receipt in receipts(comments):
-        text = release.get("body") or ""
-        source = next((c for c in comments if c.get("id") == receipt["source_id"]), None)
-        if source is None or source_record(source) != receipt["source"]:
-            raise ValueError("Abandoned-release source claim changed or is missing")
-        if (source.get("user") or {}).get("login") != (release.get("user") or {}).get("login"):
-            raise ValueError("Abandoned-release author differs from source automation identity")
-        if claim.released_claim_id(text) != source["id"]:
-            raise ValueError("Abandoned-release receipt does not match the exact release line")
-        check_activity(comments, source, stamp(receipt["evidence_at"]))
+def effective_comments(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Invalid releases restore source ownership; they never poison an issue."""
+    result = []
+    for comment in comments:
+        text = re.sub(r"(?ms)^```[^\n]*\n.*?^```[^\n]*$", "", comment.get("body") or "")
+        if not any(line.startswith("<!-- " + RELEASE_MARKER) for line in text.splitlines()):
+            result.append(comment)
+            continue
+        receipt = receipt_for(comment)
+        try:
+            if receipt is None:
+                raise ValueError("Invalid receipt")
+            source = next((c for c in comments if c.get("id") == receipt["source_id"]), None)
+            if (source is None or source_record(source) != receipt["source"]
+                    or not (source.get("user") or {}).get("login")
+                    or (source.get("user") or {}).get("login") != (comment.get("user") or {}).get("login")
+                    or claim.released_claim_id(comment.get("body") or "") != source["id"]):
+                raise ValueError("Source no longer matches receipt")
+            check_activity(comments, source, stamp(receipt["evidence_at"]))
+        except (KeyError, TypeError, ValueError):
+            comment = without_release(comment)
+        result.append(comment)
+    return result

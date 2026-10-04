@@ -450,11 +450,16 @@ For retained PRs, pass each verified same-repository PR URL with repeatable
 to the source automation identity. The release comment is the new handoff for
 `claim --resume-from <original-id> --refresh-pr <url> --handoff-comment <release-id>`.
 Unmentioned siblings, live retained-worktree peers and other ownership still
-refuse. Retained PR commit activity newer than the cited closure refuses; verify
+refuse. Commit activity newer than the cited closure refuses for listed PRs and every
+open PR on the source branch; verify
 the newer session's actual handoff rather than moving the closure timestamp.
 
 Renewed source claims or source edits after closure refuse the release and
-invalidate its receipt during later claims. Available native sessions are
+invalidate its receipt during later claims. An invalid, edited or unavailable
+attestation makes that release stop counting and restores the original claim
+conflict; it never permanently blocks the issue. Verify actual closure, post a
+corrected attestation and rerun `release-claim` to recover without deleting
+history. Available native sessions are
 checked and their coverage is returned. `--confirm-session-ended` records the
 caller's transcript/closure verification, including peers or hosts unavailable
 to the helper; partial inventory alone is never closure evidence. The command
