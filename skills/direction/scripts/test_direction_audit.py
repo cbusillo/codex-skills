@@ -389,6 +389,7 @@ def test_main_preserves_closed_audit_cutoff_and_stamps_scan_start() -> None:
                       "gh_json": fetch,
                       "dt": types.SimpleNamespace(datetime=Clock, timezone=dt.timezone, timedelta=dt.timedelta),
                   }),
+                  patch.object(module.github_client, "recorded_client", return_value={"status": "none", "source": "fixture"}),
                   patch.dict(vars(module.github_identity), {"configured_bot_logins": lambda: ("bot",)}),
                   redirect_stdout(output)):
                 assert module.main(["--repo", "o/r", "--automation", "bot", "--gh", "fixture-gh"]) == 3
@@ -1108,6 +1109,33 @@ def test_only_the_direction_repository_audit_counts_capacity() -> None:
             assert (result["marked"] is None) is (audited == "o/direction")
             assert (json.loads(marker.read_text())["audits"][audited] == stamp(SINCE)) is (audited == "o/direction")
     assert windows == [("o/direction", SINCE)]
+
+
+def test_only_product_client_issues_are_exempt_from_admission_quotes() -> None:
+    module = load()
+    request = {**issue(10, "A Client request"), "user": {"login": "CLIENT"},
+               "milestone": {"title": "Thin fork decision"}, "_milestone_admitted_by": "bot"}
+    client = {"status": "recorded", "source": "launchplane", "login": "client"}
+    assert "milestone_issue_quote_missing" not in kinds(run(module, issues=[request], client=client))
+    for record in (None, {"status": "none"}, {**client, "login": "another-client"}):
+        assert "milestone_issue_quote_missing" in kinds(run(module, issues=[request], client=record))
+    automation = {**request, "user": {"login": "bot"}}
+    assert "milestone_issue_quote_missing" in kinds(run(module, issues=[automation], client={**client, "login": "bot"}))
+    staff = {**request, "user": {"login": "staff"}}
+    assert "milestone_issue_quote_missing" in kinds(run(module, issues=[staff], client=client))
+    # The exemption affects only admission quotes; other drift is still reported.
+    changed = {**request, "labels": [{"name": "direction"}]}
+    assert "escalation_open" in kinds(run(module, issues=[changed], client=client))
+
+
+def test_audit_preserves_degraded_client_identity_evidence_without_private_login() -> None:
+    module = load()
+    for status in ("unavailable", "ambiguous"):
+        result = run(module, client={"status": status, "source": "launchplane"})
+        assert result["client_context"] == {"status": status, "source": "launchplane"}
+        assert any(limit["kind"] == "client_identity_unavailable" for limit in result["limits"])
+    result = run(module, client={"status": "recorded", "source": "launchplane", "login": "client"})
+    assert "login" not in result["client_context"]
 
 
 def main() -> int:

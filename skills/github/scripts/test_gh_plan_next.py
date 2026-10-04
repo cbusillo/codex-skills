@@ -2087,7 +2087,127 @@ def test_skipped_repository_counts_exclude_graph_overlap_and_marked_incidents() 
         assert all(item["number"] != incident["number"] for item in result["excluded"] if item.get("exclusion") == "outside_direction_tracks")
 
 
+def test_client_requests_rank_with_product_without_changing_order_or_authority() -> None:
+    shared = load_module().github_direction_next
+    def candidate(repo: str, number: int, author: str, title: str | None = None) -> dict[str, Any]:
+        raw = {**global_issue(repo, number, labels=[], created_at="2026-01-01T00:00:00Z"), "user": {"login": author}}
+        raw["labels"] = []
+        raw["milestone"] = {"title": title, "state": "open"} if title else None
+        item = {**shared.compact_list_issue(repo, raw), "milestone": raw["milestone"],
+                "discussion": shared.discussion_snapshot(raw, [], complete=True), "reasons": []}
+        item["discussion"]["ancestry_complete"] = True
+        return item
+    client = candidate("someone/site", 20, "CLIENT")
+    staff = candidate("someone/site", 21, "staff")
+    absent = candidate("someone/no-client", 22, "client")
+    another = candidate("someone/other", 23, "client")
+    first = candidate("someone/business", 10, "bot", "First")
+    first["via"] = ["Track"]
+    graph = {"candidates": [first], "dependency_context": {"complete": True}}
+    records = {"someone/site": {"status": "recorded", "source": "launchplane", "login": "client"},
+               "someone/other": {"status": "recorded", "source": "launchplane", "login": "other-client"}}
+    kwargs = dict(milestone_titles=["First", "Second"], repository_clients=records, director_owner="someone",
+                  repository_waypoints={"someone/site": ["Second"], "someone/other": ["First"], "someone/no-client": ["First"]})
+    context = {"issues": {f"{item['repo']}#{item['number']}": reviewed(item)
+                          for item in [client, staff, absent, another, first]}}
+    result = shared.rank_portfolio_work(graph, [client, staff, absent, another], selection_context=context, **kwargs)
+    assert [item["number"] for item in result["available_candidates"]][:2] == [10, 20]
+    assert {item["number"] for item in result["available_candidates"][2:]} == {21, 22, 23}
+    selected = result["available_candidates"][1]
+    assert selected["category"] == "milestone"
+    assert selected["client_request"] == {"source": "launchplane", "milestone": "Second", "ranking_only": True, "basis": "exact_listed_title_match"}
+    assert selected["labels"] == []
+    assert client["milestone"] is None  # ranker never mutates the source request
+    assert all("client_request" not in item for item in result["candidates"] if item["number"] in {21, 22, 23})
+    external = {**client, "repo": "another/site"}
+    external_kwargs = {**kwargs, "repository_clients": {"another/site": records["someone/site"]},
+                       "repository_waypoints": {"another/site": ["First"]}}
+    assert "client_request" not in shared.rank_portfolio_work(graph, [external], **external_kwargs)["candidates"][-1]
+    completed = {**graph, "completed_milestones": ["Second"]}
+    assert "client_request" not in shared.rank_portfolio_work(completed, [client], **kwargs)["candidates"][-1]
+    incomplete = {**graph, "dependency_context": {"complete": False}}
+    assert "client_request" not in shared.rank_portfolio_work(incomplete, [client], **kwargs)["candidates"][-1]
+    assert "client_request" not in shared.rank_portfolio_work(graph, [client], **kwargs, bot_logins=("client",))["candidates"][-1]
+    # Full discussion, current review, holds and ownership still fence Client work.
+    unreviewed = shared.rank_portfolio_work(graph, [client], **kwargs)
+    assert unreviewed["available_candidates"] == []
+    assert unreviewed["candidates"][1]["availability"] == "needs_review"
+    held = {**context, "repository_holds": {"someone/site": {"reason": "Director hold", "evidence": ["decision"]}}}
+    assert [item["number"] for item in shared.rank_portfolio_work(graph, [client], selection_context=held, **kwargs)["available_candidates"]] == [10]
+    blocked = {**client, "exclusion": "blocked_by_open_dependency"}
+    assert [item["number"] for item in shared.rank_portfolio_work(graph, [blocked], selection_context=context, **kwargs)["available_candidates"]] == [10]
+    # Explicitly reviewed breakage ranks first, without changing any label.
+    context["issues"]["someone/site#20"] = reviewed(client, category="live_incident")
+    incident = shared.rank_portfolio_work(graph, [client], selection_context=context, **kwargs)
+    assert [item["number"] for item in incident["available_candidates"]] == [20, 10]
+    assert incident["candidates"][0]["labels"] == []
+
+
+def test_client_requests_inherit_native_product_track_and_still_need_reviews() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    product = global_issue("someone/site", 30)
+    request = {**global_issue("someone/site", 31, labels=[]), "user": {"login": "client"}}
+    with global_fixture(roots, [product], {(roots[1]["repo"], 2): relationships(sub_issues=[product])}, discovered=[request]) as (module, result, _reads):
+        with patch.object(module.github_client, "recorded_client", return_value={"status": "recorded", "source": "repo_people_overlay", "login": "client"}):
+            module.cmd_next(next_args())
+            item = next(item for item in result["candidates"] if item["number"] == 31)
+            assert item["client_request"]["milestone"] == "Second"
+            assert result["available_candidates"] == []
+            context = {"issues": {"someone/site#31": reviewed(item)}}
+            with patch.object(module, "next_selection_context", return_value=context):
+                module.cmd_next(next_args())
+            assert [item["number"] for item in result["available_candidates"]] == [31]
+            assert result["available_candidates"][0]["category"] == "milestone"
+
+
+def test_client_track_precedence_keeps_real_membership_and_completed_assignments() -> None:
+    shared = load_module().github_direction_next
+    raw = {**global_issue("someone/site", 20), "user": {"login": "client"}}
+    request = {**shared.compact_list_issue(raw["repo"], raw), "milestone": None,
+               "discussion": {"complete": True, "ancestry_complete": True, "digest": "current"}}
+    leaf = {**request, "number": 10, "via": ["Track"], "milestone": {"title": "Second", "state": "open"}}
+    graph = {"candidates": [leaf], "dependency_context": {"complete": True}}
+    kwargs = dict(milestone_titles=["First", "Second"], director_owner="someone",
+                  repository_clients={"someone/site": {"status": "recorded", "source": "launchplane", "login": "client"}},
+                  repository_waypoints={"someone/site": ["First", "Product work"]})
+    result = shared.rank_portfolio_work(graph, [request], **kwargs)
+    item = next(item for item in result["candidates"] if item["number"] == 20)
+    assert item["client_request"]["milestone"] == "Second"  # native Track wins over First waypoint
+    assert item["milestone"] is None
+    local = {**request, "milestone": {"number": 3, "title": "Product work", "state": "open"}}
+    item = next(item for item in shared.rank_portfolio_work(graph, [local], **kwargs)["candidates"] if item["number"] == 20)
+    assert item["milestone"] == local["milestone"]
+    assert item["client_request"]["milestone"] == "Second"
+    completed = {**graph, "completed_milestones": ["First"]}
+    old = {**request, "milestone": {"title": "First", "state": "open"}}
+    item = next(item for item in shared.rank_portfolio_work(completed, [old], **kwargs)["candidates"] if item["number"] == 20)
+    assert "client_request" not in item
+    assert item["milestone"] == old["milestone"]
+
+
+def test_unscanned_client_request_prevents_spare_capacity_admission() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    wait = {**global_issue("someone/site", 10, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Client testing."), "user": {"login": "client"}}
+    tools = [global_issue("someone/tools", number) for number in (20, 21, 22)]
+    request = {**global_issue("someone/site", 30), "user": {"login": "client"}}
+    with global_fixture(roots, [wait], {("someone/direction", 1): relationships(sub_issues=[wait])}, discovered=[*tools, request]) as (module, result, _reads):
+        with patch.object(module.github_client, "recorded_client", return_value={"status": "recorded", "source": "launchplane", "login": "client"}):
+            module.cmd_next(next_args(scan_limit=3))
+            items = {item["number"]: item for item in [*result["candidates"], *result["excluded"]]}
+            context = {"issues": {"someone/site#10": reviewed(items[10], "waiting", waiting_on="person"),
+                                  "someone/tools#20": reviewed(items[20], category="repeated_stop_tooling")}}
+            with patch.object(module, "next_selection_context", return_value=context):
+                module.cmd_next(next_args(scan_limit=3))
+            assert result["tooling_capacity_context"]["admitted"] is False
+            assert [item["number"] for item in result["discovery_context"]["unevaluated_milestone_issues"]] == [30]
+            assert result["available_candidates"] == []
+
+
 TESTS = [
+    test_unscanned_client_request_prevents_spare_capacity_admission,
+    test_client_track_precedence_keeps_real_membership_and_completed_assignments,
+    test_client_requests_rank_with_product_without_changing_order_or_authority,
+    test_client_requests_inherit_native_product_track_and_still_need_reviews,
     test_discovered_blocker_explains_its_native_link_to_waiting_track_work,
     test_service_waypoint_evidence_cannot_be_inferred_from_ranking_map,
     test_waypoint_evidence_does_not_change_repository_ranking_fallback,
