@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import sys
+import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
@@ -285,6 +286,23 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(inventory["issue"], 42)
         with patch.object(CLAIM, "run_read", return_value="https://github.com/wrong/repo.git"):
             with self.assertRaises(ValueError): CLAIM.local_inventory("other/plans", 42, cwd=planning_path)
+
+    def test_mixed_case_issue_url_remains_competing_ownership(self):
+        self.pulls = [{"number": 101, "body": "https://github.com/Owner/Repo/issues/42", "head": {"ref": "work/unrelated"}}]
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+        self.assert_no_writes()
+
+    def test_repo_configuration_identity_is_case_insensitive(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            config = root / ".github" / "github.json"
+            config.parent.mkdir()
+            config.write_text('{"planning":{"labels":{"active":"custom-active"}}}')
+            with patch.object(PLAN, "git_root", return_value=root), patch.object(PLAN, "repo_from_git", return_value="Owner/Some-Repo"), \
+                    patch.object(PLAN, "workspace_config_path", return_value=root / "missing-workspace-config"):
+                resolved = PLAN.load_config("owner/some-repo")
+                self.assertEqual(PLAN.repo_config_path("owner/some-repo"), config)
+            self.assertEqual(resolved["labels"]["active"], "custom-active")
 
     def test_plain_resume_still_refuses_released_split_pr_artifacts(self):
         self.refresh_fixture()

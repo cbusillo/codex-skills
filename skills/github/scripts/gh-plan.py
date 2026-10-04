@@ -1059,7 +1059,7 @@ def repo_config_path(repo: str | None) -> pathlib.Path | None:
     for candidate in candidates:
         if not candidate.exists():
             continue
-        if repo and repo_from_git(candidate) != repo:
+        if repo and (repo_from_git(candidate) or "").casefold() != repo.casefold():
             continue
         path = candidate / ".github/github.json"
         if path.exists():
@@ -1883,7 +1883,6 @@ def claim_snapshot(ref: str, repo: str) -> tuple[dict[str, Any], str, list[dict[
 def cmd_claim(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     issue_repo, number = issue_ref(args.issue, repo)
-    issue_repo = issue_repo.casefold()
     claim = {key: getattr(args, key) for key in ("worker", "session", "branch")}
     for key, value in claim.items():
         if not value or re.search(r"\s|[<>]", value):

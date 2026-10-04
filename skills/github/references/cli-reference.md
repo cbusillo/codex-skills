@@ -443,7 +443,9 @@ uv run <skill-dir>/scripts/gh-plan.py claim <canonical-issue-url> \
 For a planning issue in another repository, both repositories receive their
 own ownership inventory. Supply `--planning-checkout /path/to/planning-repo`
 when its verified checkout is not discoverable through repository configuration.
-The remote identity is checked; no worktree is adopted or mutated there.
+The remote identity is checked; inventory covers that checkout's registered
+worktrees and remote heads, not every clone or Codex peer. No worktree is
+adopted or mutated there.
 
 The source claim and handoff must be on that planning issue. The source author
 must have posted an exact `Released claim <id>` before or in the handoff, and
@@ -470,7 +472,8 @@ requiring cleanup to refresh the remaining PR. The helper reads the
 issue and those PR discussions, local/remote branches, registered worktrees,
 and available peer sessions again during readback. Unreleased claims, active
 Current Status, live peers on retained worktrees, unaccounted artifacts, and
-races still refuse. A refresh claim records its target PR so recovering it
+races still refuse. Sibling references identify retained artifacts and do not authorize refreshing
+those siblings. A refresh claim records its target PR so recovering it
 cannot silently become a general implementation claim.
 
 This route grants no refresh, push, merge, cleanup, or takeover authority.

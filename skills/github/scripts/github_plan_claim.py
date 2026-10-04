@@ -319,7 +319,7 @@ def artifact_evidence(
             if not (line.startswith("Code follow-ups recorded without starting implementation:")
                     and not re.search(ownership_reference, line))
         )
-        explicit_url = bool(repo and re.search(issue_url + r"(?!\d)", title + "\n" + ownership_body))
+        explicit_url = bool(repo and re.search(issue_url + r"(?!\d)", title + "\n" + ownership_body, re.IGNORECASE))
         linked = bool(re.search(ownership_reference, body))
         titled = local_references and bool(re.search(rf"(?<![\w/])#{number}(?!\d)", title))
         if explicit_url or linked or titled or (local_references and references_issue(branch, number)):
