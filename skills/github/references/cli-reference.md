@@ -414,6 +414,9 @@ Current Status and post `Released claim <claim-comment-id>` through the same bot
 identity. Release affects that exact comment, not another worker's
 record or retained branch/worktree evidence; those still need ordinary
 ownership and preservation review.
+The first release line is exactly `Released claim <id>`, or ends its exact ID
+with a period followed by optional handoff prose. Conditional prose after a
+bare ID does not release ownership.
 
 Use a unique worker token per native session. Legacy `Released by <worker>`
 comments are accepted only when the earlier structured claims for that token
@@ -421,9 +424,19 @@ all belong to one session; reuse requires exact comment-ID releases.
 
 After a verified retained-work handoff, use `--resume-from <claim-comment-id>`.
 The source must be one structured claim explicitly released by its author.
-Only its exact branch, worktree, and PR evidence is accepted; competing Current
-Status, unreleased comments, other artifacts, and visible peer sessions still
-refuse. This flag supplies no cleanup or takeover authority: apply Choose Work's
+An identical structured Current Status marker and its helper-generated active
+worker line and worker/session fields are accepted when the source author's
+exact-ID release is newer than both
+the marker's claimed-at time and the source comment's last edit. Missing or
+invalid timestamps remain uncertain ownership. The successor claim replaces
+automation-managed stale status on normal readback; contributor-owned status
+stays intact, with the successor's claim in a comment. Unstructured ownership
+outside the helper-generated fields still refuses. The original status remains quoted in
+the successor's claim comment. Only the exact retained branch, worktree, and
+PR evidence is accepted; other Current Status ownership, unreleased comments,
+other artifacts, and visible peer sessions still refuse. Records on another issue must use that
+canonical planning issue's supported handoff route.
+This flag supplies no cleanup or takeover authority: apply Choose Work's
 verified-handoff and preservation rules before passing it.
 
 For an explicitly authorized **conflict-only refresh** of a finished session's
@@ -449,14 +462,14 @@ worktrees and remote heads, not every clone or Codex peer. No worktree is
 adopted or mutated there.
 
 The source claim and handoff must be on that planning issue. The source author
-must have posted an exact `Released claim <id>` before or in the handoff, and
+must have posted an exact-ID release as described above before or in the handoff, and
 the handoff must name the target PR. A same-repository `#123`, qualified
 `OWNER/REPO#123`, or full PR URL identifies it; cross-repository handoffs require
 a qualified reference. The open PR must independently link the planning issue
 and use a head and base in the PR's repository; fork refreshes are not supported.
 The issue and target PR's recorded waits still require verified resolution.
 
-The handoff must start with the exact `Released claim <id>` line, or with
+The handoff must start with the exact-ID release line described above, or with
 `Handoff from <source-worker>` and include the exact claim ID and native source
 session ID. A generic bot rollup or refresh claim is not a handoff. Authorship
 checks are at GitHub identity level; verify the actual finished-session handoff
