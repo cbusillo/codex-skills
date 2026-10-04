@@ -114,7 +114,11 @@ local extensions until the vendored artifact is refreshed.
   sanitized by `public_operator_text`. `entry_count` and `warning_count`
   describe the full response; `entries_truncated` and `warnings_truncated`
   disclose omitted rows. Unknown entry fields and image reference lists are
-  dropped. Malformed retained fields fail the read. This diagnostic projection
+  dropped. Artifact ids may be registry references with an optional SHA-256
+  digest suffix; credential-bearing userinfo is refused in ids and warning text.
+  Empty ids remain valid for preview feedback protecting image references only.
+  Nonempty image digests must be SHA-256, and lane and record names cannot carry
+  userinfo. Malformed retained fields fail the read. This diagnostic projection
   is not a complete registry-cleanup retention set when truncated.
 - `product-profile-read --product` calls `GET /v1/product-profiles/{product}`
   and returns the product's Client GitHub login and review label, `production_use`,

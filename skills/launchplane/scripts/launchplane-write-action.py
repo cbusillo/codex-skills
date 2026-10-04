@@ -2562,15 +2562,33 @@ PROTECTED_ARTIFACTS_MAX_WARNINGS = 50
 
 def _protected_artifact_identifier(value: object) -> str:
     artifact_id = _project_artifact_reference(value)
-    if re.match(r"^[^/]*:[^/]*@", artifact_id):
-        raise LaunchplaneSafetyError("invalid_response")
+    if "@" in artifact_id:
+        name, digest = artifact_id.rsplit("@", 1)
+        if "@" in name or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise LaunchplaneSafetyError("invalid_response")
     return artifact_id
 
 
 def _protected_artifact_warning(value: object) -> str:
-    if isinstance(value, str) and re.search(r"(?:^|\s)[^/\s]*:[^/\s]*@", value):
-        raise LaunchplaneSafetyError("invalid_response")
+    if isinstance(value, str):
+        for reference in value.split():
+            if "@" in reference and "://" not in reference:
+                _protected_artifact_identifier(reference)
     return public_operator_text(value)
+
+
+def _protected_artifact_lane(value: object, *, optional: bool = False) -> str:
+    name = _optional_identifier(value) if optional else public_identifier(value)
+    if "@" in name:
+        raise LaunchplaneSafetyError("invalid_response")
+    return name
+
+
+def _protected_artifact_digest(value: object) -> str:
+    digest = _optional_identifier(value)
+    if digest and not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise LaunchplaneSafetyError("invalid_response")
+    return digest
 
 def _project_protected_artifacts(value: object) -> dict[str, object]:
     source = _require_dict(value)
@@ -2583,16 +2601,16 @@ def _project_protected_artifacts(value: object) -> dict[str, object]:
         entry = _require_dict(value)
         projected_entries.append({
             "reason": public_code(entry.get("reason")),
-            "context": public_identifier(entry.get("context")),
-            "instance": _optional_identifier(entry.get("instance")),
+            "context": _protected_artifact_lane(entry.get("context")),
+            "instance": _protected_artifact_lane(entry.get("instance"), optional=True),
             "artifact_id": _protected_artifact_identifier(entry.get("artifact_id")),
             "source_record_type": public_code(entry.get("source_record_type")),
-            "source_record_id": public_identifier(entry.get("source_record_id")),
-            "image_digest": _optional_identifier(entry.get("image_digest")),
+            "source_record_id": _protected_artifact_lane(entry.get("source_record_id")),
+            "image_digest": _protected_artifact_digest(entry.get("image_digest")),
         })
     projected = {
-        "product": public_identifier(source.get("product")),
-        "context": _optional_identifier(source.get("context")),
+        "product": _protected_artifact_lane(source.get("product")),
+        "context": _protected_artifact_lane(source.get("context"), optional=True),
         "entries": projected_entries,
         "entry_count": len(entries),
         "entries_truncated": len(entries) > PROTECTED_ARTIFACTS_MAX_ENTRIES,

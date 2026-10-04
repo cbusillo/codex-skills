@@ -2933,6 +2933,16 @@ def test_protected_artifacts_read_projection_and_query() -> None:
         assert "private-entry-field" not in json.dumps(payload)
 
 
+    for artifact in ("ghcr.io/example/app@sha256:" + "a" * 64, "registry.example:5000/app@sha256:" + "a" * 64):
+        response["protected_artifacts"]["entries"][0]["artifact_id"] = artifact
+        status, payload, _ = _run_product_read(["protected-artifacts-read", "--product", "example-product"], response)
+        assert status == 0 and payload["result"]["entries"][0]["artifact_id"] == artifact
+    # Active preview feedback can protect image references without an artifact id.
+    response["protected_artifacts"]["entries"][0].update(artifact_id="", image_digest="", instance="")
+    status, payload, _ = _run_product_read(["protected-artifacts-read", "--product", "example-product"], response)
+    assert status == 0 and payload["result"]["entries"][0]["artifact_id"] == ""
+
+
 def test_protected_artifacts_read_bounds_and_sanitizes_warnings() -> None:
     response = _protected_artifacts_response()
     inventory = response["protected_artifacts"]
@@ -2963,6 +2973,10 @@ def test_protected_artifacts_read_empty_invalid_and_denied() -> None:
         lambda body: body["protected_artifacts"]["entries"][0].update(artifact_id="Bearer abcdefghijklmnop"),
         lambda body: body["protected_artifacts"]["entries"][0].update(artifact_id="user:pass@private-host/app"),
         lambda body: body["protected_artifacts"].update(warnings=["Protected artifact user:pass@private-host/app has no manifest."]),
+        lambda body: body["protected_artifacts"]["entries"][0].update(artifact_id="user:ab/cd@registry.example/app:tag"),
+        lambda body: body["protected_artifacts"].update(warnings=["Protected artifact user:ab/cd@registry.example/app:tag has no manifest."]),
+        lambda body: body["protected_artifacts"]["entries"][0].update(image_digest="user:pass@host"),
+        lambda body: body["protected_artifacts"]["entries"][0].update(instance="user:pass@host"),
         lambda body: body.update(unexpected="private-field"),
     ):
         body = _protected_artifacts_response()
