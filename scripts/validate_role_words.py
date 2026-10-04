@@ -77,12 +77,15 @@ def strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
 
 def prose_lines(text: str) -> Iterable[tuple[int, str]]:
     fence = ""
+    fence_in_blockquote = False
     in_comment = False
     in_frontmatter = False
     prose_indent: int | None = None
     previous = ""
     for number, line in enumerate(text.splitlines(), start=1):
-        line = BLOCKQUOTE.sub("", line)
+        quote_prefix = BLOCKQUOTE.match(line)
+        if not fence or fence_in_blockquote:
+            line = BLOCKQUOTE.sub("", line)
         if number == 1 and line.strip() == "---":
             in_frontmatter = True
             continue
@@ -111,6 +114,7 @@ def prose_lines(text: str) -> Iterable[tuple[int, str]]:
             continue
         if opening:
             fence = opening.group(1)
+            fence_in_blockquote = quote_prefix is not None
             previous = ""
             continue
         line, in_comment = strip_comments(line, in_comment)

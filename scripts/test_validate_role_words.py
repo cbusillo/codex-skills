@@ -105,6 +105,14 @@ def test_allows_wrapped_github_sense() -> None:
             raise AssertionError(module.findings(text))
 
 
+def test_quoted_fence_literals_stay_inside_unquoted_code() -> None:
+    module = load_module()
+    for fence in ("```", "~~~"):
+        text = f"{fence}text\n> {fence}bash\noperator = owner\n{fence}\nAsk the owner."
+        if module.findings(text) != [(5, "owner")]:
+            raise AssertionError(module.findings(text))
+
+
 def test_allows_github_sense_and_code() -> None:
     module = load_module()
     text = "\n".join(
@@ -137,6 +145,7 @@ def main() -> int:
     test_flags_blockquote_and_hyphen_wraps()
     test_never_carries_prose_across_fences()
     test_allows_wrapped_github_sense()
+    test_quoted_fence_literals_stay_inside_unquoted_code()
     test_allows_github_sense_and_code()
     print("ok test-validate-role-words")
     return 0
