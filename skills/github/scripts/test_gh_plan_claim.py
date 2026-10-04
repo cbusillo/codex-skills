@@ -27,6 +27,10 @@ SPEC.loader.exec_module(PLAN)
 
 OWNER = {"worker": "trial-a", "session": "session-a", "branch": "work/issue-42", "claimed_at": "2026-10-01T00:00:00Z"}
 OTHER = {**OWNER, "worker": "trial-b", "session": "session-b", "branch": "work/other-42"}
+RESPONSIBILITY_STATUS = (
+    "After these proposals, 61 OPW and 57 CM provider-only entries would remain, "
+    "owned by Launchplane engineering for evidence and Chris for production disposition approval."
+)
 
 
 class ClaimTests(unittest.TestCase):
@@ -117,6 +121,41 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(PLAN.ClassifiedPlanError):
             self.run_claim()
         self.assert_no_writes()
+
+    def test_responsibility_status_with_released_claim_allows_new_claim(self):
+        self.issue["body"] += "\n" + RESPONSIBILITY_STATUS
+        self.comments = [
+            {"id": 1, "body": "Claimed by " + OTHER["worker"] + "\n" + CLAIM.marker(OTHER),
+             "user": {"login": TEST_BOT}},
+            {"id": 2, "body": "Released claim 1", "user": {"login": TEST_BOT}},
+        ]
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.assertIn("post", self.events)
+
+    def test_responsibility_status_does_not_release_real_claims(self):
+        self.issue["body"] += "\n" + RESPONSIBILITY_STATUS
+        self.compete()
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.payload["competing_evidence"][0]["source"], "comment")
+        self.assert_no_writes()
+
+    def test_unstructured_execution_ownership_refuses(self):
+        for status in (
+            "Owned by another-worker",
+            "State: Active, owned by another-worker",
+            "Implementation is owned by another-worker.",
+            "Next action: Continue work owned by another-worker.",
+            "Claimed by another-worker",
+            "Worker: another-worker",
+            "Session: another-session",
+        ):
+            with self.subTest(status=status):
+                self.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n\n## Current Status\n\n" + status
+                with self.assertRaises(PLAN.ClassifiedPlanError):
+                    self.run_claim()
+                self.assert_no_writes()
 
     def test_stale_claim_is_not_expired(self):
         self.compete({**OTHER, "claimed_at": "2020-01-01T00:00:00Z"})

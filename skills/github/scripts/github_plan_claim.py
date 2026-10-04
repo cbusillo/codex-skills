@@ -78,8 +78,13 @@ def discussion_evidence(
             owned.append(record)
         else:
             conflicts.append({"source": "current_status", "record": record})
+    # Bare ownership lines, state declarations and execution subjects identify
+    # workers. Mid-sentence ownership of provider entries or other resources
+    # assigns functional responsibility, not an executing claim.
     if not status_records and re.search(
-        r"(?im)owned by|claimed by|\bworker\s*:|\bsession\s*:",
+        r"(?im)claimed by|\bworker\s*:|\bsession\s*:"
+        r"|^\s*(?:State:[^\n]*?)?owned by\b"
+        r"|\b(?:work|issue|task|implementation|execution)\b[^\n.]*\bowned by\b",
         status,
     ):
         if any(claim[key] not in status for key in ("worker", "session", "branch")):
