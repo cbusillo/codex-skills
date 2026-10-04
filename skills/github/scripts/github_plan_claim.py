@@ -82,7 +82,9 @@ def discussion_evidence(
     # responsibilities. Keep the broad fail-closed scan for other ownership,
     # including another assertion on the same line or elsewhere in the status.
     ownership_status = re.sub(
-        r"(?im)\b(?:entries|records|resources)\b(?:\s+(?:would remain,|are))?\s+"
+        r"(?im)^\s*(?:After these proposals,\s+)?"
+        r"(?:Remaining |\d+ [\w-]+ and \d+ [\w-]+ )?(?:provider-only )?"
+        r"(?:entries|records|resources)\b(?:\s+(?:would remain,|are))?\s+"
         r"owned by (?:(?!\b(?:owned|claimed) by\b)[\w -])+ for evidence and "
         r"(?:(?!\b(?:owned|claimed) by\b)[\w -])+ for (?:production )?disposition approval"
         r"(?:\.(?=\s|$)|(?=\n|$))",

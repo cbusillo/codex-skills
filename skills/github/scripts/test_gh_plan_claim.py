@@ -167,6 +167,8 @@ class ClaimTests(unittest.TestCase):
             "Records owned by engineering and implementation owned by another-worker for evidence and Chris for disposition approval.",
             "Entries remain while implementation is owned by another-worker for evidence and Chris for disposition approval.",
             RESPONSIBILITY_STATUS.removesuffix(".") + " (session-x)",
+            "Implementation and records owned by another-worker for evidence and Chris for disposition approval.",
+            "Fix and remaining entries owned by another-worker for evidence and Chris for production disposition approval.",
         ):
             with self.subTest(status=status):
                 self.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n\n## Current Status\n\n" + status
