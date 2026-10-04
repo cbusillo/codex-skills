@@ -49,59 +49,54 @@ jobs:
           cache-dependency-glob: "**/*.py"
           python-version: ${{ matrix.python-version }}
 
-      - name: Diagnose Node startup (temporary CS-992-D1 experiment)
+      - name: Diagnose parallel Node cohort (temporary CS-992-D1 experiment)
         if: steps.lane.outputs.run == 'true'
         run: |
           set -euo pipefail
-          uv run python - <<'PY'
+          uv run python - <<'PYDIAG'
           import concurrent.futures
-          import os
           import pathlib
-          import resource
           import shutil
           import subprocess
           import tempfile
           import time
 
+          scripts = [
+              'skills/github/scripts/validate-gh-plan.py',
+              'skills/local-llm/scripts/validate_local_codex_agent.py',
+              'skills/model-review/scripts/test_review_with_model.py',
+              'skills/openai-docs/scripts/test_fetch_codex_manual.py',
+          ]
           node = shutil.which('node')
-          tracer = shutil.which('strace')
-          print('Node executable:', node, 'resolved:', pathlib.Path(node).resolve(), flush=True)
-          print('Tracer:', tracer, flush=True)
           with tempfile.TemporaryDirectory() as directory:
               root = pathlib.Path(directory)
-              alias = root / 'manual.mjs'
-              alias.symlink_to(pathlib.Path('skills/openai-docs/scripts/fetch-codex-manual.mjs').resolve())
-              def probe(index):
-                  trace = root / f'trace-{index}'
-                  args = [node, '--version'] if index == 0 else [node, str(alias), '--invalid-test-argument']
-                  if tracer:
-                      args = [tracer, '-f', '-ttt', '-T', '-o', str(trace), *args]
-                  usage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
+              wrapper = root / 'node'
+              trace_root = root / 'traces'
+              trace_root.mkdir()
+              wrapper.write_text('#!/bin/bash\nexec strace -f -ttt -T -o "' + str(trace_root) + '/node-$$" ' + node + ' "$@"\n')
+              wrapper.chmod(0o700)
+              import os
+              env = dict(os.environ, PATH=str(root) + ':' + os.environ['PATH'])
+              def probe(script):
                   started = time.monotonic()
-                  try:
-                      result = subprocess.run(args, capture_output=True, timeout=5)
-                      usage = resource.getrusage(resource.RUSAGE_CHILDREN)
-                      print(index, 'elapsed:', time.monotonic() - started, 'rc:', result.returncode, 'cpu:', usage.ru_utime + usage.ru_stime - usage_before.ru_utime - usage_before.ru_stime, 'major_faults:', usage.ru_majflt - usage_before.ru_majflt, flush=True)
-                  except subprocess.TimeoutExpired as error:
-                      print(index, 'TIMEOUT:', time.monotonic() - started, 'stdout:', error.stdout, 'stderr:', error.stderr, flush=True)
-                  if trace.exists():
-                      lines = trace.read_text().splitlines()
-                      print(index, 'trace tail:', '\n'.join(lines[-15:]), flush=True)
-                      for line in lines:
-                          if '<' in line:
-                              try:
-                                  duration = float(line.rsplit('<', 1)[1].rstrip('>'))
-                              except ValueError:
-                                  continue
-                              if duration > 0.1:
-                                  print(index, 'slow syscall:', line, flush=True)
-              for index in range(-6, 1):
-                  with open(node, 'rb') as binary:
-                      os.posix_fadvise(binary.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
-                  probe(index)
-              with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-                  list(pool.map(probe, range(1, 21)))
-          PY
+                  result = subprocess.run(['uv', 'run', script], env=env, capture_output=True, text=True, timeout=90)
+                  print(script, 'elapsed:', time.monotonic() - started, 'rc:', result.returncode, 'stderr:', result.stderr[-5000:], flush=True)
+              for iteration in range(6):
+                  print('Cohort', iteration, flush=True)
+                  with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+                      list(pool.map(probe, scripts))
+              for trace in trace_root.iterdir():
+                  lines = trace.read_text().splitlines()
+                  print('Node trace', trace.name, 'first:', lines[:3], 'last:', lines[-3:], flush=True)
+                  for line in lines:
+                      if '<' in line:
+                          try:
+                              duration = float(line.rsplit('<', 1)[1].rstrip('>'))
+                          except ValueError:
+                              continue
+                          if duration > 0.5:
+                              print('slow syscall:', line, flush=True)
+          PYDIAG
 
       - name: Validate skills
         if: steps.lane.outputs.run == 'true'
