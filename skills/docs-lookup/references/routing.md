@@ -33,8 +33,9 @@ move that guidance into `AGENTS.md` or workflow metadata.
 ## Local Infrastructure Docs
 
 Use this route when private operational context is
-needed and `.github/github.json` is absent or its `relatedRepos`/`docs` routes
-do not cover that context. Preserve explicit repo routes for the scope they
+needed and `.github/github.json` is absent or its `docs` routes
+do not cover that context. Related repo names alone declare no operational
+authority. Preserve explicit repo routes for the scope they
 declare; consult local context only for the missing operational facts. Read
 task-relevant documentation, not an unrestricted inventory of private repos.
 Ordinary code planning with sufficient checked-in evidence needs no local
@@ -62,10 +63,11 @@ provider-token locations. After the docs/access path is known, use `infra-ops`
 for live record inspection, mutation, rollback, and verification.
 
 Credential, API token, and secret location requests are local-infrastructure
-routes too. Follow the scoped routing above to find that environment's credentials
+routes too. Use `[docs].local_infra` to find that environment's credentials
 index, which records each credential's holder, each storage location, a read-only validation
 check, and the rotation path. Then read the owning repo's declared key names in
 its checked-in `.env.example` and the `env` block of its `.github/github.json`.
+Repo documentation that mentions a token location does not replace this index.
 Read a value only from the location the index names, never print it, and pass
 it to a command through standard input rather than an argument. If the index
 has no entry, say so before searching, search narrowly by key name, and route a

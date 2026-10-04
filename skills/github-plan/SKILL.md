@@ -137,12 +137,15 @@ Use `github` for PRs, Actions, and landing; use `direction` for changes to
 `DIRECTION.md` or the Director's waypoints.
 
 Before private operational lookup during planning, read `.github/github.json` when present and use
-its `relatedRepos` and task-relevant `docs` routes for their declared scope.
+its task-relevant `docs` routes and declared `relatedRepos`. A related repo name
+alone establishes no operational authority; use the scope its instructions or
+docs assign.
 If a declared route answers the task, use it without opening the local docs
 fallback.
 When the task needs this environment's infrastructure, access paths, or private
 operational ownership and those routes do not provide the needed context, use
-`docs-lookup` before searching for more repositories. Missing metadata alone
+load `docs-lookup` before reading configured private documentation or searching
+for more repositories. Missing metadata alone
 does not require private lookup for ordinary source work; do not read private
 operational docs unless the task needs those operational facts. The local
 docs source supplies task-specific context, not a repository inventory. Keep

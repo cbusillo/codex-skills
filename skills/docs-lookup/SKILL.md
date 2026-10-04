@@ -42,13 +42,16 @@ docs and authority. Route by source of truth, not provider name.
    For private operational facts missing from explicit repo docs routes,
    check its configured local context before inferring authority from unrouted
    product clues, provider dashboards, deployment platforms, or browser sessions.
+   Credential location lookup always uses the configured local credentials index,
+   even when repo docs mention token locations.
    When explicit docs routes do not cover them, private DNS/Cloudflare and
    secret-location requests start there, never with
    product `.env` files, shell history, or common token locations. Missing
    required context is a configuration gap to report, not permission to guess.
-4. Honor explicit repo documentation routes for their declared scope. For
-   missing private operational facts, prefer configured local context for this
-   environment; otherwise repo docs/source for project behavior; official product docs;
+4. Honor explicit repo documentation routes for their declared scope and the
+   credential index-first rule. Use configured local context for missing private
+   operational facts. For other lookup, prefer repo docs/source for project
+   behavior; official product docs;
    official API references, release/migration notes, changelogs and source;
    registries for package metadata/version facts; trusted community sources
    only when official docs are missing/incomplete or the user wants ecosystem
