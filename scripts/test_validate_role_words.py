@@ -70,6 +70,78 @@ def test_flags_folded_frontmatter_prose() -> None:
         raise AssertionError(module.findings(text))
 
 
+def test_flags_blockquote_and_hyphen_wraps() -> None:
+    module = load_module()
+    for text, expected_word in (
+        ("> The policy\n> administrator approves.", "policy administrator"),
+        ("The policy-\nadministrator approves.", "policy-administrator"),
+        ("> > The POLICY-  \n> > administrators approve.", "POLICY-administrators"),
+        ("> The signed-in policy\nadministrator approves access.", "policy administrator"),
+    ):
+        found = module.findings(text)
+        if found != [(2, expected_word)]:
+            raise AssertionError(found)
+
+
+def test_never_carries_prose_across_fences() -> None:
+    module = load_module()
+    for fence in ("```", "~~~", "> ```"):
+        text = f"The policy\n{fence}\ncode\n{fence}\nadministrator approves."
+        if module.findings(text):
+            raise AssertionError(module.findings(text))
+        # A repository qualifier before code must not exempt unrelated prose.
+        text = f"The repository\n{fence}\ncode\n{fence}\nowner approves."
+        if module.findings(text) != [(5, "owner")]:
+            raise AssertionError(module.findings(text))
+    text = "> The policy\n> ```\n> code\n> ```\n> administrator approves."
+    if module.findings(text):
+        raise AssertionError(module.findings(text))
+    text = "> The repository\n> ```\n> code\n> ```\n> owner approves."
+    if module.findings(text) != [(5, "owner")]:
+        raise AssertionError(module.findings(text))
+
+
+def test_allows_wrapped_github_sense() -> None:
+    module = load_module()
+    for text in (
+        "> The repository\n> owner applies the ruleset.",
+        "The repository-\nowner applies the ruleset.",
+        "> The repository-\n> owner applies the ruleset.",
+        "> Ask the repository\nowner to apply the ruleset.",
+    ):
+        if module.findings(text):
+            raise AssertionError(module.findings(text))
+
+
+def test_quoted_fence_literals_stay_inside_unquoted_code() -> None:
+    module = load_module()
+    for fence in ("```", "~~~"):
+        text = f"{fence}text\n> {fence}bash\noperator = owner\n{fence}\nAsk the owner."
+        if module.findings(text) != [(5, "owner")]:
+            raise AssertionError(module.findings(text))
+
+
+def test_quote_boundaries_do_not_hide_role_prose() -> None:
+    module = load_module()
+    for text, expected in (
+        ("> ```bash\n> make\n\nAsk the owner.", [(4, "owner")]),
+        ("Settings live in the repository\n> Owner approval is required.", [(2, "Owner")]),
+        ("> Settings live in the repository\n>> Owner approval is required.", [(2, "Owner")]),
+    ):
+        if module.findings(text) != expected:
+            raise AssertionError(module.findings(text))
+
+
+def test_only_matching_bare_fences_close_code() -> None:
+    module = load_module()
+    for text, expected_line in (
+        ("> ```markdown\n> > ```bash\n> > run as operator\n> > ```\n> ```\nOwner approves.", 6),
+        ("```markdown\n```bash\nrun as operator\n```\nOwner approves.", 5),
+    ):
+        if module.findings(text) != [(expected_line, "Owner")]:
+            raise AssertionError(module.findings(text))
+
+
 def test_allows_github_sense_and_code() -> None:
     module = load_module()
     text = "\n".join(
@@ -99,6 +171,12 @@ def main() -> int:
     test_flags_frontmatter_description_only()
     test_flags_wrapped_policy_administrator()
     test_flags_folded_frontmatter_prose()
+    test_flags_blockquote_and_hyphen_wraps()
+    test_never_carries_prose_across_fences()
+    test_allows_wrapped_github_sense()
+    test_quoted_fence_literals_stay_inside_unquoted_code()
+    test_quote_boundaries_do_not_hide_role_prose()
+    test_only_matching_bare_fences_close_code()
     test_allows_github_sense_and_code()
     print("ok test-validate-role-words")
     return 0
