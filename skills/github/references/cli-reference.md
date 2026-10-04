@@ -350,6 +350,12 @@ uv run <skill-dir>/scripts/gh-plan.py claim <issue> \
   --branch work/<task-slug> --next-action "<action>"
 ```
 
+Agent routing and the session override are defined in
+[Agent Assignment](../../github-plan/SKILL.md#agent-assignment). `next` and
+`claim` accept `--agent claude|codex`; `claim --agent-override REASON` records an
+explicit Director exception. Both creation helpers accept `--agent` as an
+assignment.
+
 Claim the exact branch that the worktree helper will create. For
 `dev-worktree <repo> <task-slug> <start>`, that is `work/<task-slug>`.
 Verify holds and recorded waits under Choose Work before invoking claim.
