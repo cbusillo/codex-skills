@@ -58,7 +58,8 @@ def records(text: str) -> list[dict[str, str]]:
 
 
 def same_owner(record: dict[str, str], claim: dict[str, str]) -> bool:
-    return all(record.get(key) == claim[key] for key in ("worker", "session", "branch"))
+    return (all(record.get(key) == claim[key] for key in ("worker", "session", "branch"))
+            and record.get("refresh_pr") == claim.get("refresh_pr"))
 
 
 def references_issue(text: str, number: int) -> bool:
@@ -206,13 +207,67 @@ def retained_branch(comments: list[dict[str, Any]], comment_id: int) -> str:
     raise ValueError("Resume source claim has not been released by its author")
 
 
+def refresh_handoff(
+    comments: list[dict[str, Any]], source_id: int, handoff_id: int,
+    pulls: list[dict[str, Any]], target_number: int, *, issue_repo: str,
+    issue_number: int, target_repo: str,
+) -> set[str]:
+    """Bind retained PR identities to the exact author-released handoff."""
+    source_branch = retained_branch(comments, source_id)
+    source = next(c for c in comments if c.get("id") == source_id)
+    author = source["user"]["login"]
+    handoff = next((c for c in comments if c.get("id") == handoff_id), None)
+    if handoff is None or (handoff.get("user") or {}).get("login") != author:
+        raise ValueError("Refresh handoff must be a comment by the source claim author")
+    source_index, handoff_index = comments.index(source), comments.index(handoff)
+    if handoff_index <= source_index or not any(
+        (c.get("user") or {}).get("login") == author
+        and (c.get("body") or "").splitlines()[:1] == [f"Released claim {source_id}"]
+        for c in comments[source_index + 1:handoff_index + 1]
+    ):
+        raise ValueError("Refresh requires an exact source-claim release before or in the handoff")
+
+    def mentions_pr(text: str, number: int) -> bool:
+        qualified = rf"(?:https://github\.com/{re.escape(target_repo)}/pull/|{re.escape(target_repo)}#){number}(?!\d)"
+        return bool(re.search(qualified, text) or (issue_repo.casefold() == target_repo.casefold()
+                    and re.search(rf"(?<![\w/#])#{number}(?!\d)", text)))
+
+    handoff_text = handoff.get("body") or ""
+    if not (handoff_text.splitlines()[:1] == [f"Released claim {source_id}"]
+            or re.search(rf"\bclaim {source_id}(?!\d)", handoff_text)):
+        raise ValueError("Refresh handoff must identify the exact released source claim")
+    empty = {"local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}
+    permitted = {source_branch}
+    target_found = False
+    for pull in pulls:
+        branch = (pull.get("head") or {}).get("ref", "")
+        if not mentions_pr(handoff.get("body") or "", pull["number"]):
+            continue
+        if (pull.get("user") or {}).get("login") != author:
+            continue
+        if ((pull.get("head") or {}).get("repo") or {}).get("full_name", "").casefold() != target_repo.casefold():
+            continue
+        if ((pull.get("base") or {}).get("repo") or {}).get("full_name", "").casefold() != target_repo.casefold():
+            continue
+        # The PR must independently link the canonical planning issue.
+        if not artifact_evidence(empty, [{**pull, "head": {"ref": ""}}], issue_number, {},
+                                 own_record=False, repo=issue_repo):
+            continue
+        permitted.add(branch)
+        target_found |= pull["number"] == target_number
+    if not target_found:
+        raise ValueError("Refresh target must be an open same-repository PR linked to the issue and attested in the released handoff")
+    return permitted
+
+
 def artifact_evidence(
     inventory: dict[str, Any], pulls: list[dict[str, Any]], number: int,
     claim: dict[str, str], *, own_record: bool, retained: str | None = None, repo: str = "",
+    retained_branches: set[str] | None = None, retained_repo: str | None = None,
 ) -> list[dict[str, Any]]:
     conflicts = []
     def permitted(branch: str) -> bool:
-        return (own_record and branch == claim["branch"]) or branch == retained
+        return (own_record and branch == claim["branch"]) or branch == retained or branch in (retained_branches or set())
 
     for source in ("local_branches", "remote_branches"):
         for branch in inventory[source]:
@@ -223,11 +278,13 @@ def artifact_evidence(
             if not permitted(tree["branch"]):
                 conflicts.append({"source": "worktree", **tree, "certainty": "current_or_stale"})
     paths = {str(pathlib.Path(t["path"]).resolve()) for t in inventory["worktrees"]}
+    retained_paths = {str(pathlib.Path(t["path"]).resolve()) for t in inventory["worktrees"]
+                      if t["branch"] == retained or t["branch"] in (retained_branches or set())}
     for session in inventory["sessions"]:
         if session.get("sessionId") == claim["session"]:
             continue
         cwd = str(pathlib.Path(session.get("cwd") or "/").resolve())
-        if cwd in paths and references_issue((session.get("name") or "") + "/" + pathlib.Path(cwd).name, number):
+        if cwd in retained_paths or (cwd in paths and references_issue((session.get("name") or "") + "/" + pathlib.Path(cwd).name, number)):
             conflicts.append({"source": "claude_session", "session": session.get("sessionId"),
                               "state": session.get("state") or session.get("status")})
     for pull in pulls:
@@ -252,6 +309,10 @@ def artifact_evidence(
         linked = bool(re.search(ownership_reference, body))
         titled = bool(re.search(rf"(?<![\w/])#{number}(?!\d)", title))
         if explicit_url or linked or titled or references_issue(branch, number):
-            if not permitted(branch):
+            same_repo = not retained_repo or all(
+                ((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() == retained_repo.casefold()
+                for side in ("head", "base")
+            )
+            if not permitted(branch) or not same_repo:
                 conflicts.append({"source": "open_pr", "number": pull["number"], "branch": branch})
     return conflicts
