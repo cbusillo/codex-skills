@@ -49,7 +49,7 @@ async def send(session, text, submit=True):
 async def wait_for_session(app, tab, timeout=10.0):
     """Refresh only the created tab's identity until its session is available."""
     if tab is None:
-        raise ValueError("new tab closed before its identity was available")
+        raise ValueError("new tab identity unavailable; run list and inspect before retrying")
     tab_id = tab.tab_id
     try:
         async with asyncio.timeout(timeout):

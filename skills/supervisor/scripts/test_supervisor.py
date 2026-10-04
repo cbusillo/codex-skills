@@ -777,7 +777,7 @@ class TerminalTests(unittest.TestCase):
             current_terminal_window=SimpleNamespace(current_tab=SimpleNamespace(current_session=terminal)),
         )
         for tab in (None, SimpleNamespace(tab_id="closed", current_session=None)):
-            with self.subTest(tab=tab), self.assertRaisesRegex(ValueError, "closed"):
+            with self.subTest(tab=tab), self.assertRaises(ValueError):
                 asyncio.run(iterm_tab.wait_for_session(app, tab))
         terminal.async_send_text.assert_not_awaited()
 
