@@ -94,7 +94,12 @@ and accepted full-answer forms containing {value}. The expected value comes
 from the fixture itself; a refusal, a guessed value without a delivered read,
 or a value contradicted by the fixture fails. Accepted forms normalize case
 and whitespace, Markdown formatting and final punctuation, but remain an
-explicit bounded output contract.
+explicit bounded output contract. The qualified local-fact forms include the
+observed sentence “In local.py, MAX_RETRIES is set to {value}.” and compare
+its whole normalized answer with the captured fixture value. Additional prose,
+including a second contradictory value, falls outside this contract; this does
+not establish general semantic answer grading. Historical trial scores stay
+unchanged when the form list is extended.
 The final_any check accepts a listed alternative pattern; final_none rejects
 listed contradictory answers. These are lexical checks, not a general semantic
 judge: inspect actual finals when the answer falls outside the qualified rubric.

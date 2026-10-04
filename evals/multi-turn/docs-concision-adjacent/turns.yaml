@@ -21,6 +21,7 @@ turns:
           - 'MAX_RETRIES in local.py is set to {value}.'
           - 'MAX_RETRIES is set to {value}.'
           - 'In local.py, MAX_RETRIES is {value}.'
+          - 'In local.py, MAX_RETRIES is set to {value}.'
           - 'local.py defines MAX_RETRIES = {value}.'
           - 'MAX_RETRIES = {value}.'
           - '{value}'
