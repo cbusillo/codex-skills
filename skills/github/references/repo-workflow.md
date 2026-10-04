@@ -456,8 +456,6 @@ two PRs deep or expensive checks would rerun at every layer.
 ## CI Failure Diagnosis
 
 When checks fail, inspect logs before guessing from check names or status alone.
-When a failure fits a pattern, such as case sensitivity, paths, or naming, search
-the whole affected path for the same pattern before pushing a fix.
 
 ```sh
 <skill-dir>/scripts/github-ci-diagnose.py --pr <number-or-url>
@@ -471,6 +469,10 @@ Classify failures before acting:
 - likely flaky/infra: runner provisioning, registry/network outages, provider
   incidents, or timeouts without code-specific evidence
 - ambiguous: inspect once manually and report what evidence is missing
+
+When a branch-related failure fits a pattern, such as case sensitivity, paths,
+or naming, search all files covered by the failing check for the same pattern
+before pushing a fix.
 
 The diagnosis helper uses the same paged REST check reader as `gh-pr.py`, then
 reads workflow-run metadata, latest-attempt jobs, and individual job logs over
