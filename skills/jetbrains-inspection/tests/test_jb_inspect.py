@@ -8083,6 +8083,16 @@ class AgentInspectContractTest(unittest.TestCase):
                 self.assertIsNone(jb_inspect.selected_inspection_file_count(payload))
                 self.assertEqual(jb_inspect.verdict_for_payload(payload), original)
 
+    def test_observation_uses_native_scope_instead_of_repository_default(self):
+        for native_scope, count, expected in [("whole_project", 0, None), ("directory", 0, None), ("files", 2, 2)]:
+            with self.subTest(native_scope=native_scope):
+                payload = {
+                    "status": "clean", "context": {"scope": "changed_files"},
+                    "capture_diagnostic": {"scope_kind": native_scope, "scope_file_resolved_count": count},
+                }
+                self.assertEqual(jb_inspect.selected_inspection_file_count(payload), expected)
+                self.assertNotEqual(jb_inspect.verdict_for_payload(payload)["verdict_reason"], "inspection_scope_empty")
+
     def emit_agent_payload(self, payload, helper_exit_code=None):
         output = io.StringIO()
         with redirect_stdout(output), patch.object(jb_inspect, "log_assessment_records"):

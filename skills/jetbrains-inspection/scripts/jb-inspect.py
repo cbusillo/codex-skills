@@ -9065,7 +9065,7 @@ def selected_inspection_file_count(payload: dict[str, Any]) -> int | None:
     else:
         diagnostic = payload.get("capture_diagnostic")
         context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-        scope = context.get("scope") or (diagnostic.get("scope_kind") if isinstance(diagnostic, dict) else None)
+        scope = (diagnostic.get("scope_kind") if isinstance(diagnostic, dict) else None) or context.get("scope")
         if scope in {"whole_project", "directory"}:
             # Broad scopes report zero here as a placeholder; their native
             # traversal proof establishes execution separately.
