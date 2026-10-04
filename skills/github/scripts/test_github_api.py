@@ -3079,7 +3079,8 @@ def main() -> None:
     for test in tests:
         _api.reset_rate_limit_cache()
         try:
-            test()
+            with tempfile.TemporaryDirectory() as state_dir, patch.dict(os.environ, {"GITHUB_RETRY_STATE_DIR": state_dir}):
+                test()
             print(f"ok {test.__name__}")
         except Exception as exc:
             print(f"FAIL {test.__name__}: {exc}", file=sys.stderr)

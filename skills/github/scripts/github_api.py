@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, NoReturn, Optional
 
 import github_identity
+import github_request_usage
 
 SCHEMA_VERSION = 1
 DEFAULT_API_VERSION = "2022-11-28"
@@ -3009,6 +3010,12 @@ def call_gh(
     raw_stdout = proc.stdout.decode(errors="replace")
     raw_stderr = proc.stderr.decode(errors="replace").strip()
     reported_actor = actor_from_gh_stderr(raw_stderr)
+    observed_status, observed_headers, _ = parse_gh_include_output(raw_stdout)
+    github_request_usage.record_response(
+        method=method, path=path, status=observed_status, headers=observed_headers,
+        operation=operation or "github.api.call", actor=reported_actor or actor or expected_actor,
+        host=resolved_host, bucket=resolved_bucket,
+    )
     if reported_actor:
         actor = reported_actor
     authorized_actor_change = active_fallback_was_authorized(raw_stderr)

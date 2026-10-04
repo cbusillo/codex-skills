@@ -91,6 +91,29 @@ reporting only the final status read. Composite diagnostic tools that do not use
 the terminal-envelope CLI contract expose the same aggregate under
 `diagnostics.retry` and per-request evidence under `diagnostics.requests`.
 
+### Request Use
+
+`uv run scripts/github_request_usage.py --hours 1` ranks the configured App's
+local HTTP attempts by helper, operation, repository and quota bucket. Use
+`--actor LOGIN` to select another observed actor. The private hourly receipts
+live under the shared retry-state directory's `request-usage` folder and contain
+no request/response bodies, endpoint queries or credentials. Delegating watchers
+pass their caller name to the PR helper, so its reads count toward that watcher.
+
+HTTP attempts and primary requests are separate: authenticated 304 responses
+and `/rate_limit` probes use no primary requests. GraphQL point costs remain
+unknown rather than being counted as REST requests. Raw CLI calls without HTTP
+headers and Launchplane's server-side GitHub calls are outside this ledger;
+the result is a lower bound, not an installation-wide audit. Offline tests must
+set a temporary `GITHUB_RETRY_STATE_DIR`, which also isolates these receipts.
+
+PR watchers back off unchanged pending snapshots to their quiet interval,
+returning to the active interval when evidence changes. Shared core-budget
+evidence at or below 20% remaining adds a five-minute polling floor until reset.
+This slows PR/workflow/train polls without delaying writes or changing identity,
+permission checks, write reconciliation or the existing bounded reset waits.
+See [GitHub's conditional-request guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests).
+
 ### Shared Retry Policy
 
 `scripts/github_api.py` loads retry eligibility, idempotency, quota bucket, and

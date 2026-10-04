@@ -39,6 +39,9 @@ from typing import Any
 SCRIPT_DIR = Path(__file__).resolve().parent
 WRITE_ACTION = SCRIPT_DIR / "launchplane-write-action.py"
 GH_WITH_ENV_TOKEN = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-with-env-token"
+sys.path.insert(0, str(GH_WITH_ENV_TOKEN.parent))
+import github_identity
+import github_read
 
 EXIT_CODES = {"landed": 0, "failed": 1, "needs_owner": 2, "error": 3}
 LEASE_HELD_CODE = "merge_train_controller_lease_held"
@@ -55,6 +58,7 @@ class DriveIO:
     failing_checks: Callable[[str, str], list[dict[str, str]] | None]
     # Numbers of ready-to-merge PRs merged at or after an epoch time.
     merged_since: Callable[[str, float], list[int]] = lambda _repository, _since: []
+    quota_wait: Callable[[], float] = lambda: 0.0
     now: Callable[[], float] = time.time
     sleep: Callable[[float], None] = time.sleep
 
@@ -85,6 +89,16 @@ class DriveState:
     last_action: str = ""
     stack_seen: bool = False
     lease_held: dict[str, Any] | None = None
+    candidate_active: bool = False
+    unchanged_passes: int = 0
+
+
+def _pause(settings: DriveSettings, io: DriveIO, state: DriveState, *, minimum: float = 0.0) -> None:
+    delay = github_read.poll_delay(
+        min(settings.poll_seconds * 2 ** min(state.unchanged_passes, 10), max(settings.poll_seconds, 300.0)),
+        minimum,
+    )
+    io.sleep(min(delay, max(0.0, settings.deadline - io.now())))
 
 
 def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, Any]], None]) -> str:
@@ -92,7 +106,9 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
     started = io.now()
     pass_number = 0
     while True:
-        outcome = _record_landings(settings, io, state, emit)
+        # The controller observes an admitted candidate and reports its landing.
+        # Do not separately poll every PR in that batch while checks run.
+        outcome = None if state.candidate_active and io.now() < settings.deadline else _record_landings(settings, io, state, emit)
         if outcome == "landed":
             _finish_landing(settings, io, state, emit, started)
             return _stop(settings, state, emit, "landed")
@@ -113,16 +129,24 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
             emit("snapshot", _snapshot(settings, state, "helper_unavailable", response))
             if state.helper_failures >= settings.max_helper_failures:
                 return _stop(settings, state, emit, "error", reason="merge-train helper kept failing")
-            io.sleep(settings.poll_seconds)
+            _pause(settings, io, state)
             continue
         if response.get("status") not in {"accepted", "ok"}:
             snapshot = _snapshot(settings, state, "controller_refused", response)
+            if snapshot["error_code"] == "github_request_failed":
+                wait = io.quota_wait()
+                if wait > 0:
+                    snapshot["controller_action"] = "github_primary_limit_wait"
+                    snapshot["retry_after_seconds"] = wait
+                    emit("snapshot", snapshot)
+                    _pause(settings, io, state, minimum=wait)
+                    continue
             if snapshot["error_code"] == LEASE_HELD_CODE:
                 # Another driver is running the controller; keep polling until its lease is released or expires.
                 snapshot["controller_action"] = "controller_lease_held"
                 state.lease_held = snapshot
                 emit("snapshot", snapshot)
-                io.sleep(settings.poll_seconds)
+                _pause(settings, io, state)
                 continue
             state.helper_failures += 1
             state.lease_held = None
@@ -130,12 +154,15 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
             if state.helper_failures >= settings.max_helper_failures:
                 return _stop(settings, state, emit, "error", reason="merge-train controller kept refusing",
                              **{key: snapshot[key] for key in ("status", "error_code", "http_status", "trace_id")})
-            io.sleep(settings.poll_seconds)
+            _pause(settings, io, state)
             continue
         state.helper_failures = 0
         state.lease_held = None
         result = response.get("result") or {}
         action = str(result.get("controller_action") or "")
+        state.unchanged_passes = min(state.unchanged_passes + 1, 10) if action == state.last_action else 0
+        candidate = result.get("candidate") or {}
+        state.candidate_active = action == "observe_candidate" and bool(candidate.get("candidate_sha"))
         _remember_batch(result, state)
         if action in {"execute_stack_collapse", "admit_collapsed_root"}:
             state.stack_seen = True
@@ -151,7 +178,11 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
                 _finish_landing(settings, io, state, emit, started)
                 return _stop(settings, state, emit, "landed")
             return _stop(settings, state, emit, outcome, **detail)
-        io.sleep(settings.poll_seconds)
+        if action in {"batch_landed", "land_batch", "complete_landing"}:
+            if _record_landings(settings, io, state, emit) == "landed":
+                _finish_landing(settings, io, state, emit, started)
+                return _stop(settings, state, emit, "landed")
+        _pause(settings, io, state)
 
 
 # Blocks Launchplane raises while a candidate's checks are still running; the deadline bounds the wait.
@@ -327,15 +358,22 @@ def _run_json(command: list[str], timeout: float) -> Any | None:
         return None
 
 
-def live_io(helper_timeout: float) -> DriveIO:
+def live_io(helper_timeout: float, *, deadline_at: float | None = None) -> DriveIO:
+    reader = github_read.GitHubReader(
+        gh_cmd=str(GH_WITH_ENV_TOKEN), expected_actor=github_identity.automation_login(),
+        operation="github.train.drive", cache_enabled=True, deadline_at=deadline_at,
+    )
     def controller(repository: str, base_branch: str, key: str) -> dict[str, Any] | None:
+        remaining = max(0.0, deadline_at - time.time()) if deadline_at is not None else helper_timeout + 60
+        if remaining <= 0:
+            return {"status": "no_response", "failure": "deadline_reached"}
         command = [
-            "uv", "run", str(WRITE_ACTION), "--timeout", str(helper_timeout),
+            "uv", "run", str(WRITE_ACTION), "--timeout", str(min(helper_timeout, remaining)),
             "merge-train-controller-run-once", "--repo", repository, "--base-branch", base_branch,
             "--mutate", "--idempotency-key", key,
         ]
         try:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=helper_timeout + 60, check=False)
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=min(helper_timeout + 60, remaining), check=False)
         except (OSError, subprocess.TimeoutExpired) as error:
             return {"status": "no_response", "failure": type(error).__name__}
         try:
@@ -348,14 +386,19 @@ def live_io(helper_timeout: float) -> DriveIO:
         return {"status": "no_response", "exit_code": completed.returncode}
 
     def pull_request(repository: str, number: int) -> dict[str, Any] | None:
-        payload = _run_json(
-            [
-                str(GH_WITH_ENV_TOKEN), "api", f"repos/{repository}/pulls/{number}", "--jq",
-                "{state, merged, merge_commit_sha, head_repository: .head.repo.full_name}",
-            ],
-            timeout=60,
-        )
-        return payload if isinstance(payload, dict) else None
+        try:
+            payload = reader.get_json(f"/repos/{repository}/pulls/{number}", step="pull_request")
+        except github_read.GitHubReadError as error:
+            # Keep authentication and permission refusals terminal. A primary
+            # throttle has already waited within the inherited deadline.
+            if error.result.failure and error.result.failure.cause in {
+                "invalid_credentials", "permission_denied", "actor_mismatch", "unconfigured_identity",
+            }:
+                raise
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return {**payload, "head_repository": ((payload.get("head") or {}).get("repo") or {}).get("full_name")}
 
     def update_branch(repository: str, number: int) -> bool:
         try:
@@ -368,27 +411,21 @@ def live_io(helper_timeout: float) -> DriveIO:
         return completed.returncode == 0
 
     def failing_checks(repository: str, sha: str) -> list[dict[str, str]] | None:
-        payload = _run_json(
-            [
-                str(GH_WITH_ENV_TOKEN), "api", f"repos/{repository}/commits/{sha}/check-runs?per_page=100",
-                "--jq", "[.check_runs[] | {name, conclusion, url: .details_url}]",
-            ],
-            timeout=60,
-        )
-        if not isinstance(payload, list):
+        try:
+            payload = reader.paged_json(f"/repos/{repository}/commits/{sha}/check-runs",
+                                        step_prefix="candidate_checks", collection_key="check_runs")
+        except github_read.GitHubReadError:
             return None
-        return [run for run in payload if isinstance(run, dict) and run.get("conclusion") in FAILING_CONCLUSIONS]
+        return [{"name": run.get("name", ""), "conclusion": run["conclusion"], "url": run.get("details_url", "")}
+                for run in payload if run.get("conclusion") in FAILING_CONCLUSIONS]
 
     def merged_since(repository: str, since: float) -> list[int]:
-        payload = _run_json(
-            [
-                str(GH_WITH_ENV_TOKEN), "api",
-                f"repos/{repository}/pulls?state=closed&sort=updated&direction=desc&per_page=50",
-                "--jq",
-                "[.[] | select(.merged_at != null) | {number, merged_at, labels: [.labels[].name]}]",
-            ],
-            timeout=60,
-        )
+        try:
+            payload = reader.get_json(
+                f"/repos/{repository}/pulls?state=closed&sort=updated&direction=desc&per_page=50", step="merged_since"
+            )
+        except github_read.GitHubReadError:
+            return []
         if not isinstance(payload, list):
             return []
         numbers = []
@@ -398,9 +435,28 @@ def live_io(helper_timeout: float) -> DriveIO:
                 merged = calendar.timegm(time.strptime(merged_at, "%Y-%m-%dT%H:%M:%SZ"))
             except ValueError:
                 continue
-            if merged >= since and "ready-to-merge" in (item.get("labels") or []):
+            if merged >= since and "ready-to-merge" in [label.get("name") for label in item.get("labels") or []]:
                 numbers.append(int(item["number"]))
         return numbers
+
+    def quota_wait() -> float:
+        # Launchplane currently projects upstream failures as github_request_failed.
+        # /rate_limit is quota-free: verify exhaustion rather than treating every
+        # 502 as a throttle or weakening the ordinary refusal budget.
+        probe = github_read.GitHubReader(
+            gh_cmd=str(GH_WITH_ENV_TOKEN), expected_actor=github_identity.automation_login(),
+            operation="github.api.rate_limit", deadline_at=min(deadline_at or time.time() + 60, time.time() + 60),
+        )
+        try:
+            payload = probe.get_json("/rate_limit", step="controller_quota")
+        except github_read.GitHubReadError:
+            return 0.0
+        core = (payload.get("resources") or {}).get("core") if isinstance(payload, dict) else None
+        if isinstance(core, dict) and core.get("remaining") == 0:
+            reset = core.get("reset")
+            if isinstance(reset, (int, float)):
+                return max(0.0, reset + 3.0 - time.time())
+        return 0.0
 
     return DriveIO(
         controller=controller,
@@ -408,6 +464,7 @@ def live_io(helper_timeout: float) -> DriveIO:
         update_branch=update_branch,
         failing_checks=failing_checks,
         merged_since=merged_since,
+        quota_wait=quota_wait,
     )
 
 
@@ -438,7 +495,7 @@ def main(argv: list[str]) -> int:
         poll_seconds=args.poll_seconds,
         allow_branch_update=args.allow_branch_update,
     )
-    outcome = drive(settings, live_io(args.helper_timeout), emit)
+    outcome = drive(settings, live_io(args.helper_timeout, deadline_at=settings.deadline), emit)
     return EXIT_CODES[outcome]
 
 

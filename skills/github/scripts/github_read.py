@@ -25,6 +25,7 @@ from typing import Any, NoReturn, Optional
 
 import github_api as github_api_core
 import github_identity
+import github_request_usage
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -51,7 +52,7 @@ def poll_interval(headers: dict[str, str]) -> float:
 
 
 def poll_delay(interval: float, minimum: float = 0.0) -> float:
-    base = max(interval, minimum)
+    base = max(interval, minimum, github_request_usage.polling_floor())
     return base + random.uniform(0.0, min(3.0, base * 0.1))
 
 
@@ -300,7 +301,7 @@ class GitHubReader:
             bucket="graphql",
             operation=operation,
             retry_policy=retry_policy,
-            deadline_at=deadline_at,
+            deadline_at=deadline_at if deadline_at is not None else self.deadline_at,
         )
         self._record_result(result, method="POST", path="/graphql", step=step)
         return result

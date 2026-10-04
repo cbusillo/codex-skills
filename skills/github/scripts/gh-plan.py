@@ -507,6 +507,16 @@ def run_raw(
         reported_actor = github_api_core.actor_from_gh_stderr(proc.stderr)
         authorized_fallback = github_api_core.active_fallback_was_authorized(proc.stderr)
         actual_actor = reported_actor or initial_retry_actor
+        if "--include" in args:
+            status, headers, _ = github_api_core.parse_gh_include_output(proc.stdout)
+            endpoint = next((item for item in args if re.match(
+                r"^/?(?:repos/|repositories/|orgs/|users/|user/|app/|installation/|search/|graphql$|rate_limit$)", item
+            )), "")
+            method = args[args.index("-X") + 1] if "-X" in args else "GET"
+            github_api_core.github_request_usage.record_response(
+                method=method, path=endpoint, status=status, headers=headers,
+                operation=resolved_operation, actor=actual_actor, bucket=resolved_bucket,
+            )
         expected_context_actor = None if authorized_fallback else initial_expected_actor
         last_display_actor = reported_actor or route_actor
         if proc.returncode == 0:
