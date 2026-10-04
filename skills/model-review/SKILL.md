@@ -86,6 +86,9 @@ paper over it by pasting files into the prompt.
 OpenAI runs must show a successful shell command in their JSONL tool evidence;
 an answer without one fails even when the CLI exits 0. This proves tool activity,
 not that the reviewer read every relevant file; check the review's coverage too.
+Failures distinguish no command attempts from attempts without a successful command.
+Nonzero exits retain the JSON provider error and distinct stderr cause as bounded,
+credential-redacted diagnostics; OpenAI's malformed stdout is never excerpted.
 
 - Run `uv run scripts/review_with_model.py check --repo <repo>` to see which
   providers can read the repository from this machine before spending a review.
