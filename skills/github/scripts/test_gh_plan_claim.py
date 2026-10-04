@@ -163,6 +163,7 @@ class ClaimTests(unittest.TestCase):
             RESPONSIBILITY_STATUS + " Currently owned by another-worker",
             "Entries owned by another-worker",
             "Entries owned by another-worker; records owned by engineering for evidence and Chris for disposition approval.",
+            "Entries claimed by another-worker and records owned by engineering for evidence and Chris for disposition approval.",
         ):
             with self.subTest(status=status):
                 self.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n\n## Current Status\n\n" + status
@@ -171,6 +172,16 @@ class ClaimTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "claim_conflict")
                 self.assertEqual(caught.exception.payload["competing_evidence"][0]["source"], "current_status")
                 self.assert_no_writes()
+
+    def test_scoped_record_and_resource_responsibility_is_not_ownership(self):
+        for status in (
+            "Remaining records are owned by engineering for evidence and Chris for disposition approval",
+            "Remaining resources are owned by engineering for evidence and Chris for production disposition approval.",
+        ):
+            with self.subTest(status=status):
+                conflicts, owned = CLAIM.discussion_evidence(status, [], OWNER)
+                self.assertEqual(conflicts, [])
+                self.assertEqual(owned, [])
 
     def test_stale_claim_is_not_expired(self):
         self.compete({**OTHER, "claimed_at": "2020-01-01T00:00:00Z"})
