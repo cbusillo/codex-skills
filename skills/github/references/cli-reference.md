@@ -111,6 +111,10 @@ The production defaults allow one primary GitHub reset window:
   `$CODE_HOME/state/github-retry`, then `$CODEX_HOME/state/github-retry`, then
   `~/.code/state/github-retry`.
 
+Offline fake-CLI fixtures must set `GITHUB_RETRY_STATE_DIR` to their own temporary
+directory. The catalog validation gate gives each helper test a separate directory;
+live commands keep the default shared cooldown.
+
 Advanced bounded-backoff and state-lifecycle controls are
 `GITHUB_RETRY_BASE_BACKOFF_SECONDS`, `GITHUB_RETRY_MAX_BACKOFF_SECONDS`,
 `GITHUB_RETRY_WAIT_SLICE_SECONDS`, `GITHUB_RETRY_LOCK_POLL_SECONDS`,
@@ -284,8 +288,9 @@ uv run github/scripts/reconcile-runtime-checkout.py \
   --landing-sha <full-landing-sha>
 ```
 
-The helper checks every host binding: `CODE_HOME`, `CODEX_HOME`, `~/.code`, and
-each entry under Claude Code's `skills` folder (`CLAUDE_CONFIG_DIR` or
+The helper checks every host binding: `CODE_HOME`, `CODEX_HOME`, `~/.code`,
+`~/.agents/skills` (whole-catalog link), `~/.agents/skills/shared` (installer
+binding), and each entry under Claude Code's `skills` folder (`CLAUDE_CONFIG_DIR` or
 `~/.claude`). `bindings_checked` in the receipt lists each with its outcome; `matched` means a
 binding qualified, and the receipt's own `status` says what was reconciled. A
 work-in-progress worktree linked for testing does not shadow an install on the

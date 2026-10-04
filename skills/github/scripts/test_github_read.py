@@ -16,7 +16,7 @@ import time
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -124,7 +124,7 @@ def test_graphql_json_uses_bounded_shared_graphql_transport() -> None:
             "query($number: Int!) { repository { pullRequest(number: $number) { reviewDecision } } }",
             {"number": 7},
             step="review_readiness",
-            retry_policy=github_read.github_api_core.RetryPolicy(max_wait_seconds=1, max_attempts=1),
+            retry_policy=github_read.github_api_core.RetryPolicy(max_wait_seconds=1, max_attempts=1, state_dir=Path(os.environ["GITHUB_RETRY_STATE_DIR"])),
         )
     assert result.ok is True
     command = run.call_args.args[0]
@@ -845,8 +845,109 @@ def test_text_log_capability_probe_failure_is_visible() -> None:
         assert "private configuration detail" not in json.dumps(diagnostics)
 
 
+def test_poll_delay_respects_server_interval_and_adds_only_positive_jitter() -> None:
+    assert github_read.poll_interval({"x-poll-interval": "90"}) == 90
+    for value in ("nan", "inf", "-1", "bogus"):
+        assert github_read.poll_interval({"x-poll-interval": value}) == 0
+    with patch.object(github_read.random, "uniform", return_value=2.0):
+        assert github_read.poll_delay(60, 90) == 92
+
+
+def test_cache_honors_poll_interval_across_readers_and_304() -> None:
+    first = process(include_output({"value": 1}, headers={"etag": '"v1"', "x-poll-interval": "60"}))
+    unchanged = process(include_output(None, status=304, headers={"x-poll-interval": "120"}), returncode=1)
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"GITHUB_READ_CACHE_DIR": tmp}):
+        with patch("subprocess.run", side_effect=[first, unchanged]) as run, patch.object(time, "time", return_value=1000):
+            reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="github.pr.watch", cache_enabled=True)
+            assert reader.get_json("/poll", step="first") == {"value": 1}
+            with patch.object(time, "time", return_value=1030):
+                assert reader.get_json("/poll", step="coalesced") == {"value": 1}
+                assert run.call_count == 1
+            with patch.object(time, "time", return_value=1061):
+                assert reader.get_json("/poll", step="revalidated") == {"value": 1}
+            with patch.object(time, "time", return_value=1150):
+                another = github_read.GitHubReader(gh_cmd="fake-gh", operation="github.pr.watch", cache_enabled=True)
+                assert another.get_json("/poll", step="later") == {"value": 1}
+            assert run.call_count == 2
+
+
+def test_cache_lock_wait_expires_without_remote_call() -> None:
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"GITHUB_READ_CACHE_DIR": tmp}):
+        reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="github.workflow.run.read",
+                                         cache_enabled=True, deadline_at=time.time() + 0.1)
+        cache = github_read.ConditionalResponseCache.from_reader(reader)
+        assert cache is not None
+        _, lock_path = cache._paths("/poll", {"Accept": "application/vnd.github+json"})
+        with lock_path.open("a+") as held:
+            github_read.fcntl.flock(held, github_read.fcntl.LOCK_EX)
+            real_flock = github_read.fcntl.flock
+
+            def bounded_lock(fd: int, flags: int) -> None:
+                assert flags & github_read.fcntl.LOCK_NB, "deadline-bound cache read must not block indefinitely"
+                real_flock(fd, flags)
+
+            with patch("subprocess.run") as remote, patch.object(github_read.fcntl, "flock", side_effect=bounded_lock):
+                started = time.monotonic()
+                try:
+                    reader.request("GET", "/poll", step="poll")
+                except github_read.GitHubReadError as exc:
+                    assert exc.result.failure is not None
+                    assert exc.result.failure.cause == "deadline_exceeded", exc.result.as_dict()
+                else:
+                    raise AssertionError("cache lock must not outlive the request deadline")
+                assert time.monotonic() - started < 5
+                remote.assert_not_called()
+
+
+def test_cache_storage_failure_falls_back_to_same_deadline_and_actor() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "cache"
+        root.write_text("not a directory")
+        reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="github.workflow.run.read",
+                                         cache_enabled=True, strict_actor=True, actor="fixture-automation", deadline_at=time.time() + 10)
+        with patch.dict(os.environ, {"GITHUB_READ_CACHE_DIR": str(root)}), patch(
+            "subprocess.run", return_value=process(include_output({"value": 1}))
+        ) as remote, patch.object(github_read.github_api_core, "call_gh_with_retry", wraps=github_read.github_api_core.call_gh_with_retry) as transport:
+            result = reader.request("GET", "/poll", step="poll")
+            assert result.body == {"value": 1}
+            assert result.headers["x-codex-cache"] == "unavailable"
+            assert remote.call_count == 1
+            assert transport.call_args.kwargs["deadline_at"] == reader.deadline_at
+            assert transport.call_args.kwargs["actor"] == reader.request_actor
+            assert transport.call_args.kwargs["expected_actor"] == reader.expected_actor
+        # Storage fallback must not return a cached success for permission errors.
+        with patch.dict(os.environ, {"GITHUB_READ_CACHE_DIR": str(root)}), patch(
+            "subprocess.run", return_value=process(include_output({"message": "Resource not accessible by integration"}, status=403), returncode=1)
+        ):
+            try:
+                reader.request("GET", "/poll", step="denied")
+            except github_read.GitHubReadError as exc:
+                assert exc.result.failure is not None
+                assert exc.result.failure.cause == "permission_denied"
+            else:
+                raise AssertionError("permission failure must survive storage fallback")
+
+
+def test_cache_write_failure_does_not_repeat_completed_get() -> None:
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"GITHUB_READ_CACHE_DIR": tmp}):
+        reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="github.workflow.run.read", cache_enabled=True)
+        response = process(include_output({"value": 1}, headers={"etag": '"v1"', "x-poll-interval": "60"}))
+        with patch.object(github_read.ConditionalResponseCache, "_write", side_effect=OSError("disk full")), patch(
+            "subprocess.run", return_value=response
+        ) as remote:
+            result = reader.request("GET", "/poll", step="poll")
+            assert result.body == {"value": 1}
+            assert result.headers["x-codex-cache"] == "unavailable"
+            assert remote.call_count == 1
+
+
 def main() -> None:
-    tests = [
+    tests: list[Callable[[], None]] = [
+        test_cache_write_failure_does_not_repeat_completed_get,
+        test_cache_lock_wait_expires_without_remote_call,
+        test_cache_storage_failure_falls_back_to_same_deadline_and_actor,
+        test_poll_delay_respects_server_interval_and_adds_only_positive_jitter,
+        test_cache_honors_poll_interval_across_readers_and_304,
         test_issue_reader_paginates_and_filters_pull_requests,
         test_present_terminal_link_header_does_not_fabricate_next_page,
         test_request_diagnostics_include_quota_and_request_id,
@@ -886,7 +987,8 @@ def main() -> None:
     failed: list[str] = []
     for test in tests:
         try:
-            test()
+            with tempfile.TemporaryDirectory() as state_dir, patch.dict(os.environ, {"GITHUB_RETRY_STATE_DIR": state_dir}):
+                test()
             print(f"ok {test.__name__}")
         except Exception as exc:
             print(f"FAIL {test.__name__}: {exc}", file=sys.stderr)

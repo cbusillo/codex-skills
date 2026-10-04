@@ -373,7 +373,7 @@ def finish(
 def runtime_skills_paths() -> list[tuple[Path, str, bool]]:
     """Each place a supported host binds the catalog, its label, and whether it is a primary binding.
 
-    Primary bindings are the ones this helper has always owned; a failure inspecting one is reported.
+    Explicit host and installer bindings are primary; a failure inspecting one is reported.
     Entries under Claude Code's skills folder can be anyone's plugin, so a failure there is skipped.
     """
     paths: list[tuple[Path, str, bool]] = []
@@ -381,6 +381,10 @@ def runtime_skills_paths() -> list[tuple[Path, str, bool]]:
         if os.environ.get(variable):
             paths.append((Path(os.environ[variable]).expanduser() / "skills", variable, True))
     paths.append((Path.home() / ".code" / "skills", "HOME/.code", True))
+    # The installer keeps a whole-catalog Codex link or creates the namespaced binding.
+    codex_skills = Path.home() / ".agents" / "skills"
+    paths.append((codex_skills, "HOME/.agents/skills", True))
+    paths.append((codex_skills / "shared", "HOME/.agents/skills/shared", True))
     # Claude Code loads a catalog linked under its skills folder by any name the user chose.
     claude_config = os.environ.get("CLAUDE_CONFIG_DIR")
     claude_skills = (Path(claude_config).expanduser() if claude_config else Path.home() / ".claude") / "skills"

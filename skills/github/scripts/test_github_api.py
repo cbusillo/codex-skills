@@ -23,7 +23,7 @@ import types
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from unittest.mock import patch
 
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
@@ -1919,6 +1919,40 @@ def test_retry_waits_until_primary_reset_and_succeeds() -> None:
         assert payload["last_bucket"] == "rest_core", payload
 
 
+def test_secondary_response_cooldown_is_shared_by_two_helpers() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp)
+        first_clock = FakeRetryClock()
+        def secondary_response() -> Any:
+            response = retry_failure("secondary_rate_limited", retryable=True, retry_after=4)
+            response.status = 403
+            return response
+
+        first = _api.run_with_retry(
+            secondary_response,
+            operation="github.api.rate_limit", is_write=False,
+            actor="fixture-automation", bucket="rest_core",
+            retry_policy=retry_policy(state_dir, max_wait_seconds=2),
+            retry_runtime=retry_runtime(first_clock),
+        )
+        assert not first.ok, first.as_dict()
+        second_clock = FakeRetryClock()
+        called_at = []
+
+        def second_attempt() -> Any:
+            called_at.append(second_clock.current)
+            return retry_success()
+
+        second = _api.run_with_retry(
+            second_attempt, operation="github.read.repository", is_write=False,
+            actor="fixture-automation", bucket="rest_core",
+            retry_policy=retry_policy(state_dir), retry_runtime=retry_runtime(second_clock),
+        )
+        assert second.ok, second.as_dict()
+        assert called_at == [1004.0], called_at
+        assert sum(second_clock.sleeps) == 4.0, second_clock.sleeps
+
+
 def test_retry_honors_secondary_retry_after() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         clock = FakeRetryClock()
@@ -2885,7 +2919,7 @@ def test_malformed_cooldown_state_is_removed() -> None:
 
 
 def main() -> None:
-    tests = [
+    tests: list[Callable[[], None]] = [
         # parse_gh_include_output
         test_parse_success_200_json_body,
         test_parse_204_no_body,
@@ -3006,6 +3040,7 @@ def main() -> None:
         test_aggregate_retry_summaries_prefers_write_certainty,
         # reset-aware retries
         test_retry_waits_until_primary_reset_and_succeeds,
+        test_secondary_response_cooldown_is_shared_by_two_helpers,
         test_retry_honors_secondary_retry_after,
         test_retry_idempotent_write_recovers_from_unknown_network_failure,
         test_retry_outer_deadline_wins_without_second_call,
