@@ -1125,6 +1125,16 @@ def test_only_product_client_issues_are_exempt_from_admission_quotes() -> None:
     assert "escalation_open" in kinds(run(module, issues=[changed], client=client))
 
 
+def test_audit_preserves_degraded_client_identity_evidence_without_private_login() -> None:
+    module = load()
+    for status in ("unavailable", "ambiguous"):
+        result = run(module, client={"status": status, "source": "launchplane"})
+        assert result["client_context"] == {"status": status, "source": "launchplane"}
+        assert any(limit["kind"] == "client_identity_unavailable" for limit in result["limits"])
+    result = run(module, client={"status": "recorded", "source": "launchplane", "login": "client"})
+    assert "login" not in result["client_context"]
+
+
 def main() -> int:
     tests = [value for name, value in globals().items() if name.startswith("test_") and callable(value)]
     for test in tests:

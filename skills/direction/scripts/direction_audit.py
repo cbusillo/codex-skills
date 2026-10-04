@@ -165,6 +165,9 @@ def audit(
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     limits: list[dict[str, Any]] = []
+    client_context = {key: value for key, value in (client or {"status": "not_supplied"}).items() if key != "login"}
+    if client and client.get("status") in {"unavailable", "ambiguous"}:
+        limits.append({"kind": "client_identity_unavailable", "detail": "Client quote exemptions could not be established; identity is unavailable or ambiguous."})
     audit_since = audit_since or now - dt.timedelta(days=7)
     if truncated:
         findings.append({"kind": "coverage_incomplete", "detail": "a bounded read was truncated or unavailable; drift beyond verified coverage is unreported", "listings": sorted(truncated)})
@@ -333,6 +336,7 @@ def audit(
         "findings": findings,
         "limits": limits,
         "counts": _counts(findings),
+        "client_context": client_context,
     }
     if capacity is not None:
         result["capacity"] = capacity

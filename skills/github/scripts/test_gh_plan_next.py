@@ -2157,7 +2157,33 @@ def test_client_requests_inherit_native_product_track_and_still_need_reviews() -
             assert result["available_candidates"][0]["category"] == "milestone"
 
 
+def test_client_track_precedence_keeps_real_membership_and_completed_assignments() -> None:
+    shared = load_module().github_direction_next
+    raw = {**global_issue("someone/site", 20), "user": {"login": "client"}}
+    request = {**shared.compact_list_issue(raw["repo"], raw), "milestone": None,
+               "discussion": {"complete": True, "ancestry_complete": True, "digest": "current"}}
+    leaf = {**request, "number": 10, "via": ["Track"], "milestone": {"title": "Second", "state": "open"}}
+    graph = {"candidates": [leaf], "dependency_context": {"complete": True}}
+    kwargs = dict(milestone_titles=["First", "Second"], director_owner="someone",
+                  repository_clients={"someone/site": {"status": "recorded", "source": "launchplane", "login": "client"}},
+                  repository_waypoints={"someone/site": ["First", "Product work"]})
+    result = shared.rank_portfolio_work(graph, [request], **kwargs)
+    item = next(item for item in result["candidates"] if item["number"] == 20)
+    assert item["client_request"]["milestone"] == "Second"  # native Track wins over First waypoint
+    assert item["milestone"] is None
+    local = {**request, "milestone": {"number": 3, "title": "Product work", "state": "open"}}
+    item = next(item for item in shared.rank_portfolio_work(graph, [local], **kwargs)["candidates"] if item["number"] == 20)
+    assert item["milestone"] == local["milestone"]
+    assert item["client_request"]["milestone"] == "Second"
+    completed = {**graph, "completed_milestones": ["First"]}
+    old = {**request, "milestone": {"title": "First", "state": "open"}}
+    item = next(item for item in shared.rank_portfolio_work(completed, [old], **kwargs)["candidates"] if item["number"] == 20)
+    assert "client_request" not in item
+    assert item["milestone"] == old["milestone"]
+
+
 TESTS = [
+    test_client_track_precedence_keeps_real_membership_and_completed_assignments,
     test_client_requests_rank_with_product_without_changing_order_or_authority,
     test_client_requests_inherit_native_product_track_and_still_need_reviews,
     test_discovered_blocker_explains_its_native_link_to_waiting_track_work,

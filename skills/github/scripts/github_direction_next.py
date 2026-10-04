@@ -237,7 +237,8 @@ def rank_next_candidates(
     }
 
     def milestone_rank(candidate: dict[str, Any]) -> tuple[int, str, int]:
-        milestone = candidate.get("milestone")
+        request = candidate.get("client_request")
+        milestone = {"title": request["milestone"], "state": "open"} if request else candidate.get("milestone")
         if not isinstance(milestone, dict) or milestone.get("state") != "open":
             return len(listed_order) + 1, "9999-12-31T00:00:00Z", 0
         if direction_milestones is not None:
@@ -489,19 +490,22 @@ def rank_portfolio_work(
                          if item["repo"].casefold() == entry["repo"].casefold() and item.get("via")
                          and (item.get("milestone") or {}).get("state") == "open"}
         eligible = [title for title in milestone_titles if title not in graph.get("completed_milestones", [])
-                    and (title in (waypoints or []) or title in native_titles)]
+                    and title in (native_titles if native_titles else waypoints or [])]
         assigned = (entry.get("milestone") or {}).get("title")
-        # Explicit membership outside this product's current direction is not
-        # silently reassigned. Direction changes still require escalation.
-        title = assigned if assigned in eligible else (
-            eligible[0] if eligible and (not assigned or assigned in (waypoints or []) and native_titles) else None
-        )
-        if title is None:
+        if not eligible or assigned in graph.get("completed_milestones", []):
             return entry
-        if assigned and (entry.get("milestone") or {}).get("state") != "open":
-            return entry
-        return {**entry, "milestone": entry.get("milestone") if assigned == title else {"title": title, "state": "open"},
-                "client_request": {"source": record["source"], "milestone": title, "ranking_only": True}}
+        if assigned:
+            if (entry.get("milestone") or {}).get("state") != "open":
+                return entry
+            if assigned in eligible:
+                title = assigned
+            elif assigned not in milestone_titles and assigned in (waypoints or []) and native_titles:
+                title = eligible[0]
+            else:
+                return entry
+        else:
+            title = eligible[0]
+        return {**entry, "client_request": {"source": record["source"], "milestone": title, "ranking_only": True}}
 
     graph = {**graph, "candidates": [client_milestone(item) for item in graph.get("candidates", [])],
              "excluded": [client_milestone(item) for item in graph.get("excluded", [])]}

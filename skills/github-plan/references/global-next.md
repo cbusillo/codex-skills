@@ -36,7 +36,9 @@ Read for `next` in a repository owner's direction repository, including explicit
    otherwise use an exact waypoint shared by the repository's
    merged direction and the overall direction, in overall order. Explicit
    membership outside that scope is not reassigned. `client_request` marks the
-   virtual ranking context only: no GitHub milestone or label is changed.
+   virtual ranking context only; the emitted `milestone` preserves actual GitHub
+   membership. No GitHub milestone or label is changed. Completed overall
+   milestone assignments are not moved forward.
    Live breakage is still established by the Director marker or current caller
    review, never guessed from issue prose. Full discussions, parent waits,
    blockers, holds and current ownership checks still apply. The audit exempts
