@@ -158,9 +158,9 @@ test_refs = ["github/scripts/test_github_workflow_babysit.py:GitHubWorkflowClien
 id = "github.workflow.run.read"
 capabilities = ["actions_read"]
 permission_mode = "fixed"
-permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
+permission_note = "Existing Actions read grant and safe probe suffice. Automation-only conditional GETs reuse validator-backed private bodies, preserve same actor and bounded deadlines, and propagate read/permission failures; identity and protected-environment reads are uncached. No profile grant changes."
 entrypoint = "github/scripts/github_workflow_babysit.py dispatch|watch"
-intent = "Read one exact workflow run by id for bounded status polling."
+intent = "Read one exact workflow run by id for bounded status polling with shared conditional GET caching."
 current_transport = "rest_api"
 selected_transport = "rest_api"
 endpoint_or_command = "GET /repos/{repo}/actions/runs/{run_id}"
@@ -172,15 +172,15 @@ retry_eligibility = "safe"
 reconciliation_strategy = "fresh_read"
 retained_graphql_rationale = "No retained GraphQL transport; REST returns the exact run status, conclusion, actors, branch, and SHA."
 source_refs = ["github/scripts/github_workflow_babysit.py:GitHubWorkflowClient", "github/scripts/github_workflow_babysit.py:parse_run_snapshot"]
-test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterTests"]
+test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterTests", "github/scripts/test_github_workflow_babysit.py:test_workflow_poll_uses_conditional_read_without_caching_identity"]
 
 [[operations]]
 id = "github.workflow.jobs.read"
 capabilities = ["actions_read"]
 permission_mode = "fixed"
-permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
+permission_note = "Existing Actions read grant and safe probe suffice. Automation-only conditional GETs reuse validator-backed private bodies, preserve same actor and bounded deadlines, and propagate read/permission failures; identity and protected-environment reads are uncached. No profile grant changes."
 entrypoint = "github/scripts/github_workflow_babysit.py dispatch|watch"
-intent = "Read jobs for one exact workflow run to distinguish queued runner work from other waits."
+intent = "Read jobs for one exact workflow run to distinguish queued runner work from other waits, with shared conditional GET caching."
 current_transport = "rest_api"
 selected_transport = "rest_api"
 endpoint_or_command = "GET /repos/{repo}/actions/runs/{run_id}/jobs?filter=latest&per_page=100"
@@ -192,7 +192,7 @@ retry_eligibility = "safe"
 reconciliation_strategy = "fresh_read"
 retained_graphql_rationale = "No retained GraphQL transport; REST job status and runner assignment are sufficient for bounded queue diagnosis."
 source_refs = ["github/scripts/github_workflow_babysit.py:GitHubWorkflowClient", "github/scripts/github_workflow_babysit.py:queue_diagnosis"]
-test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterTests"]
+test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterTests", "github/scripts/test_github_workflow_babysit.py:test_workflow_poll_uses_conditional_read_without_caching_identity"]
 
 [[operations]]
 id = "github.workflow.pending_deployments.read"
@@ -2074,7 +2074,7 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github/scripts/github_milestone.py" = "08cf5da1e6e93bf6d577b572ea508e71da9e1e0224ef0ebfb588c403bf8f5598"
 "github/scripts/github_read.py" = "3188ef35440d2870b403a6c039af98e9901bf2dd5aff7fe7772a3aed4334f58b"
 "github/scripts/github_rulesets.py" = "f87765e84350d958a8b6ef8416f26ffb4144d5ee35abb84f254744eaec256281"
-"github/scripts/github_workflow_babysit.py" = "fdb82f0ad2e804cc78267c1b4e18983a97b898ae82a3be95149cfeac132bbea2"
+"github/scripts/github_workflow_babysit.py" = "af4836d2d8a1a0214c13c62886978d5facedae3d0c82bfbdd02e199babda80ba"
 "github/scripts/reconcile-runtime-checkout.py" = "8cc6a9806bf57175dfdb898aa0776cfa2bd68f852553beb6648b84e7ab6fe4f3"
 "github-work-rollup/scripts/github_unanswered_comments.py" = "ca855657a3e3e47dad5080b48d0525a817dfbd29151e5ed84decdbd1f78fdc74"
 "github-work-rollup/scripts/github_work_rollup.py" = "cd77d9191d131d4514826aacb8259c059d69ea8a0ce097bb1bd1b109216b57af"
