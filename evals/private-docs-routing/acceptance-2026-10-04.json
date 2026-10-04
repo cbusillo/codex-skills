@@ -189,91 +189,334 @@
       "native_passes": 1,
       "source_digests": [
         "8527e51927f8b4df6ead2e6da5df8bffa08e45c5f02b7b8a2449e138a49f3b1b"
-      ]
+      ],
+      "results": {
+        "private-docs-explicit-routes": {
+          "native_pass": false,
+          "failed_checks": [
+            "turn1_no_forbidden_read",
+            "turn1_final_matches"
+          ]
+        },
+        "private-docs-missing-metadata": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-source-planning": {
+          "native_pass": false,
+          "failed_checks": [
+            "turn1_no_forbidden_read"
+          ]
+        },
+        "private-docs-unconfigured": {
+          "native_pass": false,
+          "failed_checks": [
+            "turn1_final_matches"
+          ]
+        }
+      }
     },
     "claude-candidate": {
       "trials": 4,
       "native_passes": 1,
       "source_digests": [
         "8527e51927f8b4df6ead2e6da5df8bffa08e45c5f02b7b8a2449e138a49f3b1b"
-      ]
+      ],
+      "results": {
+        "private-docs-explicit-routes": {
+          "native_pass": false,
+          "failed_checks": [
+            "turn1_no_forbidden_read",
+            "turn1_read_before_operation"
+          ]
+        },
+        "private-docs-missing-metadata": {
+          "native_pass": false,
+          "failed_checks": [
+            "turn1_owner_before_first_operation"
+          ]
+        },
+        "private-docs-source-planning": {
+          "native_pass": false,
+          "failed_checks": [
+            "turn1_no_forbidden_read"
+          ]
+        },
+        "private-docs-unconfigured": {
+          "native_pass": true,
+          "failed_checks": []
+        }
+      }
     },
     "codex-final": {
       "trials": 5,
       "native_passes": 3,
       "source_digests": [
         "fc19826f2ed6e52287ce9457c31b76c3ca400e27a592acdfe7cfbf93e96f847f"
-      ]
+      ],
+      "results": {
+        "private-docs-explicit-routes": {
+          "native_pass": false,
+          "failed_checks": [
+            "turn1_no_forbidden_read"
+          ]
+        },
+        "private-docs-incomplete-metadata": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-missing-metadata": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-source-planning": {
+          "native_pass": false,
+          "failed_checks": [
+            "turn1_no_forbidden_read"
+          ]
+        },
+        "private-docs-unconfigured": {
+          "native_pass": true,
+          "failed_checks": []
+        }
+      }
     },
     "claude-final": {
       "trials": 5,
       "native_passes": 5,
       "source_digests": [
         "fc19826f2ed6e52287ce9457c31b76c3ca400e27a592acdfe7cfbf93e96f847f"
-      ]
+      ],
+      "results": {
+        "private-docs-explicit-routes": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-incomplete-metadata": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-missing-metadata": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-source-planning": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-unconfigured": {
+          "native_pass": true,
+          "failed_checks": []
+        }
+      }
     },
     "codex-entry": {
       "trials": 5,
       "native_passes": 4,
       "source_digests": [
         "74fe5d5dfe28885f710c92218d59f9065759d20a2380b78babe1c23a33b792d6"
-      ]
+      ],
+      "results": {
+        "private-docs-explicit-routes": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-incomplete-metadata": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-missing-metadata": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-source-planning": {
+          "native_pass": false,
+          "failed_checks": [
+            "turn1_no_forbidden_read"
+          ]
+        },
+        "private-docs-unconfigured": {
+          "native_pass": true,
+          "failed_checks": []
+        }
+      }
     },
     "claude-entry": {
       "trials": 5,
       "native_passes": 5,
       "source_digests": [
         "74fe5d5dfe28885f710c92218d59f9065759d20a2380b78babe1c23a33b792d6"
-      ]
+      ],
+      "results": {
+        "private-docs-explicit-routes": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-incomplete-metadata": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-missing-metadata": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-source-planning": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-unconfigured": {
+          "native_pass": true,
+          "failed_checks": []
+        }
+      }
     },
     "codex-acceptance": {
       "trials": 5,
       "native_passes": 4,
       "source_digests": [
         "93d5dc084abb5951c690cb1ca0bbca0d4067720a0ea01aeb46212dcbd8f24f98"
-      ]
+      ],
+      "results": {
+        "private-docs-explicit-routes": {
+          "native_pass": false,
+          "failed_checks": [
+            "turn1_no_forbidden_read"
+          ]
+        },
+        "private-docs-incomplete-metadata": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-missing-metadata": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-source-planning": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-unconfigured": {
+          "native_pass": true,
+          "failed_checks": []
+        }
+      }
     },
     "claude-acceptance": {
       "trials": 5,
       "native_passes": 5,
       "source_digests": [
         "93d5dc084abb5951c690cb1ca0bbca0d4067720a0ea01aeb46212dcbd8f24f98"
-      ]
+      ],
+      "results": {
+        "private-docs-explicit-routes": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-incomplete-metadata": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-missing-metadata": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-source-planning": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "private-docs-unconfigured": {
+          "native_pass": true,
+          "failed_checks": []
+        }
+      }
     },
     "codex-explicit-authority": {
       "trials": 1,
       "native_passes": 0,
       "source_digests": [
         "93d5dc084abb5951c690cb1ca0bbca0d4067720a0ea01aeb46212dcbd8f24f98"
-      ]
+      ],
+      "results": {
+        "private-docs-explicit-routes": {
+          "native_pass": false,
+          "failed_checks": [
+            "turn1_no_forbidden_read"
+          ]
+        }
+      }
     },
     "claude-explicit-authority": {
       "trials": 1,
       "native_passes": 1,
       "source_digests": [
         "93d5dc084abb5951c690cb1ca0bbca0d4067720a0ea01aeb46212dcbd8f24f98"
-      ]
+      ],
+      "results": {
+        "private-docs-explicit-routes": {
+          "native_pass": true,
+          "failed_checks": []
+        }
+      }
     },
     "codex-existing": {
       "trials": 4,
       "native_passes": 4,
       "source_digests": [
         "93d5dc084abb5951c690cb1ca0bbca0d4067720a0ea01aeb46212dcbd8f24f98"
-      ]
+      ],
+      "results": {
+        "docs-concision-adjacent": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "docs-concision-credential": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "docs-concision-missing-context": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "docs-concision-primary": {
+          "native_pass": true,
+          "failed_checks": []
+        }
+      }
     },
     "claude-existing": {
       "trials": 4,
       "native_passes": 3,
       "source_digests": [
         "93d5dc084abb5951c690cb1ca0bbca0d4067720a0ea01aeb46212dcbd8f24f98"
-      ]
+      ],
+      "results": {
+        "docs-concision-adjacent": {
+          "native_pass": false,
+          "failed_checks": [
+            "turn1_fixture_answer"
+          ]
+        },
+        "docs-concision-credential": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "docs-concision-missing-context": {
+          "native_pass": true,
+          "failed_checks": []
+        },
+        "docs-concision-primary": {
+          "native_pass": true,
+          "failed_checks": []
+        }
+      }
     }
   },
   "limits": [
     "One run per final case/host; no production or installed-runtime acceptance and no measured before/after reliability claim.",
     "Claude source-only incidental private-doc read is a real remaining boundary failure tracked in https://github.com/cbusillo/codex-skills/issues/1146; no private marker appeared in final output.",
     "Claude stable-fact answer is correct but outside accepted forms; native grade remains failed and follow-up is https://github.com/cbusillo/codex-skills/issues/1145.",
-    "Recursive searches and read-before-skill ordering are not comprehensively established by the native grader; actual trace review supplements scores."
+    "Native grades do not establish skill-load-before-read ordering at all for read-only turns. Manual trace review found Claude missing-metadata read the private fixture at trace line 18 before docs-lookup Skill at line 26; original native pass remains preserved. Recursive content searches also have incomplete forbidden-read attribution.",
+    "Earlier Claude source-only cases passed before a final failure. Counts and per-case outcomes are retained; unmatched single samples do not establish a regression or reliability improvement."
   ],
   "changed_guidance_sha256": {
     "skills/github-plan/SKILL.md": "4420dfc90d9060e2c699d7de6f63a6c520442c99948b0a8031e1148b629f7d2e",
@@ -286,5 +529,25 @@
     "evals/multi-turn/private-docs-missing-metadata/turns.yaml": "3f8582227dea7579cbd27fd979c4369fac528d677090f9371ebc42e424e002f2",
     "evals/multi-turn/private-docs-source-planning/turns.yaml": "f068f0ec3dec3aed420ac99d9ed4ad744a9251baaa4fda7f02301b7e1076fb29",
     "evals/multi-turn/private-docs-unconfigured/turns.yaml": "f3e0bd80b852b019648cfecae4736ab8be51c11c601b3ca1b2c4bf248510b16a"
+  },
+  "manual_observations": {
+    "claude_missing_metadata": {
+      "native_pass_preserved": true,
+      "ordering": "failed",
+      "private_read_trace_line": 18,
+      "docs_lookup_skill_trace_line": 26,
+      "disposition": "tracked with selective/ordered private documentation reading in https://github.com/cbusillo/codex-skills/issues/1146"
+    },
+    "claude_source_planning": {
+      "native_pass": false,
+      "selective_private_reading": "failed",
+      "disposition": "tracked in https://github.com/cbusillo/codex-skills/issues/1146"
+    },
+    "claude_existing_adjacent": {
+      "native_pass": false,
+      "actual_final": "In local.py, MAX_RETRIES is set to 7.",
+      "source_value_agreement": true,
+      "disposition": "native wording-list false negative tracked in https://github.com/cbusillo/codex-skills/issues/1145"
+    }
   }
 }
