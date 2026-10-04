@@ -207,6 +207,75 @@ class CleanupContracts(unittest.TestCase):
         self.assertIn("explicit_preserve", root["holds"])
         self.assertEqual(root["disposition"], "Keep")
 
+    def registration_fixture(self, count):
+        raw = cleanup_git.git(str(self.repo), "worktree", "list", "--porcelain", "-z")[1]
+        head = run_git(self.repo, "rev-parse", "HEAD")
+        for index in range(count - len(cleanup_git.registrations(str(self.repo)))):
+            path = self.base / f"unexamined-{index}"
+            raw += os.fsencode(f"worktree {path}\0HEAD {head}\0detached\0\0")
+        original = cleanup_git.git
+
+        def fixture_git(repo, *args, **kwargs):
+            if args == ("worktree", "list", "--porcelain", "-z"):
+                return 0, raw
+            return original(repo, *args, **kwargs)
+
+        return fixture_git
+
+    def test_registration_boundary_and_scoped_inventory_above_it(self):
+        run_git(self.repo, "worktree", "lock", str(self.worktree), "--reason", "fixture owner")
+        for count in (cleanup_git.MAX_WORKTREES, cleanup_git.MAX_WORKTREES + 1):
+            with self.subTest(count=count), patch.object(cleanup_git, "git", self.registration_fixture(count)):
+                self.assertEqual(len(cleanup_git.registrations(str(self.repo))), count)
+                if count == cleanup_git.MAX_WORKTREES:
+                    snapshot = cleanup_git.snapshot(str(self.repo), self.key, roots=[str(self.worktree)])
+                    self.assertEqual(len(snapshot["worktrees"]), count)
+                    continue
+                self.private_files(self.worktree / "out")
+                report = self.inventory(self.worktree, preserved=[str(self.worktree)])
+                self.assertTrue(report["complete"], report["repository"])
+                self.assertTrue(report["git_stable"])
+                coverage = report["repository"]["worktree_coverage"]
+                self.assertEqual(coverage["global"], "excluded")
+                self.assertEqual(coverage["inspected_count"], 1)
+                self.assertEqual(coverage["excluded_count"], count - 1)
+                root = report["roots"][0]
+                self.assertEqual(root["entries"]["README.md"]["git"], "tracked")
+                self.assertEqual(root["entries"]["README.md"]["category"], "tracked_source")
+                self.assertEqual(root["entries"]["out/nested/.env.production"]["git"], "ignored")
+                self.assertTrue({"locked", "explicit_preserve", "protected_contents"} <= set(root["holds"]))
+                self.assertFalse(report["policy"]["may_delete"])
+                self.assertTrue(cleanup.check_manifest(report)["ok"])
+
+    def test_large_unscoped_inventory_offers_explicit_root_route(self):
+        with patch.object(cleanup_git, "git", self.registration_fixture(cleanup_git.MAX_WORKTREES + 1)):
+            report = cleanup.inventory(str(self.repo), [], key=self.key)
+            self.assertFalse(report["complete"])
+            self.assertEqual(report["repository"]["error"], "worktree_scope_limit_use_explicit_roots")
+
+    def test_large_scoped_inventory_rejects_oversized_and_malformed_registration_lists(self):
+        with patch.object(cleanup_git, "git", self.registration_fixture(cleanup_git.MAX_REGISTRATIONS + 1)):
+            report = self.inventory(self.worktree)
+            self.assertFalse(report["complete"])
+            self.assertEqual(report["repository"]["error"], "worktree_count_invalid")
+        for raw in (b"HEAD bad\0\0", b"worktree relative\0bare\0\0",
+                    b"worktree /fixture\0HEAD bad\0\0",
+                    b"worktree /fixture\0bare\0\0worktree /fixture\0bare\0\0",
+                    b"worktree /fixture\0worktree /other\0bare\0\0"):
+            with (self.subTest(raw=raw), patch.object(cleanup_git, "git", return_value=(0, raw)),
+                  self.assertRaisesRegex(cleanup.ProbeError, "worktree_registration_invalid")):
+                cleanup_git.registrations(str(self.repo))
+
+    def test_large_scoped_revalidation_detects_unexamined_registration_change(self):
+        fixture = self.registration_fixture(cleanup_git.MAX_WORKTREES + 1)
+        with patch.object(cleanup_git, "git", fixture):
+            before = self.inventory(self.worktree)
+        larger = self.registration_fixture(cleanup_git.MAX_WORKTREES + 2)
+        with patch.object(cleanup_git, "git", larger):
+            result = cleanup.check_manifest(before)
+        self.assertFalse(result["ok"])
+        self.assertIn("git_postcondition_changed", result["errors"])
+
     def test_active_skills_runtime_is_kept(self):
         home = self.base / "host"
         home.mkdir()

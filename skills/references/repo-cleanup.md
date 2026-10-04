@@ -253,6 +253,18 @@ also bounded; inaccessible or hung roots do not disappear from coverage.
 Backups, Trash and dependency trees have no silent pruning exception.
 Pruned or offline inventory cannot serve as final revalidation evidence.
 Use a smaller explicit scope and a new complete snapshot when a bound is reached.
+Registration discovery accepts up to 4,096 records; detailed Git evidence is
+bounded to 64 checkouts. Above 64 registrations, pass `--root` for the selected
+checkout or its output directory. The helper probes only registered checkouts
+that contain or lie within those roots, and refuses a selection above 64.
+The report's `repository.worktree_coverage` names the scope, inspected and
+excluded counts, and whether global checkout coverage was excluded. All
+registration metadata is still compared for changes, including omitted
+checkouts' registration locks; their contents, status and operations are
+unexamined. `complete` and `repository.coverage` describe the requested scope,
+not those omitted checkouts. Smaller repositories retain the full Git probe.
+Malformed or over-limit registration lists still fail closed. Ownership,
+live-use, private-content and deletion-authorization rules still apply.
 Do not claim an all-disks audit from this repository-scoped report.
 
 ## Private manifests and retention

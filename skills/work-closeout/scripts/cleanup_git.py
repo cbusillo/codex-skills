@@ -20,6 +20,8 @@ UNSAFE_ENV = {"GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
 OPERATIONS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "BISECT_LOG",
               "BISECT_START", "rebase-merge", "rebase-apply", "sequencer", "index.lock",
               "HEAD.lock", "config.lock", "packed-refs.lock", "shallow.lock")
+MAX_WORKTREES = 64
+MAX_REGISTRATIONS = 4096
 
 
 def git(repo: str, *args: str, check: bool = True) -> tuple[int, bytes]:
@@ -48,6 +50,9 @@ def registrations(repo: str) -> list[dict]:
                 current = {}
             continue
         key, _, value = field.partition(b" ")
+        name = "path" if key == b"worktree" else os.fsdecode(key).lower()
+        if name in current:
+            raise ProbeError("worktree_registration_invalid")
         if key == b"worktree":
             current["path"] = os.fsdecode(value)
         elif key in (b"HEAD", b"branch"):
@@ -56,8 +61,15 @@ def registrations(repo: str) -> list[dict]:
             current[os.fsdecode(key)] = True  # Do not print arbitrary lock/prune reason text.
     if current:
         worktrees.append(current)
-    if not worktrees or len(worktrees) > 64:
+    if not worktrees or len(worktrees) > MAX_REGISTRATIONS:
         raise ProbeError("worktree_count_invalid")
+    paths = set()
+    for item in worktrees:
+        path = item.get("path", "")
+        if (not os.path.isabs(path) or path in paths or
+                (not item.get("bare") and not re.fullmatch(r"[0-9a-f]{40,64}", item.get("head", "")))):
+            raise ProbeError("worktree_registration_invalid")
+        paths.add(path)
     return worktrees
 
 
@@ -89,10 +101,19 @@ def operation_state(directory: str) -> list[dict]:
     return sorted(result, key=lambda item: item["name"])
 
 
-def snapshot(repo: str, key: bytes, remote_probe: bool = True) -> dict:
+def snapshot(repo: str, key: bytes, remote_probe: bool = True,
+             roots: list[str] | None = None) -> dict:
     root = git_text(repo, "rev-parse", "--show-toplevel")
     common = git_text(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
     start_registrations = registrations(root)
+    selected = start_registrations
+    if roots is not None and len(start_registrations) > MAX_WORKTREES:
+        resolved_roots = [os.path.realpath(path) for path in roots]
+        selected = [item for item in start_registrations if any(
+            path == item["path"] or path.startswith(item["path"].rstrip(os.sep) + os.sep)
+            or item["path"].startswith(path.rstrip(os.sep) + os.sep) for path in resolved_roots)]
+    if len(selected) > MAX_WORKTREES:
+        raise ProbeError("worktree_scope_limit_use_explicit_roots")
     raw_refs = git(root, "for-each-ref", "--format=%(refname)%00%(objectname)",
                    "refs/heads", "refs/tags", "refs/stash")[1]
     refs = {}
@@ -129,7 +150,7 @@ def snapshot(repo: str, key: bytes, remote_probe: bool = True) -> dict:
                 remote["error"] = str(exc)
         remotes.append(remote)
     worktrees = []
-    for registration in start_registrations:
+    for registration in selected:
         item = dict(registration)
         path = item["path"]
         try:
@@ -167,6 +188,11 @@ def snapshot(repo: str, key: bytes, remote_probe: bool = True) -> dict:
     return {"root": root, "common_dir": common, "common_identity": signature(os.stat(common)),
             "default_branch": default_branch, "default_branch_evidence": "live" if default_branch else "unknown",
             "refs": refs, "ref_coverage": coverage, "remotes": remotes, "worktrees": worktrees,
+            "registrations": start_registrations,
+            "worktree_coverage": {"scope": "explicit_roots" if roots is not None else "all_registered",
+                                  "inspected_count": len(selected),
+                                  "excluded_count": len(start_registrations) - len(selected),
+                                  "global": "excluded" if len(selected) < len(start_registrations) else "completed"},
             "operations": operation_state(common),
             "stashes": os.fsdecode(stash_data).splitlines() if stash_code == 0 else [],
             "coverage": "completed" if names and default_branch
