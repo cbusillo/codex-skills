@@ -211,6 +211,11 @@ active issue labels and continuing background jobs do not lift a hold.
    for refusal, partial recovery, or release. Continue only on confirmed success;
    preserve competing or uncertain ownership for the Director to decide. Keep
    Current Status current through handoff or completion.
+   For an authorized PR-only conflict refresh of a finished session, claim its
+   canonical open planning issue with `--refresh-pr`, `--resume-from`, and
+   `--handoff-comment`; read Planning: Claim for the exact released-handoff
+   proof and supported route before using these flags. Direct PR claims remain
+   unsupported. Active ownership still refuses.
 
 Also report each `blocking_work_elsewhere` pair from `gh-plan.py next`, naming
 the local blocker and the repository/issue it holds up. Read the blocker's
