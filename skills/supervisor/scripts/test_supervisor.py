@@ -16,7 +16,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import account_choice
 import close_ttys
@@ -121,6 +121,48 @@ class TranscriptTests(unittest.TestCase):
             self.assertFalse(
                 session_record.summarize(records + [tail], "codex")["safe_verdict"]
             )
+
+    def test_memory_citation_tail_preserves_verdict_constraints(self):
+        records = session_record.read_jsonl(
+            Path(__file__).parent / "fixtures/codex-closeout-memory-citation.jsonl"
+        )
+        response = records[1]["payload"]["content"][0]["text"]
+        citation = response[response.index("<oai-mem-citation>"):]
+        self.assertTrue(session_record.summarize(records, "codex")["safe_verdict"])
+        for text in (
+            "> Safe to exit: yes",
+            '"Safe to exit: yes"',
+            "Not Safe to exit: yes",
+            "Safe to exit: no",
+            "Safe to exit: yes, if CI passes",
+            "If CI passes:\n  Safe to exit: yes, conditional",
+            "```text\nSafe to exit: yes",
+            "Safe to exit: yes\nStill doing work",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(session_record.summarize(
+                    [event("agent_message", message=text + "\n\n" + citation),
+                     event("task_complete")], "codex"
+                )["safe_verdict"])
+        for suffix in (
+            citation + "Still doing work",
+            citation.replace("</oai-mem-citation>", ""),
+            citation.replace("<oai-mem-citation>", "> <oai-mem-citation>"),
+            citation + citation,
+        ):
+            with self.subTest(suffix=suffix):
+                self.assertFalse(session_record.summarize(
+                    [event("agent_message", message="Safe to exit: yes\n\n" + suffix),
+                     event("task_complete")], "codex"
+                )["safe_verdict"])
+        self.assertFalse(session_record.summarize(
+            [event("agent_message", message=citation), event("task_complete")],
+            "codex"
+        )["safe_verdict"])
+        for tail in (event("turn_aborted"), event("task_started"),
+                     event("user_message", message="continue"), event("function_call")):
+            with self.subTest(tail=tail):
+                self.assertFalse(session_record.summarize(records + [tail], "codex")["safe_verdict"])
 
     def test_codex_response_item_text_and_usage(self):
         records = [
@@ -335,6 +377,28 @@ class LedgerTests(unittest.TestCase):
         terminal.async_get_variable.return_value = "/dev/ttys999"
         with self.assertRaises(ValueError):
             asyncio.run(close_ttys.close(app, entry, True, True, True))
+
+    def test_memory_citation_fixture_through_status_candidates_and_close(self):
+        fixture = Path(__file__).parent / "fixtures/codex-closeout-memory-citation.jsonl"
+        self.transcript.write_text(fixture.read_text())
+        result = status.snapshot(self.ledger)[0]
+        self.assertTrue(result["safe_verdict"])
+        self.assertIn("<oai-mem-citation>", result["last_text"])
+        self.assertTrue(finished_map.candidates(self.ledger)[0]["candidate"])
+        entry = session_record.load_ledger(self.ledger)[0]
+        terminal = SimpleNamespace(
+            session_id="term1",
+            async_get_variable=AsyncMock(return_value="ttys001"),
+            async_close=AsyncMock(),
+        )
+        app = SimpleNamespace(terminal_windows=[
+            SimpleNamespace(tabs=[SimpleNamespace(sessions=[terminal])])
+        ])
+        with patch.object(close_ttys, "inventory", return_value=[(20, "ttys001", "-zsh")]):
+            self.assertTrue(asyncio.run(close_ttys.close(app, entry, False, True, True))["dry_run"])
+            terminal.async_close.assert_not_awaited()
+            asyncio.run(close_ttys.close(app, entry, True, True, True))
+        terminal.async_close.assert_awaited_once_with(force=False)
 
     def test_activity_race_keeps_tab(self):
         entry = session_record.load_ledger(self.ledger)[0]
@@ -666,7 +730,7 @@ class TerminalTests(unittest.TestCase):
             ("\x1b[200~two\nlines\x1b[201~",),
         )
 
-    def test_launch_explicit_window_and_restore_focus(self):
+    def test_launch_explicit_window_without_moving_focus(self):
         terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
         tab = SimpleNamespace(tab_id="newtab", current_session=terminal)
         previous = SimpleNamespace(async_select=AsyncMock())
@@ -686,11 +750,100 @@ class TerminalTests(unittest.TestCase):
             with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}):
                 result = asyncio.run(iterm_tab.operate(app, args))
         self.assertEqual(result["session_id"], "new")
-        window.async_create_tab.assert_awaited_once()
-        previous.async_select.assert_awaited_once()
+        window.async_create_tab.assert_awaited_once_with(select=False)
+        previous.async_select.assert_not_awaited()
         self.assertEqual(
             terminal.async_send_text.await_args_list[0].args, ("run-authorized-brief",)
         )
+
+    def test_late_session_launches_only_in_refreshed_created_tab(self):
+        terminal = SimpleNamespace(session_id="late", async_send_text=AsyncMock())
+        created = SimpleNamespace(tab_id="newtab", current_session=None)
+        # iTerm can replace hierarchy objects during a refresh.
+        refreshed = SimpleNamespace(tab_id="newtab", current_session=terminal)
+        previous = SimpleNamespace(async_select=AsyncMock(), async_send_text=AsyncMock())
+        window = SimpleNamespace(
+            window_id="chosen", async_create_tab=AsyncMock(return_value=created)
+        )
+        app = SimpleNamespace(
+            terminal_windows=[window],
+            current_terminal_window=SimpleNamespace(current_tab=previous),
+            async_refresh=AsyncMock(),
+            get_tab_by_id=Mock(side_effect=[created, refreshed]),
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            command = Path(folder) / "launch.txt"
+            command.write_text("run-authorized-brief\n")
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=command)
+            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}):
+                result = asyncio.run(iterm_tab.operate(app, args))
+        self.assertEqual(result["session_id"], "late")
+        self.assertEqual(app.async_refresh.await_count, 2)
+        self.assertTrue(all(call.args == ("newtab",) for call in app.get_tab_by_id.call_args_list))
+        window.async_create_tab.assert_awaited_once_with(select=False)
+        previous.async_select.assert_not_awaited()
+        previous.async_send_text.assert_not_awaited()
+        self.assertEqual(
+            [call.args for call in terminal.async_send_text.await_args_list],
+            [("run-authorized-brief",), ("\r",)],
+        )
+
+    def test_session_wait_timeout_covers_stalled_refresh(self):
+        async def stalled_refresh():
+            await asyncio.Future()
+
+        tab = SimpleNamespace(tab_id="newtab", current_session=None)
+        for refresh in (AsyncMock(), AsyncMock(side_effect=stalled_refresh)):
+            with self.subTest(stalled=bool(refresh.side_effect)):
+                app = SimpleNamespace(
+                    async_refresh=refresh,
+                    get_tab_by_id=Mock(return_value=tab),
+                )
+                with self.assertRaisesRegex(ValueError, "newtab.*no session after"):
+                    asyncio.run(iterm_tab.wait_for_session(app, tab, timeout=0.01))
+
+    def test_launch_timeout_never_sends_or_moves_focus(self):
+        previous = SimpleNamespace(async_select=AsyncMock(), async_send_text=AsyncMock())
+        tab = SimpleNamespace(tab_id="newtab", current_session=None)
+        window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(return_value=tab))
+        app = SimpleNamespace(
+            terminal_windows=[window],
+            current_terminal_window=SimpleNamespace(current_tab=previous),
+            async_refresh=AsyncMock(),
+            get_tab_by_id=Mock(return_value=tab),
+        )
+        wait = iterm_tab.wait_for_session
+
+        async def short_wait(target_app, target_tab):
+            return await wait(target_app, target_tab, timeout=0.01)
+
+        with tempfile.TemporaryDirectory() as folder:
+            command = Path(folder) / "launch.txt"
+            command.write_text("run-authorized-brief\n")
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=command)
+            with (
+                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
+                patch.object(iterm_tab, "wait_for_session", side_effect=short_wait),
+                patch.object(iterm_tab, "send", new_callable=AsyncMock) as send,
+                self.assertRaisesRegex(ValueError, "newtab.*no session after"),
+            ):
+                asyncio.run(iterm_tab.operate(app, args))
+            send.assert_not_awaited()
+        window.async_create_tab.assert_awaited_once_with(select=False)
+        previous.async_select.assert_not_awaited()
+        previous.async_send_text.assert_not_awaited()
+
+    def test_closed_new_tab_does_not_fall_back_to_another_session(self):
+        terminal = SimpleNamespace(async_send_text=AsyncMock())
+        app = SimpleNamespace(
+            async_refresh=AsyncMock(),
+            get_tab_by_id=Mock(return_value=None),
+            current_terminal_window=SimpleNamespace(current_tab=SimpleNamespace(current_session=terminal)),
+        )
+        for tab in (None, SimpleNamespace(tab_id="closed", current_session=None)):
+            with self.subTest(tab=tab), self.assertRaises(ValueError):
+                asyncio.run(iterm_tab.wait_for_session(app, tab))
+        terminal.async_send_text.assert_not_awaited()
 
     def test_codex_remote_launch_inherits_selected_home_after_cd(self):
         rows = [account_row("main", 0.6, []), account_row("spare", 0.5, [], cfg="cfg-spare")]
@@ -739,7 +892,7 @@ class TerminalTests(unittest.TestCase):
             terminal.async_send_text.await_args_list[0].args,
             ("export CLAUDE_CONFIG_DIR='/accounts/spare dir' && cd /repo && claude 'brief'",),
         )
-        window.async_create_tab.assert_awaited_once()
+        window.async_create_tab.assert_awaited_once_with(select=False)
         self.assertEqual(result["account"]["env_keys"], ["CLAUDE_CONFIG_DIR"])
         self.assertNotIn("env", result["account"])
 

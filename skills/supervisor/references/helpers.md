@@ -81,7 +81,13 @@ uv run skills/supervisor/scripts/iterm_tab.py send --session-id <iterm-session-i
 ```
 
 Use one dedicated Supervisor window, never the window with the most tabs. The
-helper restores the previous tab after launch. Launch files contain the exact
+`new` creates the tab in the background without selecting it or moving keyboard
+focus. It waits up to 10 seconds for that exact tab's session, refreshing the
+iTerm hierarchy before launching. A session-wait timeout names the tab for
+inspection. If creation returns no tab identity, run `list` and inspect first;
+the tab may still exist. Do not create another tab or replay the launch without
+checking it. `window` still restores the previous tab after creation.
+Launch files contain the exact
 brief and account/model settings already authorized, without the Discord
 channels flag; `--account-provider` can choose the account instead (see
 below). Run one agent invocation, without restart loops or commands
@@ -159,7 +165,11 @@ login, including the desktop app's.
 ## Finished-session shutdown stages
 
 `finished_map.py` offers candidates only. Its conservative last-line parser
-rejects quoted, negated, conditional and aborted verdicts. A complete Claude local `/exit` record sequence preserves
+rejects quoted, negated, conditional and aborted verdicts. The shared parser used
+by status, candidates and terminal closure ignores one complete trailing
+`<oai-mem-citation>` block when evaluating the verdict, while retaining the full
+response in status output. Text after the block or an incomplete block remains
+unrecognized. A complete Claude local `/exit` record sequence preserves
 the preceding verdict; other commands or new work invalidate it. Read the transcript
 and issue handoff yourself under the skill's full shutdown procedure; an
 unrecognized format remains manual verification, never permission to close.
