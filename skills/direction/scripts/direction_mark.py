@@ -16,10 +16,13 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import json
 import os
 import sys
-from collections.abc import Mapping
+import tempfile
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 
 MARKER_NAME = "direction-last-check.json"
@@ -54,27 +57,51 @@ def load(path: Path) -> dict[str, object]:
     return current
 
 
-def save(path: Path, current: dict[str, object]) -> None:
+@contextmanager
+def marker_lock(path: Path) -> Iterator[Path]:
+    """Serialize read/modify/replace on a stable sidecar, never the replaced inode."""
+    path = path.resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
+    descriptor = os.open(path.with_name(path.name + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    with os.fdopen(descriptor, "rb") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield path
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def save(path: Path, current: dict[str, object]) -> None:
+    """Atomically replace the marker; the caller must hold marker_lock."""
+    descriptor, temporary = tempfile.mkstemp(prefix=path.name + ".pending-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w") as stream:
+            stream.write(json.dumps(current, indent=2, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def mark_turn(path: Path, now: dt.datetime) -> dict[str, object]:
-    current = load(path)
-    current["turn"] = utc_stamp(now)
-    save(path, current)
+    with marker_lock(path) as path:
+        current = load(path)
+        current["turn"] = utc_stamp(now)
+        save(path, current)
     return current
 
 
 def mark_audit(path: Path, repo: str, now: dt.datetime) -> dict[str, object]:
     """Used by the audit script; a turn is implied because an audit is a turn."""
-    current = load(path)
-    stamp = utc_stamp(now)
-    current["turn"] = stamp
-    audits = current["audits"]
-    assert isinstance(audits, dict)
-    audits[repo] = stamp
-    save(path, current)
+    with marker_lock(path) as path:
+        current = load(path)
+        stamp = utc_stamp(now)
+        current["turn"] = stamp
+        audits = current["audits"]
+        assert isinstance(audits, dict)
+        audits[repo] = stamp
+        save(path, current)
     return current
 
 

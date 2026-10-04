@@ -10,14 +10,18 @@ from __future__ import annotations
 import datetime as dt
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name("direction_mark.py")
 HOOK = Path(__file__).resolve().parents[3] / "hooks" / "direction_check_hook.py"
-NOW = dt.datetime(2026, 9, 22, 12, 0, 30, 123456, tzinfo=dt.timezone.utc)
+NOW = dt.datetime(2026, 9, 22, 12, second=30, microsecond=123456, tzinfo=dt.timezone.utc)
 
 
 def load(path: Path, name: str) -> Any:
@@ -74,6 +78,97 @@ def test_only_a_turn_can_be_marked_by_hand() -> None:
         assert exc.code == 2
     else:
         raise AssertionError("audit must not be markable from the command line")
+
+
+def test_overlapping_audits_and_turn_preserve_updates() -> None:
+    mark = load(SCRIPT, "direction_mark_concurrency")
+    for kind in ("turn", "audit"):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "marker.json"
+            mark.mark_turn(path, NOW)
+            writer: subprocess.Popen[str] | None = None
+            read = mark.load
+
+            def overlap(target: Path) -> dict[str, object]:
+                nonlocal writer
+                snapshot = read(target)
+                writer = subprocess.Popen([
+                    sys.executable, "-c",
+                    "import datetime as dt, sys; from pathlib import Path; "
+                    "sys.path.insert(0,sys.argv[1]); import direction_mark as mark; "
+                    "now=dt.datetime(2026,10,4,tzinfo=dt.timezone.utc); "
+                    "mark.mark_turn(Path(sys.argv[2]),now) if sys.argv[3]=='turn' "
+                    "else mark.mark_audit(Path(sys.argv[2]),'o/second',now)",
+                    str(SCRIPT.parent), str(path), kind,
+                ], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                try:
+                    writer.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
+                return snapshot
+
+            try:
+                with patch.dict(vars(mark), {"load": overlap}):
+                    mark.mark_audit(path, "o/first", NOW)
+                assert writer is not None
+                stdout, stderr = writer.communicate(timeout=5)
+                assert writer.returncode == 0, (stdout, stderr)
+                current = json.loads(path.read_text())
+                assert current["turn"] == "2026-10-04T00:00:00Z", current
+                assert current["audits"]["o/first"] == mark.utc_stamp(NOW)
+                assert set(current["audits"]) == ({"o/first", "o/second"} if kind == "audit" else {"o/first"})
+            finally:
+                if writer is not None and writer.poll() is None:
+                    writer.kill()
+                    writer.communicate()
+
+
+def test_failed_replace_preserves_marker_and_releases_lock() -> None:
+    mark = load(SCRIPT, "direction_mark_interrupted")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "marker.json"
+        original = b'{"audits":{}, "other":true}\n'
+        path.write_bytes(original)
+        with patch.object(os, "replace", side_effect=OSError("interrupted replace")):
+            try:
+                mark.mark_turn(path, NOW)
+            except OSError:
+                pass
+            else:
+                raise AssertionError("replacement failure was hidden")
+        assert path.read_bytes() == original
+        assert list(Path(tmp).glob("*.pending-*")) == []
+        assert mark.mark_turn(path, NOW)["other"] is True
+
+
+def test_killed_writer_leaves_complete_marker_and_unlocked_sidecar() -> None:
+    mark = load(SCRIPT, "direction_mark_killed")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "marker.json"
+        ready = Path(tmp) / "ready"
+        original = b'{"audits":{}, "other":true}\n'
+        path.write_bytes(original)
+        writer = subprocess.Popen([
+            sys.executable, "-c",
+            "import datetime as dt, sys, time; from pathlib import Path; "
+            "sys.path.insert(0,sys.argv[1]); import direction_mark as mark; "
+            "mark.os.replace=lambda *_: (Path(sys.argv[3]).write_text('ready'),time.sleep(30)); "
+            "mark.mark_turn(Path(sys.argv[2]),dt.datetime.now(dt.timezone.utc))",
+            str(SCRIPT.parent), str(path), str(ready),
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 5
+            while not ready.exists() and writer.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert ready.exists(), "writer did not reach replacement"
+            writer.kill()
+            writer.communicate(timeout=5)
+            assert path.read_bytes() == original
+            assert mark.mark_turn(path, NOW)["other"] is True
+        finally:
+            if writer.poll() is None:
+                writer.kill()
+                writer.communicate()
 
 
 def main() -> int:

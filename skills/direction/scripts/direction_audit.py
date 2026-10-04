@@ -31,6 +31,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from skills.github.scripts import github_client, github_identity, github_rulesets
+from skills.direction.scripts import direction_mark
 
 REQUIRED_HEADINGS = ("Purpose", "Stop Boundaries", "Journey", "Retired", "Milestones")
 ESCALATION_LABEL = "direction"
@@ -569,17 +570,20 @@ def prune_unadopted(
             unknown[repo] = str(exc)
     backup = None
     if apply and removed:
-        if path.read_bytes() != original:
-            raise AuditError("marker changed during preview; rerun before applying")
         import tempfile
 
-        descriptor, backup_name = tempfile.mkstemp(prefix=path.name + ".backup-", dir=path.parent)
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(original)
-        backup = backup_name
-        for repo in removed:
-            del current["audits"][repo]
-        path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
+        with direction_mark.marker_lock(path) as path:
+            if path.read_bytes() != original:
+                raise AuditError("marker changed during preview; rerun before applying")
+            descriptor, backup_name = tempfile.mkstemp(prefix=path.name + ".backup-", dir=path.parent)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(original)
+                stream.flush()
+                os.fsync(stream.fileno())
+            backup = backup_name
+            for repo in removed:
+                del current["audits"][repo]
+            direction_mark.save(path, current)
     return {"ok": not unknown, "applied": apply and bool(removed), "removed": removed,
             "retained": retained, "unknown": unknown, "backup": backup}
 
