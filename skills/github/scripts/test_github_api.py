@@ -853,6 +853,25 @@ def test_classify_405_expected_required_checks_as_rejected_readiness() -> None:
     assert non_405_result.failure.cause == "validation_error"
 
 
+
+def test_comments_only_rejection_is_narrow() -> None:
+    for message in (
+        "All comments must be resolved.",
+        "Repository rule violations found\n\nAll comments must be resolved.\n",
+    ):
+        result = _call("PUT", "/repos/owner/repo/pulls/1/merge", body={},
+                       fake_stdout=_include_output(405, body={"message": message}), returncode=1)
+        assert result.failure is not None
+        assert result.failure.cause == "unresolved_review_threads"
+        assert result.failure.write_outcome == "rejected"
+        assert not result.failure.retryable
+    mixed = _call("PUT", "/repos/owner/repo/pulls/1/merge", body={},
+                  fake_stdout=_include_output(405, body={"message": "Repository rule violations found\n\nAll comments must be resolved.\nOther rule violation."}), returncode=1)
+    assert mixed.failure is not None
+    assert mixed.failure.cause == "unknown_error"
+    assert mixed.failure.write_outcome == "unknown"
+
+
 def test_classify_405_unrelated_failure_as_unknown_write() -> None:
     result = _call(
         "PUT",
@@ -2922,6 +2941,7 @@ def main() -> None:
         test_classify_200_graphql_rate_limit,
         test_classify_404_not_found,
         test_classify_405_expected_required_checks_as_rejected_readiness,
+        test_comments_only_rejection_is_narrow,
         test_classify_405_unrelated_failure_as_unknown_write,
         test_classify_422_validation_error,
         test_classify_409_conflict,

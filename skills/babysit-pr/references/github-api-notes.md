@@ -139,3 +139,47 @@ both layers use the same automation identity route.
 - `status`
 - `conclusion`
 - `html_url`
+
+### Automated inline review threads
+
+Inline Codex and GitHub Advanced Security comments are actionable review
+inventory. When those comments exist, the watcher reads GraphQL `reviewThreads`
+with the REST repository, PR number, URL, and head SHA pinned on every page.
+`pr.review_threads` retains thread IDs, resolution, outdated state, comment
+anchor commit SHA, and whether that anchor matches the current head. GitHub can
+advance the anchor commit when a line still applies after a push:
+`matches_current_head: true` does not prove the bot analyzed that head. Verify
+the finding against the current code and its original review/snapshot revision
+before acting, even when the anchor matches. Resolved comments
+are omitted from new feedback. Unresolved threads remain a `resolve_review_threads`
+action after their comment IDs have been seen; old-head findings require
+verification on the current head before changing code, and still need disposition
+before the watcher offers a merge. GitHub requires resolution for merge only
+when its branch protection or rulesets require conversation resolution. Missing, mismatched, or truncated resolution
+evidence emits `review_thread_resolution_unavailable` and cannot prove readiness.
+Thread pagination is bounded to ten pages; a thread with over 100 comments is
+reported incomplete.
+
+
+### Resolve an addressed automated thread
+
+After pushing and verifying the fix on the current head, or recording why the
+finding is declined under the review policy, use the thread ID from fresh
+`pr.review_threads` evidence. The maintained bot wrapper supports GitHub's
+[resolveReviewThread mutation](https://docs.github.com/en/graphql/reference/pulls#resolvereviewthread):
+
+```bash
+<skill-dir>/../github/scripts/gh-with-env-token api graphql \
+  -f query='mutation($thread: ID!) { resolveReviewThread(input: {threadId: $thread}) { thread { id isResolved } } }' \
+  -f thread='<verified thread ID>'
+```
+
+This uses the existing CLI passthrough because there is no dedicated resolve
+command. Verify the ID belongs to the intended PR in the current watcher
+snapshot before sending it. Confirm no GraphQL errors and the same returned
+ID with `isResolved: true`, then re-read the watcher; a successful CLI exit
+alone is insufficient. Preserve auth/refusal behavior, never change identity
+or grants to resolve a thread, and do not resolve an unaddressed finding.
+For an ambiguous response, re-read the thread before another write. If the
+configured bot cannot resolve it, record that specific refusal on the owning
+issue and retain the blocker for supported disposition.

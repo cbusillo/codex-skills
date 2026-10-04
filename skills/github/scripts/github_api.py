@@ -1171,6 +1171,22 @@ def classify_error(
             request_id=request_id,
         )
 
+    if (
+        status == 405
+        and isinstance(body, dict)
+        and REPOSITORY_RULE_VIOLATIONS_WRAPPER.sub("", msg.strip(), count=1)
+        == "All comments must be resolved."
+    ):
+        return FailureDetail(
+            cause="unresolved_review_threads",
+            message=f"Merge readiness is blocked because review comments must be resolved: {msg}",
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            write_outcome=rejected,
+            request_id=request_id,
+        )
+
     if status == 409:
         return FailureDetail(
             cause="conflict",
@@ -2638,6 +2654,8 @@ def run_with_retry(
                 recommended_next_action=(
                     "wait_for_required_checks"
                     if failure and failure.cause == "required_status_checks_expected"
+                    else "resolve_review_threads"
+                    if failure and failure.cause == "unresolved_review_threads"
                     else (
                         "reconcile_or_retry_manually"
                         if is_write and failure and failure.write_outcome == "unknown"

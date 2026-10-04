@@ -1057,6 +1057,8 @@ def merge_observations(
 
 
 def merge_failure_hint(message: str, *, cause: Optional[str] = None) -> str:
+    if cause == "unresolved_review_threads":
+        return "Resolve the unresolved PR review threads before attempting the merge again."
     if cause == "required_status_checks_expected":
         return (
             "Wait for GitHub to receive the required status checks for this head, "
