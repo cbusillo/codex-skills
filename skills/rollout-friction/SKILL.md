@@ -18,7 +18,7 @@ resources:
     description: Cluster friction episodes and emit compact trajectory skeletons for human or model review.
   - path: scripts/classify_auto_review_ledger.py
     kind: script
-    description: Classify Every Code auto-review ledger entries against the active checkout so stale detached proposal findings are not treated as current blockers.
+    description: Classify historical Every Code auto-review ledger entries against the active checkout so stale detached proposal findings are not treated as current blockers.
   - path: scripts/extract_rollout_memory.py
     kind: script
     description: Legacy broad extraction of destination-aware durable-memory candidates from local rollout/session traces.
@@ -92,7 +92,7 @@ commands:
         ".",
         "--json",
       ]
-    purpose: Distinguish current-target auto-review findings from stale detached auto-review proposal diagnostics.
+    purpose: Interpret historical Every Code ledgers and distinguish target findings from stale detached proposals.
   - name: rollout-local-scout
     source: skill
     resource_path: scripts/lm_studio_scout.py
@@ -186,7 +186,7 @@ commands:
         "--budget",
         "quarter",
         "--variant",
-        "gpt-5.4=code-llm:gpt-5.4",
+        "sonnet-1m=claude:claude-sonnet-4-6[1m]",
         "--output-jsonl",
         ".local/rollout-memory/<run-id>/matrix-results.jsonl",
       ]
@@ -265,9 +265,8 @@ rollout files, session traces, runout files, or agent workflow friction.
    redacted by default; pass `--trusted-originals` only for approved local-only
    review where path/email/id shapes are useful. Treat hit counts as triage, not
    as proof that thousands of durable lessons exist.
-5. When session context includes an Every Code auto-review ledger or repeated
-   warnings about generated detached `auto-review-<hex>` worktrees, save the ledger text to an
-   ignored local file and run `classify_auto_review_ledger.py` against the active
+5. When explicitly interpreting a historical Every Code auto-review ledger,
+   save the ledger text to an ignored local file and run `classify_auto_review_ledger.py` against the active
    repo. Default JSON redacts raw local finding locations and titles into stable
    ids; use `--trusted-local-details` only for approved local-only diagnosis.
    Treat `current_target` findings as review evidence to address or explicitly
@@ -379,25 +378,21 @@ memory/profile/local-config candidates.
 
 ## Long-Context Prompt Path
 
-For rollout/model matrix evaluation, use the provided rollout-friction scripts
-and their script-owned one-shot transports. For `code-llm` variants, that means
-the strict `code llm request --message-file` path; other matrix providers must
-stay behind the matrix runner's bounded provider-specific transport. Do not use
-`agent.create` `context_files` to pass rollout prompt payloads to agents for
-matrix/model evaluation.
-
-For GPT-5.6 migration comparisons, add explicit Sol, Terra, or Luna variants
-with `--variant` alongside the existing GPT-5.4 comparison instead of replacing
-the pinned baseline. Keep new family variants opt-in: every additional variant
-changes provider cost and runtime, and Sol should not become the default for
-every workload. Preserve fake `gpt-5.1-codex` harness models because they are
-deterministic protocol fixtures rather than production recommendations.
+For rollout/model matrix evaluation, use the matrix runner's bounded Claude
+transport, which sends the selected-note prompt on stdin and requests strict
+JSON output. The retired Every Code `code-llm` transport is rejected, including
+in dry runs. Existing matrix result files remain readable as historical data.
+Use explicit `NAME=claude:MODEL` variants for approved model comparisons;
+additional variants change provider cost and runtime. Keep prompt content,
+budgets, validation, and output artifacts on this controlled one-shot path.
+Do not use `agent.create` `context_files` to pass rollout prompt payloads to
+agents for matrix/model evaluation.
 
 `context_files` snapshots file contents directly into a spawned agent prompt.
 Use it only for deliberate agent-context snapshots, and require an explicit
-large `context_budget_tokens` when a large file is truly intended. For rollout
-evaluation, prefer `run_rollout_memory_long_context_matrix.py` so prompt content,
-budgets, validation, and output artifacts stay on the controlled one-shot path.
+large `context_budget_tokens` when a large file is truly intended.
+Preserve fake `gpt-5.1-codex` harness models as historical deterministic protocol
+fixtures rather than production recommendations.
 
 The trusted-local batch review path is different: `review_rollout_memory_batches.py`
 may send approved prompt content directly in the local OpenAI-compatible request

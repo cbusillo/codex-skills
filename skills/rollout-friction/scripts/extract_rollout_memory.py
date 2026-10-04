@@ -17,7 +17,6 @@ import argparse
 import hashlib
 import json
 import re
-import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,7 +29,6 @@ DEFAULT_CONTEXT_EVENTS = 2
 DEFAULT_BATCH_CHARS = 36_000
 DEFAULT_MAX_RECORD_CHARS = 1_800
 
-SESSION_ROOT = Path.home() / ".code" / "sessions"
 ROLL_OUT_SUFFIXES = {".jsonl", ".json", ".log", ".txt", ".md"}
 STRUCTURED_TRACE_SUFFIXES = {".json", ".jsonl", ".log"}
 ROLL_OUT_NAME_RE = re.compile(r"(rollout|session|runout|thread|trace|transcript)", re.I)
@@ -144,7 +142,7 @@ class Candidate:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extract rollout memory candidates for local review.")
     parser.add_argument("paths", nargs="*", type=Path)
-    parser.add_argument("--root", type=Path, default=SESSION_ROOT)
+    parser.add_argument("--root", type=Path, help="Explicit session directory; no default.")
     parser.add_argument("--max-files", type=int, default=DEFAULT_MAX_FILES)
     parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
     parser.add_argument("--context-events", type=int, default=DEFAULT_CONTEXT_EVENTS)
@@ -164,6 +162,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt-jsonl", action="store_true", help="Emit local-LLM prompt batches as JSONL.")
     parser.add_argument("--output-dir", type=Path, help="Write local artifacts to this ignored/private directory.")
     args = parser.parse_args()
+    if not args.paths and args.root is None:
+        parser.error("provide trace paths or --root; there is no default session directory")
     if args.trusted_originals and args.redact:
         parser.error("use --trusted-originals or --redact, not both")
     args.since_ts = parse_timestamp(args.since) if args.since else None
