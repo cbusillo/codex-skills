@@ -90,13 +90,7 @@ jobs:
           if [[ -n "$remote_sha" ]]; then
             git fetch --no-tags origin \
               "refs/heads/$AUTOMATION_BRANCH:refs/remotes/origin/$AUTOMATION_BRANCH"
-            remote_author="$(git show -s --format='%ae' "$remote_sha")"
-            remote_message="$(git show -s --format='%B' "$remote_sha")"
-            if [[ "$remote_author" != "41898282+github-actions[bot]@users.noreply.github.com" ]] \
-              || ! grep -Fxq "PEP723-Automation: true" <<<"$remote_message"; then
-              echo "Refusing to replace a branch without the automation commit identity" >&2
-              exit 1
-            fi
+            uv run scripts/check_pep723_branch.py "$remote_sha" HEAD
           fi
 
           git switch --create "$AUTOMATION_BRANCH"
