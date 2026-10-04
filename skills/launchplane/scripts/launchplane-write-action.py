@@ -183,6 +183,7 @@ MERGE_TRAIN_RESULT_FIELDS = {
     "completed_disposition_count",
     "completed_entry_count",
     "completed_mutation_count",
+    "conflict_probe",
     "controller_action",
     "controller_reconciliation_status",
     "details",
@@ -231,6 +232,10 @@ MERGE_TRAIN_RESULT_FIELDS = {
     "workflow_run_url",
 }
 MERGE_TRAIN_BLOCKING_REASON_FIELDS = {"code", "message"}
+MERGE_TRAIN_CONFLICT_PROBE_FIELDS = {"status", "pull_request_numbers", "held_out"}
+MERGE_TRAIN_HELD_OUT_FIELDS = {
+    "pull_request_number", "head_sha", "reason", "conflicts_with",
+}
 MERGE_TRAIN_READINESS_FIELDS = {
     "state",
     "reason_codes",
@@ -1310,6 +1315,38 @@ def _project_merge_train_blocking_reason(value: object) -> dict[str, object]:
     }
 
 
+def _project_merge_train_conflict_probe(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    source = _require_dict(value)
+    if any(str(key) not in MERGE_TRAIN_CONFLICT_PROBE_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    numbers = source.get("pull_request_numbers")
+    if not isinstance(numbers, list) or not isinstance(source.get("status"), str):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "status": public_code(source.get("status")),
+        "pull_request_numbers": [_merge_train_pr_number(number) for number in numbers],
+    }
+    if "held_out" in source:
+        if not isinstance(source["held_out"], list):
+            raise LaunchplaneSafetyError("invalid_response")
+        held_out: list[dict[str, object]] = []
+        for value in source["held_out"]:
+            entry = _require_exact_fields(value, MERGE_TRAIN_HELD_OUT_FIELDS)
+            conflicts_with = entry.get("conflicts_with")
+            if not isinstance(conflicts_with, list) or not isinstance(entry.get("reason"), str):
+                raise LaunchplaneSafetyError("invalid_response")
+            held_out.append({
+                "pull_request_number": _merge_train_pr_number(entry.get("pull_request_number")),
+                "head_sha": public_identifier(entry.get("head_sha")),
+                "reason": public_code(entry.get("reason")),
+                "conflicts_with": [_merge_train_pr_number(number) for number in conflicts_with],
+            })
+        projected["held_out"] = held_out
+    return projected
+
+
 def _project_merge_train_readiness(value: object) -> dict[str, object] | None:
     if value is None:
         return None
@@ -1402,6 +1439,8 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
         )
     if "dry_run_result" in source:
         projected["dry_run_result"] = _project_merge_train_dry_run(source["dry_run_result"])
+    if "conflict_probe" in source:
+        projected["conflict_probe"] = _project_merge_train_conflict_probe(source["conflict_probe"])
     for key in ("workflow_run_url", "source_of_truth_url"):
         if key in source:
             projected[key] = public_url(source[key])
