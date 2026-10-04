@@ -858,12 +858,13 @@ def infer_graphql_operation_type(body: Any) -> GraphQLOperation:
     document: Any = body.get("query") if isinstance(body, dict) else body
     if not isinstance(document, str):
         return "unknown"
-    remaining = document.lstrip("\ufeff")
+    remaining: str = document.lstrip("\ufeff")
     while True:
         remaining = remaining.lstrip()
         if not remaining.startswith("#"):
             break
-        _, separator, remaining = remaining.partition("\n")
+        _, separator, tail = remaining.partition("\n")
+        remaining = tail
         if not separator:
             return "unknown"
     match = re.match(r"(?i)(query|mutation|subscription)\b", remaining)
