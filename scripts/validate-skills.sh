@@ -40,6 +40,11 @@ uv run scripts/update_pep723_dependencies.py --check
 uv run skills/skill-creator/scripts/quick_validate.py --self-test
 uv run skills/skill-creator/scripts/validate-skill-repo.py
 
+# --version does not initialize Node's ESM loader or the manual helper's
+# builtins. Load them offline before parallel helpers compete for cold disk
+# pages, keeping the symlink CLI regression's five-second deadline unchanged.
+node --input-type=module -e 'await import("./skills/openai-docs/scripts/fetch-codex-manual.mjs")'
+
 # Validators invoked by the dedicated commands above rather than by the helper loop.
 explicit_helper_validators=(
 	skills/github/scripts/validate-operation-matrix.py

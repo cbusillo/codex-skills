@@ -327,6 +327,12 @@ must keep passing the canonical gate. See
 [`skills/github/references/execution-environment.md`](skills/github/references/execution-environment.md)
 for the complete dependency-introduction and update policy.
 
+The validation gate imports the Codex manual helper offline before starting
+parallel helper tests. This initializes Node's ESM loader and the helper's
+builtins before they compete for cold disk pages; printing `node --version`
+does not perform that initialization. The CLI regression retains its
+five-second subprocess deadline, and the import does not fetch the manual.
+
 ## Reviews By Another Model
 
 The `model-review` skill asks a model from another provider to review a change
