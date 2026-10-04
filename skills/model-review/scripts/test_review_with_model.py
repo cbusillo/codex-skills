@@ -38,6 +38,17 @@ FAKE_CLAUDE = """#!/bin/sh
 [ -n "$FAKE_CLAUDE_ARGV_FILE" ] && printf '%s\\n' "$@" > "$FAKE_CLAUDE_ARGV_FILE"
 printf '%s' "$FAKE_CLAUDE_JSON"
 """
+READING_CLAUDE = """#!/bin/sh
+diff_path=$(printf '%s' "$2" | sed -n 's/^The changes to review are in \\(.*\\). Read that file.*/\\1/p')
+if [ -n "$diff_path" ]; then
+  case "$diff_path" in
+    "$PWD"/.model-review-*/change.diff) cat "$diff_path" > "$FAKE_CLAUDE_DIFF_FILE" ;;
+    *) printf '{"permission_denials":[{"tool_name":"Read","tool_input":{"file_path":"%s"}}]}' "$diff_path"; exit ;;
+  esac
+fi
+cat "$PWD/example.txt" > "$FAKE_CLAUDE_SOURCE_FILE"
+printf '%s' "$FAKE_CLAUDE_JSON"
+"""
 FAKE_AGY = """#!/bin/sh
 pwd > "$FAKE_AGY_CWD_FILE"
 [ -n "$FAKE_AGY_PROMPT_FILE" ] && printf '%s' "$2" > "$FAKE_AGY_PROMPT_FILE"
@@ -153,6 +164,60 @@ class ReviewWithModelTests(unittest.TestCase):
         disabled = {argv[i + 1] for i, arg in enumerate(argv) if arg == "--disable"}
         self.assertLessEqual({"plugins", "apps"}, disabled)
         self.assertEqual(argv[argv.index("-s") + 1], "read-only")
+
+    def test_anthropic_reads_source_and_diff_inside_checkout_and_cleans_its_scratch(self) -> None:
+        self.install("claude", READING_CLAUDE)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.repo)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "test@example.com"], check=True)
+        source = self.repo / "example.txt"
+        source.write_text("before\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "example.txt"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "base"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "update-ref", "refs/remotes/origin/main", "HEAD"], check=True)
+        diff_copy, source_copy = self.root / "diff-copy", self.root / "source-copy"
+        env = {"FAKE_CLAUDE_JSON": json.dumps({"result": "none"}),
+               "FAKE_CLAUDE_DIFF_FILE": str(diff_copy), "FAKE_CLAUDE_SOURCE_FILE": str(source_copy)}
+        code, result = self.review("anthropic", **env)
+        self.assertEqual((code, result["response"]), (0, "none"))
+        self.assertFalse(diff_copy.exists(), "a review with no changes needs no diff file")
+        source.write_text("after\n")
+        code, result = self.review("anthropic", **env)
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertIn("uncommitted", result["error"])
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qam", "change"], check=True)
+        leftover = self.repo / ".model-review-Ab12_cd" / "change.diff"
+        leftover.parent.mkdir()
+        leftover.write_text("another review's scratch")
+        code, result = self.review("anthropic", **env)
+        self.assertEqual((code, result["response"]), (0, "none"))
+        self.assertIn("+after", diff_copy.read_text())
+        self.assertEqual(source_copy.read_text(), "after\n")
+        self.assertEqual(list(self.repo.glob(".model-review-*")), [leftover.parent])
+        source_copy.unlink()
+        (self.repo / "untracked.txt").write_text("ordinary project file")
+        code, result = self.review("anthropic", **env)
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertIn("untracked", result["error"])
+        self.assertFalse(source_copy.exists(), "dirty reviews must not invoke the provider")
+        self.assertTrue(leftover.exists(), "another review's scratch stays intact")
+
+    def test_anthropic_denial_names_read_path_without_echoing_other_inputs(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        path = str(self.repo / ".model-review-example" / "change.diff")
+        denials = [{"tool_name": "Read", "tool_input": {"file_path": path, "contents": "private contents"}},
+                   {"tool_name": "Grep", "tool_input": {"path": str(self.repo), "pattern": "private pattern"}},
+                   {"tool_name": "Read"}]
+        code, result = self.review("anthropic", FAKE_CLAUDE_JSON=json.dumps({
+            "result": "none", "permission_denials": denials}))
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertIn({"tool": "Read", "path": path}, result["denied_targets"])
+        self.assertIn({"tool": "Grep", "path": str(self.repo)}, result["denied_targets"])
+        self.assertEqual(result["denied"], ["Grep", "Read"])
+        self.assertNotIn("private contents", json.dumps(result))
+        self.assertNotIn("private pattern", json.dumps(result))
+        self.assertNotIn("response", result)
+        self.assertFalse(list(self.repo.glob(".model-review-*")), "denials also clean scratch")
 
     def saved_command(self, command: str, status: int = 7) -> str:
         conversation = "12345678-1234-1234-1234-123456789abc"

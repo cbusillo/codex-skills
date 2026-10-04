@@ -27,26 +27,50 @@ else
 	done
 fi
 
-# The helper rewrites and checks origin only, so it pushes only there; another
-# remote or a URL could use the person's own SSH key or credentials.
+# Named remotes must be selected explicitly; never accept a URL as a push target.
+selected_remote=origin
+if [ "${1:-}" = --remote ]; then
+	if [ "$#" -lt 2 ]; then
+		echo "error: --remote requires a configured remote name" >&2
+		exit 1
+	fi
+	selected_remote=$2
+	case "$selected_remote" in
+	'' | -* | *[!a-zA-Z0-9_./-]*)
+		echo "error: --remote requires a configured remote name" >&2
+		exit 1 ;;
+	esac
+	shift 2
+	set -- "$selected_remote" "$@"
+fi
 repository_argument=
 next_is=
+end_options=false
 for argument in "$@"; do
-	case $next_is in
-	value) next_is= ; continue ;;
-	repository) repository_argument=$argument; break ;;
-	esac
+	if [ "$next_is" = value ]; then
+		next_is=
+		continue
+	fi
+	if [ "$end_options" = true ]; then
+		if [ -z "$repository_argument" ]; then repository_argument=$argument; fi
+		continue
+	fi
 	case $argument in
-	--repo=*) repository_argument=${argument#--repo=}; break ;;
-	--repo | --) next_is=repository ;;
+	--remote | --remote=*)
+		echo "error: use --remote NAME as the first two arguments, followed by push options and refspecs" >&2
+		exit 1 ;;
+	--repo | --repo=*)
+		echo "error: --repo overrides are unsupported; use --remote NAME" >&2
+		exit 1 ;;
+	--) end_options=true ;;
 	-o | --push-option | --receive-pack | --exec) next_is=value ;;
 	-*) ;;
-	*) repository_argument=$argument; break ;;
+	*) if [ -z "$repository_argument" ]; then repository_argument=$argument; fi ;;
 	esac
 done
-if [ "$repository_argument" != origin ]; then
-	echo "error: git-push-as-bot pushes only to origin; got '${repository_argument:-<none>}'" >&2
-	echo "hint: run git-push-as-bot [options] origin <refspec>" >&2
+if [ "$repository_argument" != "$selected_remote" ]; then
+	echo "error: git-push-as-bot pushes only to origin unless --remote NAME is supplied; got '${repository_argument:-<none>}'" >&2
+	echo "hint: run git-push-as-bot [options] origin <refspec>, or git-push-as-bot --remote NAME [options] <refspec>" >&2
 	exit 1
 fi
 
@@ -66,32 +90,53 @@ same_login() {
 	[ "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" ]
 }
 
-origin_url=$("$git_bin" remote get-url origin)
-case "$origin_url" in
+# get-url expands insteadOf rules. Restore the stored value, not that expansion.
+if ! stored_remote_url=$("$git_bin" config --get-all "remote.$selected_remote.url"); then
+	echo "error: no configured URL for remote '$selected_remote'; check git remote -v" >&2
+	exit 1
+fi
+case "$stored_remote_url" in
+'' | *'
+'*)
+	echo "error: selected remote must have exactly one stored URL" >&2
+	exit 1 ;;
+esac
+remote_url=$("$git_bin" remote get-url "$selected_remote")
+case "$remote_url" in
 git@github.com:*)
-	repo=${origin_url#git@github.com:}
+	repo=${remote_url#git@github.com:}
 	;;
 ssh://git@github.com/*)
-	repo=${origin_url#ssh://git@github.com/}
+	repo=${remote_url#ssh://git@github.com/}
 	;;
 https://github.com/*)
-	repo=${origin_url#https://github.com/}
+	repo=${remote_url#https://github.com/}
 	;;
 https://*@github.com/*)
-	repo=${origin_url#https://*@github.com/}
+	repo=${remote_url#https://*@github.com/}
 	;;
 *)
-	echo "error: origin remote is not a github.com URL supported by git-push-as-bot: $origin_url" >&2
+	echo "error: selected remote is not a supported github.com URL; refusing to push" >&2
 	exit 1
 	;;
 esac
 
 repo=${repo%.git}
+# Only an owner/repository pair can reach authentication or URL rewriting.
+case "$repo" in
+*/*) owner=${repo%%/*}; repository=${repo#*/} ;;
+*) owner=; repository= ;;
+esac
+case "$owner/$repository" in
+/* | */ | *[!a-zA-Z0-9_./-]* | ./* | ../* | */. | */.. | */*/*)
+	echo "error: selected remote must name a github.com owner/repository" >&2
+	exit 1 ;;
+esac
 https_url="https://github.com/$repo.git"
 
 # Select credentials the way the GitHub CLI wrapper does, so pushes and API writes
 # run as the same automation identity: a configured GitHub App comes first, with
-# the installation on origin's repository (each owner installs it separately).
+# the installation on the selected repository (each owner installs it separately).
 app_variable_count=0
 for app_variable in GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH; do
 	eval "app_variable_value=\${$app_variable:-}"
@@ -115,7 +160,7 @@ if [ "$app_variable_count" -gt 0 ]; then
 		exit 127
 	fi
 	# github_identity.CONTRIBUTOR_EXIT_STATUS: the App is not installed on
-	# origin and the account that registered it does not own it, so with the
+	# the selected repository and its registering account does not own it; with the
 	# caller's opt-in the person pushes as their own GitHub user, with the
 	# active gh login's token.
 	if [ "$app_auth_status" -eq 3 ]; then
@@ -190,7 +235,7 @@ askpass_dir=$(mktemp -d "${TMPDIR:-/tmp}/git-push-as-bot.XXXXXX")
 askpass=$askpass_dir/askpass
 
 cleanup() {
-	"$git_bin" remote set-url origin "$origin_url" >/dev/null 2>&1 || true
+	"$git_bin" remote set-url "$selected_remote" "$stored_remote_url" >/dev/null 2>&1 || true
 	rm -rf "$askpass_dir"
 }
 trap cleanup EXIT
@@ -209,13 +254,13 @@ esac
 EOF
 chmod 700 "$askpass"
 
-"$git_bin" remote set-url origin "$https_url"
+"$git_bin" remote set-url "$selected_remote" "$https_url"
 # A pushurl or an insteadOf rewrite (to SSH, for example) would push with
 # credentials other than the automation token.
-push_urls=$("$git_bin" remote get-url --push --all origin)
+push_urls=$("$git_bin" remote get-url --push --all "$selected_remote")
 if [ "$push_urls" != "$https_url" ]; then
-	echo "error: origin pushes to '$(printf '%s' "$push_urls" | tr '\n' ' ')', not only '$https_url'; refusing to push without the automation token" >&2
-	echo "hint: remove remote.origin.pushurl or the url.*.insteadOf rule that rewrites github.com HTTPS URLs" >&2
+	echo "error: $selected_remote pushes to '$(printf '%s' "$push_urls" | tr '\n' ' ')', not only '$https_url'; refusing to push without the automation token" >&2
+	echo "hint: remove remote.$selected_remote.pushurl or the url.*.insteadOf rule that rewrites github.com HTTPS URLs" >&2
 	exit 1
 fi
 # Git asks configured credential helpers before GIT_ASKPASS, and a helper such
