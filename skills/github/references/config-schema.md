@@ -339,10 +339,11 @@ Rules:
   disabled, unavailable, or unauthorized Launchplane access as reportable state,
   not as permission to bypass Launchplane with direct provider mutation.
 - Put cross-repo defaults in the workspace config, not in a single repo.
-- Project fields should reduce human lostness. Prefer `Focus`, `Manager`, and
-  `Finish Line`; avoid duplicating the whole issue body into fields.
-- Use `workflow.repo_managers` for repo-specific human ownership. Fall back to
-  `workflow.default_manager` only when a repo has no specific manager.
+- Projects display automatic issue metadata and native hierarchy. Do not maintain
+  Focus, Manager, Finish Line, Roadmap Start, or Roadmap Target during planning.
+- `project_fields` names support explicitly requested field edits. Legacy
+  `workflow.repo_managers` and `workflow.default_manager` are accepted for config
+  compatibility but no longer populate Project Manager on issue creation.
 - Manager values may be raw Project field values, GitHub handles, or explicit
   `person:<id>` references resolved through the `people` skill's private local
   `.local/people.yaml` contract when available. Raw values are never rewritten
@@ -356,5 +357,5 @@ Rules:
 - Keep recovery-critical handoff content in the owning GitHub issue or PR
   comment for GitHub-backed work. Local files matching configured temporary
   handoff globs are scratch unless intentionally committed as part of a PR.
-- Live manager routing belongs in the workspace `github-planning.json`; keep this
-  reference generic so ownership changes do not require doc edits.
+- Keep private people references in local configuration; this reference stays
+  generic so identity changes do not require doc edits.

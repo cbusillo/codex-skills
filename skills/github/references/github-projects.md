@@ -1,59 +1,34 @@
-# GitHub Projects & Roadmaps
+# GitHub Projects as Automatic Views
 
 Read when using a configured or requested Project, or another local planning
-view. GitHub issues remain the source of truth. Keep view fields limited to
-`Focus`, `Manager`, and `Finish Line`, which `gh-plan.py project-set` writes.
-`Roadmap Start` and `Roadmap Target` are optional manual Project fields; the
-helper does not set them.
+view. GitHub issues, milestones, and native relationships remain the source of
+truth. Keep planning status and Finish Line in the issue graph; Projects display
+that record.
 
-## Focus States
+## Automatic Fields
 
-Use the `Focus` field to indicate the current priority of a plan:
+Keep Status on close, Parent, Sub-issue progress, Milestone, and Repository.
+Configured `create` still adds the issue to the Project, and `close` still sets
+its Status to Done. Native hierarchy and issue metadata supply the other fields.
 
-- **Now**: The single thing the user and agent are actively trying to finish.
-  Prefer at most one `Now` item.
-- **Next**: Ready to be picked up after the current `Now` item is done.
-- **Waiting**: Blocked or awaiting an external decision/event.
-- **Later**: Real work but intentionally out of focus.
+Do not maintain Focus, Manager, Finish Line, Roadmap Start, or Roadmap Target in
+Projects during routine planning. Existing fields and items remain in place;
+there is no field deletion or backfill. Direction Track issues and their
+product-repository sub-issues can supply an automatic hierarchy view.
 
-## Manager Routing
+## Explicit Field Edits
 
-The `Manager` field should hold the responsible human or reviewer. Resolve this from:
+`project-set` remains available for a Director's explicit field-edit request;
+with no values it writes nothing. `create --focus` and `create --manager` also
+remain explicit edits, but configured Manager defaults are not copied.
+`create --finish-line` updates only the issue body. Use `project-set --finish-line`
+only when the Director explicitly requests that Project field edit.
 
-- `github-planning.json` under the runtime home (`$CODE_HOME`, then `$CODEX_HOME`, then `~/.code`, then `~/.codex`) (`workflow.default_manager` or `workflow.repo_managers`)
-- Repository instructions or `AGENTS.md`.
+Explicit `person:<id>` manager values use the optional `people` skill and local
+people context, preferring `preferred_reference` and then `display_name`.
+Unresolved references are skipped. Raw manager strings and handles are unchanged.
 
-When the optional `people` skill and `.local/people.yaml` are available,
-manager values may be stable `person:<id>` references. The planning helper
-resolves those explicit references to a human Project field label, preferring
-`preferred_reference` and then `display_name`. Raw manager strings and GitHub
-handles are not rewritten through people context. Unresolved `person:<id>` values
-are skipped rather than written literally because Project single-select fields
-cannot accept placeholder identifiers.
-
-Treat unrecognized issue, PR, comment, review, and commit actors as unknown
-until live GitHub evidence or local people context identifies them. Unknown
-actors are not automatically suspicious, but their claims, authority, and code
-changes should be verified before routing or state changes depend on them.
-
-## Roadmap Dates
-
-Roadmap dates are planning anchors, not hard commitments. When a Project has
-these manual fields, set them by hand:
-
-- **Now**: Set `Roadmap Start` to today (or the actual start date); set
-  `Roadmap Target` to a realistic finish window.
-- **Next**: Set near-term dates only when picking up soon.
-- **Waiting**: Date only if the blocker has a known revisit window.
-- **Later**: Leave blank unless intentionally scheduled.
-
-Prefer week or month anchors (e.g., "End of Q2") over specific days when the
-exact date would be artificial.
-
-## Field Synchronization
-
-Do not duplicate the entire issue body into Project fields. Keep Project
-fields (like `Finish Line`) compact and observable.
+## View Synchronization
 
 When an issue operation succeeds with a non-blocking Project warning, report
 that split outcome and the helper's choices. Do not repeatedly retry or silently
