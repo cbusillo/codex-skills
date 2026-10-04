@@ -31,7 +31,10 @@ output includes `github.diagnostics.components` with request IDs, quota headers,
 observed/expected actor identity when active-auth fallback occurs, and explicit
 degraded components. A missing or unauthorized GitHub component
 does not erase the rest of the snapshot; do not treat an unavailable component
-as an empty authoritative result.
+as an empty authoritative result. Launchplane routing metadata with a string
+`context` is reported under `launchplane.routing`; helper-object metadata stays
+under `launchplane.context`. Invalid Launchplane metadata carries warnings.
+A failed JSON projection returns nonzero instead of an empty successful snapshot.
 
 Summarize only actionable state:
 
