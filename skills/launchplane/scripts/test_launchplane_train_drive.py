@@ -184,6 +184,16 @@ class TrainDriveTests(unittest.TestCase):
         self.assertEqual((outcome, events[-1][1]["landing_sha"]), ("landed", "sha-7"))
         self.assertEqual(events[-1][1]["companion_evidence"], "unavailable")
 
+    def test_malformed_candidate_check_response_emits_error(self) -> None:
+        train = FakeTrain([_response("candidate_failed", candidate={"candidate_sha": "abc"})])
+        io = train.io()
+        io.failing_checks = lambda *_args: (_ for _ in ()).throw(train_drive.github_read.GitHubReadShapeError("missing check_runs"))
+        events = []
+        outcome = train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10000), io,
+                                    lambda event, payload: events.append((event, payload)))
+        self.assertEqual(outcome, "error")
+        self.assertEqual(events[-1][1]["read_failure_cause"], "invalid_response")
+
     def test_final_landing_reads_have_one_fixed_grace_deadline(self) -> None:
         with patch.object(train_drive.github_read, "GitHubReader") as reader_class:
             io = train_drive.live_io(180, deadline_at=1000)

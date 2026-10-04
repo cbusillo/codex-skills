@@ -109,12 +109,15 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
     state = DriveState(batch={settings.number})
     try:
         return _drive(settings, io, state, emit)
-    except github_read.GitHubReadError as error:
-        detail = {"read_failure_cause": error.result.failure.cause if error.result.failure else "read_failed",
-                  "request_id": error.result.request_id}
+    except (github_read.GitHubReadError, github_read.GitHubReadShapeError) as error:
+        if isinstance(error, github_read.GitHubReadError):
+            detail = {"read_failure_cause": error.result.failure.cause if error.result.failure else "read_failed",
+                      "request_id": error.result.request_id}
+        else:
+            detail = {"read_failure_cause": "invalid_response"}
         if settings.number in state.landed:
             return _stop(settings, state, emit, "landed", companion_evidence="unavailable", **detail)
-        return _stop(settings, state, emit, "error", reason="GitHub read refused", **detail)
+        return _stop(settings, state, emit, "error", reason="GitHub read unavailable", **detail)
 
 
 def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callable[[str, dict[str, Any]], None]) -> str:
