@@ -361,7 +361,10 @@ identify arbitrary writers or prove that ignored files are quiet.
   For `stale_results` and `inspection_inputs_changed`, `unknown_diagnosis`
   separates proven snapshot invalidation from unproven source-edit or process
   attribution. Do not blame an agent or source edit without changed-file or
-  process evidence.
+  process evidence. Disk/PSI validation diagnostics keep synchronization recovery
+  in `next_action`, even after the bounded retry ends: resolve the scoped file,
+  save intended editor changes, and use Reload from Disk in the exact IDE project
+  or rewrite with an updated modification time before a fresh assessment.
   A bounded internal retry may extend to the stricter policy of a later UNKNOWN
   result, such as `stale_results` followed by `project_analysis_not_ready`; all
   attempts remain part of one terminal assessment and stop at the latest policy.
