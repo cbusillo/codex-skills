@@ -2961,6 +2961,8 @@ def test_protected_artifacts_read_empty_invalid_and_denied() -> None:
         lambda body: body["protected_artifacts"].update(entries="bad"),
         lambda body: body["protected_artifacts"].update(warnings="bad"),
         lambda body: body["protected_artifacts"]["entries"][0].update(artifact_id="Bearer abcdefghijklmnop"),
+        lambda body: body["protected_artifacts"]["entries"][0].update(artifact_id="user:pass@private-host/app"),
+        lambda body: body["protected_artifacts"].update(warnings=["Protected artifact user:pass@private-host/app has no manifest."]),
         lambda body: body.update(unexpected="private-field"),
     ):
         body = _protected_artifacts_response()

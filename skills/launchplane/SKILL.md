@@ -679,7 +679,8 @@ operation map rather than adding duplicate literals.
 The merge-train policy import, repository inventory, product expected configuration,
 generic-web deploy-recovery, Odoo addon-settings, integration-allowances,
 testing-hold, product-repository-identity, product-environment-read,
-product-activity-read, protected-artifacts-read, product-profile-read, path-check, preview-history-read,
+product-activity-read, protected-artifacts-read, product-profile-read, path-check,
+preview-history-read,
 reconcile-requests-read, product-secret-bindings-read,
 target-replacement-operation-read, target-replacement-plan-read, `product-owner-*`,
 `product-image-repository-*`, `dokploy-target-create-compose-*`,
@@ -1032,8 +1033,9 @@ verification.
   (`protected-artifacts-read --product P [--context C]`) of protected artifacts:
   per-entry reason, context, instance, artifact id, source record type and id,
   and image digest. It returns sanitized warning texts, total entry and warning
-  counts, and truncation flags. Images, URLs and other provider fields are
-  dropped. Use this diagnostic projection to explain retention; truncated
+  counts, and truncation flags. Image reference lists, URLs and other provider fields are
+  dropped. Artifact ids may themselves be image references; credential-bearing
+  registry userinfo is refused. Use this diagnostic projection to explain retention; truncated
   output is not a complete retention set for registry cleanup.
 - `GET /v1/product-profiles/{product}`: Bounded local-extension read
   (`product-profile-read --product`) for who a product's Client is and its

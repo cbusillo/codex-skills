@@ -2559,6 +2559,19 @@ PROTECTED_ARTIFACTS_MAX_ENTRIES = 100
 PROTECTED_ARTIFACTS_MAX_WARNINGS = 50
 
 
+
+def _protected_artifact_identifier(value: object) -> str:
+    artifact_id = _project_artifact_reference(value)
+    if re.match(r"^[^/]*:[^/]*@", artifact_id):
+        raise LaunchplaneSafetyError("invalid_response")
+    return artifact_id
+
+
+def _protected_artifact_warning(value: object) -> str:
+    if isinstance(value, str) and re.search(r"(?:^|\s)[^/\s]*:[^/\s]*@", value):
+        raise LaunchplaneSafetyError("invalid_response")
+    return public_operator_text(value)
+
 def _project_protected_artifacts(value: object) -> dict[str, object]:
     source = _require_dict(value)
     entries = source.get("entries")
@@ -2572,7 +2585,7 @@ def _project_protected_artifacts(value: object) -> dict[str, object]:
             "reason": public_code(entry.get("reason")),
             "context": public_identifier(entry.get("context")),
             "instance": _optional_identifier(entry.get("instance")),
-            "artifact_id": _project_artifact_reference(entry.get("artifact_id")),
+            "artifact_id": _protected_artifact_identifier(entry.get("artifact_id")),
             "source_record_type": public_code(entry.get("source_record_type")),
             "source_record_id": public_identifier(entry.get("source_record_id")),
             "image_digest": _optional_identifier(entry.get("image_digest")),
@@ -2583,7 +2596,7 @@ def _project_protected_artifacts(value: object) -> dict[str, object]:
         "entries": projected_entries,
         "entry_count": len(entries),
         "entries_truncated": len(entries) > PROTECTED_ARTIFACTS_MAX_ENTRIES,
-        "warnings": [public_operator_text(warning) for warning in warnings[:PROTECTED_ARTIFACTS_MAX_WARNINGS]],
+        "warnings": [_protected_artifact_warning(warning) for warning in warnings[:PROTECTED_ARTIFACTS_MAX_WARNINGS]],
         "warning_count": len(warnings),
         "warnings_truncated": len(warnings) > PROTECTED_ARTIFACTS_MAX_WARNINGS,
     }
