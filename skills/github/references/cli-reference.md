@@ -551,7 +551,7 @@ retrying until planning stalls.
 - `next [--milestone <number-or-title>] [--limit <n>] [--scan-limit <n>]`:
   Rank actionable open plans without mutating labels, relationships, milestones,
   Projects, or workflows. Native `blocked-by` relationships are authoritative.
-- The command excludes done, stale, waiting, Later-focus, inconsistently
+- The command excludes done, stale, waiting, inconsistently
   `plan:blocked`, dependency-unknown, and parent plans with open sub-issues. Each
   exclusion includes a normalized reason and dependency evidence when present.
 - Configured Project Focus and milestone state/due date are advisory ranking and
@@ -585,7 +585,7 @@ including when the command runs elsewhere with `--repo`. In milestone order,
 it walks the open `Track:` plans through native blockers and sub-issues, across
 repository owners as well as repositories. Waiting summary labels on these tracking
 containers do not hide their linked work. Ordinary waiting, stale, completed,
-Later-focus, and inconsistently blocked plans remain excluded. Tracking issues
+and inconsistently blocked plans remain excluded. Tracking issues
 without open work are reported, never selected as implementation tasks.
 
 Global candidates have `repo`, `number`, overall `milestone`, `issue_milestone`,
@@ -691,7 +691,7 @@ No `next` mode mutates planning state or authorizes execution.
 entry point for service consumers such as Launchplane. It accepts tracking
 roots, ordered milestone titles, completed milestone titles, a node reader,
 and the scan bound. The same module's `evaluate_direction_node` classifies raw
-issue, relationship, label and Focus evidence, including Current Status waits;
+issue, relationship and label evidence, including Current Status waits;
 `rank_next_candidates` supplies the common ordering for local and global calls.
 Bounded readers must pass `truncated_relationships` or `relationship_error`
 to the classifier when their evidence is incomplete; it then returns an unknown

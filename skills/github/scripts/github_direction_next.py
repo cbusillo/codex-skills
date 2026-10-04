@@ -204,11 +204,8 @@ def evaluate_next_plan(
             "evidence": [],
             "inconsistency": True,
         }
-    normalized_focus = focus.casefold() if isinstance(focus, str) else None
-    if status == "waiting" or normalized_focus == "waiting":
+    if status == "waiting":
         return "excluded", {**base, "exclusion": "waiting", "evidence": []}
-    if normalized_focus == "later":
-        return "excluded", {**base, "exclusion": "later_focus", "evidence": []}
     open_sub_issues = summary["open_sub_issues"]
     if open_sub_issues:
         return "excluded", {
@@ -346,7 +343,7 @@ def include_parent_context(
     for parent in parents:
         if (parent["repo"].casefold(), parent["number"]) in tracking:
             continue
-        if parent.get("exclusion") in {"waiting", "later_focus", "label_blocked_without_native_edge"}:
+        if parent.get("exclusion") in {"waiting", "label_blocked_without_native_edge"}:
             return {**result, "exclusion": "parent_waiting", "waiting_on_parent": parent["url"]}
     return result
 
@@ -704,7 +701,6 @@ def evaluate_direction_node(
     summary = next_relationship_summary(relationships or {})
     if (
         next_plan_status(issue, config) == "waiting"
-        or (focus or "").casefold() == "waiting"
         or re.search(r"(?im)^\s*State:\s*(?:waiting|parked)\b", status_text)
         or (reports and not (summary["open_blockers"] or summary["open_sub_issues"]))
     ):
@@ -811,7 +807,7 @@ def rank_direction_work(
                 "reported_by": item["url"],
                 "reported_at": item.get("updated_at"),
             })
-        if reason in {"waiting", "later_focus", "label_blocked_without_native_edge"} and not tracking:
+        if reason in {"waiting", "label_blocked_without_native_edge"} and not tracking:
             excluded.append(item)
             degraded += reason == "label_blocked_without_native_edge"
             continue

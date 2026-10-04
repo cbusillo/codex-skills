@@ -339,8 +339,8 @@ checks below as relevant.
 ## Plan Hygiene
 
 - Use `github-plan` plus the sibling `github` helpers to update the active
-  issue's `Current Status`, finish line, blockers, and automatic Project Status
-  before parking work.
+  issue's `Current Status`, finish line, labels, and blockers before parking
+  work. Projects display that record; the close flow sets automatic Status.
 - For issue-backed work that is resolved without a merged PR, close the owning
   issue with a concise evidence-backed comment, or leave it open with the current
   blocker and next action. Do not rely on a local summary as the only record.

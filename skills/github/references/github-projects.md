@@ -13,8 +13,8 @@ its Status to Done. Native hierarchy and issue metadata supply the other fields.
 
 Do not maintain Focus, Manager, Finish Line, Roadmap Start, or Roadmap Target in
 Projects during routine planning. Existing fields and items remain in place;
-there is no field deletion or backfill. Project #4 (Code Plans) is an automatic
-view of the direction Track issues and their product-repository sub-issues.
+there is no field deletion or backfill. Direction Track issues and their
+product-repository sub-issues can supply an automatic hierarchy view.
 
 ## Explicit Field Edits
 

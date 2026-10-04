@@ -1429,52 +1429,12 @@ def test_repo_config_path_skips_missing_home_candidate() -> None:
     assert checked == [], checked
 
 
-def test_manager_for_repo_passes_raw_values_without_people_resolver() -> None:
-    plan = load_plan_module()
-    original_resolver = plan.PEOPLE_RESOLVER
-    plan.PEOPLE_RESOLVER = Path("/tmp/not-present-people-resolver.py")
-    try:
-        manager = plan.manager_for_repo(
-            {
-                "workflow": {
-                    "default_manager": "@default",
-                    "repo_managers": {"owner/repo": "@repo-manager"},
-                }
-            },
-            "owner/repo",
-        )
-    finally:
-        plan.PEOPLE_RESOLVER = original_resolver
-
-    assert manager == "@repo-manager"
-
-
-def test_manager_for_repo_skips_unresolved_person_ref() -> None:
-    plan = load_plan_module()
-    original_resolver = plan.PEOPLE_RESOLVER
-    plan.PEOPLE_RESOLVER = Path("/tmp/not-present-people-resolver.py")
-    try:
-        manager = plan.manager_for_repo(
-            {"workflow": {"default_manager": "person:example-manager"}},
-            "owner/repo",
-        )
-    finally:
-        plan.PEOPLE_RESOLVER = original_resolver
-
-    assert manager is None
-
-
 def test_explicit_unresolved_person_manager_is_skipped() -> None:
     plan = load_plan_module()
     original_resolver = plan.PEOPLE_RESOLVER
     plan.PEOPLE_RESOLVER = Path("/tmp/not-present-people-resolver.py")
     try:
         assert plan.resolve_required_manager_value("person:example-manager") is None
-        assert plan.selected_manager_value(
-            "person:example-manager",
-            {"workflow": {"default_manager": "Code", "repo_managers": {}}},
-            "owner/repo",
-        ) is None
     finally:
         plan.PEOPLE_RESOLVER = original_resolver
 
@@ -1517,7 +1477,7 @@ def test_raw_manager_values_do_not_resolve_through_people() -> None:
         plan.subprocess.run = original_run
 
 
-def test_manager_for_repo_resolves_person_ref_to_project_label_when_available() -> None:
+def test_explicit_manager_resolves_person_ref_to_project_label_when_available() -> None:
     plan = load_plan_module()
     original_resolver = plan.PEOPLE_RESOLVER
     original_run = plan.subprocess.run
@@ -1546,15 +1506,7 @@ def test_manager_for_repo_resolves_person_ref_to_project_label_when_available() 
 
     plan.subprocess.run = fake_run
     try:
-        manager = plan.manager_for_repo(
-            {
-                "workflow": {
-                    "default_manager": "person:example-manager",
-                    "repo_managers": {},
-                }
-            },
-            "owner/repo",
-        )
+        manager = plan.resolve_required_manager_value("person:example-manager")
     finally:
         plan.PEOPLE_RESOLVER = original_resolver
         plan.subprocess.run = original_run
@@ -6792,12 +6744,10 @@ def main() -> None:
         test_plan_rest_command_context_and_limit_validation,
         test_project_commands_are_recoverable,
         test_repo_config_path_skips_missing_home_candidate,
-        test_manager_for_repo_passes_raw_values_without_people_resolver,
-        test_manager_for_repo_skips_unresolved_person_ref,
         test_explicit_unresolved_person_manager_is_skipped,
         test_person_resolution_requires_uv,
         test_raw_manager_values_do_not_resolve_through_people,
-        test_manager_for_repo_resolves_person_ref_to_project_label_when_available,
+        test_explicit_manager_resolves_person_ref_to_project_label_when_available,
         test_create_uses_rest_dedupe_and_shared_issue_create,
         test_create_project_enrollment_does_not_copy_manual_fields,
         test_project_set_without_values_does_not_read_or_write_project,

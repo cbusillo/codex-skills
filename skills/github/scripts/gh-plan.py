@@ -1085,12 +1085,6 @@ def labels(config: dict[str, Any], *keys: str) -> list[str]:
     return [config["labels"][key] for key in keys]
 
 
-def manager_for_repo(config: dict[str, Any], repo: str) -> str | None:
-    workflow = config.get("workflow") or {}
-    repo_managers = workflow.get("repo_managers") or {}
-    return resolve_manager_value(repo_managers.get(repo) or workflow.get("default_manager"))
-
-
 def resolve_manager_value(value: Any) -> str | None:
     if not value:
         return None
@@ -1105,12 +1099,6 @@ def resolve_manager_value(value: Any) -> str | None:
 def resolve_required_manager_value(value: Any) -> str | None:
     raw_value = str(value).strip() if value else ""
     return resolve_manager_value(raw_value)
-
-
-def selected_manager_value(explicit_value: Any, config: dict[str, Any], repo: str) -> str | None:
-    if explicit_value:
-        return resolve_required_manager_value(explicit_value)
-    return manager_for_repo(config, repo)
 
 
 def resolve_person_for_project(value: str) -> str | None:
