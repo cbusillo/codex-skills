@@ -151,6 +151,31 @@ the `github` skill's authentication rules. Keep GitHub issues as the durable
 record; never bypass an ownership or dependency refusal by changing tools or
 identities.
 
+## Agent Assignment
+
+`agent:claude` and `agent:codex` route an issue to that agent family. An
+unlabeled issue is available to either family; a specific model stays in issue
+text. `ensure-labels` creates both routing labels alongside the planning labels.
+Apply assignments only after the installed skills support this convention.
+
+`next --agent claude|codex` selects that family and unlabeled issues, and reports
+other-family issues as `assigned_elsewhere`. Without the flag, the helper detects
+the active harness from session environment markers (Codex takes precedence in
+a Codex child launched from Claude). When detection is unavailable or both routing
+labels are present, labeled issues remain excluded; identify the running family
+with `--agent`, or resolve the conflicting assignment.
+
+Before `go`, `claim` checks the labels again and stops on a mismatch, naming the
+label. An explicit Director override for this session permits
+`claim --agent-override "<recorded decision or user instruction>"`; the reason is
+recorded in the claim and does not change the assignment or other claim gates.
+Do not use `--agent` to impersonate the assigned family.
+
+Assign new issues with `gh-plan.py create ... --agent claude|codex` or
+`gh-issue create ... --agent claude|codex`. Creation ensures the requested label
+exists and rejects conflicting family labels. It never infers an assignment
+from the authoring harness.
+
 ## Choose Work
 
 Check known repository-wide Director holds before selection or implementation;

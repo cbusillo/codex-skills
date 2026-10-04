@@ -105,6 +105,32 @@ class ClaimTests(unittest.TestCase):
         self.assertFalse(output["exclusive_lock"])
         self.assertEqual(output["session_coverage"]["codex"]["status"], "unavailable")
 
+    def test_agent_mismatch_stops_before_any_write_in_both_directions(self):
+        for family, other in (("codex", "claude"), ("claude", "codex")):
+            self.setUp()
+            self.args.agent = family
+            self.issue["labels"] = [{"name": f"agent:{other}"}]
+            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                self.run_claim()
+            self.assertIn(f"agent:{other}", str(caught.exception))
+            self.assert_no_writes()
+
+    def test_explicit_agent_override_is_recorded_without_changing_assignment(self):
+        self.args.agent = "codex"
+        self.args.agent_override = "Director authorized this Codex session"
+        self.issue["labels"] = [{"name": "agent:claude"}]
+        self.run_claim()
+        self.assertIn(self.args.agent_override, self.comments[0]["body"])
+        self.assertIn("agent:claude", PLAN.normalize_labels(self.issue["labels"]))
+
+    def test_assignment_changed_during_claim_retains_release_recovery(self):
+        self.args.agent = "codex"
+        self.after_post = lambda: self.issue.update(labels=[{"name": "agent:claude"}])
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.payload["claim_recovery"]["release_own_claim"]["body"], "Released claim 1")
+        self.assertNotIn("status", self.events)
+
     def test_current_status_owner_refuses_before_writes(self):
         self.issue["body"] += CLAIM.marker(OTHER)
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:

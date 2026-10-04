@@ -24,7 +24,10 @@ updates use `github-plan`; for reviews use `model-review` when the review
 reference calls for one.
 
 Before recommending or starting an item, apply
-[Choose Work](../github-plan/SKILL.md#choose-work), including its ownership check.
+[Choose Work](../github-plan/SKILL.md#choose-work), including its ownership check and
+[agent assignment](../github-plan/SKILL.md#agent-assignment). `go` stops when
+`claim` reports another family’s label unless the Director explicitly overrides
+it for that session.
 Report higher-ranked work already underway separately from the next
 independent item available to this session.
 
