@@ -4145,12 +4145,16 @@ def summarize_http_error(
         "error_code": public_code(error.get("code"), default=status),
         "recommendation": http_error_recommendation(status),
     }
-    if operation == "privileged-policy-propose" and exc.code in {404, 409}:
-        payload["status"] = "unsupported" if exc.code == 404 else "conflict"
+    if operation == "privileged-policy-propose" and exc.code in {404, 409, 502, 503, 504}:
+        payload["status"] = (
+            "unsupported" if exc.code == 404 else "conflict" if exc.code == 409 else "outcome_unknown"
+        )
         payload["summary"]["recommendation"] = (
             "The deployed service has no supported proposal route. Wait for service delivery; do not switch identity or transport."
             if exc.code == 404
             else "This source event conflicts with an existing request. Restore the original envelope, or use a fresh source event only for an intentional new proposal."
+            if exc.code == 409
+            else "Retain and re-run the identical private envelope and source event. A gateway error does not prove that the plan was not saved."
         )
     message = (
         "Launchplane read was rejected; inspect the trace in an approved operator surface."
@@ -6009,7 +6013,11 @@ def execute_post(
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
-        if isinstance(exc, http.client.HTTPException) and operation != "privileged-policy-propose":
+        if (
+            isinstance(exc, http.client.HTTPException)
+            and not isinstance(exc, OSError)
+            and operation != "privileged-policy-propose"
+        ):
             raise
         if operation == "privileged-policy-propose":
             payload = unavailable_payload(operation=operation, request=request, status="outcome_unknown", code="proposal_transport_uncertain", message="The proposal response was interrupted; this does not prove a service outage or an unsaved plan.")

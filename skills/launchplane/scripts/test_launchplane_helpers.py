@@ -1198,7 +1198,10 @@ def test_controller_block_and_reconciliation_preserve_durable_diagnostics() -> N
 
 
 def test_controller_client_timeout_is_not_a_service_outage_and_never_retries() -> None:
-    for error in (TimeoutError("timed out"), urllib.error.URLError(TimeoutError("timed out"))):
+    for error in (
+        TimeoutError("timed out"),
+        urllib.error.URLError(TimeoutError("timed out")),
+    ):
         for mutate in (False, True):
             status, payload = _run_controller_response(error, mutate=mutate, timeout=7.5)
             assert status == 1
@@ -1206,9 +1209,13 @@ def test_controller_client_timeout_is_not_a_service_outage_and_never_retries() -
             assert payload["summary"]["timeout_seconds"] == 7.5
             assert payload["warnings"][0]["code"] == "client_timeout"
             assert "7.5 s" in payload["warnings"][0]["message"]
-    status, payload = _run_controller_response(urllib.error.URLError("connection refused"))
-    assert status == 1
-    assert payload["warnings"][0]["code"] == "provider_unavailable"
+    for error in (
+        urllib.error.URLError("connection refused"),
+        http.client.RemoteDisconnected("remote disconnected"),
+    ):
+        status, payload = _run_controller_response(error)
+        assert status == 1
+        assert payload["warnings"][0]["code"] == "provider_unavailable"
 
 
 def _conflict_probe_response(probe: object, action: str = "plan_candidate") -> dict[str, Any]:
@@ -7640,6 +7647,9 @@ def test_privileged_policy_propose_rejects_malformed_result_without_echoing_priv
         (403, "denied"),
         (409, "conflict"),
         (404, "unsupported"),
+        (502, "outcome_unknown"),
+        (503, "outcome_unknown"),
+        (504, "outcome_unknown"),
     ],
 )
 def test_privileged_policy_propose_failure_reports_safe_reconciliation(
