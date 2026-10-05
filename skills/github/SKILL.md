@@ -673,7 +673,7 @@ policy:
       match:
         shell_regex: "(?:^|[;&|(`\\n]|\\s-[A-Za-z]*c\\s+['\"])\\s*(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+|(?:command|exec|time|nohup|env)\\s+)*(?:\\S*/)?git(?:\\s+(?:-[cC]\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"])+|--(?:git-dir|work-tree|namespace|config-env|exec-path|super-prefix|attr-source)(?:=|\\s+)(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"])+|--[a-z][a-z-]*(?:=(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"])+)?|-[pP]))*\\s+(?:merge(?!\\s+--ff-only(?=\\s|$)(?![^;&|\\n]*\\s--(?:ff|no-ff)(?:\\s|$)))|pull|rebase|cherry-pick|revert|am)(?![\\w-])(?!\\s+--(?:abort|quit)\\s*(?:$|[;&|\\n]))"
       action: require_preferred
-      message: These Git commands can create commits with the local human identity. For an authorized PR base update use gh-pr.py update-branch; for local integration run git-commit-as-bot --git-command COMMAND from the target directory, including continuations after conflicts. Existing branch and landing authorization still applies.
+      message: These Git commands can create commits with the local human identity. For a PR base update first apply the branch ownership and authorization checks in references/repo-workflow.md Merge Readiness, then use gh-pr.py update-branch; for local integration run git-commit-as-bot --git-command COMMAND from the target directory, including continuations after conflicts. For non-creating sync, use git fetch then git merge --ff-only. Existing branch and landing authorization still applies.
       preferred:
         - kind: script
           path: scripts/gh-pr.py
@@ -784,7 +784,9 @@ and say why.
   explicit `--head BRANCH`.
 - **Commits and pushes** by Code or spawned agents: `scripts/git-commit-as-bot`
   and `scripts/git-push-as-bot`.
-  For a PR base update, use `gh-pr.py update-branch`. For local integration,
+  Before a PR base update, apply the ownership and authorization checks in
+  [Merge Readiness](references/repo-workflow.md#merge-readiness), then use
+  `gh-pr.py update-branch`. For local integration,
   use `git-commit-as-bot --git-command merge|pull|rebase|cherry-pick|revert|am`
   from the target directory, followed by that command's arguments, including
   `--continue` after resolving

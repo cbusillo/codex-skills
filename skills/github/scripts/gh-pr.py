@@ -626,7 +626,7 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
             "PR head is behind a base that requires up-to-date branches",
             failure=github_api_core.FailureDetail(
                 cause="update_behind_branch",
-                message=f"Run gh-pr.py --repo {repo} update-branch {number}, wait for required checks on the new head, then follow the repository landing flow.",
+                message=f"First verify branch ownership and update authorization under repo-workflow.md Merge Readiness; then run gh-pr.py --repo {repo} update-branch {number}, wait for required checks on the new head, and follow the repository landing flow.",
                 retryable=False,
                 fallback_eligible=False,
                 disposition="stop",

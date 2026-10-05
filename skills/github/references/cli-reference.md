@@ -253,7 +253,9 @@ also include the shared `api_result` diagnostics envelope.
 - `scripts/gh-pr.py checks <pr>`: Show check runs and commit statuses
   for the PR head.
 - `scripts/gh-pr.py update-branch <pr> [--wait-seconds 0..60]`: Merge the base
-  into the PR branch through the automation identity using GitHub's
+  into the PR branch after the ownership and authorization checks in
+  [Merge Readiness](repo-workflow.md#merge-readiness), through the automation
+  identity using GitHub's
   [update-branch API](https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request-branch)
   and the freshly read `expected_head_sha`. The App also needs Contents write
   on the head repository. The helper observes the asynchronous update for up

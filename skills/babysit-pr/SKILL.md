@@ -126,8 +126,8 @@ For each snapshot:
    `../github/scripts/gh-pr.py view <pr>` that `headRepository` matches the PR
    repository, the head branch is automation-owned, and its diff stays within
    the approved change. Then run
-   `../github/scripts/gh-with-env-token pr update-branch <pr>` and watch the
-   new head. Never update a fork or someone else's branch without approval
+   `../github/scripts/gh-pr.py update-branch <pr>`, which observes the
+   asynchronous update, and watch checks on the new head. Never update a fork or someone else's branch without approval
    from the person it belongs to.
 6. **Evidence still settling**: `check_evidence_incomplete` means check counts
    cannot prove a terminal round; do not rerun from it. `review_readiness_unavailable`
