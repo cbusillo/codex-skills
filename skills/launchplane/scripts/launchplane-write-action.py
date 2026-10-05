@@ -3872,7 +3872,7 @@ def _error_payload_from_http(exc: urllib.error.HTTPError) -> dict[str, object]:
     try:
         raw = exc.read().decode()
         parsed = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError, http.client.HTTPException, OSError):
         parsed = {}
     return parsed if isinstance(parsed, dict) else {}
 
@@ -5636,11 +5636,17 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
     path = helper_command_path(operation)
 
     def call(mode: str) -> tuple[dict[str, object], dict[str, Any]]:
-        raw = request_launchplane(
-            service_url=settings["service_url"], path=path, settings=settings,
-            body={**body, "mode": mode}, timeout=args.timeout,
-            idempotency_key=args.idempotency_key if mode == "apply" else "",
-        )
+        nonlocal known_trace
+        try:
+            raw = request_launchplane(
+                service_url=settings["service_url"], path=path, settings=settings,
+                body={**body, "mode": mode}, timeout=args.timeout,
+                idempotency_key=args.idempotency_key if mode == "apply" else "",
+            )
+        except ValueError:
+            raise LaunchplaneSafetyError("invalid_response") from None
+        if mode == "apply":
+            known_trace = public_trace_id(raw.get("trace_id"))
         if raw.get("status") != "accepted":
             raise LaunchplaneSafetyError("invalid_response")
         result = _runtime_sync_result(raw.get("result"), mode=mode)
