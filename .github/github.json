@@ -93,6 +93,9 @@
     ],
     "test": {
       "default": "./scripts/validate-skills.sh"
+    },
+    "syntax": {
+      "python": "uv run --python 3.12 python -m compileall -q skills scripts hooks evals"
     }
   },
   "importantWorkflows": [
