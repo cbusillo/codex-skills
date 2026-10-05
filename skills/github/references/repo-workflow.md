@@ -427,7 +427,8 @@ Before merging any PR, do a fresh PR read and account for feedback:
 If the fresh PR state is `BEHIND`, first use `gh-pr.py view` to verify
 `headRepository` matches the PR repository, the head branch is automation-owned,
 and its own diff remains within the approved change. Then use
-`scripts/gh-with-env-token pr update-branch <pr>` before attempting merge.
+`scripts/gh-pr.py update-branch <pr>` before attempting merge; the helper
+observes the asynchronous update.
 Re-read the PR to capture the new head SHA, then use `babysit-pr` to wait for
 checks and review evidence on that exact head. A check result for the old head
 does not qualify the updated branch. Do not update a fork or another person's
