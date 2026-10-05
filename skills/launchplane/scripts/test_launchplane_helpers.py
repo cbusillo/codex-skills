@@ -1044,6 +1044,7 @@ def test_invalid_private_payload_does_not_expose_path() -> None:
 
 
 @pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize("root_alias", [False, True])
 @pytest.mark.parametrize(
     ("spelling", "repo_local"),
     [
@@ -1058,7 +1059,7 @@ def test_invalid_private_payload_does_not_expose_path() -> None:
 )
 def test_private_payload_placement_through_symlinks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str,
-    repo_local: bool, relative: bool,
+    repo_local: bool, relative: bool, root_alias: bool,
 ) -> None:
     fixture_root = tmp_path.resolve()
     repo_root = fixture_root / "repo"
@@ -1074,6 +1075,9 @@ def test_private_payload_placement_through_symlinks(
     (fixture_root / "external-local-link.json").symlink_to(local_path)
     (fixture_root / "external-private-link.json").symlink_to(private_path)
     monkeypatch.chdir(repo_root)
+    if root_alias:
+        # Exercise actual directory identity even on case-sensitive CI hosts.
+        monkeypatch.setattr(write_action, "active_repo_root", lambda: fixture_root / "alias")
     payload_path = fixture_root / spelling
     path = os.path.relpath(payload_path, repo_root) if relative else str(payload_path)
     if repo_local:
@@ -1081,6 +1085,65 @@ def test_private_payload_placement_through_symlinks(
             write_action.read_payload_file(path)
     else:
         assert write_action.read_payload_file(path) == payload
+
+
+@pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "repository/local.json",
+        "REPOSITORY/local.json",
+        "REPOSITORY/nested/local.json",
+        "REPOSITORY/local-link.json",
+        "external-case-local-link.json",
+        "external-case-private-link.json",
+    ],
+)
+def test_private_payload_placement_uses_filesystem_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str, relative: bool,
+) -> None:
+    fixture_root = tmp_path.resolve()
+    repo_root = fixture_root / "repository"
+    repo_root.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(repo_root)], check=True)
+    case_path = fixture_root / "REPOSITORY"
+    case_alias = case_path.exists() and case_path.samefile(repo_root)
+    if not case_alias:
+        # On a case-sensitive filesystem this is a distinct external directory.
+        case_path.mkdir()
+    payload = {"fixture": True}
+    private_path = fixture_root / "private.json"
+    private_path.write_text(json.dumps(payload), encoding="utf-8")
+    for directory in {repo_root, case_path}:
+        (directory / "local.json").write_text(json.dumps(payload), encoding="utf-8")
+        (directory / "nested").mkdir(exist_ok=True)
+        (directory / "nested" / "local.json").write_text(json.dumps(payload), encoding="utf-8")
+        link = directory / "local-link.json"
+        if not link.is_symlink():
+            link.symlink_to(private_path)
+    (fixture_root / "external-case-local-link.json").symlink_to(case_path / "local.json")
+    (fixture_root / "external-case-private-link.json").symlink_to(private_path)
+    monkeypatch.chdir(repo_root)
+    payload_path = fixture_root / spelling
+    path = os.path.relpath(payload_path, repo_root) if relative else str(payload_path)
+    repo_local = spelling.startswith("repository/") or (
+        case_alias and spelling != "external-case-private-link.json"
+    )
+    if repo_local:
+        with pytest.raises(ValueError, match="^repo_local_payload_unsupported$"):
+            write_action.read_payload_file(path)
+    else:
+        assert write_action.read_payload_file(path) == payload
+
+
+def test_private_payload_identity_failure_refuses_without_exposing_path(
+    tmp_path: Path,
+) -> None:
+    payload_path = tmp_path / "private.json"
+    payload_path.write_text(json.dumps({"fixture": True}), encoding="utf-8")
+    with patch.object(Path, "samefile", side_effect=OSError(str(payload_path))):
+        with pytest.raises(ValueError, match="^invalid_payload_path$"):
+            write_action.read_payload_file(str(payload_path))
 
 
 def _queue_refusal_response() -> dict[str, Any]:

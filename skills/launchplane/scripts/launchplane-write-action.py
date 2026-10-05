@@ -372,7 +372,9 @@ def _is_relative_to(path: Path, base: Path) -> bool:
         path.relative_to(base)
         return True
     except ValueError:
-        return False
+        # Path spelling can differ while an ancestor is the same directory.
+        # Start at the parent so the final symlink's location stays meaningful.
+        return any(parent.samefile(base) for parent in path.parents)
 
 
 def active_repo_root() -> Path:
@@ -4228,11 +4230,12 @@ def read_payload_file(path: str) -> dict[str, object]:
         absolute_payload_path = path_with_resolved_parent(payload_path)
         resolved_payload_path = payload_path.resolve(strict=True)
         repo_root = active_repo_root()
+        repo_local = _is_relative_to(absolute_payload_path, repo_root) or _is_relative_to(
+            resolved_payload_path, repo_root
+        )
     except OSError:
         raise ValueError("invalid_payload_path") from None
-    if _is_relative_to(absolute_payload_path, repo_root) or _is_relative_to(
-        resolved_payload_path, repo_root
-    ):
+    if repo_local:
         raise ValueError("repo_local_payload_unsupported")
     try:
         raw = json.loads(payload_path.read_text(encoding="utf-8"))
