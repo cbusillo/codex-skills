@@ -361,7 +361,7 @@ cat >"$tmpdir/record-git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
-if [[ "$1" == "commit" ]]; then
+if [[ " commit merge pull rebase cherry-pick revert am " == *" $1 "* ]]; then
 	printf 'author=%s <%s> committer=%s <%s>\n' \
 		"${GIT_AUTHOR_NAME:-}" "${GIT_AUTHOR_EMAIL:-}" \
 		"${GIT_COMMITTER_NAME:-}" "${GIT_COMMITTER_EMAIL:-}" \
@@ -401,6 +401,27 @@ PATH="$tmpdir:$PATH" GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LO
 
 grep -q 'author=fixture-automation <fixture-automation@example.invalid> committer=fixture-automation <fixture-automation@example.invalid>' "$env_log"
 grep -q '^commit_tokens=||$' "$env_log"
+
+# Every integration mode uses the same identity and token-free child environment.
+for git_command in commit merge pull rebase cherry-pick revert am; do
+	: >"$env_log"
+	: >"$log"
+	PATH="$tmpdir:$PATH" GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
+	    GH_ISSUE_ENV_LOG="$env_log" CODEX_AUTOMATION_LOGIN=fixture-automation \
+	    CODEX_AUTOMATION_EMAIL=fixture-automation@example.invalid CODEX_GITHUB_TOKEN=must-not-reach-hook \
+	    GH_TOKEN=must-not-reach-hook GITHUB_TOKEN=must-not-reach-hook \
+	    "$repo_root/github/scripts/git-commit-as-bot" --git-command "$git_command" --continue >/dev/null
+	grep -qx "$git_command --continue" "$log"
+	grep -q '^author=fixture-automation <fixture-automation@example.invalid> committer=fixture-automation <fixture-automation@example.invalid>$' "$env_log"
+	grep -q '^commit_tokens=||$' "$env_log"
+done
+: >"$log"
+if GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
+	"$repo_root/github/scripts/git-commit-as-bot" --git-command push origin branch >/dev/null 2>"$stderr_log"; then
+	echo "error: commit wrapper accepted an unsupported command" >&2
+	exit 1
+fi
+[[ ! -s "$log" ]]
 
 commit_home="$tmpdir/commit-home"
 mkdir -p "$commit_home/.code"
