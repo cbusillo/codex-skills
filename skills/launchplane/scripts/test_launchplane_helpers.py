@@ -1044,6 +1044,7 @@ def test_invalid_private_payload_does_not_expose_path() -> None:
 
 
 @pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize("root_alias", [False, True])
 @pytest.mark.parametrize(
     ("spelling", "repo_local"),
     [
@@ -1058,7 +1059,7 @@ def test_invalid_private_payload_does_not_expose_path() -> None:
 )
 def test_private_payload_placement_through_symlinks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str,
-    repo_local: bool, relative: bool,
+    repo_local: bool, relative: bool, root_alias: bool,
 ) -> None:
     fixture_root = tmp_path.resolve()
     repo_root = fixture_root / "repo"
@@ -1074,6 +1075,9 @@ def test_private_payload_placement_through_symlinks(
     (fixture_root / "external-local-link.json").symlink_to(local_path)
     (fixture_root / "external-private-link.json").symlink_to(private_path)
     monkeypatch.chdir(repo_root)
+    if root_alias:
+        # Exercise actual directory identity even on case-sensitive CI hosts.
+        monkeypatch.setattr(write_action, "active_repo_root", lambda: fixture_root / "alias")
     payload_path = fixture_root / spelling
     path = os.path.relpath(payload_path, repo_root) if relative else str(payload_path)
     if repo_local:
