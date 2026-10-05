@@ -1139,29 +1139,31 @@ class ClaimTests(unittest.TestCase):
         self.assert_no_writes()
 
     def test_embedded_release_recovers_reported_finished_session(self):
-        # repairshopr_api#102: the release follows the Owner question/handoff.
-        self.comments = [
-            {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
-            {"id": 2, "body": "Owner question: Verify live-host usage?\n\n"
-             "Source session finished without implementation.\n\nReleased claim 1\n\n"
-             "<!-- github-skill-operation:ebe51a4db859c979eaa963fb10af11b5 -->\n",
-             "user": {"login": TEST_BOT}},
-            {"id": 3, "body": "Owner decision: The later read-only inventory is approved; no host changes.",
-             "user": {"login": "owner"}},
-        ]
-        self.run_claim()
-        self.assertEqual(len(self.comments), 4)
-        self.assertIn("claim_readback", self.emitted.call_args.args[0]["completed_steps"])
-        # Release is ownership proof. Task authority is verified by the caller;
-        # the helper gates recorded waits, not the presence of decision comments.
-        self.setUp()
-        self.comments = [
-            {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
-            {"id": 2, "body": "Owner question: Verify live-host usage?\n\nReleased claim 1",
-             "user": {"login": TEST_BOT}},
-        ]
-        self.run_claim()
-        self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
+        for role in ("Director", "Owner"):
+            self.setUp()
+            # The release follows a question/handoff, regardless of role spelling.
+            self.comments = [
+                {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
+                {"id": 2, "body": f"{role} question: Verify live-host usage?\n\n"
+                 "Source session finished without implementation.\n\nReleased claim 1\n\n"
+                 "<!-- github-skill-operation:ebe51a4db859c979eaa963fb10af11b5 -->\n",
+                 "user": {"login": TEST_BOT}},
+                {"id": 3, "body": f"{role} decision: The later read-only inventory is approved; no host changes.",
+                 "user": {"login": "owner"}},
+            ]
+            self.run_claim()
+            self.assertEqual(len(self.comments), 4)
+            self.assertIn("claim_readback", self.emitted.call_args.args[0]["completed_steps"])
+            # Release is ownership proof. Task authority is verified by the caller;
+            # the helper gates recorded waits, not the presence of decision comments.
+            self.setUp()
+            self.comments = [
+                {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
+                {"id": 2, "body": f"{role} question: Verify live-host usage?\n\nReleased claim 1",
+                 "user": {"login": TEST_BOT}},
+            ]
+            self.run_claim()
+            self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
 
     def test_embedded_release_resumes_exact_status_with_retained_branch(self):
         self.released_status_fixture("Finished session handoff.\r\n\r\nReleased claim 1.")
