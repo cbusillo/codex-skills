@@ -749,9 +749,13 @@ competitor's record.
   milestone listed in merged `DIRECTION.md`: a repository owner comment after
   the last issue-body edit, or a repository owner `+1` reaction after
   that edit on an unedited comment starting with the exact first line
-  `Owner decision: Close #<number> as not planned.` Other accounts, comment
+  `Director decision: Close #<number> as not planned.` The legacy `Owner decision:`
+  spelling remains accepted for existing comments. Other accounts, comment
   types, actions, and edited decisions do not qualify; unreadable identity,
-  reaction time, or edit history fails closed. Then it
+  reaction time, or edit history fails closed. On a manual fallback, GraphQL
+  `lastEditedAt` must be explicitly null and every reaction page must be read;
+  if that evidence is unavailable, require a typed repository-owner comment
+  after the last issue-body edit. Then it
   retains and reports remaining relationships, closes with the distinct
   `not_planned` state reason, and does not present superseded work as completed.
   Optional Project Status=Done synchronization remains before issue closure so
