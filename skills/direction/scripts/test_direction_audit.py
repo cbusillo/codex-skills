@@ -387,17 +387,16 @@ def test_main_preserves_closed_audit_cutoff_and_stamps_scan_start() -> None:
             saved = json.loads(marker.read_text())
             assert saved["turn"] == original["turn"]
             assert saved["turn_repo"] == original["turn_repo"]
-            if cap == "closed_audit":
-                assert "recent_closed_audit_issues" in result["findings"][0]["listings"]
-                assert result["marked"] is None
+            if cap is not None:
+                listing = "recent_closed_audit_issues" if cap == "closed_audit" else "milestone_issue_events"
+                assert listing in result["findings"][0]["listings"]
+                assert result["ok"] is False
+                assert result["marked"] is None, "an unread milestone addition must stay in the next window"
                 assert saved == original
             else:
                 assert result["marked"] == str(marker)
                 assert saved["audits"]["o/r"] == "2026-09-21T12:00:00Z"
                 assert saved["audits"]["o/other"] == original["audits"]["o/other"]
-                if cap == "milestone_events":
-                    assert "milestone_issue_events" in result["findings"][0]["listings"]
-                    assert result["ok"] is False, "unrelated incomplete coverage must remain visible"
             assert any(f"labels=audit&since={previous}" in path for path in calls)
 
 

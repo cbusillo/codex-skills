@@ -245,8 +245,8 @@ For each finding:
   reported cause when present; drift beyond verified coverage is unreported.
   Do not call
   the repository clean. The audit marker stays unchanged only when the closed
-  `audit` listing or a `capacity_*` read is incomplete, so a rerun covers the
-  same window.
+  `audit` listing, the closed milestone issues, the milestone events, or a
+  `capacity_*` read is incomplete, so a rerun covers the same window.
 
 - `milestone_unlisted`: an open GitHub milestone not in the file. Either add
   the line by direction pull request or close the milestone. Never leave both.

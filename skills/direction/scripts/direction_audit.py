@@ -893,10 +893,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     result.update({"repo": repo, "direction_source": f"{repo}:DIRECTION.md@default-branch", "read_only": True})
     result["audit_since"] = audit_since.isoformat().replace("+00:00", "Z")
-    # Preserve unseen labeled closures without letting unrelated listing/event
-    # caps keep already-judged work and stale reminders recurring indefinitely.
+    # Preserve unseen labeled closures and milestone additions without letting
+    # unrelated listing caps keep stale reminders recurring indefinitely.
     # Incomplete capacity reads also keep the window open for a rerun.
-    keep_window = "recent_closed_audit_issues" in truncated or any(item.startswith("capacity_") for item in truncated)
+    window_reads = {"recent_closed_audit_issues", "recent_closed_milestone_issues", "milestone_issue_events"}
+    keep_window = bool(window_reads & set(truncated)) or any(item.startswith("capacity_") for item in truncated)
     result["marked"] = None if keep_window else record_audit(repo, now, direction_text)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["ok"] else 3
