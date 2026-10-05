@@ -62,6 +62,11 @@ resources:
     kind: script
     description: Drives one labeled pull request through the merge train to a landed, failed, needs_owner, or error outcome.
 commands:
+  - name: launchplane-privileged-policy-propose
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "privileged-policy-propose", "--payload-file", "<private-envelope>"]
+    purpose: Creates an inert pending policy plan and returns its Director UI review path without approval or apply.
   - name: launchplane-live-target-runtime-sync-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -691,7 +696,7 @@ and watching stay delegated to `github_workflow_babysit.py`, and raw protected
 workflow dispatch is not allowed. Source projected HTTP paths from the vendored
 operation map rather than adding duplicate literals.
 
-The merge-train policy read and import, repository inventory, product expected configuration,
+The privileged-policy-propose, merge-train policy read and import, repository inventory, product expected configuration,
 generic-web deploy-recovery, live-target-runtime sync, Odoo addon-settings, integration-allowances,
 testing-hold, product-repository-identity, product-environment-read,
 product-activity-read, protected-artifacts-read, product-profile-read, path-check,
@@ -707,6 +712,22 @@ extensions because the vendored public
 operation projection does not contain their routes. Do not describe them as contract-backed. If a later artifact adds those
 routes, migrate them deliberately and remove the local-extension entries instead
 of retaining parallel sources of truth.
+
+### Agent Policy Proposals
+
+For a prepared managed access-policy or merge-train policy proposal, read
+[the proposal helper contract](references/write-action-helper-contract.md#policy-proposals)
+and use `launchplane-write-action.py privileged-policy-propose --payload-file
+<private-envelope>`. The deployed service requires an explicit managed proposer
+grant for its configured `local_operator` identity. The Director approves that grant
+separately through the Access policy card. Submit no proposal until the service
+supports this route and the grant is installed. Source delivery grants no access.
+
+Creation is pending and inert. Return the review path to the Director; approval
+stays in the signed-in UI and the proposer can never approve or apply. Reuse the
+private envelope's stable source event when a response is uncertain. This path
+uses private `local_operator` config, independent of terminal-agent and ordinary-agent
+credentials, enrollment, sessions, or leases.
 
 ### Private Ordinary-Agent Client
 
@@ -954,6 +975,9 @@ merge-train-controller-run-once` instead of open-coding the route. Mutating
   `--allow-branch-update` only for your own same-repository branches, for a
   behind-base PR it reports without refreshing. Run one driver per repository
   train, and keep a watcher on it while you report "waiting on the train".
+  When the landed repository is the skills catalog the driver lives in, its
+  landed `stop` event carries `runtime_reconciliation`, the runtime
+  reconciler's receipt for that landing; report it as the runtime outcome.
 - **Train Entry**: Read the target branch's enqueue label from the active
   policy and put that label on the root PR and every stacked child ready to land
   with it. Preserve a task's assigned Supervisor handoff instead of applying

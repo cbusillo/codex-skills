@@ -59,8 +59,8 @@ across the Director's repositories.
 - **`DIRECTION.md`** holds the direction. It changes only by pull request that
   touches this file alone, and the Director approves it: `CODEOWNERS` names the
   Director for this one path and the default branch requires code-owner review.
-  Keep it to one page. A direction pull request with a large diff is a reason
-  to reject it, not to read harder.
+  Keep it to one to two pages. A direction pull request with a large diff is a
+  reason to reject it, not to read harder.
 - **Milestones** are waypoints. A milestone exists only when its exact title is
   listed under `## Milestones` in `DIRECTION.md`; once the file exists,
   `gh-plan.py milestone-create` refuses any other title and `milestone-update`
@@ -71,16 +71,12 @@ across the Director's repositories.
 - **Issues** are work. Escalations are issues labeled `direction`; questions or
   completed work for the weekly audit carry `audit`.
 
-An executing agent may admit an issue to a milestone already listed in the
-merged `DIRECTION.md` when the issue body contains a Markdown blockquote of an
-exact phrase from that milestone's line explaining what the issue proves or
-protects. The direction audit reports missing or mismatched quotes on open
-automation-created or automation-admitted milestone issues and on issues closed
-since the prior audit (at least the last seven days); the direction turn
-keeps the issue or moves it out. This is an after-the-fact finding, not a
-preapproval gate. An issue admitted during close-out waits for a later
-`go <milestone>` run. Adding a milestone or changing what it proves remains
-Director direction.
+An executing agent may add an issue to a milestone already listed in the
+merged `DIRECTION.md`. The direction audit lists the issues added since the
+prior audit, and the direction turn reads each for fit, keeping it or moving it
+out. This is an after-the-fact reading, not a preapproval gate. An issue added
+during close-out waits for a later `go <milestone>` run. Adding a milestone or
+changing what it proves remains Director direction.
 
 A proposal that adds a fourth container or a second human gate is the signal
 that the design is getting too complicated. Prefer deleting a concept to adding
@@ -226,8 +222,8 @@ It reads the merged `DIRECTION.md` from the default branch, never a checkout.
 It writes nothing to GitHub; it only stamps this repository's audit in the
 local marker. When the Director explicitly selects `--gh gh` or declares
 their own login with `--automation`, `limits` names
-`owner_acts_as_automation`: admissions by that login are treated as Director
-decisions because the audit cannot tell who used it. This is a known attribution
+`owner_acts_as_automation`: milestone additions by that login are treated as
+Director decisions because the audit cannot tell who used it. This is a known attribution
 limit, not incomplete coverage; `ok` and `counts` still reflect all findings.
 A reader returning the Director's login instead of a separately configured automation login
 still reports incomplete identity coverage. For a bot token, configure its expected
@@ -239,7 +235,7 @@ A Director with only their own `gh` login selects it explicitly with
 `direction_audit.py --repo OWNER/REPO --gh gh`; the default reader remains the
 automation wrapper. This read-only selection authorizes no GitHub writes. If a
 separate automation login is configured and the Director deliberately supplies the
-reads, pass `--automation BOT-LOGIN` to retain that bot's admission classification.
+reads, pass `--automation BOT-LOGIN` to retain that bot's attribution.
 `owner_reader_identity` in incomplete coverage means the explicit reader could
 not establish the Director's login; check the active account and token overrides.
 For each finding:
@@ -249,8 +245,8 @@ For each finding:
   reported cause when present; drift beyond verified coverage is unreported.
   Do not call
   the repository clean. The audit marker stays unchanged only when the closed
-  `audit` listing or a `capacity_*` read is incomplete, so a rerun covers the
-  same window.
+  `audit` listing, the closed milestone issues, the milestone events, or a
+  `capacity_*` read is incomplete, so a rerun covers the same window.
 
 - `milestone_unlisted`: an open GitHub milestone not in the file. Either add
   the line by direction pull request or close the milestone. Never leave both.
@@ -261,17 +257,6 @@ For each finding:
   recreate it.
 - `milestone_creator`: an open milestone created by an account other than the
   Director, the acting automation, or a configured bot login. Ask how it got there.
-- `milestone_issue_quote_missing` or `milestone_issue_quote_mismatch`: an open
-  or recently closed issue admitted to a listed milestone by an agent does not
-  blockquote an exact phrase from that milestone's merged direction line.
-  Check the issue's actual purpose, then keep it with a matching quote or move
-  it outside the milestone. Existing open issues admitted before this rule or
-  old quotes after a direction-line edit may produce a one-time batch of
-  findings. The Director may accept an issue as written by removing its milestone
-  and then adding it back; the latest assignment actor then exempts it. An
-  issue admitted by an agent can be worked before the weekly audit runs; the
-  quote is evidence for a later direction turn, not a preapproval gate. A
-  Director-admitted issue is outside this check.
 - `ruleset_missing`: an adopted repository lacks either active standard branch
   ruleset. Plan the guarded repair with `gh-rulesets.py`; applying it remains an
   explicit admin mutation.
@@ -300,6 +285,11 @@ For each finding:
   ownership rules; record the correction in a bot comment or the managed block.
 - `direction_missing` or `direction_shape`: the repository is not adopted or
   the file lost a required heading. Fix the file first.
+
+`milestone_additions` lists issues someone other than the Director added to a
+listed milestone since the prior audit, with who added each. It is not a
+finding and does not affect `ok`. Read each issue and keep it in the milestone
+or move it out.
 
 The audit of `OWNER/direction` also returns `capacity`, the overall
 direction's weekly numbers for the window since the prior audit: merged pull

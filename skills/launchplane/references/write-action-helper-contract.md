@@ -24,8 +24,9 @@ The helper lives at `scripts/launchplane-write-action.py`.
 
 Private payload files must be outside the active repository. The helper checks
 both the file's location after resolving ancestor directory aliases and its
-fully resolved target. A repository-local link to an external payload and an
-external link to repository-local data are both refused; an external payload,
+fully resolved target, comparing ancestor directories by filesystem identity
+when their path spellings differ. A repository-local link to an external payload
+and an external link to repository-local data are both refused; an external payload,
 including an external link to another external file, is accepted.
 
 ## Merge-train enrollment read
@@ -1186,3 +1187,32 @@ service-owned surface or explicit private admin input before using recovery.
 This helper does not invent an opaque recovery reference or clear an unknown
 provider fence. When the service cannot supply that evidence, track the service
 prerequisite and leave recovery held.
+
+## Policy Proposals
+
+`privileged-policy-propose --payload-file <private-envelope>` is a bounded local
+extension of `POST /v1/agent/privileged-operations/plans`. Use the normal private
+`local_operator` configuration. It accepts only `managed-authz-policy-set` and
+`managed-merge-train-policy-import`. The service is the request-schema authority;
+see [Launchplane's proposal contract](https://github.com/cbusillo/launchplane/blob/main/docs/privileged-operations.md#agent-policy-proposals).
+
+The private JSON envelope contains `schema_version: 1`, `descriptor_id`, a
+stable `source_event_id`, `request` (including reason and optional related issue),
+and optional `expires_in_seconds`. Never put it in a repository or pass policy
+JSON inline. The helper rejects dedicated preparation contexts and unsupported
+request fields. It emits bounded proposal metadata, counts, trace,
+and a relative `review_path` on the Launchplane UI host; it never returns
+policy selectors or credential-routing fields.
+
+On a timeout or response-verification failure, retain the same envelope and
+source event for reconciliation/replay. Never substitute a new identity or a new
+source event to force a duplicate proposal. A denial is not a missing token:
+report the refused action and trace and follow Launchplane denial handling.
+An accepted replay can report an already approved or terminal plan; it does not
+renew the approval deadline or perform execution. Check the persisted expiry and
+blockers in the UI before requesting approval; a stored `planned` status can lag
+expiry reconciliation. Approved or executing plans
+need observation, not another approval. Inspect terminal outcomes before an
+intentional replacement; an expired, cancelled or revoked proposal needs a fresh
+source event for a replacement. The signed-in Director reviews
+and approves pending plans in the UI; no helper approval or apply path is added.

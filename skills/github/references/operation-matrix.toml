@@ -417,6 +417,26 @@ source_refs = ["github/scripts/gh-pr.py:cmd_checks"]
 test_refs = ["github/scripts/validate-gh-plan.py:test_pr_checks_aggregates_retry_fields_across_reads", "github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
 
 [[operations]]
+id = "github.pr.update_branch"
+capabilities = ["pull_requests_write", "contents_write"]
+permission_mode = "input_dependent"
+permission_note = "PR write on the base repository and Contents write on the head repository are required for App branch updates."
+entrypoint = "github/scripts/gh-pr.py update-branch"
+intent = "Update an authorized PR branch with its base using the freshly observed head SHA and report asynchronous head observation."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/pulls/{number}; PUT /repos/{repo}/pulls/{number}/update-branch with expected_head_sha; bounded GET head observation"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "update"
+idempotency = "conditional"
+retry_eligibility = "manual"
+reconciliation_strategy = "fail_closed_write"
+retained_graphql_rationale = "No retained GraphQL transport; REST update-branch supports an expected head SHA; asynchronous acceptance is distinct from observed completion. Unknown updates are not replayed."
+source_refs = ["github/scripts/gh-pr.py:cmd_update_branch"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_update_branch_guards_head_and_reports_async_state", "github/scripts/validate-gh-plan.py:test_update_branch_unknown_write_and_rejection_never_replay", "github/scripts/validate-gh-plan.py:test_update_branch_failed_observation_preserves_accepted_nonretryable_write"]
+
+[[operations]]
 id = "github.pr.merge"
 capabilities = ["contents_write", "pull_requests_read", "workflows_write"]
 permission_mode = "input_dependent"
@@ -911,7 +931,7 @@ capabilities = ["issues_read"]
 permission_mode = "fixed"
 permission_note = "Audit issue collection uses the existing repository Issues read grant and safe issues probe; no default-profile expansion. Required issue-list read failures abort the audit. Bounded inbound dependency read failures and capped listings report incomplete coverage; an incomplete closed-audit listing preserves the prior marker."
 entrypoint = "direction/scripts/direction_audit.py --repo OWNER/REPO (issue collection)"
-intent = "Read open audit questions and recently closed labeled work alongside milestone admission evidence and waiting cross-repository blockers."
+intent = "Read open audit questions and recently closed labeled work alongside who added issues to listed milestones and waiting cross-repository blockers."
 current_transport = "rest_api"
 selected_transport = "rest_api"
 endpoint_or_command = "Paged GET /repos/{repo}/issues with state, milestone, labels=audit and since filters; GET /repos/{repo}/issues/{number}/events; bounded GET /repos/{repo}/issues/{number}/dependencies/blocking for up to 50 waiting issues and 2 pages each"
@@ -921,7 +941,7 @@ mutation_class = "read"
 idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "fresh_read"
-retained_graphql_rationale = "No GraphQL transport; issue lists and admission events are repository-scoped REST reads."
+retained_graphql_rationale = "No GraphQL transport; issue lists and milestone events are repository-scoped REST reads."
 source_refs = ["direction/scripts/direction_audit.py:enrich_waiting_inbound_blockers", "direction/scripts/direction_audit.py:fetch_audit_issues", "direction/scripts/direction_audit.py:enrich_admission_actors"]
 test_refs = ["direction/scripts/test_direction_audit.py:test_waiting_unmilestoned_cross_repository_blocker_is_a_named_finding", "direction/scripts/test_direction_audit.py:test_waiting_inbound_fetch_coverage_includes_caps_errors_and_ambiguous_targets", "direction/scripts/test_direction_audit.py:test_closed_audit_fetch_is_independent_of_milestones_and_deduplicates", "direction/scripts/test_direction_audit.py:test_main_preserves_closed_audit_cutoff_and_stamps_scan_start", "direction/scripts/test_direction_audit.py:test_open_audit_questions_beyond_the_general_issue_cap_are_still_reported"]
 
@@ -1274,11 +1294,11 @@ id = "github.git_commit_as_bot"
 capabilities = []
 permission_mode = "local"
 permission_note = "Local commit identity. With a configured App and a github.com origin, App JWT reads (no installation grant) decide whether the person commits as themselves in another owner's repository; no profile impact."
-entrypoint = "github/scripts/git-commit-as-bot <git-commit-args>"
-intent = "Create a local git commit with the configured automation author and committer identity."
+entrypoint = "github/scripts/git-commit-as-bot [--git-command COMMAND] <git-args>"
+intent = "Run commit or a supported commit-creating integration command with the configured automation author and committer environment."
 current_transport = "local_git"
 selected_transport = "local_git"
-endpoint_or_command = "git commit <args> with GIT_AUTHOR_* and GIT_COMMITTER_* environment; with a configured App, github_identity.py app-auth --require-installation for origin (GET /repos/{owner}/{repo}/installation, GET /app) and, in another owner's repository without the App and with the caller's GH_WITH_ENV_TOKEN_OWN_USER=1, the person's own git identity"
+endpoint_or_command = "git commit|merge|pull|rebase|cherry-pick|revert|am <args> with GIT_AUTHOR_* and GIT_COMMITTER_* environment; with a configured App, github_identity.py app-auth --require-installation for origin (GET /repos/{owner}/{repo}/installation, GET /app) and, in another owner's repository without the App and with the caller's GH_WITH_ENV_TOKEN_OWN_USER=1, the person's own git identity"
 quota_bucket = "local"
 actor_policy = "local_bot_identity"
 mutation_class = "local_git_write"
@@ -2126,7 +2146,7 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github/scripts/gh-comment" = "21ecb30d4d60b61c760f1df630fd6b56347873709bba2d05b7f32f9222fa4656"
 "github/scripts/gh-issue" = "2589d7e258872b5dc2609ceb581053b2daae205156ac360d1a84a2f49eb0f01f"
 "github/scripts/gh-plan.py" = "7497803ed527f9953d0f39777c48aae555429133cda4e7efac6ea8231d216306"
-"github/scripts/gh-pr.py" = "d58b23c06d224c485dc493561c7fd91835c2c65a9df5c5555f1368fbaab11a81"
+"github/scripts/gh-pr.py" = "63da814199a3d3d19fbd6dcd919194f8f413ae6460f61b5c206d5bde162b7d93"
 "github/scripts/gh-rulesets.py" = "0b6cfb046b92b6adce65841dd27eccd12884709753769744887c3e0376ce5748"
 "github/scripts/git-commit-as-bot" = "517fad723e60df546a32577f2ff459de218ed3f90773d09f922b4689b282dc67"
 "github/scripts/git-push-as-bot" = "aa0522b59cd89b4f791effdaea3cdee22108e468f56cc9cee7e9b44406981301"
@@ -2149,7 +2169,7 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github-work-rollup/scripts/github_work_rollup.py" = "cd77d9191d131d4514826aacb8259c059d69ea8a0ce097bb1bd1b109216b57af"
 "github-work-rollup/scripts/verify_work_brief.py" = "379cfec37182c96c01ac5ae2b930ca7cdd9fc34a1bacba5f5f3510d918f9074c"
 "babysit-pr/scripts/gh_pr_watch.py" = "07e16710b41b106e78be2bdb3992b8fad8886d383257524706fdd0de338c4f5b"
-"direction/scripts/direction_audit.py" = "e7485d480307adf5cd8ef7cc7cc7aa4648076cc1bbc09a16d649d9c3060b3b36"
+"direction/scripts/direction_audit.py" = "0379e289aefb382bfd691113c14eb89769d4e6fd839876709c448b0f52092f93"
 "github/scripts/github_plan_claim.py" = "8145378a5ee48b5139c9939705c8e96086712f45517214caa6423e71a1cd5bcf"
 "github/scripts/github_plan_release.py" = "23e334369bd1caebfbad012fa913cdaa5604aa52727c6d8b8a6d857e821d47d8"
 "github/scripts/github_request_usage.py" = "e79e4658e4f37c954d45aec6bb41d84bd0a582a076a924bf0057adc5c5e4eeca"

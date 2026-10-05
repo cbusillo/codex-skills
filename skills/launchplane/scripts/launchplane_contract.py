@@ -218,6 +218,9 @@ PROJECTED_HELPER_COMMANDS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    "privileged-policy-propose": {
+        "method": "POST", "path": "/v1/agent/privileged-operations/plans", "mode": "propose",
+    },
     "merge-train-policy-read": {
         "method": "GET",
         "path": "/v1/work-graph/merge-train/policy",

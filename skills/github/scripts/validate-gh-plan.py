@@ -1217,11 +1217,63 @@ def test_plan_search_uses_search_bucket_and_conditional_state() -> None:
     assert "is:open" not in all_query and "is:closed" not in all_query
     open_payload = json.loads(open_output.getvalue())
     assert open_payload["count"] == 101, open_payload
+    assert open_payload["total_count"] == 101, open_payload
+    assert open_payload["incomplete_results"] is False, open_payload
+    assert open_payload["limit"] == 101, open_payload
     assert open_payload["issues"][0]["state"] == "OPEN", open_payload
     assert open_payload["issues"][-1]["number"] == 101, open_payload
     all_payload = json.loads(all_output.getvalue())
     assert all_payload["issues"][0]["state"] == "CLOSED", all_payload
     assert all_payload["issues"][0]["labels"] == ["plan"], all_payload
+
+
+def test_plan_search_reports_provider_coverage_and_caller_bound() -> None:
+    cases: list[tuple[list[dict[str, Any]], int, int | None, bool | None, list[int]]] = [
+        # A timed-out search can return fewer items than both the total and limit.
+        ([{"total_count": 2, "incomplete_results": True, "items": [1]}], 5, 2, True, [1]),
+        ([{"total_count": 2, "incomplete_results": False, "items": [1, 2]}], 1, 2, False, [1]),
+        ([{"total_count": 0, "incomplete_results": False, "items": []}], 5, 0, False, []),
+        # A later complete page must not erase an earlier timeout; totals are not summed.
+        ([{"total_count": 102, "incomplete_results": True, "items": list(range(1, 101))},
+          {"total_count": 101, "incomplete_results": False, "items": [101]}],
+         150, 102, True, list(range(1, 102))),
+        ([{"total_count": 101, "incomplete_results": False, "items": list(range(1, 101))},
+          {"total_count": 102, "incomplete_results": True, "items": [101]}],
+         150, 102, True, list(range(1, 102))),
+        ([{"items": [1]}], 5, None, None, [1]),
+    ]
+    for pages, limit, total_count, incomplete_results, expected_numbers in cases:
+        plan = load_plan_module()
+        requested_pages: list[int] = []
+
+        def fake_api_json(method: str, path: str, _payload: Any = None, **kwargs: Any) -> tuple[str, Any]:
+            parsed = urllib.parse.urlparse(path)
+            assert method == "GET" and parsed.path == "/search/issues", (method, path)
+            assert kwargs["bucket"] == "search", kwargs
+            query = urllib.parse.parse_qs(parsed.query)
+            page = int(query["page"][0])
+            requested_pages.append(page)
+            assert query["per_page"] == ["100"], query
+            response = pages[page - 1]
+            return "automation-gh", {
+                **response,
+                "items": [{"number": number, "title": f"Result {number}", "state": "open",
+                           "html_url": f"https://github.com/owner/repo/issues/{number}"}
+                          for number in response["items"]],
+            }
+
+        plan.api_json = fake_api_json
+        output = StringIO()
+        with redirect_stdout(output):
+            plan.cmd_search(types.SimpleNamespace(repo="owner/repo", query="roadmap", state="open", limit=limit))
+        payload = json.loads(output.getvalue())
+        assert payload["ok"] is True and payload["actor"] == "automation-gh", payload
+        assert payload["total_count"] == total_count, payload
+        assert payload["incomplete_results"] is incomplete_results, payload
+        assert payload["limit"] == limit, payload
+        assert payload["count"] == len(expected_numbers), payload
+        assert [item["number"] for item in payload["issues"]] == expected_numbers, payload
+        assert requested_pages == list(range(1, len(pages) + 1)), requested_pages
 
 
 def test_plan_ensure_labels_uses_paged_rest_and_reconciles_conflict() -> None:
@@ -5146,6 +5198,98 @@ def test_merge_reconciliation_rejects_head_drift() -> None:
             pr.github_api_core.default_retry_policy = original_policy
 
 
+def test_update_branch_guards_head_and_reports_async_state() -> None:
+    for changed, wait_seconds in ((True, 0), (False, 0), (True, 5)):
+        pr = load_pr_module()
+        pr.CURRENT_OPERATION = "github.pr.update_branch"
+        calls: list[tuple[str, str, Any]] = []
+        old_head, new_head = "a" * 40, "b" * 40
+        metadata = {
+            "number": 12, "state": "open", "title": "Demo",
+            "head": {"sha": old_head, "ref": "topic", "repo": {"full_name": "owner/repo"}},
+            "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+        }
+        def fake_call(method: str, path: str, body: Any = None, **kwargs: Any) -> Any:
+            calls.append((method, path, body))
+            response = {"message": "Updating pull request branch."} if method == "PUT" else {
+                **metadata, "head": {**metadata["head"], "sha": new_head if changed and len(calls) > (3 if wait_seconds else 2) else old_head},
+            }
+            return pr.github_api_core.ApiResult(
+                ok=True, status=202 if method == "PUT" else 200, body=response,
+                operation=kwargs.get("operation"), actor=pr.EXPECTED_ACTOR,
+                expected_actor=pr.EXPECTED_ACTOR, host="github.com", bucket="rest_core",
+            )
+        with patch.object(pr.github_api_core, "call_gh", fake_call), patch.object(pr.time, "sleep"):
+            result = pr.cmd_update_branch(types.SimpleNamespace(repo="owner/repo", pr="12", wait_seconds=wait_seconds))
+        assert calls == [
+            ("GET", "/repos/owner/repo/pulls/12", None),
+            ("PUT", "/repos/owner/repo/pulls/12/update-branch", {"expected_head_sha": old_head}),
+            *[("GET", "/repos/owner/repo/pulls/12", None)] * (2 if wait_seconds else 1),
+        ], calls
+        assert result["actor"] == pr.EXPECTED_ACTOR, result
+        assert result["update"]["accepted"] is True, result
+        assert result["update"]["newHeadSha"] == (new_head if changed else None), result
+        assert result["update"]["state"] == ("head_changed" if changed else "accepted_unconfirmed"), result
+
+
+def test_update_branch_unknown_write_and_rejection_never_replay() -> None:
+    for status, outcome in ((0, "unknown"), (422, "rejected")):
+        pr = load_pr_module()
+        pr.CURRENT_OPERATION = "github.pr.update_branch"
+        calls: list[str] = []
+        def fake_call(method: str, _path: str, _body: Any = None, **kwargs: Any) -> Any:
+            calls.append(method)
+            failure = pr.github_api_core.FailureDetail(
+                cause="network_provider_failure" if not status else "validation_error",
+                message="response lost" if not status else "head mismatch",
+                retryable=False, fallback_eligible=False, disposition="stop", write_outcome=outcome,
+            ) if method == "PUT" else None
+            return pr.github_api_core.ApiResult(
+                ok=method == "GET", status=status if method == "PUT" else 200,
+                body={"state": "open", "head": {"sha": "a" * 40}},
+                operation=kwargs.get("operation"), actor=pr.EXPECTED_ACTOR,
+                expected_actor=pr.EXPECTED_ACTOR, host="github.com", bucket="rest_core", failure=failure,
+            )
+        with patch.object(pr.github_api_core, "call_gh", fake_call):
+            try:
+                pr.cmd_update_branch(types.SimpleNamespace(repo="owner/repo", pr="12", wait_seconds=0))
+            except pr.PrHelperError as exc:
+                assert exc.failure.write_outcome == outcome, exc
+            else:
+                raise AssertionError("Unconfirmed updates must fail")
+        assert calls == ["GET", "PUT"], calls
+
+
+def test_update_branch_failed_observation_preserves_accepted_nonretryable_write() -> None:
+    pr = load_pr_module()
+    calls: list[str] = []
+    def fake_call(method: str, _path: str, _body: Any = None, **kwargs: Any) -> Any:
+        calls.append(method)
+        failure = pr.github_api_core.FailureDetail(
+            cause="network_provider_failure", message="Observation read failed",
+            retryable=True, fallback_eligible=False, disposition="retry",
+        ) if len(calls) == 3 else None
+        return pr.github_api_core.ApiResult(
+            ok=failure is None, status=502 if failure else (202 if method == "PUT" else 200),
+            body={"state": "open", "head": {"sha": "a" * 40}},
+            operation=kwargs.get("operation"), actor=pr.EXPECTED_ACTOR,
+            expected_actor=pr.EXPECTED_ACTOR, host="github.com", bucket="rest_core", failure=failure,
+        )
+    stdout, stderr = StringIO(), StringIO()
+    with (patch.object(pr.github_api_core, "call_gh", fake_call),
+          patch.object(sys, "argv", ["gh-pr.py", "--repo", "owner/repo", "update-branch", "12", "--wait-seconds", "0"]),
+          redirect_stdout(stdout), redirect_stderr(stderr)):
+        assert pr.main() != 0
+    result = json.loads(stdout.getvalue())
+    assert calls == ["GET", "PUT", "GET"], calls
+    assert result["updateAccepted"] is True, result
+    assert result["retryable"] is False and result["retry_eligible"] is False, result
+    assert result["disposition"] == "stop", result
+    assert result["write_outcome"] == "unknown" and result["outcome_certainty"] == "unknown", result
+    assert result["recommended_next_action"] == "observe_branch_update", result
+    assert result["completed_steps"] == ["update_branch_accepted"], result
+
+
 def test_merge_refuses_head_behind_strict_base() -> None:
     pr = load_pr_module()
     pr.CURRENT_OPERATION = "github.pr.merge"
@@ -5189,6 +5333,7 @@ def test_merge_refuses_head_behind_strict_base() -> None:
         except pr.PrHelperError as exc:
             assert exc.failure is not None
             assert exc.failure.cause == "update_behind_branch", exc.failure
+            assert "update-branch 12" in exc.failure.message, exc.failure
             assert exc.payload["headSha"] == "b" * 40, exc.payload
             assert exc.payload["baseSha"] == "a" * 40, exc.payload
         else:
@@ -6738,6 +6883,7 @@ def main() -> None:
         test_issue_body_updates_use_rest_patch,
         test_plan_index_paginates_filters_prs_and_honors_limit,
         test_plan_search_uses_search_bucket_and_conditional_state,
+        test_plan_search_reports_provider_coverage_and_caller_bound,
         test_plan_ensure_labels_uses_paged_rest_and_reconciles_conflict,
         test_plan_ensure_labels_skips_existing_case_insensitively,
         test_plan_paged_rest_failure_receives_completed_page_evidence,
@@ -6817,6 +6963,9 @@ def main() -> None:
         test_delete_ref_keeps_a_rejected_delete_failed_when_the_branch_still_exists,
         test_merge_reconciles_accepted_unknown_outcome_to_final_sha,
         test_merge_reconciliation_rejects_head_drift,
+        test_update_branch_guards_head_and_reports_async_state,
+        test_update_branch_unknown_write_and_rejection_never_replay,
+        test_update_branch_failed_observation_preserves_accepted_nonretryable_write,
         test_merge_refuses_head_behind_strict_base,
         test_merge_identity_reread_rejects_head_drift,
         test_pr_helper_merge_404_includes_recovery_context,
