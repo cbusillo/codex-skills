@@ -539,7 +539,13 @@ the argument does not lift a draft or product prerequisite. The recorded claim
 retains the issue's hold fields and waiting/blocked labels, and records retained
 PR waits in the comment and Current Status. New or changed holds during readback
 refuse with the usual exact-ID claim-release recovery; fresh-read them before
-another supported claim with the existing resolution evidence. The claim
+another supported claim with the existing resolution evidence. Same-session
+metadata recovery keeps its exact claim and records renewed wait evidence in
+Current Status. Native blockers are rechecked on both readbacks. Verify the
+actual finished source session and current retained heads before invocation;
+available source-session activity refuses even outside a retained worktree.
+Unavailable peer coverage cannot establish inactivity or attribute later pushes
+to a session. The claim
 binds its source and handoff so recovery cannot silently discard that proof or
 become conflict-only refresh. Create a new linked worktree only after confirmed
 success; preserve the original checkouts. This route grants no live-operation,

@@ -25,7 +25,7 @@ TEST_BOT = "fixture-bot[bot]"
 
 SPEC = importlib.util.spec_from_file_location("gh_plan_claim_under_test", Path(__file__).with_name("gh-plan.py"))
 assert SPEC and SPEC.loader
-PLAN = importlib.util.module_from_spec(SPEC)
+PLAN: Any = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PLAN)
 
 OWNER = {"worker": "trial-a", "session": "session-a", "branch": "work/issue-42", "claimed_at": "2026-10-01T00:00:00Z"}
@@ -436,6 +436,57 @@ class ClaimTests(unittest.TestCase):
         self.run_claim()
         self.assertEqual(self.events.count("post"), 1)
         self.assertIn("> Labels: " + PLAN.DEFAULT_CONFIG["labels"]["waiting"], self.issue["body"])
+        self.assertIn(self.args.wait_resolved, self.issue["body"])
+
+    def test_ordinary_handoff_preserves_parks_states_and_url_continuations(self):
+        for hold in ("Parked until: owner approves the retained draft",
+                     "State: parked until the owner approves the draft",
+                     "Waiting for: approved prerequisite readback\nhttps://github.com/owner/repo/issues/123"):
+            with self.subTest(hold=hold):
+                self.setUp()
+                self.ordinary_handoff_fixture()
+                self.issue["body"] = self.issue["body"].split("## Current Status", 1)[0] + "## Current Status\n\n" + hold
+                self.args.wait_resolved = "Prerequisite authorized; preserve the recorded product hold."
+                self.run_claim()
+                status, _ = PLAN.read_plan_sections(self.issue)
+                self.assertIn(hold, status["Current Status"])
+                self.assertTrue(PLAN.github_direction_next.waiting_records(PLAN.compact_issue(self.issue), status["Current Status"]))
+
+    def test_ordinary_handoff_checks_visible_source_session_outside_retained_tree(self):
+        self.ordinary_handoff_fixture()
+        source_session = CLAIM.records(self.comments[0]["body"])[0]["session"]
+        self.inventory["sessions"] = [{"sessionId": source_session, "cwd": "/elsewhere"}]
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+        self.assert_no_writes()
+
+    def test_native_blocker_added_on_either_readback_still_refuses(self):
+        for phase in ("after_post", "after_status"):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.ordinary_handoff_fixture()
+                setattr(self, phase, lambda: self.blockers.append({"number": 1209, "state": "open"}))
+                with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
+                self.assertIn("native blockers", str(caught.exception))
+                self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+                if phase == "after_post": self.assertNotIn("status", self.events)
+
+    def test_ordinary_handoff_refuses_new_wait_label_on_either_readback(self):
+        for phase in ("after_post", "after_status"):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.ordinary_handoff_fixture()
+                self.args.wait_resolved = "Existing prerequisite authorization."
+                setattr(self, phase, lambda: self.issue["labels"].append({"name": PLAN.DEFAULT_CONFIG["labels"]["blocked"]}))
+                with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
+                self.assertIn("holds changed", str(caught.exception))
+                self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+
+    def test_ordinary_handoff_ignores_unrelated_pr_status_progress_during_readback(self):
+        self.ordinary_handoff_fixture()
+        self.targets["99"]["body"] += "\n\n## Current Status\n\nWaiting for: prerequisite.\nLast verified: yesterday"
+        self.args.wait_resolved = "Prerequisite step authorized; hold remains."
+        self.after_post = lambda: self.targets["99"].update(body=self.targets["99"]["body"].replace("yesterday", "today"))
+        self.run_claim()
 
     def test_ordinary_handoff_refuses_changed_holds_on_each_readback(self):
         for phase in ("after_post", "after_status"):
@@ -622,7 +673,8 @@ class ClaimTests(unittest.TestCase):
         self.run_claim()
         self.assertLess(self.events.index("post"), self.events.index("status"))
         self.assertIn("read_comments", self.events[self.events.index("post") + 1:self.events.index("status")])
-        self.assertEqual(self.events[-2:], ["read_issue", "read_comments"])
+        self.assertIn("read_issue", self.events[self.events.index("labels") + 1:])
+        self.assertIn("read_comments", self.events[self.events.index("labels") + 1:])
         self.assertIn("Keep me", self.issue["body"])
         self.assertEqual(CLAIM.records(self.issue["body"])[0]["session"], self.args.session)
         self.assertEqual(PLAN.normalize_labels(self.issue["labels"]), [PLAN.DEFAULT_CONFIG["labels"]["active"]])
