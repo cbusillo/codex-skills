@@ -427,7 +427,8 @@ Before merging any PR, do a fresh PR read and account for feedback:
 If the fresh PR state is `BEHIND`, first use `gh-pr.py view` to verify
 `headRepository` matches the PR repository, the head branch is automation-owned,
 and its own diff remains within the approved change. Then use
-`scripts/gh-with-env-token pr update-branch <pr>` before attempting merge.
+`scripts/gh-pr.py update-branch <pr>` before attempting merge; the helper
+observes the asynchronous update.
 Re-read the PR to capture the new head SHA, then use `babysit-pr` to wait for
 checks and review evidence on that exact head. A check result for the old head
 does not qualify the updated branch. Do not update a fork or another person's
@@ -550,8 +551,11 @@ uv run github/scripts/reconcile-runtime-checkout.py \
   --landing-sha <full-landing-sha>
 ```
 
-Invoke it from a worktree containing the landed helper source, not from a stale
-runtime checkout. Preserve two independent receipts: the remote merge/landing
+Invoke it from a worktree containing the landed helper source. A behind runtime
+checkout can also run its own copy with only `--repo` to catch up to the
+default-branch tip, unless the helper itself changed upstream; see
+[Runtime Checkout Reconciliation](cli-reference.md#runtime-checkout-reconciliation).
+A train landing through `launchplane-train-drive.py` reconciles itself. Preserve two independent receipts: the remote merge/landing
 result and local runtime reconciliation. `blocked`, `retryable`, or `failed`
 runtime reconciliation does not undo the merge and must not trigger another
 merge attempt. It does block claims that installed runtime behavior or

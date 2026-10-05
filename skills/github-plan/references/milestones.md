@@ -14,9 +14,7 @@ alternate backlogs.
 - Give each active milestone a due date or a named gate, dependency, or decision
   that determines when it can close.
 - Record why incomplete work no longer blocks before removing it to the backlog
-  or admitting it elsewhere. For agent admission to a milestone listed in
-  `DIRECTION.md`, blockquote in the issue the exact milestone phrase it proves
-  or protects, as required by `direction`.
+  or admitting it elsewhere.
 - When scope keeps growing, cut scope deliberately rather than silently
   extending the gate. Close the milestone when its release or phase ships;
   reconcile survivors instead of leaving it open for every themed issue.

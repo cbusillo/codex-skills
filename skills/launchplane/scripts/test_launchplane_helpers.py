@@ -1044,6 +1044,7 @@ def test_invalid_private_payload_does_not_expose_path() -> None:
 
 
 @pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize("root_alias", [False, True])
 @pytest.mark.parametrize(
     ("spelling", "repo_local"),
     [
@@ -1058,7 +1059,7 @@ def test_invalid_private_payload_does_not_expose_path() -> None:
 )
 def test_private_payload_placement_through_symlinks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str,
-    repo_local: bool, relative: bool,
+    repo_local: bool, relative: bool, root_alias: bool,
 ) -> None:
     fixture_root = tmp_path.resolve()
     repo_root = fixture_root / "repo"
@@ -1074,6 +1075,9 @@ def test_private_payload_placement_through_symlinks(
     (fixture_root / "external-local-link.json").symlink_to(local_path)
     (fixture_root / "external-private-link.json").symlink_to(private_path)
     monkeypatch.chdir(repo_root)
+    if root_alias:
+        # Exercise actual directory identity even on case-sensitive CI hosts.
+        monkeypatch.setattr(write_action, "active_repo_root", lambda: fixture_root / "alias")
     payload_path = fixture_root / spelling
     path = os.path.relpath(payload_path, repo_root) if relative else str(payload_path)
     if repo_local:
@@ -1081,6 +1085,65 @@ def test_private_payload_placement_through_symlinks(
             write_action.read_payload_file(path)
     else:
         assert write_action.read_payload_file(path) == payload
+
+
+@pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "repository/local.json",
+        "REPOSITORY/local.json",
+        "REPOSITORY/nested/local.json",
+        "REPOSITORY/local-link.json",
+        "external-case-local-link.json",
+        "external-case-private-link.json",
+    ],
+)
+def test_private_payload_placement_uses_filesystem_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str, relative: bool,
+) -> None:
+    fixture_root = tmp_path.resolve()
+    repo_root = fixture_root / "repository"
+    repo_root.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(repo_root)], check=True)
+    case_path = fixture_root / "REPOSITORY"
+    case_alias = case_path.exists() and case_path.samefile(repo_root)
+    if not case_alias:
+        # On a case-sensitive filesystem this is a distinct external directory.
+        case_path.mkdir()
+    payload = {"fixture": True}
+    private_path = fixture_root / "private.json"
+    private_path.write_text(json.dumps(payload), encoding="utf-8")
+    for directory in {repo_root, case_path}:
+        (directory / "local.json").write_text(json.dumps(payload), encoding="utf-8")
+        (directory / "nested").mkdir(exist_ok=True)
+        (directory / "nested" / "local.json").write_text(json.dumps(payload), encoding="utf-8")
+        link = directory / "local-link.json"
+        if not link.is_symlink():
+            link.symlink_to(private_path)
+    (fixture_root / "external-case-local-link.json").symlink_to(case_path / "local.json")
+    (fixture_root / "external-case-private-link.json").symlink_to(private_path)
+    monkeypatch.chdir(repo_root)
+    payload_path = fixture_root / spelling
+    path = os.path.relpath(payload_path, repo_root) if relative else str(payload_path)
+    repo_local = spelling.startswith("repository/") or (
+        case_alias and spelling != "external-case-private-link.json"
+    )
+    if repo_local:
+        with pytest.raises(ValueError, match="^repo_local_payload_unsupported$"):
+            write_action.read_payload_file(path)
+    else:
+        assert write_action.read_payload_file(path) == payload
+
+
+def test_private_payload_identity_failure_refuses_without_exposing_path(
+    tmp_path: Path,
+) -> None:
+    payload_path = tmp_path / "private.json"
+    payload_path.write_text(json.dumps({"fixture": True}), encoding="utf-8")
+    with patch.object(Path, "samefile", side_effect=OSError(str(payload_path))):
+        with pytest.raises(ValueError, match="^invalid_payload_path$"):
+            write_action.read_payload_file(str(payload_path))
 
 
 def _queue_refusal_response() -> dict[str, Any]:
@@ -1198,7 +1261,10 @@ def test_controller_block_and_reconciliation_preserve_durable_diagnostics() -> N
 
 
 def test_controller_client_timeout_is_not_a_service_outage_and_never_retries() -> None:
-    for error in (TimeoutError("timed out"), urllib.error.URLError(TimeoutError("timed out"))):
+    for error in (
+        TimeoutError("timed out"),
+        urllib.error.URLError(TimeoutError("timed out")),
+    ):
         for mutate in (False, True):
             status, payload = _run_controller_response(error, mutate=mutate, timeout=7.5)
             assert status == 1
@@ -1206,9 +1272,13 @@ def test_controller_client_timeout_is_not_a_service_outage_and_never_retries() -
             assert payload["summary"]["timeout_seconds"] == 7.5
             assert payload["warnings"][0]["code"] == "client_timeout"
             assert "7.5 s" in payload["warnings"][0]["message"]
-    status, payload = _run_controller_response(urllib.error.URLError("connection refused"))
-    assert status == 1
-    assert payload["warnings"][0]["code"] == "provider_unavailable"
+    for error in (
+        urllib.error.URLError("connection refused"),
+        http.client.RemoteDisconnected("remote disconnected"),
+    ):
+        status, payload = _run_controller_response(error)
+        assert status == 1
+        assert payload["warnings"][0]["code"] == "provider_unavailable"
 
 
 def _conflict_probe_response(probe: object, action: str = "plan_candidate") -> dict[str, Any]:
@@ -7421,6 +7491,301 @@ def test_client_named_fields_read_like_their_legacy_owner_names() -> None:
                 owner_review.main(["--repo", "example/site", "--pr", "42"])
             assert json.loads(output.getvalue()) == expected
 
+
+@pytest.mark.parametrize(
+    "descriptor,request_body,counts",
+    [
+        (
+            "managed-authz-policy-set",
+            {
+                "managed_set_id": "example.proposal",
+                "desired_policy": {"schema_version": 2},
+                "reason": "Review the prepared grant.",
+            },
+            {
+                "added_rule_count": 1,
+                "adopted_rule_count": 0,
+                "updated_rule_count": 0,
+                "removed_rule_count": 0,
+                "unchanged_rule_count": 0,
+                "policy_safety_blocker_count": 0,
+                "operational_readiness_blocked_rule_count": 0,
+            },
+        ),
+        (
+            "managed-merge-train-policy-import",
+            {
+                "record": _merge_train_policy_import_payload()["record"],
+                "reason": "Review the prepared policy.",
+            },
+            {
+                "active_target_count": 1,
+                "candidate_target_count": 1,
+                "unchanged_policy_key_count": 1,
+            },
+        ),
+    ],
+)
+def test_privileged_policy_propose_sends_private_envelope_and_only_returns_review_metadata(
+    descriptor: str, request_body: dict[str, object], counts: dict[str, int]
+) -> None:
+    envelope = {
+        "descriptor_id": descriptor,
+        "source_event_id": "test:proposal:one",
+        "request": request_body,
+    }
+    operation_id = "privileged-operation-" + "a" * 32
+    response: dict[str, Any] = {
+        "status": "ok",
+        "trace_id": "launchplane_req_" + "b" * 32,
+        "write_status": "written",
+        "summary": {
+            "operation_id": operation_id,
+            "descriptor_id": descriptor,
+            "status": "planned",
+            "result_status": "ok",
+            "changed": True,
+            **counts,
+            "expires_at": "2026-10-05T16:00:00+00:00",
+            "private_selectors": "never-emit-this",
+        },
+    }
+    calls: list[dict[str, object]] = []
+
+    def post(**kwargs: Any) -> dict[str, object]:
+        calls.append(kwargs)
+        assert kwargs["path"] == contract.helper_command_path("privileged-policy-propose")
+        assert kwargs["body"] == envelope
+        return response
+
+    with TemporaryDirectory() as directory:
+        payload_path = Path(directory) / "proposal.json"
+        payload_path.write_text(json.dumps(envelope))
+        for state, write_status in (
+            ("planned", "written"),
+            ("approved", "replayed"),
+            ("executing", "replayed"),
+            ("expired", "replayed"),
+        ):
+            response["summary"]["status"] = state
+            response["write_status"] = write_status
+            output = io.StringIO()
+            with (
+                patch.object(
+                    write_action,
+                    "resolve_settings",
+                    return_value={
+                        "service_url": "https://private.example.invalid",
+                        "token": "private-token",
+                    },
+                ),
+                patch.object(write_action, "request_launchplane", side_effect=post),
+                patch.object(
+                    write_action,
+                    "request_launchplane_read",
+                    side_effect=AssertionError("No import or preflight read"),
+                ),
+                redirect_stdout(output),
+            ):
+                assert (
+                    write_action.main(
+                        [
+                            "privileged-policy-propose",
+                            "--payload-file",
+                            str(payload_path),
+                        ]
+                    )
+                    == 0
+                )
+            result = json.loads(output.getvalue())["result"]
+            assert result["state"] == state
+            assert result["operation_id"] == operation_id
+            assert result["review_path"].endswith(operation_id)
+            assert result["counts"] == counts
+            assert result["authorizes_approval"] is False
+            assert result["authorizes_execution"] is False
+            for private in (
+                "private-token",
+                "private.example.invalid",
+                "never-emit-this",
+                str(request_body),
+            ):
+                assert private not in output.getvalue()
+    assert calls[0]["body"] == calls[1]["body"]
+
+
+def test_privileged_policy_propose_refuses_unsupported_fields_and_descriptors_before_network() -> (
+    None
+):
+    valid: dict[str, Any] = {
+        "descriptor_id": "managed-authz-policy-set",
+        "source_event_id": "test:proposal",
+        "request": {
+            "managed_set_id": "example.proposal",
+            "desired_policy": {"schema_version": 2},
+            "reason": "Review access.",
+        },
+    }
+    variants = [
+        {**valid, "descriptor_id": "ordinary-agent-delivery-activation"},
+        {**valid, "descriptor_id": "managed-secret-reencryption"},
+        {**valid, "approve": True},
+        {**valid, "source_event_id": "invalid source"},
+        {
+            **valid,
+            "request": {**valid["request"], "ordinary_agent_preparation_context": {}},
+        },
+        {**valid, "request": {**valid["request"], "reason": " "}},
+    ]
+    with (
+        TemporaryDirectory() as directory,
+        patch.object(
+            write_action,
+            "request_launchplane",
+            side_effect=AssertionError("No network"),
+        ),
+    ):
+        payload_path = Path(directory) / "proposal.json"
+        for envelope in variants:
+            payload_path.write_text(json.dumps(envelope))
+            with redirect_stdout(io.StringIO()):
+                assert (
+                    write_action.main(
+                        [
+                            "privileged-policy-propose",
+                            "--payload-file",
+                            str(payload_path),
+                        ]
+                    )
+                    == 2
+                )
+
+
+def test_privileged_policy_propose_rejects_malformed_result_without_echoing_private_fields() -> (
+    None
+):
+    for operation_id, descriptor, count in (
+        ("wrong-id", "managed-authz-policy-set", 0),
+        ("privileged-operation-" + "a" * 32, "managed-secret-reencryption", 0),
+        (
+            "privileged-operation-" + "a" * 32,
+            "managed-authz-policy-set",
+            "private-token",
+        ),
+    ):
+        response = {
+            "status": "ok",
+            "write_status": "written",
+            "summary": {
+                "operation_id": operation_id,
+                "descriptor_id": descriptor,
+                "status": "planned",
+                "added_rule_count": count,
+                "adopted_rule_count": 0,
+                "updated_rule_count": 0,
+                "removed_rule_count": 0,
+                "unchanged_rule_count": 0,
+                "policy_safety_blocker_count": 0,
+                "operational_readiness_blocked_rule_count": 0,
+                "expires_at": "2026-10-05T16:00:00Z",
+                "result_status": "ok",
+                "changed": True,
+            },
+        }
+        with pytest.raises(safety.LaunchplaneSafetyError):
+            write_action.summarize_privileged_policy_proposal(
+                request={"descriptor_id": "managed-authz-policy-set"},
+                provider_payload=response,
+            )
+
+
+@pytest.mark.parametrize(
+    "failure,expected",
+    [
+        (TimeoutError(), "outcome_unknown"),
+        (urllib.error.URLError("offline"), "outcome_unknown"),
+        (http.client.IncompleteRead(b"partial"), "outcome_unknown"),
+        (json.JSONDecodeError("cut off", "{", 1), "accepted_unverified"),
+        ("malformed", "accepted_unverified"),
+        (403, "denied"),
+        (409, "conflict"),
+        (404, "unsupported"),
+        (502, "outcome_unknown"),
+        (503, "outcome_unknown"),
+        (504, "outcome_unknown"),
+    ],
+)
+def test_privileged_policy_propose_failure_reports_safe_reconciliation(
+    failure: object, expected: str
+) -> None:
+    envelope = {
+        "descriptor_id": "managed-authz-policy-set",
+        "source_event_id": "test:proposal",
+        "request": {
+            "managed_set_id": "example.proposal",
+            "desired_policy": {"schema_version": 2},
+            "reason": "Review access.",
+        },
+    }
+    if isinstance(failure, int):
+        error_code = (
+            "authorization_denied" if failure == 403 else "privileged_operation_plan_conflict"
+        )
+        exception = urllib.error.HTTPError(
+            "https://private.example.invalid",
+            failure,
+            "private",
+            Message(),
+            io.BytesIO(
+                json.dumps(
+                    {"trace_id": "launchplane_req_" + "c" * 32, "error": {"code": error_code}}
+                ).encode()
+            ),
+        )
+        post = Mock(side_effect=exception)
+    elif isinstance(failure, BaseException):
+        post = Mock(side_effect=failure)
+    else:
+        post = Mock(
+            return_value={
+                "status": "ok",
+                "trace_id": "launchplane_req_" + "c" * 32,
+                "summary": {"private": "never-emit"},
+            }
+        )
+    with TemporaryDirectory() as directory:
+        payload_path = Path(directory) / "proposal.json"
+        payload_path.write_text(json.dumps(envelope))
+        output = io.StringIO()
+        with (
+            patch.object(
+                write_action,
+                "resolve_settings",
+                return_value={
+                    "service_url": "https://private.example.invalid",
+                    "token": "private-token",
+                },
+            ),
+            patch.object(write_action, "request_launchplane", post),
+            redirect_stdout(output),
+        ):
+            assert (
+                write_action.main(
+                    ["privileged-policy-propose", "--payload-file", str(payload_path)]
+                )
+                == 1
+            )
+        result = json.loads(output.getvalue())
+        assert result["status"] == expected
+        if expected in {"outcome_unknown", "accepted_unverified"}:
+            assert (
+                "identical private envelope and source event" in result["summary"]["recommendation"]
+            )
+        if failure in (403, 409, "malformed"):
+            assert result["summary"]["trace_id"] == "launchplane_req_" + "c" * 32
+        assert "private-token" not in output.getvalue()
+        assert "private.example.invalid" not in output.getvalue()
+        assert "never-emit" not in output.getvalue()
 
 
 def test_merge_policy_enrollment_projects_only_requested_repository() -> None:

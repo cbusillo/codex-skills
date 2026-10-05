@@ -252,6 +252,20 @@ also include the shared `api_result` diagnostics envelope.
   and `--expected-updated-at` check its prior state as described below.
 - `scripts/gh-pr.py checks <pr>`: Show check runs and commit statuses
   for the PR head.
+- `scripts/gh-pr.py update-branch <pr> [--wait-seconds 0..60]`: Merge the base
+  into the PR branch after the ownership and authorization checks in
+  [Merge Readiness](repo-workflow.md#merge-readiness), through the automation
+  identity using GitHub's
+  [update-branch API](https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request-branch)
+  and the freshly read `expected_head_sha`. The App also needs Contents write
+  on the head repository. The helper observes the asynchronous update for up
+  to 30 seconds by default. `update.state: head_changed` reports the observed
+  `newHeadSha`; it does not attribute a concurrent push to this request.
+  `accepted_unconfirmed` means the request was accepted but a new head is not
+  confirmed. Use `view` to keep observing, then wait for checks on the new
+  head. An uncertain PUT is never replayed or called completed. A failed
+  observation after acceptance preserves `updateAccepted: true`; do not send
+  the update again. The behind-branch merge refusal names this command.
 - `scripts/gh-pr.py merge <pr> --method merge`: Merge a PR. The expected head
   SHA guards retries; an unknown response is reconciled by re-reading the PR,
   recovering only a trustworthy final merge SHA and failing closed on head
@@ -348,6 +362,21 @@ immutable fetched commit with autostash disabled, ignored-file overwrite
 disabled, and repository hooks disabled. It never switches branches, resets,
 stashes, cleans, or overwrites unsafe local state.
 
+Run from the runtime checkout itself, the helper is its own merged worktree, so
+a clean install on the default branch that has fallen behind catches up with
+one command; omitting `--landing-sha` targets the fetched default-branch tip:
+
+```sh
+uv run <runtime-checkout>/skills/github/scripts/reconcile-runtime-checkout.py --repo OWNER/REPO
+```
+
+`--merged-worktree` defaults to the checkout the executing copy lives in; a
+copy outside the given worktree fails `invalid_merged_worktree`. When the
+helper itself changed upstream, the install's copy fails
+`helper_landing_source_mismatch`; run the copy from a worktree at the fetched
+tip instead. The receipt's `detail` says which. A landing driven by
+`launchplane-train-drive.py` runs this helper itself and reports the receipt.
+
 The JSON receipt reports `synchronized`, `already_current`, `not_applicable`,
 `blocked`, `retryable`, or `failed`, plus stable reason codes and before/fetched/
 after SHAs. Successful or not-applicable results exit `0`, blocked local state
@@ -377,7 +406,15 @@ or Project focus state.
   Result milestones retain the search payload's title. `--state open|closed` adds the matching
   search qualifier, `--state all` omits it, and quota evidence uses the search
   bucket. Compact states remain normalized as uppercase `OPEN` or `CLOSED`
-  values.
+  values. Coverage fields are `limit` (the requested item bound), `total_count`
+  (the largest GitHub total observed across fetched pages, not their sum), and
+  `incomplete_results` (true if any fetched page reports partial results).
+  Missing or invalid coverage metadata is null, unless a page positively
+  reports partial results. Compare `count` with `total_count` and `limit` to
+  distinguish returned items from provider totals and the caller's bound;
+  `ok: true` reports command success, not complete search coverage.
+  These fields do not prove repository visibility or escape
+  [GitHub's search limits](https://docs.github.com/en/rest/search/search#about-search).
 - `show <issue>`: Show selected sections and all issue comments, paginated in
   GitHub's chronological order. Each comment includes its ID, author login,
   creation/update timestamps, URL, and full body. Use `--full` for the entire
@@ -688,7 +725,13 @@ competitor's record.
   only). Configured Projects still enroll new issues. Manual fields are not
   synchronized by default; `--focus` and `--manager` are explicit edits, and
   configured Manager defaults are ignored.
-- `update-section <issue> <section>`: Patch a single markdown section. Section
+- `update-section <issue> <section>`: Patch a single markdown section on an
+  issue. A target returned as a pull request is refused before body preparation
+  or any write, with `validation_error` and `write_outcome=not_started`.
+  The refusal identifies the repository/number and points to correcting the
+  issue reference, `gh-plan.py --repo OWNER/REPO update-section` with a bare
+  issue number, or
+  `gh-pr.py --repo OWNER/REPO edit <pr> --body-file FILE` for intended PR edits. Section
   text from `--body`, `--body-file`, or stdin is literal, including backslashes;
   existing surrounding-whitespace normalization still applies. Body-read and
   regex preparation failures return a structured `validation_error` with
@@ -1194,6 +1237,20 @@ committer, push events, and resulting Actions runs stay owned by
 the configured automation account. The push helper picks credentials the same
 way as the wrapper: a configured GitHub App first, then `CODEX_GITHUB_TOKEN`,
 `GH_TOKEN`, and `GITHUB_TOKEN`.
+
+`git-commit-as-bot <commit args>` retains its existing interface. For local
+integration, use `git-commit-as-bot --git-command COMMAND <args>`, where COMMAND
+is `commit`, `merge`, `pull`, `rebase`, `cherry-pick`, `revert`, or `am`.
+Run the helper from the target directory; use `cd` first when working in
+another checkout. Conflict resolution uses the same mode with `--continue`. New commits use the
+bot environment; replayed commits preserve original authors and use the bot
+committer. Identity selection and credential stripping apply to every mode.
+Use `gh-pr.py update-branch` for authorized PR base updates; these commands do
+not grant protected-branch or train-owned work authority. Raw
+`merge --ff-only <ref>`, with `--ff-only` first after `merge` and without a
+conflicting fast-forward option, `--abort`, and `--quit` stay allowed
+because they create no commits. Sequencer `--skip` still needs the bot wrapper
+because it can recreate later commits.
 
 `git-push-as-bot [options] origin <refspec>` remains the default. When
 `origin` points at upstream and the Director's repository is a named remote, use

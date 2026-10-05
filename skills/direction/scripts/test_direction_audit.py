@@ -98,11 +98,9 @@ def test_owner_as_automation_is_a_limit_and_preserves_real_findings() -> None:
     assert fallback["limits"] == []
     assert run(module, automation="owner", expected_automation="OWNER")["ok"] is True
     assert "coverage_incomplete" in kinds(run(module, automation=None))
-    foreign = {**issue(10, "Foreign admission"), "milestone": {"title": "Thin fork decision"},
-               "_milestone_admitted_by": "other"}
-    dirty = run(module, automation="owner", issues=[foreign], truncated=["issues"], rulesets=[])
+    dirty = run(module, automation="owner", truncated=["issues"], rulesets=[])
     assert dirty["ok"] is False
-    assert set(kinds(dirty)) == {"coverage_incomplete", "ruleset_missing", "milestone_issue_quote_missing"}
+    assert set(kinds(dirty)) == {"coverage_incomplete", "ruleset_missing"}
     assert dirty["limits"] == clean["limits"]
 
 
@@ -219,58 +217,43 @@ def test_parse_reads_only_backticked_titles_under_milestones() -> None:
     parsed = module.parse_direction(DIRECTION + "\n## Notes\n- `Not a milestone` here\n")
     assert parsed["milestones"] == ["Thin fork decision", "Dogfood week"]
     assert parsed["missing_headings"] == []
-    wrapped = DIRECTION.replace("proves the engine choice; ends", "proves the engine choice;\n  ends")
-    assert module.has_direction_quote("> ends if the spikes fail.", module.parse_direction(wrapped)["milestone_lines"]["Thin fork decision"])
 
 
-def test_automation_milestone_admission_needs_a_quote_from_the_merged_line() -> None:
+def test_agent_milestone_additions_since_the_last_audit_are_listed_without_failing() -> None:
     module = load()
     assigned = {"title": "Thin fork decision"}
-    base = {**issue(10, "Choose the engine"), "user": {"login": "bot"}, "milestone": assigned}
-    missing = run(module, issues=[base])
-    assert ("milestone_issue_quote_missing", 10) in {(item["kind"], item.get("number")) for item in missing["findings"]}
+    base = {**issue(10, "Choose the engine"), "milestone": assigned}
+    since = NOW - dt.timedelta(days=2)
 
-    wrong = run(module, issues=[{**base, "body": "> proves a different engine choice"}])
-    assert ("milestone_issue_quote_mismatch", 10) in {(item["kind"], item.get("number")) for item in wrong["findings"]}
+    def added(by: str, at: dt.datetime = NOW - dt.timedelta(days=1), **extra: Any) -> dict[str, Any]:
+        return {**base, **extra, "_milestone_added": {"by": by, "at": at.isoformat()}}
 
-    quoted = run(module, issues=[{**base, "body": "> proves the engine choice"}])
-    assert quoted["ok"] is True, quoted
-
-    human = {**base, "user": {"login": "someone-else"}}
-    assert run(module, issues=[human])["ok"] is True
-    admitted = run(module, issues=[{**human, "_milestone_admitted_by": "bot"}])
-    assert "milestone_issue_quote_missing" in kinds(admitted)
-    other_agent = run(module, issues=[{**human, "_milestone_admitted_by": "another-app[bot]"}])
-    assert "milestone_issue_quote_missing" in kinds(other_agent)
-    unknown_actor = run(module, issues=[{**human, "_milestone_admitted_by": ""}])
-    assert "milestone_issue_quote_missing" in kinds(unknown_actor)
-    owner_admitted = run(module, issues=[{**base, "_milestone_admitted_by": "owner"}])
-    assert owner_admitted["ok"] is True
-    owner_fallback = run(module, automation="owner", issues=[{**base, "_milestone_admitted_by": "owner"}])
-    assert owner_fallback["ok"] is True
-    assert [item["kind"] for item in owner_fallback["limits"]] == ["owner_acts_as_automation"]
-    assert "milestone_issue_quote_missing" not in kinds(owner_fallback)
-    closed = run(module, issues=[{**base, "state": "closed"}])
-    assert "milestone_issue_quote_missing" in kinds(closed)
-    title_only = run(module, issues=[{**base, "body": "> Thin fork decision"}])
-    assert "milestone_issue_quote_mismatch" in kinds(title_only)
-    rendered = run(module, issues=[{**base, "body": "> Proves the engine choice"}])
-    assert rendered["ok"] is True
-    no_space = run(module, issues=[{**base, "body": ">proves the engine choice"}])
-    assert no_space["ok"] is True
-    fenced = run(module, issues=[{**base, "body": "```text\n> proves the engine choice\n```"}])
-    assert "milestone_issue_quote_missing" in kinds(fenced)
-    fragment = run(module, issues=[{**base, "body": ">roves the engine choic"}])
-    assert "milestone_issue_quote_mismatch" in kinds(fragment)
+    result = run(module, audit_since=since, repo="o/r", issues=[added("bot"), added("", number=11), added("bot", state="closed", number=12)])
+    assert result["ok"] is True, "additions are information, never findings"
+    assert result["findings"] == []
+    assert [(item["number"], item["added_by"]) for item in result["milestone_additions"]] == [(10, "bot"), (11, None), (12, "bot")]
+    assert result["milestone_additions"][0] == {
+        "repo": "o/r", "number": 10, "title": "Choose the engine", "milestone": "Thin fork decision",
+        "added_by": "bot", "added_at": (NOW - dt.timedelta(days=1)).isoformat(),
+    }
+    assert run(module, audit_since=since, issues=[added("owner")])["milestone_additions"] == [], "the Director's additions are decisions"
+    assert run(module, audit_since=since, issues=[added("bot", NOW - dt.timedelta(days=3))])["milestone_additions"] == [], "before the prior audit"
+    unlisted = added("bot", milestone={"title": "Not in the file"})
+    assert run(module, audit_since=since, issues=[unlisted])["milestone_additions"] == []
+    assert run(module, audit_since=since, issues=[base])["milestone_additions"] == [], "unread events list nothing"
+    same_login = run(module, automation="owner", audit_since=since, issues=[added("owner")])
+    assert same_login["milestone_additions"] == []
+    assert [item["kind"] for item in same_login["limits"]] == ["owner_acts_as_automation"]
 
 
-def test_automation_admission_uses_the_latest_event_across_renames() -> None:
+def test_milestone_addition_uses_the_latest_event_across_renames() -> None:
     module = load()
     old = {"event": "milestoned", "milestone": {"title": "Old title"}, "actor": {"login": "bot"}, "created_at": "2026-09-01T00:00:00Z"}
     owner = {"event": "milestoned", "milestone": {"title": "Thin fork decision"}, "actor": {"login": "owner"}, "created_at": "2026-09-02T00:00:00Z"}
-    assert module.milestone_admission_actor([old]) == "bot"
-    assert module.milestone_admission_actor([owner, old]) == "owner"
-    assert module.milestone_admission_actor([old, owner]) == "owner"
+    assert module.milestone_addition([old]) == {"by": "bot", "at": "2026-09-01T00:00:00Z"}
+    assert module.milestone_addition([owner, old])["by"] == "owner"
+    assert module.milestone_addition([old, owner])["by"] == "owner"
+    assert module.milestone_addition([{"event": "labeled"}]) is None
 
 
 def test_event_reads_are_bounded_and_skip_pull_requests() -> None:
@@ -278,25 +261,28 @@ def test_event_reads_are_bounded_and_skip_pull_requests() -> None:
     first = {**issue(10, "One"), "milestone": {"title": "Thin fork decision"}}
     second = {**issue(11, "Two"), "milestone": {"title": "Thin fork decision"}}
     pull = {**issue(12, "PR"), "milestone": {"title": "Thin fork decision"}, "pull_request": {}}
+    untouched = {**issue(13, "Untouched", created="2026-08-01T00:00:00Z"), "milestone": {"title": "Thin fork decision"}}
     calls: list[list[str]] = []
     def fetch(args: list[str]) -> list[dict[str, Any]]:
         calls.append(args)
-        return [{"event": "milestoned", "actor": {"login": "bot"}}]
+        return [{"event": "milestoned", "actor": {"login": "bot"}, "created_at": "2026-09-10T00:00:00Z"}]
     cut = module.enrich_admission_actors(
-        [first, second, pull], {"Thin fork decision": "- `Thin fork decision` proves the engine choice; ends if the spikes fail."},
-        "o/r", fetch=fetch, max_issues=1,
+        [first, second, pull, untouched], {"Thin fork decision": "- `Thin fork decision` proves the engine choice; ends if the spikes fail."},
+        "o/r", fetch=fetch, since=NOW - dt.timedelta(days=30), max_issues=1,
     )
     assert cut is True
-    assert first["_milestone_admitted_by"] == "bot"
+    assert first["_milestone_added"] == {"by": "bot", "at": "2026-09-10T00:00:00Z"}
     assert second["_admission_unknown"] is True
-    assert "_milestone_admitted_by" not in pull
+    assert "_milestone_added" not in pull
     assert len(calls) == 1
+    module.enrich_admission_actors([untouched], {"Thin fork decision": ""}, "o/r", fetch=fetch, since=NOW - dt.timedelta(days=7))
+    assert "_milestone_added" not in untouched and len(calls) == 1, "an issue not updated since the audit window needs no event read"
 
 
-def test_issue_fetch_keeps_open_findings_and_recent_closed_admissions() -> None:
+def test_issue_fetch_reads_recent_milestone_additions_including_closed_issues() -> None:
     module = load()
-    open_issue = {**issue(10, "Open", body="> proves the engine choice"), "milestone": {"title": "Thin fork decision"}, "state": "open"}
-    closed_issue = {**issue(11, "Closed"), "milestone": {"title": "Thin fork decision"}, "state": "closed"}
+    open_issue = {**issue(10, "Open"), "milestone": {"title": "Thin fork decision"}, "state": "open", "updated_at": "2026-09-01T00:00:00Z"}
+    closed_issue = {**issue(11, "Closed"), "milestone": {"title": "Thin fork decision"}, "state": "closed", "updated_at": "2026-09-20T00:00:00Z"}
     calls: list[str] = []
     def fetch(args: list[str]) -> list[dict[str, Any]]:
         path = args[1]
@@ -308,17 +294,17 @@ def test_issue_fetch_keeps_open_findings_and_recent_closed_admissions() -> None:
         if "state=closed" in path:
             return [closed_issue]
         if "/issues/11/events" in path:
-            return [{"event": "milestoned", "actor": {"login": "bot"}}]
+            return [{"event": "milestoned", "actor": {"login": "bot"}, "created_at": "2026-09-20T00:00:00Z"}]
         raise AssertionError(path)
     found, truncated = module.fetch_audit_issues(
         "o/r", [milestone(1, "Thin fork decision")],
         {"Thin fork decision": "- `Thin fork decision` proves the engine choice; ends if the spikes fail."},
-        NOW, fetch=fetch,
+        NOW - dt.timedelta(days=7), fetch=fetch,
     )
     assert truncated == []
     assert {item["number"] for item in found} == {10, 11}
-    assert closed_issue["_milestone_admitted_by"] == "bot"
-    assert not any("/issues/10/events" in path for path in calls), "a matching quote needs no event read"
+    assert closed_issue["_milestone_added"]["by"] == "bot"
+    assert not any("/issues/10/events" in path for path in calls), "an issue untouched since the window needs no event read"
     assert any("state=open" in path for path in calls)
     assert any("state=closed&since=" in path for path in calls)
 
@@ -372,7 +358,8 @@ def test_main_preserves_closed_audit_cutoff_and_stamps_scan_start() -> None:
                 return [closed] * 100 if cap == "closed_audit" else [closed]
             if "state=open" in path and cap == "milestone_events":
                 return [
-                    {**issue(number, "Owner-admitted work"), "milestone": {"title": "Thin fork decision"}, "user": {"login": "o"}}
+                    {**issue(number, "Owner-admitted work"), "milestone": {"title": "Thin fork decision"},
+                     "user": {"login": "o"}, "updated_at": "2026-09-20T00:00:00Z"}
                     for number in range(100, 151)
                 ]
             if path.startswith("repos/o/r/issues/") and "/events?" in path:
@@ -391,7 +378,6 @@ def test_main_preserves_closed_audit_cutoff_and_stamps_scan_start() -> None:
                       "gh_json": fetch,
                       "dt": types.SimpleNamespace(datetime=Clock, timezone=dt.timezone, timedelta=dt.timedelta),
                   }),
-                  patch.dict(vars(module.github_client), {"recorded_client": lambda *_args, **_kwargs: {"status": "none", "source": "fixture"}}),
                   patch.dict(vars(module.github_identity), {"configured_bot_logins": lambda: ("bot",)}),
                   redirect_stdout(output)):
                 assert module.main(["--repo", "o/r", "--automation", "bot", "--gh", "fixture-gh"]) == 3
@@ -401,17 +387,16 @@ def test_main_preserves_closed_audit_cutoff_and_stamps_scan_start() -> None:
             saved = json.loads(marker.read_text())
             assert saved["turn"] == original["turn"]
             assert saved["turn_repo"] == original["turn_repo"]
-            if cap == "closed_audit":
-                assert "recent_closed_audit_issues" in result["findings"][0]["listings"]
-                assert result["marked"] is None
+            if cap is not None:
+                listing = "recent_closed_audit_issues" if cap == "closed_audit" else "milestone_issue_events"
+                assert listing in result["findings"][0]["listings"]
+                assert result["ok"] is False
+                assert result["marked"] is None, "an unread milestone addition must stay in the next window"
                 assert saved == original
             else:
                 assert result["marked"] == str(marker)
                 assert saved["audits"]["o/r"] == "2026-09-21T12:00:00Z"
                 assert saved["audits"]["o/other"] == original["audits"]["o/other"]
-                if cap == "milestone_events":
-                    assert "milestone_issue_events" in result["findings"][0]["listings"]
-                    assert result["ok"] is False, "unrelated incomplete coverage must remain visible"
             assert any(f"labels=audit&since={previous}" in path for path in calls)
 
 
@@ -1202,33 +1187,6 @@ def test_only_the_direction_repository_audit_counts_capacity() -> None:
             assert (result["marked"] is None) is (audited == "o/direction")
             assert (json.loads(marker.read_text())["audits"][audited] == stamp(SINCE)) is (audited == "o/direction")
     assert windows == [("o/direction", SINCE)]
-
-
-def test_only_product_client_issues_are_exempt_from_admission_quotes() -> None:
-    module = load()
-    request = {**issue(10, "A Client request"), "user": {"login": "CLIENT"},
-               "milestone": {"title": "Thin fork decision"}, "_milestone_admitted_by": "bot"}
-    client = {"status": "recorded", "source": "launchplane", "login": "client"}
-    assert "milestone_issue_quote_missing" not in kinds(run(module, issues=[request], client=client))
-    for record in (None, {"status": "none"}, {**client, "login": "another-client"}):
-        assert "milestone_issue_quote_missing" in kinds(run(module, issues=[request], client=record))
-    automation = {**request, "user": {"login": "bot"}}
-    assert "milestone_issue_quote_missing" in kinds(run(module, issues=[automation], client={**client, "login": "bot"}))
-    staff = {**request, "user": {"login": "staff"}}
-    assert "milestone_issue_quote_missing" in kinds(run(module, issues=[staff], client=client))
-    # The exemption affects only admission quotes; other drift is still reported.
-    changed = {**request, "labels": [{"name": "direction"}]}
-    assert "escalation_open" in kinds(run(module, issues=[changed], client=client))
-
-
-def test_audit_preserves_degraded_client_identity_evidence_without_private_login() -> None:
-    module = load()
-    for status in ("unavailable", "ambiguous"):
-        result = run(module, client={"status": status, "source": "launchplane"})
-        assert result["client_context"] == {"status": status, "source": "launchplane"}
-        assert any(limit["kind"] == "client_identity_unavailable" for limit in result["limits"])
-    result = run(module, client={"status": "recorded", "source": "launchplane", "login": "client"})
-    assert "login" not in result["client_context"]
 
 
 def main() -> int:

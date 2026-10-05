@@ -931,6 +931,7 @@ def collect_paged_rest_items(
     collection_key: str | None = None,
     issue_only: bool = False,
     completed_steps: list[str] | None = None,
+    page_metadata: list[dict[str, Any]] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     actor = ""
     items: list[dict[str, Any]] = []
@@ -953,6 +954,8 @@ def collect_paged_rest_items(
             page_items = payload
         if not isinstance(page_items, list):
             raise PlanError(f"GitHub {step_prefix} response did not contain a list")
+        if page_metadata is not None and isinstance(payload, dict):
+            page_metadata.append({key: value for key, value in payload.items() if key != collection_key})
         for item in page_items:
             if not isinstance(item, dict):
                 raise PlanError(f"GitHub {step_prefix} response contained a non-object item")
@@ -1807,6 +1810,7 @@ def cmd_search(args: argparse.Namespace) -> None:
     query_parts.append("is:issue")
     if args.state != "all":
         query_parts.append(f"is:{args.state}")
+    page_metadata: list[dict[str, Any]] = []
     actor, data = collect_paged_rest_items(
         "/search/issues",
         query={"q": " ".join(part for part in query_parts if part)},
@@ -1815,6 +1819,7 @@ def cmd_search(args: argparse.Namespace) -> None:
         limit=args.limit,
         collection_key="items",
         issue_only=True,
+        page_metadata=page_metadata,
     )
     items = []
     for item in data:
@@ -1822,7 +1827,20 @@ def cmd_search(args: argparse.Namespace) -> None:
         if item_repo is None:
             raise PlanError("GitHub search response omitted the issue repository")
         items.append(compact_list_issue(item_repo, item))
-    emit({"ok": True, "actor": actor, "repo": repo, "count": len(items), "issues": items})
+    totals: list[int] = []
+    for page in page_metadata:
+        value = page.get("total_count")
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            totals.append(value)
+    partial_flags = [page.get("incomplete_results") for page in page_metadata]
+    total_count = max(totals) if totals and len(totals) == len(page_metadata) else None
+    incomplete_results = (
+        True if any(value is True for value in partial_flags)
+        else False if partial_flags and all(value is False for value in partial_flags)
+        else None
+    )
+    emit({"ok": True, "actor": actor, "repo": repo, "count": len(items), "issues": items,
+          "total_count": total_count, "incomplete_results": incomplete_results, "limit": args.limit})
 
 
 def cmd_show(args: argparse.Namespace) -> None:
@@ -2490,6 +2508,23 @@ def cmd_update_section(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     issue_repo, number = issue_ref(args.issue, repo)
     _, issue = get_issue(args.issue, repo)
+    if "pull_request" in issue:
+        message = (
+            f"{issue_repo}#{number} is a pull request; update-section only updates planning issues. "
+            "Select the intended issue reference, or use gh-plan.py --repo OWNER/REPO update-section "
+            "with a bare issue number. "
+            f"For an intended PR body edit, use gh-pr.py --repo {issue_repo} edit {number} --body-file FILE."
+        )
+        failure = github_api_core.FailureDetail(
+            cause="validation_error",
+            message=message,
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            write_outcome="not_started",
+            failed_step="validate_object_kind",
+        )
+        raise PlanError(message, failure=failure)
     preparation_step = "read_body"
     try:
         new_text = read_body(args)
