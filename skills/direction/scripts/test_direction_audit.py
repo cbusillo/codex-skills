@@ -1576,10 +1576,12 @@ def test_overall_audit_follows_track_to_invalid_cross_repository_wait() -> None:
         if path == "repos/owner/business/issues/120":
             return child
         return []
-    assert not module.enrich_milestone_waits([root], "owner/direction", ["Dogfood week"], fetch=fetch)
-    result = run(module, issues=[root])
+    pull = {**issue(2, "Direction proposal"), "pull_request": {"url": "https://github.com/owner/direction/pull/2"}}
+    assert not module.enrich_milestone_waits([pull, root], "owner/direction", ["Dogfood week"], fetch=fetch)
+    result = run(module, issues=[pull, root])
     finding = next(item for item in result["findings"] if item["kind"] == "milestone_wait_invalid")
     assert (finding["repo"], finding["number"]) == ("owner/business", 120)
+    assert sum(item["kind"] == "milestone_wait_invalid" for item in result["findings"]) == 1
     assert module.enrich_milestone_waits([root], "owner/direction", ["Dogfood week"],
                                        fetch=lambda _: (_ for _ in ()).throw(module.AuditError("unavailable")))
 

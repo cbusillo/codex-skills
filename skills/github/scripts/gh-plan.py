@@ -3335,7 +3335,6 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                 evaluated_node = github_direction_next.evaluate_direction_node(
                     raw_issue, config=target_config, focus=focus, relationships=relationships,
                     truncated_relationships=truncated,
-                    milestone_titles=titles,
                 )
             comment_limit = getattr(args, "comment_limit", None) or 100
             _, comments = collect_paged_rest_items(
@@ -3474,7 +3473,8 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
             original_exclusion = item.get("exclusion")
             ordinary_discussion_complete = bool((item.get("discussion") or {}).get("complete"))
             held = github_direction_next.repository_hold(selection_context, item["repo"])
-            if (not original_exclusion or capacity_evidence) and item.get("exclusion") not in {"completed", "pull_request", "unknown_dependencies"}:
+            listed_wait = original_exclusion == "waiting" and (item.get("milestone") or {}).get("title") in titles
+            if (not original_exclusion or capacity_evidence or listed_wait) and item.get("exclusion") not in {"completed", "pull_request", "unknown_dependencies"}:
                 exclusion = item.get("exclusion")
                 item = with_ancestry(item)
                 if exclusion:

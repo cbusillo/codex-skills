@@ -80,7 +80,10 @@ out. This is an after-the-fact reading, not a preapproval gate. An issue added
 during close-out waits for a later `go <milestone>` run. Adding a milestone or
 changing what it proves remains Director direction.
 
-On a listed milestone's path, report a wait that names another milestone or no person or event and keep the issue available unless it has an open native blocker; tooling fills spare capacity only when every milestone has a reviewed named person wait, with its recorded start date or an explicit unknown start.
+On a listed milestone's path, report a wait that names another milestone or no
+person or event and keep the issue available unless it has an open native
+blocker; tooling fills spare capacity only when every milestone has a reviewed
+named person wait, with its recorded start date or an explicit unknown start.
 
 A proposal that adds a fourth container or a second human gate is the signal
 that the design is getting too complicated. Prefer deleting a concept to adding
@@ -245,6 +248,9 @@ reads, pass `--automation BOT-LOGIN` to retain that bot's attribution.
 `owner_reader_identity` in incomplete coverage means the explicit reader could
 not establish the Director's login; check the active account and token overrides.
 For each finding:
+
+- `milestone_wait_invalid`: apply the milestone-wait rule under
+  [Three Containers, One Gate](#three-containers-one-gate) to the reported issue.
 
 - `coverage_incomplete`: a bounded read was truncated or unavailable, or
   actor classification was unavailable. Name the affected listings and the

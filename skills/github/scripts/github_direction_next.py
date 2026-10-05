@@ -92,16 +92,24 @@ def section_map(body: str) -> dict[str, str]:
 def milestone_wait_evidence(item: dict[str, Any], status_text: str, milestone_titles: list[str]) -> dict[str, Any]:
     """Validate the recorded wait, leaving person/event interpretation to review."""
     status_text = re.sub(r"<!--.*?-->", "", status_text, flags=re.DOTALL)
-    match = re.search(r"(?im)^[ \t]*(?:[-*][ \t]+)?Waiting for:[ \t]*([^\n]*)", status_text)
+    status_text = re.sub(r"\*\*((?:Waiting for|Parked until|Blocked by|Waiting since):)\*\*", r"\1", status_text, flags=re.IGNORECASE)
+    match = re.search(r"(?im)^[ \t]*(?:[-*][ \t]+)?(?:Waiting for|Parked until):[ \t]*([^\n]*)", status_text)
+    if match is None:
+        match = re.search(r"(?im)^[ \t]*(?:[-*][ \t]+)?Blocked by:[^\n]*?\bwaiting for[ \t]+([^\n]*)", status_text)
     reason = match.group(1).strip() if match else ""
     plain = re.sub(r"[`*_]", "", reason).casefold().rstrip(" .")
     requested = bool((plain and plain not in {"none", "n/a", "nothing", "-"}) or item.get("exclusion") == "waiting"
                      or "plan:waiting" in normalize_labels(item.get("labels"))
                      or re.search(r"(?im)^\s*(?:[-*]\s+)?State:\s*(?:waiting|parked)\b", status_text))
     invalid = None
+    milestone = item.get("milestone")
+    own_title = milestone.get("title") if isinstance(milestone, dict) else milestone
     if not plain or plain in {"none", "n/a", "nothing", "-", "tbd", "unknown", "not recorded", "testing", "people"}:
         invalid = "wait_names_no_person_or_event"
-    elif re.search(r"\bmilestones?\b", plain) or any(title.casefold() in plain for title in milestone_titles):
+    elif (re.match(r"^(?:(?:starts?|starting)\s+)?(?:after\s+)?(?:[\w.-]+/direction\s+)?(?:another\s+)?milestones?\b", plain)
+          or any(plain.strip("'\"") == title.casefold()
+                 or re.match(r"^(?:(?:starts?|starting)\s+)?(?:after|until|following|once)\s+['\"]?" + re.escape(title.casefold()) + r"\b", plain)
+                 for title in milestone_titles if title != own_title)):
         invalid = "wait_names_another_milestone"
     # updated_at is evidence of when the record was observed, not a fabricated
     # start date. Only an explicit since field establishes how long it waited.
@@ -126,7 +134,18 @@ def check_milestone_wait(item: dict[str, Any], status_text: str, milestone_title
     result = {**item, "wait_finding": finding}
     if result.get("exclusion") == "waiting":
         result.pop("exclusion")
+        if result.get("open_sub_issues"):
+            result["exclusion"] = "delegated_to_open_sub_issues"
     return result
+
+
+def milestone_wait_source(item: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    source = item
+    if item.get("exclusion") == "parent_waiting":
+        source = next((parent for parent in (item.get("discussion") or {}).get("parents", [])
+                       if parent.get("url") == item.get("waiting_on_parent")), item)
+    status = section_map((source.get("discussion") or {}).get("body", "")).get("Current Status", "")
+    return source, status
 
 
 def relationship_refs(items: list[dict[str, Any]], issue_repo: str) -> list[str]:
@@ -411,6 +430,17 @@ def overall_milestone_context(
         linked = {entry["milestone"]["title"] for entry in linked_entries}
         blocked_match = any((entry["repo"].casefold(), entry["number"]) in blocking_keys for entry in linked_entries)
         return {"state": "matched", "titles": [title for title in milestone_titles if title in linked], "source": "native_track_links" if blocked_match else "native_track_ancestry"}
+    inherited = set()
+    for parent in (item.get("discussion") or {}).get("parents", []):
+        parent_milestone = parent.get("milestone") or {}
+        parent_titles = next((value for key, value in repository_milestones.items()
+                              if key.casefold() == parent["repo"].casefold()), None)
+        if (parent_milestone.get("state") == "open" and parent_milestone.get("title") in milestone_titles
+                and parent_milestone.get("title") in (parent_titles or [])):
+            inherited.add(parent_milestone["title"])
+    if inherited:
+        return {"state": "matched", "titles": [title for title in milestone_titles if title in inherited],
+                "source": "native_milestone_ancestry"}
     repo = item["repo"]
     repository_titles = next((value for key, value in repository_milestones.items() if key.casefold() == repo.casefold()), None)
     local_title = (item.get("milestone") or {}).get("title")
@@ -499,8 +529,8 @@ def tooling_capacity_context(
             or review.get("ownership_complete") is not True
         ):
             return {**result, "issue": f"{entry['repo']}#{entry['number']}", "required": "current_complete_person_wait_review"}
-        status = section_map(discussion.get("body", "")).get("Current Status", "")
-        evidence = milestone_wait_evidence(entry, status, milestone_titles)
+        source, status = milestone_wait_source(entry)
+        evidence = milestone_wait_evidence(source, status, milestone_titles)
         if not evidence["valid"]:
             return {**result, "reason": evidence["reason"], "issue": f"{entry['repo']}#{entry['number']}"}
     # Person-wait reviews enable the adapter's capacity-only ancestry reads.
@@ -526,9 +556,9 @@ def tooling_capacity_context(
             visited.add(key)
             entry = by_key[key]
             if key in frontier_keys:
-                status = section_map((entry.get("discussion") or {}).get("body", "")).get("Current Status", "")
-                evidence = milestone_wait_evidence(entry, status, milestone_titles)
-                records.append({"repo": entry["repo"], "number": entry["number"], "url": entry["url"],
+                source, status = milestone_wait_source(entry)
+                evidence = milestone_wait_evidence(source, status, milestone_titles)
+                records.append({"repo": source["repo"], "number": source["number"], "url": source["url"],
                                      "person": evidence["waiting_for"], "since": evidence["since"],
                                      "recorded_at": evidence["recorded_at"]})
             pending_keys.extend((dep["repo"].casefold(), dep["number"])
@@ -641,6 +671,7 @@ def rank_portfolio_work(
     excluded = list(graph.get("excluded", []))
     waiting = list(graph.get("waiting", []))
     invalid_wait_urls = {item["url"] for item in findings}
+    invalid_wait_urls.update(item["url"] for item in [*graph.get("candidates", []), *discoveries] if item.get("wait_finding"))
     waiting = [item for item in waiting if item.get("reported_by") not in invalid_wait_urls]
     underway: list[dict[str, Any]] = []
     seen = {f"{entry['repo']}#{entry['number']}".casefold() for entry in excluded if entry.get("exclusion") != "outside_direction_tracks"}
@@ -782,7 +813,6 @@ def evaluate_direction_node(
     relationships: dict[str, list[dict[str, Any]]] | None,
     relationship_error: str | None = None,
     truncated_relationships: list[str] | None = None,
-    milestone_titles: list[str] | None = None,
 ) -> dict[str, Any]:
     """Classify raw issue evidence identically for CLI and service consumers."""
     if truncated_relationships:
@@ -801,19 +831,14 @@ def evaluate_direction_node(
     status_text = re.sub(r"<!--.*?-->", "", status_text, flags=re.S).strip()
     reports = waiting_records(item, status_text)
     summary = next_relationship_summary(relationships or {})
+    if summary["open_sub_issues"]:
+        item["open_sub_issues"] = summary["open_sub_issues"]
     if (
         next_plan_status(issue, config) == "waiting"
         or re.search(r"(?im)^\s*State:\s*(?:waiting|parked)\b", status_text)
         or (reports and not (summary["open_blockers"] or summary["open_sub_issues"]))
     ):
         item["exclusion"] = "waiting"
-    if ((item.get("milestone") or {}).get("title") in (milestone_titles or [])
-            and not str(item.get("title", "")).startswith("Track:")):
-        checked = check_milestone_wait({**item, "blocked_by": summary["open_blockers"]}, status_text, milestone_titles or [])
-        if checked.get("wait_finding") or checked.get("exclusion") != item.get("exclusion"):
-            item = checked
-        if checked.get("wait_finding"):
-            reports = []
     return {
         "item": item,
         "blockers": summary["open_blockers"],

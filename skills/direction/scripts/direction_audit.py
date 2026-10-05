@@ -244,7 +244,9 @@ def audit(
                     findings.append({"kind": "audit_judge", "number": number, "title": issue.get("title"), "closed_at": issue.get("closed_at")})
         milestone_title = str(((issue.get("milestone") or {}).get("title")) or "")
         findings.extend(issue.get("_milestone_wait_findings", []))
-        if state == "open" and milestone_title in listed and not str(issue.get("title", "")).startswith("Track:"):
+        if (state == "open" and milestone_title in listed
+                and not github_direction_next.is_direction_repository(str(issue.get("repo") or ""))
+                and not str(issue.get("title", "")).startswith("Track:")):
             compact = {**github_direction_next.compact_list_issue(str(issue.get("repo") or owner), issue),
                        "blocked_by": issue.get("_open_blockers", [])}
             status = github_direction_next.section_map(issue.get("body") or "").get("Current Status", "")
@@ -830,6 +832,8 @@ def enrich_milestone_waits(
 ) -> bool:
     """Use the selection graph for overall Tracks; local audits check assigned work."""
     seeds = {(repo.casefold(), item["number"]): item for item in issues}
+    for item in issues:
+        item["repo"] = repo
     incomplete = False
     config = {"labels": {"waiting": "plan:waiting", "blocked": "plan:blocked", "stale": "plan:stale", "done": "plan:done"}}
 
@@ -866,8 +870,9 @@ def enrich_milestone_waits(
                  for item in issues if item.get("state", "open") == "open" and "pull_request" not in item]
         graph = github_direction_next.rank_direction_work(roots, milestone_titles=titles, read_node=read_node,
                                                           scan_limit=MAX_ADMISSION_ISSUES, completed_milestone_titles=completed_titles)
-        if issues:
-            issues[0]["_milestone_wait_findings"] = graph["findings"]
+        target = next((item for item in issues if "pull_request" not in item), None)
+        if target is not None:
+            target["_milestone_wait_findings"] = graph["findings"]
         incomplete |= not graph["dependency_context"]["complete"]
     else:
         examined = 0
