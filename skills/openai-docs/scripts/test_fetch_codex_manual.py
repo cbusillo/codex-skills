@@ -169,11 +169,14 @@ process.stdout.write(JSON.stringify({ first, second, body: await readFile(second
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             executable = root / "curl"
-            executable.write_text(f"#!{sys.executable}\n" + curl_script)
+            implementation = root / "curl_fixture.py"
+            implementation.write_text(curl_script)
+            executable.write_text('#!/bin/sh\nexec "$CURL_FIXTURE_PYTHON" "$CURL_FIXTURE_SCRIPT" "$@"\n')
             executable.chmod(0o700)
             calls = root / "calls"
             environment.update(PATH=str(root), HTTP_PROXY="http://proxy.example.invalid",
-                               CURL_FIXTURE_BODY=body, CURL_FIXTURE_CALLS=str(calls))
+                               CURL_FIXTURE_BODY=body, CURL_FIXTURE_CALLS=str(calls),
+                               CURL_FIXTURE_PYTHON=sys.executable, CURL_FIXTURE_SCRIPT=str(implementation))
             result = subprocess.run(
                 [node, "--input-type=module", "-e", script, str(root / "cache"), HELPER.as_uri()],
                 env=environment, capture_output=True, text=True, timeout=5,
