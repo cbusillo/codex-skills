@@ -371,16 +371,6 @@ commands:
     purpose: Applies only apply-eligible reviewed generic-web deploy-recovery evidence with redacted output.
 policy:
   command_policies:
-    - id: prefer-launchplane-helper-for-live-target-runtime-api
-      match:
-        shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/live-target-runtime/apply\\b"
-      action: require_preferred
-      message: Use the runtime-sync helper for reviewed key plans, scoped authority, persistence evidence and value redaction.
-      preferred:
-        - kind: script
-          path: scripts/launchplane-write-action.py
-          example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "live-target-runtime-sync-dry-run", "--product", "<product>", "--context", "<context>", "--instance", "<instance>"]
-          purpose: Dry-runs managed-runtime delivery without a deploy.
     - id: prefer-launchplane-write-helper-for-merge-train-policy-import-api
       match:
         shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/merge-train/policies/import\\b"

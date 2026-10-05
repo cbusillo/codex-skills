@@ -7046,7 +7046,9 @@ def test_runtime_sync_review_persistence_and_boundaries() -> None:
             _runtime_sync_response(), _runtime_sync_response(mode="apply"), denied_readback,
         ])
         assert code == 1 and result["status"] == "accepted_unverified"
-        assert result["summary"]["trace_id"] == "launchplane_req_expired"
+        assert result["summary"]["trace_id"] == "launchplane_req_runtime_sync"
+        assert result["summary"]["read_back_trace_id"] == "launchplane_req_expired"
+        assert result["summary"]["read_back_error_code"] == "authorization_denied"
         code, result, _ = _run_runtime_sync(apply_argv, [
             _runtime_sync_response(), http.client.IncompleteRead(b"private-provider-response", 10),
         ])
@@ -7074,6 +7076,8 @@ def test_runtime_sync_denial_and_unsafe_output() -> None:
     code, result, _ = _run_runtime_sync(argv, [json.JSONDecodeError("Invalid", "", 0)])
     assert code == 1 and result["status"] == "invalid"
     assert result["warnings"][0]["code"] == "invalid_response"
+    code, result, _ = _run_runtime_sync(argv, [safety.LaunchplaneSafetyError("unsafe_redirect")])
+    assert code == 1 and result["warnings"][0]["code"] == "unsafe_redirect"
     unsafe = _runtime_sync_response()
     unsafe["result"]["runtime_environment"]["changed_keys"] = ["EXAMPLE_API_TOKEN=secret"]
     code, result, _ = _run_runtime_sync(argv, [unsafe])

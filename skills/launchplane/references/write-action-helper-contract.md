@@ -1121,13 +1121,15 @@ product/context. The helper grants nothing and never switches identity.
 Save the dry-run output privately. Apply requires `--reviewed-dry-run`,
 `--expected-plan-digest` from `result.plan_sha256`, `--dry-run-evidence-file`, and
 `--idempotency-key`. The helper binds the review to the lane, provider target
-fingerprint and key/count plan, obtains a fresh dry run and refuses a changed
-plan before applying. It reports changed, missing, different and retiring key
+fingerprint and key/count plan, obtains a fresh dry run and refuses a difference
+observed in that pre-apply plan before sending apply. It reports changed, missing, different and retiring key
 names, counts, provider persistence status and `read_back_matches`; target ids,
 provider payloads and values are dropped. After apply it runs another dry run
 and requires zero remaining key changes on the same target.
 
-The digest binds metadata, not hidden values or managed-record revisions. The
+Changes between the pre-apply dry run and the apply can only be detected after
+the write by the result comparison and read-back. The digest binds metadata,
+not hidden values or managed-record revisions. The
 service has no reviewed-revision compare-and-swap contract here; a value change
 that leaves the same key plan is not detectable by this helper. This is not an
 exact-value review guarantee. Provider persistence also does not prove the

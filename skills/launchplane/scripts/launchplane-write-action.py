@@ -5643,6 +5643,8 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
                 body={**body, "mode": mode}, timeout=args.timeout,
                 idempotency_key=args.idempotency_key if mode == "apply" else "",
             )
+        except LaunchplaneSafetyError:
+            raise
         except ValueError:
             raise LaunchplaneSafetyError("invalid_response") from None
         if mode == "apply":
@@ -5701,10 +5703,15 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
                 except (http.client.HTTPException, OSError):
                     error_payload = {}
                 try:
-                    summary["trace_id"] = public_trace_id(error_payload.get("trace_id"))
+                    error_trace = public_trace_id(error_payload.get("trace_id"))
+                    if apply_received:
+                        summary["read_back_trace_id"] = error_trace
+                    elif error_trace:
+                        summary["trace_id"] = error_trace
                     error = error_payload.get("error")
                     if isinstance(error, dict):
-                        summary["error_code"] = public_code(error.get("code"))
+                        code_field = "read_back_error_code" if apply_received else "error_code"
+                        summary[code_field] = public_code(error.get("code"))
                 except LaunchplaneSafetyError:
                     pass
             payload["summary"] = summary
