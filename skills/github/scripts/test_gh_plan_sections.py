@@ -59,7 +59,8 @@ class SectionTests(unittest.TestCase):
             try:
                 PLAN.main()
             except SystemExit as exc:
-                code = int(exc.code)
+                assert isinstance(exc.code, int), exc.code
+                code = exc.code
         return code, json.loads(output.getvalue()), edit, errors.getvalue()
 
     def test_literal_text_survives_body_file_and_stdin_updates(self) -> None:
