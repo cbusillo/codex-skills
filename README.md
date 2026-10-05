@@ -10,8 +10,10 @@ read the Director's overall `DIRECTION.md` in the repository owner's
 [AGENTS.md](AGENTS.md) holds execution details for both hosts and is the only
 repository agent-instruction filename; path-specific instructions use nested
 `AGENTS.md` files. Generated host-global instructions remain host-specific.
-Every Code and Codex Lab are retired execution targets; retained traces,
-fixtures, and artifact readers describe historical behavior.
+Every Code traces, fixtures, and artifact readers describe historical behavior.
+Remaining Codex Lab bindings await the separate
+[support decision](https://github.com/cbusillo/direction/issues/21); this docs
+audit does not remove them.
 
 Each skill lives in its own directory under [`skills/`](skills) with a `SKILL.md`
 file; `skills/` is the catalog that hosts load. Skills can include
@@ -379,9 +381,9 @@ For work in this repository, use the direction files linked above and the
 claimed before its linked worktree is created. This repository's
 [GitHub metadata](.github/github.json) enables Launchplane's merge train:
 use the [Launchplane skill](skills/launchplane/SKILL.md#merge-train-controller)
-for authorized train entry and landing, rather than merging by hand. A task
-brief that assigns routing to a direction or Supervisor session owns that
-handoff.
+for authorized train entry and landing. Do not call `gh-pr.py merge` or merge
+directly in GitHub. A task brief that assigns routing to a direction or
+Supervisor session owns that handoff.
 After a confirmed landing, reconcile the runtime checkout as described in
 [AGENTS.md](AGENTS.md#runtime-checkout-discipline).
 

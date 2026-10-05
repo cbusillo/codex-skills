@@ -15,9 +15,9 @@
   `gh-plan.py claim` before creating its linked task worktree.
 - This repository enables Launchplane's merge train in `.github/github.json`.
   Use the [Launchplane skill](skills/launchplane/SKILL.md#merge-train-controller)
-  for authorized train entry and landing; do not merge by hand. When the task
-  brief assigns train routing to a direction or Supervisor session, follow
-  that handoff instead of driving the train yourself.
+  for authorized train entry and landing. Do not call `gh-pr.py merge` or merge
+  directly in GitHub. When the task brief assigns train routing to a direction
+  or Supervisor session, follow that handoff instead of driving the train yourself.
 
 ## Instruction maintenance
 
