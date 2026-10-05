@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = [
+#     "pytest==9.1.1",
+# ]
 # ///
 """Focused regression tests for Launchplane helper trust boundaries."""
 
@@ -24,6 +26,8 @@ from email.message import Message
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, cast
+
+import pytest
 from unittest.mock import Mock, patch
 
 
@@ -6953,135 +6957,6 @@ def test_compose_domain_review_apply_and_read_back() -> None:
                     assert status == 2 and not posts
 
 
-def main() -> int:
-    tests = [
-        test_operator_free_text_redacts_credentials_and_urls,
-        test_redacted_reasons_allow_matching_reviewed_apply,
-        test_path_check_reads_both_paths_and_preserves_clear_blocked_unknown,
-        test_path_check_refuses_unknown_fields_unsafe_values_and_incomplete_evidence,
-        test_path_check_refuses_bad_selector_and_surfaces_read_denial,
-        test_product_owner_plan_projection_digests_the_reviewed_change,
-        test_client_named_fields_read_like_their_legacy_owner_names,
-        test_product_owner_dry_run_sends_normalized_login_to_the_product_route,
-        test_product_owner_apply_checks_the_client_reapplies_and_reads_back,
-        test_product_image_repository_plan_projection_digests_the_reviewed_move,
-        test_product_image_repository_dry_run_sends_the_package_to_the_product_route,
-        test_product_image_repository_apply_names_the_reviewed_start_and_reads_back,
-        test_production_backup_authority_never_prints_provider_coordinates,
-        test_production_backup_authority_apply_binds_the_exact_reviewed_payload,
-        test_production_backup_authority_read_keeps_state_and_record_ids,
-        test_dokploy_compose_target_hides_provider_ids_and_binds_the_payload,
-        test_compose_domain_review_apply_and_read_back,
-        test_compose_source_create_reads_back_repository_branch_and_path,
-        test_compose_source_completion_binds_source_and_existing_target,
-        test_private_health_endpoint_hides_the_url_and_binds_apply_to_the_review,
-        test_private_health_endpoint_read_lists_keys_without_urls,
-        test_product_promotion_status_keeps_the_fingerprint_and_drops_release_detail,
-        test_product_promotion_dry_run_never_accepts_a_live_result,
-        test_controller_branch_update_result_reaches_the_caller,
-        test_owner_review_reader_keeps_full_prose_and_uses_only_the_private_route,
-        test_owner_review_reader_rejects_wrong_subject_or_selected_record,
-        test_owner_review_reader_surfaces_denial_without_credentials_or_provider_text,
-        test_expected_config_review_binds_metadata_and_never_prints_owner_instructions,
-        test_expected_config_removal_shape_is_bound_to_the_request,
-        test_expected_config_removal_items_are_plain_identities,
-        test_agent_operator_contract_identity_and_provenance_semantics,
-        test_agent_operator_contract_rejects_drift_and_unsafe_content,
-        test_agent_operator_contract_routes_every_local_consumer,
-        test_odoo_addon_settings_projection_redacts_secret_settings,
-        test_odoo_addon_settings_body_refuses_plaintext_and_binds_digest,
-        test_odoo_addon_settings_cli_dispatches_projected_route,
-        test_integration_allowances_plan_projection_keeps_diff_and_digest,
-        test_integration_allowances_projection_refuses_unknown_fields,
-        test_integration_allowances_read_summary_projects_allowances,
-        test_integration_allowances_read_shows_why_a_lane_key_is_shared,
-        test_integration_allowances_payload_rejects_unknown_fields_and_unreviewed_apply,
-        test_testing_hold_plan_projection_is_bounded_and_fail_closed,
-        test_testing_hold_read_sends_lane_query_and_projects_hold,
-        test_product_environment_read_uses_path_route_and_projects_deploy_identity,
-        test_product_environment_read_refuses_bad_segments_and_unsafe_values,
-        test_product_activity_read_bounds_events_and_record_links,
-        test_protected_artifacts_read_projection_and_query,
-        test_protected_artifacts_read_bounds_and_sanitizes_warnings,
-        test_protected_artifacts_read_empty_invalid_and_denied,
-        test_product_activity_read_keeps_real_events_and_drops_odd_fields,
-        test_product_activity_read_reports_http_denial_as_read_error,
-        test_preview_history_read_derives_launchplanes_preview_id,
-        test_preview_history_read_projects_newest_generation_first,
-        test_preview_history_read_needs_exactly_one_selector,
-        test_reconcile_requests_read_keeps_the_decision_and_drops_the_rest,
-        test_reconcile_requests_read_keeps_testing_operation_ids,
-        test_reconcile_requests_read_keeps_generic_web_testing_outcome,
-        test_target_replacement_operation_read_keeps_progress_and_drops_error_text,
-        test_target_replacement_operation_read_projects_failure_details,
-        test_target_replacement_operation_read_bounds_failure_details,
-        test_target_replacement_operation_read_tolerates_a_pending_operation,
-        test_target_replacement_operation_read_refuses_bad_ids_and_unsafe_values,
-        test_target_replacement_plan_read_keeps_key_names_and_drops_text,
-        test_target_replacement_plan_read_marks_missing_key_lists_as_unreported,
-        test_target_replacement_plan_read_reports_denial_with_trace,
-        test_target_replacement_plan_read_refuses_bad_input_and_unsafe_values,
-        test_testing_hold_body_binds_apply_to_saved_dry_run,
-        test_testing_hold_cli_dispatches_local_extension_route,
-        test_product_repository_identity_projection_is_bounded_and_fail_closed,
-        test_product_repository_identity_apply_requires_saved_dry_run,
-        test_product_config_secret_results_keep_declared_secret_class,
-        test_product_config_projection_keeps_declared_secret_class_end_to_end,
-        test_product_config_secret_copy_keeps_the_source_through_dry_run_apply_and_replay,
-        test_product_config_secret_copy_refuses_a_value_or_malformed_source,
-        test_product_config_secret_copy_projection_refuses_extra_source_fields,
-        test_product_secret_bindings_read_keeps_metadata_and_counts_the_rest,
-        test_product_secret_bindings_read_fails_closed_on_values_and_ciphertext,
-        test_repository_inventory_review_evidence_binds_exact_private_payload,
-        test_repository_inventory_projection_is_bounded_and_fail_closed,
-        test_agent_operator_contract_cli_is_public_safe_and_hermetic,
-        test_merge_train_policy_import_body_projection_and_redaction,
-        test_merge_train_policy_import_apply_requires_bound_evidence,
-        test_merge_train_policy_import_preflight_blocks_stale_policy_before_post,
-        test_merge_train_policy_import_uses_exact_read_and_write_routes,
-        test_merge_train_policy_import_apply_handles_ambiguous_success_and_transport,
-        test_endpoint_validation_policy,
-        test_build_url_and_redirect_policy,
-        test_write_helper_validates_cli_env_and_json_url_sources,
-        test_context_helper_validates_env_and_json_url_sources,
-        test_success_projection_preserves_contracts,
-        test_preview_feedback_remediation_body_and_projection,
-        test_invalid_private_payload_does_not_expose_path,
-        test_product_config_projection_accepts_context_scoped_runtime_environment,
-        test_runtime_retirement_projection_rejects_values_and_malformed_metadata,
-        test_optional_public_identifier_rejects_null_values,
-        test_runtime_environment_projection_enforces_scope_identity,
-        test_merge_train_idle_preserves_author_refusal_without_pr_content,
-        test_controller_timeout_covers_slow_dry_run_and_mutation_and_keeps_override,
-        test_controller_block_and_reconciliation_preserve_durable_diagnostics,
-        test_controller_client_timeout_is_not_a_service_outage_and_never_retries,
-        test_controller_conflict_probe_preserves_planning_and_update_branch_evidence,
-        test_controller_conflict_probe_rejects_malformed_and_unsafe_evidence,
-        test_controller_rejected_response_keeps_only_safe_trace_and_code,
-        test_controller_http_error_keeps_safe_identifiers_without_raw_error_text,
-        test_merge_train_queue_distinguishes_eligible_empty_and_unavailable,
-        test_merge_train_queue_rejects_malformed_or_sensitive_evidence,
-        test_current_launchplane_service_response_shapes,
-        test_success_projection_fails_closed_on_secret_bearing_payloads,
-        test_summaries_and_trace_ids_fail_closed_on_secret_values,
-        test_authorization_denial_keeps_denied_status,
-        test_context_projection_contract_and_secret_shape,
-        test_current_agent_context_service_shape,
-        test_request_helpers_use_shared_safe_urlopen,
-        test_settings_diagnostic_validates_sources_without_printing_values,
-        test_generic_web_deploy_recovery_body_and_projection,
-        test_generic_web_deploy_recovery_apply_requires_review_idempotency_and_reason,
-        test_generic_web_deploy_recovery_apply_requires_apply_eligible_evidence,
-        test_generic_web_deploy_recovery_payload_rejects_repo_local_files,
-        test_generic_web_deploy_recovery_cli_dispatches_exact_routes,
-        test_generic_web_deploy_recovery_cli_refuses_ineligible_evidence_without_http,
-        test_generic_web_deploy_recovery_projection_fails_closed_on_extra_fields,
-        test_generic_web_deploy_recovery_apply_unverified_on_projection_failure,
-    ]
-    for test in tests:
-        test()
-    print(f"ok - {len(tests)} tests")
-    return 0
 
 
 def _odoo_addon_settings_payload() -> dict[str, object]:
@@ -7364,4 +7239,4 @@ def test_client_named_fields_read_like_their_legacy_owner_names() -> None:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(pytest.main([__file__]))
