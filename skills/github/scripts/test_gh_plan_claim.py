@@ -410,6 +410,7 @@ class ClaimTests(unittest.TestCase):
                 self.ordinary_handoff_fixture()
                 target = self.issue if place == "issue" else self.targets[place]
                 target["body"] += "\n\n## Current Status\n\nWaiting for: Approved prerequisite readback."
+                if place == "issue": target["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
                 self.assertEqual(caught.exception.code, "claim_wait_unresolved")
@@ -417,6 +418,40 @@ class ClaimTests(unittest.TestCase):
                 self.args.wait_resolved = "Existing brief authorizes prerequisite only; keep the draft/readback hold."
                 self.run_claim()
                 self.assertTrue(self.pulls[0]["draft"])
+                if place == "issue":
+                    status, _ = PLAN.read_plan_sections(self.issue)
+                    self.assertIn("Waiting for: Approved prerequisite readback.", status["Current Status"])
+                    self.assertIn(PLAN.DEFAULT_CONFIG["labels"]["waiting"], PLAN.normalize_labels(self.issue["labels"]))
+                    self.assertEqual(PLAN.next_plan_status(self.issue, PLAN.DEFAULT_CONFIG), "waiting")
+                else:
+                    self.assertIn(f"PR #{place}:\n", self.comments[-1]["body"])
+                    self.assertIn("> Waiting for: Approved prerequisite readback.", self.comments[-1]["body"])
+                    self.assertIn("> Waiting for: Approved prerequisite readback.", self.issue["body"])
+
+    def test_ordinary_recovery_records_newly_verified_pr_wait_in_current_status(self):
+        self.ordinary_handoff_fixture()
+        self.run_claim()
+        self.targets["99"]["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
+        self.args.wait_resolved = "Fresh authorization for this step; preserve the new PR hold."
+        self.run_claim()
+        self.assertEqual(self.events.count("post"), 1)
+        self.assertIn("> Labels: " + PLAN.DEFAULT_CONFIG["labels"]["waiting"], self.issue["body"])
+
+    def test_ordinary_handoff_refuses_changed_holds_on_each_readback(self):
+        for phase in ("after_post", "after_status"):
+            for place in ("issue", "99", "100"):
+                with self.subTest(phase=phase, place=place):
+                    self.setUp()
+                    self.ordinary_handoff_fixture()
+                    self.args.wait_resolved = "Prior prerequisite approval; no authority for a new hold."
+                    def race():
+                        target = self.issue if place == "issue" else self.targets[place]
+                        target["body"] += "\n\n## Current Status\n\nWaiting for: New product prerequisite."
+                    setattr(self, phase, race)
+                    with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
+                    self.assertIn("holds changed" if place == "issue" else "waits changed", str(caught.exception))
+                    self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+                    if phase == "after_post": self.assertNotIn("status", self.events)
 
     def test_ordinary_handoff_preserves_native_blocker(self):
         self.ordinary_handoff_fixture()

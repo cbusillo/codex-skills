@@ -2030,10 +2030,11 @@ def cmd_claim(args: argparse.Namespace) -> None:
     claim_comment: dict[str, Any] = {}
     inventory: dict[str, Any] = {}
     previous_status = ""
+    retained_waits: dict[int, str] | None = None
     planning_checkout = getattr(args, "planning_checkout", None)
     config = load_config(issue_repo, checkout=planning_checkout) if planning_checkout else load_config(issue_repo)
 
-    def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False) -> None:
+    def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False) -> bool:
         status_state = next_plan_status(waiting_issue, load_config(target_repo) if target else config)
         reports = github_direction_next.waiting_records(
             compact_issue(waiting_issue),
@@ -2048,13 +2049,34 @@ def cmd_claim(args: argparse.Namespace) -> None:
             and not github_plan_claim.no_wait_reason(match.group(1), field="Blocked by")
             for line in waiting_status.splitlines()
         )
-        if (status_state in {"waiting", "blocked", "stale", "done"} or reports or blocked_text
-                or re.search(r"(?im)^\s*(?:[-*]\s+)?State:\s*(?:waiting|parked|blocked|stale|done)\b", waiting_status)):
+        has_wait = bool(status_state in {"waiting", "blocked", "stale", "done"} or reports or blocked_text
+                        or re.search(r"(?im)^\s*(?:[-*]\s+)?State:\s*(?:waiting|parked|blocked|stale|done)\b", waiting_status))
+        if has_wait:
             if not args.wait_resolved:
                 raise ClassifiedPlanError("claim_wait_unresolved", "Verify the recorded wait or hold, then pass --wait-resolved with existing resolution evidence",
                                           payload={"previous_current_status": waiting_status})
+        return has_wait
+
+    def hold_fields(status: str) -> str:
+        lines = []
+        in_hold = False
+        for line in status.splitlines():
+            if re.match(r"\s*(?:[-*]\s+)?[\w ]+:\s*", line):
+                in_hold = bool(re.match(r"\s*(?:[-*]\s+)?(?:Blocked by|Waiting for):", line, re.I))
+            elif not line.strip():
+                in_hold = False
+            if in_hold:
+                lines.append(line)
+        return "\n".join(lines)
+
+    def check_issue_holds(status: str) -> None:
+        expected = hold_fields(previous_status) or "Blocked by: None.\nWaiting for: Nothing."
+        observed = hold_fields(status) or "Blocked by: None.\nWaiting for: Nothing."
+        if handoff_id and not refresh_pr and observed != expected:
+            raise PlanError("Issue holds changed during retained-handoff readback; verify the new evidence before recovery")
 
     def handoff_preflight(source_comments: list[dict[str, Any]]) -> set[str]:
+        nonlocal retained_waits
         if not handoff_id:
             return set()
         _, target_pulls = collect_paged_rest_items(
@@ -2083,6 +2105,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         if claim["branch"] in permitted:
             raise PlanError("Retained handoff requires a new task branch, separate from every retained PR/source branch")
         source_author = next(c for c in source_comments if c.get("id") == args.resume_from)["user"]["login"]
+        observed_waits = {}
         for pull in target_pulls:
             if ((pull.get("head") or {}).get("ref") in permitted and pull.get("state") == "open"
                     and (pull["number"] not in named or (pull.get("user") or {}).get("login") != source_author)):
@@ -2102,7 +2125,15 @@ def cmd_claim(args: argparse.Namespace) -> None:
             if competing:
                 refuse(competing)
             if not refresh_pr or pull["number"] == target_number:
-                check_wait(target, sections.get("Current Status", ""), target=True)
+                target_status = sections.get("Current Status", "")
+                if check_wait(target, target_status, target=True):
+                    wait_labels = sorted(set(normalize_labels(target.get("labels"))) &
+                                         {config["labels"][key] for key in ("waiting", "blocked", "stale", "done")})
+                    observed_waits[pull["number"]] = "Labels: " + ", ".join(wait_labels) + "\n" + target_status
+        if not refresh_pr:
+            if retained_waits is not None and observed_waits != retained_waits:
+                raise PlanError("Retained PR waits changed during claim readback; verify the new evidence before recovery")
+            retained_waits = observed_waits
         target_inventory = github_plan_claim.local_inventory(target_repo, target_number)
         _, own_comments = github_plan_claim.discussion_evidence("", source_comments, claim)
         for checked_number, checked_repo in ((target_number, target_repo), (number, issue_repo)):
@@ -2189,6 +2220,9 @@ def cmd_claim(args: argparse.Namespace) -> None:
             refuse(conflicts)
         completed.append("ownership_preflight")
         actor, gh_cmd, expected_actor = comment_route()
+        wait_receipt = ("\n\nRetained PR waits verified for this step:\n" + "\n".join(
+            f"PR #{pr}:\n" + "\n".join("> " + line for line in wait.splitlines())
+            for pr, wait in sorted(retained_waits.items())) if retained_waits else "")
         text = (
             f"Claimed by {claim['worker']}\n\nSession: {claim['session']}\nBranch: {claim['branch']}\n"
             f"Claimed at: {claim['claimed_at']}\nNext action: {args.next_action}\n\n"
@@ -2196,6 +2230,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
             + github_plan_claim.marker(claim)
             + (f"\n\nConflict-only refresh: {claim['refresh_pr']}; released claim {args.resume_from}; handoff comment {handoff_id}." if refresh_pr else "")
             + (f"\n\nRetained-work handoff: released claim {args.resume_from}; handoff comment {handoff_id}. This ordinary successor claim preserves retained PRs and their product holds." if handoff_id and not refresh_pr else "")
+            + wait_receipt
             + (f"\n\nWait resolution: {args.wait_resolved}" if args.wait_resolved else "")
             + "\n\nPrevious Current Status:\n" + "\n".join("> " + line for line in previous_status.splitlines())
         )
@@ -2215,15 +2250,19 @@ def cmd_claim(args: argparse.Namespace) -> None:
         if conflicts:
             refuse(conflicts)
         check_wait(issue, status)
+        check_issue_holds(status)
         handoff_preflight(comments)
         if not any(github_plan_claim.same_owner(record, claim) for record in observed):
             raise PlanError("Claim was not visible on readback; do not create a worktree")
         completed.append("claim_readback")
+        holds = hold_fields(previous_status) if handoff_id and not refresh_pr else ""
         status_text = (
             f"State: Active; owned by {claim['worker']}.\nSession: {claim['session']}\n"
             f"Branch: {claim['branch']}\nNext action: {args.next_action}\n"
-            f"Blocked by: None.\nWaiting for: Nothing.\nLast verified: {claim['claimed_at']}\n\n"
+            + (holds + "\n" if holds else "Blocked by: None.\nWaiting for: Nothing.\n")
+            + f"Last verified: {claim['claimed_at']}\n\n"
             + github_plan_claim.marker(claim)
+            + wait_receipt
         )
         if can_update:
             body = replace_issue_plan_section(issue, "Current Status", status_text)
@@ -2232,7 +2271,8 @@ def cmd_claim(args: argparse.Namespace) -> None:
         label_map = config["labels"]
         label_result = github_issue_core.edit_issue(
             number, repo=issue_repo, add_labels=[label_map["active"]],
-            remove_labels=[label_map[key] for key in ("waiting", "stale", "done", "blocked")
+            remove_labels=[label_map[key] for key in (("stale", "done") if handoff_id and not refresh_pr
+                                                     else ("waiting", "stale", "done", "blocked"))
                            if label_map[key] in normalize_labels(issue.get("labels"))],
             gh_cmd=gh_cmd, expected_actor=expected_actor, operation=CURRENT_OPERATION,
         )
@@ -2243,6 +2283,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         conflicts, observed = github_plan_claim.discussion_evidence(final_status, final_comments, claim, resume_from=args.resume_from)
         if conflicts:
             refuse(conflicts)
+        check_issue_holds(final_status)
         handoff_preflight(final_comments)
         if not observed or label_map["active"] not in normalize_labels(final.get("labels")):
             raise PlanError("Claim metadata was not visible on final readback")

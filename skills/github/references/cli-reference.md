@@ -536,6 +536,10 @@ local/remote branches and worktrees are checked again on both readbacks.
 Unmentioned artifacts, foreign identity, and unresolved waits or native
 blockers still refuse. Supply existing wait evidence for the authorized step;
 the argument does not lift a draft or product prerequisite. The recorded claim
+retains the issue's hold fields and waiting/blocked labels, and records retained
+PR waits in the comment and Current Status. New or changed holds during readback
+refuse with the usual exact-ID claim-release recovery; fresh-read them before
+another supported claim with the existing resolution evidence. The claim
 binds its source and handoff so recovery cannot silently discard that proof or
 become conflict-only refresh. Create a new linked worktree only after confirmed
 success; preserve the original checkouts. This route grants no live-operation,
