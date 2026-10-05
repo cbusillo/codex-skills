@@ -103,6 +103,11 @@ commands:
         "session-status",
       ]
     purpose: Resume one private ordinary-agent enrollment, session, or finite job alias with redacted output.
+  - name: launchplane-merge-train-policy-read
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "merge-train-policy-read", "--repo", "OWNER/REPO"]
+    purpose: Reads active service policy and projects only one repository's enrollment and enqueue routing.
   - name: launchplane-context
     source: skill
     resource_path: scripts/launchplane-context.py
@@ -686,7 +691,7 @@ and watching stay delegated to `github_workflow_babysit.py`, and raw protected
 workflow dispatch is not allowed. Source projected HTTP paths from the vendored
 operation map rather than adding duplicate literals.
 
-The merge-train policy import, repository inventory, product expected configuration,
+The merge-train policy read and import, repository inventory, product expected configuration,
 generic-web deploy-recovery, live-target-runtime sync, Odoo addon-settings, integration-allowances,
 testing-hold, product-repository-identity, product-environment-read,
 product-activity-read, protected-artifacts-read, product-profile-read, path-check,
@@ -921,6 +926,15 @@ answer to `authorization_denied`.
 
 ## Merge Train (Controller)
 
+Read enrollment with `uv run scripts/launchplane-write-action.py
+merge-train-policy-read --repo OWNER/REPO`. Launchplane's active policy owns
+whether a repository is enrolled, its base branches and enqueue labels;
+`.github/github.json` only carries routing hints. The bounded read uses the
+existing private admin configuration and standing `merge_train.policy_targets`
+permission. It emits only that repository's targets and policy revision evidence.
+If configuration, access or a valid service response is unavailable, enrollment
+is unknown. Never infer a direct merge path from missing metadata or a failed read.
+
 Use Launchplane's controller route as the default merge-train workflow. Before
 advancing or diagnosing a train, read [merge-train execution](references/merge-train.md)
 for phase, stack, retry, and terminal evidence requirements. Label every PR
@@ -997,6 +1011,11 @@ verification.
   preflight, exact saved dry-run evidence, reviewed acknowledgement,
   idempotency, and post-apply read-back. The helper-side digest check is not
   server-enforced compare-and-swap.
+- `GET /v1/work-graph/merge-train/policy`: Bounded local-extension read
+  (`merge-train-policy-read --repo OWNER/REPO`) of enrollment and enqueue routing
+  from the complete active policy. Credential sources and other repositories
+  are dropped. A confirmed complete read with no match means not enrolled; any
+  failure leaves enrollment unknown. Reading does not authorize train entry.
 - `GET /v1/work-graph/merge-train/policy-targets`: Internal bounded preflight
   read used immediately before policy import to verify the expected active
   policy digest. It is not an independently exposed helper command.

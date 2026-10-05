@@ -720,7 +720,9 @@ how existing approval and task boundaries apply.
 
 ## Workflow
 
-1. **Orient**: Run `scripts/github-repo-snapshot.sh`. Use `github-plan` when
+1. **Orient**: Run `scripts/github-repo-snapshot.sh`. Its merge-train enrollment
+   comes from Launchplane's active policy; unavailable reads mean unknown,
+   regardless of `.github/github.json`. Use `github-plan` when
    planning state matters. [Repo workflow](references/repo-workflow.md) holds
    orientation, PR, check, review, merge-readiness, and cleanup detail; read
    the section for the step you are on.

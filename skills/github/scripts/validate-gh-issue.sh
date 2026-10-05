@@ -1792,12 +1792,10 @@ GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
 		.launchplane.status == "configured" and
 		.launchplane.enabled == true and
 		([.launchplane.warnings[].code] | sort) == [
-			"missing_actions_runner",
 			"missing_context_helper",
 			"missing_context_url_env",
 			"missing_operator_helper",
-			"missing_operator_url_env",
-			"missing_ready_label"
+			"missing_operator_url_env"
 		]
 	' >/dev/null
 

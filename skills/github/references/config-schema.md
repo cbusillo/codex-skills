@@ -186,7 +186,7 @@ helpers should not create them unless repo metadata documents them.
 | ---------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `awaiting-qa`    | `qaLabels`                                                | Optional repo-local manual QA handoff for concrete implementation or bug work.                   |
 | `preview-ready`  | `deployLabels` or repo workflow docs                      | A preview environment is available for review; this is not QA approval.                          |
-| `ready-to-merge` | `launchplane.mergeTrain.readyLabel` or repo workflow docs | Repo-configured merge readiness signal; still requires fresh checks and explicit merge approval. |
+| Merge-train enqueue label | Launchplane active merge-policy read | Service-configured readiness signal; still requires fresh checks and existing merge authorization. |
 
 Avoid generic labels such as `waiting`, `blocked`, `ready`, or `qa` unless the
 repo documents a narrow convention for them. Prefer the namespaced `plan:*`
@@ -258,6 +258,18 @@ Common top-level keys:
   configuration uses an object `context` with `enabled` and `helper` instead.
   The snapshot preserves routing fields under `launchplane.routing` and helper
   configuration under `launchplane.context`.
+  Enrollment and enqueue routing come from the active Launchplane policy:
+  `uv run skills/launchplane/scripts/launchplane-write-action.py merge-train-policy-read --repo OWNER/REPO`
+  (from the catalog root). The snapshot reads it in both text and JSON mode.
+  Its `launchplane.mergeTrain` summary has `status` (`enrolled`,
+  `not_enrolled` or `unknown`), nullable `enabled`, per-branch `targets`
+  with `baseBranch` and `readyLabel`, and policy revision evidence.
+  Missing configuration, denial, failed reads and malformed responses mean
+  `unknown`; they never authorize a different merge path. Raw `config.data`
+  remains routing metadata. The legacy `mergeTrain.enabled` field is deprecated
+  and ignored; it remains in the example until readers have landed, after which
+  repository metadata is removed in separate PRs. Other `mergeTrain` fields
+  below are routing hints, not enrollment evidence.
   `mergeTrain.githubActionsRunner.revisionEvidenceFields` names the per-run
   GitHub/Launchplane response fields that carry workflow, candidate, and landing
   revisions; it is a field-path contract, not a place to persist one run's SHA

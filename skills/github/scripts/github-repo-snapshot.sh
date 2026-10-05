@@ -13,6 +13,7 @@ script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 gh_bin="${GITHUB_REPO_SNAPSHOT_GH:-$script_dir/gh-with-env-token}"
 pr_helper="${GITHUB_REPO_SNAPSHOT_PR_HELPER:-$script_dir/gh-pr.py}"
 read_helper="${GITHUB_REPO_SNAPSHOT_READ_HELPER:-$script_dir/github_read.py}"
+policy_helper="${GITHUB_REPO_SNAPSHOT_POLICY_HELPER:-$script_dir/../../launchplane/scripts/launchplane-write-action.py}"
 if [[ -n "${GITHUB_REPO_SNAPSHOT_PYTHON:-}" ]]; then
   python_command=("$GITHUB_REPO_SNAPSHOT_PYTHON")
 elif command -v uv >/dev/null 2>&1; then
@@ -100,6 +101,25 @@ USAGE
       ;;
   esac
 done
+
+# Enrollment is live Launchplane policy, independent of repository metadata.
+read_merge_train_policy() {
+  local response
+  if [[ -f "$policy_helper" ]] && response="$("${python_command[@]}" "$policy_helper" merge-train-policy-read --repo-root "$repo_root" 2>/dev/null)"; then
+    if jq -e '
+      .status == "available" and .operation == "merge-train-policy-read" and
+      .result.source == "launchplane" and
+      ((.result.status == "enrolled" and .result.enabled == true) or
+       (.result.status == "not_enrolled" and .result.enabled == false)) and
+      (.result.targets | type == "array") and
+      (.result.policy | type == "object")
+    ' <<<"$response" >/dev/null 2>&1; then
+      jq '.result' <<<"$response"
+      return
+    fi
+  fi
+  jq -n '{source: "launchplane", status: "unknown", enabled: null, targets: [], policy: null}'
+}
 
 section() {
   printf '\n== %s ==\n' "$1"
@@ -407,6 +427,12 @@ if [[ -n "$config_path" ]]; then
   done < <(jq -r '.healthUrls[]? | if type == "string" then . elif type == "object" then .url // empty else empty end' "$effective_config_path")
 fi
 
+if ! command -v jq >/dev/null 2>&1; then
+  echo "error: jq is required to read merge-train enrollment" >&2
+  exit 2
+fi
+merge_train_policy="$(read_merge_train_policy)"
+
 if [[ "$json_output" -eq 1 ]]; then
   if ! command -v jq >/dev/null 2>&1; then
     echo "error: --json requires jq" >&2
@@ -511,6 +537,7 @@ if [[ "$json_output" -eq 1 ]]; then
 
   jq -n \
     --arg repoRoot "$repo_root" \
+    --argjson mergeTrain "$merge_train_policy" \
     --arg currentBranch "$current_branch" \
     --argjson ghAvailable "$gh_available" \
     --slurpfile status "$tmpdir/status.json" \
@@ -632,13 +659,6 @@ if [[ "$json_output" -eq 1 ]]; then
             helper: ($lp.operator.helper // null),
             requiresPrivateConfig: ($lp.operator.requiresPrivateConfig // true)
           },
-          mergeTrain: {
-            enabled: ($lp.mergeTrain.enabled // false),
-            controller: ($lp.mergeTrain.controller // false),
-            readyLabel: ($lp.mergeTrain.readyLabel // null),
-            baseBranch: ($lp.mergeTrain.baseBranch // null),
-            githubActionsRunner: ($lp.mergeTrain.githubActionsRunner // null)
-          },
           warnings: ([
             if $lp.context != null and (["object", "string"] | index($lp.context | type)) == null then
               {code: "invalid_launchplane_context", message: "Launchplane context must be a routing string or helper object."}
@@ -657,12 +677,6 @@ if [[ "$json_output" -eq 1 ]]; then
             else empty end,
             if ($lp.operator.enabled // false) and (present($lp.operator.helper // "") | not) then
               {code: "missing_operator_helper", message: "Launchplane operator helper path is missing."}
-            else empty end,
-            if ($lp.mergeTrain.enabled // false) and (present($lp.mergeTrain.readyLabel // "") | not) then
-              {code: "missing_ready_label", message: "Launchplane mergeTrain.readyLabel is missing."}
-            else empty end,
-            if ($lp.mergeTrain.enabled // false) and (($lp.mergeTrain.githubActionsRunner // null) == null) then
-              {code: "missing_actions_runner", message: "Launchplane mergeTrain.githubActionsRunner is missing."}
             else empty end
           ])
         }
@@ -679,7 +693,7 @@ if [[ "$json_output" -eq 1 ]]; then
       },
       config: $config[0],
       cleanup: cleanup_summary($config[0]),
-      launchplane: launchplane_summary($config[0]),
+      launchplane: (launchplane_summary($config[0]) + {mergeTrain: $mergeTrain}),
       github: {
         ghAvailable: $ghAvailable,
         currentBranchPullRequest: $currentPr[0],
@@ -776,16 +790,18 @@ if [[ -n "$config_path" ]]; then
         "routingContext: " + (if ($lp.context | type) == "string" then $lp.context else "" end),
         "contextHelper: " + ($context.helper // ""),
         "operatorHelper: " + ($lp.operator.helper // ""),
-        "operatorRequiresPrivateConfig: " + (($lp.operator.requiresPrivateConfig // true) | tostring),
-        "mergeTrainEnabled: " + (($lp.mergeTrain.enabled // false) | tostring),
-        "mergeTrainReadyLabel: " + ($lp.mergeTrain.readyLabel // ""),
-        "mergeTrainBaseBranch: " + ($lp.mergeTrain.baseBranch // ""),
-        "mergeTrainWorkflow: " + ($lp.mergeTrain.githubActionsRunner.workflow // ""),
-        "mergeTrainWorkflowRepo: " + ($lp.mergeTrain.githubActionsRunner.repo // "")
+        "operatorRequiresPrivateConfig: " + (($lp.operator.requiresPrivateConfig // true) | tostring)
       ] | .[]
     end
   ' "$effective_config_path"
 fi
+
+section "Merge Train (Launchplane policy)"
+jq -r '[
+  "mergeTrainStatus: " + .status,
+  "mergeTrainEnabled: " + (if .enabled == null then "unknown" else (.enabled | tostring) end),
+  (.targets[] | "mergeTrainTarget: " + .baseBranch + " (" + .readyLabel + ")")
+] | .[]' <<<"$merge_train_policy"
 
 if [[ -x "$gh_bin" ]] || command -v "$gh_bin" >/dev/null 2>&1; then
   section "Current Branch Pull Request"
