@@ -4920,12 +4920,15 @@ def summarize_merge_train_policy_read(
             raise LaunchplaneSafetyError("invalid_response")
         seen.add(key)
         if name.casefold() == repository.casefold():
-            ready_label = public_summary_string(target.get("enqueue_label"), max_length=50)
-            if any(ord(character) < 32 or ord(character) == 127 for character in ready_label):
+            raw_label = target.get("enqueue_label")
+            public_summary_string(raw_label, max_length=50)
+            if not isinstance(raw_label, str) or len(raw_label) > 50 or raw_label != raw_label.strip():
+                raise LaunchplaneSafetyError("invalid_response")
+            if any(ord(character) < 32 or ord(character) == 127 for character in raw_label):
                 raise LaunchplaneSafetyError("invalid_response")
             targets.append({
                 "baseBranch": public_identifier(branch),
-                "readyLabel": ready_label,
+                "readyLabel": raw_label,
             })
     summary = {
         "source": "launchplane",

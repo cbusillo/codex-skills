@@ -116,7 +116,8 @@ inspection, browser, CI, deployment, or security gates.
    point-in-time readiness verdict and evidence.
    For stacked PRs, include whether a rollup/integration PR would be safer or
    faster than merging each layer and rerunning expensive checks repeatedly,
-   unless repo metadata or task context says Launchplane owns the merge train.
+   unless Launchplane policy, repository instructions or task context routes
+   landing through the merge train.
    For Launchplane-managed trains, verify or route through `launchplane` instead
    of recommending a hand-built GitHub rollup.
 7. If UI was touched, use `browser-ui-review` for browser-visible validation.

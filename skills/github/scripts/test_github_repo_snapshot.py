@@ -104,6 +104,18 @@ class SnapshotTests(unittest.TestCase):
                 ).stdout)
 
 
+    def test_unknown_reason_drops_provider_prose(self):
+        for reason, expected in (("authorization_denied", "authorization_denied"),
+                                 ("fixture private diagnostic", "invalid_response")):
+            response = {"status": "denied", "warnings": [{"code": reason}]}
+            result = self.snapshot({}, policy=response, policy_exit=1)
+            summary = json.loads(result.stdout)["launchplane"]["mergeTrain"]
+            self.assertEqual(summary["reason"], expected)
+            self.assertEqual(summary["status"], "unknown")
+            self.assertIsNone(summary["enabled"])
+            if reason != expected:
+                self.assertNotIn(reason, result.stdout)
+
     def test_text_without_jq_keeps_local_snapshot_and_unknown_enrollment(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
