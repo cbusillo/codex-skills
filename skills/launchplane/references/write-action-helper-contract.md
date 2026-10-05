@@ -1109,3 +1109,54 @@ The private request keeps the original reason; redaction changes public evidence
 only. A projection is lossy and cannot distinguish changes solely inside
 redacted spans; service digests and private-payload bindings remain in force
 where supported.
+
+## Managed runtime sync
+
+`live-target-runtime-sync-dry-run` and `live-target-runtime-sync-apply` use the
+existing `POST /v1/live-target-runtime/apply` local extension. Pass `--product`,
+`--context`, and `--instance`; values come from Launchplane's managed records,
+never CLI input. The service checks `live_target_runtime.plan` for dry runs and
+`.apply` for writes on product/context. The helper's apply command requires both
+permissions because it also runs pre-apply and read-back dry runs. It grants
+nothing and never switches identity.
+
+Save the dry-run output privately. Apply requires `--reviewed-dry-run`,
+`--expected-plan-digest` from `result.plan_sha256`, `--dry-run-evidence-file`, and
+`--idempotency-key`. Use a fresh stable key for each later intentional sync;
+keep the original key associated with that operation, never with a new sync.
+Reconcile through the read-only dry-run command below; do not replay apply
+blindly after an uncertain outcome.
+The helper binds the review to the lane, provider target
+fingerprint and key/count plan, obtains a fresh dry run and refuses a difference
+observed in that pre-apply plan before sending apply. It reports changed,
+missing, different and retiring key names, counts, provider persistence status and `read_back_matches`; target ids,
+provider payloads and values are dropped. After apply it runs another dry run
+and requires zero remaining key changes on the same target.
+
+Changes between the pre-apply dry run and the apply can only be detected after
+the write by the result comparison and read-back. The digest binds metadata,
+not hidden values or managed-record revisions. The service has no reviewed-revision compare-and-swap contract here; a value change
+that leaves the same key plan is not detectable by this helper. This is not an
+exact-value review guarantee. Provider persistence also does not prove the
+running containers received the values: this narrow sync always sends
+`deploy: false`, and offers no deploy or restart option.
+
+The global `--timeout` option precedes the subcommand. Its default is 10 seconds
+per request; choose a longer timeout when the provider needs more time for the
+apply's fetch/update/verification calls, for example `--timeout 60`.
+
+Authorization denials remain denials with their trace. A timeout or unverifiable
+response after an apply attempt is `accepted_unverified`, exits nonzero and
+requires reconciliation before retrying under any key. Run
+`live-target-runtime-sync-dry-run` on the same lane and compare `target_sha256`:
+zero `changed_keys` proves current provider persistence. Inspect the retained
+service trace and error code to resolve the operation outcome before retrying.
+A denied read-back after a successful apply stays `accepted_unverified`; a
+failed read-back never becomes successful persistence evidence.
+
+For event-driven generic-web recovery, `deploy_key_sha256` identifies a key but
+cannot reconstruct it. Obtain the original deploy coordinates/key from a
+service-owned surface or explicit private admin input before using recovery.
+This helper does not invent an opaque recovery reference or clear an unknown
+provider fence. When the service cannot supply that evidence, track the service
+prerequisite and leave recovery held.
