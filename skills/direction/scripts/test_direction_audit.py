@@ -382,7 +382,7 @@ def test_main_preserves_closed_audit_cutoff_and_stamps_scan_start() -> None:
             return []
         with tempfile.TemporaryDirectory() as tmp:
             marker = Path(tmp) / "marker.json"
-            original = {"turn": previous, "audits": {"o/r": previous, "o/other": "2026-09-01T00:00:00Z"}}
+            original = {"turn": previous, "turn_repo": "o/daily", "audits": {"o/r": previous, "o/other": "2026-09-01T00:00:00Z"}}
             marker.write_text(json.dumps(original))
             output = StringIO()
             with (patch.dict("os.environ", {"DIRECTION_MARKER": str(marker)}),
@@ -399,6 +399,8 @@ def test_main_preserves_closed_audit_cutoff_and_stamps_scan_start() -> None:
             assert result["audit_since"] == previous
             assert result["counts"]["audit_judge"] == 1
             saved = json.loads(marker.read_text())
+            assert saved["turn"] == original["turn"]
+            assert saved["turn_repo"] == original["turn_repo"]
             if cap == "closed_audit":
                 assert "recent_closed_audit_issues" in result["findings"][0]["listings"]
                 assert result["marked"] is None
@@ -521,7 +523,7 @@ def test_prune_preserves_writer_started_after_final_read() -> None:
                             "sys.path.insert(0, sys.argv[1]); import direction_mark as mark; "
                             "Path(sys.argv[3]).write_text('ready'); "
                             "now=dt.datetime(2026,10,4,tzinfo=dt.timezone.utc); "
-                            "mark.mark_turn(Path(sys.argv[2]),now) if sys.argv[4]=='turn' "
+                            "mark.mark_turn(Path(sys.argv[2]),'o/daily',now) if sys.argv[4]=='turn' "
                             "else mark.mark_audit(Path(sys.argv[2]),'o/new',now)",
                             str(SCRIPT.parent), str(marker), str(ready), kind,
                         ], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -549,8 +551,9 @@ def test_prune_preserves_writer_started_after_final_read() -> None:
                 stdout, stderr = writer.communicate(timeout=5)
                 assert writer.returncode == 0, (stdout, stderr)
                 after = json.loads(marker.read_text())
-                assert after["turn"] == "2026-10-04T00:00:00Z", after
-                assert after["audits"] == ({"o/new": after["turn"]} if kind == "audit" else {})
+                assert after["turn"] == ("2026-10-04T00:00:00Z" if kind == "turn" else "earlier"), after
+                assert after.get("turn_repo") == ("o/daily" if kind == "turn" else None)
+                assert after["audits"] == ({"o/new": "2026-10-04T00:00:00Z"} if kind == "audit" else {})
                 assert after["other"] is True
                 assert Path(result["backup"]).read_bytes() == original
                 assert Path(result["backup"]).stat().st_mode & 0o777 == 0o600
