@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,14 +26,15 @@ class FetchCodexManualTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             alias = Path(directory) / "manual.mjs"
             alias.symlink_to(HELPER)
+            unknown_argument = "--invalid-test-argument"
             result = subprocess.run(
-                ["node", str(alias), "--invalid-test-argument"],
+                ["node", str(alias), unknown_argument],
                 capture_output=True,
                 text=True,
                 timeout=5,
             )
             self.assertEqual(result.returncode, 1)
-            self.assertIn("Unknown argument: --invalid-test-argument", result.stderr)
+            self.assertIn(unknown_argument, result.stderr)
 
     def run_cache_scenario(self, scenario: dict) -> dict:
         node = shutil.which("node")
@@ -62,13 +64,21 @@ const snapshot = async () => {
 };
 await mkdir(cacheDir, { recursive: true });
 const first = await fetchManual();
+let domainErrorType;
+try {
+  await fetchCodexManual({ cacheDir: first.status.manualPath, manualUrl: 'https://manual.example.invalid/manual' });
+} catch (failure) { domainErrorType = failure.constructor; }
+if (!domainErrorType) throw new Error('A cache file must be refused as a directory');
 const before = await snapshot();
 calls.length = 0;
 if (scenario.corrupt) await writeFile(first.status.manualPath, scenario.corrupt);
 response = scenario.next ?? response;
-let second, error;
-try { second = await fetchManual(); } catch (failure) { error = failure.message; }
-process.stdout.write(JSON.stringify({ first, second, error, calls, before, after: await snapshot() }));
+let second, error, domainError;
+try { second = await fetchManual(); } catch (failure) {
+  error = failure.message;
+  domainError = failure.constructor === domainErrorType;
+}
+process.stdout.write(JSON.stringify({ first, second, error, domainError, calls, before, after: await snapshot() }));
 """
         environment = {
             key: value for key, value in os.environ.items()
@@ -118,9 +128,64 @@ process.stdout.write(JSON.stringify({ first, second, error, calls, before, after
             with self.subTest(response=response):
                 result = self.run_cache_scenario({"initial": {"body": old}, "next": response})
                 self.assertTrue(result.get("error"), result)
+                self.assertTrue(result.get("domainError"), result)
                 self.assertNotIn("second", result)
                 self.assertEqual(result["calls"], calls)
                 self.assertEqual(result["after"], result["before"])
+
+    def test_curl_transport_uses_final_headers_and_cleans_response_files(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            raise RuntimeError("Node.js is required for the manual-helper tests")
+        body = "# Curl fixture\n\n## Verified section\nBody\n"
+        curl_script = r"""
+import hashlib, os, pathlib, sys
+arguments = sys.argv[1:]
+method = 'HEAD' if '--head' in arguments else arguments[arguments.index('--request') + 1]
+body = os.environ['CURL_FIXTURE_BODY']
+digest = hashlib.sha256(body.encode()).hexdigest()
+headers = ('HTTP/1.1 200 Connection established\r\n\r\n'
+           'HTTP/2 302 Found\r\nLocation: https://redirect.example.invalid\r\n\r\n'
+           f'HTTP/2 200 OK\r\nX-Content-SHA256: {digest}\r\n\r\n')
+pathlib.Path(arguments[arguments.index('--dump-header') + 1]).write_text(headers)
+pathlib.Path(arguments[arguments.index('--output') + 1]).write_text('' if method == 'HEAD' else body)
+with pathlib.Path(os.environ['CURL_FIXTURE_CALLS']).open('a') as log:
+    log.write(method + '\n')
+"""
+        script = r"""
+import { readFile, readdir } from 'node:fs/promises';
+const { fetchCodexManual } = await import(process.argv[2]);
+globalThis.fetch = () => { throw new Error('Unexpected native-fetch fallback'); };
+const options = { cacheDir: process.argv[1], manualUrl: 'https://manual.example.invalid/manual' };
+const first = await fetchCodexManual(options);
+const second = await fetchCodexManual(options);
+process.stdout.write(JSON.stringify({ first, second, body: await readFile(second.status.manualPath, 'utf8'),
+                                     files: await readdir(options.cacheDir) }));
+"""
+        environment = {
+            key: value for key, value in os.environ.items()
+            if key.lower() not in {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "curl"
+            executable.write_text(f"#!{sys.executable}\n" + curl_script)
+            executable.chmod(0o700)
+            calls = root / "calls"
+            environment.update(PATH=str(root), HTTP_PROXY="http://proxy.example.invalid",
+                               CURL_FIXTURE_BODY=body, CURL_FIXTURE_CALLS=str(calls))
+            result = subprocess.run(
+                [node, "--input-type=module", "-e", script, str(root / "cache"), HELPER.as_uri()],
+                env=environment, capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(calls.read_text().splitlines(), ["HEAD", "GET", "HEAD"])
+        self.assertEqual(payload["first"]["status"]["cacheStatus"], "updated")
+        self.assertEqual(payload["second"]["status"]["cacheStatus"], "hit")
+        self.assertEqual(payload["body"], body)
+        status = payload["second"]["status"]
+        self.assertEqual(set(payload["files"]), {Path(status["manualPath"]).name, Path(status["outlinePath"]).name})
 
     def test_timeout_covers_stalled_response_body(self) -> None:
         node = shutil.which("node")
@@ -135,6 +200,7 @@ process.stdout.write(JSON.stringify({ first, second, error, calls, before, after
         script = """
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 const { fetchCodexManual } = await import(process.argv[2]);
 const nativeFetch = globalThis.fetch;
 const nativeSetTimeout = globalThis.setTimeout;
@@ -202,6 +268,11 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const manualUrl = 'http://127.0.0.1:' + server.address().port + '/manual.md';
 let outcome;
 try {
+  let domainErrorType;
+  try {
+    await fetchCodexManual({ cacheDir: fileURLToPath(process.argv[2]), manualUrl });
+  } catch (failure) { domainErrorType = failure.constructor; }
+  if (!domainErrorType) throw new Error('A cache file must be refused as a directory');
   outcome = await Promise.race([
     fetchCodexManual({
       cacheDir: process.argv[1],
@@ -211,7 +282,7 @@ try {
       () => ({ kind: 'resolved' }),
       error => ({
         kind: 'rejected',
-        expectedError: error.message.includes('could not be fetched'),
+        expectedError: error.constructor === domainErrorType,
       }),
     ),
     proofDeadlinePromise,
