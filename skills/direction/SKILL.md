@@ -127,7 +127,9 @@ Director asks; that is execution.
    result under [talking with the Director](../references/talking-with-the-director.md).
 3. Propose, in this order: escalation decisions, milestone lines to add or
    retire, and a direction pull request when the file itself must change. The
-   Director decides in chat; record the decision on GitHub the same session.
+   Director decides in chat; record the decision on GitHub the same session,
+   on an issue that ends done or split as the
+   [executing loop](../references/executing-loop.md) says.
 4. End with what the executing agent should see on GitHub when it next runs
    `next`, so the handoff needs no copy and paste.
 
