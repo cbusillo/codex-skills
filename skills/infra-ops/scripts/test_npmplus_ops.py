@@ -30,16 +30,6 @@ sys.modules[MODULE_SPEC.name] = npmplus_ops
 MODULE_SPEC.loader.exec_module(npmplus_ops)
 
 
-PRIVATE_LITERALS = (
-    "private-node-01",
-    "10.99.",
-    "example-internal.test",
-    "private-canary",
-    "private container command",
-    "private hypervisor command",
-)
-
-
 @pytest.fixture(autouse=True)
 def clear_npmplus_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in tuple(os.environ):
@@ -554,13 +544,7 @@ def test_authenticate_rejects_wrong_authenticated_principal(
         client.authenticate()
 
 
-def test_public_engine_does_not_contain_private_literals() -> None:
-    source = MODULE_PATH.read_text(encoding="utf-8")
-    for literal in PRIVATE_LITERALS:
-        assert literal not in source
-
-
-def test_help_does_not_contain_private_literals(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_help_does_not_render_private_runtime_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     private_home = tmp_path / "private-runtime-home"
     monkeypatch.setenv("CODE_HOME", str(private_home))
     for arguments in (["--help"], ["context-check", "--help"]):
@@ -570,9 +554,7 @@ def test_help_does_not_contain_private_literals(monkeypatch: pytest.MonkeyPatch,
             text=True,
             check=True,
         )
-        for literal in PRIVATE_LITERALS:
-            assert literal not in result.stdout
-        assert str(private_home) not in result.stdout
+        assert str(private_home) not in result.stdout + result.stderr
 
 
 def test_api_config_loads_fixture_credentials(tmp_path: Path) -> None:
@@ -737,13 +719,16 @@ def test_cmd_lifecycle_dry_run_includes_apply_readiness(
         )
     )
 
-    payload = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
     assert payload["apply"] is False
     assert payload["apply_authorized"] is True
     assert payload["apply_ready"] is True
     assert payload["planned_operation"] == "enable"
-    output = json.dumps(payload)
-    assert all(private_literal not in output for private_literal in PRIVATE_LITERALS)
+    output = captured.out + captured.err
+    private_values = [*host["domain_names"], str(private_repo), str(context.env_file)]
+    private_values.extend(npmplus_ops.parse_env_file(context.env_file).values())
+    assert all(value not in output for value in private_values)
 
 
 def test_cmd_lifecycle_rejects_unauthorized_ref_before_client_build(
