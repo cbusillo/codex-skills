@@ -1209,7 +1209,7 @@ def _project_product_config_apply_result(result: object) -> dict[str, object]:
     return projected
 
 
-def _project_merge_component(value: object) -> dict[str, object]:
+def _project_merge_component(value: object, *, include_membership: bool = False) -> dict[str, object]:
     source = _require_dict(value)
     assert_public_safe_shape(source)
     projected: dict[str, object] = {}
@@ -1244,6 +1244,12 @@ def _project_merge_component(value: object) -> dict[str, object]:
             if not isinstance(source[key], list):
                 raise LaunchplaneSafetyError("invalid_response")
             projected[f"{key}_count"] = len(source[key])
+            if include_membership and key == "entries" and source[key] and all(
+                isinstance(entry, dict) and isinstance(entry.get("pull_request_number"), int)
+                and not isinstance(entry["pull_request_number"], bool) and entry["pull_request_number"] > 0
+                for entry in source[key]
+            ):
+                projected["pull_request_numbers"] = [entry["pull_request_number"] for entry in source[key]]
     return projected
 
 
@@ -1455,7 +1461,7 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
         "branch_update_result",
     ):
         if key in source:
-            projected[key] = _project_merge_component(source[key])
+            projected[key] = _project_merge_component(source[key], include_membership=key == "candidate")
     assert_public_safe_shape(projected)
     return projected
 
