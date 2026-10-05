@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
+import sys
 import tempfile
 import unittest
 
@@ -100,6 +102,25 @@ class SnapshotTests(unittest.TestCase):
                 self.assertIn("mergeTrainEnabled: unknown", self.snapshot(
                     metadata, text=True, policy=response, policy_exit=exit_code,
                 ).stdout)
+
+
+    def test_text_without_jq_keeps_local_snapshot_and_unknown_enrollment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            bins = root / "bin"
+            bins.mkdir()
+            for name in ("git", "dirname"):
+                (bins / name).symlink_to(shutil.which(name))
+            result = subprocess.run(
+                ["/bin/bash", str(SCRIPT)], cwd=root,
+                env={**os.environ, "PATH": str(bins), "GITHUB_REPO_SNAPSHOT_PYTHON": sys.executable,
+                     "GITHUB_REPO_SNAPSHOT_GH": str(root / "missing-gh")},
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("== Repository ==", result.stdout)
+            self.assertIn("mergeTrainEnabled: unknown", result.stdout)
 
 
 if __name__ == "__main__":

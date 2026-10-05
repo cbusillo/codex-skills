@@ -105,6 +105,10 @@ done
 # Enrollment is live Launchplane policy, independent of repository metadata.
 read_merge_train_policy() {
   local response
+  if ! command -v jq >/dev/null 2>&1; then
+    printf '{"source":"launchplane","status":"unknown","enabled":null,"targets":[],"policy":null}\n'
+    return
+  fi
   if [[ -f "$policy_helper" ]] && response="$("${python_command[@]}" "$policy_helper" merge-train-policy-read --repo-root "$repo_root" 2>/dev/null)"; then
     if jq -e '
       .status == "available" and .operation == "merge-train-policy-read" and
@@ -427,10 +431,6 @@ if [[ -n "$config_path" ]]; then
   done < <(jq -r '.healthUrls[]? | if type == "string" then . elif type == "object" then .url // empty else empty end' "$effective_config_path")
 fi
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo "error: jq is required to read merge-train enrollment" >&2
-  exit 2
-fi
 merge_train_policy="$(read_merge_train_policy)"
 
 if [[ "$json_output" -eq 1 ]]; then
@@ -797,11 +797,15 @@ if [[ -n "$config_path" ]]; then
 fi
 
 section "Merge Train (Launchplane policy)"
-jq -r '[
-  "mergeTrainStatus: " + .status,
-  "mergeTrainEnabled: " + (if .enabled == null then "unknown" else (.enabled | tostring) end),
-  (.targets[] | "mergeTrainTarget: " + .baseBranch + " (" + .readyLabel + ")")
-] | .[]' <<<"$merge_train_policy"
+if command -v jq >/dev/null 2>&1; then
+  jq -r '[
+    "mergeTrainStatus: " + .status,
+    "mergeTrainEnabled: " + (if .enabled == null then "unknown" else (.enabled | tostring) end),
+    (.targets[] | "mergeTrainTarget: " + .baseBranch + " (" + .readyLabel + ")")
+  ] | .[]' <<<"$merge_train_policy"
+else
+  printf 'mergeTrainStatus: unknown\nmergeTrainEnabled: unknown\n'
+fi
 
 if [[ -x "$gh_bin" ]] || command -v "$gh_bin" >/dev/null 2>&1; then
   section "Current Branch Pull Request"

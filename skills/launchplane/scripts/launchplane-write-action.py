@@ -8673,7 +8673,12 @@ def main(argv: list[str]) -> int:
             sys.path.insert(0, str(github_scripts))
             from github_read import resolve_repo
 
-            repository = resolve_repo(Path(args.repo_root), args.repo)
+            try:
+                repository = resolve_repo(Path(args.repo_root), args.repo)
+                if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+                    raise ValueError("repository_unresolved")
+            except ValueError as exc:
+                raise ValueError("repository_unresolved") from exc
             request = {"repository": public_identifier(repository)}
             return execute_product_read(
                 args=args, operation=args.command, request=request,

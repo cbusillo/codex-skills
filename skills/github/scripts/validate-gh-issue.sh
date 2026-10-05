@@ -7,6 +7,7 @@ export CODEX_AUTOMATION_EMAIL=fixture-automation@example.invalid
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
 tmpdir="$(mktemp -d)"
+export GITHUB_REPO_SNAPSHOT_POLICY_HELPER="$tmpdir/missing-policy.py"
 cleanup() {
 	rm -rf "$tmpdir"
 }
@@ -1671,8 +1672,8 @@ GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
 		.launchplane.service.contextUrlEnv == "LAUNCHPLANE_CONTEXT_URL" and
 		.launchplane.service.operatorUrlEnv == "LAUNCHPLANE_OPERATOR_URL" and
 		.launchplane.service.localConfigExample == $localConfigExample and
-		.launchplane.mergeTrain.readyLabel == "ready-to-merge" and
-		.launchplane.mergeTrain.githubActionsRunner.workflow == "merge-train-runner.yml" and
+		.launchplane.mergeTrain.status == "unknown" and
+		.launchplane.mergeTrain.enabled == null and
 		(.launchplane.warnings | length) == 0 and
 		.cleanup.status == "configured" and
 		.cleanup.routineCommands[0].name == "git status" and

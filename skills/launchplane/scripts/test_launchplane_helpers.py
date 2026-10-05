@@ -7437,5 +7437,13 @@ def test_merge_policy_read_uses_only_get_and_preserves_denial(tmp_path: Path) ->
     assert calls[0]["path"] == contract.helper_command_path("merge-train-policy-read")
     assert json.loads(output.getvalue())["status"] == "denied"
 
+
+def test_merge_policy_unresolved_origin_uses_safe_code(tmp_path: Path) -> None:
+    output = io.StringIO()
+    with patch.object(write_action, "prepare_operator_settings", side_effect=AssertionError("config read attempted")), redirect_stdout(output):
+        status = write_action.main(["merge-train-policy-read", "--repo-root", str(tmp_path)])
+    assert status == 2
+    assert json.loads(output.getvalue())["warnings"][0]["code"] == "repository_unresolved"
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
