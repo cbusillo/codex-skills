@@ -946,6 +946,9 @@ the original author separately in `comment.author`.
 The read-only `--write-actor-for OWNER/REPO` wrapper prefix supports only a
 GET `/user` actor probe; it applies the same installation, own-user opt-in,
 and required-automation checks as a write without sending a mutation.
+Malformed repository or probe arguments return a structured `validation_error`
+with exit code 2 and `write_outcome: not_started` before authentication or
+mutation. The API retry layer preserves this failure and does not retry it.
 `git-push-as-bot` pushes there with
 the active login's token, `git-commit-as-bot` keeps the person's own git
 identity, and `gh-pr.py create` requires `--body-file` and appends

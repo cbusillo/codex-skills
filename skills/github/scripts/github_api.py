@@ -3042,6 +3042,27 @@ def call_gh(
     if authorized_actor_change:
         expected_actor = None
 
+    # The wrapper can reject local input without an HTTP response. Preserve its
+    # terminal envelope instead of classifying status 0 as a provider failure.
+    if proc.returncode != 0 and _failure_from_terminal_envelope(
+        _try_parse_json(raw_stdout.strip()), is_write=is_write
+    ) is not None:
+        return legacy_process_result(
+            proc.returncode,
+            raw_stdout,
+            raw_stderr,
+            operation=operation or "github.api.call",
+            is_write=is_write,
+            actor=actor,
+            expected_actor=expected_actor,
+            host=resolved_host,
+            transport=TRANSPORT,
+            bucket=resolved_bucket,
+            graphql_operation=resolved_graphql_operation,
+            completed_steps=completed_steps,
+            failed_step=failed_step or "gh_invocation",
+        )
+
     # gh printed nothing (network failure before HTTP response)
     if not raw_stdout and proc.returncode != 0:
         failure = classify_legacy_failure(raw_stderr, stdout=raw_stdout, is_write=is_write)

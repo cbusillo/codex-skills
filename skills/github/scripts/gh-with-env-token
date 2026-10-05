@@ -19,6 +19,15 @@ run_python() {
 	fi
 }
 
+probe_validation_error() {
+	run_python "$classifier" terminal-error \
+		--operation github.auth.resolve_write_actor \
+		--message "$1" \
+		--transport gh_cli_wrapper \
+		--write-outcome not_started
+	exit 2
+}
+
 # Use the first local.env that exists under CODE_HOME, CODEX_HOME, then
 # ~/.code. An explicit CODEX_SKILLS_ENV_FILE always wins, even when missing, so
 # tests and isolated callers can load nothing.
@@ -75,8 +84,7 @@ while [ "$#" -gt 0 ]; do
 		;;
 	--write-actor-for)
 		if [ "$#" -lt 2 ] || [ -z "${2:-}" ] || [ -n "$write_actor_repository" ]; then
-			echo "error: --write-actor-for requires one OWNER/REPO" >&2
-			exit 2
+			probe_validation_error "--write-actor-for requires one OWNER/REPO"
 		fi
 		write_actor_repository=$2
 		shift 2
@@ -92,6 +100,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "$check_auth" -eq 1 ] && [ "$#" -ne 0 ]; then
+	if [ -n "$write_actor_repository" ]; then
+		probe_validation_error "--check does not accept a gh command"
+	fi
 	echo "error: --check does not accept a gh command" >&2
 	exit 2
 fi
@@ -114,23 +125,6 @@ fi
 readonly require_automation_auth
 
 expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-${CODEX_AUTOMATION_LOGIN:-}}
-
-# Capture stdin only when the command is going to read it, so the same body can
-# be replayed to the actor check and to the real call. Agent hosts leave stdin
-# open and idle; reading it unconditionally would wait forever for an end of
-# file that never comes. A command that reads stdin without saying so in its
-# arguments still inherits it, just without replay.
-reads_stdin=0
-for argument in "$@"; do
-	case $argument in
-	- | @- | *=@- | --with-token) reads_stdin=1 ;;
-	esac
-done
-
-if [ "$reads_stdin" -eq 1 ] && [ ! -t 0 ]; then
-	cat >"$stdin_file"
-	stdin_captured=1
-fi
 
 run_with_input() {
 	if [ "$stdin_captured" -eq 1 ]; then
@@ -810,20 +804,34 @@ app_auth_for_command() {
 # actor probe. Comment selection must know the writer before reading authors.
 if [ -n "$write_actor_repository" ]; then
 	case "$write_actor_repository" in
-	*[!a-zA-Z0-9_./-]* | */*/* | /* | */ | ./* | ../* | */. | */..)
-		echo "error: --write-actor-for requires OWNER/REPO" >&2
-		exit 2
+	*[!a-zA-Z0-9_./-]* | */*/* | /* | */ | ./* | ../* | */. | */.. | -*)
+		probe_validation_error "--write-actor-for requires OWNER/REPO"
 		;;
 	*/*) ;;
 	*)
-		echo "error: --write-actor-for requires OWNER/REPO" >&2
-		exit 2
+		probe_validation_error "--write-actor-for requires OWNER/REPO"
 		;;
 	esac
 	if ! is_actor_probe "$@"; then
-		echo "error: --write-actor-for accepts only a GET /user actor probe" >&2
-		exit 2
+		probe_validation_error "--write-actor-for accepts only a GET /user actor probe"
 	fi
+fi
+
+# Capture stdin only after probe validation, when the command is going to read
+# it, so the same body can be replayed to the actor check and to the real call.
+# Agent hosts leave stdin open and idle; an invalid probe must fail without
+# waiting for an end of file. Commands that read stdin without saying so in
+# their arguments still inherit it, just without replay.
+reads_stdin=0
+for argument in "$@"; do
+	case $argument in
+	- | @- | *=@- | --with-token) reads_stdin=1 ;;
+	esac
+done
+
+if [ "$reads_stdin" -eq 1 ] && [ ! -t 0 ]; then
+	cat >"$stdin_file"
+	stdin_captured=1
 fi
 
 # github_identity.CONTRIBUTOR_EXIT_STATUS: the App is not installed on the

@@ -470,18 +470,36 @@ def test_write_actor_probe_preserves_repository_authorization() -> None:
 def test_write_actor_probe_rejects_non_probe_commands_before_authentication() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
+        env_file = root / "local.env"
+        env_file.write_text(
+            "GITHUB_APP_ID=12345\nGITHUB_APP_INSTALLATION_ID=67890\n"
+            "GITHUB_APP_PRIVATE_KEY_PATH=/fake/app.pem\n",
+            encoding="utf-8",
+        )
+        auth_calls = root / "auth-calls"
         unused = root / "unused.py"
-        write(unused, "raise AssertionError('invalid probe must fail before any authentication or command')\n")
+        write(unused, "from pathlib import Path\n"
+              f"Path({str(auth_calls)!r}).touch()\n"
+              "raise AssertionError('invalid probe must fail before any authentication or command')\n")
         for args in (
             ("--write-actor-for",),
             ("--write-actor-for", "", "api", "/user"),
+            ("--write-actor-for", "director/catalog", "--write-actor-for", "director/catalog", "api", "/user"),
             ("--write-actor-for", "invalid", "api", "/user"),
             ("--write-actor-for", "director/catalog", "api", "/user", "--method", "POST"),
             ("--write-actor-for", "director/catalog", "issue", "comment", "42", "--body", "x"),
             ("--write-actor-for", "director/catalog", "api", "/repos/director/catalog"),
+            ("--check", "--write-actor-for", "director/catalog", "api", "/user"),
         ):
-            result = run_wrapper(root / "missing.env", unused, unused, *args, gh_command=unused)
-            assert result.returncode == 2 and not result.stdout, result
+            result = run_wrapper(env_file, SCRIPT.with_name("github_api.py"), unused,
+                                 *args, gh_command=unused)
+            assert result.returncode == 2, result
+            payload = json.loads(result.stdout)
+            assert payload["failure"]["cause"] == "validation_error", payload
+            assert payload["retryable"] is False and payload["fallback_eligible"] is False, payload
+            assert payload["write_outcome"] == "not_started", payload
+            assert payload["failed_step"] == "input_validation", payload
+            assert not auth_calls.exists(), result
 
 
 def test_comment_cli_selects_own_user_through_real_wrapper() -> None:
@@ -574,6 +592,84 @@ def test_comment_cli_selects_own_user_through_real_wrapper() -> None:
             assert payload["attempts"] == 1, payload
             assert identity_calls.read_text().splitlines() == ["lookup"], identity_calls.read_text()
             assert calls_file.read_text() == "", calls_file.read_text()
+
+
+def test_comment_cli_rejects_malformed_probe_once_before_authentication() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        auth_calls = root / "auth-calls"
+        unused = root / "unused"
+        write(unused, f"#!{sys.executable}\nfrom pathlib import Path\n"
+              f"Path({str(auth_calls)!r}).touch()\nraise SystemExit(99)\n")
+        wrapper_calls = root / "wrapper-calls"
+        launcher = root / "wrapper"
+        write(launcher, f"#!/bin/sh\nprintf 'probe\\n' >> '{wrapper_calls}'\n"
+              f"exec '{SCRIPT}' \"$@\"\n")
+        env_file = root / "local.env"
+        env_file.write_text(
+            "GITHUB_APP_ID=12345\nGITHUB_APP_INSTALLATION_ID=67890\n"
+            "GITHUB_APP_PRIVATE_KEY_PATH=/fake/app.pem\n"
+            "CODEX_AUTOMATION_LOGIN='catalog-app[bot]'\n",
+            encoding="utf-8",
+        )
+        body_file = root / "body.md"
+        body_file.write_text("fixture comment", encoding="utf-8")
+        env = {
+            "PATH": os.environ["PATH"], "HOME": directory,
+            "CODEX_SKILLS_ENV_FILE": str(env_file),
+            "GH_WITH_ENV_TOKEN_IDENTITY_HELPER": str(unused),
+            "GH_WITH_ENV_TOKEN_PYTHON": sys.executable,
+            "GH_WITH_ENV_TOKEN_GH": str(unused),
+            "GH_COMMENT_GH": str(launcher),
+            "GITHUB_RETRY_STATE_DIR": str(root / "retry-state"),
+            "GITHUB_RETRY_MAX_ATTEMPTS": "2",
+            "GITHUB_RETRY_MAX_WAIT_SECONDS": "5",
+        }
+        for repository in ("fixture/repo!", "fixture/..", "-fixture/repo"):
+            wrapper_calls.write_text("", encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT.with_name("github_comment.py")), "issue", "42",
+                 f"--repo={repository}", "--body-file", str(body_file)],
+                env=env, text=True, capture_output=True, timeout=10, check=False,
+            )
+            assert result.returncode != 0, result.stdout
+            payload = json.loads(result.stdout)
+            assert payload["error_code"] == "validation_error", payload
+            assert payload["retryable"] is False and payload["retry_eligible"] is False, payload
+            assert payload["attempts"] == 1, payload
+            assert payload["write_outcome"] == "not_started", payload
+            assert wrapper_calls.read_text().splitlines() == ["probe"], result
+            assert not auth_calls.exists(), result
+
+
+def test_invalid_probe_does_not_wait_for_open_stdin() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        unused = root / "unused.py"
+        write(unused, "raise AssertionError('invalid probe must fail before authentication')\n")
+        env = {
+            "PATH": os.environ["PATH"], "HOME": directory,
+            "CODEX_SKILLS_ENV_FILE": str(root / "missing.env"),
+            "GH_WITH_ENV_TOKEN_IDENTITY_HELPER": str(unused),
+            "GH_WITH_ENV_TOKEN_PYTHON": sys.executable,
+            "GH_WITH_ENV_TOKEN_GH": str(unused),
+        }
+        with subprocess.Popen(
+            [str(SCRIPT), "--write-actor-for", "fixture/repo", "api", "/user", "--input", "-"],
+            env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True,
+        ) as process:
+            assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+            try:
+                process.wait(timeout=5)
+            finally:
+                process.stdin.close()
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=5)
+            stdout, stderr = process.stdout.read(), process.stderr.read()
+            assert process.returncode == 2, (stdout, stderr)
+            assert json.loads(stdout)["failure"]["cause"] == "validation_error", stdout
 
 
 def test_app_login_mismatch_fails_closed_for_write_and_check() -> None:
@@ -695,6 +791,8 @@ def main() -> None:
         test_write_actor_probe_preserves_repository_authorization,
         test_write_actor_probe_rejects_non_probe_commands_before_authentication,
         test_comment_cli_selects_own_user_through_real_wrapper,
+        test_comment_cli_rejects_malformed_probe_once_before_authentication,
+        test_invalid_probe_does_not_wait_for_open_stdin,
         test_check_preserves_user_token_fallback_when_app_is_absent,
         test_no_token_check_fails_explicitly_without_running_gh,
         test_check_rejects_commands_before_active_auth_fallback,
