@@ -550,8 +550,11 @@ uv run github/scripts/reconcile-runtime-checkout.py \
   --landing-sha <full-landing-sha>
 ```
 
-Invoke it from a worktree containing the landed helper source, not from a stale
-runtime checkout. Preserve two independent receipts: the remote merge/landing
+Invoke it from a worktree containing the landed helper source. A behind runtime
+checkout can also run its own copy with only `--repo` to catch up to the
+default-branch tip, unless the helper itself changed upstream; see
+[Runtime Checkout Reconciliation](cli-reference.md#runtime-checkout-reconciliation).
+A train landing through `launchplane-train-drive.py` reconciles itself. Preserve two independent receipts: the remote merge/landing
 result and local runtime reconciliation. `blocked`, `retryable`, or `failed`
 runtime reconciliation does not undo the merge and must not trigger another
 merge attempt. It does block claims that installed runtime behavior or

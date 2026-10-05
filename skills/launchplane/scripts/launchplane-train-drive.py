@@ -20,6 +20,11 @@ Each pass calls `launchplane-write-action.py merge-train-controller-run-once
 A controller lease held by another driver is a wait, not a failure; if it is
 still held at the deadline the outcome is needs_owner.
 
+When the landed repository is the skills catalog this command lives in, the
+landed stop event carries `runtime_reconciliation`: the receipt from running
+`reconcile-runtime-checkout.py` with the landing SHA, so the installed catalog
+follows every train landing. Its result never changes the landed outcome.
+
 Output is JSONL in `gh_pr_watch.py`'s shape: {"event": ..., "payload": ...}.
 """
 
@@ -39,6 +44,7 @@ from typing import Any
 SCRIPT_DIR = Path(__file__).resolve().parent
 WRITE_ACTION = SCRIPT_DIR / "launchplane-write-action.py"
 GH_WITH_ENV_TOKEN = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-with-env-token"
+RECONCILER = SCRIPT_DIR.parent.parent / "github" / "scripts" / "reconcile-runtime-checkout.py"
 sys.path.insert(0, str(GH_WITH_ENV_TOKEN.parent))
 import github_identity
 import github_read
@@ -60,6 +66,8 @@ class DriveIO:
     # Numbers of ready-to-merge PRs merged at or after an epoch time.
     merged_since: Callable[[str, float], list[int]] = lambda _repository, _since: []
     quota_wait: Callable[[], float] = lambda: 0.0
+    # Reconciles the installed catalog after a landing; None when the repository is not this catalog.
+    reconcile: Callable[[str, str], dict[str, Any] | None] = lambda _repository, _sha: None
     finish_reads: Callable[[], None] = lambda: None
     now: Callable[[], float] = time.time
     sleep: Callable[[float], None] = time.sleep
@@ -107,6 +115,7 @@ def _pause(settings: DriveSettings, io: DriveIO, state: DriveState, *, minimum: 
 
 def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, Any]], None]) -> str:
     state = DriveState(batch={settings.number})
+    emit = _with_runtime_reconciliation(settings, io, emit)
     try:
         return _drive(settings, io, state, emit)
     except (github_read.GitHubReadError, github_read.GitHubReadShapeError) as error:
@@ -118,6 +127,19 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
         if settings.number in state.landed:
             return _stop(settings, state, emit, "landed", companion_evidence="unavailable", **detail)
         return _stop(settings, state, emit, "error", reason="GitHub read unavailable", **detail)
+
+
+def _with_runtime_reconciliation(
+    settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, Any]], None]
+) -> Callable[[str, dict[str, Any]], None]:
+    def wrapped(event: str, payload: dict[str, Any]) -> None:
+        if event == "stop" and payload.get("outcome") == "landed" and payload.get("landing_sha"):
+            receipt = io.reconcile(settings.repository, payload["landing_sha"])
+            if receipt is not None:
+                payload["runtime_reconciliation"] = receipt
+        emit(event, payload)
+
+    return wrapped
 
 
 def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callable[[str, dict[str, Any]], None]) -> str:
@@ -493,6 +515,18 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
                 return max(0.0, reset + 3.0 - time.time())
         return 0.0
 
+    def reconcile(repository: str, landing_sha: str) -> dict[str, Any] | None:
+        origin = subprocess.run(
+            ["git", "-C", str(RECONCILER.parent), "config", "--get", "remote.origin.url"],
+            capture_output=True, text=True, check=False,
+        ).stdout.strip().removesuffix(".git")
+        if not origin.casefold().replace(":", "/").endswith("/" + repository.casefold()):
+            return None
+        receipt = _run_json(["uv", "run", str(RECONCILER), "--repo", repository, "--landing-sha", landing_sha], 300)
+        if isinstance(receipt, dict):
+            return receipt
+        return {"status": "failed", "reason_code": "reconciler_unavailable", "landing_sha": landing_sha}
+
     def finish_reads() -> None:
         # Only final read-back gets a fixed, bounded grace window. Mutations
         # and reset waits retain the original drive deadline.
@@ -506,6 +540,7 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
         failing_checks=failing_checks,
         merged_since=merged_since,
         quota_wait=quota_wait,
+        reconcile=reconcile,
         finish_reads=finish_reads,
     )
 

@@ -609,5 +609,69 @@ def test_reconcile_prefers_the_install_over_a_linked_work_in_progress_worktree(t
     assert statuses["CLAUDE_CONFIG_DIR/skills/a-wip"] == statuses["CLAUDE_CONFIG_DIR/skills/team-catalog"] == "matched"
 
 
+def run_helper(fixture: RuntimeFixture, script: Path, *args: str) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
+    env = os.environ.copy()
+    env["HOME"] = str(fixture.code_home.parent / "host-home")
+    env["CODE_HOME"] = str(fixture.code_home)
+    env["CODEX_HOME"] = str(fixture.code_home.parent / "ignored-codex-home")
+    env["CLAUDE_CONFIG_DIR"] = str(fixture.code_home.parent / "no-claude-config")
+    proc = subprocess.run(
+        [sys.executable, str(script), "--repo", fixture.repo, *args],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        check=False,
+    )
+    return proc, json.loads(proc.stdout)
+
+
+def test_a_behind_install_catches_up_by_running_its_own_copy(tmp_path: Path) -> None:
+    fixture = build_runtime_fixture(tmp_path)
+
+    proc, receipt = run_helper(fixture, fixture.runtime / "github" / "scripts" / SCRIPT.name)
+
+    assert proc.returncode == 0
+    assert (receipt["status"], receipt["reason_code"]) == ("synchronized", "runtime_fast_forwarded")
+    assert receipt["landing_sha"] == receipt["fetched_sha"] == fixture.landing_sha
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
+
+
+def test_an_install_whose_helper_changed_upstream_names_the_copy_to_run(tmp_path: Path) -> None:
+    fixture = build_runtime_fixture(tmp_path)
+    changed = fixture.landing / "github" / "scripts" / SCRIPT.name
+    changed.write_text(changed.read_text() + "\n# changed upstream\n")
+    git(fixture.landing, "commit", "-am", "change helper")
+    tip = git(fixture.landing, "rev-parse", "HEAD")
+    git(fixture.landing, "push", "origin", "main")
+
+    proc, receipt = run_helper(fixture, fixture.runtime / "github" / "scripts" / SCRIPT.name)
+
+    assert proc.returncode == 1
+    assert receipt["reason_code"] == "helper_landing_source_mismatch"
+    detail = receipt["detail"]
+    assert isinstance(detail, str) and tip in detail
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
+
+
+def test_a_helper_outside_the_merged_worktree_says_which_copy_to_run(tmp_path: Path) -> None:
+    fixture = build_runtime_fixture(tmp_path)
+
+    proc, receipt = run_helper(
+        fixture,
+        fixture.runtime / "github" / "scripts" / SCRIPT.name,
+        "--merged-worktree",
+        str(fixture.merged),
+        "--landing-sha",
+        fixture.landing_sha,
+    )
+
+    assert proc.returncode == 1
+    assert receipt["reason_code"] == "invalid_merged_worktree"
+    detail = receipt["detail"]
+    assert isinstance(detail, str) and "is not inside" in detail
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

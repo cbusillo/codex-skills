@@ -954,6 +954,9 @@ merge-train-controller-run-once` instead of open-coding the route. Mutating
   `--allow-branch-update` only for your own same-repository branches, for a
   behind-base PR it reports without refreshing. Run one driver per repository
   train, and keep a watcher on it while you report "waiting on the train".
+  When the landed repository is the skills catalog the driver lives in, its
+  landed `stop` event carries `runtime_reconciliation`, the runtime
+  reconciler's receipt for that landing; report it as the runtime outcome.
 - **Train Entry**: Read the target branch's enqueue label from the active
   policy and put that label on the root PR and every stacked child ready to land
   with it. Preserve a task's assigned Supervisor handoff instead of applying
