@@ -674,7 +674,12 @@ competitor's record.
   only). Configured Projects still enroll new issues. Manual fields are not
   synchronized by default; `--focus` and `--manager` are explicit edits, and
   configured Manager defaults are ignored.
-- `update-section <issue> <section>`: Patch a single markdown section.
+- `update-section <issue> <section>`: Patch a single markdown section. Section
+  text from `--body`, `--body-file`, or stdin is literal, including backslashes;
+  existing surrounding-whitespace normalization still applies. Body-read and
+  regex preparation failures return a structured `validation_error` with
+  `write_outcome=not_started` before any mutation. Ownership refusals and API
+  write failures retain their existing classifications.
 - `link|unlink <issue> <rel> <target>`: Manage native `blocked-by`, `blocks`,
   or `subissue` relationships. `related` edits a body note instead and follows
   body-ownership rules.
