@@ -220,7 +220,9 @@ Command model:
   request or assessment. Text output prints `FINDINGS_ARTIFACT` with the path.
   Artifacts are private local evidence in the helper cache's `findings`
   directory; preserve required receipts through acceptance, then remove those
-  disposable files during task cleanup.
+  disposable files during task cleanup. Record the exposed receipt paths with
+  the task's evidence; `assessment.context.worktree_root` identifies their
+  exact worktree.
   An `incomplete` or `unavailable` artifact records the retrieval gap separately
   from the native RED. Do not assume omitted findings are inherited or clean.
   The artifact proves the accepted run, not freshness after later source edits

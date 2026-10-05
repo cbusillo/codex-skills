@@ -2822,7 +2822,8 @@ def preserve_inspection_findings(
 ) -> dict[str, Any] | None:
     """Save accepted run evidence before closing; an artifact is never a new assessment."""
     total = result.get("total_problems")
-    if result.get("verdict") != "RED" or not isinstance(total, int) or isinstance(total, bool) or total <= MAX_AGENT_FINDINGS:
+    displayed = min(MAX_AGENT_FINDINGS, len(result.get("problems") or []))
+    if result.get("verdict") != "RED" or not isinstance(total, int) or isinstance(total, bool) or total <= displayed:
         return None
     route = payload_route(result)
     run_id = inspection_run_id(result.get("trigger") or {}) or inspection_run_id(result)
@@ -2897,6 +2898,9 @@ def preserve_inspection_findings(
             offset = following
     except InspectError as error:
         receipt["reason"] = infer_error_reason(error, error.payload)
+    except Exception as error:
+        receipt["reason"] = "findings_capture_failed"
+        receipt["error_type"] = type(error).__name__
     receipt["finding_count"] = len(problems)
     artifact = {
         "schema_version": 1, "recorded_at": datetime.now(timezone.utc).isoformat(),
@@ -2904,16 +2908,18 @@ def preserve_inspection_findings(
         "retrieval": receipt, "request": request, "assessment": result,
         "pages": pages, "problems": problems,
     }
-    data = public_json(artifact).encode("utf-8")
     path: Path | None = None
     try:
+        data = public_json(artifact).encode("utf-8")
         directory = cache_dir() / "findings"
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        path = directory / f"{uuid.uuid4()}.json"
-        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as handle:
+        destination = directory / f"{uuid.uuid4()}.json"
+        descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        path = destination
+        with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
         return receipt | {"path": str(path), "sha256": hashlib.sha256(data).hexdigest()}
-    except OSError:
+    except Exception:
         if path is not None:
             with suppress(OSError):
                 path.unlink(missing_ok=True)

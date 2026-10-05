@@ -14971,6 +14971,7 @@ class FindingsPreservationTests(unittest.TestCase):
         self.assertEqual(saved["request"]["files"], "app.py")
         self.assertEqual(saved["assessment"]["verdict"], "RED")
         self.assertEqual(saved["assessment"]["route"], self.route)
+        self.assertEqual(saved["assessment"]["context"]["worktree_root"], self.context["worktree_root"])
         self.assertEqual(Path(receipt["path"]).stat().st_mode & 0o777, 0o600)
         self.assertEqual(receipt["sha256"], jb_inspect.hashlib.sha256(Path(receipt["path"]).read_bytes()).hexdigest())
         self.assertTrue(closed)
@@ -14992,6 +14993,22 @@ class FindingsPreservationTests(unittest.TestCase):
             receipt = jb_inspect.preserve_inspection_findings(self.args, self.context, self.result())
         self.assertEqual(json.loads(Path(receipt["path"]).read_text())["problems"], self.problems)
         self.assertEqual(offsets, [0, 25, 50])
+
+    def test_small_display_limit_preserves_omitted_findings_below_compact_limit(self):
+        self.problems = self.problems[:15]
+        self.args.limit = 10
+        with patch.object(jb_inspect, "call_endpoint", side_effect=lambda route, endpoint, params, **kwargs: self.page(params["offset"])):
+            receipt = jb_inspect.preserve_inspection_findings(self.args, self.context, self.result())
+        self.assertEqual(receipt["status"], "complete")
+        self.assertEqual(json.loads(Path(receipt["path"]).read_text())["problems"], self.problems)
+
+    def test_connection_reset_preserves_accepted_red_and_already_read_findings(self):
+        result = self.result()
+        with patch.object(jb_inspect, "call_endpoint", side_effect=ConnectionResetError("peer reset")):
+            receipt = jb_inspect.preserve_inspection_findings(self.args, self.context, result)
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertEqual(json.loads(Path(receipt["path"]).read_text())["problems"], self.problems[:25])
+        self.assertEqual(result["verdict"], "RED")
 
     def test_invalid_later_pages_preserve_red_and_report_partial_coverage(self):
         for change in ({"inspection_run_id": 8}, {"snapshot_run_id": 8}, {"status": "stale_results"}, {"route": {**self.route, "session_id": "replacement"}}, {"total_problems": 54}):
