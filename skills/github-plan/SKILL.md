@@ -426,11 +426,10 @@ labels, cleanup of stale `plan:active`, `plan:blocked`, `plan:waiting`, and
 `github/scripts/gh-issue close` helper is for non-plan issues, or when the plan
 helper is unavailable. Closing a durable plan with the generic issue helper can
 leave planning labels or Project Status stale.
-It also skips the relationship and not-planned decision preflight; perform those
-checks in the linked closure decision contract below before using that fallback. For reaction approval, read
-the comment's `lastEditedAt` (must be explicitly null) and all reaction pages
-to verify that the repository owner reacted and when; if that evidence is
-unavailable, require the Director's typed decision comment.
+It also skips the relationship and not-planned decision preflight. Before using
+that fallback, read and apply the
+[closure decision contract](../github/references/cli-reference.md#planning-management),
+including its identity, timing, and edit-history checks.
 
 Before closing a planning issue, run
 `uv run <skill-dir>/../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
