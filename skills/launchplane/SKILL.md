@@ -954,9 +954,10 @@ merge-train-controller-run-once` instead of open-coding the route. Mutating
   `--allow-branch-update` only for your own same-repository branches, for a
   behind-base PR it reports without refreshing. Run one driver per repository
   train, and keep a watcher on it while you report "waiting on the train".
-- **Train Entry**: Put `ready-to-merge` on the root PR that targets the
-  protected base branch and on every stacked child that is ready to land with
-  it. A held child stays unlabeled or draft, and that stops the stack. Do not
+- **Train Entry**: Read the target branch's enqueue label from the active
+  policy and put that label on the root PR and every stacked child ready to land
+  with it. Preserve a task's assigned Supervisor handoff instead of applying
+  labels when the task does not authorize train entry. A held child stays unlabeled or draft, and that stops the stack. Do not
   hand-collapse stacks in GitHub.
 - **Mutation Gate**: Keep scheduled runners in dry-run mode until the Director
   explicitly selects a mutation pilot. Manual `mutate=true` controller runs are

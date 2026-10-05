@@ -7392,7 +7392,7 @@ def test_merge_policy_enrollment_projects_only_requested_repository() -> None:
             "policy": {"policies": [
                 {"repository": "example/Repo", "base_branch": "release",
                  "enqueue_label": "ship it", "github_token": {"env_var": "PRIVATE_TOKEN"}},
-                {"repository": "private/other", "base_branch": "main", "enqueue_label": "other"},
+                {"repository": "private/task-runner", "base_branch": "risk-fixes", "enqueue_label": "other"},
             ]},
         },
     }
@@ -7401,10 +7401,14 @@ def test_merge_policy_enrollment_projects_only_requested_repository() -> None:
     assert projected["result"]["enabled"] is True
     assert projected["result"]["targets"] == [{"baseBranch": "release", "readyLabel": "ship it"}]
     assert "PRIVATE_TOKEN" not in json.dumps(projected)
-    assert "private/other" not in json.dumps(projected)
+    assert "private/task-runner" not in json.dumps(projected)
     request = {"repository": "example/absent"}
     result = write_action.summarize_merge_train_policy_read(request=request, provider_payload=response)["result"]
     assert result["status"] == "not_enrolled" and result["enabled"] is False
+    response["record"]["policy"]["policies"][0]["enqueue_label"] = "unsafe\x1b[31m"
+    with pytest.raises(safety.LaunchplaneSafetyError):
+        write_action.summarize_merge_train_policy_read(request={"repository": "example/repo"}, provider_payload=response)
+    response["record"]["policy"]["policies"][0]["enqueue_label"] = "ship it"
     response["record"]["policy"]["policies"].append(response["record"]["policy"]["policies"][0])
     with pytest.raises(safety.LaunchplaneSafetyError):
         write_action.summarize_merge_train_policy_read(request=request, provider_payload=response)

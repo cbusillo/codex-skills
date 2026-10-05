@@ -4911,16 +4911,21 @@ def summarize_merge_train_policy_read(
     seen: set[tuple[str, str]] = set()
     for value in policies:
         target = _require_dict(value)
-        name = public_identifier(target.get("repository"))
-        branch = public_identifier(target.get("base_branch"))
+        name = target.get("repository")
+        branch = target.get("base_branch")
+        if not isinstance(name, str) or not name.strip() or not isinstance(branch, str) or not branch.strip():
+            raise LaunchplaneSafetyError("invalid_response")
         key = (name.casefold(), branch)
         if key in seen:
             raise LaunchplaneSafetyError("invalid_response")
         seen.add(key)
         if name.casefold() == repository.casefold():
+            ready_label = public_summary_string(target.get("enqueue_label"), max_length=50)
+            if any(ord(character) < 32 or ord(character) == 127 for character in ready_label):
+                raise LaunchplaneSafetyError("invalid_response")
             targets.append({
-                "baseBranch": branch,
-                "readyLabel": public_summary_string(target.get("enqueue_label"), max_length=50),
+                "baseBranch": public_identifier(branch),
+                "readyLabel": ready_label,
             })
     summary = {
         "source": "launchplane",
@@ -8669,15 +8674,18 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     try:
         if args.command == "merge-train-policy-read":
-            github_scripts = Path(__file__).resolve().parents[2] / "github" / "scripts"
-            sys.path.insert(0, str(github_scripts))
-            from github_read import resolve_repo
-
             try:
-                repository = resolve_repo(Path(args.repo_root), args.repo)
+                if args.repo:
+                    repository = args.repo.removesuffix(".git")
+                else:
+                    github_scripts = Path(__file__).resolve().parents[2] / "github" / "scripts"
+                    sys.path.insert(0, str(github_scripts))
+                    from github_read import resolve_repo
+
+                    repository = resolve_repo(Path(args.repo_root))
                 if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
                     raise ValueError("repository_unresolved")
-            except ValueError as exc:
+            except (ValueError, ImportError) as exc:
                 raise ValueError("repository_unresolved") from exc
             request = {"repository": public_identifier(repository)}
             return execute_product_read(

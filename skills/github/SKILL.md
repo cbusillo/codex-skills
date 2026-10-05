@@ -888,15 +888,22 @@ Before a merge:
   An attention result or degraded coverage needs a response or explicit
   handoff first; a bot response never proves Director acknowledgement.
 
-When the user does not name a method, say you are using a normal merge commit
-and run `scripts/gh-pr.py merge <pr> --method merge`. Use `--method squash`
+For an authorized direct GitHub merge, when the user does not name a method,
+say you are using a normal merge commit and run `scripts/gh-pr.py merge <pr> --method merge`. Use `--method squash`
 or `--method rebase` only when the user asks, repo policy requires it, or you ask and get
 confirmation.
 
-For stacked PRs, when repo metadata or task context says Launchplane owns the
+For stacked PRs, when Launchplane policy, repository instructions or task
+context says Launchplane owns the
 merge train, delegate stack handling to the `launchplane` workflow and never
 hand-collapse the stack in GitHub. Otherwise consider a rollup branch when
 merging each layer would rerun expensive checks or churn conflicts.
+
+For Launchplane-managed landing, an unknown enrollment read never establishes
+a direct merge path. Preserve an existing repository/task train handoff; when
+the route is unresolved, use `merge-train-policy-read` and report its reason
+while retaining the PR for authoritative routing. Repository JSON is a routing
+hint, not enrollment evidence.
 
 ## After A Merge
 

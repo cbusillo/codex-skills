@@ -205,8 +205,9 @@ Label audit checklist:
   are undocumented in `.github/github.json`.
 - If a repo uses `awaiting-qa`, list it in `qaLabels`. If it uses
   `preview-ready`, list it in `deployLabels` or repo workflow docs. If it uses
-  `ready-to-merge`, configure it as the merge-train ready label or document the
-  equivalent local merge convention.
+  a merge-train enqueue label, resolve it from Launchplane's active policy;
+  do not duplicate that authority in repository metadata. Other merge conventions
+  belong in repository workflow docs.
 - Run `uv run scripts/gh-plan.py --repo OWNER/REPO ensure-labels` from the
   `github` skill directory only for
   durable planning labels. Do not use it to invent PR workflow labels.
