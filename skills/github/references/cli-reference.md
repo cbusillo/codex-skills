@@ -91,6 +91,20 @@ reporting only the final status read. Composite diagnostic tools that do not use
 the terminal-envelope CLI contract expose the same aggregate under
 `diagnostics.retry` and per-request evidence under `diagnostics.requests`.
 
+For a failed `gh-issue edit`, the aggregate `write_outcome` is
+`partially_applied` when earlier mutations succeeded and requested mutations
+remain, or `applied` when all mutations succeeded but final readback failed.
+`outcome_certainty` is `confirmed_partially_applied` for a confirmed partial
+edit, stays `unknown` when the final mutation's outcome is unknown, and is
+`confirmed` when every mutation is confirmed. The command still fails.
+`failed_request` retains the final request's original certainty and write outcome;
+these aggregate diagnostics do not change its retry or actor policy.
+`reconciliation.requested` includes field names and `field_values`, labels, and
+assignees; `completed` and `remaining` partition the confirmed mutations.
+Read the supplied issue endpoint and compare remaining intent before resuming;
+an unknown final mutation may already have applied, and an absent label may
+already meet the requested removal. Do not replay completed mutations.
+
 ### Request Use
 
 `uv run scripts/github_request_usage.py --hours 1` ranks the configured App's
