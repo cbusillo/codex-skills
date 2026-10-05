@@ -7422,5 +7422,196 @@ def test_client_named_fields_read_like_their_legacy_owner_names() -> None:
             assert json.loads(output.getvalue()) == expected
 
 
+@pytest.mark.parametrize(
+    "descriptor,request_body,counts",
+    [
+        (
+            "managed-authz-policy-set",
+            {
+                "managed_set_id": "example.proposal",
+                "desired_policy": {"schema_version": 2},
+                "reason": "Review the prepared grant.",
+            },
+            {
+                "added_rule_count": 1,
+                "adopted_rule_count": 0,
+                "updated_rule_count": 0,
+                "removed_rule_count": 0,
+                "unchanged_rule_count": 0,
+                "policy_safety_blocker_count": 0,
+                "operational_readiness_blocked_rule_count": 0,
+            },
+        ),
+        (
+            "managed-merge-train-policy-import",
+            {
+                "record": _merge_train_policy_import_payload()["record"],
+                "reason": "Review the prepared policy.",
+            },
+            {
+                "active_target_count": 1,
+                "candidate_target_count": 1,
+                "unchanged_policy_key_count": 1,
+            },
+        ),
+    ],
+)
+def test_privileged_policy_propose_sends_private_envelope_and_only_returns_review_metadata(
+    descriptor: str, request_body: dict[str, object], counts: dict[str, int]
+) -> None:
+    envelope = {
+        "descriptor_id": descriptor,
+        "source_event_id": "test:proposal:one",
+        "request": request_body,
+    }
+    operation_id = "privileged-operation-" + "a" * 32
+    response: dict[str, Any] = {
+        "status": "ok",
+        "trace_id": "launchplane_req_" + "b" * 32,
+        "write_status": "written",
+        "summary": {
+            "operation_id": operation_id,
+            "descriptor_id": descriptor,
+            "status": "planned",
+            **counts,
+            "expires_at": "2026-10-05T16:00:00+00:00",
+            "private_selectors": "never-emit-this",
+        },
+    }
+    calls: list[dict[str, object]] = []
+
+    def post(**kwargs: Any) -> dict[str, object]:
+        calls.append(kwargs)
+        assert kwargs["path"] == contract.helper_command_path(
+            "privileged-policy-propose"
+        )
+        assert kwargs["body"] == envelope
+        return response
+
+    with TemporaryDirectory() as directory:
+        payload_path = Path(directory) / "proposal.json"
+        payload_path.write_text(json.dumps(envelope))
+        for state, write_status in (("planned", "written"), ("approved", "replayed")):
+            response["summary"]["status"] = state
+            response["write_status"] = write_status
+            output = io.StringIO()
+            with (
+                patch.object(
+                    write_action,
+                    "resolve_settings",
+                    return_value={
+                        "service_url": "https://private.example.invalid",
+                        "token": "private-token",
+                    },
+                ),
+                patch.object(write_action, "request_launchplane", side_effect=post),
+                patch.object(
+                    write_action,
+                    "request_launchplane_read",
+                    side_effect=AssertionError("No import or preflight read"),
+                ),
+                redirect_stdout(output),
+            ):
+                assert (
+                    write_action.main(
+                        [
+                            "privileged-policy-propose",
+                            "--payload-file",
+                            str(payload_path),
+                        ]
+                    )
+                    == 0
+                )
+            result = json.loads(output.getvalue())["result"]
+            assert result["state"] == state
+            assert result["operation_id"] == operation_id
+            assert result["review_path"].endswith(operation_id)
+            assert result["counts"] == counts
+            assert result["authorizes_approval"] is False
+            assert result["authorizes_execution"] is False
+            for private in (
+                "private-token",
+                "private.example.invalid",
+                "never-emit-this",
+                str(request_body),
+            ):
+                assert private not in output.getvalue()
+    assert calls[0]["body"] == calls[1]["body"]
+
+
+def test_privileged_policy_propose_refuses_unsupported_fields_and_descriptors_before_network() -> (
+    None
+):
+    valid: dict[str, Any] = {
+        "descriptor_id": "managed-authz-policy-set",
+        "source_event_id": "test:proposal",
+        "request": {
+            "managed_set_id": "example.proposal",
+            "desired_policy": {"schema_version": 2},
+            "reason": "Review access.",
+        },
+    }
+    variants = [
+        {**valid, "descriptor_id": "ordinary-agent-delivery-activation"},
+        {**valid, "descriptor_id": "managed-secret-reencryption"},
+        {**valid, "approve": True},
+        {**valid, "source_event_id": "invalid source"},
+        {
+            **valid,
+            "request": {**valid["request"], "ordinary_agent_preparation_context": {}},
+        },
+        {**valid, "request": {**valid["request"], "reason": " "}},
+    ]
+    with (
+        TemporaryDirectory() as directory,
+        patch.object(
+            write_action,
+            "request_launchplane",
+            side_effect=AssertionError("No network"),
+        ),
+    ):
+        payload_path = Path(directory) / "proposal.json"
+        for envelope in variants:
+            payload_path.write_text(json.dumps(envelope))
+            with redirect_stdout(io.StringIO()):
+                assert (
+                    write_action.main(
+                        [
+                            "privileged-policy-propose",
+                            "--payload-file",
+                            str(payload_path),
+                        ]
+                    )
+                    == 2
+                )
+
+
+def test_privileged_policy_propose_rejects_malformed_result_without_echoing_private_fields() -> (
+    None
+):
+    for operation_id, descriptor, count in (
+        ("wrong-id", "managed-authz-policy-set", 0),
+        ("privileged-operation-" + "a" * 32, "managed-secret-reencryption", 0),
+        (
+            "privileged-operation-" + "a" * 32,
+            "managed-authz-policy-set",
+            "private-token",
+        ),
+    ):
+        response = {
+            "status": "ok",
+            "write_status": "written",
+            "summary": {
+                "operation_id": operation_id,
+                "descriptor_id": descriptor,
+                "status": "planned",
+                "added_rule_count": count,
+            },
+        }
+        with pytest.raises(safety.LaunchplaneSafetyError):
+            write_action.summarize_privileged_policy_proposal(
+                request={"descriptor_id": "managed-authz-policy-set"},
+                provider_payload=response,
+            )
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

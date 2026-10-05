@@ -218,6 +218,9 @@ PROJECTED_HELPER_COMMANDS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    "privileged-policy-propose": {
+        "method": "POST", "path": "/v1/agent/privileged-operations/plans", "mode": "propose",
+    },
     "live-target-runtime-sync-dry-run": {
         "method": "POST", "path": "/v1/live-target-runtime/apply", "mode": "dry-run",
     },

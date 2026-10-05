@@ -5733,6 +5733,132 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
         return 1
 
 
+POLICY_PROPOSAL_DESCRIPTORS = (
+    "managed-authz-policy-set",
+    "managed-merge-train-policy-import",
+)
+
+
+def privileged_policy_proposal_body(args: argparse.Namespace) -> dict[str, object]:
+    body = read_payload_file(args.payload_file)
+    if set(body) - {
+        "schema_version",
+        "descriptor_id",
+        "source_event_id",
+        "expires_in_seconds",
+        "request",
+    }:
+        raise ValueError("invalid_proposal_envelope")
+    if (
+        body.get("schema_version", 1) != 1
+        or body.get("descriptor_id") not in POLICY_PROPOSAL_DESCRIPTORS
+    ):
+        raise ValueError("unsupported_proposal_descriptor")
+    source = body.get("source_event_id")
+    if (
+        not isinstance(source, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", source) is None
+    ):
+        raise ValueError("invalid_proposal_source_event")
+    request_body = body.get("request")
+    if not isinstance(request_body, dict):
+        raise ValueError("invalid_proposal_request")
+    reason = request_body.get("reason")
+    if not isinstance(reason, str) or not reason.strip() or len(reason) > 4000:
+        raise ValueError("invalid_proposal_reason")
+    if body["descriptor_id"] == "managed-authz-policy-set":
+        allowed = {
+            "managed_set_id",
+            "desired_policy",
+            "schema_migration",
+            "administrator_quorum_change",
+            "reason",
+            "related_issue",
+        }
+        required = {"managed_set_id", "desired_policy", "reason"}
+    else:
+        allowed = {"record", "reason", "related_issue"}
+        required = {"record", "reason"}
+    if set(request_body) - allowed or not required.issubset(request_body):
+        raise ValueError("invalid_proposal_request")
+    return body
+
+
+def summarize_privileged_policy_proposal(
+    *, request: dict[str, object], provider_payload: dict[str, object]
+) -> dict[str, object]:
+    if (
+        set(provider_payload) - {"status", "trace_id", "write_status", "summary"}
+        or provider_payload.get("status") != "ok"
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    summary = _require_dict(provider_payload.get("summary"))
+    descriptor = summary.get("descriptor_id")
+    operation_id = summary.get("operation_id")
+    if (
+        descriptor != request["descriptor_id"]
+        or not isinstance(operation_id, str)
+        or re.fullmatch(r"privileged-operation-[0-9a-f]{32}", operation_id) is None
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    state = summary.get("status")
+    if state not in {
+        "planned",
+        "approved",
+        "revoked",
+        "cancelled",
+        "expired",
+        "executed",
+        "execution_failed",
+    } or provider_payload.get("write_status") not in {"written", "replayed"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    counts = (
+        (
+            "added_rule_count",
+            "adopted_rule_count",
+            "updated_rule_count",
+            "removed_rule_count",
+            "unchanged_rule_count",
+            "policy_safety_blocker_count",
+            "operational_readiness_blocked_rule_count",
+        )
+        if descriptor == "managed-authz-policy-set"
+        else (
+            "active_target_count",
+            "candidate_target_count",
+            "unchanged_policy_key_count",
+        )
+    )
+    expires_at = summary.get("expires_at")
+    if not isinstance(expires_at, str):
+        raise LaunchplaneSafetyError("invalid_response")
+    try:
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        if expiry.tzinfo is None:
+            raise ValueError("timezone required")
+        normalized_expiry = expiry.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    except ValueError:
+        raise LaunchplaneSafetyError("invalid_response") from None
+    result = {
+        "operation_id": operation_id,
+        "descriptor_id": descriptor,
+        "state": state,
+        "review_path": f"/ui/engineering/privileged-operations?operation_id={operation_id}",
+        "expires_at": public_timestamp(normalized_expiry),
+        "counts": {name: _nonnegative_int(summary.get(name)) for name in counts},
+        "authorizes_approval": False,
+        "authorizes_execution": False,
+    }
+    payload = base_payload(
+        status="accepted", operation="privileged-policy-propose", request=request
+    )
+    payload["result"] = result
+    payload["summary"] = {
+        "trace_id": public_trace_id(provider_payload.get("trace_id")),
+        "write_status": provider_payload["write_status"],
+        "recommendation": "Open the review path in the signed-in Director UI. The proposer cannot approve or apply this plan.",
+    }
+    return payload
 def execute_post(
     *,
     args: argparse.Namespace,
@@ -5757,7 +5883,9 @@ def execute_post(
         )
         try:
             emit(
-                summarize_success(
+                summarize_privileged_policy_proposal(request=request, provider_payload=provider_payload)
+                if operation == "privileged-policy-propose"
+                else summarize_success(
                     operation=operation,
                     request=request,
                     provider_payload=provider_payload,
@@ -8179,6 +8307,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             expected_config.add_argument("--reviewed-dry-run", action="store_true")
             expected_config.add_argument("--dry-run-evidence-file", required=True, help="Saved helper output for the exact reviewed metadata.")
 
+    proposal = subparsers.add_parser("privileged-policy-propose", help="Submit an inert policy plan for signed-in Director review; never approve or apply.")
+    proposal.add_argument("--payload-file", required=True, help="Private local JSON envelope with a stable source_event_id for retries.")
+    proposal.set_defaults(idempotency_key="")
+
     merge_train_policy_dry_run = subparsers.add_parser(
         "merge-train-policy-import-dry-run",
         help="Dry-run one private merge-train policy import after active-policy preflight.",
@@ -8634,6 +8766,10 @@ def main(argv: list[str]) -> int:
             payload["summary"] = diagnostic
             emit(payload)
             return 0
+        if args.command == "privileged-policy-propose":
+            body = privileged_policy_proposal_body(args)
+            request = {"mode": "propose", "payload_source": "private_file", "descriptor_id": body["descriptor_id"]}
+            return execute_post(args=args, operation=args.command, path=helper_command_path(args.command), request=request, body=body)
         if args.command == "product-config-preflight":
             request = {
                 "product": args.product,
