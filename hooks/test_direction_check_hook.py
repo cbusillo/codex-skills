@@ -73,9 +73,11 @@ class ReminderTests(unittest.TestCase):
         m = marker(ago(hours=3), owner__repo=ago(days=2))
         self.assertEqual(hook.reminder(m, NOW, "owner/repo", MARKER), "")
 
-    def test_a_fresh_audit_anywhere_counts_as_a_turn(self) -> None:
+    def test_a_fresh_audit_does_not_replace_a_stale_turn(self) -> None:
         m = marker(ago(days=3), owner__other=ago(hours=2))
-        self.assertEqual(hook.reminder(m, NOW, None, MARKER), "")
+        self.assertIn("last direction turn was 3 days ago", hook.reminder(m, NOW, None, MARKER))
+        m["turn"] = None
+        self.assertIn("no direction turn has been recorded", hook.reminder(m, NOW, None, MARKER))
 
     def test_an_audit_in_one_repo_does_not_silence_another(self) -> None:
         m = marker(ago(hours=1), owner__a=ago(hours=1))
@@ -102,6 +104,21 @@ class ReminderTests(unittest.TestCase):
         text = hook.reminder({"turn": None, "audits": {}}, NOW, None, MARKER)
         self.assertIn("no direction turn has been recorded", text)
 
+    def test_last_daily_coverage_is_named_without_requiring_a_turn_per_repo(self) -> None:
+        m = marker(ago(hours=1), owner__other=ago(days=1))
+        m["turn_repo"] = "owner/start"
+        self.assertEqual(hook.reminder(m, NOW, "owner/other", MARKER), "")
+        m["turn"] = ago(days=2)
+        self.assertIn("last daily turn covered owner/start", hook.reminder(m, NOW, "owner/other", MARKER))
+
+    def test_legacy_turn_has_unknown_coverage_and_is_still_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "marker.json"
+            path.write_text(json.dumps({"turn": ago(hours=1).isoformat(), "turn_repo": ["invalid"]}))
+            read = hook.read_marker(path)
+            self.assertNotIn("turn_repo", read)
+            self.assertEqual(hook.reminder(read, NOW, None, path), "")
+
     def test_marker_path_is_shared_across_hosts(self) -> None:
         # Codex sets CODEX_HOME for its hooks; Claude Code sets neither. Both must read one file.
         self.assertEqual(hook.marker_path({"CODEX_HOME": "/h/.codex", "HOME": "/h"}), Path("/h/.code/direction-last-check.json"))
@@ -123,7 +140,7 @@ class ReminderTests(unittest.TestCase):
             self.assertEqual(list(audits), ["o/r"])
             text = hook.reminder(read, NOW, "o/r", path)
             self.assertNotIn("last weekly audit of o/r", text, "a naive two-day-old audit stamp is read as UTC, not a crash")
-            self.assertIn("last direction turn was 2 days ago", text, "the naive audit stamp stands in for the unparseable turn stamp")
+            self.assertIn("no direction turn has been recorded", text, "the audit must not replace an unparseable turn stamp")
 
     def test_adopted_repo_needs_a_direction_file_and_an_origin(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

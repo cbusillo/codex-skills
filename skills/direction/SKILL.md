@@ -22,8 +22,8 @@ commands:
   - name: direction-mark
     source: skill
     resource_path: scripts/direction_mark.py
-    example_argv: ["uv", "run", "scripts/direction_mark.py", "turn"]
-    purpose: Marks a daily turn as done so every host stops reminding the Director until the next day.
+    example_argv: ["uv", "run", "scripts/direction_mark.py", "turn", "--repo", "OWNER/REPO"]
+    purpose: Records the daily turn and the repository it covered for the shared reminder.
 ---
 
 # Direction
@@ -133,10 +133,24 @@ Director asks; that is execution.
 4. End with what the executing agent should see on GitHub when it next runs
    `next`, so the handoff needs no copy and paste.
 
-A **daily turn** is steps 1 and 2 alone, for the repository the session is
-in, with the result explained under that same reference. One turn, wherever it
-happens, clears the turn reminder on the whole machine; it does not look at other
-repositories. A **weekly audit** is the full session repeated once per
+A **daily turn** is steps 1 and 2 for the repository the session is in,
+after reading the Director's overall direction, with the result explained
+under that same reference. Also list every open `direction` issue across the
+Director's repositories with one search through the existing planning
+helper (load `github-plan` first):
+
+```bash
+uv run <skill-dir>/../github/scripts/gh-plan.py search "user:OWNER label:direction" --state open --limit 1000
+```
+
+Use the starting repository's GitHub account for `OWNER`; do not pass `--repo`, which
+would narrow the search. Report unavailable or bounded search coverage as
+incomplete, not an empty list. This is one cross-repository list, with no
+per-repository reads or copied repository inventory. The daily marker records
+the starting repository covered; one turn clears the daily reminder on the
+whole machine, without claiming that other repositories were checked.
+
+A **weekly audit** is the full session repeated once per
 adopted repository, all from one session and one checkout: for each
 repository, run the audit script with `--repo OWNER/REPO`, read the findings
 first, then do steps 1 to 4 for that repository with `--repo` on every
@@ -149,17 +163,21 @@ per repository; the
 per-repository reminder line only fires when a session happens to open inside
 an adopted repository whose audit is stale.
 
-End every daily turn by recording it, so the reminder goes quiet:
+Each adopted repository's own `DIRECTION.md` and milestones are checked in
+that one weekly audit session. An audit does not count as the Director's daily
+turn.
+
+End every daily turn by recording the starting repository it covered:
 
 ```bash
-uv run <skill-dir>/scripts/direction_mark.py turn
+uv run <skill-dir>/scripts/direction_mark.py turn --repo OWNER/REPO
 ```
 
 Only the direction agent runs that, at the end of a turn the Director took part
 in; an executing agent that runs it clears a reminder the Director never acted
 on. Weekly audits are not marked by hand. The audit script stamps its own
 completion for the repository it audited, so an audit stamp means a real
-read-only audit ran.
+read-only audit ran; it never updates the daily turn or its coverage.
 
 To clean older markers that included unadopted repositories, preview with
 `uv run <skill-dir>/scripts/direction_audit.py --prune-unadopted`, then repeat

@@ -77,7 +77,10 @@ def read_marker(path: Path) -> dict[str, object]:
             stamp = parse_stamp(value)
             if isinstance(repo, str) and stamp:
                 audits[repo] = stamp
-    return {"turn": parse_stamp(raw.get("turn")), "audits": audits}
+    result: dict[str, object] = {"turn": parse_stamp(raw.get("turn")), "audits": audits}
+    if isinstance(raw.get("turn_repo"), str):
+        result["turn_repo"] = raw["turn_repo"]
+    return result
 
 
 def git_line(cwd: Path, *args: str) -> str | None:
@@ -208,11 +211,10 @@ def reminder(marker: dict[str, object], now: dt.datetime, repo: str | None, path
     turn = marker.get("turn")
     audits = marker.get("audits")
     audits = audits if isinstance(audits, dict) else {}
-    latest = max([stamp for stamp in [turn, *audits.values()] if isinstance(stamp, dt.datetime)], default=None)
-    if latest is None:
+    if not isinstance(turn, dt.datetime):
         overdue.append("no direction turn has been recorded on this machine")
-    elif now - latest > TURN_STALE:
-        overdue.append(f"the last direction turn was {(now - latest).days} days ago")
+    elif now - turn > TURN_STALE:
+        overdue.append(f"the last direction turn was {(now - turn).days} days ago")
     if repo:
         audit = audits.get(repo)
         if not isinstance(audit, dt.datetime):
@@ -221,6 +223,9 @@ def reminder(marker: dict[str, object], now: dt.datetime, repo: str | None, path
             overdue.append(f"the last weekly audit of {repo} was {(now - audit).days} days ago")
     if not overdue:
         return ""
+    coverage = marker.get("turn_repo")
+    if isinstance(turn, dt.datetime) and isinstance(coverage, str) and coverage:
+        overdue.append(f"the last daily turn covered {coverage}")
     return (
         "Direction check overdue: " + "; ".join(overdue) + ". "
         "Tell the owner once at the start of the session to open Claude Code and run the `direction` skill "

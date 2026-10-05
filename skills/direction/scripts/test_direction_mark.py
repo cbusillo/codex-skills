@@ -32,17 +32,19 @@ def load(path: Path, name: str) -> Any:
     return module
 
 
-def test_turn_updates_turn_only_and_audit_updates_both() -> None:
+def test_turn_records_repository_and_audit_preserves_daily_evidence() -> None:
     mark = load(SCRIPT, "direction_mark_under_test")
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "nested" / "direction-last-check.json"
-        first = mark.mark_turn(path, NOW)
-        assert first == {"turn": "2026-09-22T12:00:30Z", "audits": {}}, first
+        first = mark.mark_turn(path, "owner/start", NOW)
+        assert first == {"turn": mark.utc_stamp(NOW), "turn_repo": "owner/start", "audits": {}}, first
         later = mark.mark_audit(path, "owner/repo", NOW + dt.timedelta(days=1))
-        assert later == {"turn": "2026-09-23T12:00:30Z", "audits": {"owner/repo": "2026-09-23T12:00:30Z"}}, later
-        again = mark.mark_turn(path, NOW + dt.timedelta(days=2))
+        assert later == {**first, "audits": {"owner/repo": mark.utc_stamp(NOW + dt.timedelta(days=1))}}, later
+        again = mark.mark_turn(path, "owner/next", NOW + dt.timedelta(days=2))
+        assert again["turn_repo"] == "owner/next"
         assert again["audits"] == {"owner/repo": "2026-09-23T12:00:30Z"}, "a turn must not touch audit stamps"
         other = mark.mark_audit(path, "owner/other", NOW + dt.timedelta(days=3))
+        assert (other["turn"], other["turn_repo"]) == (again["turn"], again["turn_repo"])
         assert set(other["audits"]) == {"owner/repo", "owner/other"}, "audits are kept per repository"
         assert json.loads(path.read_text()) == other
 
@@ -57,6 +59,11 @@ def test_hook_reads_what_the_marker_writes() -> None:
         path = Path(tmp) / mark.MARKER_NAME
         mark.mark_audit(path, "owner/repo", NOW)
         read = hook.read_marker(path)
+        assert "no direction turn has been recorded" in hook.reminder(read, NOW + dt.timedelta(hours=1), "owner/repo", path)
+        assert "turn" not in mark.load(path)
+        mark.mark_turn(path, "owner/start", NOW)
+        read = hook.read_marker(path)
+        assert read["turn_repo"] == "owner/start"
         assert hook.reminder(read, NOW + dt.timedelta(hours=1), "owner/repo", path) == ""
         assert "last weekly audit of owner/repo was 8 days ago" in hook.reminder(read, NOW + dt.timedelta(days=8), "owner/repo", path)
         assert "owner/other has a DIRECTION.md but no recorded weekly audit" in hook.reminder(read, NOW + dt.timedelta(hours=1), "owner/other", path)
@@ -67,7 +74,7 @@ def test_malformed_marker_is_replaced_not_crashed() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "m.json"
         path.write_text("[1, 2]")
-        assert mark.mark_turn(path, NOW) == {"turn": "2026-09-22T12:00:30Z", "audits": {}}
+        assert mark.mark_turn(path, "owner/start", NOW) == {"turn": mark.utc_stamp(NOW), "turn_repo": "owner/start", "audits": {}}
 
 
 def test_only_a_turn_can_be_marked_by_hand() -> None:
@@ -80,12 +87,28 @@ def test_only_a_turn_can_be_marked_by_hand() -> None:
         raise AssertionError("audit must not be markable from the command line")
 
 
+def test_turn_cli_requires_coverage_and_reports_written_repository() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "marker.json"
+        env = {**os.environ, "DIRECTION_MARKER": str(path)}
+        for args in (["turn"], ["turn", "--repo", "missing-owner"]):
+            result = subprocess.run([sys.executable, str(SCRIPT), *args], env=env, capture_output=True, text=True)
+            assert result.returncode == 2
+            assert not path.exists()
+        result = subprocess.run([sys.executable, str(SCRIPT), "turn", "--repo", "owner/start"], env=env, capture_output=True, text=True, check=True)
+        written = json.loads(path.read_text())
+        output = json.loads(result.stdout)
+        assert output["turn_repo"] == written["turn_repo"] == "owner/start"
+        assert output["turn"] == written["turn"]
+        assert written["audits"] == {}
+
+
 def test_overlapping_audits_and_turn_preserve_updates() -> None:
     mark = load(SCRIPT, "direction_mark_concurrency")
     for kind in ("turn", "audit"):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "marker.json"
-            mark.mark_turn(path, NOW)
+            mark.mark_turn(path, "owner/start", NOW)
             writer: subprocess.Popen[str] | None = None
             read = mark.load
 
@@ -97,7 +120,7 @@ def test_overlapping_audits_and_turn_preserve_updates() -> None:
                     "import datetime as dt, sys; from pathlib import Path; "
                     "sys.path.insert(0,sys.argv[1]); import direction_mark as mark; "
                     "now=dt.datetime(2026,10,4,tzinfo=dt.timezone.utc); "
-                    "mark.mark_turn(Path(sys.argv[2]),now) if sys.argv[3]=='turn' "
+                    "mark.mark_turn(Path(sys.argv[2]),'o/daily',now) if sys.argv[3]=='turn' "
                     "else mark.mark_audit(Path(sys.argv[2]),'o/second',now)",
                     str(SCRIPT.parent), str(path), kind,
                 ], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -114,7 +137,8 @@ def test_overlapping_audits_and_turn_preserve_updates() -> None:
                 stdout, stderr = writer.communicate(timeout=5)
                 assert writer.returncode == 0, (stdout, stderr)
                 current = json.loads(path.read_text())
-                assert current["turn"] == "2026-10-04T00:00:00Z", current
+                assert current["turn"] == ("2026-10-04T00:00:00Z" if kind == "turn" else mark.utc_stamp(NOW)), current
+                assert current["turn_repo"] == ("o/daily" if kind == "turn" else "owner/start")
                 assert current["audits"]["o/first"] == mark.utc_stamp(NOW)
                 assert set(current["audits"]) == ({"o/first", "o/second"} if kind == "audit" else {"o/first"})
             finally:
@@ -131,14 +155,14 @@ def test_failed_replace_preserves_marker_and_releases_lock() -> None:
         path.write_bytes(original)
         with patch.object(os, "replace", side_effect=OSError("interrupted replace")):
             try:
-                mark.mark_turn(path, NOW)
+                mark.mark_turn(path, "owner/start", NOW)
             except OSError:
                 pass
             else:
                 raise AssertionError("replacement failure was hidden")
         assert path.read_bytes() == original
         assert list(Path(tmp).glob("*.pending-*")) == []
-        assert mark.mark_turn(path, NOW)["other"] is True
+        assert mark.mark_turn(path, "owner/start", NOW)["other"] is True
 
 
 def test_killed_writer_leaves_complete_marker_and_unlocked_sidecar() -> None:
@@ -153,7 +177,7 @@ def test_killed_writer_leaves_complete_marker_and_unlocked_sidecar() -> None:
             "import datetime as dt, sys, time; from pathlib import Path; "
             "sys.path.insert(0,sys.argv[1]); import direction_mark as mark; "
             "mark.os.replace=lambda *_: (Path(sys.argv[3]).write_text('ready'),time.sleep(30)); "
-            "mark.mark_turn(Path(sys.argv[2]),dt.datetime.now(dt.timezone.utc))",
+            "mark.mark_turn(Path(sys.argv[2]),'o/daily',dt.datetime.now(dt.timezone.utc))",
             str(SCRIPT.parent), str(path), str(ready),
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
@@ -164,7 +188,7 @@ def test_killed_writer_leaves_complete_marker_and_unlocked_sidecar() -> None:
             writer.kill()
             writer.communicate(timeout=5)
             assert path.read_bytes() == original
-            assert mark.mark_turn(path, NOW)["other"] is True
+            assert mark.mark_turn(path, "owner/start", NOW)["other"] is True
         finally:
             if writer.poll() is None:
                 writer.kill()
