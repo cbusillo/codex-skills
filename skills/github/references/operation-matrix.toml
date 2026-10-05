@@ -1353,12 +1353,12 @@ test_refs = ["github/scripts/test_github_api.py", "github/scripts/test_github_ci
 id = "github.repo_snapshot"
 capabilities = ["metadata_read", "contents_read", "issues_read", "pull_requests_read", "checks_read", "statuses_read", "actions_read"]
 permission_mode = "delegated"
-permission_note = "Composite read-only evidence uses these capability families; report each degraded component without converting unavailable data into a clean result."
+permission_note = "GitHub reads use automation identity and rest_core quota. The bounded Launchplane policy GET uses existing private admin configuration and its standing policy-read grant, independently of GitHub auth/quota. Report each degraded component without treating unavailable evidence as clean."
 entrypoint = "github/scripts/github-repo-snapshot.sh snapshot"
 intent = "Capture compact local git, PR, issue, workflow, repository setting, cleanup, and optional health state."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "Local git status/branch/worktree/remote reads and optional fetch; REST-first gh-pr.py view/list run through uv Python 3.12; shared paged GET /issues, /pulls, and /actions/runs; GET /repos/{repo}"
+endpoint_or_command = "Local git status/branch/worktree/remote reads and optional fetch; REST-first gh-pr.py view/list run through uv Python 3.12; shared paged GET /issues, /pulls, and /actions/runs; GET /repos/{repo}; bounded Launchplane GET /v1/work-graph/merge-train/policy through merge-train-policy-read"
 quota_bucket = "rest_core"
 actor_policy = "automation_required"
 mutation_class = "read"
@@ -1366,7 +1366,7 @@ idempotency = "read_only"
 retry_eligibility = "conditional"
 reconciliation_strategy = "degraded_snapshot"
 retained_graphql_rationale = "No retained GraphQL transport is required in the selected path; degraded output remains available when REST evidence is unavailable."
-source_refs = ["github/scripts/github-repo-snapshot.sh:capture_read_json", "github/scripts/github_read.py:list_issues", "github/scripts/github_read.py:list_workflow_runs", "github/scripts/github_read.py:list_pull_requests", "github/scripts/github_read.py:repository"]
+source_refs = ["github/scripts/github-repo-snapshot.sh:read_merge_train_policy", "launchplane/scripts/launchplane-write-action.py:summarize_merge_train_policy_read", "github/scripts/github-repo-snapshot.sh:capture_read_json", "github/scripts/github_read.py:list_issues", "github/scripts/github_read.py:list_workflow_runs", "github/scripts/github_read.py:list_pull_requests", "github/scripts/github_read.py:repository"]
 test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/test_github_read.py", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]

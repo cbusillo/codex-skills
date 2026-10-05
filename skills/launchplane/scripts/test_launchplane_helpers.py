@@ -7422,5 +7422,72 @@ def test_client_named_fields_read_like_their_legacy_owner_names() -> None:
             assert json.loads(output.getvalue()) == expected
 
 
+
+def test_merge_policy_enrollment_projects_only_requested_repository() -> None:
+    response = {
+        "status": "ok", "trace_id": "launchplane_req_policy_read",
+        "record": {
+            "status": "active", "record_id": "fixture-policy",
+            "updated_at": "2026-10-05T12:00:00Z", "policy_sha256": "a" * 64,
+            "policy": {"policies": [
+                {"repository": "example/Repo", "base_branch": "release",
+                 "enqueue_label": "ship  it", "github_token": {"env_var": "PRIVATE_TOKEN"}},
+                {"repository": "private/task-runner", "base_branch": "risk-fixes", "enqueue_label": "other"},
+            ]},
+        },
+    }
+    request = {"repository": "EXAMPLE/repo"}
+    projected = write_action.summarize_merge_train_policy_read(request=request, provider_payload=response)
+    assert projected["result"]["enabled"] is True
+    assert projected["result"]["targets"] == [{"baseBranch": "release", "readyLabel": "ship  it"}]
+    assert "PRIVATE_TOKEN" not in json.dumps(projected)
+    assert "private/task-runner" not in json.dumps(projected)
+    request = {"repository": "example/absent"}
+    result = write_action.summarize_merge_train_policy_read(request=request, provider_payload=response)["result"]
+    assert result["status"] == "not_enrolled" and result["enabled"] is False
+    response["record"]["policy"]["policies"][0]["enqueue_label"] = "unsafe\x1b[31m"
+    with pytest.raises(safety.LaunchplaneSafetyError):
+        write_action.summarize_merge_train_policy_read(request={"repository": "example/repo"}, provider_payload=response)
+    response["record"]["policy"]["policies"][0]["enqueue_label"] = "ship  it"
+    response["record"]["policy"]["policies"].append(response["record"]["policy"]["policies"][0])
+    with pytest.raises(safety.LaunchplaneSafetyError):
+        write_action.summarize_merge_train_policy_read(request=request, provider_payload=response)
+
+
+@pytest.mark.parametrize("record", [{}, {"status": "superseded", "policy": {"policies": []}},
+                                    {"status": "active", "policy": {"policies": []}}])
+def test_merge_policy_invalid_record_cannot_prove_absence(record: dict[str, object]) -> None:
+    with pytest.raises(safety.LaunchplaneSafetyError):
+        write_action.summarize_merge_train_policy_read(
+            request={"repository": "example/repo"},
+            provider_payload={"status": "ok", "trace_id": "launchplane_req_fixture", "record": record},
+        )
+
+
+def test_merge_policy_read_uses_only_get_and_preserves_denial(tmp_path: Path) -> None:
+    config = tmp_path / "operator.json"
+    config.write_text(json.dumps({"service_url": "https://service.example.invalid", "operator_token_env": "FIXTURE_TOKEN"}))
+    calls = []
+    def denied(**kwargs: Any) -> dict[str, object]:
+        calls.append(kwargs)
+        raise urllib.error.HTTPError("https://service.example.invalid", 403, "Denied", Message(), io.BytesIO(b'{}'))
+    output = io.StringIO()
+    with patch.dict(os.environ, {"FIXTURE_TOKEN": "fixture-value"}, clear=True), patch.object(
+        write_action, "request_launchplane_read", denied,
+    ), patch.object(write_action, "request_launchplane", side_effect=AssertionError("write attempted")), redirect_stdout(output):
+        status = write_action.main(["--config", str(config), "--env-config", str(tmp_path / "missing.env"),
+                                    "merge-train-policy-read", "--repo", "example/repo"])
+    assert status != 0
+    assert calls[0]["path"] == contract.helper_command_path("merge-train-policy-read")
+    assert json.loads(output.getvalue())["status"] == "denied"
+
+
+def test_merge_policy_unresolved_origin_uses_safe_code(tmp_path: Path) -> None:
+    output = io.StringIO()
+    with patch.object(write_action, "prepare_operator_settings", side_effect=AssertionError("config read attempted")), redirect_stdout(output):
+        status = write_action.main(["merge-train-policy-read", "--repo-root", str(tmp_path)])
+    assert status == 2
+    assert json.loads(output.getvalue())["warnings"][0]["code"] == "repository_unresolved"
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

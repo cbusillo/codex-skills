@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
+import sys
 import tempfile
 import unittest
 
@@ -13,16 +15,24 @@ SCRIPT = Path(__file__).with_name("github-repo-snapshot.sh")
 
 
 class SnapshotTests(unittest.TestCase):
-    def snapshot(self, metadata, *, text=False):
+    def snapshot(self, metadata, *, text=False, policy=None, policy_exit=0):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             subprocess.run(["git", "init", "--quiet", str(root)], check=True)
             config = root / "metadata.json"
             config.write_text(json.dumps(metadata))
+            policy_helper = root / "policy.py"
+            if policy is not None:
+                policy_helper.write_text(
+                    "import sys\n"
+                    f"print({json.dumps(json.dumps(policy))})\n"
+                    f"sys.exit({policy_exit})\n"
+                )
             return subprocess.run(
                 ["bash", str(SCRIPT), "--config", str(config), *([] if text else ["--json"])],
                 cwd=root,
-                env={**os.environ, "GITHUB_REPO_SNAPSHOT_GH": str(root / "missing-gh")},
+                env={**os.environ, "GITHUB_REPO_SNAPSHOT_GH": str(root / "missing-gh"),
+                     "GITHUB_REPO_SNAPSHOT_POLICY_HELPER": str(policy_helper)},
                 capture_output=True, text=True, check=False,
             )
 
@@ -61,6 +71,68 @@ class SnapshotTests(unittest.TestCase):
         result = self.snapshot({"cleanup": {"commands": [42]}})
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Cannot index", result.stderr)
+
+    def test_policy_overrides_stale_metadata_and_absent_routing(self):
+        for enrolled in (True, False):
+            policy = {
+                "status": "available", "operation": "merge-train-policy-read",
+                "result": {
+                    "source": "launchplane", "enabled": enrolled,
+                    "status": "enrolled" if enrolled else "not_enrolled",
+                    "targets": [{"baseBranch": "release", "readyLabel": "ship"}] if enrolled else [],
+                    "policy": {"record_id": "fixture-policy"},
+                },
+            }
+            for metadata in ({}, {"launchplane": {"mergeTrain": {"enabled": not enrolled}}}):
+                result = self.snapshot(metadata, policy=policy)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["launchplane"]["mergeTrain"], policy["result"])
+                result = self.snapshot(metadata, text=True, policy=policy)
+                self.assertIn(f'mergeTrainStatus: {policy["result"]["status"]}', result.stdout)
+                self.assertIn(f'mergeTrainEnabled: {str(enrolled).lower()}', result.stdout)
+
+    def test_unavailable_or_invalid_policy_never_means_not_enrolled(self):
+        for response, exit_code in ((None, 0), ({}, 0), ({"status": "unauthorized"}, 1)):
+            for enabled in (True, False):
+                metadata = {"launchplane": {"mergeTrain": {"enabled": enabled}}}
+                result = self.snapshot(metadata, policy=response, policy_exit=exit_code)
+                summary = json.loads(result.stdout)["launchplane"]["mergeTrain"]
+                self.assertEqual(summary["status"], "unknown")
+                self.assertIsNone(summary["enabled"])
+                self.assertIn("mergeTrainEnabled: unknown", self.snapshot(
+                    metadata, text=True, policy=response, policy_exit=exit_code,
+                ).stdout)
+
+
+    def test_unknown_reason_drops_provider_prose(self):
+        for reason, expected in (("authorization_denied", "authorization_denied"),
+                                 ("fixture private diagnostic", "invalid_response")):
+            response = {"status": "denied", "warnings": [{"code": reason}]}
+            result = self.snapshot({}, policy=response, policy_exit=1)
+            summary = json.loads(result.stdout)["launchplane"]["mergeTrain"]
+            self.assertEqual(summary["reason"], expected)
+            self.assertEqual(summary["status"], "unknown")
+            self.assertIsNone(summary["enabled"])
+            if reason != expected:
+                self.assertNotIn(reason, result.stdout)
+
+    def test_text_without_jq_keeps_local_snapshot_and_unknown_enrollment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            bins = root / "bin"
+            bins.mkdir()
+            for name in ("git", "dirname"):
+                (bins / name).symlink_to(shutil.which(name))
+            result = subprocess.run(
+                ["/bin/bash", str(SCRIPT)], cwd=root,
+                env={**os.environ, "PATH": str(bins), "GITHUB_REPO_SNAPSHOT_PYTHON": sys.executable,
+                     "GITHUB_REPO_SNAPSHOT_GH": str(root / "missing-gh")},
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("== Repository ==", result.stdout)
+            self.assertIn("mergeTrainEnabled: unknown", result.stdout)
 
 
 if __name__ == "__main__":
