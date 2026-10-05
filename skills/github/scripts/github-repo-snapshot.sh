@@ -104,9 +104,9 @@ done
 
 # Enrollment is live Launchplane policy, independent of repository metadata.
 read_merge_train_policy() {
-  local response
+  local response="" reason="helper_unavailable"
   if ! command -v jq >/dev/null 2>&1; then
-    printf '{"source":"launchplane","status":"unknown","enabled":null,"targets":[],"policy":null}\n'
+    printf '{"source":"launchplane","status":"unknown","reason":"jq_unavailable","enabled":null,"targets":[],"policy":null}\n'
     return
   fi
   if [[ -f "$policy_helper" ]] && response="$("${python_command[@]}" "$policy_helper" merge-train-policy-read --repo-root "$repo_root" 2>/dev/null)"; then
@@ -122,7 +122,14 @@ read_merge_train_policy() {
       return
     fi
   fi
-  jq -n '{source: "launchplane", status: "unknown", enabled: null, targets: [], policy: null}'
+  if [[ -n "$response" ]]; then
+    reason="$(jq -r '
+      (.warnings[0].code // .status // "invalid_response") as $code |
+      if ($code | type) == "string" and ($code | test("^[a-z][a-z0-9_]{0,63}$")) and $code != "available"
+      then $code else "invalid_response" end
+    ' <<<"$response" 2>/dev/null)" || reason="invalid_response"
+  fi
+  jq -n --arg reason "$reason" '{source: "launchplane", status: "unknown", reason: $reason, enabled: null, targets: [], policy: null}'
 }
 
 section() {
@@ -800,11 +807,12 @@ section "Merge Train (Launchplane policy)"
 if command -v jq >/dev/null 2>&1; then
   jq -r '[
     "mergeTrainStatus: " + .status,
+    (if .reason != null then "mergeTrainReason: " + .reason else empty end),
     "mergeTrainEnabled: " + (if .enabled == null then "unknown" else (.enabled | tostring) end),
     (.targets[] | "mergeTrainTarget: " + .baseBranch + " (" + .readyLabel + ")")
   ] | .[]' <<<"$merge_train_policy"
 else
-  printf 'mergeTrainStatus: unknown\nmergeTrainEnabled: unknown\n'
+  printf 'mergeTrainStatus: unknown\nmergeTrainReason: jq_unavailable\nmergeTrainEnabled: unknown\n'
 fi
 
 if [[ -x "$gh_bin" ]] || command -v "$gh_bin" >/dev/null 2>&1; then

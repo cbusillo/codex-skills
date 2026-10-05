@@ -39,7 +39,8 @@ metadata. Matching ignores repository case; distinct branches remain separate.
 Only a complete active-policy response proves absence. Missing config, denial,
 transport failure, duplicate targets or malformed policy mean unknown to callers.
 The snapshot emits `launchplane.mergeTrain.status=unknown` and `enabled=null`
-on those failures, independently of `github.json`. A read grants no merge authority.
+on those failures, independently of `github.json`, with a compact safe `reason`
+code for diagnosis. A read grants no merge authority.
 
 ## Odoo addon settings
 

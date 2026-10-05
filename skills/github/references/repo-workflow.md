@@ -399,8 +399,10 @@ Keep planning state separate from PR execution state:
 Discourage generic labels such as `waiting`, `blocked`, `ready`, or `qa` unless
 the repo documents a narrow local convention. When auditing a repo, compare
 `gh label list -R OWNER/REPO --limit 500`, open issue labels, and open PR labels
-against `.github/github.json` `qaLabels`, `deployLabels`, and merge-train ready
-label metadata before recommending label cleanup.
+against `.github/github.json` `qaLabels` and `deployLabels`. For merge-train
+enqueue labels, read Launchplane's active policy with `merge-train-policy-read`
+or use the snapshot's `launchplane.mergeTrain.targets` before recommending
+label cleanup; an unavailable policy read leaves that part unverified.
 
 ## Merge Readiness
 
