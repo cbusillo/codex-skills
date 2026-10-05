@@ -380,8 +380,8 @@ grants you added for your own sessions, it refuses to touch.
 
 For work in this repository, use the direction files linked above and the
 [executing loop](skills/references/executing-loop.md). Issue-backed work is
-claimed before its linked worktree is created. This repository's
-[GitHub metadata](.github/github.json) enables Launchplane's merge train:
+claimed before its linked worktree is created. Launchplane's active merge-policy
+record owns this repository's train enrollment:
 use the [Launchplane skill](skills/launchplane/SKILL.md#merge-train-controller)
 for authorized train entry and landing. Do not call `gh-pr.py merge` or merge
 directly in GitHub. A task brief that assigns routing to a direction or

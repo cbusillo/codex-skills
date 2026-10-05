@@ -720,7 +720,9 @@ how existing approval and task boundaries apply.
 
 ## Workflow
 
-1. **Orient**: Run `scripts/github-repo-snapshot.sh`. Use `github-plan` when
+1. **Orient**: Run `scripts/github-repo-snapshot.sh`. Its merge-train enrollment
+   comes from Launchplane's active policy; unavailable reads mean unknown,
+   regardless of `.github/github.json`. Use `github-plan` when
    planning state matters. [Repo workflow](references/repo-workflow.md) holds
    orientation, PR, check, review, merge-readiness, and cleanup detail; read
    the section for the step you are on.
@@ -841,8 +843,9 @@ Use PRs for all non-trivial changes.
   implementation:` followed by their links. Keep implemented work elsewhere.
 - **Labels**: Planning labels are only for durable planning issues. PR labels
   follow the [label taxonomy](references/repo-workflow.md#label-taxonomy):
-  `preview-ready`, the optional `awaiting-qa` handoff, and `ready-to-merge`,
-  which still needs a fresh readiness check and merge authorization.
+  `preview-ready`, the optional `awaiting-qa` handoff, and the merge-train
+  enqueue label from active policy, which still needs a fresh readiness check
+  and merge authorization.
 - **Follow-through**: When an open PR needs repeated CI, review, mergeability,
   or merged/closed polling, hand off to `babysit-pr`. Use its `--once` snapshot
   for a merged or closed PR's closeout evidence.
@@ -886,15 +889,22 @@ Before a merge:
   An attention result or degraded coverage needs a response or explicit
   handoff first; a bot response never proves Director acknowledgement.
 
-When the user does not name a method, say you are using a normal merge commit
-and run `scripts/gh-pr.py merge <pr> --method merge`. Use `--method squash`
+For an authorized direct GitHub merge, when the user does not name a method,
+say you are using a normal merge commit and run `scripts/gh-pr.py merge <pr> --method merge`. Use `--method squash`
 or `--method rebase` only when the user asks, repo policy requires it, or you ask and get
 confirmation.
 
-For stacked PRs, when repo metadata or task context says Launchplane owns the
+For stacked PRs, when Launchplane policy, repository instructions or task
+context says Launchplane owns the
 merge train, delegate stack handling to the `launchplane` workflow and never
 hand-collapse the stack in GitHub. Otherwise consider a rollup branch when
 merging each layer would rerun expensive checks or churn conflicts.
+
+For Launchplane-managed landing, an unknown enrollment read never establishes
+a direct merge path. Preserve an existing repository/task train handoff; when
+the route is unresolved, use `merge-train-policy-read` and report its reason
+while retaining the PR for authoritative routing. Repository JSON is a routing
+hint, not enrollment evidence.
 
 ## After A Merge
 

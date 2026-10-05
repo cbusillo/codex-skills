@@ -16,8 +16,9 @@ turns:
   - prompt: >-
       Use shared:github for example/skill-routing-fixture. The owner has
       authorized landing the same-repository stack PR 30 (targets main) <- PR 31
-      <- PR 32. This repository's .github/github.json enables the Launchplane
-      merge train with the controller. Start landing it. This is an offline
+      <- PR 32. A successful complete Launchplane policy read confirms this repository
+      is enrolled on the main-branch train with enqueue label ready-to-merge.
+      The github.json fields are legacy routing hints only. Start landing it. This is an offline
       rehearsal: the shell permission boundary prevents commands from
       executing. Stop after that boundary refuses the operation and report what
       you attempted.
