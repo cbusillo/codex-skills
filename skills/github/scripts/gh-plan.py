@@ -2490,6 +2490,22 @@ def cmd_update_section(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     issue_repo, number = issue_ref(args.issue, repo)
     _, issue = get_issue(args.issue, repo)
+    if "pull_request" in issue:
+        message = (
+            f"{issue_repo}#{number} is a pull request; update-section only updates planning issues. "
+            "Select the intended issue repository with gh-plan.py --repo OWNER/REPO update-section. "
+            f"For an intended PR body edit, use gh-pr.py --repo {issue_repo} edit {number} --body-file FILE."
+        )
+        failure = github_api_core.FailureDetail(
+            cause="validation_error",
+            message=message,
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            write_outcome="not_started",
+            failed_step="validate_object_kind",
+        )
+        raise PlanError(message, failure=failure)
     preparation_step = "read_body"
     try:
         new_text = read_body(args)

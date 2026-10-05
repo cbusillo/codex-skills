@@ -125,6 +125,32 @@ class SectionTests(unittest.TestCase):
     def test_reserved_markers_still_fail_before_mutation(self) -> None:
         self.assert_prewrite_failure(("--body", PLAN.PLAN_MANAGED_START))
 
+    def test_pull_requests_fail_before_body_preparation_or_write(self) -> None:
+        self.issue["pull_request"] = {"url": "https://api.github.com/repos/owner/repo/pulls/42"}
+        for state in ("open", "closed"):
+            for login in ("fixture-bot[bot]", "outside-contributor"):
+                with self.subTest(state=state, login=login):
+                    self.issue["state"] = state
+                    self.issue["user"] = {"login": login}
+                    read_body, replace_section = Mock(), Mock()
+                    code, result, edit, errors = self.run_update(
+                        "--body", "New content", read_body=read_body,
+                        replace_issue_plan_section=replace_section,
+                    )
+                    self.assertNotEqual(code, 0, errors)
+                    self.assertFalse(result["ok"])
+                    self.assertEqual(result["write_outcome"], "not_started")
+                    self.assertEqual(result["error_code"], "validation_error")
+                    self.assertFalse(result["retryable"])
+                    self.assertFalse(result["fallback_eligible"])
+                    self.assertIn("owner/repo#42", result["error"])
+                    self.assertIn("pull request", result["error"].lower())
+                    self.assertIn("--repo", result["error"])
+                    self.assertIn("gh-pr.py", result["error"])
+                    edit.assert_not_called()
+                    read_body.assert_not_called()
+                    replace_section.assert_not_called()
+
     def test_ambiguous_contributor_body_still_fails_before_mutation(self) -> None:
         self.issue["user"] = {"login": "outside-contributor"}
         self.assert_prewrite_failure(("--body", "New content"))
