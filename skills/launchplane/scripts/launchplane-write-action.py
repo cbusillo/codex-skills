@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -5629,6 +5630,8 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
     if settings is None:
         return 2
     apply_attempted = False
+    apply_received = False
+    known_trace = ""
     body = {"schema_version": 1, **{key: request[key] for key in ("product", "context", "instance")}, "deploy": False}
     path = helper_command_path(operation)
 
@@ -5654,6 +5657,8 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
         if applying:
             apply_attempted = True
             result, raw = call("apply")
+            apply_received = True
+            known_trace = public_trace_id(raw.get("trace_id"))
             if _runtime_sync_plan_digest(request, result) != reviewed_digest:
                 raise LaunchplaneSafetyError("invalid_response")
             observed, _ = call("dry-run")
@@ -5671,8 +5676,8 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
         }
         emit(payload)
         return 0
-    except (urllib.error.HTTPError, OSError, TimeoutError, urllib.error.URLError, LaunchplaneSafetyError, ValueError) as exc:
-        if apply_attempted and isinstance(exc, urllib.error.HTTPError) and exc.code in {401, 403}:
+    except (urllib.error.HTTPError, http.client.HTTPException, OSError, TimeoutError, urllib.error.URLError, LaunchplaneSafetyError, ValueError) as exc:
+        if apply_attempted and not apply_received and isinstance(exc, urllib.error.HTTPError) and exc.code in {401, 403}:
             emit_http_error_payload(operation=operation, request=request, exc=exc)
         elif apply_attempted:
             payload = unavailable_payload(
@@ -5680,7 +5685,23 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
                 code="runtime_sync_apply_unverified",
                 message="Runtime sync was attempted; inspect persistence before any retry.",
             )
-            payload["summary"] = {"recommendation": "Do not retry under any key until the lane env and operation outcome are reconciled."}
+            summary: dict[str, object] = {
+                "trace_id": known_trace,
+                "recommendation": "Run live-target-runtime-sync-dry-run for the same lane and compare target_sha256; zero changed_keys proves current provider persistence. Inspect the trace before retrying under any key; sync does not restart containers.",
+            }
+            if isinstance(exc, urllib.error.HTTPError):
+                try:
+                    error_payload = _error_payload_from_http(exc)
+                except (http.client.HTTPException, OSError):
+                    error_payload = {}
+                try:
+                    summary["trace_id"] = public_trace_id(error_payload.get("trace_id"))
+                    error = error_payload.get("error")
+                    if isinstance(error, dict):
+                        summary["error_code"] = public_code(error.get("code"))
+                except LaunchplaneSafetyError:
+                    pass
+            payload["summary"] = summary
             emit(payload)
         elif isinstance(exc, urllib.error.HTTPError):
             emit_http_error_payload(operation=operation, request=request, exc=exc)

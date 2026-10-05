@@ -11,6 +11,7 @@ import argparse
 import copy
 import importlib.util
 import io
+import http.client
 import json
 import os
 import subprocess
@@ -7036,6 +7037,21 @@ def test_runtime_sync_review_persistence_and_boundaries() -> None:
         assert code == 2 and transport.call_count == 0
         code, result, transport = _run_runtime_sync(apply_argv, [_runtime_sync_response(), TimeoutError()])
         assert code == 1 and result["status"] == "accepted_unverified" and transport.call_count == 2
+        denied_readback = urllib.error.HTTPError(
+            "https://example.invalid", 401, "Expired", {}, io.BytesIO(json.dumps({
+                "error": {"code": "authorization_denied"}, "trace_id": "launchplane_req_expired"
+            }).encode())
+        )
+        code, result, _ = _run_runtime_sync(apply_argv, [
+            _runtime_sync_response(), _runtime_sync_response(mode="apply"), denied_readback,
+        ])
+        assert code == 1 and result["status"] == "accepted_unverified"
+        assert result["summary"]["trace_id"] == "launchplane_req_expired"
+        code, result, _ = _run_runtime_sync(apply_argv, [
+            _runtime_sync_response(), http.client.IncompleteRead(b"private-provider-response", 10),
+        ])
+        assert code == 1 and result["status"] == "accepted_unverified"
+        assert "private-provider-response" not in json.dumps(result)
 
 
 def test_runtime_sync_denial_and_unsafe_output() -> None:

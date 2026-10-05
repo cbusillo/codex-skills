@@ -1136,8 +1136,12 @@ running containers received the values: this narrow sync always sends
 
 Authorization denials remain denials with their trace. A timeout or unverifiable
 response after an apply attempt is `accepted_unverified`, exits nonzero and
-requires reconciliation before retrying under any key. A failed read-back never
-becomes successful persistence evidence.
+requires reconciliation before retrying under any key. Run
+`live-target-runtime-sync-dry-run` on the same lane and compare `target_sha256`:
+zero `changed_keys` proves current provider persistence. Inspect the retained
+service trace and error code to resolve the operation outcome before retrying.
+A denied read-back after a successful apply stays `accepted_unverified`; a
+failed read-back never becomes successful persistence evidence.
 
 For event-driven generic-web recovery, `deploy_key_sha256` identifies a key but
 cannot reconstruct it. Obtain the original deploy coordinates/key from a
