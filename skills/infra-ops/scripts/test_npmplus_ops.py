@@ -222,7 +222,8 @@ def make_private_repo(tmp_path: Path) -> Path:
         private_repo / ".code" / "local.env",
         "NPMPLUS_BASE_URL=https://npmplus.invalid\n"
         "NPMPLUS_AUTOMATION_EMAIL=robot@example.invalid\n"
-        "NPMPLUS_AUTOMATION_PASSWORD=secret-value\n",
+        "NPMPLUS_AUTOMATION_PASSWORD=secret-value\n"
+        "NPMPLUS_RETRIES=1\n",
     )
     return private_repo
 
@@ -727,7 +728,8 @@ def test_cmd_lifecycle_dry_run_includes_apply_readiness(
     assert payload["planned_operation"] == "enable"
     output = captured.out + captured.err
     private_values = [*host["domain_names"], str(private_repo), str(context.env_file)]
-    private_values.extend(npmplus_ops.parse_env_file(context.env_file).values())
+    credentials = npmplus_ops.parse_env_file(context.env_file)
+    private_values.extend(credentials[key] for key in (context.base_url_env, context.identity_env, context.secret_env))
     assert all(value not in output for value in private_values)
 
 
