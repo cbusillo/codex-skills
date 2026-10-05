@@ -331,7 +331,10 @@ Treat the checkout behind the active `skills` path as a runtime checkout: keep
 it clean, on `main`, and current with `origin/main`. Use linked task worktrees
 for skill development. After a skills PR lands, reconcile the runtime checkout
 with the landed repo-local GitHub helper before relying on installed skill
-behavior or provenance-sensitive evidence.
+behavior or provenance-sensitive evidence. A merge-train landing driven by
+`launchplane-train-drive.py` does this itself. To catch up a clean install that
+has fallen behind, run its own copy:
+`uv run <runtime-checkout>/skills/github/scripts/reconcile-runtime-checkout.py --repo cbusillo/codex-skills`.
 
 ## Execution Environment
 

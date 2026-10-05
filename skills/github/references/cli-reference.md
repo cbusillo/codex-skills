@@ -362,6 +362,21 @@ immutable fetched commit with autostash disabled, ignored-file overwrite
 disabled, and repository hooks disabled. It never switches branches, resets,
 stashes, cleans, or overwrites unsafe local state.
 
+Run from the runtime checkout itself, the helper is its own merged worktree, so
+a clean install on the default branch that has fallen behind catches up with
+one command; omitting `--landing-sha` targets the fetched default-branch tip:
+
+```sh
+uv run <runtime-checkout>/skills/github/scripts/reconcile-runtime-checkout.py --repo OWNER/REPO
+```
+
+`--merged-worktree` defaults to the checkout the executing copy lives in; a
+copy outside the given worktree fails `invalid_merged_worktree`. When the
+helper itself changed upstream, the install's copy fails
+`helper_landing_source_mismatch`; run the copy from a worktree at the fetched
+tip instead. The receipt's `detail` says which. A landing driven by
+`launchplane-train-drive.py` runs this helper itself and reports the receipt.
+
 The JSON receipt reports `synchronized`, `already_current`, `not_applicable`,
 `blocked`, `retryable`, or `failed`, plus stable reason codes and before/fetched/
 after SHAs. Successful or not-applicable results exit `0`, blocked local state

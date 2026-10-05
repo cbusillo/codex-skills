@@ -63,7 +63,9 @@
 - After a confirmed merge affecting this repository, run the landed repo-local
   `skills/github/scripts/reconcile-runtime-checkout.py` helper with the final landing
   SHA. Treat remote merge success and local runtime reconciliation as separate
-  outcomes.
+  outcomes. A train landing through `launchplane-train-drive.py` runs it and
+  reports the receipt in its `stop` event; a clean, behind runtime checkout can
+  also run its own copy with only `--repo` to catch up.
 
   ```sh
   uv run skills/github/scripts/reconcile-runtime-checkout.py \

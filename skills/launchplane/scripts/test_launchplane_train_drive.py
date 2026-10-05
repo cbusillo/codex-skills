@@ -57,6 +57,8 @@ class FakeTrain:
         self.failing: list[dict[str, str]] = []
         self.companions: list[int] = []
         self.clock = 0.0
+        self.reconciled: list[str] = []
+        self.reconcile_receipt: dict[str, Any] | None = None
 
     def controller(self, _repository: str, _base: str, _key: str) -> dict[str, Any] | None:
         response = self.responses[min(self.calls, len(self.responses) - 1)]
@@ -82,6 +84,10 @@ class FakeTrain:
     def sleep(self, seconds: float) -> None:
         self.clock += seconds
 
+    def reconcile(self, _repository: str, landing_sha: str) -> dict[str, Any] | None:
+        self.reconciled.append(landing_sha)
+        return self.reconcile_receipt
+
     def io(self) -> Any:
         return train_drive.DriveIO(
             controller=self.controller,
@@ -89,6 +95,7 @@ class FakeTrain:
             update_branch=self.update_branch,
             failing_checks=self.failing_checks,
             merged_since=lambda _repository, _since: self.companions,
+            reconcile=self.reconcile,
             now=lambda: self.clock,
             sleep=self.sleep,
         )
@@ -304,6 +311,33 @@ class TrainDriveTests(unittest.TestCase):
         self.assertEqual(stop["landing_sha"], "sha-7")
         self.assertEqual({pr["number"]: pr["outcome"] for pr in stop["prs"]}, {7: "landed", 8: "landed"})
         self.assertEqual([event for event, _ in events].count("pr_landed"), 2)
+
+    def test_a_landing_reconciles_the_installed_catalog_with_its_landing_sha(self) -> None:
+        train = FakeTrain([_response("land_batch")], merge_after={7: 1})
+        train.reconcile_receipt = {"status": "synchronized", "reason_code": "runtime_fast_forwarded"}
+        outcome, events = _drive(train)
+        self.assertEqual((outcome, train.reconciled), ("landed", ["sha-7"]))
+        self.assertEqual(events[-1][1]["runtime_reconciliation"], train.reconcile_receipt)
+
+    def test_another_repository_or_a_failed_drive_has_no_reconciliation(self) -> None:
+        landed = FakeTrain([_response("land_batch")], merge_after={7: 1})
+        _, events = _drive(landed)
+        self.assertNotIn("runtime_reconciliation", events[-1][1])
+        failed = FakeTrain([_response("block", blocking_reason={"code": "x"})])
+        failed.reconcile_receipt = {"status": "synchronized"}
+        self.assertEqual((_drive(failed)[0], failed.reconciled), ("failed", []))
+
+    def test_live_reconcile_only_runs_for_the_catalog_repository(self) -> None:
+        io = train_drive.live_io(1.0)
+        catalog = subprocess.run(
+            ["git", "-C", str(SCRIPT_DIR), "config", "--get", "remote.origin.url"], capture_output=True, text=True
+        ).stdout.strip().removesuffix(".git").replace(":", "/").split("/")
+        with patch.object(train_drive, "_run_json", return_value={"status": "already_current"}) as run:
+            self.assertIsNone(io.reconcile("someone-else/app", "a" * 40))
+            run.assert_not_called()
+            receipt = io.reconcile(f"{catalog[-2]}/{catalog[-1]}", "a" * 40)
+        self.assertEqual(receipt, {"status": "already_current"})
+        self.assertIn("--landing-sha", run.call_args.args[0])
 
     def test_a_landing_by_another_driver_counts_without_a_controller_call(self) -> None:
         train = FakeTrain([_response("idle")], merge_after={7: 0})

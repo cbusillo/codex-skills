@@ -14,13 +14,13 @@ import json
 import os
 import re
 import subprocess
-import sys
 import urllib.parse
 from pathlib import Path
 from typing import Any, Iterator
 
 
 SCHEMA_VERSION = 1
+HELPER_IN_CATALOG = Path("skills/github/scripts/reconcile-runtime-checkout.py")
 SUCCESS_STATUSES = frozenset({"synchronized", "already_current", "not_applicable"})
 LANDING_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -58,8 +58,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--merged-worktree",
         type=Path,
-        required=True,
-        help="A worktree from the repository whose default branch landed.",
+        default=Path(__file__).resolve().parent,
+        help="A worktree from the repository whose default branch landed; it must contain this copy "
+        "of the helper. Defaults to the checkout this helper lives in.",
     )
     parser.add_argument(
         "--repo",
@@ -68,8 +69,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--landing-sha",
-        required=True,
-        help="The full Git commit SHA confirmed as landed on the repository default branch.",
+        help="The full Git commit SHA confirmed as landed on the repository default branch. "
+        "Omit it to catch up to the fetched default-branch tip.",
     )
     return parser.parse_args()
 
@@ -97,22 +98,35 @@ def main() -> int:
 def reconcile_runtime_checkout(
     merged_worktree: Path,
     expected_repo: str,
-    landing_sha: str,
+    landing_sha: str | None,
 ) -> dict[str, Any]:
     receipt = base_receipt(landing_sha)
     receipt["expected_repo"] = expected_repo
     if not REPOSITORY_PATTERN.fullmatch(expected_repo):
         return finish(receipt, "failed", "invalid_repository")
-    if not LANDING_SHA_PATTERN.fullmatch(landing_sha):
+    if landing_sha is not None and not LANDING_SHA_PATTERN.fullmatch(landing_sha):
         return finish(receipt, "failed", "invalid_landing_sha")
 
     try:
         source_root = git_root(merged_worktree)
+    except (GitCommandError, OSError):
+        receipt["detail"] = f"{merged_worktree} is not a Git worktree."
+        return finish(receipt, "failed", "invalid_merged_worktree")
+    try:
+        helper_relative_path = helper_path_relative_to(source_root)
+    except ValueError:
+        receipt["detail"] = (
+            f"This copy of the helper ({Path(__file__).resolve()}) is not inside {source_root}. "
+            f"Run the copy at {source_root / HELPER_IN_CATALOG}, or omit --merged-worktree to use "
+            "the checkout this copy lives in."
+        )
+        return finish(receipt, "failed", "invalid_merged_worktree")
+    try:
         source_common_dir = git_common_dir(source_root)
         source_head = git_text(source_root, "rev-parse", "HEAD")
         default_branch = resolve_default_branch(source_root)
-        helper_relative_path = helper_path_relative_to(source_root)
     except (GitCommandError, OSError, ValueError, json.JSONDecodeError):
+        receipt["detail"] = f"Could not read the default branch of {source_root}."
         return finish(receipt, "failed", "invalid_merged_worktree")
 
     receipt.update(
@@ -124,13 +138,14 @@ def reconcile_runtime_checkout(
     )
 
     # Several hosts can bind this catalog. A binding qualifies when it is a worktree of the merged
-    # clone other than the merged worktree itself. A developer may also link a work-in-progress
-    # worktree for testing, so one already on the default branch is preferred over one that is not.
+    # clone. The merged worktree itself qualifies only on the default branch, which is how a clean,
+    # behind install catches up by running its own copy. A developer may also link a
+    # work-in-progress worktree for testing, so one already on the default branch is preferred.
     matches: list[tuple[Path, Path, str]] = []
     checked: list[dict[str, str]] = []
     for candidate, home_source, primary in runtime_skills_paths():
         status, reason, candidate_root = inspect_binding(candidate, source_common_dir)
-        if candidate_root == source_root:
+        if candidate_root == source_root and current_branch(source_root) != default_branch:
             status, reason, candidate_root = "not_applicable", "binding_is_merged_worktree", None
         checked.append({"source": home_source, "status": status, "reason_code": reason})
         if candidate_root is not None:
@@ -204,6 +219,8 @@ def reconcile_runtime_checkout(
             fetched_sha = git_text(runtime_root, "rev-parse", remote_ref)
             current_sha = git_text(runtime_root, "rev-parse", "HEAD")
             receipt["fetched_sha"] = fetched_sha
+            if landing_sha is None:
+                landing_sha = receipt["landing_sha"] = fetched_sha
 
             if not git_object_exists(runtime_root, landing_sha):
                 receipt["after_sha"] = current_sha
@@ -256,11 +273,14 @@ def reconcile_runtime_checkout(
             receipt["helper_tip_verified"] = (
                 canonical_executing_helper == canonical_script_bytes(tip_helper)
             )
-            if not receipt["helper_landing_verified"]:
+            if not (receipt["helper_landing_verified"] and receipt["helper_tip_verified"]):
                 receipt["after_sha"] = current_sha
-                return finish(receipt, "failed", "helper_landing_source_mismatch")
-            if not receipt["helper_tip_verified"]:
-                receipt["after_sha"] = current_sha
+                receipt["detail"] = (
+                    "This copy of the helper differs from the landed one. Run the copy in a worktree "
+                    f"checked out at {fetched_sha}."
+                )
+                if not receipt["helper_landing_verified"]:
+                    return finish(receipt, "failed", "helper_landing_source_mismatch")
                 return finish(receipt, "failed", "helper_tip_source_mismatch")
             receipt["helper_source_verified"] = True
 
@@ -323,7 +343,7 @@ def reconcile_runtime_checkout(
         return finish(receipt, "failed", "unexpected_os_error")
 
 
-def base_receipt(landing_sha: str) -> dict[str, Any]:
+def base_receipt(landing_sha: str | None) -> dict[str, Any]:
     return {
         "ok": False,
         "schema_version": SCHEMA_VERSION,
@@ -352,6 +372,7 @@ def base_receipt(landing_sha: str) -> dict[str, Any]:
         "runtime_mutated": False,
         "failed_operation": None,
         "blockers": [],
+        "detail": None,
     }
 
 
