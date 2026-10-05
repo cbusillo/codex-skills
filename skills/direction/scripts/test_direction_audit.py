@@ -49,6 +49,8 @@ def load() -> Any:
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.planning_config = lambda _: {"labels": {"waiting": "plan:waiting", "blocked": "plan:blocked",
+                                                   "stale": "plan:stale", "done": "plan:done"}}
     return module
 
 
@@ -1589,7 +1591,7 @@ def test_overall_audit_follows_track_to_invalid_cross_repository_wait() -> None:
                                        fetch=lambda _: (_ for _ in ()).throw(module.AuditError("unavailable")))
 
 
-def test_local_wait_reads_skip_zero_blockers_and_preserve_failed_or_capped_coverage() -> None:
+def test_local_wait_findings_need_no_dependency_reads() -> None:
     module = load()
     base = {**issue(120, "Inventory", labels=("plan:waiting",),
                     body="## Current Status\nWaiting for: milestone Thin fork decision."),
@@ -1600,13 +1602,12 @@ def test_local_wait_reads_skip_zero_blockers_and_preserve_failed_or_capped_cover
     assert not module.enrich_milestone_waits([zero], "owner/product", ["Thin fork decision", "Dogfood week"], fetch=denied)
     assert "milestone_wait_invalid" in kinds(run(module, issues=[zero]))
     unknown = {**base}
-    assert module.enrich_milestone_waits([unknown], "owner/product", ["Thin fork decision", "Dogfood week"], fetch=denied)
-    assert "coverage_incomplete" in kinds(run(module, issues=[unknown]))
-    assert "milestone_wait_invalid" not in kinds(run(module, issues=[unknown]))
-    with patch.object(module, "MAX_ADMISSION_ISSUES", 1):
-        records = [{**base, "number": number} for number in (120, 121)]
-        assert module.enrich_milestone_waits(records, "owner/product", ["Thin fork decision", "Dogfood week"], fetch=lambda _: [])
-        assert records[-1]["_wait_blockers_unknown"] is True
+    assert not module.enrich_milestone_waits([unknown], "owner/product", ["Thin fork decision", "Dogfood week"], fetch=denied)
+    assert "milestone_wait_invalid" in kinds(run(module, issues=[unknown]))
+    module.planning_config = lambda _: {"labels": {"waiting": "paused"}}
+    custom = {**base, "body": "## Current Status\nWaiting for: nothing.", "labels": [{"name": "paused"}]}
+    assert not module.enrich_milestone_waits([custom], "owner/product", ["Dogfood week"], fetch=denied)
+    assert "milestone_wait_invalid" in kinds(run(module, issues=[custom]))
 
 
 def main() -> int:

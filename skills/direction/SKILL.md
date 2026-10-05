@@ -80,10 +80,11 @@ out. This is an after-the-fact reading, not a preapproval gate. An issue added
 during close-out waits for a later `go <milestone>` run. Adding a milestone or
 changing what it proves remains Director direction.
 
-Global `next` and audits report, on a listed milestone's path, a wait that names
-another milestone or no person or event and keep the issue available unless it has an open native
-blocker; tooling fills spare capacity only when every milestone has a reviewed
-named person wait, with its recorded start date or an explicit unknown start.
+Global `next` and audits report milestone waits that name another milestone or
+no person or event, keep independent work selectable after normal ownership
+review and native dependency checks, and admit capacity tooling only with a
+reviewed named person wait for every listed open milestone and its known or
+explicitly unknown start.
 
 A proposal that adds a fourth container or a second human gate is the signal
 that the design is getting too complicated. Prefer deleting a concept to adding

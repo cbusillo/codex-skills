@@ -3273,6 +3273,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         if milestone.get("state") == "closed"
     ]
     scope = None
+    wait_titles = list(titles)
     if args.milestone:
         result = github_milestone_core.show_milestone(
             repo, args.milestone, operation=CURRENT_OPERATION,
@@ -3397,6 +3398,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         roots, milestone_titles=titles, read_node=read_node,
         scan_limit=args.scan_limit, completed_milestone_titles=completed_titles,
         agent=github_agent.running_agent(getattr(args, "agent", None)),
+        wait_milestone_titles=wait_titles,
     )
     ranked["dependency_context"]["relationship_limit"] = NEXT_RELATIONSHIP_LIMIT
     if inventory_truncated or milestones_truncated:

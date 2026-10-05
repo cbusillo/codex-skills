@@ -92,7 +92,7 @@ def section_map(body: str) -> dict[str, str]:
 def milestone_wait_evidence(item: dict[str, Any], status_text: str, milestone_titles: list[str]) -> dict[str, Any]:
     """Validate the recorded wait, leaving person/event interpretation to review."""
     status_text = re.sub(r"<!--.*?-->", "", status_text, flags=re.DOTALL)
-    status_text = re.sub(r"\*\*((?:Waiting for|Parked until|Blocked by|Waiting since):)\*\*", r"\1", status_text, flags=re.IGNORECASE)
+    status_text = re.sub(r"\*\*(Waiting for|Parked until|Blocked by|Waiting since)(:?)\*\*(:?)", r"\1\2\3", status_text, flags=re.IGNORECASE)
     match = re.search(r"(?im)^[ \t]*(?:[-*][ \t]+)?(?:Waiting for|Parked until):[ \t]*([^\n]*)", status_text)
     if match is None:
         match = re.search(r"(?im)^[ \t]*(?:[-*][ \t]+)?Blocked by:[^\n]*?\bwaiting for[ \t]+([^\n]*)", status_text)
@@ -105,6 +105,10 @@ def milestone_wait_evidence(item: dict[str, Any], status_text: str, milestone_ti
                 break
             continuation.append(re.sub(r"^\s*[-*]?\s*", "", line))
         reason = " ".join(continuation)
+    if reason.casefold().rstrip(" .") in {"", "none", "nothing", "n/a", "-"}:
+        fallback = re.search(r"(?im)^[ \t]*(?:[-*][ \t]+)?Blocked by:[^\n]*?\bwaiting for[ \t]+([^\n]*)", status_text)
+        if fallback:
+            reason = fallback.group(1).strip()
     plain = re.sub(r"[`*_]", "", reason).casefold().rstrip(" .")
     requested = bool((plain and plain not in {"none", "n/a", "nothing", "-"}) or item.get("exclusion") == "waiting"
                      or "plan:waiting" in normalize_labels(item.get("labels"))
@@ -572,9 +576,11 @@ def tooling_capacity_context(
             if key in frontier_keys:
                 source, status = milestone_wait_source(entry)
                 evidence = milestone_wait_evidence(source, status, milestone_titles)
-                records.append({"repo": source["repo"], "number": source["number"], "url": source["url"],
+                record = {"repo": source["repo"], "number": source["number"], "url": source["url"],
                                      "waiting_for": evidence["waiting_for"], "since": evidence["since"],
-                                     "recorded_at": evidence["recorded_at"]})
+                                     "recorded_at": evidence["recorded_at"]}
+                if record not in records:
+                    records.append(record)
             pending_keys.extend((dep["repo"].casefold(), dep["number"])
                                 for dep in [*entry.get("blocked_by", []), *entry.get("open_sub_issues", [])]
                                 if (dep["repo"].casefold(), dep["number"]) in by_key)
@@ -870,6 +876,7 @@ def rank_direction_work(
     scan_limit: int,
     completed_milestone_titles: list[str] | None = None,
     agent: str | None = None,
+    wait_milestone_titles: list[str] | None = None,
 ) -> dict[str, Any]:
     """Walk ordered Track issues through native blockers and sub-issues.
 
@@ -942,7 +949,7 @@ def rank_direction_work(
         if status_text is None:
             status_text = section_map((item.get("discussion") or {}).get("body", "")).get("Current Status", "")
         if not tracking:
-            item = check_milestone_wait(item, status_text, milestone_titles)
+            item = check_milestone_wait(item, status_text, wait_milestone_titles or milestone_titles)
         reason = item.get("exclusion")
         blockers = node.get("blockers") or []
         children = node.get("children") or []

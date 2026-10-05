@@ -2387,7 +2387,8 @@ def test_discovered_milestone_wait_remains_available_and_cannot_admit_tooling() 
 
 def test_supported_wait_forms_and_person_work_do_not_become_ordering_findings() -> None:
     roots = [track("someone/direction", 1, "First")]
-    for status in ("Parked until: 2026-12-01 holiday freeze.", "**Waiting for:** Alex to test.",
+    for status in ("Parked until: 2026-12-01 holiday freeze.", "**Waiting for:** Alex to test.", "**Waiting for**: Alex to test.",
+                   "Blocked by: No native issue blocker; waiting for Alex to test.\nWaiting for:\nLast verified: 2026-10-01",
                    "Blocked by: No native issue blocker; waiting for Alex to test.",
                    "Waiting for: Alex to approve the beta copy."):
         leaf = global_issue("someone/business", 120, labels=["plan:waiting"],
@@ -2499,6 +2500,20 @@ def test_multiline_wait_and_literal_milestone_wait_have_opposite_results() -> No
 
 TESTS.extend([test_empty_track_discovery_still_reads_held_milestone_capacity_evidence,
               test_multiline_wait_and_literal_milestone_wait_have_opposite_results])
+
+
+def test_milestone_scope_still_recognizes_other_listed_milestone_waits() -> None:
+    roots = [track("someone/direction", 1, "First")]
+    leaf = global_issue("someone/business", 120, labels=["plan:waiting"],
+                        body="## Current Status\nWaiting for: Second to finish.")
+    with global_fixture(roots, [leaf], {(roots[0]["repo"], 1): relationships(sub_issues=[leaf])}) as (module, result, _reads):
+        with patch.object(module.github_milestone_core, "show_milestone", return_value={"milestone": roots[0]["milestone"]}):
+            module.cmd_next(next_args(milestone="First"))
+        assert [item["number"] for item in result["candidates"]] == [120]
+        assert result["findings"][0]["reason"] == "wait_names_another_milestone"
+
+
+TESTS.append(test_milestone_scope_still_recognizes_other_listed_milestone_waits)
 
 
 def main() -> None:
