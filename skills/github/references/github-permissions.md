@@ -101,6 +101,10 @@ babysitter and direction helper directories. A new or changed surface fails
 validation until its operation declaration, permission, safe probe, degraded
 behavior and profile impact are reviewed together. Dynamic passthrough input
 and arbitrary untracked code remain outside this static check.
+The `gh-with-env-token` passthrough is covered by
+`test_gh_with_env_token.py`, which executes its credential selection, actor
+verification and refusal paths with fixture credentials. Its shell text is
+not fingerprinted.
 
 After reviewing the change, print candidate hashes with `github-capabilities.py
 fingerprints` and update the matrix's fingerprint table in the same PR. The
