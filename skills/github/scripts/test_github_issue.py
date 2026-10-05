@@ -779,6 +779,40 @@ def test_edit_malformed_readback_preserves_confirmed_writes() -> None:
         with_call_stub(callback, run)
 
 
+def test_edit_partial_failure_preserves_actor_recovery_guidance() -> None:
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        if method in {"GET", "PATCH"}:
+            return success(issue_body())
+        result = failure(503, "Unicorn!", is_write=True)
+        result.actor = "other-fixture"
+        result.expected_actor = "fixture-automation"
+        return result
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        try:
+            github_issue.edit_issue(
+                42, repo="owner/repo", title="Updated", add_labels=["plan:waiting"], gh_cmd="fake-gh"
+            )
+        except github_issue.IssueError as exc:
+            envelope = github_issue._terminal_failure(
+                exc, "github.issue.edit", expected_actor="fixture-automation"
+            )
+            assert envelope["error_code"] == "actor_mismatch", envelope
+            assert envelope["write_outcome"] == "partially_applied", envelope
+            assert envelope["recommended_next_action"] == "start_new_authorized_actor_context", envelope
+            assert envelope["failed_request"]["recommended_next_action"] == "start_new_authorized_actor_context", envelope
+            assert envelope["retryable"] is False and envelope["fallback_eligible"] is False, envelope
+            assert envelope["disposition"] == "stop", envelope
+            assert envelope["reconciliation"]["completed"]["field_values"] == {"title": "Updated"}, envelope
+        else:
+            raise AssertionError("expected actor-context refusal")
+        assert [call["method"] for call in calls] == ["GET", "GET", "PATCH", "POST"], calls
+
+    with_call_stub(callback, run, allow_retry=True)
+
+
 def test_edit_rejects_cross_author_source_content_without_override() -> None:
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
@@ -1266,6 +1300,7 @@ TESTS = [
     test_edit_first_mutation_failure_is_not_partial,
     test_edit_failed_readback_preserves_confirmed_writes,
     test_edit_malformed_readback_preserves_confirmed_writes,
+    test_edit_partial_failure_preserves_actor_recovery_guidance,
     test_edit_rejects_cross_author_source_content_without_override,
     test_edit_allows_explicit_cross_author_source_content_override,
     test_metadata_only_edit_does_not_require_source_content_ownership,

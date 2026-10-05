@@ -97,8 +97,9 @@ remain, or `applied` when all mutations succeeded but final readback failed.
 `outcome_certainty` is `confirmed_partially_applied` for a confirmed partial
 edit, stays `unknown` when the final mutation's outcome is unknown, and is
 `confirmed` when every mutation is confirmed. The command still fails.
-`failed_request` retains the final request's original certainty and write outcome;
-these aggregate diagnostics do not change its retry or actor policy.
+`failed_request` retains the final request's original certainty, write outcome,
+and recommended next action. The original top-level retry/actor recommendation
+also remains unchanged; follow it before resuming any edit.
 `reconciliation.requested` includes field names and `field_values`, labels, and
 assignees; `completed` and `remaining` partition the requested mutations.
 Read the supplied issue endpoint and compare remaining intent before resuming;

@@ -903,6 +903,7 @@ def _enrich_edit_failure(error: IssueError) -> None:
         "failed_step": error.failure.failed_step,
         "write_outcome": error.failure.write_outcome,
         "outcome_certainty": error.payload.get("outcome_certainty"),
+        "recommended_next_action": error.payload.get("recommended_next_action"),
     }
     if error.failure.failed_step in {"read_after_write", "parse_issue_response"}:
         failed_request.update(write_outcome=None, outcome_certainty="not_applicable")
@@ -918,7 +919,6 @@ def _enrich_edit_failure(error: IssueError) -> None:
         failed_request=failed_request,
         write_outcome=write_outcome,
         outcome_certainty=certainty,
-        recommended_next_action="read_issue_and_resume_remaining_edits",
     )
     if error.api_result is not None:
         error.api_result.update(
