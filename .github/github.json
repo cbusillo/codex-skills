@@ -95,7 +95,8 @@
       "default": "./scripts/validate-skills.sh"
     },
     "syntax": {
-      "python": "uv run --python 3.12 python -m compileall -q skills scripts hooks evals"
+      "python": "uv run --python 3.12 python -m compileall -q skills scripts hooks evals",
+      "shell": "bash -n skills/github/scripts/github-repo-snapshot.sh skills/github/scripts/gh-with-env-token skills/github/scripts/git-commit-as-bot skills/github/scripts/git-push-as-bot skills/github/scripts/gh-issue skills/github/scripts/gh-comment skills/google-seo/scripts/google-cloud-inventory.sh scripts/validate-skills.sh"
     }
   },
   "importantWorkflows": [
