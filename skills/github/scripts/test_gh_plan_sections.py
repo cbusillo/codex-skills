@@ -38,7 +38,7 @@ LITERAL_TEXTS = (
 
 class SectionTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.issue = {
+        self.issue: dict[str, Any] = {
             "repo": "owner/repo", "number": 42, "title": "Fixture", "state": "open",
             "user": {"login": "fixture-bot[bot]"}, "labels": [],
             "body": "## Objective\n\nKeep this.\n\n## Finish Line\n\nOld text.\n\n## Scope\n\nKeep that.\n",
