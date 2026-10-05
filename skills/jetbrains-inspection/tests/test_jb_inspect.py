@@ -17,10 +17,10 @@ import time
 import unittest
 import urllib.parse
 from argparse import Namespace
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import chdir, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 
 TEST_CACHE = tempfile.TemporaryDirectory(prefix="jetbrains-inspection-tests-")
@@ -40,6 +40,65 @@ def write_json(path: Path, payload: dict) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle)
 
+
+
+class IdeLaunchCwdTests(unittest.TestCase):
+    def test_live_fake_ide_does_not_hold_task_cwd_after_project_close(self):
+        # LaunchServices starts apps in /; JetBrains restores cwd from inherited PWD.
+        # Only app launching is faked; the IDE is a real child process.
+        child_code = """
+import json, os, sys
+if os.getcwd() == "/" and os.environ.get("PWD"):
+    os.chdir(os.environ["PWD"])
+print(json.dumps({"cwd": os.getcwd(), "project": sys.argv[1], "other": os.environ.get("CS1159_LAUNCH_TEST")}), flush=True)
+for command in sys.stdin:
+    if command.strip() == "close":
+        print(json.dumps({"cwd": os.getcwd(), "project": None}), flush=True)
+    elif command.strip() == "stop":
+        break
+"""
+        for launch in (jb_inspect.bootstrap_ide_app, jb_inspect.open_in_ide):
+            with self.subTest(launch=launch.__name__), tempfile.TemporaryDirectory() as temporary:
+                task = Path(temporary).resolve() / "disposable-task"
+                task.mkdir()
+                processes = []
+                observations = []
+
+                def fake_open(command, **kwargs):
+                    process = subprocess.Popen(
+                        [sys.executable, "-u", "-c", child_code, str(task)],
+                        cwd="/", env=kwargs.get("env"),
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, text=True,
+                    )
+                    processes.append(process)
+                    assert process.stdout is not None
+                    observations.append(json.loads(process.stdout.readline()))
+                    return subprocess.CompletedProcess(command, 0, "", "")
+
+                try:
+                    with chdir(task), patch.dict(os.environ, {"PWD": str(task), "CS1159_LAUNCH_TEST": "preserved"}), \
+                            patch.object(jb_inspect.sys, "platform", "darwin"), \
+                            patch.object(jb_inspect.subprocess, "run", side_effect=fake_open):
+                        result = launch({"ide": "PyCharm", "worktree_root": str(task)}, background=True)
+                        self.assertEqual(Path.cwd(), task)
+                        self.assertEqual(os.environ["PWD"], str(task))
+                        self.assertEqual(observations[0]["other"], os.environ["CS1159_LAUNCH_TEST"])
+                    process = processes[0]
+                    assert process.stdin is not None and process.stdout is not None
+                    self.assertTrue(result["accepted"])
+                    self.assertEqual(observations[0]["project"], str(task))
+                    process.stdin.write("close\n")
+                    process.stdin.flush()
+                    closed = json.loads(process.stdout.readline())
+                    self.assertIsNone(closed["project"])
+                    self.assertIsNone(process.poll())
+                    for observation in (observations[0], closed):
+                        self.assertFalse(Path(observation["cwd"]).is_relative_to(task))
+                finally:
+                    for process in processes:
+                        process.communicate("stop\n", timeout=5)
+                        self.assertEqual(process.returncode, 0)
 
 
 class IdeMemoryTests(unittest.TestCase):
@@ -5965,7 +6024,7 @@ class LifecycleTest(unittest.TestCase):
             run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
             jb_inspect.open_in_ide({"ide": "IntelliJ IDEA", "worktree_root": "/tmp/worktree"}, background=True)
 
-        run.assert_called_once_with(["open", "-g", "-a", "IntelliJ IDEA", "/tmp/worktree"], check=False, capture_output=True, text=True)
+        run.assert_called_once_with(["open", "-g", "-a", "IntelliJ IDEA", "/tmp/worktree"], env=ANY, check=False, capture_output=True, text=True)
 
     def test_open_in_ide_uses_explicit_app_for_macos_launch(self):
         with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
@@ -5975,7 +6034,7 @@ class LifecycleTest(unittest.TestCase):
                 background=True,
             )
 
-        run.assert_called_once_with(["open", "-g", "-a", "WebStorm 2026.2 EAP", "/tmp/worktree"], check=False, capture_output=True, text=True)
+        run.assert_called_once_with(["open", "-g", "-a", "WebStorm 2026.2 EAP", "/tmp/worktree"], env=ANY, check=False, capture_output=True, text=True)
 
     def test_open_in_ide_uses_resolved_app_path_when_available(self):
         app_path = Path("/Applications/WebStorm 2026.2 EAP.app")
@@ -5990,7 +6049,7 @@ class LifecycleTest(unittest.TestCase):
                 background=True,
             )
 
-        run.assert_called_once_with(["open", "-g", "-n", "-a", str(app_path), "/tmp/worktree"], check=False, capture_output=True, text=True)
+        run.assert_called_once_with(["open", "-g", "-n", "-a", str(app_path), "/tmp/worktree"], env=ANY, check=False, capture_output=True, text=True)
 
     def test_open_in_ide_uses_lifecycle_target_for_nested_project(self):
         with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
@@ -6004,7 +6063,7 @@ class LifecycleTest(unittest.TestCase):
                 background=True,
             )
 
-        run.assert_called_once_with(["open", "-g", "-a", "IntelliJ IDEA", "/tmp/harness-parent/workspace/project"], check=False, capture_output=True, text=True)
+        run.assert_called_once_with(["open", "-g", "-a", "IntelliJ IDEA", "/tmp/harness-parent/workspace/project"], env=ANY, check=False, capture_output=True, text=True)
 
     def test_open_in_ide_reports_failed_macos_open(self):
         completed = subprocess.CompletedProcess(["open"], 1, "", "Unable to find application")
@@ -6021,14 +6080,14 @@ class LifecycleTest(unittest.TestCase):
             run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
             jb_inspect.bootstrap_ide_app({"ide": "PyCharm", "worktree_root": "/tmp/worktree"}, background=True)
 
-        run.assert_called_once_with(["open", "-g", "-j", "-a", "PyCharm"], check=False, capture_output=True, text=True)
+        run.assert_called_once_with(["open", "-g", "-j", "-a", "PyCharm"], env=ANY, check=False, capture_output=True, text=True)
 
     def test_bootstrap_ide_app_uses_explicit_app_for_hidden_launch(self):
         with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
             run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
             jb_inspect.bootstrap_ide_app({"ide": "WebStorm", "ide_app": "WebStorm 2026.2 EAP"}, background=True)
 
-        run.assert_called_once_with(["open", "-g", "-j", "-a", "WebStorm 2026.2 EAP"], check=False, capture_output=True, text=True)
+        run.assert_called_once_with(["open", "-g", "-j", "-a", "WebStorm 2026.2 EAP"], env=ANY, check=False, capture_output=True, text=True)
 
     def test_bootstrap_ide_app_uses_resolved_app_path(self):
         app_path = Path("/Applications/WebStorm 2026.2 EAP.app")
@@ -6036,7 +6095,7 @@ class LifecycleTest(unittest.TestCase):
             run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
             jb_inspect.bootstrap_ide_app({"ide_selection": {"app_path": str(app_path), "app_name": "WebStorm 2026.2 EAP"}}, background=True)
 
-        run.assert_called_once_with(["open", "-g", "-j", "-n", "-a", str(app_path)], check=False, capture_output=True, text=True)
+        run.assert_called_once_with(["open", "-g", "-j", "-n", "-a", str(app_path)], env=ANY, check=False, capture_output=True, text=True)
 
     def test_bootstrap_ide_app_reports_failed_hidden_launch(self):
         completed = subprocess.CompletedProcess(["open"], 1, "", "Unable to find application")

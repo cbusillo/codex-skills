@@ -11629,7 +11629,9 @@ def open_in_ide(context: dict[str, Any], background: bool = False, method: str =
         command.extend(["-n", "-a", str(ide_app_path), str(target)])
     else:
         command.extend(["-a", str(ide_app), str(target)])
-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    # JetBrains restores its cwd from PWD after LaunchServices starts it in /.
+    environment = {**os.environ, "PWD": "/"}
+    completed = subprocess.run(command, env=environment, check=False, capture_output=True, text=True)
     if completed.returncode != 0:
         raise InspectError(
             "Failed to ask macOS to open the JetBrains IDE.",
@@ -11672,7 +11674,9 @@ def bootstrap_ide_app(context: dict[str, Any], background: bool = True) -> dict[
         command.extend(["-n", "-a", str(ide_app_path)])
     else:
         command.extend(["-a", str(ide_app)])
-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    # JetBrains restores its cwd from PWD after LaunchServices starts it in /.
+    environment = {**os.environ, "PWD": "/"}
+    completed = subprocess.run(command, env=environment, check=False, capture_output=True, text=True)
     if completed.returncode != 0:
         raise InspectError(
             "Failed to launch the JetBrains IDE for lifecycle open.",
