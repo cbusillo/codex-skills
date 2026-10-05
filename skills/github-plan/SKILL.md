@@ -8,6 +8,10 @@ commands:
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "claim", "<issue>", "--worker", "<worker>", "--session", "<session-id>", "--branch", "work/issue-<number>", "--next-action", "<action>"]
     purpose: Rechecks ownership, records and reads back the claim, and activates planning state before a task worktree is created.
+  - name: github-plan-release-claim
+    source: repo
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "release-claim", "<issue>", "--claim-comment", "<id>", "--evidence-comment", "<attestation-url>", "--role", "supervisor", "--session", "<native-id>", "--confirm-session-ended", "--dry-run"]
+    purpose: Reviews or records the exact release of an abandoned automation claim after verified session closure.
   - name: github-plan-index
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "index"]
@@ -228,6 +232,11 @@ active issue labels and continuing background jobs do not lift a hold.
    for refusal, partial recovery, or release. Continue only on confirmed success;
    preserve competing or uncertain ownership for the Director to decide. Keep
    Current Status current through handoff or completion.
+   For an abandoned automation claim held by a closed session, a direction or
+   Supervisor session uses `release-claim`, with a closed-session attestation
+   and fresh activity checks. Read Planning: Claim first; age, a merged PR or
+   partial peer coverage never proves closure. This releases ownership only;
+   recorded waits, native blockers and retained-artifact gates still apply.
    For an authorized PR-only conflict refresh of a finished session, claim its
    canonical open planning issue with `--refresh-pr`, `--resume-from`, and
    `--handoff-comment`; read Planning: Claim for the exact released-handoff
