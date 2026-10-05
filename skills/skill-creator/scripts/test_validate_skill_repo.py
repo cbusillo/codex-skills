@@ -10,10 +10,12 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 SCRIPT = Path(__file__).with_name("validate-skill-repo.py")
 
@@ -601,7 +603,34 @@ def test_invocation_policy_matches_on_both_hosts() -> None:
         assert not module.validate_invocation_parity(skill_dir)
 
 
+def test_missing_system_overrides_are_all_reported() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as directory:
+        module.ROOT = Path(directory)
+        skills = [module.ROOT / name for name in sorted(module.SYSTEM_OVERRIDE_NAMES)]
+        for skill in skills:
+            skill.mkdir()
+        errors = module.validate_system_override_paths(skills)
+        assert len(errors) == len(skills), errors
+        assert all(any(f"{skill.name}: override skill is missing" in error for error in errors) for skill in skills), errors
+
+
+def test_stale_injected_override_path_does_not_break_fixture_catalog() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as directory:
+        module.ROOT = Path(directory)
+        for name in module.SYSTEM_OVERRIDE_NAMES:
+            skill = module.ROOT / name
+            skill.mkdir()
+            (skill / "SKILL.md").write_text(f"---\nname: {name}\ndescription: Fixture skill.\n---\n")
+        stale = module.ROOT / ".system" / next(iter(module.SYSTEM_OVERRIDE_NAMES)) / "SKILL.md"
+        with mock.patch.dict(os.environ, {"CODEX_SKILLS_INJECTED_PATHS": str(stale)}):
+            assert module.main() == 0
+
+
 def main() -> int:
+    test_missing_system_overrides_are_all_reported()
+    test_stale_injected_override_path_does_not_break_fixture_catalog()
     test_invocation_policy_matches_on_both_hosts()
     test_openai_yaml_accepts_documented_shape()
     test_openai_yaml_rejects_schema_drift()

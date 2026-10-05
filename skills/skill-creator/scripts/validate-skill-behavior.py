@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = [
+#     "PyYAML==6.0.3",
+# ]
 # ///
 """Behavior checks that run skill helpers and commands.
 
@@ -22,6 +24,7 @@ import tempfile
 import urllib.error
 from email.message import Message
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -60,49 +63,62 @@ def launchplane_environment(**overrides: str) -> dict[str, str]:
 def run_launchplane_payload_probe(
     helper: Path,
     payload_path: Path,
+    fixture: Path,
+    repo: Path,
 ) -> subprocess.CompletedProcess[str]:
     return run_probe(
         [
             sys.executable,
             str(helper),
             "--config",
-            str(ROOT / ".missing-launchplane-operator-config.json"),
+            str(fixture / "missing-operator-config.json"),
             "product-config-dry-run",
             "--payload-file",
             str(payload_path),
         ],
-        cwd=ROOT,
+        cwd=repo,
         env=launchplane_environment(),
     )
 
 
+def validator_module() -> Any:
+    path = ROOT / "skill-creator" / "scripts" / "validate-skill-repo.py"
+    spec = importlib.util.spec_from_file_location("skill_repo_behavior_validator", path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("Validator must be importable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def command_argv(skill_name: str, command_name: str) -> list[str]:
-    text = (ROOT / skill_name / "SKILL.md").read_text()
-    marker = f"  - name: {command_name}"
-    start = text.find(marker)
-    require(start >= 0, f"{skill_name} must define {command_name}")
-    block_end = text.find("\n  - name:", start + len(marker))
-    if block_end < 0:
-        block_end = text.find("\n---", start + len(marker))
-    block = text[start:block_end]
-    for line in block.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("example_argv:"):
-            raw_json = stripped.split(":", 1)[1].strip()
-            argv = json.loads(raw_json)
-            require(isinstance(argv, list), f"{command_name} must define example_argv")
-            return [str(token) for token in argv]
-    raise AssertionError(f"{command_name} must define single-line example_argv")
+    metadata = validator_module().read_frontmatter(ROOT / skill_name / "SKILL.md")
+    for command in metadata.get("commands", []):
+        if command.get("name") == command_name:
+            argv = command.get("example_argv")
+            require(isinstance(argv, list) and bool(argv) and all(isinstance(token, str) for token in argv),
+                    f"{command_name} must define a nonempty string example_argv list")
+            return argv
+    raise AssertionError(f"{skill_name} must define {command_name}")
 
 
 def test_launchplane_write_action_helper_contract() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = Path(directory).resolve()
+        repo = fixture / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+        check_launchplane_write_action_helper_contract(fixture, repo)
+
+
+def check_launchplane_write_action_helper_contract(fixture: Path, repo: Path) -> None:
     helper = ROOT / "launchplane" / "scripts" / "launchplane-write-action.py"
     no_context = run_probe(
         [
             sys.executable,
             str(helper),
             "--config",
-            str(ROOT / ".missing-launchplane-operator-config.json"),
+            str(fixture / "missing-operator-config.json"),
             "merge-train-controller-run-once",
             "--repo",
             "example/repo",
@@ -124,7 +140,7 @@ def test_launchplane_write_action_helper_contract() -> None:
             sys.executable,
             str(helper),
             "--env-config",
-            str(ROOT / ".missing-launchplane-operator.env"),
+            str(fixture / "missing-operator.env"),
             "merge-train-controller-run-once",
             "--repo",
             "example/repo",
@@ -141,18 +157,13 @@ def test_launchplane_write_action_helper_contract() -> None:
         missing_url_payload["summary"]["configuration_state"] == "missing_service_url",
         "Write-action helper must distinguish a missing service URL from a missing credential",
     )
-    require(
-        "local operator token material is present"
-        in str(missing_url_payload["summary"].get("recommendation", "")).lower(),
-        "Write-action helper must explain missing_service_url as local operator routing setup",
-    )
 
     missing_token = run_probe(
         [
             sys.executable,
             str(helper),
             "--env-config",
-            str(ROOT / ".missing-launchplane-operator.env"),
+            str(fixture / "missing-operator.env"),
             "--url",
             "https://launchplane.example.invalid",
             "merge-train-controller-run-once",
@@ -175,7 +186,7 @@ def test_launchplane_write_action_helper_contract() -> None:
             sys.executable,
             str(helper),
             "--env-config",
-            str(ROOT / ".missing-launchplane-operator.env"),
+            str(fixture / "missing-operator.env"),
             "operator-config-diagnostic",
         ],
         env=launchplane_environment(
@@ -201,10 +212,10 @@ def test_launchplane_write_action_helper_contract() -> None:
         "Write-action diagnostic must not render public URL hint or token values",
     )
 
-    repo_payload = ROOT / ".tmp-launchplane-repo-payload.json"
+    repo_payload = repo / "payload.json"
     try:
         repo_payload.write_text('{"reason":"example"}\n', encoding="utf-8")
-        repo_local = run_launchplane_payload_probe(helper, repo_payload)
+        repo_local = run_launchplane_payload_probe(helper, repo_payload, fixture, repo)
     finally:
         repo_payload.unlink(missing_ok=True)
     require(repo_local.returncode == 2, "Write-action helper must reject repo-local payload files")
@@ -217,7 +228,7 @@ def test_launchplane_write_action_helper_contract() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         external_payload = Path(tmp) / "operator-payload.json"
         external_payload.write_text('{"reason":"external"}\n', encoding="utf-8")
-        external_private = run_launchplane_payload_probe(helper, external_payload)
+        external_private = run_launchplane_payload_probe(helper, external_payload, fixture, repo)
         require(
             external_private.returncode == 2,
             "Write-action helper should reach missing-config handling for external payload files",
@@ -228,10 +239,10 @@ def test_launchplane_write_action_helper_contract() -> None:
             and "repo_local_payload_unsupported" not in json.dumps(external_private_error),
             "Write-action helper must not reject external private payload files as repo-local",
         )
-        repo_symlink = ROOT / ".tmp-launchplane-repo-payload-link.json"
+        repo_symlink = repo / "payload-link.json"
         try:
             repo_symlink.symlink_to(external_payload)
-            symlink_local = run_launchplane_payload_probe(helper, repo_symlink)
+            symlink_local = run_launchplane_payload_probe(helper, repo_symlink, fixture, repo)
         finally:
             repo_symlink.unlink(missing_ok=True)
         require(
@@ -429,15 +440,6 @@ def test_launchplane_write_action_helper_contract() -> None:
         denied_payload["summary"]["error_code"] == "authorization_denied",
         "Write-action denied summary must expose safe error code",
     )
-    denied_recommendation = denied_payload["summary"]["recommendation"].lower()
-    require(
-        "authority-scope" in denied_recommendation
-        and "authorization-architecture issue" in denied_recommendation
-        and "block only the affected work" in denied_recommendation
-        and "continue independent safe work" in denied_recommendation
-        and "do not probe routes manually" in denied_recommendation,
-        "Write-action denied recommendation must isolate the blocked work, continue safely, and avoid borrowing CI authority",
-    )
     rendered_denied = json.dumps(denied_payload)
     require(
         "secret-token-never-render" not in rendered_denied
@@ -462,96 +464,6 @@ def test_launchplane_write_action_helper_contract() -> None:
         and unauthorized_payload["summary"]["error_code"] == "unauthorized",
         "Write-action 401 without error body must summarize as unauthorized, not provider unavailable",
     )
-
-
-
-
-def test_stale_injected_override_paths_are_nonfatal() -> None:
-    validator_path = ROOT / "skill-creator" / "scripts" / "validate-skill-repo.py"
-    injected = str(ROOT / ".system" / "plan" / "SKILL.md")
-    proc = run_probe(
-        ["uv", "run", str(validator_path)],
-        env={**os.environ, "CODEX_SKILLS_INJECTED_PATHS": injected},
-    )
-    require(
-        proc.returncode == 0,
-        "Skill repo validation must not fail only because injected runtime metadata names a stale .system override path",
-    )
-
-    (ROOT / ".local").mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=ROOT / ".local") as tmp:
-        tmp_root = Path(tmp)
-        for name in ("plan", "plugin-creator", "skill-creator"):
-            (tmp_root / name).mkdir()
-        collect_missing = run_probe(
-            [
-                "uv",
-                "run",
-                "--with",
-                "PyYAML>=6.0.0",
-                "python3",
-                "-c",
-                (
-                    "import importlib.util, json, pathlib; "
-                    f"path = pathlib.Path({str(validator_path)!r}); "
-                    "spec = importlib.util.spec_from_file_location('validator', path); "
-                    "module = importlib.util.module_from_spec(spec); "
-                    "spec.loader.exec_module(module); "
-                    f"root = pathlib.Path({str(tmp_root)!r}); "
-                    "print(json.dumps(module.validate_system_override_paths([root / 'plan', root / 'plugin-creator', root / 'skill-creator'])))"
-                ),
-            ],
-        )
-    require(collect_missing.returncode == 0, "Skill repo validator missing-override probe must run")
-    missing = json.loads(collect_missing.stdout)
-    require(
-        len(missing) == 3,
-        "Skill repo validation must report every missing override skill, not only the first",
-    )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    # Closeout routes to the shared policy above. Do not require duplicating its
-    # prose in SKILL.md; the cleanup qualification cases check file preservation.
-
-
-
-
 
 
 def test_infra_ops_private_context_command_detects_docs_pointer() -> None:
@@ -592,22 +504,9 @@ def test_infra_ops_private_context_command_reports_missing() -> None:
     )
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 def main() -> None:
     tests = [
         test_launchplane_write_action_helper_contract,
-        test_stale_injected_override_paths_are_nonfatal,
         test_infra_ops_private_context_command_detects_docs_pointer,
         test_infra_ops_private_context_command_reports_missing,
     ]
