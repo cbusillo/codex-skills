@@ -540,16 +540,18 @@ def test_reconcile_prefers_explicit_home_over_default_legacy_binding(tmp_path: P
     legacy = fixture.code_home.parent / "host-home" / ".codex" / "skills"
     legacy.parent.mkdir(parents=True)
     legacy_runtime = tmp_path / "legacy-runtime"
-    # Both are eligible default-branch installs, so lookup order decides the winner.
-    git(fixture.runtime, "worktree", "add", "--force", str(legacy_runtime), "main")
+    # Both are work in progress, so default-branch preference cannot mask lookup order.
+    git(fixture.runtime, "switch", "-c", "explicit-wip")
+    git(fixture.runtime, "worktree", "add", "-b", "legacy-wip", str(legacy_runtime), fixture.initial_sha)
     legacy.symlink_to(legacy_runtime, target_is_directory=True)
 
     proc, receipt = fixture.run(extra_env={"CODE_HOME": None, "CODEX_HOME": None,
                                          variable: str(fixture.code_home)})
 
-    assert proc.returncode == 0
-    assert (receipt["status"], receipt["runtime_home_source"]) == ("synchronized", variable)
-    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
+    assert proc.returncode != 0
+    assert (receipt["status"], receipt["runtime_home_source"]) == ("blocked", variable)
+    assert receipt["reason_code"] == "runtime_wrong_branch"
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
     assert git(legacy_runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
