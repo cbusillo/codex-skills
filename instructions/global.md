@@ -1,3 +1,8 @@
+# Repository instructions
+
+- Before repository work, read the Director's overall `DIRECTION.md` in `OWNER/direction` when configured, then the repository's `DIRECTION.md` if present, `AGENTS.md`, and relevant sections of `README.md`. Read nested `AGENTS.md` files before working in their paths; in repositories that still have `CLAUDE.md` or other legacy instruction files, read those too.
+- On both Claude Code and Codex, read relevant repository instruction files explicitly if the host has not supplied them; do not rely on automatic filename discovery. The installer still generates each host's native global instruction file separately.
+
 # GitHub Branch Discipline
 
 - For GitHub-backed repos, assume the default branch and shared/release/production branches are protected no-direct-work zones unless the user explicitly says otherwise.
