@@ -1,8 +1,9 @@
 # Synthetic client checks
 
 Read when changing the memory workflow or qualifying it on a client. These cases
-check the shared instructions on Codex, Codex Lab, and Claude Code using
+check the shared instructions on Codex and Claude Code using
 synthetic stores; they do not authorize inspecting or changing real user memory.
+Codex Lab material is historical evidence, not a supported execution target.
 
 Before a run, verify installed client capabilities and bind every home, store,
 source catalog, and tool permission to the fixture scope. Include the catalog's
