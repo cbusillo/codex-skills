@@ -246,18 +246,17 @@ def audit(
                     findings.append({"kind": "audit_judge", "number": number, "title": issue.get("title"), "closed_at": issue.get("closed_at")})
         milestone_title = str(((issue.get("milestone") or {}).get("title")) or "")
         for finding in issue.get("_milestone_wait_findings", []):
-            wait_findings[(finding["repo"], finding["number"])] = finding
+            wait_findings[(finding["repo"].casefold(), finding["number"])] = finding
         if (state == "open" and milestone_title in listed
                 and not str(issue.get("title", "")).startswith("Track:")):
-            compact = {**github_direction_next.compact_list_issue(str(issue.get("repo") or owner), issue),
-                       "blocked_by": issue.get("_open_blockers", [])}
+            compact = github_direction_next.compact_list_issue(str(issue.get("repo") or owner), issue)
             if issue.get("_plan_waiting"):
                 compact["exclusion"] = "waiting"
             status = github_direction_next.section_map(issue.get("body") or "").get("Current Status", "")
             checked = github_direction_next.check_milestone_wait(compact, status, listed)
             if checked.get("wait_finding"):
                 finding = checked["wait_finding"]
-                wait_findings[(finding["repo"], finding["number"])] = finding
+                wait_findings[(finding["repo"].casefold(), finding["number"])] = finding
         added = issue.get("_milestone_added")
         added_at = _parse_time((added or {}).get("at"))
         if (added and milestone_title in milestone_lines and added["by"] != owner.lower()

@@ -938,6 +938,7 @@ def test_global_whole_parent_wait_does_not_select_its_children_or_dependencies()
         else:
             assert [item["number"] for item in result["candidates"]] == [4]
             assert reads == [("someone/product", 3), ("someone/product", 4)]
+            assert any(finding["number"] == 3 for finding in result["findings"])
 
 
 def test_global_leaf_waiting_on_referenced_review_is_not_actionable() -> None:
@@ -2514,6 +2515,44 @@ def test_milestone_scope_still_recognizes_other_listed_milestone_waits() -> None
 
 
 TESTS.append(test_milestone_scope_still_recognizes_other_listed_milestone_waits)
+
+
+def test_discovery_preserves_valid_waits_above_invalid_child_or_parent_waits() -> None:
+    grand = global_issue("someone/business", 40, labels=["plan:waiting"],
+                         body="## Current Status\nWaiting for: Alex to sign the contract.")
+    parent = global_issue("someone/business", 41, labels=["plan:waiting"],
+                          body="## Current Status\nWaiting for: TBD.")
+    for chain in ([grand], [parent, grand]):
+        child = global_issue("someone/business", 50, labels=["plan:waiting"],
+                             milestone=milestone_data(7, "First", created_at="2026-01-01"),
+                             body="## Current Status\nWaiting for: TBD.")
+        edges = {(ancestor["repo"], ancestor["number"]): relationships(sub_issues=[descendant])
+                 for ancestor, descendant in zip(chain, [child, *chain[:-1]])}
+        with global_fixture([], list(chain), edges, discovered=[child]) as (module, result, _reads):
+            module.discover_direction_work = lambda *_a, **_kw: ([child], {"complete": True,
+                "repositories": [{"repo": child["repo"], "direction": DIRECTION}]})
+            module.cmd_next(next_args())
+            assert not result["candidates"]
+            item = next(item for item in result["excluded"] if item["number"] == 50)
+            assert item["exclusion"] == "parent_waiting" and item["waiting_on_parent"] == grand["html_url"]
+
+
+def test_inconsistent_block_label_and_unknown_start_do_not_become_available_or_dated() -> None:
+    roots = [track("someone/direction", 1, "First")]
+    leaf = global_issue("someone/business", 120, labels=["plan:blocked"], body="## Current Status\nState: Waiting.")
+    with global_fixture(roots, [leaf], {(roots[0]["repo"], 1): relationships(sub_issues=[leaf])}) as (module, result, _reads):
+        module.cmd_next(next_args())
+        assert not result["candidates"]
+        assert next(item for item in result["excluded"] if item["number"] == 120)["exclusion"] == "label_blocked_without_native_edge"
+        for value in ("unknown", "TBD", "2026-99-99"):
+            evidence = module.github_direction_next.milestone_wait_evidence({}, "Waiting for: Alex to test.\nWaiting since: " + value, ["First"])
+            assert evidence["since"] is None
+        for status in ("Waiting for:\n- Alex: approve the copy.", "Waiting for: none\nParked until: 2026-12-01 holiday freeze."):
+            assert module.github_direction_next.milestone_wait_evidence({}, status, ["First"])["valid"]
+
+
+TESTS.extend([test_discovery_preserves_valid_waits_above_invalid_child_or_parent_waits,
+              test_inconsistent_block_label_and_unknown_start_do_not_become_available_or_dated])
 
 
 def main() -> None:

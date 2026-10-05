@@ -3481,7 +3481,11 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
             if (not original_exclusion or capacity_evidence or listed_wait) and item.get("exclusion") not in {"completed", "pull_request", "unknown_dependencies"}:
                 exclusion = item.get("exclusion")
                 item = with_ancestry(item)
-                if exclusion:
+                preserve_ancestry = exclusion == "waiting" and (
+                    item.get("exclusion") == "parent_waiting"
+                    or (item.get("exclusion") == "unknown_ancestry" and not wait_evidence["valid"])
+                )
+                if exclusion and not preserve_ancestry:
                     item["exclusion"] = exclusion
                     if exclusion != "parent_waiting":
                         item.pop("waiting_on_parent", None)

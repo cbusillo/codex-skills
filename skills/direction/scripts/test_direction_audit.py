@@ -1558,7 +1558,6 @@ def test_invalid_milestone_wait_is_reported_but_named_event_or_native_blocker_is
     for reason in ("starts after milestone Thin fork decision", "", "nothing"):
         waiting = {**base, "body": "## Current Status\nState: Waiting.\nWaiting for: " + reason}
         assert "milestone_wait_invalid" in kinds(run(module, issues=[waiting]))
-        assert "milestone_wait_invalid" in kinds(run(module, issues=[{**waiting, "_open_blockers": [{"number": 7}]}]))
     event = {**base, "body": "## Current Status\nWaiting for: beta release on October 1."}
     assert "milestone_wait_invalid" not in kinds(run(module, issues=[event]))
 
