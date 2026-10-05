@@ -770,8 +770,11 @@ hold or available ownership. Issue ranking and claim behavior are unchanged.
 `dependabot_context` reports per-repository enrollment and bounded GitHub read
 coverage. Unknown enrollment retains observed old PRs in
 `dependabot_unverified_candidates`, never as confirmed candidates or confirmed
-unenrolled repositories. `--scan-limit` independently bounds the open PR read
-per repository; `--limit` bounds each returned PR list with full counts and
+unenrolled repositories. After the first unavailable enrollment read, further
+repositories in that run remain unknown without repeating the failed service
+read; GitHub PR observation continues with unverified results.
+`--scan-limit` independently bounds the open PR read per repository;
+`--limit` bounds each returned PR list with full counts and
 `result_truncated`. A repository-wide PR read also runs with a local
 `--milestone`; global milestone scope omits unrelated PR discovery. Owner-wide
 discovery uses the existing bounded repository inventory, respects repository

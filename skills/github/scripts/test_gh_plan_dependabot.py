@@ -10,10 +10,11 @@ from datetime import datetime, timedelta, timezone
 import json
 import subprocess
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 from test_gh_plan_next import (
-    global_fixture, global_issue, issue, load_module, next_args, relationships,
+    global_fixture, issue, load_module, next_args, relationships,
 )
 
 NOW = datetime(2026, 10, 5, 18, tzinfo=timezone.utc)
@@ -32,7 +33,7 @@ def enrolled(status="enrolled"):
     return {"source": "launchplane", "status": status, "targets": [{"baseBranch": "main"}]}
 
 
-def discover(module, pulls, *, sources=None, limit=10, scan_limit=50, status="enrolled", inventory_complete=True):
+def discover(module: Any, pulls, *, sources=None, limit=10, scan_limit=50, status="enrolled", inventory_complete=True):
     with patch.object(module, "read_next_train_enrollment", return_value=enrolled(status)), patch.object(
         module, "collect_paged_rest_items", return_value=("automation-gh", pulls)
     ) as reads:
@@ -44,9 +45,9 @@ def discover(module, pulls, *, sources=None, limit=10, scan_limit=50, status="en
 
 
 def test_age_author_state_branch_and_pr_identity():
-    module = load_module()
+    module: Any = load_module()
     result, reads = discover(module, [
-        pull(1, hours=24), pull(2, hours=24 + 1 / 3600), pull(3, hours=23),
+        pull(hours=24), pull(2, hours=24 + 1 / 3600), pull(3, hours=23),
         pull(4, hours=72), pull(5, author="someone"), pull(6, state="closed"),
         pull(7, base="unlisted"), pull(8, hours=-1),
     ])
@@ -63,7 +64,7 @@ def test_age_author_state_branch_and_pr_identity():
 
 
 def test_enrollment_unknown_preserves_observations_without_claiming_eligibility():
-    module = load_module()
+    module: Any = load_module()
     result, reads = discover(module, [pull()], status="not_enrolled")
     assert result["dependabot_candidates"] == [] and reads.call_count == 0
     result, reads = discover(module, [pull()], status="unknown")
@@ -73,7 +74,7 @@ def test_enrollment_unknown_preserves_observations_without_claiming_eligibility(
 
 
 def test_bounds_failures_and_invalid_dates_are_explicit():
-    module = load_module()
+    module: Any = load_module()
     result, _ = discover(module, [pull(n) for n in range(1, 5)], scan_limit=3, limit=1, inventory_complete=False)
     assert result["dependabot_candidate_count"] == 3 and len(result["dependabot_candidates"]) == 1
     context = result["dependabot_context"]
@@ -92,7 +93,7 @@ def test_bounds_failures_and_invalid_dates_are_explicit():
 
 
 def test_holds_duplicates_and_issue_tracker_disabled():
-    module = load_module()
+    module: Any = load_module()
     sources = [
         {"repo": "owner/held", "hold": {"reason": "Director hold"}},
         {"repo": "other/repo", "exclusion": "other_owner"},
@@ -105,8 +106,42 @@ def test_holds_duplicates_and_issue_tracker_disabled():
     assert result["dependabot_context"]["repositories"][0]["exclusion"] == "repository_held"
 
 
+def test_service_outage_is_read_once_but_pr_observations_continue():
+    module: Any = load_module()
+    sources = [{"repo": f"owner/repo-{number}"} for number in range(3)]
+    with patch.object(module, "read_next_train_enrollment", return_value=enrolled("unknown")) as service, patch.object(
+        module, "collect_paged_rest_items", return_value=("automation-gh", [pull()])
+    ) as github:
+        result = module.next_dependabot_work(sources, scan_limit=5, limit=5, now=NOW)
+    assert service.call_count == 1 and github.call_count == 3
+    assert result["dependabot_candidates"] == []
+    assert result["dependabot_unverified_candidate_count"] == 3
+    assert result["dependabot_context"]["complete"] is False
+    assert result["dependabot_context"]["repositories"][1]["enrollment"]["reason"] == "earlier_enrollment_read_unavailable"
+
+
+def test_classified_quota_and_auth_failures_stop_without_more_reads():
+    module: Any = load_module()
+    for cause in ("primary_rate_limit", "authentication_failed"):
+        failure = module.github_api_core.FailureDetail(
+            cause=cause, message="terminal failure", retryable=False,
+            fallback_eligible=False, disposition="stop",
+        )
+        error = module.PlanError("terminal failure", failure=failure)
+        with patch.object(module, "read_next_train_enrollment", return_value=enrolled()), patch.object(
+            module, "collect_paged_rest_items", side_effect=error,
+        ) as reads:
+            try:
+                module.next_dependabot_work([{"repo": "owner/first"}, {"repo": "owner/second"}], scan_limit=5, limit=5, now=NOW)
+            except module.PlanError as caught:
+                assert caught is error
+            else:
+                raise AssertionError("classified failures must preserve the existing stop policy")
+        assert reads.call_count == 1
+
+
 def test_terminal_and_changed_head_disappear_or_refresh_on_next_read():
-    module = load_module()
+    module: Any = load_module()
     first, _ = discover(module, [pull()])
     updated, _ = discover(module, [{**pull(), "head": {"sha": "updated-head"}}])
     assert first["dependabot_candidates"][0]["head_sha"] != updated["dependabot_candidates"][0]["head_sha"]
@@ -115,10 +150,10 @@ def test_terminal_and_changed_head_disappear_or_refresh_on_next_read():
 
 
 def test_policy_reader_uses_existing_read_only_projection_and_hides_diagnostics():
-    module = load_module()
+    module: Any = load_module()
     reader = module.real_read_next_train_enrollment
     valid = {"status": "available", "result": enrolled()}
-    with patch.object(module.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=json.dumps(valid))) as run:
+    with patch("subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=json.dumps(valid))) as run:
         assert reader("owner/repo") == valid["result"]
     argv = run.call_args.args[0]
     assert argv[-3:] == ["merge-train-policy-read", "--repo", "owner/repo"]
@@ -129,15 +164,15 @@ def test_policy_reader_uses_existing_read_only_projection_and_hides_diagnostics(
         SimpleNamespace(returncode=0, stdout="[]"),
         SimpleNamespace(returncode=0, stdout='{"status":"available","result":null}'),
     ):
-        with patch.object(module.subprocess, "run", return_value=response):
+        with patch("subprocess.run", return_value=response):
             assert reader("owner/repo") == {"source": "launchplane", "status": "unknown"}
     for error in (OSError("private"), subprocess.TimeoutExpired("private", 30)):
-        with patch.object(module.subprocess, "run", side_effect=error):
+        with patch("subprocess.run", side_effect=error):
             assert reader("owner/repo")["status"] == "unknown"
 
 
 def test_local_next_preserves_issue_ranking_and_includes_prs():
-    module = load_module()
+    module: Any = load_module()
     output = {}
     def collect(path, **kwargs):
         if path.endswith("/pulls"):

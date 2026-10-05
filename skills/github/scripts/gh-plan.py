@@ -2794,6 +2794,7 @@ def next_dependabot_work(
         "observed_at": observed_at.isoformat(),
     }
     seen: set[str] = set()
+    enrollment_unavailable = False
     for source in sources:
         repo = source.get("repo")
         if not isinstance(repo, str) or repo.casefold() in seen:
@@ -2806,12 +2807,15 @@ def next_dependabot_work(
         if source.get("hold"):
             context.update(exclusion="repository_held", hold=source["hold"])
             continue
-        enrollment = read_next_train_enrollment(repo)
+        enrollment = ({"source": "launchplane", "status": "unknown",
+                       "reason": "earlier_enrollment_read_unavailable"}
+                      if enrollment_unavailable else read_next_train_enrollment(repo))
         status = enrollment["status"]
         context["enrollment"] = enrollment
         if status == "not_enrolled":
             continue
         if status == "unknown":
+            enrollment_unavailable = True
             coverage["complete"] = False
         try:
             _, pulls = collect_paged_rest_items(
@@ -2852,7 +2856,7 @@ def next_dependabot_work(
             }
             (candidates if status == "enrolled" else unverified).append(item)
     for items in (candidates, unverified):
-        items.sort(key=lambda item: (datetime.fromisoformat(item["created_at"].replace("Z", "+00:00")), item["repo"].casefold(), item["number"]))
+        items.sort(key=lambda entry: (datetime.fromisoformat(entry["created_at"].replace("Z", "+00:00")), entry["repo"].casefold(), entry["number"]))
     coverage["result_truncated"] = len(candidates) > limit or len(unverified) > limit
     return {
         "dependabot_candidates": candidates[:limit], "dependabot_candidate_count": len(candidates),
