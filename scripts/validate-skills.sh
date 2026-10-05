@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if ((BASH_VERSINFO[0] < 4)); then
+	printf 'error: validation requires Bash 4+ (running %s).\n' "$BASH_VERSION" >&2
+	printf 'Select a supported Bash on PATH; macOS setup: skills/github/references/execution-environment.md#macos-bash-setup\n' >&2
+	exit 1
+fi
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
@@ -13,8 +19,7 @@ for required_command in "${required_commands[@]}"; do
 done
 
 printf 'execution environment:\n'
-printf '  '
-bash --version | sed -n '1p'
+printf '  running Bash %s\n' "$BASH_VERSION"
 printf '  '
 git --version
 printf '  '

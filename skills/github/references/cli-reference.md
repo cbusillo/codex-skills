@@ -91,6 +91,21 @@ reporting only the final status read. Composite diagnostic tools that do not use
 the terminal-envelope CLI contract expose the same aggregate under
 `diagnostics.retry` and per-request evidence under `diagnostics.requests`.
 
+For a failed `gh-issue edit`, the aggregate `write_outcome` is
+`partially_applied` when earlier mutations succeeded and requested mutations
+remain, or `applied` when all mutations succeeded but final readback failed.
+`outcome_certainty` is `confirmed_partially_applied` for a confirmed partial
+edit, stays `unknown` when the final mutation's outcome is unknown, and is
+`confirmed` when every mutation is confirmed. The command still fails.
+`failed_request` retains the final request's original certainty, write outcome,
+and recommended next action. The original top-level retry/actor recommendation
+also remains unchanged; follow it before resuming any edit.
+`reconciliation.requested` includes field names and `field_values`, labels, and
+assignees; `completed` and `remaining` partition the requested mutations.
+Read the supplied issue endpoint and compare remaining intent before resuming;
+an unknown final mutation may already have applied, and an absent label may
+already meet the requested removal. Do not replay completed mutations.
+
 ### Request Use
 
 `uv run scripts/github_request_usage.py --hours 1` ranks the configured App's
@@ -318,10 +333,9 @@ uv run github/scripts/reconcile-runtime-checkout.py \
   --landing-sha <full-landing-sha>
 ```
 
-The helper checks every host binding: `CODE_HOME`, `CODEX_HOME`, `~/.code`,
-`~/.agents/skills` (whole-catalog link), `~/.agents/skills/shared` (installer
-binding), and each entry under Claude Code's `skills` folder (`CLAUDE_CONFIG_DIR` or
-`~/.claude`). `bindings_checked` in the receipt lists each with its outcome; `matched` means a
+The helper checks every host binding documented in
+[runtime binding lookup](https://github.com/cbusillo/codex-skills/blob/main/README.md#runtime-binding-lookup).
+`bindings_checked` in the receipt lists each with its outcome; `matched` means a
 binding qualified, and the receipt's own `status` says what was reconciled. A
 work-in-progress worktree linked for testing does not shadow an install on the
 default branch, and another plugin's unreadable checkout is skipped. It acts only when that path belongs to the same Git
@@ -674,7 +688,12 @@ competitor's record.
   only). Configured Projects still enroll new issues. Manual fields are not
   synchronized by default; `--focus` and `--manager` are explicit edits, and
   configured Manager defaults are ignored.
-- `update-section <issue> <section>`: Patch a single markdown section.
+- `update-section <issue> <section>`: Patch a single markdown section. Section
+  text from `--body`, `--body-file`, or stdin is literal, including backslashes;
+  existing surrounding-whitespace normalization still applies. Body-read and
+  regex preparation failures return a structured `validation_error` with
+  `write_outcome=not_started` before any mutation. Ownership refusals and API
+  write failures retain their existing classifications.
 - `link|unlink <issue> <rel> <target>`: Manage native `blocked-by`, `blocks`,
   or `subissue` relationships. `related` edits a body note instead and follows
   body-ownership rules.

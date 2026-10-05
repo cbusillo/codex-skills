@@ -834,7 +834,16 @@ retry_eligibility = "conditional"
 reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "No retained GraphQL transport; REST issue body reads and PATCH updates preserve deterministic section replacement."
 source_refs = ["github/scripts/gh-plan.py:cmd_update_section"]
-test_refs = ["github/scripts/validate-gh-plan.py:test_issue_body_updates_use_rest_patch", "github/scripts/validate-operation-matrix.py:self-test"]
+test_refs = [
+  "github/scripts/validate-gh-plan.py:test_issue_body_updates_use_rest_patch",
+  "github/scripts/test_gh_plan_sections.py:test_literal_text_survives_body_file_and_stdin_updates",
+  "github/scripts/test_gh_plan_sections.py:test_contributor_request_survives_literal_section_updates",
+  "github/scripts/test_gh_plan_sections.py:test_unreadable_body_file_fails_before_mutation",
+  "github/scripts/test_gh_plan_sections.py:test_undecodable_stdin_fails_before_mutation",
+  "github/scripts/test_gh_plan_sections.py:test_section_preparation_failure_is_structured",
+  "github/scripts/test_gh_plan_sections.py:test_write_failures_keep_their_transport_classification",
+  "github/scripts/validate-operation-matrix.py:self-test",
+]
 
 [[operations]]
 id = "github.plan.link"

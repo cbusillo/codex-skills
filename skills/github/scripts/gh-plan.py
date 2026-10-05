@@ -1412,7 +1412,7 @@ def replace_section(body: str, section: str, new_text: str) -> str:
     pattern = re.compile(rf"(?ms)^##\s+{re.escape(section)}\s*\n.*?(?=^##\s+|\Z)")
     replacement = f"## {section}\n\n{new_text.strip()}\n\n"
     if pattern.search(body):
-        return pattern.sub(replacement, body).rstrip() + "\n"
+        return pattern.sub(lambda _match: replacement, body).rstrip() + "\n"
     if body and not body.endswith("\n"):
         body += "\n"
     return f"{body}\n{replacement}".lstrip()
@@ -2490,8 +2490,23 @@ def cmd_update_section(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     issue_repo, number = issue_ref(args.issue, repo)
     _, issue = get_issue(args.issue, repo)
-    new_text = read_body(args)
-    updated = replace_issue_plan_section(issue, args.section, new_text)
+    preparation_step = "read_body"
+    try:
+        new_text = read_body(args)
+        preparation_step = "section_replacement"
+        updated = replace_issue_plan_section(issue, args.section, new_text)
+    except (OSError, UnicodeError, re.error) as exc:
+        message = f"Cannot prepare plan section update: {exc}"
+        failure = github_api_core.FailureDetail(
+            cause="validation_error",
+            message=message,
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            write_outcome="not_started",
+            failed_step=preparation_step,
+        )
+        raise PlanError(message, failure=failure) from exc
     actor, refreshed = rest_edit_issue(issue_repo, number, body=updated)
     emit({"ok": True, "actor": actor, "updated_section": args.section, "issue": compact_issue(refreshed)})
 

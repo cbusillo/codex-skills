@@ -537,11 +537,8 @@ Merge success is not the finish line. After a PR merges, wait for relevant
 post-merge Actions/check suites on the target/default branch when repo config
 says to or when the task affects readiness, deploy, security, or shared quality.
 
-When the merged repository is bound into an active local runtime, such as a
-skills checkout behind `$CODE_HOME/skills`, `$CODEX_HOME/skills`,
-`~/.code/skills`, `~/.agents/skills` (whole-catalog link),
-`~/.agents/skills/shared` (installer binding), or a link under Claude Code's
-`skills` folder, run the
+When the merged repository is bound into an active local runtime (see
+[runtime binding lookup](https://github.com/cbusillo/codex-skills/blob/main/README.md#runtime-binding-lookup)), run the
 landed repo-local runtime reconciler after the final landing SHA is known. Use
 the merge result's `merge.sha` or a fresh merged-PR view's `mergeCommitOid`,
 never the PR head SHA:

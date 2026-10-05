@@ -391,10 +391,9 @@ def active_repo_root() -> Path:
     return Path.cwd().resolve(strict=True)
 
 
-def absolute_path_without_symlink_resolution(path: Path) -> Path:
-    if path.is_absolute():
-        return Path(os.path.abspath(path))
-    return Path(os.path.abspath(Path.cwd() / path))
+def path_with_resolved_parent(path: Path) -> Path:
+    # Resolve ancestor aliases while preserving the final symlink's location.
+    return path.parent.resolve(strict=True) / path.name
 
 
 def utc_now() -> str:
@@ -4215,7 +4214,7 @@ def read_payload_file(path: str) -> dict[str, object]:
         raise ValueError("stdin_payload_unsupported")
     payload_path = Path(path).expanduser()
     try:
-        absolute_payload_path = absolute_path_without_symlink_resolution(payload_path)
+        absolute_payload_path = path_with_resolved_parent(payload_path)
         resolved_payload_path = payload_path.resolve(strict=True)
         repo_root = active_repo_root()
     except OSError:
