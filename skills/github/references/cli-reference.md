@@ -435,6 +435,64 @@ release does not resolve a recorded wait or authorize the next task's actions.
 Use one exact-ID release per comment; a first-line release takes precedence
 over a final release paragraph.
 
+#### Abandoned automation claims
+
+A direction or Supervisor session may release a finished native session's
+claim through `release-claim`. Keep the same configured automation identity;
+this route cannot release a human or another automation identity's claim.
+Verify the original session's transcript and actual closure first. Post a
+closed-session attestation through `gh-comment` on the canonical issue or
+Supervisor handoff issue. Its first line is `Closed session <native-id>`,
+followed by `Ended at: <timezone-qualified-ISO-timestamp>` recording actual
+closure, `Safe to exit: yes`, and links to the transcript-verified handoff.
+Do not substitute the attestation's posting time for the closure time.
+
+```bash
+uv run <skill-dir>/scripts/gh-plan.py release-claim <issue> \
+  --claim-comment <original-claim-id> \
+  --evidence-comment https://github.com/OWNER/REPO/issues/884#issuecomment-ID \
+  --role supervisor --session <releasing-native-session-id> \
+  --confirm-session-ended --dry-run
+```
+
+Inspect the returned release body, then repeat without `--dry-run`. The helper
+reads back its recorded exact-ID release. `--related-claim-comment <id>` may
+name an unstructured `Claimed by <same-worker>` ownership follow-up on that
+issue; it cannot release another structured claim. Partial writes preserve the
+posted records and completed steps: read them before any recovery, never switch
+identity or replay an unknown write.
+
+For retained PRs, pass each verified same-repository PR URL with repeatable
+`--retained-pr`. Each PR must independently link the canonical issue and belong
+to the source automation identity. The release comment is the new handoff for
+`claim --resume-from <original-id> --refresh-pr <url> --handoff-comment <release-id>`.
+Unmentioned siblings, live retained-worktree peers and other ownership still
+refuse. Commit activity newer than the cited closure refuses for listed PRs and every
+open PR on the source branch. Commit timestamps do not prove push time; verify
+the newer session's actual handoff rather than moving the closure timestamp.
+
+Later authorized successor or merge-train pushes do not undo a historical
+release. At claim time, recheck live peers, source ownership, issue/PR waits and
+current heads under the ordinary retained-work procedure; unavailable remote
+peer inventory is not proof of inactivity. The closure attestation remains the
+caller's responsibility, and release-time commit timestamps alone cannot
+attribute later pushes to a native session.
+
+Renewed source claims or source edits after closure refuse the release and
+invalidate its receipt during later claims. An invalid, edited or unavailable
+attestation makes that release stop counting and restores the original claim
+conflict; it never permanently blocks the issue. Verify actual closure, post a
+corrected attestation and rerun `release-claim` to recover without deleting
+history. Available native sessions are
+checked and their coverage is returned. `--confirm-session-ended` records the
+caller's transcript/closure verification, including peers or hosts unavailable
+to the helper; partial inventory alone is never closure evidence. The command
+leaves issue status, waits, blockers, branches and worktrees intact. Use
+`--resume-from` for an identical stale structured Current Status marker; other
+status ownership still needs its supported reconciliation. Closing a landed
+prerequisite and proving its finish line is separate from release: `next` and
+`claim` accept a closed native blocker without deleting dependency history.
+
 Use a unique worker token per native session. Legacy `Released by <worker>`
 comments are accepted only when the earlier structured claims for that token
 all belong to one session; reuse requires exact comment-ID releases.
