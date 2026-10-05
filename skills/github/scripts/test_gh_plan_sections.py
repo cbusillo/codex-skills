@@ -44,7 +44,7 @@ class SectionTests(unittest.TestCase):
             "body": "## Objective\n\nKeep this.\n\n## Finish Line\n\nOld text.\n\n## Scope\n\nKeep that.\n",
         }
 
-    def run_update(self, *body_args: str, stdin: str | io.TextIOBase = "", **overrides: Any) -> tuple[int, dict, Mock, str]:
+    def run_update(self, *body_args: str, stdin: str | io.TextIOBase = "", target: str = "42", **overrides: Any) -> tuple[int, dict, Mock, str]:
         output, errors = io.StringIO(), io.StringIO()
         edit = Mock(side_effect=lambda _repo, _number, *, body: ("fixture-bot[bot]", {**self.issue, "body": body}))
         replacements = {"default_repo": Mock(return_value="owner/repo"),
@@ -52,7 +52,7 @@ class SectionTests(unittest.TestCase):
                         "rest_edit_issue": edit, "EXPECTED_ACTOR": "fixture-bot[bot]", **overrides}
         with patch.multiple(PLAN, **replacements), \
                 patch.object(github_identity, "configured_bot_logins", return_value=["fixture-bot[bot]"]), \
-                patch.object(sys, "argv", [str(SCRIPT), "update-section", "42", "Finish Line", *body_args]), \
+                patch.object(sys, "argv", [str(SCRIPT), "update-section", target, "Finish Line", *body_args]), \
                 patch.object(sys, "stdin", io.StringIO(stdin) if isinstance(stdin, str) else stdin), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             code = 0
@@ -150,6 +150,17 @@ class SectionTests(unittest.TestCase):
                     edit.assert_not_called()
                     read_body.assert_not_called()
                     replace_section.assert_not_called()
+
+    def test_pull_request_error_uses_the_explicit_reference_repository(self) -> None:
+        self.issue["pull_request"] = {"url": "https://api.github.com/repos/owner/repo/pulls/42"}
+        code, result, edit, errors = self.run_update(
+            "--body", "New content", target="owner/repo#42",
+            default_repo=Mock(return_value="owner/another-repo"),
+        )
+        self.assertNotEqual(code, 0, errors)
+        self.assertIn("owner/repo#42", result["error"])
+        self.assertNotIn("owner/another-repo", result["error"])
+        edit.assert_not_called()
 
     def test_ambiguous_contributor_body_still_fails_before_mutation(self) -> None:
         self.issue["user"] = {"login": "outside-contributor"}

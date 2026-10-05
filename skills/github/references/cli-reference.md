@@ -691,8 +691,9 @@ competitor's record.
 - `update-section <issue> <section>`: Patch a single markdown section on an
   issue. A target returned as a pull request is refused before body preparation
   or any write, with `validation_error` and `write_outcome=not_started`.
-  The refusal identifies the repository/number and points to explicit
-  `gh-plan.py --repo OWNER/REPO update-section` selection or
+  The refusal identifies the repository/number and points to correcting the
+  issue reference, `gh-plan.py --repo OWNER/REPO update-section` with a bare
+  issue number, or
   `gh-pr.py --repo OWNER/REPO edit <pr> --body-file FILE` for intended PR edits. Section
   text from `--body`, `--body-file`, or stdin is literal, including backslashes;
   existing surrounding-whitespace normalization still applies. Body-read and

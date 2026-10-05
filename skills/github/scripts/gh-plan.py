@@ -2493,7 +2493,8 @@ def cmd_update_section(args: argparse.Namespace) -> None:
     if "pull_request" in issue:
         message = (
             f"{issue_repo}#{number} is a pull request; update-section only updates planning issues. "
-            "Select the intended issue repository with gh-plan.py --repo OWNER/REPO update-section. "
+            "Select the intended issue reference, or use gh-plan.py --repo OWNER/REPO update-section "
+            "with a bare issue number. "
             f"For an intended PR body edit, use gh-pr.py --repo {issue_repo} edit {number} --body-file FILE."
         )
         failure = github_api_core.FailureDetail(
