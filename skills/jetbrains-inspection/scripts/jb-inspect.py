@@ -78,6 +78,7 @@ UNKNOWN_RETRY_WAIT_MS = 30_000
 NATIVE_BROAD_SCOPE_PROOF_VERSION = 2
 MAX_WORKTREE_MUTATION_PATHS = 25
 MAX_LANE_FILE_PATHS = 100
+MAX_AGENT_FINDINGS = 20
 MAX_INSPECTION_STAGE_HISTORY = 8
 MAX_INSPECTION_FAILURE_HISTORY = 3
 MAX_INSPECTION_WORKER_STACK = 64
@@ -2606,6 +2607,7 @@ def compact_inspection_lane_result(
             "finding_count": compact.get("finding_count"),
             "findings": compact.get("findings"),
             "findings_truncated": compact.get("findings_truncated"),
+            "findings_artifact": compact.get("findings_artifact"),
             "cleanup": {
                 "status": cleanup.get("status"),
                 "reason": cleanup.get("reason"),
@@ -2748,6 +2750,9 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
         try:
             result = run_inspection_with_internal_retry(args, context, prepared["route"])
             result["inspection_result"] = compact_inspection_result(result)
+            findings_artifact = preserve_inspection_findings(args, context, result)
+            if findings_artifact is not None:
+                result["findings_artifact"] = findings_artifact
         except BaseException as error:
             inspection_error = error
             result = inspection_exception_result(error)
@@ -2810,6 +2815,115 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
                 },
             ) from inspection_error
     return result
+
+
+def preserve_inspection_findings(
+    args: argparse.Namespace, context: dict[str, Any], result: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Save accepted run evidence before closing; an artifact is never a new assessment."""
+    total = result.get("total_problems")
+    displayed = min(MAX_AGENT_FINDINGS, len(result.get("problems") or []))
+    if result.get("verdict") != "RED" or not isinstance(total, int) or isinstance(total, bool) or total <= displayed:
+        return None
+    route = payload_route(result)
+    run_id = inspection_run_id(result.get("trigger") or {}) or inspection_run_id(result)
+    receipt: dict[str, Any] = {
+        "status": "incomplete", "expected_finding_count": total,
+        "inspection_run_id": run_id, "finding_count": 0,
+    }
+    if run_id is None or not all(route.get(key) for key in ("project_key", "session_id", "project_instance_id")):
+        return receipt | {"status": "unavailable", "reason": "missing_run_or_route_proof"}
+    request = problems_params(args, context, route) | {"inspection_run_id": run_id}
+    # Display pagination does not restrict the preserved matching finding set.
+    request["offset"] = 0
+    offset = 0
+    problems: list[dict[str, Any]] = []
+    pages: list[dict[str, Any]] = []
+    deadline = time.monotonic() + 30.0
+    first = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                receipt["reason"] = "findings_capture_timeout"
+                break
+            page = first if offset == 0 and getattr(args, "offset", 0) == 0 else call_endpoint(
+                route, "problems", request | {"offset": offset}, timeout=min(DEFAULT_TIMEOUT_SECONDS, remaining),
+            )
+            page_route = page.get("route") if isinstance(page.get("route"), dict) else {}
+            page_problems = page.get("problems")
+            pagination = page.get("pagination") if isinstance(page.get("pagination"), dict) else {}
+            page_summary = summarize_problems(
+                context, page_route, page,
+                allow_text_only_coverage=getattr(args, "allow_text_only_coverage", False),
+            )
+            if (
+                inspection_run_id(page) != run_id
+                or inspection_result_run_changed(page, run_id)
+                or any(page_route.get(key) != route.get(key) for key in ("project_key", "session_id", "project_instance_id"))
+                or page_summary.get("verdict") != "RED"
+                or page.get("results_may_be_stale") is True
+                or page.get("inspection_in_progress") is True
+                or page.get("total_problems") != total
+            ):
+                receipt["reason"] = "findings_page_proof_changed"
+                break
+            if (
+                not isinstance(page_problems, list)
+                or not all(isinstance(problem, dict) for problem in page_problems)
+                or not page_problems
+                or page.get("problems_shown") != len(page_problems)
+                or pagination.get("offset") != offset
+                or offset + len(page_problems) > total
+            ):
+                receipt["reason"] = "findings_pagination_inconsistent"
+                break
+            following = offset + len(page_problems)
+            if (
+                pagination.get("has_more") is not (following < total)
+                or (following < total and pagination.get("next_offset") != following)
+            ):
+                receipt["reason"] = "findings_pagination_inconsistent"
+                break
+            problems.extend(page_problems)
+            pages.append({
+                "offset": offset, "finding_count": len(page_problems),
+                "inspection_attribution": page_summary.get("inspection_attribution"),
+                "proof_failures": page_summary.get("proof_failures"),
+                "inspection_proof": compact_inspection_proof(page_summary),
+            })
+            if following == total:
+                receipt["status"] = "complete"
+                break
+            offset = following
+    except InspectError as error:
+        receipt["reason"] = infer_error_reason(error, error.payload)
+    except Exception as error:
+        receipt["reason"] = "findings_capture_failed"
+        receipt["error_type"] = type(error).__name__
+    receipt["finding_count"] = len(problems)
+    artifact = {
+        "schema_version": 1, "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "evidence_kind": "accepted_run_findings", "helper_revision": helper_revision(),
+        "retrieval": receipt, "request": request, "assessment": result,
+        "pages": pages, "problems": problems,
+    }
+    path: Path | None = None
+    try:
+        data = public_json(artifact).encode("utf-8")
+        directory = cache_dir() / "findings"
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        destination = directory / f"{uuid.uuid4()}.json"
+        descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        path = destination
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+        return receipt | {"path": str(path), "sha256": hashlib.sha256(data).hexdigest()}
+    except Exception:
+        if path is not None:
+            with suppress(OSError):
+                path.unlink(missing_ok=True)
+        return receipt | {"status": "unavailable", "reason": "findings_artifact_write_failed"}
 
 
 def apply_prepared_retry_evidence(result: dict[str, Any], prepared: dict[str, Any]) -> None:
@@ -9114,7 +9228,7 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
     ide = route.get("ide") if isinstance(route.get("ide"), dict) else {}
     problems = payload.get("problems") if isinstance(payload.get("problems"), list) else []
     available_findings = [problem for problem in problems if isinstance(problem, dict)]
-    compact_findings = [compact_agent_finding(problem) for problem in available_findings[:20]]
+    compact_findings = [compact_agent_finding(problem) for problem in available_findings[:MAX_AGENT_FINDINGS]]
     total_problems = payload.get("total_problems")
     problems_shown = payload.get("problems_shown")
     findings_truncated = len(available_findings) > len(compact_findings)
@@ -9171,8 +9285,9 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
         "finding_count": total_problems,
         "problems_shown": problems_shown,
         "findings": compact_findings,
-        "findings_limit": 20,
+        "findings_limit": MAX_AGENT_FINDINGS,
         "findings_truncated": findings_truncated,
+        "findings_artifact": payload.get("findings_artifact"),
         "proof_failures": compact_proof_failures or None,
         "inspection_proof": inspection_proof or None,
         "inspection_outcome": inspection_outcome_for_payload(payload),
@@ -9219,7 +9334,7 @@ def compact_multi_lane_agent_result_payload(payload: dict[str, Any], helper_exit
         for finding in lane_findings:
             if not isinstance(finding, dict):
                 continue
-            if len(findings) >= 20:
+            if len(findings) >= MAX_AGENT_FINDINGS:
                 findings_truncated = True
                 break
             findings.append({"lane_id": lane.get("id"), **finding})
@@ -9235,7 +9350,7 @@ def compact_multi_lane_agent_result_payload(payload: dict[str, Any], helper_exit
         "selected_file_count": selected_inspection_file_count(payload),
         "finding_count": total_findings,
         "findings": findings,
-        "findings_limit": 20,
+        "findings_limit": MAX_AGENT_FINDINGS,
         "findings_truncated": findings_truncated or total_findings > len(findings),
         "selection": bounded_lane_selection(payload.get("lane_selection")),
         "lanes": compact_lanes,
@@ -9352,6 +9467,14 @@ def emit(payload: dict[str, Any], json_only: bool, exit_code: int, command: str 
     return exit_code
 
 
+def print_findings_artifact(payload: dict[str, Any]) -> None:
+    artifact = payload.get("findings_artifact")
+    if isinstance(artifact, dict):
+        print(safe_text("FINDINGS_ARTIFACT: status={status} findings={finding_count}/{expected_finding_count} path={path} reason={reason}", {
+            key: artifact.get(key) for key in ("status", "finding_count", "expected_finding_count", "path", "reason")
+        }))
+
+
 def print_human(payload: dict[str, Any], assess: bool = True) -> None:
     if assess:
         apply_verdict(payload)
@@ -9369,6 +9492,7 @@ def print_human(payload: dict[str, Any], assess: bool = True) -> None:
                 f"ide={ide.get('product') or ide.get('requested')} files={len(lane.get('files') or [])} "
                 f"verdict={lane.get('verdict')} bucket={lane.get('bucket')} cleanup={cleanup.get('status')}"
             )
+            print_findings_artifact(lane)
         selection = payload.get("lane_selection") if isinstance(payload.get("lane_selection"), dict) else {}
         if selection.get("excluded_files"):
             print(f"EXCLUDED_FILES: {len(selection['excluded_files'])}")
@@ -9428,6 +9552,7 @@ def print_human(payload: dict[str, Any], assess: bool = True) -> None:
     if status == "error":
         print_error_details(payload)
     print_result_flags(payload)
+    print_findings_artifact(payload)
     if "total_problems" in payload or "problems_shown" in payload:
         total = payload.get("total_problems", 0)
         shown = payload.get("problems_shown", len(payload.get("problems") or []))
