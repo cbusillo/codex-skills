@@ -144,8 +144,10 @@ uv run <skill-dir>/../github/scripts/gh-plan.py search "user:OWNER label:directi
 ```
 
 Use the starting repository's GitHub account for `OWNER`; do not pass `--repo`, which
-would narrow the search. Report unavailable or bounded search coverage as
-incomplete, not an empty list. This is one cross-repository list, with no
+would narrow the search. The list covers issues visible to the configured
+reader; successful search does not prove access to every repository. Report an
+unavailable search or a count reaching the limit as incomplete, not an empty
+or complete list. This is one cross-repository list, with no
 per-repository reads or copied repository inventory. The daily marker records
 the starting repository covered; one turn clears the daily reminder on the
 whole machine, without claiming that other repositories were checked.
