@@ -8,6 +8,13 @@ handoffs, reviews, readiness reports, closeout summaries, or docs snippets.
 Keep skill-specific instructions short and link here instead of repeating broad
 formatting rules in every `SKILL.md`.
 
+## Plain Language
+
+Write `DIRECTION.md`, direction pull requests, and every question to the
+Director or a Client in everyday words: no coined terms, and no architecture
+vocabulary where a plain word exists. Every question says in plain words what
+changes on yes.
+
 ## Carry Context
 
 - Assume the Director has not read the issue, file, or earlier session you just
