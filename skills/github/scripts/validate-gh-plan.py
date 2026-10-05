@@ -2449,7 +2449,7 @@ def test_close_not_planned_accepts_owner_reaction_on_unedited_decision() -> None
         decision = json.loads(output.getvalue())["closed"]["owner_decision"]
         assert decision["approval"] == "owner_reaction" and decision["reaction_id"] == 456, decision
         assert calls[:6] == ["direction", "last_edited", "comments", "edit_history", "reactions", "edit_history"], calls
-    assert "close" in calls, calls
+        assert "close" in calls, calls
 
 
 def test_close_not_planned_rejects_unqualified_reactions() -> None:

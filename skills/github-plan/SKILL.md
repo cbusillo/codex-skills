@@ -427,7 +427,7 @@ labels, cleanup of stale `plan:active`, `plan:blocked`, `plan:waiting`, and
 helper is unavailable. Closing a durable plan with the generic issue helper can
 leave planning labels or Project Status stale.
 It also skips the relationship and not-planned decision preflight; perform those
-checks below yourself before using that fallback. For reaction approval, read
+checks in the linked closure decision contract below before using that fallback. For reaction approval, read
 the comment's `lastEditedAt` (must be explicitly null) and all reaction pages
 to verify that the repository owner reacted and when; if that evidence is
 unavailable, require the Director's typed decision comment.
@@ -444,8 +444,8 @@ retained open relationships are not completion evidence. For an issue in a
 milestone listed in merged `DIRECTION.md`, a `not_planned` close requires the
 Director's approval through the
 [closure decision contract](../github/references/cli-reference.md#planning-management).
-Record the exact action in a new comment; never edit an existing GitHub comment
-or bypass a closure refusal through another tool.
+Record the exact action in a new comment; never edit existing question or
+decision comments to migrate them, or bypass a closure refusal through another tool.
 
 Prefer non-closing `Refs` from PRs unless the Director requests auto-close or an
 internal task is conclusively complete. After merge, inspect referenced issues:

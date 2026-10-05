@@ -13,7 +13,13 @@ from pathlib import Path
 
 ITEM = re.compile(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)")
 QUESTION_PREFIXES = ("Director question:", "Owner question:")
-DECISION_PREFIXES = ("Director decision", "Owner decision")
+DECISION_PREFIXES = (
+    "Director decision:",
+    "Director decision,",
+    "Director decision (",
+    "Director decision**",
+    "Owner decision",
+)
 
 
 def questions(comments, owner, decision_authors):

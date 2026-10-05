@@ -443,6 +443,8 @@ class QuestionTests(unittest.TestCase):
                         {"author": "outsider", "body": f"{decision_role} decision: yes 123", "url": "foreign"},
                         {"author": "bot", "body": f"{decision_role} decision: yes 1234", "url": "unlinked"},
                         {"author": "bot", "body": "yes 123", "url": "unrecorded"},
+                        {"author": "bot", "body": "Director decision needed: see 123", "url": "needed"},
+                        {"author": "bot", "body": "Director decisions still open: 123", "url": "open"},
                     ]
                     # Even the Director's linked follow-up question is not an answer.
                     answers.extend(
@@ -461,6 +463,8 @@ class QuestionTests(unittest.TestCase):
                     for body in (
                         f"**{decision_role} decision:** yes 123",
                         f"{decision_role} decision, recorded: {question['url']}",
+                        f"**{decision_role} decision** on {question['url']}: yes",
+                        f"{decision_role} decision (recorded in chat): yes 123",
                     ):
                         answer = {"author": "bot", "body": body, "url": "recorded"}
                         result = oq.questions([question, *answers, answer], "director", {"bot"})[0]
