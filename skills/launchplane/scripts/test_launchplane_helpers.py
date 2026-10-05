@@ -1043,6 +1043,46 @@ def test_invalid_private_payload_does_not_expose_path() -> None:
             raise AssertionError("expected invalid private payload rejection")
 
 
+@pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize(
+    ("spelling", "repo_local"),
+    [
+        ("repo/local.json", True),
+        ("repo/local-link.json", True),
+        ("alias/local.json", True),
+        ("alias/local-link.json", True),
+        ("external-local-link.json", True),
+        ("private.json", False),
+        ("external-private-link.json", False),
+    ],
+)
+def test_private_payload_placement_through_symlinks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str,
+    repo_local: bool, relative: bool,
+) -> None:
+    fixture_root = tmp_path.resolve()
+    repo_root = fixture_root / "repo"
+    repo_root.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(repo_root)], check=True)
+    payload = {"reason": "Disposable private payload fixture."}
+    private_path = fixture_root / "private.json"
+    private_path.write_text(json.dumps(payload), encoding="utf-8")
+    local_path = repo_root / "local.json"
+    local_path.write_text(json.dumps(payload), encoding="utf-8")
+    (repo_root / "local-link.json").symlink_to(private_path)
+    (fixture_root / "alias").symlink_to(repo_root, target_is_directory=True)
+    (fixture_root / "external-local-link.json").symlink_to(local_path)
+    (fixture_root / "external-private-link.json").symlink_to(private_path)
+    monkeypatch.chdir(repo_root)
+    payload_path = fixture_root / spelling
+    path = os.path.relpath(payload_path, repo_root) if relative else str(payload_path)
+    if repo_local:
+        with pytest.raises(ValueError, match="^repo_local_payload_unsupported$"):
+            write_action.read_payload_file(path)
+    else:
+        assert write_action.read_payload_file(path) == payload
+
+
 def _queue_refusal_response() -> dict[str, Any]:
     return {
         "status": "accepted",
