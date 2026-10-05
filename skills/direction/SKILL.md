@@ -59,7 +59,9 @@ across the Director's repositories.
 - **`DIRECTION.md`** holds the direction. It changes only by pull request that
   touches this file alone, and the Director approves it: `CODEOWNERS` names the
   Director for this one path and the default branch requires code-owner review.
-  Keep it to one to two pages. A direction pull request with a large diff is a
+  Keep it to one to two pages, in
+  [plain language](../references/talking-with-the-director.md#plain-language).
+  A direction pull request with a large diff is a
   reason to reject it, not to read harder.
 - **Milestones** are waypoints. A milestone exists only when its exact title is
   listed under `## Milestones` in `DIRECTION.md`; once the file exists,
