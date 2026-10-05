@@ -1195,8 +1195,9 @@ another checkout. Conflict resolution uses the same mode with `--continue`. New 
 bot environment; replayed commits preserve original authors and use the bot
 committer. Identity selection and credential stripping apply to every mode.
 Use `gh-pr.py update-branch` for authorized PR base updates; these commands do
-not grant protected-branch or train-owned work authority. Raw `merge --ff-only`
-without a conflicting fast-forward option, `--abort`, and `--quit` stay allowed
+not grant protected-branch or train-owned work authority. Raw
+`merge --ff-only <ref>`, with `--ff-only` first after `merge` and without a
+conflicting fast-forward option, `--abort`, and `--quit` stay allowed
 because they create no commits. Sequencer `--skip` still needs the bot wrapper
 because it can recreate later commits.
 

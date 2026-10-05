@@ -673,7 +673,7 @@ policy:
       match:
         shell_regex: "(?:^|[;&|(`\\n]|\\s-[A-Za-z]*c\\s+['\"])\\s*(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+|(?:command|exec|time|nohup|env)\\s+)*(?:\\S*/)?git(?:\\s+(?:-[cC]\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"])+|--(?:git-dir|work-tree|namespace|config-env|exec-path|super-prefix|attr-source)(?:=|\\s+)(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"])+|--[a-z][a-z-]*(?:=(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"])+)?|-[pP]))*\\s+(?:merge(?!\\s+--ff-only(?=\\s|$)(?![^;&|\\n]*\\s--(?:ff|no-ff)(?:\\s|$)))|pull|rebase|cherry-pick|revert|am)(?![\\w-])(?!\\s+--(?:abort|quit)\\s*(?:$|[;&|\\n]))"
       action: require_preferred
-      message: These Git commands can create commits with the local human identity. For a PR base update first apply the branch ownership and authorization checks in references/repo-workflow.md Merge Readiness, then use gh-pr.py update-branch; for local integration run git-commit-as-bot --git-command COMMAND from the target directory, including continuations after conflicts. For non-creating sync, use git fetch then git merge --ff-only. Existing branch and landing authorization still applies.
+      message: These Git commands can create commits with the local human identity. For a PR base update first apply the branch ownership and authorization checks in references/repo-workflow.md Merge Readiness, then use gh-pr.py update-branch; for local integration run git-commit-as-bot --git-command COMMAND from the target directory, including continuations after conflicts. For non-creating sync, use git fetch then git merge --ff-only REF, with --ff-only first after merge. Existing branch and landing authorization still applies.
       preferred:
         - kind: script
           path: scripts/gh-pr.py
@@ -793,7 +793,8 @@ and say why.
   conflicts. Existing commits retain their authors; newly created commits use
   the bot environment and recreated commits use the bot committer. This does
   not authorize changing protected branches or taking over train-owned work.
-  Plain `merge --ff-only` (without a conflicting fast-forward option),
+  Plain `merge --ff-only <ref>` (with `--ff-only` first after `merge` and
+  without a conflicting fast-forward option),
   `--abort`, and `--quit` remain available because they create no commits.
 - **Issue bodies and close comments**: `scripts/gh-issue`; from the catalog
   root (`skills/`), `github/scripts/gh-issue create "Title" --repo OWNER/REPO < body.md`.
