@@ -44,7 +44,7 @@ class SectionTests(unittest.TestCase):
             "body": "## Objective\n\nKeep this.\n\n## Finish Line\n\nOld text.\n\n## Scope\n\nKeep that.\n",
         }
 
-    def run_update(self, *body_args: str, stdin: str = "", **overrides: Any) -> tuple[int, dict, Mock, str]:
+    def run_update(self, *body_args: str, stdin: str | io.TextIOBase = "", **overrides: Any) -> tuple[int, dict, Mock, str]:
         output, errors = io.StringIO(), io.StringIO()
         edit = Mock(side_effect=lambda _repo, _number, *, body: ("fixture-bot[bot]", {**self.issue, "body": body}))
         replacements = {"default_repo": Mock(return_value="owner/repo"),
@@ -53,7 +53,7 @@ class SectionTests(unittest.TestCase):
         with patch.multiple(PLAN, **replacements), \
                 patch.object(github_identity, "configured_bot_logins", return_value=["fixture-bot[bot]"]), \
                 patch.object(sys, "argv", [str(SCRIPT), "update-section", "42", "Finish Line", *body_args]), \
-                patch.object(sys, "stdin", io.StringIO(stdin)), \
+                patch.object(sys, "stdin", io.StringIO(stdin) if isinstance(stdin, str) else stdin), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             code = 0
             try:
@@ -109,11 +109,13 @@ class SectionTests(unittest.TestCase):
 
     def test_unreadable_body_file_fails_before_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            invalid = Path(directory) / "invalid.md"
-            invalid.write_bytes(b"\xff")
-            for path in (Path(directory) / "missing.md", Path(directory), invalid):
+            for path in (Path(directory) / "missing.md", Path(directory)):
                 with self.subTest(path=path):
                     self.assert_prewrite_failure(("--body-file", str(path)), "read_body")
+
+    def test_undecodable_stdin_fails_before_mutation(self) -> None:
+        with io.TextIOWrapper(io.BytesIO(b"\xff"), encoding="utf-8") as stream:
+            self.assert_prewrite_failure(("--body-file", "-"), "read_body", stdin=stream)
 
     def test_section_preparation_failure_is_structured(self) -> None:
         self.assert_prewrite_failure(("--body", "Valid content"), "section_replacement",
