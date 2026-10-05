@@ -21,6 +21,11 @@ from urllib.parse import urlsplit
 
 def response(argv: list[str], state: dict, body: dict) -> tuple[int, object, str, str]:
     """Return status, payload, method and normalized endpoint for one fake call."""
+    write_actor_repo = None
+    if argv[:1] == ["--write-actor-for"]:
+        if len(argv) < 3:
+            return 400, {"message": "Missing write actor repository"}, "UNKNOWN", "unsupported"
+        write_actor_repo, argv = argv[1], argv[2:]
     if argv[:2] == ["repo", "view"]:
         repo = next((a for a in argv[2:] if "/" in a and not a.startswith("-")), state["repo"])
         value = state["repositories"].get(repo)
@@ -70,6 +75,10 @@ def response(argv: list[str], state: dict, body: dict) -> tuple[int, object, str
         method = "POST"
     if field_error is not None:
         return 400, {"message": field_error}, method, endpoint
+    if write_actor_repo is not None and (
+        write_actor_repo != state["owner_repo"] or method != "GET" or endpoint != "user"
+    ):
+        return 403, {"message": "Write actor probe unavailable in this fixture"}, method, endpoint
     body.update(fields)
     if method == "GET" and endpoint == "user":
         return 200, {"login": "fixture-bot"}, method, endpoint
