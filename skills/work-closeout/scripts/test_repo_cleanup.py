@@ -309,15 +309,17 @@ class CleanupContracts(unittest.TestCase):
         catalog.mkdir()
         environment = {"HOME": str(home), "CODE_HOME": "", "CODEX_HOME": "",
                        "CLAUDE_CONFIG_DIR": str(self.base / "no-claude-config")}
-        for nested in (False, True):
-            with self.subTest(nested=nested):
-                binding = skills / "shared" if nested else skills
+        for layout in (".agents/skills", ".agents/skills/shared", ".codex/skills"):
+            with self.subTest(layout=layout):
+                binding = home / layout
                 binding.parent.mkdir(parents=True, exist_ok=True)
                 binding.symlink_to(catalog, target_is_directory=True)
                 try:
-                    if nested:
+                    if layout.endswith("/shared"):
                         (skills / "personal").mkdir()
                     with patch.dict(os.environ, environment):
+                        os.environ.pop("CODEX_HOME", None)
+                        os.environ.pop("CODE_HOME", None)
                         report = self.inventory(self.worktree)
                     self.assertIn("skills_runtime", report["roots"][0]["holds"])
                     self.assertEqual(report["roots"][0]["disposition"], "Keep")

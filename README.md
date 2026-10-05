@@ -313,15 +313,15 @@ tooling (`scripts/`, `.github/`) stays at the root and is not part of an
 install.
 
 The repository's runtime reconciler checks `$CODE_HOME/skills`, then
-`$CODEX_HOME/skills`, then `~/.code/skills`, then `~/.agents/skills` and
+`$CODEX_HOME/skills`, then `~/.code/skills`, then the preserved legacy
+`~/.codex/skills`, then `~/.agents/skills` and
 `~/.agents/skills/shared`, then each entry under Claude Code's
 `skills` folder (`$CLAUDE_CONFIG_DIR` or `~/.claude`). It acts on one that is a
 worktree of the same clone as the merged worktree, preferring one already on
 the default branch, and lists every binding it looked at in the receipt's
 `bindings_checked`. Both `~/.agents` layouts work for Codex-only installs, and
-the cleanup helper protects these same bindings. Legacy `~/.codex/skills` links
-are discovered through `$CODEX_HOME/skills` when `CODEX_HOME` is set; the unset
-fallback is tracked in [codex-skills#1186](https://github.com/cbusillo/codex-skills/issues/1186).
+the cleanup helper protects these same bindings. The default legacy binding is
+discovered even when `CODEX_HOME` is unset; explicit homes retain precedence.
 A separate clone is not matched. A reconciler
 `not_applicable` result does not prove the runtime checkout is current.
 
