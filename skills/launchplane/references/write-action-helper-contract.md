@@ -24,8 +24,9 @@ The helper lives at `scripts/launchplane-write-action.py`.
 
 Private payload files must be outside the active repository. The helper checks
 both the file's location after resolving ancestor directory aliases and its
-fully resolved target. A repository-local link to an external payload and an
-external link to repository-local data are both refused; an external payload,
+fully resolved target, comparing ancestor directories by filesystem identity
+when their path spellings differ. A repository-local link to an external payload
+and an external link to repository-local data are both refused; an external payload,
 including an external link to another external file, is accepted.
 
 ## Merge-train enrollment read
