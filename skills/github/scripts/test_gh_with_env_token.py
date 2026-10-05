@@ -659,6 +659,24 @@ def test_comment_cli_rejects_malformed_probe_once_before_authentication() -> Non
         )
         body_file = root / "body.md"
         body_file.write_text("fixture comment", encoding="utf-8")
+        cli = root / "comment-cli.py"
+        # Control retry time while retaining the real wrapper and response parser.
+        # The transport/outer timeouts are hang guards, separate from the virtual deadline.
+        write(cli,
+              "import sys\n"
+              "from unittest.mock import patch\n"
+              f"sys.path.insert(0, {str(SCRIPT.parent)!r})\n"
+              "import github_api, github_comment\n"
+              "def unexpected_sleep(duration):\n"
+              "    raise AssertionError('malformed probe must not sleep or retry')\n"
+              "runtime = github_api.RetryRuntime(now=lambda: 1000.0, sleep=unexpected_sleep)\n"
+              "real_transport = github_api.call_gh\n"
+              "def transport(*args, **kwargs):\n"
+              "    kwargs['timeout_seconds'] = 30\n"
+              "    return real_transport(*args, **kwargs)\n"
+              "with patch.object(github_api, 'default_retry_runtime', return_value=runtime), "
+              "patch.object(github_api, 'call_gh', side_effect=transport):\n"
+              "    raise SystemExit(github_comment.main())\n")
         env = {
             "PATH": os.environ["PATH"], "HOME": directory,
             "CODEX_SKILLS_ENV_FILE": str(env_file),
@@ -673,15 +691,16 @@ def test_comment_cli_rejects_malformed_probe_once_before_authentication() -> Non
         for repository in ("fixture/repo!", "fixture/..", "-fixture/repo"):
             wrapper_calls.write_text("", encoding="utf-8")
             result = subprocess.run(
-                [sys.executable, str(SCRIPT.with_name("github_comment.py")), "issue", "42",
+                [sys.executable, str(cli), "issue", "42",
                  f"--repo={repository}", "--body-file", str(body_file)],
-                env=env, text=True, capture_output=True, timeout=10, check=False,
+                env=env, text=True, capture_output=True, timeout=60, check=False,
             )
             assert result.returncode != 0, result.stdout
             payload = json.loads(result.stdout)
             assert payload["error_code"] == "validation_error", payload
             assert payload["retryable"] is False and payload["retry_eligible"] is False, payload
             assert payload["attempts"] == 1, payload
+            assert payload["elapsed_wait"] == 0.0, payload
             assert payload["write_outcome"] == "not_started", payload
             assert wrapper_calls.read_text().splitlines() == ["probe"], result
             assert not auth_calls.exists(), result
