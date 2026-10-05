@@ -1180,7 +1180,7 @@ stable `source_event_id`, `request` (including reason and optional related issue
 and optional `expires_in_seconds`. Never put it in a repository or pass policy
 JSON inline. The helper rejects dedicated preparation contexts and unsupported
 request fields. It emits only the operation ID, lifecycle state, bounded counts,
-trace, and a relative `review_path` on the configured service; it never returns
+trace, and a relative `review_path` on the Launchplane UI host; it never returns
 policy selectors or credential-routing fields.
 
 On a timeout or response-verification failure, retain the same envelope and
@@ -1188,5 +1188,8 @@ source event for reconciliation/replay. Never substitute a new identity or a new
 source event to force a duplicate proposal. A denial is not a missing token:
 report the refused action and trace and follow Launchplane denial handling.
 An accepted replay can report an already approved or terminal plan; it does not
-renew the approval deadline or perform execution. The signed-in Director reviews
+renew the approval deadline or perform execution. Approved or executing plans
+need observation, not another approval. Inspect terminal outcomes before an
+intentional replacement; an expired, cancelled or revoked proposal needs a fresh
+source event for a replacement. The signed-in Director reviews
 and approves pending plans in the UI; no helper approval or apply path is added.

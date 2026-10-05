@@ -4145,6 +4145,13 @@ def summarize_http_error(
         "error_code": public_code(error.get("code"), default=status),
         "recommendation": http_error_recommendation(status),
     }
+    if operation == "privileged-policy-propose" and exc.code in {404, 409}:
+        payload["status"] = "unsupported" if exc.code == 404 else "conflict"
+        payload["summary"]["recommendation"] = (
+            "The deployed service has no supported proposal route. Wait for service delivery; do not switch identity or transport."
+            if exc.code == 404
+            else "This source event conflicts with an existing request. Restore the original envelope, or use a fresh source event only for an intentional new proposal."
+        )
     message = (
         "Launchplane read was rejected; inspect the trace in an approved operator surface."
         if operation in READ_ONLY_OPERATIONS
@@ -5808,6 +5815,7 @@ def summarize_privileged_policy_proposal(
         "revoked",
         "cancelled",
         "expired",
+        "executing",
         "executed",
         "execution_failed",
     } or provider_payload.get("write_status") not in {"written", "replayed"}:
@@ -5839,16 +5847,34 @@ def summarize_privileged_policy_proposal(
         normalized_expiry = expiry.astimezone(UTC).isoformat().replace("+00:00", "Z")
     except ValueError:
         raise LaunchplaneSafetyError("invalid_response") from None
+    result_status = summary.get("result_status")
+    if result_status not in {"ok", "blocked"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    if state == "planned":
+        recommendation = (
+            "The pending plan has blockers; review them on the Launchplane UI host before approval."
+            if result_status == "blocked"
+            else "Open the review path on the Launchplane UI host for the signed-in Director. The proposer cannot approve or apply."
+        )
+    elif state in {"approved", "executing"}:
+        recommendation = "This plan is already approved or executing. Observe its existing outcome; no new approval is needed."
+    else:
+        recommendation = "This plan is terminal. Inspect its outcome instead of requesting approval. An intentional replacement needs a fresh envelope and source event."
     result = {
         "operation_id": operation_id,
         "descriptor_id": descriptor,
         "state": state,
+        "result_status": result_status,
         "review_path": f"/ui/engineering/privileged-operations?operation_id={operation_id}",
         "expires_at": public_timestamp(normalized_expiry),
         "counts": {name: _nonnegative_int(summary.get(name)) for name in counts},
         "authorizes_approval": False,
         "authorizes_execution": False,
     }
+    if descriptor == "managed-authz-policy-set":
+        if not isinstance(summary.get("changed"), bool):
+            raise LaunchplaneSafetyError("invalid_response")
+        result["changed"] = summary["changed"]
     payload = base_payload(
         status="accepted", operation="privileged-policy-propose", request=request
     )
@@ -5856,9 +5882,11 @@ def summarize_privileged_policy_proposal(
     payload["summary"] = {
         "trace_id": public_trace_id(provider_payload.get("trace_id")),
         "write_status": provider_payload["write_status"],
-        "recommendation": "Open the review path in the signed-in Director UI. The proposer cannot approve or apply this plan.",
+        "recommendation": recommendation,
     }
     return payload
+
+
 def execute_post(
     *,
     args: argparse.Namespace,
@@ -5892,6 +5920,15 @@ def execute_post(
                 )
             )
         except LaunchplaneSafetyError:
+            if operation == "privileged-policy-propose":
+                payload = unavailable_payload(operation=operation, request=request, status="accepted_unverified", code="proposal_response_unverified", message="The proposal response could not be verified; the plan may have been saved.")
+                try:
+                    trace_id = public_trace_id(provider_payload.get("trace_id"))
+                except LaunchplaneSafetyError:
+                    trace_id = ""
+                payload["summary"] = {"trace_id": trace_id, "recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
+                emit(payload)
+                return 1
             if operation == "merge-train-controller-run-once":
                 payload = unavailable_payload(
                     operation=operation, request=request, status="invalid",
@@ -5972,6 +6009,11 @@ def execute_post(
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        if operation == "privileged-policy-propose":
+            payload = unavailable_payload(operation=operation, request=request, status="outcome_unknown", code="proposal_transport_uncertain", message="The proposal response was interrupted; this does not prove a service outage or an unsaved plan.")
+            payload["summary"] = {"recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
+            emit(payload)
+            return 1
         if operation == "merge-train-controller-run-once" and (
             isinstance(exc, TimeoutError)
             or (isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError))
@@ -5993,6 +6035,11 @@ def execute_post(
         emit_provider_unavailable(operation=operation, request=request)
         return 1
     except (ValueError, json.JSONDecodeError):
+        if operation == "privileged-policy-propose":
+            payload = unavailable_payload(operation=operation, request=request, status="accepted_unverified", code="proposal_response_unverified", message="The proposal response could not be read; the plan may have been saved.")
+            payload["summary"] = {"recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
+            emit(payload)
+            return 1
         emit_invalid_response(operation=operation, request=request)
         return 1
 

@@ -7473,6 +7473,8 @@ def test_privileged_policy_propose_sends_private_envelope_and_only_returns_revie
             "operation_id": operation_id,
             "descriptor_id": descriptor,
             "status": "planned",
+            "result_status": "ok",
+            "changed": True,
             **counts,
             "expires_at": "2026-10-05T16:00:00+00:00",
             "private_selectors": "never-emit-this",
@@ -7482,16 +7484,19 @@ def test_privileged_policy_propose_sends_private_envelope_and_only_returns_revie
 
     def post(**kwargs: Any) -> dict[str, object]:
         calls.append(kwargs)
-        assert kwargs["path"] == contract.helper_command_path(
-            "privileged-policy-propose"
-        )
+        assert kwargs["path"] == contract.helper_command_path("privileged-policy-propose")
         assert kwargs["body"] == envelope
         return response
 
     with TemporaryDirectory() as directory:
         payload_path = Path(directory) / "proposal.json"
         payload_path.write_text(json.dumps(envelope))
-        for state, write_status in (("planned", "written"), ("approved", "replayed")):
+        for state, write_status in (
+            ("planned", "written"),
+            ("approved", "replayed"),
+            ("executing", "replayed"),
+            ("expired", "replayed"),
+        ):
             response["summary"]["status"] = state
             response["write_status"] = write_status
             output = io.StringIO()
@@ -7606,6 +7611,15 @@ def test_privileged_policy_propose_rejects_malformed_result_without_echoing_priv
                 "descriptor_id": descriptor,
                 "status": "planned",
                 "added_rule_count": count,
+                "adopted_rule_count": 0,
+                "updated_rule_count": 0,
+                "removed_rule_count": 0,
+                "unchanged_rule_count": 0,
+                "policy_safety_blocker_count": 0,
+                "operational_readiness_blocked_rule_count": 0,
+                "expires_at": "2026-10-05T16:00:00Z",
+                "result_status": "ok",
+                "changed": True,
             },
         }
         with pytest.raises(safety.LaunchplaneSafetyError):
@@ -7613,5 +7627,91 @@ def test_privileged_policy_propose_rejects_malformed_result_without_echoing_priv
                 request={"descriptor_id": "managed-authz-policy-set"},
                 provider_payload=response,
             )
+
+
+@pytest.mark.parametrize(
+    "failure,expected",
+    [
+        (TimeoutError(), "outcome_unknown"),
+        (urllib.error.URLError("offline"), "outcome_unknown"),
+        ("malformed", "accepted_unverified"),
+        (403, "denied"),
+        (409, "conflict"),
+        (404, "unsupported"),
+    ],
+)
+def test_privileged_policy_propose_failure_reports_safe_reconciliation(
+    failure: object, expected: str
+) -> None:
+    envelope = {
+        "descriptor_id": "managed-authz-policy-set",
+        "source_event_id": "test:proposal",
+        "request": {
+            "managed_set_id": "example.proposal",
+            "desired_policy": {"schema_version": 2},
+            "reason": "Review access.",
+        },
+    }
+    if isinstance(failure, int):
+        error_code = (
+            "authorization_denied" if failure == 403 else "privileged_operation_plan_conflict"
+        )
+        exception = urllib.error.HTTPError(
+            "https://private.example.invalid",
+            failure,
+            "private",
+            Message(),
+            io.BytesIO(
+                json.dumps(
+                    {"trace_id": "launchplane_req_" + "c" * 32, "error": {"code": error_code}}
+                ).encode()
+            ),
+        )
+        post = Mock(side_effect=exception)
+    elif isinstance(failure, BaseException):
+        post = Mock(side_effect=failure)
+    else:
+        post = Mock(
+            return_value={
+                "status": "ok",
+                "trace_id": "launchplane_req_" + "c" * 32,
+                "summary": {"private": "never-emit"},
+            }
+        )
+    with TemporaryDirectory() as directory:
+        payload_path = Path(directory) / "proposal.json"
+        payload_path.write_text(json.dumps(envelope))
+        output = io.StringIO()
+        with (
+            patch.object(
+                write_action,
+                "resolve_settings",
+                return_value={
+                    "service_url": "https://private.example.invalid",
+                    "token": "private-token",
+                },
+            ),
+            patch.object(write_action, "request_launchplane", post),
+            redirect_stdout(output),
+        ):
+            assert (
+                write_action.main(
+                    ["privileged-policy-propose", "--payload-file", str(payload_path)]
+                )
+                == 1
+            )
+        result = json.loads(output.getvalue())
+        assert result["status"] == expected
+        if expected in {"outcome_unknown", "accepted_unverified"}:
+            assert (
+                "identical private envelope and source event" in result["summary"]["recommendation"]
+            )
+        if failure in (403, 409, "malformed"):
+            assert result["summary"]["trace_id"] == "launchplane_req_" + "c" * 32
+        assert "private-token" not in output.getvalue()
+        assert "private.example.invalid" not in output.getvalue()
+        assert "never-emit" not in output.getvalue()
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
