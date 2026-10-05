@@ -904,6 +904,8 @@ def _enrich_edit_failure(error: IssueError) -> None:
         "write_outcome": error.failure.write_outcome,
         "outcome_certainty": error.payload.get("outcome_certainty"),
     }
+    if error.failure.failed_step == "read_after_write":
+        failed_request.update(write_outcome=None, outcome_certainty="not_applicable")
     pending_writes = any(remaining.values())
     write_outcome = "partially_applied" if pending_writes else "applied"
     certainty = (

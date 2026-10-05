@@ -731,6 +731,8 @@ def test_edit_failed_readback_preserves_confirmed_writes() -> None:
             assert envelope["write_outcome"] == "applied", envelope
             assert envelope["outcome_certainty"] == "confirmed", envelope
             assert envelope["failed_step"] == "read_after_write", envelope
+            assert envelope["failed_request"]["write_outcome"] is None, envelope
+            assert envelope["failed_request"]["outcome_certainty"] == "not_applicable", envelope
             assert envelope["reconciliation"]["completed"]["add_assignees"] == ["octocat"], envelope
             assert not any(envelope["reconciliation"]["remaining"].values()), envelope
         else:
