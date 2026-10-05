@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Exercise the gate's shell preflight without running the catalog suite."""
+"""Exercise validation preflight without running the catalog suite."""
 
 from __future__ import annotations
 
@@ -18,21 +18,21 @@ from pathlib import Path
 GATE = Path(__file__).with_name("validate-skills.sh")
 
 
-def supports_mapfile(shell: str) -> bool:
+def supports_required_builtin(shell: str) -> bool:
     return subprocess.run(
         [shell, "-c", "builtin mapfile -t lines < /dev/null"],
-        capture_output=True, check=False,
+        capture_output=True,
     ).returncode == 0
 
 
 class ValidationGateTests(unittest.TestCase):
     def test_unsupported_shell_refuses_before_external_commands(self) -> None:
         shell = "/bin/bash"
-        if not Path(shell).is_file() or supports_mapfile(shell):
+        if not Path(shell).is_file() or supports_required_builtin(shell):
             self.skipTest("host has no unsupported system Bash")
         result = subprocess.run(
             [shell, str(GATE)], env={**os.environ, "PATH": ""},
-            capture_output=True, text=True, check=False,
+            capture_output=True, text=True,
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Bash", result.stderr)
@@ -42,7 +42,7 @@ class ValidationGateTests(unittest.TestCase):
 
     def test_supported_shell_reaches_runtime_and_reports_itself(self) -> None:
         shell = shutil.which("bash")
-        if not shell or not supports_mapfile(shell):
+        if not shell or not supports_required_builtin(shell):
             self.skipTest("host has no supported Bash on PATH")
         version = subprocess.check_output(
             [shell, "-c", 'printf "%s" "$BASH_VERSION"'], text=True,
@@ -63,7 +63,7 @@ class ValidationGateTests(unittest.TestCase):
             result = subprocess.run(
                 [shell, str(GATE)],
                 env={**os.environ, "PATH": f"{bin_dir}:{os.defpath}"},
-                capture_output=True, text=True, check=False,
+                capture_output=True, text=True,
             )
         self.assertEqual(result.returncode, 42, result.stderr)
         self.assertIn("runtime-reached", result.stderr)
