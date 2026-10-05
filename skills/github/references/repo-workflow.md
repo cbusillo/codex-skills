@@ -409,8 +409,9 @@ label cleanup; an unavailable policy read leaves that part unverified.
 First resolve the landing route under the GitHub skill's
 [Merging procedure](../SKILL.md#merging), for a single PR or a stack.
 Train-owned branch refresh and landing follow the Launchplane workflow or the
-assigned handoff. The direct merge and branch-update instructions below apply
-outside that route.
+assigned handoff. Apply the fresh-read checklist below before any merge or
+authorized train entry; only the direct merge and branch-update operations are
+replaced by that route.
 
 Before merging any PR, do a fresh PR read and account for feedback:
 

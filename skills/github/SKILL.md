@@ -895,10 +895,11 @@ or branch integration. When Launchplane's active policy, repository instructions
 or task context assigns landing to its merge train, load
 [`launchplane`](../launchplane/SKILL.md#merge-train-controller) and use that
 workflow. Preserve an assigned direction or Supervisor handoff instead of
-labeling or driving the train yourself. Repository metadata is only a routing
-hint; use the Launchplane skill's enrollment read when the route is unresolved.
-An unavailable read leaves enrollment unknown and does not establish a direct
-merge path.
+labeling or driving the train yourself when the task does not authorize train
+entry. Repository metadata is only a routing hint; use the Launchplane skill's
+enrollment read when the route is unresolved. An unavailable read leaves
+enrollment unknown: report its reason and retain the PR for authoritative
+routing; it does not establish a direct merge path.
 
 Merging implementation work means merging its PR through GitHub. Never merge a
 task branch locally into a protected branch as a shortcut; local integration is
@@ -907,7 +908,8 @@ lands through a PR. If that happens by accident, preserve the work, restore the
 local protected branch to the remote tip, push the task branch, and continue
 through the PR. Never push the accidental merge.
 
-Before a merge:
+Before any merge or authorized train entry, apply these checks regardless of
+the landing route:
 
 - **Authority**: Merge only when [task scope](../references/execution-scope.md)
   authorizes the change and destination. A readiness question is not merge

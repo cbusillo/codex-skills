@@ -14,7 +14,7 @@ Executing loop for this repository (from DIRECTION.md):
   go <milestone title>  work that milestone's issues in next order without stopping between them
   next and go   both
   escalate      a finding that retires, stops, or redirects work is an issue labeled direction, not a change
-  land          load github to open the PR and resolve its landing route; follow an assigned train handoff, otherwise watch landing with babysit-pr and reconcile the runtime checkout
+  land          load github to open the PR and carry out its resolved landing route; honor an assigned train handoff, otherwise watch with babysit-pr and verify runtime reconciliation after landing
   close out     load work-closeout to update the plan issue, open follow-up issues without starting them, remove the worktree (with the retire command its lock reason names, if any), leave main clean
 ```
 
