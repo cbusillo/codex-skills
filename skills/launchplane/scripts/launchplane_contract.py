@@ -218,6 +218,11 @@ PROJECTED_HELPER_COMMANDS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    "merge-train-policy-read": {
+        "method": "GET",
+        "path": "/v1/work-graph/merge-train/policy",
+        "mode": "read",
+    },
     "live-target-runtime-sync-dry-run": {
         "method": "POST", "path": "/v1/live-target-runtime/apply", "mode": "dry-run",
     },
