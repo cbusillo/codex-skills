@@ -108,8 +108,12 @@ class ReminderTests(unittest.TestCase):
         m = marker(ago(hours=1), owner__other=ago(days=1))
         m["turn_repo"] = "owner/start"
         self.assertEqual(hook.reminder(m, NOW, "owner/other", MARKER), "")
+        m["audits"] = {"owner/other": ago(days=8)}
+        text = hook.reminder(m, NOW, "owner/other", MARKER)
+        self.assertIn("last weekly audit of owner/other was 8 days ago. The last daily turn covered owner/start.", text)
+        self.assertNotIn("last direction turn was", text)
         m["turn"] = ago(days=2)
-        self.assertIn("last daily turn covered owner/start", hook.reminder(m, NOW, "owner/other", MARKER))
+        self.assertIn("Last daily turn covered owner/start", hook.reminder(m, NOW, "owner/other", MARKER))
 
     def test_legacy_turn_has_unknown_coverage_and_is_still_readable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

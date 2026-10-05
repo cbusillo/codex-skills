@@ -135,7 +135,9 @@ Director asks; that is execution.
 
 A **daily turn** is steps 1 and 2 for the repository the session is in,
 after reading the Director's overall direction, with the result explained
-under that same reference. Also list every open `direction` issue across the
+under that same reference. If the session has no GitHub repository, use the
+Director's `OWNER/direction` as its daily repository and read it before marking
+that coverage. Also list every open `direction` issue across the
 Director's repositories with one search through the existing planning
 helper (load `github-plan` first):
 
@@ -167,7 +169,8 @@ an adopted repository whose audit is stale.
 
 Each adopted repository's own `DIRECTION.md` and milestones are checked in
 that one weekly audit session. An audit does not count as the Director's daily
-turn.
+turn. A weekly session records a daily turn only if it also performs the daily
+procedure above with the Director; then explicitly mark the starting repository.
 
 End every daily turn by recording the starting repository it covered:
 

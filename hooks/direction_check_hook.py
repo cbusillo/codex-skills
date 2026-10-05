@@ -223,11 +223,12 @@ def reminder(marker: dict[str, object], now: dt.datetime, repo: str | None, path
             overdue.append(f"the last weekly audit of {repo} was {(now - audit).days} days ago")
     if not overdue:
         return ""
+    coverage_note = ""
     coverage = marker.get("turn_repo")
     if isinstance(turn, dt.datetime) and isinstance(coverage, str) and coverage:
-        overdue.append(f"the last daily turn covered {coverage}")
+        coverage_note = f" The last daily turn covered {coverage}."
     return (
-        "Direction check overdue: " + "; ".join(overdue) + ". "
+        "Direction check overdue: " + "; ".join(overdue) + "." + coverage_note + " "
         "Tell the owner once at the start of the session to open Claude Code and run the `direction` skill "
         "(a daily turn, or the weekly audit of this repository when that is what is overdue), then continue with the task. "
         f"Do not run the marking helpers yourself; the marker is {path}."
