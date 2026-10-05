@@ -210,13 +210,32 @@ Command model:
   problems, and clean up helper-opened projects.
 - `inspect-closeout --repo "$PWD" --scope changed_files`: readiness/hand-off
   inspection; use before saying a change is ready, safe to push, safe to merge, safe to hand off, or safe to exit.
+- For a RED assessment with more findings than the compact output shows, read
+  `findings_artifact.path` (under each executed lane, or at the top level for a
+  single IDE). Before cleanup, the helper collects every page with the same
+  route, session, project instance, native run and scope/filter selectors. A
+  `status: complete` artifact preserves all matching findings, the original
+  assessment/proof and request; `sha256` identifies its bytes. Read its
+  `problems` array directly after the project closes, without another IDE
+  request or assessment. Text output prints `FINDINGS_ARTIFACT` with the path.
+  Artifacts are private local evidence in the helper cache's `findings`
+  directory; preserve required receipts through acceptance, then remove those
+  disposable files during task cleanup. Record the exposed receipt paths with
+  the task's evidence; `assessment.context.worktree_root` identifies their
+  exact worktree.
+  An `incomplete` or `unavailable` artifact records the retrieval gap separately
+  from the native RED. Do not assume omitted findings are inherited or clean.
+  The artifact proves the accepted run, not freshness after later source edits
+  or a new IDE run; retain any execution-proof or lifecycle gaps in the final
+  assessment alongside it.
 - `get-status --repo "$PWD"` and `get-problems --repo "$PWD" --severity error`:
-  route-pinned diagnostics for already-routable projects.
+  route-pinned diagnostics for already-routable projects; they cannot read a
+  closed project. Use the preserved artifact for post-cleanup finding triage.
 - `get-problems` reads the stored inspection run; it does not start a new one.
   Repeat the original scope selectors so the plugin can prove the requested
   results belong to that run. For a `files` scope, pass at least one repeatable
-  `--file` selector. Use a larger `--limit` when the compact assessment envelope
-  omitted finding details:
+  `--file` selector. For an intentionally warm project, paginate with `--limit`
+  and `--offset` while it remains routable:
 
   ```bash
   uv run "$HELPER" get-problems --json --repo "$PWD" \

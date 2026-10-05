@@ -452,8 +452,9 @@ closure refusal through another tool.
 
 Prefer non-closing `Refs` from PRs unless the Director requests auto-close or an
 internal task is conclusively complete. After merge, inspect referenced issues:
-close only those whose finish lines are satisfied; otherwise record what
-remains. Use `gh-plan.py close --comment-file` for durable plan issues.
+close only those whose finish lines are satisfied; end every other one done
+or split as the [executing loop](../references/executing-loop.md) says. Use
+`gh-plan.py close --comment-file` for durable plan issues.
 
 For closure failures, partial Project synchronization, quota or retry/reconciliation,
 or helper output details, read

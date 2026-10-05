@@ -59,7 +59,9 @@ across the Director's repositories.
 - **`DIRECTION.md`** holds the direction. It changes only by pull request that
   touches this file alone, and the Director approves it: `CODEOWNERS` names the
   Director for this one path and the default branch requires code-owner review.
-  Keep it to one to two pages. A direction pull request with a large diff is a
+  Keep it to one to two pages, in
+  [plain language](../references/talking-with-the-director.md#plain-language).
+  A direction pull request with a large diff is a
   reason to reject it, not to read harder.
 - **Milestones** are waypoints. A milestone exists only when its exact title is
   listed under `## Milestones` in `DIRECTION.md`; once the file exists,
@@ -125,7 +127,9 @@ Director asks; that is execution.
    result under [talking with the Director](../references/talking-with-the-director.md).
 3. Propose, in this order: escalation decisions, milestone lines to add or
    retire, and a direction pull request when the file itself must change. The
-   Director decides in chat; record the decision on GitHub the same session.
+   Director decides in chat; record the decision on GitHub the same session,
+   on an issue that ends done or split as the
+   [executing loop](../references/executing-loop.md) says.
 4. End with what the executing agent should see on GitHub when it next runs
    `next`, so the handoff needs no copy and paste.
 
