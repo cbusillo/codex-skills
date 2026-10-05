@@ -2537,22 +2537,60 @@ def test_discovery_preserves_valid_waits_above_invalid_child_or_parent_waits() -
             assert item["exclusion"] == "parent_waiting" and item["waiting_on_parent"] == grand["html_url"]
 
 
-def test_inconsistent_block_label_and_unknown_start_do_not_become_available_or_dated() -> None:
-    roots = [track("someone/direction", 1, "First")]
+def test_blocked_wait_and_unknown_start_do_not_become_available_or_dated() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
     leaf = global_issue("someone/business", 120, labels=["plan:blocked"], body="## Current Status\nState: Waiting.")
-    with global_fixture(roots, [leaf], {(roots[0]["repo"], 1): relationships(sub_issues=[leaf])}) as (module, result, _reads):
+    edges = {(root["repo"], root["number"]): relationships(sub_issues=[leaf]) for root in roots}
+    with global_fixture(roots, [leaf], edges) as (module, result, _reads):
         module.cmd_next(next_args())
         assert not result["candidates"]
-        assert next(item for item in result["excluded"] if item["number"] == 120)["exclusion"] == "label_blocked_without_native_edge"
+        assert next(item for item in result["excluded"] if item["number"] == 120)["exclusion"] == "waiting"
+        assert result["dependency_context"]["complete"]
+        assert result["candidate_coverage"]["complete"]
         for value in ("unknown", "TBD", "2026-99-99"):
             evidence = module.github_direction_next.milestone_wait_evidence({}, "Waiting for: Alex to test.\nWaiting since: " + value, ["First"])
             assert evidence["since"] is None
         for status in ("Waiting for:\n- Alex: approve the copy.", "Waiting for: none\nParked until: 2026-12-01 holiday freeze."):
             assert module.github_direction_next.milestone_wait_evidence({}, status, ["First"])["valid"]
+        evidence = module.github_direction_next.milestone_wait_evidence({}, "Waiting for: Alex to test.\nWaiting since: 2026-08-20 (Alex confirmed)", ["First"])
+        assert evidence["since"] == "2026-08-20"
 
 
 TESTS.extend([test_discovery_preserves_valid_waits_above_invalid_child_or_parent_waits,
-              test_inconsistent_block_label_and_unknown_start_do_not_become_available_or_dated])
+              test_blocked_wait_and_unknown_start_do_not_become_available_or_dated])
+
+
+def test_excluded_unrelated_wait_failure_preserves_ordinary_coverage() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    leaf = global_issue("someone/business", 10, labels=["plan:waiting"], body="## Current Status\nWaiting for: Alex to test.")
+    unrelated = global_issue("someone/other", 50, labels=["plan:waiting"], body="## Current Status\nWaiting for: TBD.")
+    edges = {(root["repo"], root["number"]): relationships(sub_issues=[leaf]) for root in roots}
+    with global_fixture(roots, [leaf], edges, discovered=[unrelated]) as (module, result, _reads):
+        def denied_parent(target: str, _number: int) -> None:
+            if target == unrelated["repo"]:
+                raise module.PlanError("parent unavailable")
+            return None
+        module.read_next_parent = denied_parent
+        module.cmd_next(next_args())
+        assert result["candidate_coverage"]["complete"]
+        assert result["discovery_context"]["complete"]
+        assert not result["discovery_context"]["capacity_complete"]
+        assert next(item for item in result["excluded"] if item["number"] == 50)["exclusion"] == "unknown_ancestry"
+
+
+def test_unmatched_parent_wait_does_not_emit_internal_exclusion() -> None:
+    parent = global_issue("someone/other", 40, labels=["plan:waiting"], body="## Current Status\nWaiting for: Alex to test.")
+    child = global_issue("someone/other", 50)
+    edges = {(parent["repo"], parent["number"]): relationships(sub_issues=[child])}
+    with global_fixture([], [parent], edges, discovered=[child]) as (module, result, _reads):
+        module.cmd_next(next_args())
+        item = next(item for item in result["excluded"] if item["number"] == 50)
+        assert item["exclusion"] == "parent_waiting"
+        assert "_own_exclusion" not in item
+
+
+TESTS.extend([test_excluded_unrelated_wait_failure_preserves_ordinary_coverage,
+              test_unmatched_parent_wait_does_not_emit_internal_exclusion])
 
 
 def main() -> None:

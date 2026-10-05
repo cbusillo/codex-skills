@@ -1551,7 +1551,7 @@ def test_stale_wait_report_reports_explicit_absence_of_all_waits() -> None:
     assert report["complete"] and report["items"][0]["number"] == 41, report
 
 
-def test_invalid_milestone_wait_is_reported_but_named_event_or_native_blocker_is_valid() -> None:
+def test_invalid_milestone_wait_is_reported_but_named_event_is_valid() -> None:
     module = load()
     base = {**issue(120, "Inventory", labels=("plan:waiting",)),
             "milestone": {"title": "Dogfood week"}}

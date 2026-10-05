@@ -132,6 +132,10 @@ def milestone_wait_evidence(item: dict[str, Any], status_text: str, milestone_ti
         since = re.search(r"\bsince\s+(\d{4}-\d{2}-\d{2}(?:T\S+)?)", reason, re.IGNORECASE)
     start = since.group(1).strip().rstrip(".,;") if since else None
     if start:
+        dated_note = re.match(r"^(\d{4}-\d{2}-\d{2})(?:\s+.*)?$", start)
+        if dated_note:
+            start = dated_note.group(1)
+    if start:
         try:
             dt.datetime.fromisoformat(start)
         except ValueError:
@@ -142,7 +146,7 @@ def milestone_wait_evidence(item: dict[str, Any], status_text: str, milestone_ti
 
 
 def check_milestone_wait(item: dict[str, Any], status_text: str, milestone_titles: list[str]) -> dict[str, Any]:
-    if item.get("exclusion") in {"completed", "stale_needs_review", "unknown_dependencies", "unknown_ancestry", "label_blocked_without_native_edge", "tracking", "tracking_without_open_work"}:
+    if item.get("plan_status") == "blocked" or item.get("exclusion") in {"completed", "stale_needs_review", "unknown_dependencies", "unknown_ancestry", "label_blocked_without_native_edge", "tracking", "tracking_without_open_work"}:
         return item
     evidence = milestone_wait_evidence(item, status_text, milestone_titles)
     if not evidence["requested"] or evidence["valid"]:
@@ -669,7 +673,7 @@ def rank_portfolio_work(
 
     def checked_wait(item: dict[str, Any]) -> dict[str, Any]:
         if overall_milestone_context(item, graph, milestone_titles, repository_waypoints or {})["state"] != "matched":
-            return item
+            return {key: value for key, value in item.items() if key != "_own_exclusion"}
         if item.get("exclusion") == "parent_waiting":
             original_parent_url = item.get("waiting_on_parent")
             valid_parent = None
@@ -885,7 +889,7 @@ def evaluate_direction_node(
     summary = next_relationship_summary(relationships or {})
     if summary["open_sub_issues"]:
         item["open_sub_issues"] = summary["open_sub_issues"]
-    if item.get("exclusion") != "label_blocked_without_native_edge" and (
+    if (
         next_plan_status(issue, config) == "waiting"
         or re.search(r"(?im)^\s*State:\s*(?:waiting|parked)\b", status_text)
         or (reports and not (summary["open_blockers"] or summary["open_sub_issues"]))
