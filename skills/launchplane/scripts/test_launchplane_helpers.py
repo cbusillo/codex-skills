@@ -7019,6 +7019,19 @@ def test_runtime_sync_review_persistence_and_boundaries() -> None:
         ])
         assert code == 0 and result["result"]["read_back_matches"] is True
         assert result["result"]["persistence_status"] == "pass"
+        assert result["result"]["read_back_trace_id"] == "launchplane_req_runtime_sync"
+        for http_status, service_code, expected_status in (
+            (403, "authorization_denied", "denied"),
+            (400, "dokploy_target_verification_failed", "accepted_unverified"),
+        ):
+            error = urllib.error.HTTPError("https://example.invalid", http_status, "Refused", {}, io.BytesIO(json.dumps({
+                "error": {"code": service_code}, "trace_id": "launchplane_req_apply_error"
+            }).encode()))
+            code, refused, refused_transport = _run_runtime_sync(apply_argv, [_runtime_sync_response(), error])
+            assert code == 1 and refused["status"] == expected_status
+            assert refused["summary"]["error_code"] == service_code
+            assert refused["summary"]["trace_id"] == "launchplane_req_apply_error"
+            assert refused_transport.call_count == 2
         assert [call.kwargs["body"]["mode"] for call in transport.call_args_list] == ["dry-run", "apply", "dry-run"]
         assert [call.kwargs["idempotency_key"] for call in transport.call_args_list] == ["", "example-sync", ""]
         code, result, transport = _run_runtime_sync(apply_argv, [_runtime_sync_response(changed=False)])

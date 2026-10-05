@@ -5669,12 +5669,13 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
             known_trace = public_trace_id(raw.get("trace_id"))
             if _runtime_sync_plan_digest(request, result) != reviewed_digest:
                 raise LaunchplaneSafetyError("invalid_response")
-            observed, _ = call("dry-run")
+            observed, observed_raw = call("dry-run")
             delta = cast(dict[str, object], observed["runtime_environment"])
             matches = observed["target_sha256"] == result["target_sha256"] and delta["changed_keys"] == []
             if not matches or result["persistence_status"] == "fail":
                 raise LaunchplaneSafetyError("invalid_response")
             result["read_back_matches"] = True
+            result["read_back_trace_id"] = public_trace_id(observed_raw.get("trace_id"))
         result["plan_sha256"] = digest
         payload = base_payload(status="accepted", operation=operation, request=request)
         payload["result"] = result
