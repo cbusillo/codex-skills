@@ -868,6 +868,67 @@ def _edit_reconciliation(repo: str, number: int, requested: dict[str, Any]) -> d
     }
 
 
+def _enrich_edit_failure(error: IssueError) -> None:
+    """Describe aggregate edit progress after the request retry policy has finished."""
+    reconciliation = error.payload.get("reconciliation")
+    if not isinstance(reconciliation, dict) or "requested" not in reconciliation:
+        return
+    requested = reconciliation["requested"]
+    steps = error.failure.completed_steps
+    completed: dict[str, Any] = {}
+    remaining: dict[str, Any] = {}
+    for key, values in requested.items():
+        if key in {"fields", "field_values"}:
+            count = len(values) if "edit_issue_fields" in steps else 0
+        elif key == "remove_labels":
+            count = steps.count("remove_label")
+        else:
+            count = len(values) if key in steps else 0
+        if isinstance(values, dict):
+            completed[key] = dict(values) if count else {}
+            remaining[key] = {} if count else dict(values)
+        else:
+            completed[key] = values[:count]
+            remaining[key] = values[count:]
+    reconciliation.update(
+        completed=completed,
+        remaining=remaining,
+        required_before_retry=True,
+    )
+    if not any(completed.values()):
+        return
+
+    # Keep the final request's certainty separate from the composite operation.
+    failed_request = {
+        "failed_step": error.failure.failed_step,
+        "write_outcome": error.failure.write_outcome,
+        "outcome_certainty": error.payload.get("outcome_certainty"),
+        "recommended_next_action": error.payload.get("recommended_next_action"),
+    }
+    if error.failure.failed_step in {"read_after_write", "parse_issue_response"}:
+        failed_request.update(write_outcome=None, outcome_certainty="not_applicable")
+    pending_writes = any(remaining.values())
+    write_outcome = "partially_applied" if pending_writes else "applied"
+    certainty = (
+        "unknown"
+        if pending_writes and failed_request["write_outcome"] == "unknown"
+        else "confirmed_partially_applied" if pending_writes else "confirmed"
+    )
+    error.failure.write_outcome = write_outcome
+    error.payload.update(
+        failed_request=failed_request,
+        write_outcome=write_outcome,
+        outcome_certainty=certainty,
+    )
+    if error.api_result is not None:
+        error.api_result.update(
+            write_outcome=write_outcome,
+            outcome_certainty=certainty,
+            reconciliation=reconciliation,
+            failure=error.failure.as_dict(),
+        )
+
+
 def _edit_issue_impl(
     number: int,
     *,
@@ -951,6 +1012,7 @@ def _edit_issue_impl(
         core["milestone"] = None
     requested = {
         "fields": sorted(core),
+        "field_values": core,
         "add_labels": normalized_add_labels,
         "remove_labels": normalized_remove_labels,
         "add_assignees": normalized_add_assignees,
@@ -1121,15 +1183,19 @@ def _edit_issue_impl(
         retry_summaries=retry_summaries,
     )
     steps.append("read_after_write")
-    return _issue_payload(
-        result.body,
-        operation=operation,
-        repo=resolved_repo,
-        actor=actor if expected_actor is not None else None,
-        expected_actor=expected_actor,
-        completed_steps=steps,
-        retry_summary=github_api_core.aggregate_retry_summaries(retry_summaries),
-    )
+    try:
+        return _issue_payload(
+            result.body,
+            operation=operation,
+            repo=resolved_repo,
+            actor=actor if expected_actor is not None else None,
+            expected_actor=expected_actor,
+            completed_steps=steps,
+            retry_summary=github_api_core.aggregate_retry_summaries(retry_summaries),
+        )
+    except IssueError as error:
+        error.payload.update(failure_payload)
+        raise
 
 
 def edit_issue(
@@ -1170,6 +1236,7 @@ def edit_issue(
         )
     except IssueError as error:
         _enrich_error_with_retry_summaries(error, retry_summaries)
+        _enrich_edit_failure(error)
         raise
 
 
