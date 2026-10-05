@@ -324,6 +324,7 @@ def pr_helper_json(command, pr_spec=None, repo=None, allow_partial=False):
         cmd.append(pr_spec)
     env = os.environ.copy()
     env["GH_PR_GH"] = GH_COMMAND
+    env["GITHUB_REQUEST_CALLER"] = os.environ.get("GITHUB_REQUEST_CALLER") or Path(__file__).name
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
 
     raw = proc.stdout.strip()
@@ -1634,20 +1635,27 @@ def snapshot_change_key(snapshot):
 
 def run_watch(args):
     last_change_key = None
+    unchanged_polls = 0
     while True:
         snapshot, state_path = collect_snapshot(args)
         current_change_key = snapshot_change_key(snapshot)
         changed = current_change_key != last_change_key
+        unchanged_polls = 0 if changed else min(unchanged_polls + 1, 10)
         green = is_ci_green(snapshot)
         pr = snapshot.get("pr") or {}
         pr_open = not bool(pr.get("closed")) and not bool(pr.get("merged"))
 
-        if not green or not pr_open or changed or last_change_key is None:
+        if not pr_open or changed or last_change_key is None:
             poll_seconds = args.poll_seconds
+        elif not green:
+            poll_seconds = min(
+                args.poll_seconds * 2 ** unchanged_polls,
+                max(args.poll_seconds, getattr(args, "green_poll_seconds", 300)),
+            )
         else:
             poll_seconds = getattr(args, "green_poll_seconds", 300)
 
-        poll_seconds = github_read.poll_delay(poll_seconds, snapshot.get("minimum_poll_seconds", 0.0))
+        poll_seconds = github_read.poll_delay(poll_seconds, snapshot.get("minimum_poll_seconds", 0.0), repository=pr.get("repo"))
         print_event(
             "snapshot",
             {

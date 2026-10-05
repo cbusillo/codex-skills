@@ -1760,6 +1760,47 @@ retained_graphql_rationale = "GraphQL supplies the Discussions surface."
 source_refs = ["github/scripts/github_api.py:call_gh", "github/scripts/github_capabilities.py:audit_repository"]
 test_refs = ["github/scripts/test_github_capabilities.py"]
 
+
+[[operations]]
+id = "github.pr.watch"
+entrypoint = "babysit-pr/scripts/gh_pr_watch.py --watch"
+intent = "Read PR review, check and workflow evidence through the existing conditional reader."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/issues/{number}/comments; GET /repos/{repo}/pulls/{number}/comments; GET /repos/{repo}/pulls/{number}/reviews; GET /repos/{repo}/commits/{sha}/check-runs; GET /repos/{repo}/commits/{sha}/status; GET /repos/{repo}/actions/runs; GET /repos/{repo}/actions/runs/{run_id}/jobs"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No GraphQL in this operation; readiness and review-thread queries retain their separate bounded matrix entries."
+source_refs = ["babysit-pr/scripts/gh_pr_watch.py:watcher_reader"]
+test_refs = ["babysit-pr/scripts/test_gh_pr_watch.py:test_run_watch_reports_chosen_sleep_interval"]
+capabilities = ["issues_read", "pull_requests_read", "checks_read", "statuses_read", "actions_read"]
+permission_mode = "fixed"
+permission_note = "Existing read grants only; no identity, permission or controller-mutation expansion."
+
+[[operations]]
+id = "github.train.drive"
+entrypoint = "launchplane/scripts/launchplane-train-drive.py --repo OWNER/REPO --pr N"
+intent = "Read train PR and candidate-check state with conditional caching and bounded primary-reset waits. Controller mutations remain delegated to the Launchplane helper."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/pulls/{number}; GET /repos/{repo}/commits/{sha}/check-runs; GET /repos/{repo}/pulls?state=closed; GET /rate_limit"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No GraphQL in this operation; readiness and review-thread queries retain their separate bounded matrix entries."
+source_refs = ["launchplane/scripts/launchplane-train-drive.py:live_io"]
+test_refs = ["launchplane/scripts/test_launchplane_train_drive.py:TrainDriveTests"]
+capabilities = ["pull_requests_read", "checks_read"]
+permission_mode = "fixed"
+permission_note = "Existing read grants only; no identity, permission or controller-mutation expansion."
+
 [capabilities.contents_read]
 scope = "repository"
 permission = "contents"
@@ -2075,7 +2116,7 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github/scripts/github_app_setup.py" = "752a8c6d16f8117271700a616a506dabc80528544f5315a1d15d67ab141ec4c4"
 "github/scripts/gh-comment" = "21ecb30d4d60b61c760f1df630fd6b56347873709bba2d05b7f32f9222fa4656"
 "github/scripts/gh-issue" = "2589d7e258872b5dc2609ceb581053b2daae205156ac360d1a84a2f49eb0f01f"
-"github/scripts/gh-plan.py" = "8424b2e4410cc7505494617d7c46bbfb7b843ea4d7979aaaa5ed2491ecab8024"
+"github/scripts/gh-plan.py" = "fc0347bcb53987c7a20bf3b9452c54e26a91eee6113162b7e5473cc198765465"
 "github/scripts/gh-pr.py" = "d58b23c06d224c485dc493561c7fd91835c2c65a9df5c5555f1368fbaab11a81"
 "github/scripts/gh-rulesets.py" = "0b6cfb046b92b6adce65841dd27eccd12884709753769744887c3e0376ce5748"
 "github/scripts/git-commit-as-bot" = "517fad723e60df546a32577f2ff459de218ed3f90773d09f922b4689b282dc67"
@@ -2085,7 +2126,7 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github/scripts/github-ci-diagnose.py" = "aa0acdfc3dfe28caa16b4fff851341eb34e65c4264ff3c1402b8e96d2116f27a"
 "github/scripts/github-repo-snapshot.sh" = "16162c41247a610e5d7093fd649053c79f6a4708b14d812368dee8753fd1a9fd"
 "github/scripts/github-work-evidence.py" = "eef884893d5bedce8a539587e7f7fd93e109ef1a17aedf887575a144340977a6"
-"github/scripts/github_api.py" = "d021f2572a2ff5fc7199a32fe01bad82c5c6db5c930b538c63944ee85a32d4fc"
+"github/scripts/github_api.py" = "a09cfb7454d707e5305fd8711e0861c3fa2b030af464dc87dcc3a6354d2ae04b"
 "github/scripts/github_capabilities.py" = "bfd1a0a155a783feca5735b870a78709032e878a9011a07034b000e41be97901"
 "github/scripts/github_comment.py" = "3833134cc809b2fc10a81b54ec7d92c420121f69f5417cede54be579820dd0cf"
 "github/scripts/github_direction_next.py" = "7a6f83bd0a764962486fb720f9dc9eca2febb77524565afcba95540711de5eb4"
@@ -2103,3 +2144,4 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "direction/scripts/direction_audit.py" = "e7485d480307adf5cd8ef7cc7cc7aa4648076cc1bbc09a16d649d9c3060b3b36"
 "github/scripts/github_plan_claim.py" = "02972b94895b552b0b9acbfde3d77b178e664b9b38d141dd6354af914edaee48"
 "github/scripts/github_plan_release.py" = "23e334369bd1caebfbad012fa913cdaa5604aa52727c6d8b8a6d857e821d47d8"
+"github/scripts/github_request_usage.py" = "e79e4658e4f37c954d45aec6bb41d84bd0a582a076a924bf0057adc5c5e4eeca"

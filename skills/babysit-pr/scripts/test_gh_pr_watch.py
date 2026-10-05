@@ -1170,6 +1170,61 @@ def test_run_watch_keeps_polling_open_ready_to_merge_pr(monkeypatch):
     assert [event for event, _ in events] == ["snapshot", "snapshot"]
 
 
+def test_25_unchanged_pending_watchers_fit_half_an_hourly_budget(monkeypatch):
+    """Replay the real watch loop and HTTP transport with no free 304s.
+
+    Seven mutable REST representations per poll is deliberately pessimistic.
+    This qualifies local poll traffic, not remote controller or write traffic.
+    """
+    clock = [0.0]
+    costs = [0]
+    monkeypatch.setenv("CODEX_AUTOMATION_LOGIN", "fixture-bot")
+    monkeypatch.setattr(gh_pr_watch.time, "time", lambda: clock[0])
+    monkeypatch.setattr(gh_pr_watch.github_read.random, "uniform", lambda *_args: 0)
+    monkeypatch.setattr(gh_pr_watch.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    monkeypatch.setattr(gh_pr_watch, "print_event", lambda *_args: None)
+    monkeypatch.setattr(gh_pr_watch.github_api, "default_retry_runtime", lambda: gh_pr_watch.github_api.RetryRuntime(
+        now=lambda: clock[0], sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds), jitter=lambda _seconds: 0
+    ))
+
+    def transport(command, **_kwargs):
+        assert "api" in command
+        costs[0] += 1
+        return subprocess.CompletedProcess(command, 0, stdout=(
+            'HTTP/2 200\ncontent-type: application/json\n\n' + json.dumps({"revision": costs[0]})
+        ).encode(), stderr=b"GitHub automation actor: fixture-bot (source: github_app)")
+
+    monkeypatch.setattr(gh_pr_watch.subprocess, "run", transport)
+    pending = {"pr": sample_pr(), "checks": sample_checks(all_terminal=False, pending_count=1),
+               "new_review_items": [], "actions": ["idle"]}
+    paths = ["pulls/7", "issues/7/comments", "pulls/7/comments", "pulls/7/reviews",
+             "commits/abc/check-runs", "commits/abc/status", "actions/runs?head_sha=abc"]
+
+    def snapshot(_args):
+        if clock[0] >= 3600:
+            return {**pending, "actions": ["stop_pr_closed"]}, Path("unused")
+        reader = gh_pr_watch.watcher_reader()
+        for path in paths:
+            reader.get_json(f"/repos/example/app/{path}", step="replay")
+        return pending, Path("unused")
+
+    monkeypatch.setattr(gh_pr_watch, "collect_snapshot", snapshot)
+    totals = []
+    for quiet_interval in (60, 300):
+        costs[0] = 0
+        for _ in range(25):
+            clock[0] = 0
+            assert gh_pr_watch.run_watch(argparse.Namespace(poll_seconds=60, green_poll_seconds=quiet_interval)) == 0
+        totals.append(costs[0])
+    baseline, optimized = totals
+    assert baseline > 7750
+    assert optimized < 7750 / 2
+    assert optimized < baseline / 3
+    print(json.dumps({"scenario": "25 unchanged pending watchers, seven mutable REST reads per poll, one hour",
+                      "baseline_requests": baseline, "optimized_requests": optimized,
+                      "coverage": "local watcher HTTP calls only"}))
+
+
 @pytest.mark.parametrize("stop_action", ["stop_pr_closed", "stop_exhausted_retries"])
 @pytest.mark.parametrize("server_floor", [0, 90])
 def test_run_watch_reports_chosen_sleep_interval(monkeypatch, stop_action, server_floor):
@@ -1215,7 +1270,7 @@ def test_run_watch_reports_chosen_sleep_interval(monkeypatch, stop_action, serve
     assert sleeps == [max(value, server_floor) + 2 for value in [
         args.poll_seconds, args.green_poll_seconds,
         args.poll_seconds, args.green_poll_seconds,
-        args.poll_seconds, args.poll_seconds, args.poll_seconds,
+        args.poll_seconds, args.poll_seconds * 2, args.poll_seconds,
     ]]
     assert [event for event, _ in events] == ["snapshot"] * 8 + ["stop"]
 

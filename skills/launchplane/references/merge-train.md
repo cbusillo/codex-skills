@@ -86,6 +86,21 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   ineligible, closed, deadline, no response, or repeated controller refusals,
   with each refusal's error code, HTTP status and trace ID. A candidate failure reports the
   failing checks and run URLs on the candidate commit.
+  Driver GitHub reads use the shared conditional cache and retry deadline.
+  The controller helper projects validated candidate PR numbers. While the
+  controller observes a candidate containing this driver's PR, it leaves the batch PRs
+  to that observation and reads them again on a phase change or final landing.
+  Unchanged controller phases poll less often, up to five minutes, and respect
+  the shared low-budget floor. A generic `github_request_failed` refusal probes
+  the quota-free `/rate_limit` endpoint through the target repository's
+  installation. Zero local core quota permits one wait to reset per refusal
+  streak, within the driver's deadline, without spending its helper-failure budget.
+  This is evidence about the local App; the controller can use another identity.
+  Further refusals retain the failure budget until the controller makes progress.
+  Other refusals retain their existing failure budget.
+  At the deadline, final read-back has one fixed 15-second grace window;
+  controller mutations and stack-finish passes keep the original deadline.
+  Authentication and permission failures emit an `error` stop event.
 - **Evidence**: For stack runs, report the stack-collapse plan record id, any
   batch candidate record id, the landing-plan record id, workflow run URLs, and
   the final root merge commit. Include child disposition evidence when the root
