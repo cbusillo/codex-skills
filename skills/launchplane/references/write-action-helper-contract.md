@@ -13,7 +13,7 @@ public-safety, operation semantics, protected workflows, invariant coverage, and
 helper bindings without network access. This is local consistency evidence, not
 proof of upstream freshness.
 
-Merge-train policy import, repository inventory, product expected configuration,
+Merge-train policy read and import, repository inventory, product expected configuration,
 generic-web deploy recovery, Odoo addon settings, and the lane-setup and
 promotion commands below are intentionally listed as bounded local extensions because their
 routes are not in the current vendored projection. The conformance gate fails
@@ -27,6 +27,26 @@ both the file's location after resolving ancestor directory aliases and its
 fully resolved target. A repository-local link to an external payload and an
 external link to repository-local data are both refused; an external payload,
 including an external link to another external file, is accepted.
+
+## Merge-train enrollment read
+
+`merge-train-policy-read --repo OWNER/REPO` calls the complete active-policy
+`GET /v1/work-graph/merge-train/policy` read using existing private admin config
+and the service's standing `merge_train.policy_targets` permission. Omitting
+`--repo` resolves the origin remote in `--repo-root` (default current directory).
+No grant, credential resolution, policy mutation or train entry occurs.
+The endpoint is a bounded local extension, absent from the vendored projection.
+
+On success, `status=available` and `result` contains `source=launchplane`,
+`status=enrolled|not_enrolled`, boolean `enabled`, per-branch `targets`
+(`baseBranch` and `readyLabel`), policy record id/time/digest, and a trace id.
+The projection drops other repositories, authorization and credential source
+metadata. Matching ignores repository case; distinct branches remain separate.
+Only a complete active-policy response proves absence. Missing config, denial,
+transport failure, duplicate targets or malformed policy mean unknown to callers.
+The snapshot emits `launchplane.mergeTrain.status=unknown` and `enabled=null`
+on those failures, independently of `github.json`, with a compact safe `reason`
+code for diagnosis. A read grants no merge authority.
 
 ## Odoo addon settings
 

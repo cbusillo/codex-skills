@@ -13,7 +13,7 @@
 - Follow the shared [executing loop](skills/references/executing-loop.md), loading
   each step's owning skill before acting. Claim issue-backed work with
   `gh-plan.py claim` before creating its linked task worktree.
-- This repository enables Launchplane's merge train in `.github/github.json`.
+- Launchplane's active merge-policy record owns this repository's train enrollment.
   Use the [Launchplane skill](skills/launchplane/SKILL.md#merge-train-controller)
   for authorized train entry and landing. Do not call `gh-pr.py merge` or merge
   directly in GitHub. When the task brief assigns train routing to a direction

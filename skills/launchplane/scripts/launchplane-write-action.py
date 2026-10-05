@@ -55,6 +55,7 @@ LOCAL_OPERATOR_ENV_KEYS = {
     "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL",
 }
 READ_ONLY_OPERATIONS = {
+    "merge-train-policy-read",
     "repository-inventory-read",
     "integration-allowances-read",
     "testing-hold-read",
@@ -4905,7 +4906,60 @@ def execute_target_replacement_plan_read(*, args: argparse.Namespace) -> int:
         return 1
 
 
+def summarize_merge_train_policy_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    """Project one repository; never emit credential sources or the fleet."""
+    source = _require_exact_fields(provider_payload, {"status", "trace_id", "record"})
+    record = _require_dict(source.get("record"))
+    policy = _require_dict(record.get("policy"))
+    policies = policy.get("policies")
+    if source.get("status") != "ok" or record.get("status") != "active" or not isinstance(policies, list) or not policies:
+        raise LaunchplaneSafetyError("invalid_response")
+    repository = public_identifier(request.get("repository"))
+    targets: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for value in policies:
+        target = _require_dict(value)
+        name = target.get("repository")
+        branch = target.get("base_branch")
+        if not isinstance(name, str) or not name.strip() or not isinstance(branch, str) or not branch.strip():
+            raise LaunchplaneSafetyError("invalid_response")
+        key = (name.casefold(), branch)
+        if key in seen:
+            raise LaunchplaneSafetyError("invalid_response")
+        seen.add(key)
+        if name.casefold() == repository.casefold():
+            raw_label = target.get("enqueue_label")
+            public_summary_string(raw_label, max_length=50)
+            if not isinstance(raw_label, str) or len(raw_label) > 50 or raw_label != raw_label.strip():
+                raise LaunchplaneSafetyError("invalid_response")
+            if any(ord(character) < 32 or ord(character) == 127 for character in raw_label):
+                raise LaunchplaneSafetyError("invalid_response")
+            targets.append({
+                "baseBranch": public_identifier(branch),
+                "readyLabel": raw_label,
+            })
+    summary = {
+        "source": "launchplane",
+        "status": "enrolled" if targets else "not_enrolled",
+        "enabled": bool(targets),
+        "targets": sorted(targets, key=lambda target: target["baseBranch"]),
+        "policy": {
+            "record_id": public_identifier(record.get("record_id")),
+            "updated_at": public_timestamp(record.get("updated_at")),
+            "policy_sha256": _project_sha256(record.get("policy_sha256")),
+        },
+        "trace_id": public_trace_id(source.get("trace_id")),
+    }
+    assert_public_safe_shape(summary)
+    payload = base_payload(status="available", operation="merge-train-policy-read", request=request)
+    payload["result"] = summary
+    return payload
+
+
 PRODUCT_READ_SUMMARIZERS = {
+    "merge-train-policy-read": summarize_merge_train_policy_read,
     "path-check": summarize_path_check,
     "product-environment-read": summarize_product_environment_read,
     "product-activity-read": summarize_product_activity_read,
@@ -8330,6 +8384,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Report private operator credential source presence without printing values.",
     )
 
+    policy_read = subparsers.add_parser(
+        "merge-train-policy-read",
+        help="Read enrollment and enqueue routing for one repository from the active policy.",
+    )
+    policy_read.add_argument("--repo", help="GitHub OWNER/REPO; otherwise resolve origin.")
+    policy_read.add_argument("--repo-root", default=".")
+
     preflight = subparsers.add_parser(
         "product-config-preflight", help="Preflight product-config intent without plaintext."
     )
@@ -8803,6 +8864,25 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     try:
+        if args.command == "merge-train-policy-read":
+            try:
+                if args.repo:
+                    repository = args.repo.removesuffix(".git")
+                else:
+                    github_scripts = Path(__file__).resolve().parents[2] / "github" / "scripts"
+                    sys.path.insert(0, str(github_scripts))
+                    from github_read import resolve_repo
+
+                    repository = resolve_repo(Path(args.repo_root))
+                if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+                    raise ValueError("repository_unresolved")
+            except (ValueError, ImportError) as exc:
+                raise ValueError("repository_unresolved") from exc
+            request = {"repository": public_identifier(repository)}
+            return execute_product_read(
+                args=args, operation=args.command, request=request,
+                path=helper_command_path(args.command),
+            )
         if args.command == "operator-config-diagnostic":
             request: dict[str, object] = {"diagnostic": "operator_config"}
             try:

@@ -19,6 +19,7 @@ import datetime as dt
 import fcntl
 import json
 import os
+import re
 import sys
 import tempfile
 from collections.abc import Iterator, Mapping
@@ -84,20 +85,27 @@ def save(path: Path, current: dict[str, object]) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
-def mark_turn(path: Path, now: dt.datetime) -> dict[str, object]:
+def covered_repo(repo: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+        raise ValueError("daily coverage must be OWNER/REPO")
+    return repo
+
+
+def mark_turn(path: Path, repo: str, now: dt.datetime) -> dict[str, object]:
+    repo = covered_repo(repo)
     with marker_lock(path) as path:
         current = load(path)
         current["turn"] = utc_stamp(now)
+        current["turn_repo"] = repo
         save(path, current)
     return current
 
 
 def mark_audit(path: Path, repo: str, now: dt.datetime) -> dict[str, object]:
-    """Used by the audit script; a turn is implied because an audit is a turn."""
+    """Record this repository's audit without changing daily-turn evidence."""
     with marker_lock(path) as path:
         current = load(path)
         stamp = utc_stamp(now)
-        current["turn"] = stamp
         audits = current["audits"]
         assert isinstance(audits, dict)
         audits[repo] = stamp
@@ -108,10 +116,11 @@ def mark_audit(path: Path, repo: str, now: dt.datetime) -> dict[str, object]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("kind", choices=["turn"], help="only a daily turn can be marked by hand")
-    parser.parse_args(argv)
+    parser.add_argument("--repo", required=True, type=covered_repo, help="OWNER/REPO covered by the daily turn")
+    args = parser.parse_args(argv)
     path = marker_path()
-    written = mark_turn(path, dt.datetime.now(dt.timezone.utc))
-    print(json.dumps({"ok": True, "marker": str(path), "turn": written["turn"]}))
+    written = mark_turn(path, args.repo, dt.datetime.now(dt.timezone.utc))
+    print(json.dumps({"ok": True, "marker": str(path), "turn": written["turn"], "turn_repo": written["turn_repo"]}))
     return 0
 
 
