@@ -34,8 +34,9 @@ verified backup, release record, post-deploy checks, automatic rollback.
 
 Code identifiers, stored fields, helper-checked text, and file names written
 before these words (for example `owner_review` or `operator_contract`) keep
-their spelling until they are migrated together with their readers. Quote them as code when prose must name
-them, and describe their meaning in these words. `scripts/validate_role_words.py`
+their spelling until they are migrated together with their readers. Quote them
+as code when prose must name them, and describe their meaning in these words.
+`scripts/validate_role_words.py`
 fails when the old role words return in prose.
 
 New question and decision comments use `Director question:` and
