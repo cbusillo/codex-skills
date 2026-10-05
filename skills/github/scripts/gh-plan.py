@@ -4265,7 +4265,7 @@ def unedited_owner_decision(comment: dict[str, Any]) -> bool:
     )
     node = (data.get("data") or {}).get("node")
     if data.get("errors") or not isinstance(node, dict) or "lastEditedAt" not in node:
-        raise PlanError("Owner decision edit history is unavailable")
+        raise PlanError("Director decision edit history is unavailable")
     return (
         node["lastEditedAt"] is None
         and node.get("databaseId") == comment.get("id")
@@ -4279,7 +4279,10 @@ def owner_reaction_decision(
 ) -> dict[str, Any] | None:
     # An exact first line binds the reaction to this issue and this action.
     body = comment.get("body")
-    if not isinstance(body, str) or body.splitlines()[:1] != [f"Owner decision: Close #{number} as not planned."]:
+    if not isinstance(body, str) or body.splitlines()[:1] not in (
+        [f"Director decision: Close #{number} as not planned."],
+        [f"Owner decision: Close #{number} as not planned."],
+    ):
         return None
     comment_id = comment.get("id")
     if not isinstance(comment_id, int) or isinstance(comment_id, bool):
@@ -4390,9 +4393,9 @@ def check_owner_decides_not_planned(issue_repo: str, number: int, issue: dict[st
     raise owner_decision_refusal(
         f"Cannot close {issue_repo}#{number} as not planned: it is in milestone {title!r} listed in "
         f"{issue_repo}:{DIRECTION_FILE}, and no comment by the repository owner {repo_owner!r} after the "
-        f"last Current Status update ({status_updated_at}) records the decision. Ask the owner to comment "
+        f"last Current Status update ({status_updated_at}) records the decision. Ask the Director to comment "
         "on the issue, or react with thumbs-up to an unedited comment whose first line is "
-        f"\"Owner decision: Close #{number} as not planned.\", then rerun; do not close it another way."
+        f"\"Director decision: Close #{number} as not planned.\", then rerun; do not close it another way."
     )
 
 
