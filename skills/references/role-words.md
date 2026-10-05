@@ -33,8 +33,13 @@ verified backup, release record, post-deploy checks, automatic rollback.
 ## Legacy Identifiers
 
 Code identifiers, stored fields, helper-checked text, and file names written
-before these words (for example `owner_review`, `operator_contract`, or the
-`Owner decision:` line a helper parses) keep their spelling until they are
-migrated together with their readers. Quote them as code when prose must name
-them, and describe their meaning in these words. `scripts/validate_role_words.py`
+before these words (for example `owner_review` or `operator_contract`) keep
+their spelling until they are migrated together with their readers. Quote them
+as code when prose must name them, and describe their meaning in these words.
+`scripts/validate_role_words.py`
 fails when the old role words return in prose.
+
+New question and decision comments use `Director question:` and
+`Director decision:`. Readers continue accepting `Owner question:` and
+`Owner decision:` as read-only legacy spellings forever. Never edit existing
+GitHub comments to migrate them.

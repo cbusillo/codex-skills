@@ -33,6 +33,10 @@ def load_module() -> Any:
         raise RuntimeError(f"Unable to load {SCRIPT}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.real_next_dependabot_work = module.next_dependabot_work
+    module.next_dependabot_work = lambda *_args, **_kwargs: {"dependabot_candidates": [], "dependabot_candidate_count": 0}
+    module.real_read_next_train_enrollment = module.read_next_train_enrollment
+    module.read_next_train_enrollment = lambda _repo: {"source": "launchplane", "status": "not_enrolled"}
     module.real_discover_direction_work = module.discover_direction_work
     module.real_read_next_inbound_blockers = module.read_next_inbound_blockers
     module.read_next_inbound_blockers = lambda *_a, **_kw: ("automation-gh", [], {"complete": True})
