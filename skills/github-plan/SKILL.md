@@ -442,13 +442,10 @@ reads complete. Issues the plan blocks do not prevent its closure. Use
 `--reason not_planned` only for explicitly superseded or abandoned plans;
 retained open relationships are not completion evidence. For an issue in a
 milestone listed in merged `DIRECTION.md`, a `not_planned` close requires the
-Director's decision comment, posted as the repository owner after the last
-Current Status update, or the repository owner's thumbs-up reaction after that
-update on an unedited comment whose first line is
-`Owner decision: Close #<number> as not planned.` Record the exact action in a
-new comment; editing a reacted-to decision invalidates it. If reaction identity,
-time, or edit history cannot be read, the helper rejects it. Never bypass a
-closure refusal through another tool.
+Director's approval through the
+[closure decision contract](../github/references/cli-reference.md#planning-management).
+Record the exact action in a new comment; never edit an existing GitHub comment
+or bypass a closure refusal through another tool.
 
 Prefer non-closing `Refs` from PRs unless the Director requests auto-close or an
 internal task is conclusively complete. After merge, inspect referenced issues:

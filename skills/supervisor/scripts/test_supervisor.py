@@ -446,17 +446,31 @@ class QuestionTests(unittest.TestCase):
                     ]
                     # Even the Director's linked follow-up question is not an answer.
                     answers.extend(
-                        {"id": comment_id, "author": "director", "body": f"{role} question: about 123?", "url": role}
+                        {
+                            "id": comment_id,
+                            "author": "director",
+                            "body": f"{role} question: about 123?",
+                            "url": role,
+                        }
                         for comment_id, role in enumerate(("Director", "Owner"), start=124)
                     )
-                    self.assertEqual(oq.questions([question, *answers], "director", {"bot"})[0]["status"], "needs_review")
-                    for body in (f"**{decision_role} decision:** yes 123", f"{decision_role} decision, recorded: {question['url']}"):
+                    self.assertEqual(
+                        oq.questions([question, *answers], "director", {"bot"})[0]["status"],
+                        "needs_review",
+                    )
+                    for body in (
+                        f"**{decision_role} decision:** yes 123",
+                        f"{decision_role} decision, recorded: {question['url']}",
+                    ):
                         answer = {"author": "bot", "body": body, "url": "recorded"}
                         result = oq.questions([question, *answers, answer], "director", {"bot"})[0]
                         self.assertEqual(result["answers"], ["recorded"])
                         self.assertEqual(result["status"], "answered")
                     direct = {"author": "director", "body": "yes 123", "url": "direct"}
-                    self.assertEqual(oq.questions([question, direct], "director", {"bot"})[0]["answers"], ["direct"])
+                    self.assertEqual(
+                        oq.questions([question, direct], "director", {"bot"})[0]["answers"],
+                        ["direct"],
+                    )
 
     def test_all_questions_and_only_linked_authorized_answers(self):
         q1 = {

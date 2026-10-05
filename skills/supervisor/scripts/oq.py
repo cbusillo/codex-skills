@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""List all Owner questions, with conservative answer matching and full pagination."""
+"""List Director questions, including legacy headings, with conservative answer matching."""
 
 import argparse
 import json

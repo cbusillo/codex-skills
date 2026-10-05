@@ -706,7 +706,8 @@ competitor's record.
   milestone listed in merged `DIRECTION.md`: a repository owner comment after
   the last issue-body edit, or a repository owner `+1` reaction after
   that edit on an unedited comment starting with the exact first line
-  `Owner decision: Close #<number> as not planned.` Other accounts, comment
+  `Director decision: Close #<number> as not planned.` The legacy `Owner decision:`
+  spelling remains accepted for existing comments. Other accounts, comment
   types, actions, and edited decisions do not qualify; unreadable identity,
   reaction time, or edit history fails closed. Then it
   retains and reports remaining relationships, closes with the distinct
