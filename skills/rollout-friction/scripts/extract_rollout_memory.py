@@ -462,7 +462,7 @@ def redact_person_name(match: re.Match[str]) -> str:
 
 def clean_source_file(path: str, args: argparse.Namespace) -> str:
     if args.redact:
-        return PATH_RE.sub("<path-redacted>", path)
+        return "<path-redacted>"
     return path
 
 
