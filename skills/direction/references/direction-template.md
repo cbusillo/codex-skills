@@ -1,8 +1,8 @@
 # DIRECTION.md Template
 
 Copy the block below to `DIRECTION.md` at the repository root. Keep every
-section; delete nothing but the placeholder text. Keep the whole file to about
-one page. The audit script requires the five `##` headings, and the milestone
+section; delete nothing but the placeholder text. Keep the whole file to one
+to two pages. The audit script requires the five `##` headings, and the milestone
 helper reads only the `## Milestones` section.
 
 ## Milestone Line Format
