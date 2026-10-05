@@ -7634,6 +7634,8 @@ def test_privileged_policy_propose_rejects_malformed_result_without_echoing_priv
     [
         (TimeoutError(), "outcome_unknown"),
         (urllib.error.URLError("offline"), "outcome_unknown"),
+        (http.client.IncompleteRead(b"partial"), "outcome_unknown"),
+        (json.JSONDecodeError("cut off", "{", 1), "accepted_unverified"),
         ("malformed", "accepted_unverified"),
         (403, "denied"),
         (409, "conflict"),

@@ -6008,7 +6008,9 @@ def execute_post(
     except LaunchplaneSafetyError as exc:
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
+        if isinstance(exc, http.client.HTTPException) and operation != "privileged-policy-propose":
+            raise
         if operation == "privileged-policy-propose":
             payload = unavailable_payload(operation=operation, request=request, status="outcome_unknown", code="proposal_transport_uncertain", message="The proposal response was interrupted; this does not prove a service outage or an unsaved plan.")
             payload["summary"] = {"recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
