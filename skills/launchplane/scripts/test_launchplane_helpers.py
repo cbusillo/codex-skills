@@ -7072,6 +7072,14 @@ def test_runtime_sync_review_persistence_and_boundaries() -> None:
         code, result, _ = _run_runtime_sync(apply_argv, [_runtime_sync_response(), malformed_apply])
         assert code == 1 and result["status"] == "accepted_unverified"
         assert result["summary"]["trace_id"] == "launchplane_req_runtime_sync"
+        invalid_trace = _runtime_sync_response(mode="apply")
+        invalid_trace["trace_id"] = {}
+        code, result, _ = _run_runtime_sync(apply_argv, [_runtime_sync_response(), invalid_trace])
+        assert code == 1 and result["status"] == "accepted_unverified"
+        invalid_status = _runtime_sync_response(mode="apply")
+        invalid_status["result"]["apply"]["verification"]["status"] = []
+        code, result, _ = _run_runtime_sync(apply_argv, [_runtime_sync_response(), invalid_status])
+        assert code == 1 and result["status"] == "accepted_unverified"
 
 
 def test_runtime_sync_denial_and_unsafe_output() -> None:

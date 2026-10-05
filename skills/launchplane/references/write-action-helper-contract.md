@@ -1123,7 +1123,9 @@ nothing and never switches identity.
 Save the dry-run output privately. Apply requires `--reviewed-dry-run`,
 `--expected-plan-digest` from `result.plan_sha256`, `--dry-run-evidence-file`, and
 `--idempotency-key`. Use a fresh stable key for each later intentional sync;
-reuse the original key only to reconcile that operation, never for a new sync.
+keep the original key associated with that operation, never with a new sync.
+Reconcile through the read-only dry-run command below; do not replay apply
+blindly after an uncertain outcome.
 The helper binds the review to the lane, provider target
 fingerprint and key/count plan, obtains a fresh dry run and refuses a difference
 observed in that pre-apply plan before sending apply. It reports changed,

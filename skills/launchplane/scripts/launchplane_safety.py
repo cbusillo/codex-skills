@@ -234,7 +234,7 @@ def assert_public_safe_shape(value: Any) -> None:
 
 
 def public_code(value: object, *, default: str | None = None) -> str:
-    if value in {None, ""} and default is not None:
+    if (value is None or value == "") and default is not None:
         value = default
     if not isinstance(value, str) or not CODE_RE.fullmatch(value):
         raise LaunchplaneSafetyError("invalid_response")
@@ -256,7 +256,7 @@ def public_identifier(value: object) -> str:
 
 
 def public_trace_id(value: object) -> str:
-    if value in {None, ""}:
+    if value is None or value == "":
         return ""
     if not isinstance(value, str):
         raise LaunchplaneSafetyError("invalid_response")
