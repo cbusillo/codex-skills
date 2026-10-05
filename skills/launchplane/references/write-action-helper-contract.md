@@ -1109,3 +1109,39 @@ The private request keeps the original reason; redaction changes public evidence
 only. A projection is lossy and cannot distinguish changes solely inside
 redacted spans; service digests and private-payload bindings remain in force
 where supported.
+
+## Managed runtime sync
+
+`live-target-runtime-sync-dry-run` and `live-target-runtime-sync-apply` use the
+existing `POST /v1/live-target-runtime/apply` local extension. Pass `--product`,
+`--context`, and `--instance`; values come from Launchplane's managed records,
+never CLI input. The service checks `live_target_runtime.plan` or `.apply` on
+product/context. The helper grants nothing and never switches identity.
+
+Save the dry-run output privately. Apply requires `--reviewed-dry-run`,
+`--expected-plan-digest` from `result.plan_sha256`, `--dry-run-evidence-file`, and
+`--idempotency-key`. The helper binds the review to the lane, provider target
+fingerprint and key/count plan, obtains a fresh dry run and refuses a changed
+plan before applying. It reports changed, missing, different and retiring key
+names, counts, provider persistence status and `read_back_matches`; target ids,
+provider payloads and values are dropped. After apply it runs another dry run
+and requires zero remaining key changes on the same target.
+
+The digest binds metadata, not hidden values or managed-record revisions. The
+service has no reviewed-revision compare-and-swap contract here; a value change
+that leaves the same key plan is not detectable by this helper. This is not an
+exact-value review guarantee. Provider persistence also does not prove the
+running containers received the values: this narrow sync always sends
+`deploy: false`, and offers no deploy or restart option.
+
+Authorization denials remain denials with their trace. A timeout or unverifiable
+response after an apply attempt is `accepted_unverified`, exits nonzero and
+requires reconciliation before retrying under any key. A failed read-back never
+becomes successful persistence evidence.
+
+For event-driven generic-web recovery, `deploy_key_sha256` identifies a key but
+cannot reconstruct it. Obtain the original deploy coordinates/key from a
+service-owned surface or explicit private admin input before using recovery.
+This helper does not invent an opaque recovery reference or clear an unknown
+provider fence. When the service cannot supply that evidence, track the service
+prerequisite and leave recovery held.

@@ -5541,6 +5541,158 @@ def prepare_operator_settings(
     return settings
 
 
+def _runtime_sync_result(source: object, *, mode: str) -> dict[str, object]:
+    result = _require_dict(source)
+    if result.get("status") != "ok" or result.get("mode") != mode:
+        raise LaunchplaneSafetyError("invalid_response")
+    delta = _require_dict(result.get("runtime_environment"))
+    projected_delta: dict[str, object] = {}
+    for name in ("desired_key_count", "live_key_count", "unchanged_key_count"):
+        value = delta.get(name)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise LaunchplaneSafetyError("invalid_response")
+        projected_delta[name] = value
+    for name in ("missing_keys", "different_keys", "changed_keys", "retired_keys_present"):
+        values = delta.get(name, [] if name == "retired_keys_present" else None)
+        if not isinstance(values, list) or len(values) > 500:
+            raise LaunchplaneSafetyError("invalid_response")
+        projected_delta[name] = sorted({_public_env_key(value) for value in values})
+    changed = set(cast(list[str], projected_delta["changed_keys"]))
+    expected = set(cast(list[str], projected_delta["missing_keys"])) | set(
+        cast(list[str], projected_delta["different_keys"])
+    ) | set(cast(list[str], projected_delta["retired_keys_present"]))
+    if changed != expected:
+        raise LaunchplaneSafetyError("invalid_response")
+    target = _require_dict(result.get("tracked_target"))
+    if not isinstance(target.get("target_id"), str) or not target["target_id"]:
+        raise LaunchplaneSafetyError("invalid_response")
+    target_type = public_code(target.get("target_type"))
+    if target_type not in {"application", "compose"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    target_digest = hashlib.sha256(json.dumps(
+        [target_type, target["target_id"]], separators=(",", ":")
+    ).encode()).hexdigest()
+    apply = _require_dict(result.get("apply"))
+    deploy = _require_dict(result.get("deploy"))
+    if apply.get("applied") is not (mode == "apply") or not isinstance(apply.get("env_updated"), bool):
+        raise LaunchplaneSafetyError("invalid_response")
+    if deploy.get("requested") is not False or deploy.get("triggered") is not False:
+        raise LaunchplaneSafetyError("invalid_response")
+    verification = _require_dict(apply.get("verification"))
+    verification_status = public_code(verification.get("status"))
+    if verification_status not in {"pass", "skipped", "fail"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    projected = {
+        "status": "ok", "mode": mode,
+        "context": public_identifier(result.get("context")),
+        "instance": public_identifier(result.get("instance")),
+        "target_sha256": target_digest,
+        "runtime_environment": projected_delta,
+        "env_updated": apply["env_updated"],
+        "persistence_status": verification_status,
+        "deploy_requested": False,
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _runtime_sync_plan_digest(request: dict[str, object], result: dict[str, object]) -> str:
+    if not isinstance(result.get("target_sha256"), str) or not isinstance(result.get("runtime_environment"), dict):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    return hashlib.sha256(json.dumps({
+        "request": request, "target_sha256": result["target_sha256"],
+        "runtime_environment": result["runtime_environment"],
+    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def execute_runtime_sync(args: argparse.Namespace) -> int:
+    operation = args.command
+    applying = operation.endswith("-apply")
+    request = {
+        "product": public_identifier(args.product),
+        "context": public_identifier(args.context),
+        "instance": public_identifier(args.instance),
+        "payload_source": "operator_argument",
+    }
+    reviewed_digest = ""
+    if applying:
+        _require_idempotency(args)
+        if not args.reviewed_dry_run:
+            raise ValueError("reviewed_dry_run_required")
+        reviewed_digest = _required_lower_sha256(args.expected_plan_digest, code="invalid_expected_plan_digest")
+        evidence, reviewed = _load_reviewed_evidence(
+            args, operation="live-target-runtime-sync-dry-run", expected_digest=reviewed_digest
+        )
+        if evidence["request"] != request or _runtime_sync_plan_digest(request, reviewed) != reviewed_digest:
+            raise ValueError("reviewed_dry_run_not_apply_eligible")
+    settings = prepare_operator_settings(args=args, operation=operation, request=request)
+    if settings is None:
+        return 2
+    apply_attempted = False
+    body = {"schema_version": 1, **{key: request[key] for key in ("product", "context", "instance")}, "deploy": False}
+    path = helper_command_path(operation)
+
+    def call(mode: str) -> tuple[dict[str, object], dict[str, Any]]:
+        raw = request_launchplane(
+            service_url=settings["service_url"], path=path, settings=settings,
+            body={**body, "mode": mode}, timeout=args.timeout,
+            idempotency_key=args.idempotency_key if mode == "apply" else "",
+        )
+        if raw.get("status") != "accepted":
+            raise LaunchplaneSafetyError("invalid_response")
+        result = _runtime_sync_result(raw.get("result"), mode=mode)
+        if result["context"] != request["context"] or result["instance"] != request["instance"]:
+            raise LaunchplaneSafetyError("invalid_response")
+        return result, raw
+
+    try:
+        plan, raw = call("dry-run")
+        digest = _runtime_sync_plan_digest(request, plan)
+        if applying and digest != reviewed_digest:
+            raise ValueError("runtime_sync_plan_changed")
+        result = plan
+        if applying:
+            apply_attempted = True
+            result, raw = call("apply")
+            if _runtime_sync_plan_digest(request, result) != reviewed_digest:
+                raise LaunchplaneSafetyError("invalid_response")
+            observed, _ = call("dry-run")
+            delta = cast(dict[str, object], observed["runtime_environment"])
+            matches = observed["target_sha256"] == result["target_sha256"] and delta["changed_keys"] == []
+            if not matches or result["persistence_status"] == "fail":
+                raise LaunchplaneSafetyError("invalid_response")
+            result["read_back_matches"] = True
+        result["plan_sha256"] = digest
+        payload = base_payload(status="accepted", operation=operation, request=request)
+        payload["result"] = result
+        payload["summary"] = {
+            "trace_id": public_trace_id(raw.get("trace_id")),
+            "recommendation": "Review the key plan before apply; sync persists provider env and does not restart containers.",
+        }
+        emit(payload)
+        return 0
+    except (urllib.error.HTTPError, OSError, TimeoutError, urllib.error.URLError, LaunchplaneSafetyError, ValueError) as exc:
+        if apply_attempted and isinstance(exc, urllib.error.HTTPError) and exc.code in {401, 403}:
+            emit_http_error_payload(operation=operation, request=request, exc=exc)
+        elif apply_attempted:
+            payload = unavailable_payload(
+                operation=operation, request=request, status="accepted_unverified",
+                code="runtime_sync_apply_unverified",
+                message="Runtime sync was attempted; inspect persistence before any retry.",
+            )
+            payload["summary"] = {"recommendation": "Do not retry under any key until the lane env and operation outcome are reconciled."}
+            emit(payload)
+        elif isinstance(exc, urllib.error.HTTPError):
+            emit_http_error_payload(operation=operation, request=request, exc=exc)
+        elif isinstance(exc, LaunchplaneSafetyError):
+            emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        elif isinstance(exc, ValueError):
+            raise
+        else:
+            emit_provider_unavailable(operation=operation, request=request)
+        return 1
+
+
 def execute_post(
     *,
     args: argparse.Namespace,
@@ -8352,6 +8504,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Private saved JSON output from the reviewed addon-settings dry-run.",
     )
 
+    for command in ("live-target-runtime-sync-dry-run", "live-target-runtime-sync-apply"):
+        sync = subparsers.add_parser(command, help="Sync managed runtime values without deployment; key names only.")
+        for name in ("product", "context", "instance"):
+            sync.add_argument(f"--{name}", required=True)
+        sync.add_argument("--idempotency-key", required=command.endswith("-apply"), default="")
+        if command.endswith("-apply"):
+            sync.add_argument("--reviewed-dry-run", action="store_true")
+            sync.add_argument("--expected-plan-digest", required=True)
+            sync.add_argument("--dry-run-evidence-file", required=True)
+
     recovery_dry_run = subparsers.add_parser(
         "generic-web-deploy-recovery-dry-run",
         help="Submit a private generic-web deploy-recovery dry-run payload.",
@@ -8900,6 +9062,8 @@ def main(argv: list[str]) -> int:
                 request=request,
                 body=body,
             )
+        if args.command in {"live-target-runtime-sync-dry-run", "live-target-runtime-sync-apply"}:
+            return execute_runtime_sync(args)
         if args.command == "generic-web-deploy-recovery-dry-run":
             request = {"mode": "dry_run", "payload_source": "private_file"}
             body = generic_web_deploy_recovery_body(args, mode="dry_run")

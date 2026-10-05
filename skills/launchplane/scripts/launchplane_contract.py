@@ -218,6 +218,12 @@ PROJECTED_HELPER_COMMANDS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    "live-target-runtime-sync-dry-run": {
+        "method": "POST", "path": "/v1/live-target-runtime/apply", "mode": "dry-run",
+    },
+    "live-target-runtime-sync-apply": {
+        "method": "POST", "path": "/v1/live-target-runtime/apply", "mode": "apply",
+    },
     "owner-review-read": {
         "method": "GET",
         "path": "/v1/product-review",

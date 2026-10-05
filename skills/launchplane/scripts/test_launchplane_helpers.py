@@ -6969,8 +6969,97 @@ def test_compose_domain_review_apply_and_read_back() -> None:
                     assert status == 2 and not posts
 
 
+def _runtime_sync_response(*, mode: str = "dry-run", changed: bool = True) -> dict[str, object]:
+    return {
+        "status": "accepted", "trace_id": "launchplane_req_runtime_sync",
+        "records": {"target_id": "private-provider-id"},
+        "result": {
+            "status": "ok", "mode": mode, "context": "example-context", "instance": "testing",
+            "tracked_target": {"target_id": "private-provider-id", "target_type": "compose", "target_name": "private-name"},
+            "runtime_environment": {
+                "desired_key_count": 2, "live_key_count": 2, "unchanged_key_count": 1 if changed else 2,
+                "missing_keys": [], "different_keys": ["EXAMPLE_API_TOKEN"] if changed else [],
+                "changed_keys": ["EXAMPLE_API_TOKEN"] if changed else [],
+            },
+            "provider_env_platform_credentials": {"keys": []},
+            "apply": {"applied": mode == "apply", "env_updated": mode == "apply" and changed,
+                      "verification": {"status": "pass" if mode == "apply" and changed else "skipped"}},
+            "deploy": {"requested": False, "triggered": False, "result": None},
+        },
+    }
+
+
+def _run_runtime_sync(argv: list[str], responses: list[object]) -> tuple[int, dict[str, Any], Mock]:
+    output = io.StringIO()
+    with patch.object(write_action, "resolve_settings", return_value={"service_url": "https://example.invalid", "token": "private-token"}), patch.object(
+        write_action, "request_launchplane", side_effect=responses
+    ) as transport, redirect_stdout(output):
+        code = write_action.main(argv)
+    return code, json.loads(output.getvalue()), transport
+
+
+def test_runtime_sync_review_persistence_and_boundaries() -> None:
+    flags = ["--product", "example-site", "--context", "example-context", "--instance", "testing"]
+    dry_argv = ["live-target-runtime-sync-dry-run", *flags]
+    code, evidence, transport = _run_runtime_sync(dry_argv, [_runtime_sync_response()])
+    assert code == 0 and evidence["result"]["runtime_environment"]["changed_keys"] == ["EXAMPLE_API_TOKEN"]
+    assert transport.call_args.kwargs["body"]["deploy"] is False
+    assert transport.call_args.kwargs["idempotency_key"] == ""
+    encoded = json.dumps(evidence)
+    assert "private-provider-id" not in encoded and "private-name" not in encoded and "private-token" not in encoded
+    with TemporaryDirectory() as temporary:
+        path = Path(temporary) / "review.json"
+        path.write_text(encoded)
+        apply_argv = ["live-target-runtime-sync-apply", *flags, "--idempotency-key", "example-sync",
+                      "--reviewed-dry-run", "--expected-plan-digest", evidence["result"]["plan_sha256"],
+                      "--dry-run-evidence-file", str(path)]
+        code, result, transport = _run_runtime_sync(apply_argv, [
+            _runtime_sync_response(), _runtime_sync_response(mode="apply"), _runtime_sync_response(changed=False),
+        ])
+        assert code == 0 and result["result"]["read_back_matches"] is True
+        assert result["result"]["persistence_status"] == "pass"
+        assert [call.kwargs["body"]["mode"] for call in transport.call_args_list] == ["dry-run", "apply", "dry-run"]
+        assert [call.kwargs["idempotency_key"] for call in transport.call_args_list] == ["", "example-sync", ""]
+        code, result, transport = _run_runtime_sync(apply_argv, [_runtime_sync_response(changed=False)])
+        assert code == 2 and result["warnings"][0]["code"] == "runtime_sync_plan_changed"
+        assert transport.call_count == 1
+        code, result, transport = _run_runtime_sync(apply_argv, [
+            _runtime_sync_response(), _runtime_sync_response(mode="apply"), _runtime_sync_response(),
+        ])
+        assert code == 1 and result["status"] == "accepted_unverified"
+        wrong_lane = list(apply_argv)
+        wrong_lane[wrong_lane.index("testing")] = "prod"
+        code, _, transport = _run_runtime_sync(wrong_lane, [])
+        assert code == 2 and transport.call_count == 0
+        unreviewed = [value for value in apply_argv if value != "--reviewed-dry-run"]
+        code, _, transport = _run_runtime_sync(unreviewed, [])
+        assert code == 2 and transport.call_count == 0
+        code, result, transport = _run_runtime_sync(apply_argv, [_runtime_sync_response(), TimeoutError()])
+        assert code == 1 and result["status"] == "accepted_unverified" and transport.call_count == 2
+
+
+def test_runtime_sync_denial_and_unsafe_output() -> None:
+    argv = ["live-target-runtime-sync-dry-run", "--product", "example-site", "--context", "example-context", "--instance", "testing"]
+    error = urllib.error.HTTPError("https://example.invalid", 403, "Forbidden", {}, io.BytesIO(json.dumps({
+        "error": {"code": "authorization_denied"}, "trace_id": "launchplane_req_denied"
+    }).encode()))
+    code, result, transport = _run_runtime_sync(argv, [error])
+    assert code == 1 and result["status"] == "denied" and transport.call_count == 1
+    assert result["summary"]["trace_id"] == "launchplane_req_denied"
+    unsafe = _runtime_sync_response()
+    unsafe["result"]["runtime_environment"]["changed_keys"] = ["EXAMPLE_API_TOKEN=secret"]
+    code, result, _ = _run_runtime_sync(argv, [unsafe])
+    assert code == 1 and "secret" not in json.dumps(result)
+    unexpected_deploy = _runtime_sync_response()
+    unexpected_deploy["result"]["deploy"]["triggered"] = True
+    code, _, _ = _run_runtime_sync(argv, [unexpected_deploy])
+    assert code == 1
+
+
 def main() -> int:
     tests = [
+        test_runtime_sync_review_persistence_and_boundaries,
+        test_runtime_sync_denial_and_unsafe_output,
         test_operator_free_text_redacts_credentials_and_urls,
         test_redacted_reasons_allow_matching_reviewed_apply,
         test_path_check_reads_both_paths_and_preserves_clear_blocked_unknown,
