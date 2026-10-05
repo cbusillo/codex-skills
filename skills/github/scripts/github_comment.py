@@ -262,6 +262,7 @@ def _call_api(
     payload: Any,
     *,
     gh_cmd: str,
+    gh_prefix_args: Optional[list[str]] = None,
     operation: str,
     actor: Optional[str],
     expected_actor: Optional[str],
@@ -284,6 +285,7 @@ def _call_api(
         path,
         payload,
         gh_cmd=gh_cmd,
+        gh_prefix_args=gh_prefix_args,
         operation=operation,
         actor=actor,
         expected_actor=expected_actor,
@@ -316,6 +318,7 @@ def authenticated_actor(
     gh_cmd: str,
     operation: str,
     expected_actor: Optional[str],
+    write_repository: Optional[str] = None,
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
 ) -> str:
     result = _call_api(
@@ -323,6 +326,7 @@ def authenticated_actor(
         "/user",
         None,
         gh_cmd=gh_cmd,
+        gh_prefix_args=["--write-actor-for", write_repository] if write_repository else None,
         operation=operation,
         actor=None,
         expected_actor=None,
@@ -331,6 +335,8 @@ def authenticated_actor(
         is_write=False,
         retry_summaries=retry_summaries,
     )
+    if write_repository:
+        expected_actor = response_expected_actor(result, expected_actor)
     login = result.body.get("login") if isinstance(result.body, dict) else None
     if not isinstance(login, str) or not login:
         raise _local_error(
@@ -538,6 +544,7 @@ def reconcile_created_comment(
             "failed",
             details={
                 "request_fingerprint": fingerprint,
+                "actor": actor,
                 "failure": exc.api_result or {"cause": exc.failure.cause},
             },
         )
@@ -547,6 +554,7 @@ def reconcile_created_comment(
             "failed",
             details={
                 "request_fingerprint": fingerprint,
+                "actor": actor,
                 "failure": {"cause": "invalid_reconciliation_timestamp"},
             },
         )
@@ -567,6 +575,7 @@ def reconcile_created_comment(
         matches.append(item)
     details = {
         "request_fingerprint": fingerprint,
+        "actor": actor,
         "operation_id": operation_id,
         "started_at": started_at,
         "clock_skew_seconds": RECONCILIATION_CLOCK_SKEW_SECONDS,
@@ -642,7 +651,7 @@ def _comment_payload(
         "kind": kind,
         "repo": repo,
         "number": number,
-        "actor": author if isinstance(author, str) and author else actor,
+        "actor": author if comment_action != "updated" and isinstance(author, str) and author else actor,
         "expected_actor": expected_actor,
         "comment_action": comment_action,
         "url": comment["html_url"],
@@ -737,8 +746,11 @@ def _comment_impl(
         gh_cmd=gh_cmd,
         operation=operation,
         expected_actor=expected_actor,
+        write_repository=resolved_repo,
         retry_summaries=collected_retry_summaries,
     )
+    if expected_actor:
+        expected_actor = actor
     steps = list(completed_steps or [])
     steps.append("resolve_actor")
     existing_comments: Optional[list[dict[str, Any]]] = None
@@ -803,7 +815,7 @@ def _comment_impl(
         steps.append(update_step)
         payload = _comment_payload(
             result.body, operation=operation, kind=kind, repo=resolved_repo,
-            number=number, actor=actor, expected_actor=expected_actor,
+            number=number, actor=result.actor or actor, expected_actor=expected_actor,
             comment_action="updated", completed_steps=steps, retry_summary=result.retry_summary,
         )
         payload["selected_comment_id"] = edit_comment
@@ -866,7 +878,7 @@ def _comment_impl(
                 kind=kind,
                 repo=resolved_repo,
                 number=number,
-                actor=actor,
+                actor=result.actor or actor,
                 expected_actor=expected_actor,
                 comment_action="updated",
                 completed_steps=steps,

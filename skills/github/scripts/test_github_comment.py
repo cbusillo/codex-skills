@@ -409,8 +409,93 @@ def test_edit_preserves_comment_author_after_authorized_route_switch() -> None:
             "pr", 42, "body", repo="owner/repo", gh_cmd="fake-gh", edit_last=True
         )
         assert payload["comment"]["author"] == "fixture-automation", payload
+        assert payload["actor"] == "contributor", payload
         assert payload["outcome_certainty"] == "confirmed", payload
         assert [call["method"] for call in calls] == ["GET", "GET", "PATCH"], calls
+
+    with_call_stub(callback, run)
+
+
+def test_own_user_actor_is_resolved_before_edit_selection_and_dedupe() -> None:
+    for mode in ("edit_last", "edit_comment", "dedupe_body"):
+        contributor_comment = comment_body(20, "contributor", body="replacement")
+        contributor_comment["issue_url"] = "https://api.github.com/repos/owner/repo/issues/42"
+
+        def callback(method: str, path: str, _body: Any, **kwargs: Any) -> github_api.ApiResult:
+            if path == "/user":
+                if kwargs.get("gh_prefix_args") != ["--write-actor-for", "owner/repo"]:
+                    return success({"login": "fixture-automation"})
+                result = success({"login": "contributor"})
+                result.actor = "contributor"
+                result.expected_actor = None
+                return result
+            assert kwargs["actor"] == kwargs["expected_actor"] == "contributor", kwargs
+            if method == "GET" and "/issues/comments/" not in path:
+                return success([comment_body(30), contributor_comment, comment_body(40, "foreign")])
+            assert path == "/repos/owner/repo/issues/comments/20", path
+            return success(contributor_comment)
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            options = {mode: 20 if mode == "edit_comment" else True}
+            with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}):
+                result = github_comment.comment(
+                    "issue", 42, "replacement", repo="owner/repo", gh_cmd="fake-gh", **options
+                )
+            assert result["actor"] == result["expected_actor"] == "contributor", result
+            assert result["comment"]["id"] == 20, result
+            assert not any(call["method"] == "POST" for call in calls), calls
+            assert sum(call["method"] == "PATCH" for call in calls) == (mode != "dedupe_body"), calls
+
+        with_call_stub(callback, run)
+
+
+def test_resolved_own_user_rejects_foreign_exact_comment_before_write() -> None:
+    def callback(_method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            result = success({"login": "contributor"})
+            result.actor = "contributor"
+            result.expected_actor = None
+            return result
+        result = comment_body(20)
+        result["issue_url"] = "https://api.github.com/repos/owner/repo/issues/42"
+        return success(result)
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        try:
+            github_comment.comment("issue", 42, "replacement", repo="owner/repo", edit_comment=20, gh_cmd="fake-gh")
+        except github_comment.CommentError as exc:
+            assert exc.failure.cause == "actor_mismatch", exc.failure
+            assert exc.failure.failed_step == "validate_exact_comment", exc.failure
+        else:
+            raise AssertionError("foreign comment must fail before PATCH")
+        assert all(call["method"] == "GET" for call in calls), calls
+
+    with_call_stub(callback, run)
+
+
+def test_resolved_own_user_failure_keeps_fingerprint_and_reconciliation_actor() -> None:
+    def callback(method: str, path: str, _body: Any, **kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            result = success({"login": "contributor"})
+            result.actor = "contributor"
+            result.expected_actor = None
+            return result
+        if method == "GET":
+            return success([])
+        assert kwargs["actor"] == kwargs["expected_actor"] == "contributor", kwargs
+        return failure(503, "Unicorn!", is_write=True)
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        try:
+            github_comment.comment("issue", 42, "replacement", repo="owner/repo", gh_cmd="fake-gh")
+        except github_comment.CommentError as exc:
+            assert exc.payload["reconciliation"]["actor"] == "contributor", exc.payload
+            assert exc.payload["operation_marker"]["value"] == github_comment._comment_fingerprint(
+                "owner/repo", 42, "contributor", "replacement"
+            ), exc.payload
+        else:
+            raise AssertionError("failed write must preserve actor evidence")
+        assert sum(call["method"] == "POST" for call in calls) == 1, calls
 
     with_call_stub(callback, run)
 
@@ -422,8 +507,13 @@ def test_own_user_unknown_write_reconciles_without_duplicate() -> None:
     def callback(method: str, path: str, body: Any, **kwargs: Any) -> github_api.ApiResult:
         nonlocal submitted_body, get_calls
         if path == "/user":
-            return success({"login": "fixture-automation"})
+            assert kwargs["gh_prefix_args"] == ["--write-actor-for", "owner/repo"], kwargs
+            result = success({"login": "contributor"})
+            result.actor = "contributor"
+            result.expected_actor = None
+            return result
         if method == "POST":
+            assert kwargs["actor"] == kwargs["expected_actor"] == "contributor", kwargs
             submitted_body = body["body"]
             result = failure(503, "Unicorn!", is_write=True)
             result.actor = "contributor"
@@ -449,6 +539,7 @@ def test_own_user_unknown_write_reconciles_without_duplicate() -> None:
             payload = github_comment.comment("pr", 42, "body", repo="owner/repo", gh_cmd="fake-gh")
         assert payload["actor"] == payload["expected_actor"] == "contributor", payload
         assert payload["outcome_certainty"] == "reconciled_applied", payload
+        assert payload["reconciliation"]["actor"] == "contributor", payload
         assert sum(call["method"] == "POST" for call in calls) == 1, calls
 
     with_call_stub(callback, run, allow_retry=True)
@@ -1021,6 +1112,9 @@ def test_exact_edit_supports_enterprise_api_thread_urls() -> None:
 
 
 TESTS: list[Callable[[], None]] = [
+    test_own_user_actor_is_resolved_before_edit_selection_and_dedupe,
+    test_resolved_own_user_rejects_foreign_exact_comment_before_write,
+    test_resolved_own_user_failure_keeps_fingerprint_and_reconciliation_actor,
     test_exact_edit_supports_enterprise_api_thread_urls,
     test_exact_comment_cli_preserves_files_and_conflict_envelope,
     test_exact_edits_keep_interleaved_session_comments_separate,
