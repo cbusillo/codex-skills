@@ -112,7 +112,16 @@ For each snapshot:
    [CI failures](#ci-failures). Fix a branch-caused failure; for a flaky or
    unrelated one, rerun with `--retry-failed-now` only when the snapshot also
    has `retry_failed_checks` and no fix commit is about to replace the SHA.
-4. **Behind the base** (`update_behind_branch`): after review and CI work, and
+4. **Rerun readback** (`check_rerun_outcome`): keep watching for a higher
+   workflow `run_attempt` before another retry. A `stop_unknown_rerun` action
+   means a write was interrupted or its result is unknown: stop for help,
+   preserve the saved intent, and report the partial progress. Do not clear it
+   or replay the write without authoritative readback. Explicit API rejections
+   return `rerun_rejected` with a failure exit and release only that rejected
+   intent; fix the reported access or request problem before retrying. A new
+   head gets its own retry state. See [API notes](references/github-api-notes.md)
+   for selection and retry accounting.
+5. **Behind the base** (`update_behind_branch`): after review and CI work, and
    only with existing merge authorization, verify with
    `../github/scripts/gh-pr.py view <pr>` that `headRepository` matches the PR
    repository, the head branch is automation-owned, and its diff stays within
@@ -120,15 +129,15 @@ For each snapshot:
    `../github/scripts/gh-with-env-token pr update-branch <pr>` and watch the
    new head. Never update a fork or someone else's branch without approval
    from the person it belongs to.
-5. **Evidence still settling**: `check_evidence_incomplete` means check counts
+6. **Evidence still settling**: `check_evidence_incomplete` means check counts
    cannot prove a terminal round; do not rerun from it. `review_readiness_unavailable`
    means everything else is green but review state could not be read; the
    watcher may issue one GraphQL read pinned to the repository, PR, base, and
    head SHA, and a null decision counts only with a clean merge state.
    `awaiting_review` means approval is required. Keep watching in all three.
-6. **Ready** (`ready_to_merge`): read it as ready for a merge decision; see
+7. **Ready** (`ready_to_merge`): read it as ready for a merge decision; see
    [Merge readiness](#merge-readiness). Keep watching while the PR is open.
-7. **After any push or rerun**: restart `--watch` on the new head in the same
+8. **After any push or rerun**: restart `--watch` on the new head in the same
    turn. Report the action as progress, not completion.
 
 ## Stop Or Continue
@@ -139,7 +148,7 @@ This is the only stop rule. Stop only when:
 - the user's help is required: CI infrastructure or an outage the retry budget
   cannot clear, flaky retries exhausted for the current SHA
   (`stop_exhausted_retries`, three by default), permission or authentication
-  failure, a push that cannot land safely, unclear ownership or overlapping
+  failure, an unknown rerun write awaiting authoritative readback, a push that cannot land safely, unclear ownership or overlapping
   edits, a review request needing a product decision or coordination, or a
   human comment needing a written reply.
 
