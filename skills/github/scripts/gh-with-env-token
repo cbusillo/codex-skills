@@ -19,6 +19,15 @@ run_python() {
 	fi
 }
 
+probe_validation_error() {
+	run_python "$classifier" terminal-error \
+		--operation github.auth.resolve_write_actor \
+		--message "$1" \
+		--transport gh_cli_wrapper \
+		--write-outcome not_started
+	exit 2
+}
+
 # Use the first local.env that exists under CODE_HOME, CODEX_HOME, then
 # ~/.code. An explicit CODEX_SKILLS_ENV_FILE always wins, even when missing, so
 # tests and isolated callers can load nothing.
@@ -36,6 +45,7 @@ fi
 gh_command=${GH_WITH_ENV_TOKEN_GH:-gh}
 print_auth_account=0
 check_auth=0
+write_actor_repository=
 require_automation_auth=0
 require_automation_auth_from_process=0
 stdout_file=$(mktemp)
@@ -72,6 +82,13 @@ while [ "$#" -gt 0 ]; do
 		check_auth=1
 		shift
 		;;
+	--write-actor-for)
+		if [ "$#" -lt 2 ] || [ -z "${2:-}" ] || [ -n "$write_actor_repository" ]; then
+			probe_validation_error "--write-actor-for requires one OWNER/REPO"
+		fi
+		write_actor_repository=$2
+		shift 2
+		;;
 	--require-automation-auth)
 		require_automation_auth=1
 		shift
@@ -83,6 +100,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "$check_auth" -eq 1 ] && [ "$#" -ne 0 ]; then
+	if [ -n "$write_actor_repository" ]; then
+		probe_validation_error "--check does not accept a gh command"
+	fi
 	echo "error: --check does not accept a gh command" >&2
 	exit 2
 fi
@@ -105,23 +125,6 @@ fi
 readonly require_automation_auth
 
 expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-${CODEX_AUTOMATION_LOGIN:-}}
-
-# Capture stdin only when the command is going to read it, so the same body can
-# be replayed to the actor check and to the real call. Agent hosts leave stdin
-# open and idle; reading it unconditionally would wait forever for an end of
-# file that never comes. A command that reads stdin without saying so in its
-# arguments still inherits it, just without replay.
-reads_stdin=0
-for argument in "$@"; do
-	case $argument in
-	- | @- | *=@- | --with-token) reads_stdin=1 ;;
-	esac
-done
-
-if [ "$reads_stdin" -eq 1 ] && [ ! -t 0 ]; then
-	cat >"$stdin_file"
-	stdin_captured=1
-fi
 
 run_with_input() {
 	if [ "$stdin_captured" -eq 1 ]; then
@@ -777,7 +780,10 @@ repository_from_reference() {
 app_auth_for_command() {
 	target_repo=$(target_repository "$@")
 	require_installation=
-	if [ -n "$target_repo" ] && is_write_command "$@"; then
+	if [ -n "$write_actor_repository" ]; then
+		target_repo=$write_actor_repository
+		require_installation=1
+	elif [ -n "$target_repo" ] && is_write_command "$@"; then
 		require_installation=1
 	fi
 	set -- app-auth
@@ -794,6 +800,40 @@ app_auth_for_command() {
 	fi
 }
 
+# Resolve the same repository identity as a write, but delegate only a GET
+# actor probe. Comment selection must know the writer before reading authors.
+if [ -n "$write_actor_repository" ]; then
+	case "$write_actor_repository" in
+	*[!a-zA-Z0-9_./-]* | */*/* | /* | */ | ./* | ../* | */. | */.. | -*)
+		probe_validation_error "--write-actor-for requires OWNER/REPO"
+		;;
+	*/*) ;;
+	*)
+		probe_validation_error "--write-actor-for requires OWNER/REPO"
+		;;
+	esac
+	if ! is_actor_probe "$@"; then
+		probe_validation_error "--write-actor-for accepts only a GET /user actor probe"
+	fi
+fi
+
+# Capture stdin only after probe validation, when the command is going to read
+# it, so the same body can be replayed to the actor check and to the real call.
+# Agent hosts leave stdin open and idle; an invalid probe must fail without
+# waiting for an end of file. Commands that read stdin without saying so in
+# their arguments still inherit it, just without replay.
+reads_stdin=0
+for argument in "$@"; do
+	case $argument in
+	- | @- | *=@- | --with-token) reads_stdin=1 ;;
+	esac
+done
+
+if [ "$reads_stdin" -eq 1 ] && [ ! -t 0 ]; then
+	cat >"$stdin_file"
+	stdin_captured=1
+fi
+
 # github_identity.CONTRIBUTOR_EXIT_STATUS: the App is not installed on the
 # target repository and the account that registered it does not own it.
 contributor_exit_status=3
@@ -808,11 +848,11 @@ act_as_own_user() {
 		return 2
 	fi
 	if [ "$require_automation_auth" -eq 1 ]; then
-		echo "error: $own_user_repository is not the automation's repository and this command requires configured automation authentication; refusing to act as your own GitHub user" >&2
+		echo "error: permission denied: $own_user_repository is not the automation's repository and this command requires configured automation authentication; refusing to act as your own GitHub user" >&2
 		return 1
 	fi
 	if [ "$own_user_opt_in" -ne 1 ]; then
-		echo "error: the GitHub App is not installed on $own_user_repository and another account owns it; writing there as your own GitHub user needs your Director's approval and GH_WITH_ENV_TOKEN_OWN_USER=1 on this command" >&2
+		echo "error: permission denied: the GitHub App is not installed on $own_user_repository and another account owns it; writing there as your own GitHub user needs your Director's approval and GH_WITH_ENV_TOKEN_OWN_USER=1 on this command" >&2
 		return 1
 	fi
 	own_login=$(active_auth_login)
@@ -844,7 +884,7 @@ if [ "$app_variable_count" -gt 0 ]; then
 	app_auth_status=0
 	app_auth_output=$(app_auth_for_command "$@") || app_auth_status=$?
 	if [ "$app_auth_status" -eq "$contributor_exit_status" ]; then
-		act_as_own_user "$(target_repository "$@")" "$@"
+		act_as_own_user "${write_actor_repository:-$(target_repository "$@")}" "$@"
 		exit $?
 	fi
 	if [ "$app_auth_status" -ne 0 ]; then
