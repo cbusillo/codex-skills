@@ -108,6 +108,51 @@ def test_check_preserves_user_token_fallback_when_app_is_absent() -> None:
         assert result.stdout == "GitHub automation actor: automation-user (source: user_token)\n"
 
 
+def test_user_token_write_verifies_actor_before_running_gh() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        env_file = root / "local.env"
+        identity = root / "identity.py"
+        write(identity, "raise AssertionError('App token helper should not run')\n")
+        classifier = root / "classifier.py"
+        fake_gh = root / "gh"
+        called = root / "called"
+        write(fake_gh, f"#!/bin/sh\nprintf '%s\\n' \"$@\" > '{called}'\n")
+        commands = (
+            ("issue", "comment", "1", "--body", "fixture"),
+            ("api", "-X", "POST", "/repos/example/repo/issues/1/comments"),
+            ("api", "-XPOST", "/repos/example/repo/issues/1/comments"),
+            ("api", "--method=PATCH", "/repos/example/repo/issues/1"),
+            ("api", "--method", "POST", "/repos/example/repo/issues/1/comments"),
+        )
+        for token_variable in ("CODEX_GITHUB_TOKEN", "GITHUB_TOKEN"):
+            env_file.write_text(
+                f"{token_variable}=user-token\nCODEX_AUTOMATION_LOGIN=automation-user\n",
+                encoding="utf-8",
+            )
+            for command in commands:
+                for observed_login in ("different-user", "automation-user"):
+                    called.unlink(missing_ok=True)
+                    write(
+                        classifier,
+                        "import json, os, sys\n"
+                        "assert os.environ.get('GH_TOKEN') == 'user-token'\n"
+                        "assert '--method' in sys.argv and 'GET' in sys.argv and '/user' in sys.argv\n"
+                        f"print(json.dumps({{'body': {{'login': {observed_login!r}}}}}))\n",
+                    )
+                    result = run_wrapper(
+                        env_file, classifier, identity, *command, gh_command=fake_gh,
+                    )
+                    if observed_login == "different-user":
+                        assert result.returncode == 1, result
+                        assert observed_login in result.stderr and "automation-user" in result.stderr, result
+                        assert not called.exists(), result
+                    else:
+                        assert result.returncode == 0, result
+                        assert called.read_text().splitlines() == list(command)
+                    assert "user-token" not in result.stdout + result.stderr
+
+
 def test_no_token_check_fails_explicitly_without_running_gh() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -794,6 +839,7 @@ def main() -> None:
         test_comment_cli_rejects_malformed_probe_once_before_authentication,
         test_invalid_probe_does_not_wait_for_open_stdin,
         test_check_preserves_user_token_fallback_when_app_is_absent,
+        test_user_token_write_verifies_actor_before_running_gh,
         test_no_token_check_fails_explicitly_without_running_gh,
         test_check_rejects_commands_before_active_auth_fallback,
         test_no_token_command_preserves_authorized_active_auth_fallback,
