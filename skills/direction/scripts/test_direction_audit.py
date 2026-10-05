@@ -1603,6 +1603,10 @@ def test_local_wait_findings_need_no_dependency_reads() -> None:
     unknown = {**base}
     assert not module.enrich_milestone_waits([unknown], "owner/product", ["Thin fork decision", "Dogfood week"], fetch=denied)
     assert "milestone_wait_invalid" in kinds(run(module, issues=[unknown]))
+    blocked = {**base, "body": "## Current Status\nState: Waiting.\nWaiting for: TBD.",
+               "labels": [{"name": "plan:blocked"}]}
+    assert not module.enrich_milestone_waits([blocked], "owner/product", ["Dogfood week"], fetch=denied)
+    assert "milestone_wait_invalid" not in kinds(run(module, issues=[blocked]))
     module.planning_config = lambda _: {"labels": {"waiting": "paused"}}
     custom = {**base, "body": "## Current Status\nWaiting for: nothing.", "labels": [{"name": "paused"}]}
     assert not module.enrich_milestone_waits([custom], "owner/product", ["Dogfood week"], fetch=denied)

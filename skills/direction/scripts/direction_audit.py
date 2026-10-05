@@ -250,7 +250,8 @@ def audit(
         if (state == "open" and milestone_title in listed
                 and not str(issue.get("title", "")).startswith("Track:")):
             compact = github_direction_next.compact_list_issue(str(issue.get("repo") or owner), issue)
-            if issue.get("_plan_waiting"):
+            compact["plan_status"] = issue.get("_plan_status")
+            if compact["plan_status"] == "waiting":
                 compact["exclusion"] = "waiting"
             status = github_direction_next.section_map(issue.get("body") or "").get("Current Status", "")
             checked = github_direction_next.check_milestone_wait(compact, status, listed)
@@ -848,9 +849,8 @@ def enrich_milestone_waits(
             configs[target_repo] = planning_config(target_repo)
         return configs[target_repo]
 
-    waiting_label = config(repo)["labels"]["waiting"]
     for item in issues:
-        item["_plan_waiting"] = waiting_label.casefold() in {label.casefold() for label in github_direction_next.normalize_labels(item.get("labels"))}
+        item["_plan_status"] = github_direction_next.next_plan_status(item, config(repo))
 
     def read_node(target_repo: str, number: int) -> dict[str, Any]:
         nonlocal incomplete

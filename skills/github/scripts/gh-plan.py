@@ -3508,7 +3508,8 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                     })
                 if item["exclusion"] in {"unknown_dependencies", "unknown_ancestry"}:
                     discovery["capacity_complete"] = False
-                    if not held and (original_exclusion != "waiting" or not ordinary_discussion_complete):
+                    if not held and (original_exclusion != "waiting" or not ordinary_discussion_complete
+                                     or (item.get("milestone") or {}).get("title") in titles):
                         discovery["complete"] = False
             else:
                 discoveries.append(item)

@@ -2565,17 +2565,19 @@ def test_excluded_unrelated_wait_failure_preserves_ordinary_coverage() -> None:
     leaf = global_issue("someone/business", 10, labels=["plan:waiting"], body="## Current Status\nWaiting for: Alex to test.")
     unrelated = global_issue("someone/other", 50, labels=["plan:waiting"], body="## Current Status\nWaiting for: TBD.")
     edges = {(root["repo"], root["number"]): relationships(sub_issues=[leaf]) for root in roots}
-    with global_fixture(roots, [leaf], edges, discovered=[unrelated]) as (module, result, _reads):
-        def denied_parent(target: str, _number: int) -> None:
-            if target == unrelated["repo"]:
-                raise module.PlanError("parent unavailable")
-            return None
-        module.read_next_parent = denied_parent
-        module.cmd_next(next_args())
-        assert result["candidate_coverage"]["complete"]
-        assert result["discovery_context"]["complete"]
-        assert not result["discovery_context"]["capacity_complete"]
-        assert next(item for item in result["excluded"] if item["number"] == 50)["exclusion"] == "unknown_ancestry"
+    for own_milestone in (None, milestone_data(7, "First", created_at="2026-01-01")):
+        discovery = {**unrelated, "milestone": own_milestone}
+        with global_fixture(roots, [leaf], edges, discovered=[discovery]) as (module, result, _reads):
+            def denied_parent(target: str, _number: int) -> None:
+                if target == unrelated["repo"]:
+                    raise module.PlanError("parent unavailable")
+                return None
+            module.read_next_parent = denied_parent
+            module.cmd_next(next_args())
+            assert result["candidate_coverage"]["complete"] == (own_milestone is None)
+            assert result["discovery_context"]["complete"] == (own_milestone is None)
+            assert not result["discovery_context"]["capacity_complete"]
+            assert next(item for item in result["excluded"] if item["number"] == 50)["exclusion"] == "unknown_ancestry"
 
 
 def test_unmatched_parent_wait_does_not_emit_internal_exclusion() -> None:
