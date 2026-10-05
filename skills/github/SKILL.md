@@ -894,9 +894,9 @@ For a single PR or a stack, resolve the landing route before any direct merge
 or branch integration. When Launchplane's active policy, repository instructions,
 or task context assigns landing to its merge train, load
 [`launchplane`](../launchplane/SKILL.md#merge-train-controller) and use that
-workflow. Follow the task's assigned direction or Supervisor handoff; label or
-drive the train yourself only when the task assigns those actions to this
-session. Repository metadata is only a routing hint; use the Launchplane skill's
+workflow. Follow the task's assigned direction or Supervisor handoff; otherwise
+use the train workflow within the task's existing landing authorization.
+Repository metadata is only a routing hint; use the Launchplane skill's
 enrollment read when the route is unresolved. An unavailable read leaves
 enrollment unknown: report its reason and retain the PR for authoritative
 routing; it does not establish a direct merge path.
