@@ -15,6 +15,7 @@ import tempfile
 from argparse import Namespace
 from pathlib import Path
 from types import ModuleType
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).with_name("extract_rollout_memory.py")
@@ -165,7 +166,7 @@ def test_redact_mode_removes_paths_and_person_data_but_keeps_trusted_originals()
         original = original_candidate.text
     if "/Users/example" in redacted:
         raise AssertionError(f"redact mode leaked path: {redacted}")
-    if "/" in redacted_source and "<path-redacted>" not in redacted_source:
+    if "/" in redacted_source:
         raise AssertionError(f"redact mode leaked source path: {redacted_source}")
     for leaked in (
         "Jackie Example",
@@ -195,6 +196,35 @@ def test_redact_mode_removes_paths_and_person_data_but_keeps_trusted_originals()
         raise AssertionError(f"trusted originals should preserve person data: {original}")
     if str(trace) != original_candidate.source_file:
         raise AssertionError(f"trusted originals should preserve source path: {original_candidate.source_file}")
+
+
+def test_redact_source_metadata_is_independent_of_path_root() -> None:
+    redact_args, module = args(redact=True, trusted_originals=False)
+    trusted_args, _module = args(redact=False, trusted_originals=True)
+    data = json.dumps(response_item("user", "Always prefer uv for Python commands.")).encode("utf-8")
+    for source in (
+        "/Users/example/rollout.jsonl",
+        "/tmp/example/rollout.jsonl",
+        "/Volumes/EXAMPLE/Task Evidence/rollout.jsonl",
+        "/mnt/example/rollout.jsonl",
+    ):
+        # Only the trace bytes are synthetic; extraction sees the explicit source
+        # path without needing that directory or the host's temporary root.
+        with patch.object(Path, "read_bytes", return_value=data):
+            redacted = module.extract([Path(source)], redact_args)
+            trusted = module.extract([Path(source)], trusted_args)
+        if len(redacted) != 1 or len(trusted) != 1:
+            raise AssertionError(f"expected one candidate in each mode for {source}")
+        if "/" in redacted[0].source_file:
+            raise AssertionError(f"redacted source metadata leaked a path: {redacted[0].source_file}")
+        for artifact in (
+            module.candidate_to_json(redacted[0]),
+            list(module.prompt_batches(redacted, redact_args.batch_chars)),
+        ):
+            if source in json.dumps(artifact):
+                raise AssertionError(f"redacted candidate or prompt leaked source path: {source}")
+        if trusted[0].source_file != source:
+            raise AssertionError(f"trusted originals lost source path: {source}")
 
 
 def test_redact_mode_records_person_data_privacy_summary() -> None:
@@ -409,6 +439,7 @@ def main() -> int:
     test_classifies_people_local_llm_and_friction()
     test_linked_status_reference_lowers_confidence_but_cited_preference_stays()
     test_redact_mode_removes_paths_and_person_data_but_keeps_trusted_originals()
+    test_redact_source_metadata_is_independent_of_path_root()
     test_redact_mode_records_person_data_privacy_summary()
     test_redact_mode_does_not_overmatch_public_names_or_plain_prose()
     test_prompt_batches_emit_destination_aware_task()
