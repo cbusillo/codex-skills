@@ -1549,6 +1549,41 @@ def test_stale_wait_report_reports_explicit_absence_of_all_waits() -> None:
     assert report["complete"] and report["items"][0]["number"] == 41, report
 
 
+def test_invalid_milestone_wait_is_reported_but_named_event_or_native_blocker_is_valid() -> None:
+    module = load()
+    base = {**issue(120, "Inventory", labels=("plan:waiting",)),
+            "milestone": {"title": "Dogfood week"}}
+    for reason in ("starts after milestone Thin fork decision", "", "nothing"):
+        waiting = {**base, "body": "## Current Status\nState: Waiting.\nWaiting for: " + reason}
+        assert "milestone_wait_invalid" in kinds(run(module, issues=[waiting]))
+        assert "milestone_wait_invalid" not in kinds(run(module, issues=[{**waiting, "_open_blockers": [{"number": 7}]}]))
+    event = {**base, "body": "## Current Status\nWaiting for: beta release on October 1."}
+    assert "milestone_wait_invalid" not in kinds(run(module, issues=[event]))
+
+
+def test_overall_audit_follows_track_to_invalid_cross_repository_wait() -> None:
+    module = load()
+    root = {**issue(1, "Track: Dogfood week"), "state": "open",
+            "milestone": {"title": "Dogfood week", "state": "open"},
+            "html_url": "https://github.com/owner/direction/issues/1"}
+    child = {**issue(120, "Inventory", labels=("plan:waiting",),
+                    body="## Current Status\nWaiting for: milestone Thin fork decision."),
+             "state": "open", "html_url": "https://github.com/owner/business/issues/120"}
+    def fetch(args: list[str]) -> Any:
+        path = args[1].split("?")[0]
+        if path == "repos/owner/direction/issues/1/sub_issues":
+            return [child]
+        if path == "repos/owner/business/issues/120":
+            return child
+        return []
+    assert not module.enrich_milestone_waits([root], "owner/direction", ["Dogfood week"], fetch=fetch)
+    result = run(module, issues=[root])
+    finding = next(item for item in result["findings"] if item["kind"] == "milestone_wait_invalid")
+    assert (finding["repo"], finding["number"]) == ("owner/business", 120)
+    assert module.enrich_milestone_waits([root], "owner/direction", ["Dogfood week"],
+                                       fetch=lambda _: (_ for _ in ()).throw(module.AuditError("unavailable")))
+
+
 def main() -> int:
     tests = [value for name, value in globals().items() if name.startswith("test_") and callable(value)]
     for test in tests:

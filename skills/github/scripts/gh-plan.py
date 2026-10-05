@@ -3335,6 +3335,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                 evaluated_node = github_direction_next.evaluate_direction_node(
                     raw_issue, config=target_config, focus=focus, relationships=relationships,
                     truncated_relationships=truncated,
+                    milestone_titles=titles,
                 )
             comment_limit = getattr(args, "comment_limit", None) or 100
             _, comments = collect_paged_rest_items(

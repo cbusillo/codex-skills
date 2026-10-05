@@ -879,8 +879,10 @@ no flag is needed. The target repository's merged `DIRECTION.md` is required,
 including when the command runs elsewhere with `--repo`. In milestone order,
 it walks the open `Track:` plans through native blockers and sub-issues, across
 repository owners as well as repositories. Waiting summary labels on these tracking
-containers do not hide their linked work. Ordinary waiting, stale, completed,
-and inconsistently blocked plans remain excluded. Tracking issues
+containers do not hide their linked work. Valid person/event waits, stale, completed,
+and inconsistently blocked plans remain excluded. On listed milestone paths,
+`findings` reports a wait naming another milestone or no person/event; such a
+wait does not exclude the issue, while native blockers still apply. Tracking issues
 without open work are reported, never selected as implementation tasks.
 
 Global candidates have `repo`, `number`, overall `milestone`, `issue_milestone`,

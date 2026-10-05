@@ -243,6 +243,18 @@ def audit(
                 if closed and audit_since <= closed <= now:
                     findings.append({"kind": "audit_judge", "number": number, "title": issue.get("title"), "closed_at": issue.get("closed_at")})
         milestone_title = str(((issue.get("milestone") or {}).get("title")) or "")
+        findings.extend(issue.get("_milestone_wait_findings", []))
+        if state == "open" and milestone_title in listed and not str(issue.get("title", "")).startswith("Track:"):
+            compact = {**github_direction_next.compact_list_issue(str(issue.get("repo") or owner), issue),
+                       "blocked_by": issue.get("_open_blockers", [])}
+            status = github_direction_next.section_map(issue.get("body") or "").get("Current Status", "")
+            checked = github_direction_next.check_milestone_wait(compact, status, listed)
+            if checked.get("wait_finding"):
+                if issue.get("_wait_blockers_unknown"):
+                    findings.append({"kind": "coverage_incomplete", "number": number,
+                                     "listings": ["milestone_wait_blockers"]})
+                else:
+                    findings.append(checked["wait_finding"])
         added = issue.get("_milestone_added")
         added_at = _parse_time((added or {}).get("at"))
         if (added and milestone_title in milestone_lines and added["by"] != owner.lower()
@@ -284,6 +296,7 @@ def audit(
         "milestone_creator": 7,
         "gate_phrase": 9,
         "waiting_blocks_other_repository": 8,
+        "milestone_wait_invalid": 8,
         "rank_map_missing": 10,
         "repository_unranked": 10,
         "own_share_below_floor": 10,
@@ -805,7 +818,81 @@ def fetch_audit_issues(
         truncated.append("milestone_issue_events")
     if enrich_waiting_inbound_blockers(issues, repo, fetch=fetch):
         truncated.append("waiting_inbound_blockers")
+    if enrich_milestone_waits(issues, repo, list(milestone_lines), fetch=fetch,
+                              completed_titles=[item["title"] for item in milestones if item.get("state") == "closed"]):
+        truncated.append("milestone_waits")
     return issues, truncated
+
+
+def enrich_milestone_waits(
+    issues: list[dict[str, Any]], repo: str, titles: list[str], *, fetch: Callable[[list[str]], Any],
+    completed_titles: list[str] | None = None,
+) -> bool:
+    """Use the selection graph for overall Tracks; local audits check assigned work."""
+    seeds = {(repo.casefold(), item["number"]): item for item in issues}
+    incomplete = False
+    config = {"labels": {"waiting": "plan:waiting", "blocked": "plan:blocked", "stale": "plan:stale", "done": "plan:done"}}
+
+    def read_node(target_repo: str, number: int) -> dict[str, Any]:
+        nonlocal incomplete
+        try:
+            raw = seeds.get((target_repo.casefold(), number))
+            if raw is None:
+                raw = fetch(["api", f"repos/{target_repo}/issues/{number}", "--method", "GET"])
+            relations: dict[str, list[dict[str, Any]]] = {}
+            for field, endpoint in (("blocked_by", "dependencies/blocked_by"), ("sub_issues", "sub_issues")):
+                values, cut = fetch_paginated(f"repos/{target_repo}/issues/{number}/{endpoint}", fetch=fetch, max_pages=2)
+                if cut:
+                    raise AuditError("milestone wait relationships truncated")
+                refs = []
+                for value in values:
+                    url = str(value.get("html_url") or "")
+                    match = re.search(r"github\.com/([^/]+/[^/]+)/issues/(\d+)", url)
+                    if not match or value.get("state") not in {"open", "closed"}:
+                        raise AuditError("milestone wait relationship identity unknown")
+                    refs.append({"repo": match.group(1), "number": int(match.group(2)),
+                                 "url": url, "state": value["state"]})
+                relations[field] = refs
+            return github_direction_next.evaluate_direction_node({**raw, "repo": target_repo}, config=config,
+                                                                  focus=None, relationships=relations)
+        except AuditError:
+            incomplete = True
+            return {"item": {"repo": target_repo, "number": number,
+                             "url": f"https://github.com/{target_repo}/issues/{number}",
+                             "exclusion": "unknown_dependencies"}}
+
+    if github_direction_next.is_direction_repository(repo):
+        roots = [{**github_direction_next.compact_list_issue(repo, item), "milestone": item.get("milestone")}
+                 for item in issues if item.get("state", "open") == "open" and "pull_request" not in item]
+        graph = github_direction_next.rank_direction_work(roots, milestone_titles=titles, read_node=read_node,
+                                                          scan_limit=MAX_ADMISSION_ISSUES, completed_milestone_titles=completed_titles)
+        if issues:
+            issues[0]["_milestone_wait_findings"] = graph["findings"]
+        incomplete |= not graph["dependency_context"]["complete"]
+    else:
+        examined = 0
+        for item in issues:
+            item["repo"] = repo
+            if (item.get("state", "open") != "open" or "pull_request" in item
+                    or (item.get("milestone") or {}).get("title") not in titles):
+                continue
+            compact = {**github_direction_next.compact_list_issue(repo, item)}
+            status = github_direction_next.section_map(item.get("body") or "").get("Current Status", "")
+            evidence = github_direction_next.milestone_wait_evidence(compact, status, titles)
+            if not evidence["requested"] or evidence["valid"]:
+                continue
+            if (item.get("issue_dependencies_summary") or {}).get("blocked_by") == 0:
+                item["_open_blockers"] = []
+                continue
+            if examined >= MAX_ADMISSION_ISSUES:
+                incomplete = True
+                item["_wait_blockers_unknown"] = True
+                continue
+            examined += 1
+            node = read_node(repo, item["number"])
+            item["_open_blockers"] = node.get("blockers", [])
+            item["_wait_blockers_unknown"] = node["item"].get("exclusion") == "unknown_dependencies"
+    return incomplete
 
 
 def parse_rank_map(text: str) -> dict[str, str]:
