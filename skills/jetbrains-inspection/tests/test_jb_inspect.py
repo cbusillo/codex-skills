@@ -14917,5 +14917,104 @@ class NativeCompletionObservationTests(unittest.TestCase):
         self.assertNotIn("unexplained_missing_examples", saved)
 
 
+class FindingsPreservationTests(unittest.TestCase):
+    def setUp(self):
+        self.route = {"port": 63342, "project_key": "path:/fixture", "session_id": "session", "project_instance_id": "instance"}
+        self.context = {"worktree_root": "/fixture", "scope": "files"}
+        self.args = helper_args(command="agent", scope="files", files=["app.py"], limit=25, offset=0, lifecycle_lock_timeout_ms=0)
+        self.problems = [{"file": "/fixture/app.py", "line": i + 1, "description": f"Finding {i}"} for i in range(53)]
+
+    def page(self, offset):
+        problems = self.problems[offset:offset + self.args.limit]
+        following = offset + len(problems)
+        return {
+            "status": "results_available", "inspection_run_id": 7, "snapshot_run_id": 7,
+            "route": dict(self.route), "total_problems": len(self.problems), "problems": problems,
+            "problems_shown": len(problems),
+            "pagination": {"offset": offset, "has_more": following < len(self.problems), "next_offset": following if following < len(self.problems) else None},
+        }
+
+    def result(self):
+        result = jb_inspect.summarize_problems(self.context, self.route, self.page(self.args.offset))
+        result["trigger"] = {"run_id": 7}
+        return result
+
+    def test_full_findings_are_readable_after_owned_cleanup_and_compaction(self):
+        result = self.result()
+        closed = []
+
+        def read_page(route, endpoint, params, **kwargs):
+            self.assertFalse(closed)
+            self.assertEqual(endpoint, "problems")
+            self.assertEqual(params["inspection_run_id"], 7)
+            self.assertEqual(params["session_id"], self.route["session_id"])
+            self.assertEqual(params["project_instance_id"], self.route["project_instance_id"])
+            self.assertEqual(params["files"], "app.py")
+            return self.page(params["offset"])
+
+        def close(*_):
+            self.assertEqual(result["findings_artifact"]["status"], "complete")
+            closed.append(True)
+            return {"status": "closed"}
+
+        with patch.object(jb_inspect, "prepare_lifecycle_details", return_value=({"route": self.route}, {"opened_by_helper": True}, "close-proof")), \
+                patch.object(jb_inspect, "run_inspection_with_internal_retry", return_value=result), \
+                patch.object(jb_inspect, "call_endpoint", side_effect=read_page), \
+                patch.object(jb_inspect, "git_worktree_status_snapshot", return_value={"status": "ok", "entries": {}}), \
+                patch.object(jb_inspect, "post_cleanup_worktree_status_snapshot", return_value={"status": "ok", "entries": {}}), \
+                patch.object(jb_inspect, "cleanup_lifecycle", side_effect=close):
+            payload = jb_inspect.run_prepared_inspection(self.args, self.context)
+        compact = jb_inspect.compact_agent_result_payload(payload, 1)
+        receipt = compact["findings_artifact"]
+        saved = json.loads(Path(receipt["path"]).read_text())
+        self.assertEqual(saved["problems"], self.problems)
+        self.assertEqual(saved["request"]["files"], "app.py")
+        self.assertEqual(saved["assessment"]["verdict"], "RED")
+        self.assertEqual(saved["assessment"]["route"], self.route)
+        self.assertEqual(Path(receipt["path"]).stat().st_mode & 0o777, 0o600)
+        self.assertEqual(receipt["sha256"], jb_inspect.hashlib.sha256(Path(receipt["path"]).read_bytes()).hexdigest())
+        self.assertTrue(closed)
+        self.assertTrue(compact["findings_truncated"])
+        lane = jb_inspect.compact_inspection_lane_result(jb_inspect.InspectionLane("python", "PyCharm", True, ("**/*.py",), (), None), 0, self.context, [{"file": "app.py", "absolute_path": "/fixture/app.py"}], payload)
+        self.assertEqual(lane["findings_artifact"], receipt)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            jb_inspect.print_human({"lane_results": [lane], "verdict": "RED"}, assess=False)
+        self.assertIn(receipt["path"], output.getvalue())
+
+    def test_nonzero_display_offset_still_preserves_the_complete_run(self):
+        self.args.offset = 25
+        offsets = []
+        def read_page(route, endpoint, params, **kwargs):
+            offsets.append(params["offset"])
+            return self.page(params["offset"])
+        with patch.object(jb_inspect, "call_endpoint", side_effect=read_page):
+            receipt = jb_inspect.preserve_inspection_findings(self.args, self.context, self.result())
+        self.assertEqual(json.loads(Path(receipt["path"]).read_text())["problems"], self.problems)
+        self.assertEqual(offsets, [0, 25, 50])
+
+    def test_invalid_later_pages_preserve_red_and_report_partial_coverage(self):
+        for change in ({"inspection_run_id": 8}, {"snapshot_run_id": 8}, {"status": "stale_results"}, {"route": {**self.route, "session_id": "replacement"}}, {"total_problems": 54}):
+            with self.subTest(change=change):
+                result = self.result()
+                page = self.page(25) | change
+                with patch.object(jb_inspect, "call_endpoint", return_value=page):
+                    receipt = jb_inspect.preserve_inspection_findings(self.args, self.context, result)
+                saved = json.loads(Path(receipt["path"]).read_text())
+                self.assertEqual(receipt["status"], "incomplete")
+                self.assertEqual(saved["problems"], self.problems[:25])
+                self.assertEqual(result["verdict"], "RED")
+
+    def test_unavailable_page_or_artifact_never_claims_full_retrieval(self):
+        with patch.object(jb_inspect, "call_endpoint", side_effect=jb_inspect.InspectError("closed", 3, {"error_reason": "target_project_not_open"})):
+            receipt = jb_inspect.preserve_inspection_findings(self.args, self.context, self.result())
+        self.assertEqual(receipt["status"], "incomplete")
+        with patch.object(jb_inspect, "call_endpoint", side_effect=lambda route, endpoint, params, **kwargs: self.page(params["offset"])), \
+                patch.object(jb_inspect.os, "open", side_effect=OSError("disk full")):
+            receipt = jb_inspect.preserve_inspection_findings(self.args, self.context, self.result())
+        self.assertEqual(receipt["status"], "unavailable")
+        self.assertNotIn("path", receipt)
+
+
 if __name__ == "__main__":
     unittest.main()
