@@ -255,6 +255,18 @@ not override candidate exclusions or authorize starting it. Report incomplete
 `blocking_work_elsewhere_context` separately from candidate/dependency coverage,
 including truncation, unread gates, and unavailable reads.
 
+Also report `dependabot_candidates` as PR work needing an agent, with each PR's
+link and age. Read the PR discussion and check current ownership before taking
+it on; the PR is its work record, and issue-only `claim` does not claim a PR.
+For an authorized `go` on a PR candidate, load `github` and follow its existing
+PR workflow after the ownership check, using the PR record rather than creating
+an issue per PR. Uncertain or competing ownership remains a stop.
+Report `dependabot_unverified_candidates` and incomplete `dependabot_context`
+as uncertainty. Read [Next Work](../github/references/cli-reference.md#planning-next-work)
+for the PR discovery bounds. An empty issue list with PR candidates does not
+mean no work is available. This visibility changes no priority, hold, or merge
+authority.
+
 Check beyond occupied results before saying no work is available.
 `candidate_count` greater than the returned list calls for a larger bounded
 `--limit`; truncated inventory or incomplete dependencies remain a partial
