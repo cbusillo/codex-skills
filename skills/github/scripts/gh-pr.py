@@ -41,6 +41,7 @@ PR_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
     "comment": ("rest_api", "rest_core", True),
     "checks": ("rest_api", "rest_core", False),
     "merge": ("rest_api", "rest_core", True),
+    "update-branch": ("rest_api", "rest_core", True),
     "supersede": ("rest_api", "rest_core", True),
     "rate-limit": ("rest_api", "rest_core", False),
 }
@@ -272,6 +273,12 @@ def parse_args() -> argparse.Namespace:
     p = sub.add_parser("checks", help="Show check runs and commit statuses via REST.")
     p.add_argument("pr", nargs="?", help="PR number or URL. Defaults to current branch PR.")
     p.set_defaults(func=cmd_checks)
+
+    p = sub.add_parser("update-branch", help="Update a PR with its base through the automation identity.")
+    p.add_argument("pr", help="PR number or URL.")
+    p.add_argument("--wait-seconds", type=int, choices=range(0, 61), default=30, metavar="0..60",
+                   help="Seconds to observe the asynchronous update (default: 30).")
+    p.set_defaults(func=cmd_update_branch)
 
     p = sub.add_parser("merge", help="Merge a PR via the REST merge endpoint.")
     p.add_argument("pr", help="PR number or URL.")
@@ -554,6 +561,45 @@ def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
     return result_payload
 
 
+def cmd_update_branch(args: argparse.Namespace) -> dict[str, Any]:
+    repo, number = resolve_pr(args.repo, args.pr)
+    path = f"/repos/{repo}/pulls/{number}"
+    pr = rest_json("GET", path)
+    expected_head = str((pr.get("head") or {}).get("sha") or "")
+    if pr.get("state") != "open" or not FULL_SHA_PATTERN.fullmatch(expected_head):
+        raise HelperError("Updating a branch requires an open PR with a full head SHA")
+    # A 202 accepts asynchronous work. Never replay an uncertain update: a
+    # changed head alone cannot attribute a concurrent push to this request.
+    accepted = rest_result("PUT", f"{path}/update-branch", {"expected_head_sha": expected_head})
+    deadline = time.monotonic() + args.wait_seconds
+    while True:
+        try:
+            refreshed = rest_json("GET", path)
+        except PrHelperError as exc:
+            raise PrHelperError(
+                "Branch update accepted but its new head could not be read; use view, do not repeat the update",
+                failure=exc.failure, api_result=exc.payload.get("api_result"),
+                repo=repo, pr=number, updateAccepted=True, previousHeadSha=expected_head,
+                completed_steps=["update_branch_accepted"],
+            ) from exc
+        observed_head = str((refreshed.get("head") or {}).get("sha") or "")
+        changed = FULL_SHA_PATTERN.fullmatch(observed_head) and observed_head != expected_head
+        if changed or refreshed.get("state") != "open" or time.monotonic() >= deadline:
+            return {
+                "ok": True, "repo": repo, "pr": normalize_pr(refreshed),
+                "actor": accepted.actor, "expected_actor": accepted.expected_actor,
+                "completed_steps": ["update_branch_accepted", "read_head"],
+                "update": {
+                    "state": "head_changed" if changed else "accepted_unconfirmed",
+                    "accepted": True, "previousHeadSha": expected_head,
+                    "newHeadSha": observed_head if changed else None,
+                    "next_action": "Wait for checks on the observed head" if changed else
+                    "Use gh-pr.py view to observe the head; do not repeat update-branch",
+                },
+            }
+        time.sleep(min(2, max(0, deadline - time.monotonic())))
+
+
 def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
     repo, number = resolve_pr(args.repo, args.pr)
     pr: dict[str, Any] = rest_json("GET", f"/repos/{repo}/pulls/{number}")
@@ -564,7 +610,7 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
             "PR head is behind a base that requires up-to-date branches",
             failure=github_api_core.FailureDetail(
                 cause="update_behind_branch",
-                message="Update the PR branch, wait for required checks on the new head, then merge.",
+                message=f"Run gh-pr.py --repo {repo} update-branch {number}, wait for required checks on the new head, then follow the repository landing flow.",
                 retryable=False,
                 fallback_eligible=False,
                 disposition="stop",

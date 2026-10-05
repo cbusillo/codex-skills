@@ -135,6 +135,11 @@ commands:
         "<file>",
       ]
     purpose: Creates pull requests through the helper with safe body handling.
+  - name: github-pr-update-branch
+    source: skill
+    resource_path: scripts/gh-pr.py
+    example_argv: ["uv", "run", "scripts/gh-pr.py", "update-branch", "<pr>"]
+    purpose: Updates the PR through the automation identity with its expected head SHA and observes the new head.
   - name: github-pr-checks
     source: skill
     resource_path: scripts/gh-pr.py
@@ -372,12 +377,12 @@ policy:
       match:
         argv_prefix: ["gh", "pr", "update-branch"]
       action: require_preferred
-      message: Raw PR branch updates use the active local GitHub account. Use the automation-token wrapper so branch updates are owned by the configured automation identity.
+      message: Raw PR branch updates use the active local GitHub account. Use gh-pr.py update-branch for a SHA-guarded automation update and new-head observation.
       preferred:
         - kind: script
-          path: scripts/gh-with-env-token
+          path: scripts/gh-pr.py
           example_argv:
-            ["scripts/gh-with-env-token", "pr", "update-branch", "<pr>"]
+            ["uv", "run", "scripts/gh-pr.py", "update-branch", "<pr>"]
           purpose: Updates PR branches through the configured automation token and fails closed for writes if bot auth is unavailable.
     - id: prefer-gh-pr-merge-helper
       match:
@@ -664,6 +669,20 @@ policy:
           example_argv:
             ["scripts/git-commit-as-bot", "-m", "fix: describe change"]
           purpose: Commits with the configured automation identity as author and committer while preserving normal git commit flags.
+    - id: prefer-bot-helper-for-commit-creating-git
+      match:
+        shell_regex: "(?:^|[;&|(`\\n]|\\s-[A-Za-z]*c\\s+['\"])\\s*(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+|(?:command|exec|time|nohup|env)\\s+)*(?:\\S*/)?git(?:\\s+(?:-[cC]\\s+(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"])+|--(?:git-dir|work-tree|namespace|config-env|exec-path|super-prefix|attr-source)(?:=|\\s+)(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"])+|--[a-z][a-z-]*(?:=(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"])+)?|-[pP]))*\\s+(?:merge|pull|rebase|cherry-pick|revert|am)(?![\\w-])"
+      action: require_preferred
+      message: These Git commands can create commits with the local human identity. For an authorized PR base update use gh-pr.py update-branch; for local integration use git-commit-as-bot --git-command COMMAND, including continuations after conflicts. Existing branch and landing authorization still applies.
+      preferred:
+        - kind: script
+          path: scripts/gh-pr.py
+          example_argv: ["uv", "run", "scripts/gh-pr.py", "update-branch", "<pr>"]
+          purpose: Updates an authorized PR branch through GitHub as the automation identity.
+        - kind: script
+          path: scripts/git-commit-as-bot
+          example_argv: ["scripts/git-commit-as-bot", "--git-command", "merge", "--no-edit", "origin/main"]
+          purpose: Runs the selected commit-creating Git command with the configured bot author and committer environment.
     - id: prefer-bot-push-helper
       match:
         argv_prefix: ["git", "push"]
@@ -756,13 +775,19 @@ this file for the full mapping and the `commands` entries. Use raw `gh` only
 for a surface no helper covers, route it through `scripts/gh-with-env-token`,
 and say why.
 
-- **PRs**: `scripts/gh-pr.py view|checks|create|edit|comment|merge|supersede`.
+- **PRs**: `scripts/gh-pr.py view|checks|create|edit|comment|update-branch|merge|supersede`.
   `--repo` is global and comes first:
   `uv run scripts/gh-pr.py --repo OWNER/REPO merge 123 --method merge`. To
   create a PR in another repository, run from it or pass `--repo` with an
   explicit `--head BRANCH`.
 - **Commits and pushes** by Code or spawned agents: `scripts/git-commit-as-bot`
   and `scripts/git-push-as-bot`.
+  For a PR base update, use `gh-pr.py update-branch`. For local integration,
+  use `git-commit-as-bot --git-command merge|pull|rebase|cherry-pick|revert|am`
+  followed by that command's arguments, including `--continue` after resolving
+  conflicts. Existing commits retain their authors; newly created commits use
+  the bot environment and recreated commits use the bot committer. This does
+  not authorize changing protected branches or taking over train-owned work.
 - **Issue bodies and close comments**: `scripts/gh-issue`; from the catalog
   root (`skills/`), `github/scripts/gh-issue create "Title" --repo OWNER/REPO < body.md`.
 - **Comments and reviews**: `scripts/gh-pr.py comment --body-file` or

@@ -374,6 +374,19 @@ class CommandPolicyHookTests(unittest.TestCase):
                 result = bash(line)
                 self.assertEqual(result.returncode, 2)
 
+    def test_commit_creating_git_commands_require_bot_path(self) -> None:
+        for command in ("merge --no-edit origin/main", "pull", "rebase --continue",
+                        "cherry-pick abc", "revert HEAD", "am patch.mbox"):
+            for prefix in ("git ", "git -C 'a path' ", "env FLAG=x git --no-pager "):
+                with self.subTest(command=prefix + command):
+                    result = bash(prefix + command)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("git-commit-as-bot", result.stderr)
+                    self.assertIn("update-branch", result.stderr)
+        for command in ("git merge-base main topic", "git log --grep merge",
+                        "git-commit-as-bot --git-command merge --no-edit main"):
+            self.assertEqual(bash(command).returncode, 0, command)
+
     def test_git_global_options_do_not_hide_commit_or_push(self) -> None:
         for line in (
             "git -c commit.gpgsign=false commit -m demo",

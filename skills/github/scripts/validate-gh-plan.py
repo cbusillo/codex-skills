@@ -5146,6 +5146,68 @@ def test_merge_reconciliation_rejects_head_drift() -> None:
             pr.github_api_core.default_retry_policy = original_policy
 
 
+def test_update_branch_guards_head_and_reports_async_state() -> None:
+    for changed, wait_seconds in ((True, 0), (False, 0), (True, 5)):
+        pr = load_pr_module()
+        pr.CURRENT_OPERATION = "github.pr.update_branch"
+        calls: list[tuple[str, str, Any]] = []
+        old_head, new_head = "a" * 40, "b" * 40
+        metadata = {
+            "number": 12, "state": "open", "title": "Demo",
+            "head": {"sha": old_head, "ref": "topic", "repo": {"full_name": "owner/repo"}},
+            "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+        }
+        def fake_call(method: str, path: str, body: Any = None, **kwargs: Any) -> Any:
+            calls.append((method, path, body))
+            response = {"message": "Updating pull request branch."} if method == "PUT" else {
+                **metadata, "head": {**metadata["head"], "sha": new_head if changed and len(calls) > 2 else old_head},
+            }
+            return pr.github_api_core.ApiResult(
+                ok=True, status=202 if method == "PUT" else 200, body=response,
+                operation=kwargs.get("operation"), actor=pr.EXPECTED_ACTOR,
+                expected_actor=pr.EXPECTED_ACTOR, host="github.com", bucket="rest_core",
+            )
+        with patch.object(pr.github_api_core, "call_gh", fake_call), patch.object(pr.time, "sleep"):
+            result = pr.cmd_update_branch(types.SimpleNamespace(repo="owner/repo", pr="12", wait_seconds=wait_seconds))
+        assert calls == [
+            ("GET", "/repos/owner/repo/pulls/12", None),
+            ("PUT", "/repos/owner/repo/pulls/12/update-branch", {"expected_head_sha": old_head}),
+            ("GET", "/repos/owner/repo/pulls/12", None),
+        ], calls
+        assert result["actor"] == pr.EXPECTED_ACTOR, result
+        assert result["update"]["accepted"] is True, result
+        assert result["update"]["newHeadSha"] == (new_head if changed else None), result
+        assert result["update"]["state"] == ("head_changed" if changed else "accepted_unconfirmed"), result
+
+
+def test_update_branch_unknown_write_and_rejection_never_replay() -> None:
+    for status, outcome in ((0, "unknown"), (422, "rejected")):
+        pr = load_pr_module()
+        pr.CURRENT_OPERATION = "github.pr.update_branch"
+        calls: list[str] = []
+        def fake_call(method: str, _path: str, _body: Any = None, **kwargs: Any) -> Any:
+            calls.append(method)
+            failure = pr.github_api_core.FailureDetail(
+                cause="network_provider_failure" if not status else "validation_error",
+                message="response lost" if not status else "head mismatch",
+                retryable=False, fallback_eligible=False, disposition="stop", write_outcome=outcome,
+            ) if method == "PUT" else None
+            return pr.github_api_core.ApiResult(
+                ok=method == "GET", status=status if method == "PUT" else 200,
+                body={"state": "open", "head": {"sha": "a" * 40}},
+                operation=kwargs.get("operation"), actor=pr.EXPECTED_ACTOR,
+                expected_actor=pr.EXPECTED_ACTOR, host="github.com", bucket="rest_core", failure=failure,
+            )
+        with patch.object(pr.github_api_core, "call_gh", fake_call):
+            try:
+                pr.cmd_update_branch(types.SimpleNamespace(repo="owner/repo", pr="12", wait_seconds=0))
+            except pr.PrHelperError as exc:
+                assert exc.failure.write_outcome == outcome, exc
+            else:
+                raise AssertionError("Unconfirmed updates must fail")
+        assert calls == ["GET", "PUT"], calls
+
+
 def test_merge_refuses_head_behind_strict_base() -> None:
     pr = load_pr_module()
     pr.CURRENT_OPERATION = "github.pr.merge"
@@ -5189,6 +5251,7 @@ def test_merge_refuses_head_behind_strict_base() -> None:
         except pr.PrHelperError as exc:
             assert exc.failure is not None
             assert exc.failure.cause == "update_behind_branch", exc.failure
+            assert "update-branch 12" in exc.failure.message, exc.failure
             assert exc.payload["headSha"] == "b" * 40, exc.payload
             assert exc.payload["baseSha"] == "a" * 40, exc.payload
         else:
@@ -6817,6 +6880,8 @@ def main() -> None:
         test_delete_ref_keeps_a_rejected_delete_failed_when_the_branch_still_exists,
         test_merge_reconciles_accepted_unknown_outcome_to_final_sha,
         test_merge_reconciliation_rejects_head_drift,
+        test_update_branch_guards_head_and_reports_async_state,
+        test_update_branch_unknown_write_and_rejection_never_replay,
         test_merge_refuses_head_behind_strict_base,
         test_merge_identity_reread_rejects_head_drift,
         test_pr_helper_merge_404_includes_recovery_context,
