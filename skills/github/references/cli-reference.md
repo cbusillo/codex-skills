@@ -762,6 +762,22 @@ inbound coverage; other classified API failures, including quota,
 authentication, provider/network, and timeout failures, stop the command under
 the existing plan relationship policy.
 
+`dependabot_candidates` independently lists open Dependabot PRs older than one
+day, oldest first, targeting a base branch enrolled in Launchplane's active
+policy. The PR itself is the record; each entry includes its URL, age, and head
+SHA. These are possible work needing an agent's review, not proof of a train
+hold or available ownership. Issue ranking and claim behavior are unchanged.
+`dependabot_context` reports per-repository enrollment and bounded GitHub read
+coverage. Unknown enrollment retains observed old PRs in
+`dependabot_unverified_candidates`, never as confirmed candidates or confirmed
+unenrolled repositories. `--scan-limit` independently bounds the open PR read
+per repository; `--limit` bounds each returned PR list with full counts and
+`result_truncated`. A repository-wide PR read also runs with a local
+`--milestone`; global milestone scope omits unrelated PR discovery. Owner-wide
+discovery uses the existing bounded repository inventory, respects repository
+holds, and includes repositories with disabled issue trackers. No issue, label,
+comment, admission or merge is written by this read.
+
 For `<owner>/direction`, `next` automatically selects global direction scope;
 no flag is needed. The target repository's merged `DIRECTION.md` is required,
 including when the command runs elsewhere with `--repo`. In milestone order,
