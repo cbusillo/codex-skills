@@ -224,7 +224,7 @@ The versioned JSON includes:
   remote URLs are never printed. Counts and logical bytes are observations,
   not a claim about filesystem blocks reclaimable after deletion.
 - Runtime bindings from the
-  [runtime binding lookup](https://github.com/cbusillo/codex-skills/blob/main/README.md#layout-and-private-local-state), active
+  [runtime binding lookup](https://github.com/cbusillo/codex-skills/blob/main/README.md#runtime-binding-lookup), active
   working directory, and explicit `--preserve-root` inputs. Other installed
   runtimes, apps and IDEs may remain unknown. Pass known protected locations;
   absence of a binding or an agent does not establish inactivity.

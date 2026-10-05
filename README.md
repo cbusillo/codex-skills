@@ -312,6 +312,8 @@ skills link as `../references/...` live in `skills/references`. Repository
 tooling (`scripts/`, `.github/`) stays at the root and is not part of an
 install.
 
+#### Runtime binding lookup
+
 The repository's runtime reconciler checks `$CODE_HOME/skills`, then
 `$CODEX_HOME/skills`, then `~/.code/skills`, then the preserved legacy
 `~/.codex/skills`, then `~/.agents/skills` and
@@ -321,7 +323,7 @@ worktree of the same clone as the merged worktree, preferring one already on
 the default branch, and lists every binding it looked at in the receipt's
 `bindings_checked`. Both `~/.agents` layouts work for Codex-only installs, and
 the cleanup helper protects these same bindings. The default legacy binding is
-discovered even when `CODEX_HOME` is unset; explicit homes retain precedence.
+discovered even when `CODEX_HOME` is unset.
 A separate clone is not matched. A reconciler
 `not_applicable` result does not prove the runtime checkout is current.
 

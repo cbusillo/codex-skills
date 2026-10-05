@@ -539,7 +539,10 @@ def test_reconcile_prefers_explicit_home_over_default_legacy_binding(tmp_path: P
     fixture = build_runtime_fixture(tmp_path / "fixture")
     legacy = fixture.code_home.parent / "host-home" / ".codex" / "skills"
     legacy.parent.mkdir(parents=True)
-    legacy.symlink_to(fixture.merged, target_is_directory=True)
+    legacy_runtime = tmp_path / "legacy-runtime"
+    # Both are eligible default-branch installs, so lookup order decides the winner.
+    git(fixture.runtime, "worktree", "add", "--force", str(legacy_runtime), "main")
+    legacy.symlink_to(legacy_runtime, target_is_directory=True)
 
     proc, receipt = fixture.run(extra_env={"CODE_HOME": None, "CODEX_HOME": None,
                                          variable: str(fixture.code_home)})
@@ -547,8 +550,7 @@ def test_reconcile_prefers_explicit_home_over_default_legacy_binding(tmp_path: P
     assert proc.returncode == 0
     assert (receipt["status"], receipt["runtime_home_source"]) == ("synchronized", variable)
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
-    assert git(fixture.merged, "rev-parse", "HEAD") == fixture.head_sha
-    assert git(fixture.merged, "branch", "--show-current") == "runtime-test-source"
+    assert git(legacy_runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
 def test_reconcile_reports_the_primary_binding_when_no_host_binds_this_repository(tmp_path: Path) -> None:
