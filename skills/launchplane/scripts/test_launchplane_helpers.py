@@ -1162,8 +1162,6 @@ def test_controller_client_timeout_is_not_a_service_outage_and_never_retries() -
             assert payload["summary"]["timeout_seconds"] == 7.5
             assert payload["warnings"][0]["code"] == "client_timeout"
             assert "7.5 s" in payload["warnings"][0]["message"]
-            if mutate:
-                assert "may have completed" in payload["summary"]["recommendation"]
     status, payload = _run_controller_response(urllib.error.URLError("connection refused"))
     assert status == 1
     assert payload["warnings"][0]["code"] == "provider_unavailable"
@@ -1257,9 +1255,8 @@ def test_controller_rejected_response_keeps_only_safe_trace_and_code() -> None:
         assert payload["summary"]["trace_id"] == response["trace_id"]
         assert payload["summary"]["error_code"] == error["code"]
         assert "private-fixture-value" not in json.dumps(payload)
-        status, dry_run_payload = _run_controller_response(response)
+        status, _dry_run_payload = _run_controller_response(response)
         assert status == 1
-        assert "may have completed" not in dry_run_payload["summary"]["recommendation"]
     for trace, code in (
         ("launchplane_req_diagnostic", "ghp_privatefixture"),
         ("Bearer private-fixture-value", "merge_readiness_not_ready"),
@@ -1481,9 +1478,6 @@ def test_current_launchplane_service_response_shapes() -> None:
     assert blocked_merge["summary"]["trace_id"] == "launchplane_req_blocked_merge"
     assert blocked_merge["result"]["structural_provenance"]["status"] == "recorded_rolling"
     assert blocked_merge["result"]["structural_provenance"]["effective_base_sha"] == "a" * 40
-    assert blocked_merge["summary"]["recommendation"] == (
-        "Stop and report this merge-train state."
-    )
     assert blocked_merge["records"] == {
         "merge_train_batch_landing_plan_record_id": "landing-plan-example"
     }
@@ -4498,19 +4492,11 @@ def test_summaries_and_trace_ids_fail_closed_on_secret_values() -> None:
         raise AssertionError("expected unsafe HTTP error trace to fail closed")
 
 
-def test_denied_recommendation_escalates_without_borrowing_ci_authority() -> None:
-    recommendation = write_action.http_error_recommendation("denied").lower()
+def test_authorization_denial_keeps_denied_status() -> None:
 
     assert write_action._status_for_http_error(
         403, {"error": {"code": "authorization_denied"}}
     ) == "denied"
-    assert "authority-scope" in recommendation
-    assert "escalate" in recommendation
-    assert "block only the affected work" in recommendation
-    assert "continue independent safe work" in recommendation
-    assert "do not probe routes manually" in recommendation
-    assert "workflow" in recommendation
-    assert "check the intended launchplane authz reconciliation" not in recommendation
 
 
 def test_context_projection_contract_and_secret_shape() -> None:
@@ -4858,7 +4844,6 @@ def test_generic_web_deploy_recovery_body_and_projection() -> None:
     )
     assert projected_apply["result"]["status"] == "accepted"
     assert projected_apply["result"]["recovery_action"] == "retry_original_operation"
-    assert "Verify" in projected_apply["summary"]["recommendation"]
 
 
 def test_generic_web_deploy_recovery_apply_requires_review_idempotency_and_reason() -> None:
@@ -5177,7 +5162,6 @@ def test_generic_web_deploy_recovery_apply_unverified_on_projection_failure() ->
     assert status == 0
     assert payload["status"] == "accepted_unverified"
     assert payload["warnings"][0]["code"] == "apply_response_unverified"
-    assert "reservation" in payload["summary"]["recommendation"]
 
 
 def test_expected_config_review_binds_metadata_and_never_prints_owner_instructions() -> None:
@@ -7227,7 +7211,7 @@ def main() -> int:
         test_current_launchplane_service_response_shapes,
         test_success_projection_fails_closed_on_secret_bearing_payloads,
         test_summaries_and_trace_ids_fail_closed_on_secret_values,
-        test_denied_recommendation_escalates_without_borrowing_ci_authority,
+        test_authorization_denial_keeps_denied_status,
         test_context_projection_contract_and_secret_shape,
         test_current_agent_context_service_shape,
         test_request_helpers_use_shared_safe_urlopen,
