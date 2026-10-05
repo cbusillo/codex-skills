@@ -30,7 +30,7 @@ if str(GITHUB_SCRIPTS) not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from skills.github.scripts import github_client, github_identity, github_rulesets
+from skills.github.scripts import github_identity, github_rulesets
 from skills.direction.scripts import direction_mark
 
 REQUIRED_HEADINGS = ("Purpose", "Stop Boundaries", "Journey", "Retired", "Milestones")
@@ -94,51 +94,13 @@ def parse_direction(text: str) -> dict[str, Any]:
     return {"headings": headings, "missing_headings": missing, "milestones": milestones, "milestone_lines": milestone_lines}
 
 
-def direction_quotes(body: str) -> list[str]:
-    """Read quoted evidence from Markdown blockquotes in an issue body."""
-    quotes: list[str] = []
-    fenced = False
-    for line in body.splitlines():
-        if line.lstrip().startswith(("```", "~~~")):
-            fenced = not fenced
-            continue
-        if line.startswith(("    ", "\t")):
-            continue
-        if not fenced and (match := re.match(r"^\s{0,3}>\s*([^>].*?)\s*$", line)):
-            quotes.append(match.group(1).strip())
-    return quotes
-
-
-def plain_direction_text(value: str) -> str:
-    """Compare a copied rendered phrase with its Markdown source."""
-    value = re.sub(r"\[([^]]+)]\([^)]+\)", r"\1", value)
-    return " ".join(re.sub(r"[`*_]", "", value).split()).lower()
-
-
-def has_direction_quote(body: str, milestone_line: str) -> bool:
-    evidence_line = re.sub(r"^\s*[-*]\s+`[^`]+`\s*", "", milestone_line)
-    source = plain_direction_text(evidence_line)
-    for quote in direction_quotes(body):
-        phrase = plain_direction_text(quote)
-        if len(phrase) < 12:
-            continue
-        position = source.find(phrase)
-        if position < 0:
-            continue
-        before = source[position - 1] if position else " "
-        after = source[position + len(phrase):position + len(phrase) + 1] or " "
-        if not before.isalnum() and not after.isalnum():
-            return True
-    return False
-
-
-def milestone_admission_actor(events: list[dict[str, Any]]) -> str | None:
-    """The last milestone assignment actor, including across milestone renames."""
-    admissions = [event for event in events if event.get("event") == "milestoned"]
-    if not admissions:
+def milestone_addition(events: list[dict[str, Any]]) -> dict[str, str] | None:
+    """Who made the last milestone assignment and when, including across milestone renames."""
+    additions = [event for event in events if event.get("event") == "milestoned"]
+    if not additions:
         return None
-    latest = max(enumerate(admissions), key=lambda pair: (str(pair[1].get("created_at") or ""), pair[0]))[1]
-    return str(((latest.get("actor") or {}).get("login")) or "").lower()
+    latest = max(enumerate(additions), key=lambda pair: (str(pair[1].get("created_at") or ""), pair[0]))[1]
+    return {"by": str(((latest.get("actor") or {}).get("login")) or "").lower(), "at": str(latest.get("created_at") or "")}
 
 
 def gate_phrases(text: str) -> list[str]:
@@ -162,13 +124,11 @@ def audit(
     rulesets_unavailable: bool = False,
     audit_since: dt.datetime | None = None,
     capacity: dict[str, Any] | None = None,
-    client: dict[str, Any] | None = None,
+    repo: str | None = None,
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     limits: list[dict[str, Any]] = []
-    client_context = {key: value for key, value in (client or {"status": "not_supplied"}).items() if key != "login"}
-    if client and client.get("status") in {"unavailable", "ambiguous"}:
-        limits.append({"kind": "client_identity_unavailable", "detail": "Client quote exemptions could not be established; identity is unavailable or ambiguous."})
+    milestone_additions: list[dict[str, Any]] = []
     audit_since = audit_since or now - dt.timedelta(days=7)
     if truncated:
         findings.append({"kind": "coverage_incomplete", "detail": "a bounded read was truncated or unavailable; drift beyond verified coverage is unreported", "listings": sorted(truncated)})
@@ -212,13 +172,13 @@ def audit(
     elif direction_text is not None and listed and automation and automation.casefold() == owner.casefold():
         limits.append({
             "kind": "owner_acts_as_automation",
-            "detail": "Owner and automation use the same login; owner-authored milestone admissions "
-                      "cannot be distinguished from automation-authored admissions and are treated as owner decisions.",
+            "detail": "Owner and automation use the same login; milestone additions by that login "
+                      "cannot be told apart and are treated as owner decisions, so they are not listed.",
         })
     elif direction_text is not None and listed and not bots:
         findings.append({
             "kind": "coverage_incomplete",
-            "detail": "automation identity is indistinguishable from the owner; milestone admission audit cannot classify actors",
+            "detail": "automation identity is indistinguishable from the owner; milestone additions cannot be attributed",
             "listings": ["milestone_admission_identity"],
         })
     open_titles: set[str] = set()
@@ -279,18 +239,15 @@ def audit(
                 if closed and audit_since <= closed <= now:
                     findings.append({"kind": "audit_judge", "number": number, "title": issue.get("title"), "closed_at": issue.get("closed_at")})
         milestone_title = str(((issue.get("milestone") or {}).get("title")) or "")
-        author = str(((issue.get("user") or {}).get("login")) or "").lower()
-        admission_actor = issue.get("_milestone_admitted_by")
-        non_owner_admitted = admission_actor is not None and admission_actor != owner.lower()
-        bot_authored_without_known_admission = author in bots and admission_actor is None
-        if (not github_client.is_client_issue(issue, client, bot_logins=tuple(bots))
-                and not issue.get("_admission_unknown") and milestone_title in milestone_lines
-                and (non_owner_admitted or bot_authored_without_known_admission)):
-            quotes = direction_quotes(str(issue.get("body") or ""))
-            if not quotes:
-                findings.append({"kind": "milestone_issue_quote_missing", "number": number, "milestone": milestone_title})
-            elif not has_direction_quote(str(issue.get("body") or ""), milestone_lines[milestone_title]):
-                findings.append({"kind": "milestone_issue_quote_mismatch", "number": number, "milestone": milestone_title})
+        added = issue.get("_milestone_added")
+        added_at = _parse_time((added or {}).get("at"))
+        if (added and milestone_title in milestone_lines and added["by"] != owner.lower()
+                and added_at and audit_since <= added_at <= now):
+            # Information for the direction session to read for fit, not a finding.
+            milestone_additions.append({
+                "repo": repo, "number": number, "title": issue.get("title"),
+                "milestone": milestone_title, "added_by": added["by"] or None, "added_at": added["at"],
+            })
         if ESCALATION_LABEL in labels and issue.get("state", "open") == "open":
             opened = _parse_time(issue.get("created_at"))
             age_days = (now - opened).days if opened else None
@@ -321,8 +278,6 @@ def audit(
         "milestone_closed_listed": 5,
         "milestone_pending": 6,
         "milestone_creator": 7,
-        "milestone_issue_quote_missing": 8,
-        "milestone_issue_quote_mismatch": 8,
         "gate_phrase": 9,
         "waiting_blocks_other_repository": 8,
         "rank_map_missing": 10,
@@ -337,7 +292,7 @@ def audit(
         "findings": findings,
         "limits": limits,
         "counts": _counts(findings),
-        "client_context": client_context,
+        "milestone_additions": sorted(milestone_additions, key=lambda item: (item["added_at"], str(item["number"]))),
     }
     if capacity is not None:
         result["capacity"] = capacity
@@ -415,9 +370,9 @@ def fetch_paginated(
 
 def enrich_admission_actors(
     issues: list[dict[str, Any]], milestone_lines: dict[str, str], repo: str,
-    *, fetch: Callable[[list[str]], Any], max_issues: int = MAX_ADMISSION_ISSUES,
+    *, fetch: Callable[[list[str]], Any], since: dt.datetime, max_issues: int = MAX_ADMISSION_ISSUES,
 ) -> bool:
-    """Add last admission actors within a bounded event-read budget."""
+    """Add who last assigned each listed milestone, within a bounded event-read budget."""
     incomplete = False
     examined = 0
     recent_first = sorted(issues, key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
@@ -425,7 +380,9 @@ def enrich_admission_actors(
         title = ((issue.get("milestone") or {}).get("title"))
         if "pull_request" in issue or title not in milestone_lines:
             continue
-        if has_direction_quote(str(issue.get("body") or ""), milestone_lines[title]):
+        # Assigning a milestone updates the issue, so an older issue was not added since.
+        updated = _parse_time(issue.get("updated_at") or issue.get("created_at"))
+        if updated is not None and updated < since:
             continue
         if examined >= max_issues:
             issue["_admission_unknown"] = True
@@ -437,7 +394,7 @@ def enrich_admission_actors(
             issue["_admission_unknown"] = True
             incomplete = True
             continue
-        issue["_milestone_admitted_by"] = milestone_admission_actor(events)
+        issue["_milestone_added"] = milestone_addition(events)
     return incomplete
 
 
@@ -667,7 +624,7 @@ def fetch_audit_issues(
     if cut:
         truncated.append("recent_closed_audit_issues")
     issues = list({issue.get("number"): issue for issue in issues}.values())
-    if enrich_admission_actors(issues, milestone_lines, repo, fetch=fetch):
+    if enrich_admission_actors(issues, milestone_lines, repo, fetch=fetch, since=audit_since or since):
         truncated.append("milestone_issue_events")
     if enrich_waiting_inbound_blockers(issues, repo, fetch=fetch):
         truncated.append("waiting_inbound_blockers")
@@ -916,13 +873,6 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     configured_bots = github_identity.configured_bot_logins()
-    client = github_client.recorded_client(repo) if any(
-        ((issue.get("milestone") or {}).get("title") in milestone_lines
-         and (issue.get("user") or {}).get("login")
-         and (issue.get("user") or {}).get("type") != "Bot"
-         and (issue.get("user") or {})["login"].casefold() not in {str(login).casefold() for login in (automation, *configured_bots) if login})
-        for issue in issues
-    ) else None
     result = audit(
         direction_text=direction_text,
         milestones=milestones,
@@ -939,14 +889,15 @@ def main(argv: list[str] | None = None) -> int:
         expected_automation=github_identity.automation_login(),
         owner_identity_explicit=owner_reader or args.automation is not None,
         capacity=capacity,
-        client=client,
+        repo=repo,
     )
     result.update({"repo": repo, "direction_source": f"{repo}:DIRECTION.md@default-branch", "read_only": True})
     result["audit_since"] = audit_since.isoformat().replace("+00:00", "Z")
-    # Preserve unseen labeled closures without letting unrelated listing/event
-    # caps keep already-judged work and stale reminders recurring indefinitely.
+    # Preserve unseen labeled closures and milestone additions without letting
+    # unrelated listing caps keep stale reminders recurring indefinitely.
     # Incomplete capacity reads also keep the window open for a rerun.
-    keep_window = "recent_closed_audit_issues" in truncated or any(item.startswith("capacity_") for item in truncated)
+    window_reads = {"recent_closed_audit_issues", "recent_closed_milestone_issues", "milestone_issue_events"}
+    keep_window = bool(window_reads & set(truncated)) or any(item.startswith("capacity_") for item in truncated)
     result["marked"] = None if keep_window else record_audit(repo, now, direction_text)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["ok"] else 3
