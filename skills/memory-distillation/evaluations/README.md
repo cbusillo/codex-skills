@@ -3,7 +3,9 @@
 Read when changing the memory workflow or qualifying it on a client. These cases
 check the shared instructions on Codex and Claude Code using
 synthetic stores; they do not authorize inspecting or changing real user memory.
-Codex Lab material is historical evidence, not a supported execution target.
+Remaining Codex Lab bindings are outside these current-host checks and await
+the separate [support decision](https://github.com/cbusillo/direction/issues/21).
+This evaluation document does not remove those bindings or qualify their behavior.
 
 Before a run, verify installed client capabilities and bind every home, store,
 source catalog, and tool permission to the fixture scope. Include the catalog's
