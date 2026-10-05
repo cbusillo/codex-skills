@@ -201,7 +201,7 @@ def test_redact_mode_removes_paths_and_person_data_but_keeps_trusted_originals()
 def test_redact_source_metadata_is_independent_of_path_root() -> None:
     redact_args, module = args(redact=True, trusted_originals=False)
     trusted_args, _module = args(redact=False, trusted_originals=True)
-    data = json.dumps(response_item("user", "Always prefer uv for Python commands.")).encode("utf-8")
+    data = json.dumps(response_item("user", "Always prefer uv for Python commands.")).encode()
     for source in (
         "/Users/example/rollout.jsonl",
         "/tmp/example/rollout.jsonl",
