@@ -62,6 +62,16 @@ resources:
     kind: script
     description: Drives one labeled pull request through the merge train to a landed, failed, needs_owner, or error outcome.
 commands:
+  - name: launchplane-live-target-runtime-sync-dry-run
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "live-target-runtime-sync-dry-run", "--product", "<product>", "--context", "<context>", "--instance", "<instance>"]
+    purpose: Plans delivery of existing managed runtime values and reports changed key names only.
+  - name: launchplane-live-target-runtime-sync-apply
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "live-target-runtime-sync-apply", "--product", "<product>", "--context", "<context>", "--instance", "<instance>", "--reviewed-dry-run", "--expected-plan-digest", "<digest>", "--dry-run-evidence-file", "<private-file>", "--idempotency-key", "<key>"]
+    purpose: Applies a reviewed key plan without deployment and verifies provider env persistence.
   - name: launchplane-owner-review
     source: skill
     resource_path: scripts/launchplane-owner-review.py
@@ -677,7 +687,7 @@ workflow dispatch is not allowed. Source projected HTTP paths from the vendored
 operation map rather than adding duplicate literals.
 
 The merge-train policy import, repository inventory, product expected configuration,
-generic-web deploy-recovery, Odoo addon-settings, integration-allowances,
+generic-web deploy-recovery, live-target-runtime sync, Odoo addon-settings, integration-allowances,
 testing-hold, product-repository-identity, product-environment-read,
 product-activity-read, protected-artifacts-read, product-profile-read, path-check,
 preview-history-read,
@@ -809,6 +819,11 @@ Mutate runtime environments, managed secrets, and product config.
   private admin config, environment variables, GitHub Actions OIDC, or signed-in
   Launchplane UI sessions. For shared/prod, use the deployed service, admin UI,
   or bounded helper/API with the correct URL and scoped credentials.
+- **Runtime sync**: For delivery of existing managed values to a lane's provider
+  env, read [runtime sync](references/write-action-helper-contract.md#managed-runtime-sync)
+  and use `live-target-runtime-sync-dry-run` / `-apply`. Sync does not restart
+  containers. A denial stays with that identity; it does not authorize recovery,
+  deployment or another credential.
 - **First Shot**: For product-config/runtime/secret sync, use the service API
   path from the admin contract first. Do not start by searching for a local
   `launchplane` binary or by poking provider config directly.

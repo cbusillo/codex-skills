@@ -1,11 +1,19 @@
 # Codex Skills
 
 Reusable skills for coding agents. Claude Code and OpenAI Codex are both
-supported hosts. Skills and
-helpers are written to behave the same on each; a skill that only makes sense on
-one host says so in its description.
-Every Code and Codex Lab are retired; retained traces, fixtures, and artifact readers describe
-historical behavior rather than a supported execution path.
+supported hosts. Skills and helpers are written to behave the same on each;
+a skill that only makes sense on one host says so in its description.
+
+For this repository's purpose, priorities, stop boundaries, and retirements,
+read the Director's overall `DIRECTION.md` in the repository owner's
+`OWNER/direction` repository, then [DIRECTION.md](DIRECTION.md).
+[AGENTS.md](AGENTS.md) holds execution details for both hosts and is the only
+repository agent-instruction filename; path-specific instructions use nested
+`AGENTS.md` files. Generated host-global instructions remain host-specific.
+Every Code traces, fixtures, and artifact readers describe historical behavior.
+Remaining Codex Lab bindings await the separate
+[support decision](https://github.com/cbusillo/direction/issues/21); this docs
+audit does not remove them.
 
 Each skill lives in its own directory under [`skills/`](skills) with a `SKILL.md`
 file; `skills/` is the catalog that hosts load. Skills can include
@@ -209,8 +217,6 @@ uv run scripts/sync-global-instructions.py --codex-hook
 uv run scripts/sync-global-instructions.py --codex-hook --write
 ```
 
-If you are intentionally updating global instructions from a task worktree (where `.local` is missing) and want to overwrite the existing files, append `--allow-missing-local` to proceed without private instructions.
-
 Run from the maintained runtime checkout after landing the source. The helper
 generates `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, backs up changed files,
 and refuses symlink destinations. `--home-dir` selects a fixture home for tests.
@@ -218,7 +224,12 @@ Native `CODEX_HOME` and `CLAUDE_CONFIG_DIR` overrides are respected; use
 `--codex-dir` or `--claude-dir` for explicit host destinations. `CODE_HOME`
 continues to locate shared catalog state, not either host's global instructions.
 Omit `--codex-hook` to synchronize instructions alone.
-If run from a task worktree where the local source is missing, the script refuses to overwrite existing files to prevent dropping private instructions. Use `--allow-missing-local` to override this and proceed.
+If the local source is missing, restore it in the runtime checkout before
+synchronizing. If you intend to remove all private instructions, use an empty
+`.local/global-instructions.md` there, inspect the preview, then synchronize.
+The helper also supports `--allow-missing-local`, which intentionally overwrites
+generated instructions without the private source; it is not the task-worktree
+maintenance path.
 
 Codex 0.157.0 supports a blocking `PreToolUse` hook, exposes shell calls as
 `Bash` with `tool_input.command`, and honors exit 2 with a stderr reason.
@@ -365,6 +376,17 @@ grants you added for your own sessions, it refuses to touch.
 
 ## Direction
 
+For work in this repository, use the direction files linked above and the
+[executing loop](skills/references/executing-loop.md). Issue-backed work is
+claimed before its linked worktree is created. This repository's
+[GitHub metadata](.github/github.json) enables Launchplane's merge train:
+use the [Launchplane skill](skills/launchplane/SKILL.md#merge-train-controller)
+for authorized train entry and landing. Do not call `gh-pr.py merge` or merge
+directly in GitHub. A task brief that assigns routing to a direction or
+Supervisor session owns that handoff.
+After a confirmed landing, reconcile the runtime checkout as described in
+[AGENTS.md](AGENTS.md#runtime-checkout-discipline).
+
 The `direction` skill holds a repository's direction in one Director-approved
 `DIRECTION.md` at the root, keeps milestones as waypoints that must be listed
 there, and tells an executing agent to escalate a reviewer finding that would
@@ -485,6 +507,10 @@ See the [Codex hook contract](https://learn.chatgpt.com/docs/hooks) and
 ## Instruction scope
 
 Execution skills share [task scope and authorization](skills/references/execution-scope.md).
+The [shared global instructions](instructions/global.md) tell agents on both
+hosts to read repository `AGENTS.md` and relevant nested files explicitly when
+the host has not already supplied them; repository guidance does not depend on
+Claude Code discovering that filename automatically.
 They name people and permissions with the shared [role words](skills/references/role-words.md):
 Director, Client, and admin.
 Existing authorization is reused within its scope; exact-action approvals and
