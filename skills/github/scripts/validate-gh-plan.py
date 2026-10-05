@@ -1217,11 +1217,63 @@ def test_plan_search_uses_search_bucket_and_conditional_state() -> None:
     assert "is:open" not in all_query and "is:closed" not in all_query
     open_payload = json.loads(open_output.getvalue())
     assert open_payload["count"] == 101, open_payload
+    assert open_payload["total_count"] == 101, open_payload
+    assert open_payload["incomplete_results"] is False, open_payload
+    assert open_payload["limit"] == 101, open_payload
     assert open_payload["issues"][0]["state"] == "OPEN", open_payload
     assert open_payload["issues"][-1]["number"] == 101, open_payload
     all_payload = json.loads(all_output.getvalue())
     assert all_payload["issues"][0]["state"] == "CLOSED", all_payload
     assert all_payload["issues"][0]["labels"] == ["plan"], all_payload
+
+
+def test_plan_search_reports_provider_coverage_and_caller_bound() -> None:
+    cases: list[tuple[list[dict[str, Any]], int, int | None, bool | None, list[int]]] = [
+        # A timed-out search can return fewer items than both the total and limit.
+        ([{"total_count": 2, "incomplete_results": True, "items": [1]}], 5, 2, True, [1]),
+        ([{"total_count": 2, "incomplete_results": False, "items": [1, 2]}], 1, 2, False, [1]),
+        ([{"total_count": 0, "incomplete_results": False, "items": []}], 5, 0, False, []),
+        # A later complete page must not erase an earlier timeout; totals are not summed.
+        ([{"total_count": 102, "incomplete_results": True, "items": list(range(1, 101))},
+          {"total_count": 101, "incomplete_results": False, "items": [101]}],
+         150, 102, True, list(range(1, 102))),
+        ([{"total_count": 101, "incomplete_results": False, "items": list(range(1, 101))},
+          {"total_count": 102, "incomplete_results": True, "items": [101]}],
+         150, 102, True, list(range(1, 102))),
+        ([{"items": [1]}], 5, None, None, [1]),
+    ]
+    for pages, limit, total_count, incomplete_results, expected_numbers in cases:
+        plan = load_plan_module()
+        requested_pages: list[int] = []
+
+        def fake_api_json(method: str, path: str, _payload: Any = None, **kwargs: Any) -> tuple[str, Any]:
+            parsed = urllib.parse.urlparse(path)
+            assert method == "GET" and parsed.path == "/search/issues", (method, path)
+            assert kwargs["bucket"] == "search", kwargs
+            query = urllib.parse.parse_qs(parsed.query)
+            page = int(query["page"][0])
+            requested_pages.append(page)
+            assert query["per_page"] == ["100"], query
+            response = pages[page - 1]
+            return "automation-gh", {
+                **response,
+                "items": [{"number": number, "title": f"Result {number}", "state": "open",
+                           "html_url": f"https://github.com/owner/repo/issues/{number}"}
+                          for number in response["items"]],
+            }
+
+        plan.api_json = fake_api_json
+        output = StringIO()
+        with redirect_stdout(output):
+            plan.cmd_search(types.SimpleNamespace(repo="owner/repo", query="roadmap", state="open", limit=limit))
+        payload = json.loads(output.getvalue())
+        assert payload["ok"] is True and payload["actor"] == "automation-gh", payload
+        assert payload["total_count"] == total_count, payload
+        assert payload["incomplete_results"] is incomplete_results, payload
+        assert payload["limit"] == limit, payload
+        assert payload["count"] == len(expected_numbers), payload
+        assert [item["number"] for item in payload["issues"]] == expected_numbers, payload
+        assert requested_pages == list(range(1, len(pages) + 1)), requested_pages
 
 
 def test_plan_ensure_labels_uses_paged_rest_and_reconciles_conflict() -> None:
@@ -6738,6 +6790,7 @@ def main() -> None:
         test_issue_body_updates_use_rest_patch,
         test_plan_index_paginates_filters_prs_and_honors_limit,
         test_plan_search_uses_search_bucket_and_conditional_state,
+        test_plan_search_reports_provider_coverage_and_caller_bound,
         test_plan_ensure_labels_uses_paged_rest_and_reconciles_conflict,
         test_plan_ensure_labels_skips_existing_case_insensitively,
         test_plan_paged_rest_failure_receives_completed_page_evidence,
