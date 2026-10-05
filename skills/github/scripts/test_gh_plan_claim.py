@@ -25,7 +25,7 @@ TEST_BOT = "fixture-bot[bot]"
 
 SPEC = importlib.util.spec_from_file_location("gh_plan_claim_under_test", Path(__file__).with_name("gh-plan.py"))
 assert SPEC and SPEC.loader
-PLAN = importlib.util.module_from_spec(SPEC)
+PLAN: Any = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PLAN)
 
 OWNER = {"worker": "trial-a", "session": "session-a", "branch": "work/issue-42", "claimed_at": "2026-10-01T00:00:00Z"}
@@ -58,6 +58,7 @@ class ClaimTests(unittest.TestCase):
         self.events = []
         self.after_post = lambda: None
         self.after_status = lambda: None
+        self.during_inventory = lambda: None
         self.emitted = Mock()
 
     def get_issue(self, ref, repo):
@@ -75,6 +76,7 @@ class ClaimTests(unittest.TestCase):
         return "bot", copy.deepcopy(self.closed_pulls[n])
 
     def inventory_for(self, repo, _number, **_):
+        self.during_inventory()
         if repo == "other/plans" and self.planning_inventory is not None:
             return copy.deepcopy(self.planning_inventory)
         return copy.deepcopy(self.inventory)
@@ -374,8 +376,250 @@ class ClaimTests(unittest.TestCase):
             self.run_claim()
         self.assert_no_writes()
 
+    def ordinary_handoff_fixture(self):
+        self.refresh_fixture()
+        self.args.refresh_pr = None
+        self.args.next_action = "Perform the separately authorized prerequisite before any PR refresh"
+        source_branch = CLAIM.records(self.comments[0]["body"])[0]["branch"]
+        sibling = self.pulls.pop()
+        old_branch = sibling["head"]["ref"]
+        sibling["head"]["ref"] = source_branch
+        sibling.update(state="closed", merged_at="2026-10-02T01:00:00Z")
+        self.closed_pulls[sibling["number"]] = sibling
+        self.targets[str(sibling["number"])]["state"] = "closed"
+        for key in ("local_branches", "remote_branches"):
+            self.inventory[key] = [source_branch if b == old_branch else b for b in self.inventory[key]]
+        self.inventory["worktrees"][1]["branch"] = source_branch
+        self.pulls[0]["draft"] = True
+
+    def test_ordinary_successor_accepts_two_retained_branches_before_pr_refresh(self):
+        self.ordinary_handoff_fixture()
+        before = copy.deepcopy((self.inventory, self.pulls, self.closed_pulls))
+        self.run_claim()
+        output = self.emitted.call_args.args[0]
+        self.assertNotIn("refresh_pr", output["claim"])
+        self.assertEqual(output["claim"]["resume_from"], str(self.args.resume_from))
+        self.assertTrue(output["claim"]["retained_handoff"].endswith(f"#issuecomment-{self.args.handoff_comment}"))
+        self.assertIn(self.args.next_action, self.comments[-1]["body"])
+        self.assertNotIn("Conflict-only refresh:", self.comments[-1]["body"])
+        self.assertEqual(before, (self.inventory, self.pulls, self.closed_pulls))
+        self.assertEqual(output["session_coverage"]["codex"]["status"], "unavailable")
+
+    def test_ordinary_handoff_preserves_issue_and_every_retained_pr_wait(self):
+        for place in ("issue", "99", "100"):
+            with self.subTest(place=place):
+                self.setUp()
+                self.ordinary_handoff_fixture()
+                target = self.issue if place == "issue" else self.targets[place]
+                target["body"] += "\n\n## Current Status\n\nWaiting for: Approved prerequisite readback."
+                if place == "issue": target["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_wait_unresolved")
+                self.assert_no_writes()
+                self.args.wait_resolved = "Existing brief authorizes prerequisite only; keep the draft/readback hold."
+                self.run_claim()
+                self.assertTrue(self.pulls[0]["draft"])
+                if place == "issue":
+                    status, _ = PLAN.read_plan_sections(self.issue)
+                    self.assertIn("Waiting for: Approved prerequisite readback.", status["Current Status"])
+                    self.assertIn(PLAN.DEFAULT_CONFIG["labels"]["waiting"], PLAN.normalize_labels(self.issue["labels"]))
+                    self.assertEqual(PLAN.next_plan_status(self.issue, PLAN.DEFAULT_CONFIG), "waiting")
+                else:
+                    self.assertIn(f"PR #{place}:\n", self.comments[-1]["body"])
+                    self.assertIn("> Waiting for: Approved prerequisite readback.", self.comments[-1]["body"])
+                    self.assertIn("> Waiting for: Approved prerequisite readback.", self.issue["body"])
+
+    def test_ordinary_recovery_records_newly_verified_pr_wait_in_current_status(self):
+        self.ordinary_handoff_fixture()
+        self.run_claim()
+        self.targets["99"]["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
+        self.args.wait_resolved = "Fresh authorization for this step; preserve the new PR hold."
+        self.run_claim()
+        self.assertEqual(self.events.count("post"), 1)
+        self.assertIn("> Labels: " + PLAN.DEFAULT_CONFIG["labels"]["waiting"], self.issue["body"])
+        self.assertIn(self.args.wait_resolved, self.issue["body"])
+
+    def test_ordinary_handoff_preserves_parks_states_and_url_continuations(self):
+        for hold in ("Parked until: owner approves the retained draft",
+                     "State: parked until the owner approves the draft",
+                     "Waiting for: approved prerequisite readback\nhttps://github.com/owner/repo/issues/123"):
+            with self.subTest(hold=hold):
+                self.setUp()
+                self.ordinary_handoff_fixture()
+                self.issue["body"] = self.issue["body"].split("## Current Status", 1)[0] + "## Current Status\n\n" + hold
+                self.args.wait_resolved = "Prerequisite authorized; preserve the recorded product hold."
+                self.run_claim()
+                status, _ = PLAN.read_plan_sections(self.issue)
+                self.assertIn(hold, status["Current Status"])
+                self.assertTrue(PLAN.github_direction_next.waiting_records(PLAN.compact_issue(self.issue), status["Current Status"]))
+
+    def test_ordinary_handoff_checks_visible_source_session_outside_retained_tree(self):
+        self.ordinary_handoff_fixture()
+        source_session = CLAIM.records(self.comments[0]["body"])[0]["session"]
+        self.inventory["sessions"] = [{"sessionId": source_session, "cwd": "/elsewhere"}]
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+        self.assert_no_writes()
+
+    def test_native_blocker_added_on_either_readback_still_refuses(self):
+        for phase in ("after_post", "after_status"):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.ordinary_handoff_fixture()
+                setattr(self, phase, lambda: self.blockers.append({"number": 1209, "state": "open"}))
+                with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
+                self.assertIn("native blockers", str(caught.exception))
+                self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+                if phase == "after_post": self.assertNotIn("status", self.events)
+
+    def test_ordinary_handoff_refuses_new_wait_label_on_either_readback(self):
+        for phase in ("after_post", "after_status"):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.ordinary_handoff_fixture()
+                self.args.wait_resolved = "Existing prerequisite authorization."
+                setattr(self, phase, lambda: self.issue["labels"].append({"name": PLAN.DEFAULT_CONFIG["labels"]["blocked"]}))
+                with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
+                self.assertIn("holds changed", str(caught.exception))
+                self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+
+    def test_ordinary_handoff_ignores_unrelated_pr_status_progress_during_readback(self):
+        self.ordinary_handoff_fixture()
+        self.targets["99"]["body"] += "\n\n## Current Status\n\nWaiting for: prerequisite.\nLast verified: yesterday"
+        self.args.wait_resolved = "Prerequisite step authorized; hold remains."
+        self.after_post = lambda: self.targets["99"].update(body=self.targets["99"]["body"].replace("yesterday", "today"))
+        self.run_claim()
+
+    def test_ordinary_handoff_preserves_hold_added_during_slow_inventory_read(self):
+        self.ordinary_handoff_fixture()
+        self.args.wait_resolved = "Previously authorized prerequisite only."
+        def concurrent_hold():
+            if "post" in self.events:
+                self.issue["body"] += "\n\n## Current Status\n\nWaiting for: New decision on prerequisite."
+        self.during_inventory = concurrent_hold
+        with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
+        self.assertIn("Issue body changed", str(caught.exception))
+        self.assertIn("Waiting for: New decision on prerequisite.", self.issue["body"])
+        self.assertNotIn("status", self.events)
+        self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+
+    def test_ordinary_handoff_does_not_copy_released_marker_as_hold_continuation(self):
+        self.ordinary_handoff_fixture()
+        self.comments[0]["created_at"] = self.comments[0]["updated_at"] = "2026-10-01T00:00:00Z"
+        self.comments[2]["created_at"] = "2026-10-02T00:00:00Z"
+        source = CLAIM.records(self.comments[0]["body"])[0]
+        self.issue["body"] = (self.issue["body"].split("## Current Status", 1)[0]
+                              + "## Current Status\n\nWaiting for: Owner review.\n" + CLAIM.marker(source))
+        self.args.wait_resolved = "Prerequisite authorized; retain the review hold."
+        self.run_claim()
+        self.assertEqual(CLAIM.records(self.issue["body"]), [self.emitted.call_args.args[0]["claim"]])
+        self.assertIn("Waiting for: Owner review.", self.issue["body"])
+
+    def test_ordinary_handoff_refuses_changed_holds_on_each_readback(self):
+        for phase in ("after_post", "after_status"):
+            for place in ("issue", "99", "100"):
+                with self.subTest(phase=phase, place=place):
+                    self.setUp()
+                    self.ordinary_handoff_fixture()
+                    self.args.wait_resolved = "Prior prerequisite approval; no authority for a new hold."
+                    def race():
+                        target = self.issue if place == "issue" else self.targets[place]
+                        target["body"] += "\n\n## Current Status\n\nWaiting for: New product prerequisite."
+                    setattr(self, phase, race)
+                    with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
+                    self.assertIn("holds changed" if place == "issue" else "waits changed", str(caught.exception))
+                    self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+                    if phase == "after_post": self.assertNotIn("status", self.events)
+
+    def test_ordinary_handoff_preserves_native_blocker(self):
+        self.ordinary_handoff_fixture()
+        self.args.wait_resolved = "Approved prerequisite step; not resolution of source blocker."
+        self.blockers = [{"state": "open", "number": 1209}]
+        with self.assertRaises(PLAN.PlanError): self.run_claim()
+        self.assert_no_writes()
+
+    def test_ordinary_handoff_rejects_unverified_source_and_artifacts(self):
+        for change in ("no_release", "wrong_claim", "foreign_release", "generic_handoff",
+                       "missing_pr", "foreign_pr", "missing_link", "fork", "closed_unmerged",
+                       "new_pr", "extra_branch", "new_task_uses_source", "new_task_uses_second"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.ordinary_handoff_fixture()
+                if change == "no_release": self.comments[-1]["body"] = "Handoff from trial-b\nclaim 1, session-b, #99 #100"
+                if change == "wrong_claim": self.comments[-1]["body"] = "Released claim 9\n#99 #100"
+                if change == "foreign_release": self.comments[-1]["user"]["login"] = "stranger"
+                if change == "generic_handoff":
+                    self.comments.append({"id": 4, "body": "Generic bot rollup: #99 #100", "user": {"login": TEST_BOT}})
+                    self.args.handoff_comment = 4
+                if change == "missing_pr": self.comments[-1]["body"] = "Released claim 1\nPR #100"
+                if change == "foreign_pr": self.pulls[0]["user"]["login"] = "stranger"
+                if change == "missing_link": self.pulls[0]["body"] = "No issue reference"
+                if change == "fork": self.pulls[0]["head"]["repo"]["full_name"] = "stranger/repo"
+                if change == "closed_unmerged":
+                    unmerged = self.pulls.pop()
+                    unmerged.update(state="closed", merged_at=None)
+                    self.closed_pulls[unmerged["number"]] = unmerged
+                    self.targets[str(unmerged["number"])]["state"] = "closed"
+                if change == "new_pr": self.pulls.append({**copy.deepcopy(self.pulls[0]), "number": 101})
+                if change == "extra_branch": self.inventory["remote_branches"].append("work/issue-42-unmentioned")
+                if change == "new_task_uses_source": self.args.branch = self.closed_pulls[100]["head"]["ref"]
+                if change == "new_task_uses_second": self.args.branch = self.pulls[0]["head"]["ref"]
+                with self.assertRaises(PLAN.PlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_ordinary_handoff_checks_claims_and_live_peers_on_each_branch(self):
+        for place in ("issue", "99", "100", "peer_original", "peer_second", "peer_descendant"):
+            with self.subTest(place=place):
+                self.setUp()
+                self.ordinary_handoff_fixture()
+                if place == "issue": self.compete()
+                elif place in ("99", "100"):
+                    self.target_comments[f"/repos/owner/repo/issues/{place}/comments"] = [{"id": 40, "body": CLAIM.marker(OTHER)}]
+                else:
+                    index = 1 if place == "peer_original" else 0
+                    cwd = self.inventory["worktrees"][index]["path"]
+                    if place == "peer_descendant": cwd += "/src"
+                    self.inventory["sessions"] = [{"sessionId": "live-peer", "cwd": cwd}]
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_ordinary_handoff_readbacks_preserve_racing_claims_and_artifacts(self):
+        for phase in ("after_post", "after_status"):
+            for change in ("claim", "branch", "pr"):
+                with self.subTest(phase=phase, change=change):
+                    self.setUp()
+                    self.ordinary_handoff_fixture()
+                    def race():
+                        if change == "claim":
+                            self.target_comments["/repos/owner/repo/issues/100/comments"].append({"id": 40, "body": CLAIM.marker(OTHER)})
+                        elif change == "branch":
+                            self.inventory["remote_branches"].append("work/issue-42-race")
+                        else:
+                            self.pulls.append({"number": 101, "body": "Refs #42", "head": {"ref": "work/issue-42-race"}})
+                    setattr(self, phase, race)
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                    recovery = caught.exception.payload["claim_recovery"]["release_own_claim"]
+                    self.assertEqual(recovery["comment_id"], self.comments[-1]["id"])
+                    self.assertEqual(recovery["body"], f"Released claim {self.comments[-1]['id']}")
+                    if phase == "after_post": self.assertNotIn("status", self.events)
+
+    def test_ordinary_handoff_recovery_cannot_drop_or_replace_proof(self):
+        for change in ("handoff", "source", "plain", "refresh"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.ordinary_handoff_fixture()
+                self.run_claim()
+                self.run_claim()
+                self.assertEqual(self.events.count("post"), 1)
+                if change == "handoff": self.args.handoff_comment = 2
+                if change == "source": self.args.resume_from = 2
+                if change == "plain": self.args.handoff_comment = None
+                if change == "refresh": self.args.refresh_pr = "https://github.com/owner/repo/pull/99"
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assertEqual(self.events.count("post"), 1)
+
     def test_refresh_requires_all_evidence_flags(self):
-        for flag in ("refresh_pr", "handoff_comment", "resume_from"):
+        for flag in ("handoff_comment", "resume_from"):
             with self.subTest(flag=flag):
                 self.setUp()
                 self.refresh_fixture()
@@ -456,7 +700,8 @@ class ClaimTests(unittest.TestCase):
         self.run_claim()
         self.assertLess(self.events.index("post"), self.events.index("status"))
         self.assertIn("read_comments", self.events[self.events.index("post") + 1:self.events.index("status")])
-        self.assertEqual(self.events[-2:], ["read_issue", "read_comments"])
+        self.assertIn("read_issue", self.events[self.events.index("labels") + 1:])
+        self.assertIn("read_comments", self.events[self.events.index("labels") + 1:])
         self.assertIn("Keep me", self.issue["body"])
         self.assertEqual(CLAIM.records(self.issue["body"])[0]["session"], self.args.session)
         self.assertEqual(PLAN.normalize_labels(self.issue["labels"]), [PLAN.DEFAULT_CONFIG["labels"]["active"]])

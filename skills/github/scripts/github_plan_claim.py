@@ -60,7 +60,8 @@ def records(text: str) -> list[dict[str, str]]:
 
 def same_owner(record: dict[str, str], claim: dict[str, str]) -> bool:
     return (all(record.get(key) == claim[key] for key in ("worker", "session", "branch"))
-            and record.get("refresh_pr") == claim.get("refresh_pr"))
+            and all(record.get(key) == claim.get(key)
+                    for key in ("refresh_pr", "retained_handoff", "resume_from")))
 
 
 def released_claim_id(text: str) -> int | None:
@@ -312,9 +313,9 @@ def handoff_pr_numbers(text: str, *, issue_repo: str, target_repo: str) -> set[i
     return numbers
 
 
-def refresh_handoff(
+def retained_handoff(
     comments: list[dict[str, Any]], source_id: int, handoff_id: int,
-    pulls: list[dict[str, Any]], target_number: int, *, issue_repo: str,
+    pulls: list[dict[str, Any]], target_number: int | None, *, issue_repo: str,
     issue_number: int, target_repo: str,
 ) -> set[str]:
     """Bind retained PR identities to the exact author-released handoff."""
@@ -345,6 +346,7 @@ def refresh_handoff(
     empty = {"local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}
     permitted = {source_branch}
     target_found = False
+    attested = False
     named = handoff_pr_numbers(handoff_text, issue_repo=issue_repo, target_repo=target_repo)
     for pull in pulls:
         branch = (pull.get("head") or {}).get("ref", "")
@@ -364,9 +366,12 @@ def refresh_handoff(
                                  own_record=False, repo=issue_repo, inventory_repo=target_repo):
             continue
         permitted.add(branch)
+        attested = True
         target_found |= pull["number"] == target_number and pull.get("state") == "open"
-    if not target_found:
+    if target_number is not None and not target_found:
         raise ValueError("Refresh target must be an open same-repository PR linked to the issue and attested in the released handoff")
+    if target_number is None and not attested:
+        raise ValueError("Retained handoff must attest a same-repository open or merged PR linked to the issue")
     return permitted
 
 
@@ -396,7 +401,7 @@ def artifact_evidence(
         if session.get("sessionId") == claim["session"]:
             continue
         cwd = str(pathlib.Path(session.get("cwd") or "/").resolve())
-        if cwd in retained_paths or (local_references and cwd in paths and references_issue((session.get("name") or "") + "/" + pathlib.Path(cwd).name, number)):
+        if any(cwd == path or pathlib.Path(cwd).is_relative_to(path) for path in retained_paths) or (local_references and cwd in paths and references_issue((session.get("name") or "") + "/" + pathlib.Path(cwd).name, number)):
             conflicts.append({"source": "claude_session", "session": session.get("sessionId"),
                               "state": session.get("state") or session.get("status")})
     for pull in pulls:
