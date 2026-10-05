@@ -11,7 +11,6 @@ import importlib.util
 import random
 import sys
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
@@ -34,8 +33,8 @@ def load_module() -> Any:
         raise RuntimeError(f"Unable to load {SCRIPT}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module.datetime = Mock(wraps=datetime)
-    module.datetime.now.return_value = datetime(2026, 10, 5, 18, tzinfo=timezone.utc)
+    module.real_next_dependabot_work = module.next_dependabot_work
+    module.next_dependabot_work = lambda *_args, **_kwargs: {"dependabot_candidates": [], "dependabot_candidate_count": 0}
     module.real_read_next_train_enrollment = module.read_next_train_enrollment
     module.read_next_train_enrollment = lambda _repo: {"source": "launchplane", "status": "not_enrolled"}
     module.real_discover_direction_work = module.discover_direction_work

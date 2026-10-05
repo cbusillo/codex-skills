@@ -2807,16 +2807,6 @@ def next_dependabot_work(
         if source.get("hold"):
             context.update(exclusion="repository_held", hold=source["hold"])
             continue
-        enrollment = ({"source": "launchplane", "status": "unknown",
-                       "reason": "earlier_enrollment_read_unavailable"}
-                      if enrollment_unavailable else read_next_train_enrollment(repo))
-        status = enrollment["status"]
-        context["enrollment"] = enrollment
-        if status == "not_enrolled":
-            continue
-        if status == "unknown":
-            enrollment_unavailable = True
-            coverage["complete"] = False
         try:
             _, pulls = collect_paged_rest_items(
                 f"/repos/{repo}/pulls",
@@ -2827,10 +2817,10 @@ def next_dependabot_work(
             context.update(complete=False, error=next_source_error(exc))
             coverage["complete"] = False
             continue
-        context.update(complete=status != "unknown" and len(pulls) <= scan_limit,
+        context.update(complete=len(pulls) <= scan_limit,
                        truncated=len(pulls) > scan_limit, pull_request_count=min(len(pulls), scan_limit))
         coverage["complete"] &= context["complete"]
-        branches = {target["baseBranch"] for target in enrollment.get("targets", [])}
+        observations: list[dict[str, Any]] = []
         for pull in pulls[:scan_limit]:
             if pull.get("state") != "open" or (pull.get("user") or {}).get("login") != "dependabot[bot]":
                 continue
@@ -2843,18 +2833,35 @@ def next_dependabot_work(
                 continue
             if age <= 24 * 60 * 60:
                 continue
-            if status == "enrolled" and (pull.get("base") or {}).get("ref") not in branches:
-                continue
-            item = {
+            observations.append({
                 "repo": repo, "number": pull["number"], "url": pull["html_url"],
                 "title": pull["title"], "record_type": "pull_request",
                 "created_at": pull["created_at"], "age_hours": round(age / 3600, 1),
                 "age": f"{age / 3600:.1f} hours", "head_sha": (pull.get("head") or {}).get("sha"),
-                "enrollment": status, "reasons": ["dependabot_open_more_than_one_day"],
+                "base_branch": (pull.get("base") or {}).get("ref"),
+                "reasons": ["dependabot_open_more_than_one_day"],
                 "next_action": "Review the PR discussion, changelog, compatibility and current ownership before taking work.",
                 "ownership": "not_checked",
-            }
-            (candidates if status == "enrolled" else unverified).append(item)
+            })
+        if not observations:
+            context["enrollment"] = {"source": "launchplane", "status": "not_read", "reason": "no_old_dependabot_prs"}
+            continue
+        enrollment: dict[str, Any] = ({"source": "launchplane", "status": "unknown",
+                                      "reason": "earlier_enrollment_read_unavailable"}
+                                     if enrollment_unavailable else read_next_train_enrollment(repo))
+        status = enrollment["status"]
+        context["enrollment"] = enrollment
+        if status == "not_enrolled":
+            continue
+        if status == "unknown":
+            enrollment_unavailable = True
+            context["complete"] = coverage["complete"] = False
+        branches = {target["baseBranch"] for target in enrollment.get("targets", [])}
+        for observation in observations:
+            if status == "enrolled" and observation["base_branch"] not in branches:
+                continue
+            observation["enrollment"] = status
+            (candidates if status == "enrolled" else unverified).append(observation)
     for items in (candidates, unverified):
         items.sort(key=lambda entry: (datetime.fromisoformat(entry["created_at"].replace("Z", "+00:00")), entry["repo"].casefold(), entry["number"]))
     coverage["result_truncated"] = len(candidates) > limit or len(unverified) > limit
@@ -3495,7 +3502,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     dependabot = next_dependabot_work(
         discovery.get("repositories", []), scan_limit=args.scan_limit, limit=args.limit,
         inventory_complete=not discovery.get("inventory_truncated", False) and "error" not in discovery,
-    ) if scope is None else {}
+    ) if scope is None else {"dependabot_context": {"complete": False, "exclusion": "explicit_milestone_scope"}}
     emit({
         "ok": True, "actor": actor, "repo": repo,
         "scope": {"kind": "direction", "owner": repo.split("/")[0], "milestone": scope},

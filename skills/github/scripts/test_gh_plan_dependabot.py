@@ -11,13 +11,19 @@ import json
 import subprocess
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from test_gh_plan_next import (
-    global_fixture, issue, load_module, next_args, relationships,
+    global_fixture, issue, load_module as load_next_module, next_args, relationships, track,
 )
 
 NOW = datetime(2026, 10, 5, 18, tzinfo=timezone.utc)
+
+
+def load_module() -> Any:
+    module = load_next_module()
+    module.next_dependabot_work = module.real_next_dependabot_work
+    return module
 
 
 def pull(number=1, *, hours=48, author="dependabot[bot]", state="open", base="main", repo="owner/repo"):
@@ -34,9 +40,8 @@ def enrolled(status="enrolled"):
 
 
 def discover(module: Any, pulls, *, sources=None, limit=10, scan_limit=50, status="enrolled", inventory_complete=True):
-    with patch.object(module, "read_next_train_enrollment", return_value=enrolled(status)), patch.object(
-        module, "collect_paged_rest_items", return_value=("automation-gh", pulls)
-    ) as reads:
+    reads = Mock(return_value=("automation-gh", pulls))
+    with patch.multiple(module, read_next_train_enrollment=Mock(return_value=enrolled(status)), collect_paged_rest_items=reads):
         result = module.next_dependabot_work(
             sources or [{"repo": "owner/repo"}], scan_limit=scan_limit,
             limit=limit, now=NOW, inventory_complete=inventory_complete,
@@ -66,7 +71,7 @@ def test_age_author_state_branch_and_pr_identity():
 def test_enrollment_unknown_preserves_observations_without_claiming_eligibility():
     module: Any = load_module()
     result, reads = discover(module, [pull()], status="not_enrolled")
-    assert result["dependabot_candidates"] == [] and reads.call_count == 0
+    assert result["dependabot_candidates"] == [] and reads.call_count == 1
     result, reads = discover(module, [pull()], status="unknown")
     assert reads.call_count == 1 and result["dependabot_candidates"] == []
     assert result["dependabot_unverified_candidates"][0]["enrollment"] == "unknown"
@@ -84,8 +89,9 @@ def test_bounds_failures_and_invalid_dates_are_explicit():
         result, _ = discover(module, [{**pull(), "created_at": created}])
         assert result["dependabot_candidates"] == []
         assert result["dependabot_context"]["complete"] is False
-    with patch.object(module, "read_next_train_enrollment", return_value=enrolled()), patch.object(
-        module, "collect_paged_rest_items", side_effect=module.PlanError("PR read unavailable")
+    with patch.multiple(
+        module, read_next_train_enrollment=Mock(return_value=enrolled()),
+        collect_paged_rest_items=Mock(side_effect=module.PlanError("PR read unavailable")),
     ):
         result = module.next_dependabot_work([{"repo": "owner/repo"}], scan_limit=5, limit=5, now=NOW)
     assert result["dependabot_context"]["complete"] is False
@@ -109,9 +115,9 @@ def test_holds_duplicates_and_issue_tracker_disabled():
 def test_service_outage_is_read_once_but_pr_observations_continue():
     module: Any = load_module()
     sources = [{"repo": f"owner/repo-{number}"} for number in range(3)]
-    with patch.object(module, "read_next_train_enrollment", return_value=enrolled("unknown")) as service, patch.object(
-        module, "collect_paged_rest_items", return_value=("automation-gh", [pull()])
-    ) as github:
+    service = Mock(return_value=enrolled("unknown"))
+    github = Mock(return_value=("automation-gh", [pull()]))
+    with patch.multiple(module, read_next_train_enrollment=service, collect_paged_rest_items=github):
         result = module.next_dependabot_work(sources, scan_limit=5, limit=5, now=NOW)
     assert service.call_count == 1 and github.call_count == 3
     assert result["dependabot_candidates"] == []
@@ -128,9 +134,8 @@ def test_classified_quota_and_auth_failures_stop_without_more_reads():
             fallback_eligible=False, disposition="stop",
         )
         error = module.PlanError("terminal failure", failure=failure)
-        with patch.object(module, "read_next_train_enrollment", return_value=enrolled()), patch.object(
-            module, "collect_paged_rest_items", side_effect=error,
-        ) as reads:
+        reads = Mock(side_effect=error)
+        with patch.multiple(module, read_next_train_enrollment=Mock(return_value=enrolled()), collect_paged_rest_items=reads):
             try:
                 module.next_dependabot_work([{"repo": "owner/first"}, {"repo": "owner/second"}], scan_limit=5, limit=5, now=NOW)
             except module.PlanError as caught:
@@ -138,6 +143,19 @@ def test_classified_quota_and_auth_failures_stop_without_more_reads():
             else:
                 raise AssertionError("classified failures must preserve the existing stop policy")
         assert reads.call_count == 1
+
+
+def test_enrollment_is_only_read_for_repositories_with_old_dependabot_prs():
+    module: Any = load_module()
+    sources = [{"repo": f"owner/repo-{number}"} for number in range(3)]
+    service = Mock(return_value=enrolled())
+    github = Mock(side_effect=[("automation-gh", []), ("automation-gh", [pull(hours=1)]), ("automation-gh", [pull()])])
+    with patch.multiple(module, read_next_train_enrollment=service, collect_paged_rest_items=github):
+        result = module.next_dependabot_work(sources, scan_limit=5, limit=5, now=NOW)
+    assert github.call_count == 3 and service.call_count == 1
+    assert service.call_args.args == ("owner/repo-2",)
+    assert result["dependabot_candidates"][0]["repo"] == "owner/repo-2"
+    assert result["dependabot_context"]["repositories"][0]["enrollment"]["reason"] == "no_old_dependabot_prs"
 
 
 def test_terminal_and_changed_head_disappear_or_refresh_on_next_read():
@@ -193,6 +211,7 @@ def test_local_next_preserves_issue_ranking_and_includes_prs():
 
 def test_global_next_finds_pr_only_repositories_and_respects_holds():
     with global_fixture([], [], {}) as (module, output, _reads):
+        module.next_dependabot_work = module.real_next_dependabot_work
         original = module.collect_paged_rest_items
         def collect(path, **kwargs):
             if path.endswith("/pulls"):
@@ -213,6 +232,16 @@ def test_global_next_finds_pr_only_repositories_and_respects_holds():
         assert output["dependabot_candidates"][0]["repo"] == "someone/pr-only"
         assert output["dependabot_context"]["complete"] is False
         assert output["dependabot_context"]["repositories"][1]["exclusion"] == "repository_held"
+
+
+def test_global_milestone_reports_that_pr_discovery_was_not_run():
+    root = track("someone/direction", 1, "First")
+    with global_fixture([root], [], {}) as (module, output, _reads):
+        module.next_dependabot_work = Mock(side_effect=AssertionError("unrelated PR discovery"))
+        with patch.multiple(module.github_milestone_core, show_milestone=lambda *_args, **_kwargs: {"milestone": root["milestone"]}):
+            module.cmd_next(next_args(milestone="First"))
+        assert output["dependabot_context"] == {"complete": False, "exclusion": "explicit_milestone_scope"}
+        assert module.next_dependabot_work.call_count == 0
 
 
 def main():

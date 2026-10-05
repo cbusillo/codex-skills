@@ -776,10 +776,13 @@ read; GitHub PR observation continues with unverified results.
 `--scan-limit` independently bounds the open PR read per repository;
 `--limit` bounds each returned PR list with full counts and
 `result_truncated`. A repository-wide PR read also runs with a local
-`--milestone`; global milestone scope omits unrelated PR discovery. Owner-wide
+`--milestone`; global milestone scope reports `explicit_milestone_scope` instead
+of discovering unrelated PRs. Global
 discovery uses the existing bounded repository inventory, respects repository
 holds, and includes repositories with disabled issue trackers. No issue, label,
 comment, admission or merge is written by this read.
+Enrollment is read only for repositories with observed old Dependabot PRs;
+other repositories report `not_read` with `no_old_dependabot_prs`.
 
 For `<owner>/direction`, `next` automatically selects global direction scope;
 no flag is needed. The target repository's merged `DIRECTION.md` is required,
