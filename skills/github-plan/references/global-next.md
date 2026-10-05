@@ -148,6 +148,7 @@ complete discussion and ownership evidence, and a reason and evidence identifyin
 who must act. A CI/event wait, a hold alone, underway or unreviewed milestone
 issue, or incomplete milestone graph coverage does not establish this rule.
 Each listed open milestone needs a named person wait; an empty Track cannot establish that evidence. The output lists those waits in `tooling_capacity_context.milestone_waits`, with `since` null when no start was recorded and `recorded_at` kept separately.
+Record a known start inline in the existing status field, for example `Waiting for: Alex to test; since 2026-08-20`; leave an unknown start unstated.
 A `--milestone` run cannot establish portfolio-wide capacity admission.
 Deferred/stale milestone issues report `milestone_issue_excluded` with the issue
 and exclusion, rather than asking for a person-wait review that cannot clear it.

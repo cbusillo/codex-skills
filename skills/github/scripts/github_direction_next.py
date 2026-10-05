@@ -97,19 +97,27 @@ def milestone_wait_evidence(item: dict[str, Any], status_text: str, milestone_ti
     if match is None:
         match = re.search(r"(?im)^[ \t]*(?:[-*][ \t]+)?Blocked by:[^\n]*?\bwaiting for[ \t]+([^\n]*)", status_text)
     reason = match.group(1).strip() if match else ""
+    if match and not reason:
+        continuation = []
+        for line in status_text[match.end():].splitlines()[1:]:
+            if (not line.strip() or re.match(r"^\s*(?:[-*]\s+)?[\w ]+:\s*", line)
+                    or not re.match(r"^(?:[ \t]+|[-*]\s+)", line)):
+                break
+            continuation.append(re.sub(r"^\s*[-*]?\s*", "", line))
+        reason = " ".join(continuation)
     plain = re.sub(r"[`*_]", "", reason).casefold().rstrip(" .")
     requested = bool((plain and plain not in {"none", "n/a", "nothing", "-"}) or item.get("exclusion") == "waiting"
                      or "plan:waiting" in normalize_labels(item.get("labels"))
                      or re.search(r"(?im)^\s*(?:[-*]\s+)?State:\s*(?:waiting|parked)\b", status_text))
     invalid = None
-    milestone = item.get("milestone")
-    own_title = milestone.get("title") if isinstance(milestone, dict) else milestone
     if not plain or plain in {"none", "n/a", "nothing", "-", "tbd", "unknown", "not recorded", "testing", "people"}:
         invalid = "wait_names_no_person_or_event"
-    elif (re.match(r"^(?:(?:starts?|starting)\s+)?(?:after\s+)?(?:[\w.-]+/direction\s+)?(?:another\s+)?milestones?\b", plain)
-          or any(plain.strip("'\"") == title.casefold()
-                 or re.match(r"^(?:(?:starts?|starting)\s+)?(?:after|until|following|once)\s+['\"]?" + re.escape(title.casefold()) + r"\b", plain)
-                 for title in milestone_titles if title != own_title)):
+    elif (plain in {"another milestone", "other milestones"}
+          or any(re.match(
+              r"^(?:(?:starts?|starting)\s+)?(?:(?:after|until|following|once)\s+)?(?:[\w.-]+/direction\s+)?"
+              r"(?:milestones?\s+)?(?:the\s+)?['\"]?" + re.escape(title.casefold())
+              + r"['\"]?(?:\s+milestone)?(?:$|\s+(?:to\s+)?(?:finish|complete|land|end)\w*\b|\s+and\b)", plain)
+              for title in milestone_titles)):
         invalid = "wait_names_another_milestone"
     # updated_at is evidence of when the record was observed, not a fabricated
     # start date. Only an explicit since field establishes how long it waited.
@@ -127,11 +135,11 @@ def check_milestone_wait(item: dict[str, Any], status_text: str, milestone_title
     evidence = milestone_wait_evidence(item, status_text, milestone_titles)
     if not evidence["requested"] or evidence["valid"]:
         return item
-    if item.get("blocked_by"):
-        return {**item, "exclusion": "blocked_by_open_dependency"}
     finding = {"kind": "milestone_wait_invalid", "repo": item["repo"], "number": item["number"],
                "url": item["url"], **evidence}
     result = {**item, "wait_finding": finding}
+    if item.get("blocked_by"):
+        return {**result, "exclusion": "blocked_by_open_dependency"}
     if result.get("exclusion") == "waiting":
         result.pop("exclusion")
         if result.get("open_sub_issues"):
@@ -439,6 +447,12 @@ def overall_milestone_context(
                 and parent_milestone.get("title") in (parent_titles or [])):
             inherited.add(parent_milestone["title"])
     if inherited:
+        own_milestone = item.get("milestone") or {}
+        own_titles = next((value for key, value in repository_milestones.items()
+                           if key.casefold() == item["repo"].casefold()), None)
+        if (own_milestone.get("state") == "open" and own_milestone.get("title") in milestone_titles
+                and own_milestone.get("title") in (own_titles or [])):
+            inherited.add(own_milestone["title"])
         return {"state": "matched", "titles": [title for title in milestone_titles if title in inherited],
                 "source": "native_milestone_ancestry"}
     repo = item["repo"]
@@ -559,7 +573,7 @@ def tooling_capacity_context(
                 source, status = milestone_wait_source(entry)
                 evidence = milestone_wait_evidence(source, status, milestone_titles)
                 records.append({"repo": source["repo"], "number": source["number"], "url": source["url"],
-                                     "person": evidence["waiting_for"], "since": evidence["since"],
+                                     "waiting_for": evidence["waiting_for"], "since": evidence["since"],
                                      "recorded_at": evidence["recorded_at"]})
             pending_keys.extend((dep["repo"].casefold(), dep["number"])
                                 for dep in [*entry.get("blocked_by", []), *entry.get("open_sub_issues", [])]

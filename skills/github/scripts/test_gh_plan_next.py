@@ -1965,7 +1965,7 @@ def test_milestone_candidate_coverage_is_scoped_to_graph() -> None:
 
 def test_discovered_blocker_explains_its_native_link_to_waiting_track_work() -> None:
     roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
-    waiting = global_issue("someone/direction", 7, labels=["plan", "plan:waiting"])
+    waiting = global_issue("someone/direction", 7, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Alex to decide.")
     blocker = global_issue("someone/product", 12)
     edges = {(roots[0]["repo"], 1): relationships(sub_issues=[waiting]), (waiting["repo"], 7): relationships(blocked_by=[blocker]), (blocker["repo"], 12): relationships(blocking=[waiting])}
     with global_fixture(roots, [waiting, blocker], edges, discovered=[blocker]) as (module, result, _reads):
@@ -1974,7 +1974,7 @@ def test_discovered_blocker_explains_its_native_link_to_waiting_track_work() -> 
         candidate = result["candidates"][0]
         assert candidate["overall_milestone_context"]["state"] == "matched"
         assert candidate["overall_milestone_context"]["titles"] == ["First"]
-        assert candidate["availability"] == "needs_review" and candidate.get("via")
+        assert candidate["availability"] == "needs_review" and not candidate.get("via")
 
 
 def test_service_waypoint_evidence_cannot_be_inferred_from_ranking_map() -> None:
@@ -2359,7 +2359,7 @@ def test_capacity_names_each_milestone_and_wait_start_for_shared_person_gate() -
         assert capacity["admitted"] is True
         assert {row["milestone"] for row in capacity["milestone_waits"]} == {"First", "Second"}
         for row in capacity["milestone_waits"]:
-            assert row["waits"][0]["person"] == "Alex to test."
+            assert row["waits"][0]["waiting_for"] == "Alex to test."
             assert row["waits"][0]["since"] == "2026-08-20"
 
 
@@ -2453,6 +2453,52 @@ def test_invalid_discovered_parent_wait_delegates_to_its_child() -> None:
 
 
 TESTS.append(test_invalid_discovered_parent_wait_delegates_to_its_child)
+
+
+def test_empty_track_discovery_still_reads_held_milestone_capacity_evidence() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    first = global_issue("someone/business", 10, body="## Current Status\nWaiting for: Alex to test.")
+    second = global_issue("someone/business", 11, milestone=milestone_data(7, "Second", created_at="2026-01-01"),
+                          body="## Current Status\nWaiting for: Alex to test.")
+    held = global_issue("someone/held", 12, milestone=milestone_data(8, "Second", created_at="2026-01-01"),
+                        body="## Current Status\nWaiting for: Alex to test.")
+    tool = global_issue("someone/tools", 20)
+    modes = []
+    with global_fixture(roots, [first], {(roots[0]["repo"], 1): relationships(sub_issues=[first])},
+                        discovered=[second, held, tool]) as (module, result, _reads):
+        def discover(_repo: str, _args: Any, **kwargs: Any) -> Any:
+            mode = kwargs["capacity_evidence"]
+            modes.append(mode)
+            return [second, tool, *([held] if mode else [])], {"complete": True, "repositories": [
+                {"repo": "someone/business", "direction": DIRECTION},
+                {"repo": "someone/tools", "direction": None},
+                {"repo": "someone/held", "direction": DIRECTION if mode else None}]}
+        module.discover_direction_work = discover
+        module.cmd_next(next_args())
+        items = {item["number"]: item for item in [*result["candidates"], *result["excluded"]]}
+        context = {"repository_holds": {"someone/held": {"reason": "Director hold", "evidence": ["recorded hold"]}},
+                   "issues": {**{f"someone/business#{number}": reviewed(items[number], "waiting", waiting_on="person") for number in (10, 11)},
+                              "someone/tools#20": reviewed(items[20], category="repeated_stop_tooling")}}
+        with patch.object(module, "next_selection_context", return_value=context):
+            module.cmd_next(next_args())
+        assert modes[-1] is True
+        assert result["tooling_capacity_context"]["admitted"] is False
+        assert result["tooling_capacity_context"]["issue"] == "someone/held#12"
+        assert not result["available_candidates"]
+
+
+def test_multiline_wait_and_literal_milestone_wait_have_opposite_results() -> None:
+    shared = load_module().github_direction_next
+    for reason in ("Waiting for:\n- Alex to approve the copy.", "Waiting for: milestone review call with Alex on 2026-10-10.",
+                   "Waiting for: once launch partners sign."):
+        assert shared.milestone_wait_evidence({}, reason, ["Launch", "Dogfood week", "Thin fork decision"])["valid"]
+    for reason in ("Waiting for: Dogfood week to finish.", "Waiting for: the Thin fork decision milestone."):
+        assert not shared.milestone_wait_evidence({}, reason, ["Launch", "Dogfood week", "Thin fork decision"])["valid"]
+    assert not shared.milestone_wait_evidence({}, "State: Waiting on Alex", ["Launch"])["valid"]
+
+
+TESTS.extend([test_empty_track_discovery_still_reads_held_milestone_capacity_evidence,
+              test_multiline_wait_and_literal_milestone_wait_have_opposite_results])
 
 
 def main() -> None:

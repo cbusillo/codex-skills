@@ -3411,7 +3411,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         ranked, [], milestone_titles=titles, context=selection_context,
         repository_waypoints={}, coverage_complete=graph_coverage["complete"],
     )
-    capacity_evidence = bool(preflight["admitted"] or (preflight["reason"] == "no_milestone_waits" and any(
+    capacity_evidence = bool(preflight["admitted"] or (preflight["reason"] in {"no_milestone_waits", "milestone_names_no_person"} and any(
         review.get("state") == "waiting" and review.get("waiting_on") == "person"
         for review in selection_context.get("issues", {}).values()
     )))
@@ -3473,7 +3473,9 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
             original_exclusion = item.get("exclusion")
             ordinary_discussion_complete = bool((item.get("discussion") or {}).get("complete"))
             held = github_direction_next.repository_hold(selection_context, item["repo"])
-            listed_wait = original_exclusion == "waiting" and (item.get("milestone") or {}).get("title") in titles
+            status_text = node.get("status_text") or ""
+            wait_evidence = github_direction_next.milestone_wait_evidence(item, status_text, titles)
+            listed_wait = original_exclusion == "waiting" and ((item.get("milestone") or {}).get("title") in titles or not wait_evidence["valid"])
             if (not original_exclusion or capacity_evidence or listed_wait) and item.get("exclusion") not in {"completed", "pull_request", "unknown_dependencies"}:
                 exclusion = item.get("exclusion")
                 item = with_ancestry(item)

@@ -1556,7 +1556,7 @@ def test_invalid_milestone_wait_is_reported_but_named_event_or_native_blocker_is
     for reason in ("starts after milestone Thin fork decision", "", "nothing"):
         waiting = {**base, "body": "## Current Status\nState: Waiting.\nWaiting for: " + reason}
         assert "milestone_wait_invalid" in kinds(run(module, issues=[waiting]))
-        assert "milestone_wait_invalid" not in kinds(run(module, issues=[{**waiting, "_open_blockers": [{"number": 7}]}]))
+        assert "milestone_wait_invalid" in kinds(run(module, issues=[{**waiting, "_open_blockers": [{"number": 7}]}]))
     event = {**base, "body": "## Current Status\nWaiting for: beta release on October 1."}
     assert "milestone_wait_invalid" not in kinds(run(module, issues=[event]))
 
@@ -1577,13 +1577,36 @@ def test_overall_audit_follows_track_to_invalid_cross_repository_wait() -> None:
             return child
         return []
     pull = {**issue(2, "Direction proposal"), "pull_request": {"url": "https://github.com/owner/direction/pull/2"}}
-    assert not module.enrich_milestone_waits([pull, root], "owner/direction", ["Dogfood week"], fetch=fetch)
-    result = run(module, issues=[pull, root])
+    other = {**issue(3, "Track: Thin fork decision"), "state": "open",
+             "milestone": {"title": "Thin fork decision", "state": "open"},
+             "html_url": "https://github.com/owner/direction/issues/3"}
+    assert not module.enrich_milestone_waits([pull, root, other], "owner/direction", ["Dogfood week", "Thin fork decision"], fetch=fetch)
+    result = run(module, issues=[pull, root, other])
     finding = next(item for item in result["findings"] if item["kind"] == "milestone_wait_invalid")
     assert (finding["repo"], finding["number"]) == ("owner/business", 120)
     assert sum(item["kind"] == "milestone_wait_invalid" for item in result["findings"]) == 1
     assert module.enrich_milestone_waits([root], "owner/direction", ["Dogfood week"],
                                        fetch=lambda _: (_ for _ in ()).throw(module.AuditError("unavailable")))
+
+
+def test_local_wait_reads_skip_zero_blockers_and_preserve_failed_or_capped_coverage() -> None:
+    module = load()
+    base = {**issue(120, "Inventory", labels=("plan:waiting",),
+                    body="## Current Status\nWaiting for: milestone Thin fork decision."),
+            "milestone": {"title": "Dogfood week"}}
+    zero = {**base, "issue_dependencies_summary": {"blocked_by": 0}}
+    def denied(_args: list[str]) -> Any:
+        raise module.AuditError("unavailable")
+    assert not module.enrich_milestone_waits([zero], "owner/product", ["Thin fork decision", "Dogfood week"], fetch=denied)
+    assert "milestone_wait_invalid" in kinds(run(module, issues=[zero]))
+    unknown = {**base}
+    assert module.enrich_milestone_waits([unknown], "owner/product", ["Thin fork decision", "Dogfood week"], fetch=denied)
+    assert "coverage_incomplete" in kinds(run(module, issues=[unknown]))
+    assert "milestone_wait_invalid" not in kinds(run(module, issues=[unknown]))
+    with patch.object(module, "MAX_ADMISSION_ISSUES", 1):
+        records = [{**base, "number": number} for number in (120, 121)]
+        assert module.enrich_milestone_waits(records, "owner/product", ["Thin fork decision", "Dogfood week"], fetch=lambda _: [])
+        assert records[-1]["_wait_blockers_unknown"] is True
 
 
 def main() -> int:
