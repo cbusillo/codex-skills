@@ -242,6 +242,11 @@ active issue labels and continuing background jobs do not lift a hold.
    `--handoff-comment`; read Planning: Claim for the exact released-handoff
    proof and supported route before using these flags. Direct PR claims remain
    unsupported. Active ownership still refuses.
+   For ordinary successor work before a retained PR can be refreshed, use
+   `--resume-from` with `--handoff-comment` and omit `--refresh-pr`. Read
+   Planning: Claim for the exact released multi-branch handoff proof; all
+   retained artifacts and their recorded waits are checked. This claim does
+   not lift a product hold or authorize changing the retained PRs.
 
 Also report each `blocking_work_elsewhere` pair from `gh-plan.py next`, naming
 the local blocker and the repository/issue it holds up. Read the blocker's

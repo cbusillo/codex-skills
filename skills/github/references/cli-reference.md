@@ -507,12 +507,39 @@ invalid timestamps remain uncertain ownership. The successor claim replaces
 automation-managed stale status on normal readback; contributor-owned status
 stays intact, with the successor's claim in a comment. Unstructured ownership
 outside the helper-generated fields still refuses. The original status remains quoted in
-the successor's claim comment. Only the exact retained branch, worktree, and
-PR evidence is accepted; other Current Status ownership, unreleased comments,
+the successor's claim comment. Without `--handoff-comment`, only the source
+claim's exact retained branch, worktree, and PR evidence is accepted;
+other Current Status ownership, unreleased comments,
 other artifacts, and visible peer sessions still refuse. Records on another issue must use that
 canonical planning issue's supported handoff route.
 This flag supplies no cleanup or takeover authority: apply Choose Work's
 verified-handoff and preservation rules before passing it.
+
+For an authorized **ordinary successor** whose next step precedes PR refresh,
+use the canonical open planning issue in the PRs' repository:
+
+```bash
+uv run <skill-dir>/scripts/gh-plan.py claim <canonical-issue> \
+  --worker <worker-token> --session <native-session-id> \
+  --branch work/<new-task-slug> --next-action "<authorized next step>" \
+  --resume-from <released-claim-comment-id> \
+  --handoff-comment <exact-source-handoff-comment-id> \
+  --wait-resolved "<verified existing authorization and retained hold evidence>"
+```
+
+Omit `--refresh-pr`. The same exact-ID release and source-author handoff proof
+described below binds every named open or merged same-repository PR to its
+retained branch, including branches different from the source claim. Every
+open PR on those branches must be named and same-author; independent issue
+links, PR discussions, claims, live peers (including worktree descendants),
+local/remote branches and worktrees are checked again on both readbacks.
+Unmentioned artifacts, foreign identity, and unresolved waits or native
+blockers still refuse. Supply existing wait evidence for the authorized step;
+the argument does not lift a draft or product prerequisite. The recorded claim
+binds its source and handoff so recovery cannot silently discard that proof or
+become conflict-only refresh. Create a new linked worktree only after confirmed
+success; preserve the original checkouts. This route grants no live-operation,
+PR-change, cleanup, access, or takeover authority.
 
 For an explicitly authorized **conflict-only refresh** of a finished session's
 PR, claim its **canonical open planning issue**, even when the brief names only
