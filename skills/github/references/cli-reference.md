@@ -391,7 +391,15 @@ or Project focus state.
   Result milestones retain the search payload's title. `--state open|closed` adds the matching
   search qualifier, `--state all` omits it, and quota evidence uses the search
   bucket. Compact states remain normalized as uppercase `OPEN` or `CLOSED`
-  values.
+  values. Coverage fields are `limit` (the requested item bound), `total_count`
+  (the largest GitHub total observed across fetched pages, not their sum), and
+  `incomplete_results` (true if any fetched page reports partial results).
+  Missing or invalid coverage metadata is null, unless a page positively
+  reports partial results. Compare `count` with `total_count` and `limit` to
+  distinguish returned items from provider totals and the caller's bound;
+  `ok: true` reports command success, not complete search coverage.
+  These fields do not prove repository visibility or escape
+  [GitHub's search limits](https://docs.github.com/en/rest/search/search#about-search).
 - `show <issue>`: Show selected sections and all issue comments, paginated in
   GitHub's chronological order. Each comment includes its ID, author login,
   creation/update timestamps, URL, and full body. Use `--full` for the entire
