@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Closed-session release behavior and the six reported consumer shapes."""
+"""Consumer recovery: closed-session releases and main's authored embedded releases."""
 from __future__ import annotations
 
 import copy
@@ -109,9 +109,8 @@ class ReleaseTests(unittest.TestCase):
         self.f.args.handoff_comment = self.f.comments[-1]["id"]
         self.successor()
 
-    def test_repairshopr_embedded_release_has_explicit_supervisor_route(self):
+    def test_repairshopr_embedded_release_is_claimable_without_supervisor(self):
         self.f.comments.append(self.comment(2, "Owner question: verify read-only usage?\n\nReleased claim 1", "2026-10-01T01:00:00Z"))
-        self.run_release()
         self.successor()
 
     def test_bd_closed_native_blocker_is_accepted_without_unlinking_history(self):
