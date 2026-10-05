@@ -611,12 +611,206 @@ def test_edit_partial_failure_preserves_completed_steps_and_guidance() -> None:
             assert exc.payload["reconciliation"]["strategy"] == "read_issue_and_compare_requested_fields"
             assert exc.payload["attempts"] == 4, exc.payload
             assert exc.payload["outcome_certainty"] == "unknown", exc.payload
+            envelope = github_issue._terminal_failure(
+                exc, "github.issue.edit", expected_actor="fixture-automation"
+            )
+            assert envelope["write_outcome"] == "partially_applied", envelope
+            assert envelope["outcome_certainty"] == "unknown", envelope
+            assert envelope["failed_request"]["write_outcome"] == "unknown", envelope
+            assert envelope["failed_request"]["outcome_certainty"] == "unknown", envelope
+            classified = github_api.classify_error(503, {}, "Unicorn!", is_write=True)
+            assert envelope["retryable"] == classified.retryable, envelope
+            assert envelope["fallback_eligible"] == classified.fallback_eligible, envelope
+            recovery = envelope["reconciliation"]
+            assert recovery["completed"]["field_values"] == {"body": "replacement"}, recovery
+            assert recovery["remaining"]["field_values"] == {}, recovery
+            assert recovery["remaining"]["add_labels"] == ["enhancement"], recovery
         else:
             raise AssertionError("expected partial edit failure")
         assert [call["method"] for call in calls] == ["GET", "GET", "PATCH", "POST"], calls
         assert issue_read
 
     with_call_stub(callback, run)
+
+
+def test_edit_absent_label_failure_reports_partial_writes_and_remaining_work() -> None:
+    labels = {"plan", "plan:blocked"}
+
+    def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        if method == "GET":
+            issue = issue_body()
+            issue["labels"] = [{"name": label} for label in sorted(labels)]
+            return success(issue)
+        if method == "POST":
+            labels.update(body["labels"])
+            return success([{"name": label} for label in sorted(labels)])
+        assert method == "DELETE"
+        label = github_issue.urllib.parse.unquote(path.rsplit("/", 1)[1])
+        if label not in labels:
+            return failure(404, {"message": "Label does not exist"}, is_write=True)
+        labels.remove(label)
+        return success([])
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        try:
+            github_issue.edit_issue(
+                42,
+                repo="owner/repo",
+                add_labels=["plan:waiting"],
+                remove_labels=["plan:blocked", "plan:active", "later"],
+                gh_cmd="fake-gh",
+            )
+        except github_issue.IssueError as exc:
+            envelope = github_issue._terminal_failure(
+                exc, "github.issue.edit", expected_actor="fixture-automation"
+            )
+        else:
+            raise AssertionError("absent-label removal should remain a terminal failure")
+        assert labels == {"plan", "plan:waiting"}, labels
+        assert envelope["write_outcome"] == "partially_applied", envelope
+        assert envelope["outcome_certainty"] == "confirmed_partially_applied", envelope
+        assert envelope["failure"]["write_outcome"] == "partially_applied", envelope
+        assert envelope["completed_steps"] == ["resolve_actor", "add_labels", "remove_label"], envelope
+        assert envelope["failed_step"] == "remove_label", envelope
+        assert envelope["failed_request"]["write_outcome"] == "not_started", envelope
+        assert envelope["failed_request"]["outcome_certainty"] == "confirmed_not_applied", envelope
+        assert envelope["retryable"] is False and envelope["fallback_eligible"] is False, envelope
+        recovery = envelope["reconciliation"]
+        assert recovery["completed"]["add_labels"] == ["plan:waiting"], recovery
+        assert recovery["completed"]["remove_labels"] == ["plan:blocked"], recovery
+        assert recovery["remaining"]["add_labels"] == [], recovery
+        assert recovery["remaining"]["remove_labels"] == ["plan:active", "later"], recovery
+        assert recovery["required_before_retry"] is True, recovery
+        assert [call["method"] for call in calls] == ["GET", "POST", "DELETE", "DELETE"], calls
+        # The caller's readback uses the supplied endpoint; no completed write is replayed.
+        readback = github_issue.github_api_core.call_gh("GET", recovery["endpoint"])
+        actual = {label["name"] for label in readback.body["labels"]}
+        remaining_removals = [label for label in recovery["remaining"]["remove_labels"] if label in actual]
+        assert remaining_removals == [], remaining_removals
+
+    with_call_stub(callback, run, allow_retry=True)
+
+
+def test_edit_first_mutation_failure_is_not_partial() -> None:
+    def callback(_method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        return failure(404, {"message": "Label does not exist"}, is_write=True)
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        try:
+            github_issue.edit_issue(42, repo="owner/repo", remove_labels=["absent"], gh_cmd="fake-gh")
+        except github_issue.IssueError as exc:
+            envelope = github_issue._terminal_failure(
+                exc, "github.issue.edit", expected_actor="fixture-automation"
+            )
+            assert envelope["write_outcome"] == "not_started", envelope
+            assert envelope["outcome_certainty"] == "confirmed_not_applied", envelope
+        else:
+            raise AssertionError("expected first-mutation failure")
+        assert [call["method"] for call in calls] == ["GET", "DELETE"], calls
+
+    with_call_stub(callback, run)
+
+
+def test_edit_failed_readback_preserves_confirmed_writes() -> None:
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        if method == "POST":
+            return success(issue_body())
+        return failure(404, {"message": "Not Found"}, is_write=False)
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        try:
+            github_issue.edit_issue(
+                42, repo="owner/repo", add_assignees=["octocat"], gh_cmd="fake-gh"
+            )
+        except github_issue.IssueError as exc:
+            envelope = github_issue._terminal_failure(
+                exc, "github.issue.edit", expected_actor="fixture-automation"
+            )
+            assert envelope["write_outcome"] == "applied", envelope
+            assert envelope["outcome_certainty"] == "confirmed", envelope
+            assert envelope["failed_step"] == "read_after_write", envelope
+            assert envelope["failed_request"]["write_outcome"] is None, envelope
+            assert envelope["failed_request"]["outcome_certainty"] == "not_applicable", envelope
+            assert envelope["reconciliation"]["completed"]["add_assignees"] == ["octocat"], envelope
+            assert not any(envelope["reconciliation"]["remaining"].values()), envelope
+        else:
+            raise AssertionError("expected readback failure")
+        assert [call["method"] for call in calls] == ["GET", "POST", "GET"], calls
+
+    with_call_stub(callback, run)
+
+
+def test_edit_malformed_readback_preserves_confirmed_writes() -> None:
+    for readback in ({}, "<html>proxy response</html>"):
+        def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            if path == "/user":
+                return success({"login": "fixture-automation"})
+            if method == "POST":
+                return success([{"name": "enhancement"}])
+            return success(readback)
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            try:
+                github_issue.edit_issue(
+                    42, repo="owner/repo", add_labels=["enhancement"], gh_cmd="fake-gh"
+                )
+            except github_issue.IssueError as exc:
+                envelope = github_issue._terminal_failure(
+                    exc, "github.issue.edit", expected_actor="fixture-automation"
+                )
+                assert envelope["write_outcome"] == "applied", envelope
+                assert envelope["outcome_certainty"] == "confirmed", envelope
+                assert envelope["failed_step"] == "parse_issue_response", envelope
+                assert envelope["failed_request"]["outcome_certainty"] == "not_applicable", envelope
+                recovery = envelope["reconciliation"]
+                assert recovery["endpoint"] == "/repos/owner/repo/issues/42", recovery
+                assert recovery["completed"]["add_labels"] == ["enhancement"], recovery
+                assert not any(recovery["remaining"].values()), recovery
+            else:
+                raise AssertionError("expected malformed readback failure")
+            assert [call["method"] for call in calls] == ["GET", "POST", "GET"], calls
+
+        with_call_stub(callback, run)
+
+
+def test_edit_partial_failure_preserves_actor_recovery_guidance() -> None:
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        if method in {"GET", "PATCH"}:
+            return success(issue_body())
+        result = failure(503, "Unicorn!", is_write=True)
+        result.actor = "other-fixture"
+        result.expected_actor = "fixture-automation"
+        return result
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        try:
+            github_issue.edit_issue(
+                42, repo="owner/repo", title="Updated", add_labels=["plan:waiting"], gh_cmd="fake-gh"
+            )
+        except github_issue.IssueError as exc:
+            envelope = github_issue._terminal_failure(
+                exc, "github.issue.edit", expected_actor="fixture-automation"
+            )
+            assert envelope["error_code"] == "actor_mismatch", envelope
+            assert envelope["write_outcome"] == "partially_applied", envelope
+            assert envelope["recommended_next_action"] == "start_new_authorized_actor_context", envelope
+            assert envelope["failed_request"]["recommended_next_action"] == "start_new_authorized_actor_context", envelope
+            assert envelope["retryable"] is False and envelope["fallback_eligible"] is False, envelope
+            assert envelope["disposition"] == "stop", envelope
+            assert envelope["reconciliation"]["completed"]["field_values"] == {"title": "Updated"}, envelope
+        else:
+            raise AssertionError("expected actor-context refusal")
+        assert [call["method"] for call in calls] == ["GET", "GET", "PATCH", "POST"], calls
+
+    with_call_stub(callback, run, allow_retry=True)
 
 
 def test_edit_rejects_cross_author_source_content_without_override() -> None:
@@ -1102,6 +1296,11 @@ TESTS = [
     test_rejected_retry_enabled_issue_create_can_retry,
     test_edit_uses_rest_membership_endpoints_and_reads_after_write,
     test_edit_partial_failure_preserves_completed_steps_and_guidance,
+    test_edit_absent_label_failure_reports_partial_writes_and_remaining_work,
+    test_edit_first_mutation_failure_is_not_partial,
+    test_edit_failed_readback_preserves_confirmed_writes,
+    test_edit_malformed_readback_preserves_confirmed_writes,
+    test_edit_partial_failure_preserves_actor_recovery_guidance,
     test_edit_rejects_cross_author_source_content_without_override,
     test_edit_allows_explicit_cross_author_source_content_override,
     test_metadata_only_edit_does_not_require_source_content_ownership,
