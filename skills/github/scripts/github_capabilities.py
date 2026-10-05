@@ -167,9 +167,9 @@ def source_fingerprints(root: Path) -> dict[str, str]:
         for path in sorted((root / directory).iterdir()):
             if not path.is_file() or path.name.startswith(("test", "validate-")):
                 continue
-            # This passthrough's API is caller-supplied. Its actor and refusal
-            # contracts are exercised by test_gh_with_env_token.py, not a hash
-            # of shell lines that happen to mention gh.
+            # The passthrough accepts caller-supplied APIs. Its fixed auth calls,
+            # actor checks and refusals are exercised by test_gh_with_env_token.py
+            # and validate-gh-issue.sh, not a hash of lines mentioning gh.
             if path.name == "gh-with-env-token":
                 continue
             if path.suffix not in {".py", ".sh", ""}:
