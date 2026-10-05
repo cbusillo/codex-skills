@@ -904,7 +904,7 @@ def _enrich_edit_failure(error: IssueError) -> None:
         "write_outcome": error.failure.write_outcome,
         "outcome_certainty": error.payload.get("outcome_certainty"),
     }
-    if error.failure.failed_step == "read_after_write":
+    if error.failure.failed_step in {"read_after_write", "parse_issue_response"}:
         failed_request.update(write_outcome=None, outcome_certainty="not_applicable")
     pending_writes = any(remaining.values())
     write_outcome = "partially_applied" if pending_writes else "applied"
@@ -1183,15 +1183,19 @@ def _edit_issue_impl(
         retry_summaries=retry_summaries,
     )
     steps.append("read_after_write")
-    return _issue_payload(
-        result.body,
-        operation=operation,
-        repo=resolved_repo,
-        actor=actor if expected_actor is not None else None,
-        expected_actor=expected_actor,
-        completed_steps=steps,
-        retry_summary=github_api_core.aggregate_retry_summaries(retry_summaries),
-    )
+    try:
+        return _issue_payload(
+            result.body,
+            operation=operation,
+            repo=resolved_repo,
+            actor=actor if expected_actor is not None else None,
+            expected_actor=expected_actor,
+            completed_steps=steps,
+            retry_summary=github_api_core.aggregate_retry_summaries(retry_summaries),
+        )
+    except IssueError as error:
+        error.payload.update(failure_payload)
+        raise
 
 
 def edit_issue(

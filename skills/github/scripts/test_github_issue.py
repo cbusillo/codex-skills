@@ -617,6 +617,10 @@ def test_edit_partial_failure_preserves_completed_steps_and_guidance() -> None:
             assert envelope["write_outcome"] == "partially_applied", envelope
             assert envelope["outcome_certainty"] == "unknown", envelope
             assert envelope["failed_request"]["write_outcome"] == "unknown", envelope
+            assert envelope["failed_request"]["outcome_certainty"] == "unknown", envelope
+            classified = github_api.classify_error(503, {}, "Unicorn!", is_write=True)
+            assert envelope["retryable"] == classified.retryable, envelope
+            assert envelope["fallback_eligible"] == classified.fallback_eligible, envelope
             recovery = envelope["reconciliation"]
             assert recovery["completed"]["field_values"] == {"body": "replacement"}, recovery
             assert recovery["remaining"]["field_values"] == {}, recovery
@@ -740,6 +744,39 @@ def test_edit_failed_readback_preserves_confirmed_writes() -> None:
         assert [call["method"] for call in calls] == ["GET", "POST", "GET"], calls
 
     with_call_stub(callback, run)
+
+
+def test_edit_malformed_readback_preserves_confirmed_writes() -> None:
+    for readback in ({}, "<html>proxy response</html>"):
+        def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            if path == "/user":
+                return success({"login": "fixture-automation"})
+            if method == "POST":
+                return success([{"name": "enhancement"}])
+            return success(readback)
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            try:
+                github_issue.edit_issue(
+                    42, repo="owner/repo", add_labels=["enhancement"], gh_cmd="fake-gh"
+                )
+            except github_issue.IssueError as exc:
+                envelope = github_issue._terminal_failure(
+                    exc, "github.issue.edit", expected_actor="fixture-automation"
+                )
+                assert envelope["write_outcome"] == "applied", envelope
+                assert envelope["outcome_certainty"] == "confirmed", envelope
+                assert envelope["failed_step"] == "parse_issue_response", envelope
+                assert envelope["failed_request"]["outcome_certainty"] == "not_applicable", envelope
+                recovery = envelope["reconciliation"]
+                assert recovery["endpoint"] == "/repos/owner/repo/issues/42", recovery
+                assert recovery["completed"]["add_labels"] == ["enhancement"], recovery
+                assert not any(recovery["remaining"].values()), recovery
+            else:
+                raise AssertionError("expected malformed readback failure")
+            assert [call["method"] for call in calls] == ["GET", "POST", "GET"], calls
+
+        with_call_stub(callback, run)
 
 
 def test_edit_rejects_cross_author_source_content_without_override() -> None:
@@ -1228,6 +1265,7 @@ TESTS = [
     test_edit_absent_label_failure_reports_partial_writes_and_remaining_work,
     test_edit_first_mutation_failure_is_not_partial,
     test_edit_failed_readback_preserves_confirmed_writes,
+    test_edit_malformed_readback_preserves_confirmed_writes,
     test_edit_rejects_cross_author_source_content_without_override,
     test_edit_allows_explicit_cross_author_source_content_override,
     test_metadata_only_edit_does_not_require_source_content_ownership,
