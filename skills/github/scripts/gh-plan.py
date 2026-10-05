@@ -2062,6 +2062,9 @@ def cmd_claim(args: argparse.Namespace) -> None:
         lines = []
         in_hold = False
         for line in status_to_check.splitlines():
+            if line.strip().startswith("<!-- " + github_plan_claim.MARKER):
+                in_hold = False
+                continue
             parked = re.match(r"\s*(?:[-*]\s+)?State:\s*(?:waiting|parked|blocked)\b.*", line, re.I)
             if parked:
                 lines.append("Parked until: " + parked.group().strip())
@@ -2279,6 +2282,10 @@ def cmd_claim(args: argparse.Namespace) -> None:
             + wait_receipt
         )
         if can_update:
+            if handoff_id and not refresh_pr:
+                _, pre_write_issue = get_issue(args.issue, repo)
+                if pre_write_issue.get("body") != issue.get("body"):
+                    raise PlanError("Issue body changed before retained-handoff status write; preserve the new hold and verify before recovery")
             body = replace_issue_plan_section(issue, "Current Status", status_text)
             rest_edit_issue(issue_repo, number, body=body)
             completed.append("update_current_status")

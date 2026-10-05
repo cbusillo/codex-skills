@@ -58,6 +58,7 @@ class ClaimTests(unittest.TestCase):
         self.events = []
         self.after_post = lambda: None
         self.after_status = lambda: None
+        self.during_inventory = lambda: None
         self.emitted = Mock()
 
     def get_issue(self, ref, repo):
@@ -75,6 +76,7 @@ class ClaimTests(unittest.TestCase):
         return "bot", copy.deepcopy(self.closed_pulls[n])
 
     def inventory_for(self, repo, _number, **_):
+        self.during_inventory()
         if repo == "other/plans" and self.planning_inventory is not None:
             return copy.deepcopy(self.planning_inventory)
         return copy.deepcopy(self.inventory)
@@ -487,6 +489,31 @@ class ClaimTests(unittest.TestCase):
         self.args.wait_resolved = "Prerequisite step authorized; hold remains."
         self.after_post = lambda: self.targets["99"].update(body=self.targets["99"]["body"].replace("yesterday", "today"))
         self.run_claim()
+
+    def test_ordinary_handoff_preserves_hold_added_during_slow_inventory_read(self):
+        self.ordinary_handoff_fixture()
+        self.args.wait_resolved = "Previously authorized prerequisite only."
+        def concurrent_hold():
+            if "post" in self.events:
+                self.issue["body"] += "\n\n## Current Status\n\nWaiting for: New decision on prerequisite."
+        self.during_inventory = concurrent_hold
+        with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
+        self.assertIn("Issue body changed", str(caught.exception))
+        self.assertIn("Waiting for: New decision on prerequisite.", self.issue["body"])
+        self.assertNotIn("status", self.events)
+        self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+
+    def test_ordinary_handoff_does_not_copy_released_marker_as_hold_continuation(self):
+        self.ordinary_handoff_fixture()
+        self.comments[0]["created_at"] = self.comments[0]["updated_at"] = "2026-10-01T00:00:00Z"
+        self.comments[2]["created_at"] = "2026-10-02T00:00:00Z"
+        source = CLAIM.records(self.comments[0]["body"])[0]
+        self.issue["body"] = (self.issue["body"].split("## Current Status", 1)[0]
+                              + "## Current Status\n\nWaiting for: Owner review.\n" + CLAIM.marker(source))
+        self.args.wait_resolved = "Prerequisite authorized; retain the review hold."
+        self.run_claim()
+        self.assertEqual(CLAIM.records(self.issue["body"]), [self.emitted.call_args.args[0]["claim"]])
+        self.assertIn("Waiting for: Owner review.", self.issue["body"])
 
     def test_ordinary_handoff_refuses_changed_holds_on_each_readback(self):
         for phase in ("after_post", "after_status"):
