@@ -223,10 +223,8 @@ The versioned JSON includes:
 - File type, size, identity and change metadata. Content and credential-bearing
   remote URLs are never printed. Counts and logical bytes are observations,
   not a claim about filesystem blocks reclaimable after deletion.
-- Runtime bindings from `CODE_HOME`, `CODEX_HOME`, `~/.code`,
-  `~/.agents/skills` (whole-catalog link), `~/.agents/skills/shared` (installer
-  binding), and every entry
-  under Claude Code's `skills` folder (`CLAUDE_CONFIG_DIR` or `~/.claude`), active
+- Runtime bindings from the
+  [runtime binding lookup](https://github.com/cbusillo/codex-skills/blob/main/README.md#runtime-binding-lookup), active
   working directory, and explicit `--preserve-root` inputs. Other installed
   runtimes, apps and IDEs may remain unknown. Pass known protected locations;
   absence of a binding or an agent does not establish inactivity.

@@ -43,7 +43,7 @@ class RuntimeFixture:
         landing_sha: str | None = None,
         *,
         code_home: Path | None = None,
-        extra_env: dict[str, str] | None = None,
+        extra_env: dict[str, str | None] | None = None,
         repo: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
         env = os.environ.copy()
@@ -51,7 +51,11 @@ class RuntimeFixture:
         env["CODE_HOME"] = str(code_home or self.code_home)
         env["CODEX_HOME"] = str(self.code_home.parent / "ignored-codex-home")
         env["CLAUDE_CONFIG_DIR"] = str(self.code_home.parent / "no-claude-config")
-        env.update(extra_env or {})
+        for key, value in (extra_env or {}).items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
         proc = subprocess.run(
             [
                 sys.executable,
@@ -497,29 +501,26 @@ def test_reconcile_finds_a_claude_code_binding_when_no_codex_home_exists(tmp_pat
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
 
 
-@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("layout", [".agents/skills", ".agents/skills/shared", ".codex/skills"])
 @pytest.mark.parametrize("dirty", [False, True])
 def test_reconcile_finds_codex_only_installer_bindings_and_preserves_dirty_runtime(
-    tmp_path: Path, nested: bool, dirty: bool,
+    tmp_path: Path, layout: str, dirty: bool,
 ) -> None:
     fixture = build_runtime_fixture(tmp_path / "fixture")
-    skills = fixture.code_home.parent / "host-home" / ".agents" / "skills"
-    binding = skills / "shared" if nested else skills
+    binding = fixture.code_home.parent / "host-home" / layout
     binding.parent.mkdir(parents=True)
     binding.symlink_to(fixture.runtime, target_is_directory=True)
-    if nested:
+    if layout.endswith("/shared"):
         # Personal skills coexist with the installer binding.
-        (skills / "personal").mkdir()
+        (binding.parent / "personal").mkdir()
     if dirty:
         (fixture.runtime / ".gitignore").write_text("local edit\n")
     before = git(fixture.runtime, "status", "--porcelain")
 
-    proc, receipt = fixture.run(code_home=tmp_path / "no-code-home")
+    proc, receipt = fixture.run(extra_env={"CODE_HOME": None, "CODEX_HOME": None})
 
     assert receipt["applicable"] is True
-    assert receipt["runtime_home_source"] == (
-        "HOME/.agents/skills/shared" if nested else "HOME/.agents/skills"
-    )
+    assert receipt["runtime_home_source"] == f"HOME/{layout}"
     if dirty:
         assert proc.returncode != 0
         assert receipt["status"] == "blocked"
@@ -531,6 +532,27 @@ def test_reconcile_finds_codex_only_installer_bindings_and_preserves_dirty_runti
         assert receipt["status"] == "synchronized"
         assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
     assert git(fixture.runtime, "status", "--porcelain") == before
+
+
+@pytest.mark.parametrize("variable", ["CODE_HOME", "CODEX_HOME"])
+def test_reconcile_prefers_explicit_home_over_default_legacy_binding(tmp_path: Path, variable: str) -> None:
+    fixture = build_runtime_fixture(tmp_path / "fixture")
+    legacy = fixture.code_home.parent / "host-home" / ".codex" / "skills"
+    legacy.parent.mkdir(parents=True)
+    legacy_runtime = tmp_path / "legacy-runtime"
+    # Both are work in progress, so default-branch preference cannot mask lookup order.
+    git(fixture.runtime, "switch", "-c", "explicit-wip")
+    git(fixture.runtime, "worktree", "add", "-b", "legacy-wip", str(legacy_runtime), fixture.initial_sha)
+    legacy.symlink_to(legacy_runtime, target_is_directory=True)
+
+    proc, receipt = fixture.run(extra_env={"CODE_HOME": None, "CODEX_HOME": None,
+                                         variable: str(fixture.code_home)})
+
+    assert proc.returncode != 0
+    assert (receipt["status"], receipt["runtime_home_source"]) == ("blocked", variable)
+    assert receipt["reason_code"] == "runtime_wrong_branch"
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
+    assert git(legacy_runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
 def test_reconcile_reports_the_primary_binding_when_no_host_binds_this_repository(tmp_path: Path) -> None:

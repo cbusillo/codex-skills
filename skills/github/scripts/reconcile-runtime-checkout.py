@@ -381,6 +381,8 @@ def runtime_skills_paths() -> list[tuple[Path, str, bool]]:
         if os.environ.get(variable):
             paths.append((Path(os.environ[variable]).expanduser() / "skills", variable, True))
     paths.append((Path.home() / ".code" / "skills", "HOME/.code", True))
+    # The installer preserves this legacy binding even without an exported CODEX_HOME.
+    paths.append((Path.home() / ".codex" / "skills", "HOME/.codex/skills", True))
     # The installer keeps a whole-catalog Codex link or creates the namespaced binding.
     codex_skills = Path.home() / ".agents" / "skills"
     paths.append((codex_skills, "HOME/.agents/skills", True))
