@@ -319,7 +319,7 @@ uv run github/scripts/reconcile-runtime-checkout.py \
 ```
 
 The helper checks every host binding documented in
-[runtime binding lookup](../../../README.md#layout-and-private-local-state).
+[runtime binding lookup](https://github.com/cbusillo/codex-skills/blob/main/README.md#layout-and-private-local-state).
 `bindings_checked` in the receipt lists each with its outcome; `matched` means a
 binding qualified, and the receipt's own `status` says what was reconciled. A
 work-in-progress worktree linked for testing does not shadow an install on the

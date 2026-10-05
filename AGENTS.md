@@ -55,7 +55,8 @@
 ## Runtime Checkout Discipline
 
 - Resolve the active skills directory using the runtime binding lookup in
-  [README](README.md#layout-and-private-local-state). If a binding resolves into this repository, that exact
+  [README](README.md#layout-and-private-local-state). If a binding resolves into
+  this repository, that exact
   worktree is a runtime checkout, not a development checkout.
 - Keep the runtime checkout clean, on the repository default branch, and current
   with its remote. Perform implementation work in focused linked worktrees.
