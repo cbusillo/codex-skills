@@ -58,13 +58,13 @@ fi
 # same identity selection for other commands that can create commits.
 git_command=commit
 if [ "$1" = "--git-command" ]; then
-    [ "$#" -ge 2 ] || { echo "error: --git-command needs a command" >&2; exit 2; }
-    git_command=$2
-    shift 2
-    case "$git_command" in
-    commit | merge | pull | rebase | cherry-pick | revert | am) ;;
-    *) echo "error: unsupported commit-creating Git command: $git_command" >&2; exit 2 ;;
-    esac
+	[ "$#" -ge 2 ] || { echo "error: --git-command needs a command" >&2; exit 2; }
+	git_command=$2
+	shift 2
+	case "$git_command" in
+	commit | merge | pull | rebase | cherry-pick | revert | am) ;;
+	*) echo "error: unsupported commit-creating Git command: $git_command" >&2; exit 2 ;;
+	esac
 fi
 
 # In a repository the App's registering account does not own and the GitHub

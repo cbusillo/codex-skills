@@ -376,15 +376,20 @@ class CommandPolicyHookTests(unittest.TestCase):
 
     def test_commit_creating_git_commands_require_bot_path(self) -> None:
         for command in ("merge --no-edit origin/main", "pull", "rebase --continue",
-                        "cherry-pick abc", "revert HEAD", "am patch.mbox"):
-            for prefix in ("git ", "git -C 'a path' ", "env FLAG=x git --no-pager "):
+                        "cherry-pick abc", "revert HEAD", "am patch.mbox",
+                        "merge --ff-only --no-ff main", "merge --ff-only --ff main",
+                        "rebase --skip", "am --skip"):
+            for prefix in ("git ", "git -C 'a path' ", "env FLAG=x git --no-pager ", "git -Cpath -cuser.name=Human "):
                 with self.subTest(command=prefix + command):
                     result = bash(prefix + command)
                     self.assertEqual(result.returncode, 2, result.stderr)
                     self.assertIn("git-commit-as-bot", result.stderr)
                     self.assertIn("update-branch", result.stderr)
         for command in ("git merge-base main topic", "git log --grep merge",
-                        "git-commit-as-bot --git-command merge --no-edit main"):
+                        "git-commit-as-bot --git-command merge --no-edit main",
+                        "git -C path -c core.hooksPath=/dev/null merge --ff-only --no-autostash --no-overwrite-ignore abc",
+                        "git merge --ff-only main", "git merge --abort", "git rebase --abort",
+                        "git cherry-pick --quit", "git am --abort"):
             self.assertEqual(bash(command).returncode, 0, command)
 
     def test_git_global_options_do_not_hide_commit_or_push(self) -> None:

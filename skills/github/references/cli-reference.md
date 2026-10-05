@@ -1188,11 +1188,15 @@ way as the wrapper: a configured GitHub App first, then `CODEX_GITHUB_TOKEN`,
 `git-commit-as-bot <commit args>` retains its existing interface. For local
 integration, use `git-commit-as-bot --git-command COMMAND <args>`, where COMMAND
 is `commit`, `merge`, `pull`, `rebase`, `cherry-pick`, `revert`, or `am`.
-Conflict resolution uses the same mode with `--continue`. New commits use the
+Run the helper from the target directory; use `cd` first when working in
+another checkout. Conflict resolution uses the same mode with `--continue`. New commits use the
 bot environment; replayed commits preserve original authors and use the bot
 committer. Identity selection and credential stripping apply to every mode.
 Use `gh-pr.py update-branch` for authorized PR base updates; these commands do
-not grant protected-branch or train-owned work authority.
+not grant protected-branch or train-owned work authority. Raw `merge --ff-only`
+without a conflicting fast-forward option, `--abort`, and `--quit` stay allowed
+because they create no commits. Sequencer `--skip` still needs the bot wrapper
+because it can recreate later commits.
 
 `git-push-as-bot [options] origin <refspec>` remains the default. When
 `origin` points at upstream and the Director's repository is a named remote, use

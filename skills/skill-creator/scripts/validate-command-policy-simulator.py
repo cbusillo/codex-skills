@@ -240,6 +240,9 @@ EXPECTATIONS: tuple[tuple[list[str], str | None, str], ...] = (
     (["gh", "release", "create", "v1.2.3"], None, "github"),
     (["gh", "workflow", "run", "validate.yml"], None, "github"),
     (["git", "commit", "-m", "demo"], None, "github"),
+    (["git", "merge", "--ff-only", "--no-ff", "main"], None, "github"),
+    (["git", "merge", "--ff-only", "--ff", "main"], None, "github"),
+    (["git", "-Cpath", "-cuser.name=Human", "merge", "main"], None, "github"),
     (["git", "merge", "origin/main"], None, "github"),
     (["git", "-C", "path", "merge", "--continue"], None, "github"),
     (["git", "pull", "origin/main"], None, "github"),
@@ -252,7 +255,6 @@ EXPECTATIONS: tuple[tuple[list[str], str | None, str], ...] = (
     (["git", "-C", "path", "revert", "--continue"], None, "github"),
     (["git", "am", "origin/main"], None, "github"),
     (["git", "-C", "path", "am", "--continue"], None, "github"),
-
     (["git", "push", "origin", "branch"], None, "github"),
     (["git", "push", "--force", "origin", "branch"], None, "github"),
     (["git", "-c", "commit.gpgsign=false", "commit", "-m", "demo"], None, "github"),
@@ -271,6 +273,11 @@ EXPECTATIONS: tuple[tuple[list[str], str | None, str], ...] = (
 
 NEGATIVE_EXPECTATIONS: tuple[tuple[list[str], str | None], ...] = (
     (["git", "reset", "--hard"], None),
+    (["git", "-C", "path", "-c", "core.hooksPath=/dev/null", "merge", "--ff-only", "--no-autostash", "--no-overwrite-ignore", "abc"], None),
+    (["git", "merge", "--ff-only", "main"], None),
+    (["git", "merge", "--abort"], None),
+    (["git", "rebase", "--abort"], None),
+    (["git", "cherry-pick", "--quit"], None),
     (["git", "merge-base", "main", "topic"], None),
     (["git", "rebase-helper"], None),
     (["git-commit-as-bot", "--git-command", "merge", "main"], None),

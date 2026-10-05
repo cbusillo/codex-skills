@@ -434,7 +434,7 @@ retry_eligibility = "manual"
 reconciliation_strategy = "fail_closed_write"
 retained_graphql_rationale = "No retained GraphQL transport; REST update-branch supports an expected head SHA; asynchronous acceptance is distinct from observed completion. Unknown updates are not replayed."
 source_refs = ["github/scripts/gh-pr.py:cmd_update_branch"]
-test_refs = ["github/scripts/validate-gh-plan.py:test_update_branch_guards_head_and_reports_async_state", "github/scripts/validate-gh-plan.py:test_update_branch_unknown_write_and_rejection_never_replay"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_update_branch_guards_head_and_reports_async_state", "github/scripts/validate-gh-plan.py:test_update_branch_unknown_write_and_rejection_never_replay", "github/scripts/validate-gh-plan.py:test_update_branch_failed_observation_preserves_accepted_nonretryable_write"]
 
 [[operations]]
 id = "github.pr.merge"

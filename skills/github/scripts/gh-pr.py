@@ -576,11 +576,27 @@ def cmd_update_branch(args: argparse.Namespace) -> dict[str, Any]:
         try:
             refreshed = rest_json("GET", path)
         except PrHelperError as exc:
+            # Preserve aggregate attempt evidence, but do not let a read's
+            # retry fields describe replay of the accepted write.
+            CURRENT_RETRY_FIELDS.update({
+                "retry_eligible": False, "outcome_certainty": "unknown",
+                "recommended_next_action": "observe_branch_update",
+            })
             raise PrHelperError(
                 "Branch update accepted but its new head could not be read; use view, do not repeat the update",
-                failure=exc.failure, api_result=exc.payload.get("api_result"),
+                failure=github_api_core.FailureDetail(
+                    cause="update_observation_failed",
+                    message="Update accepted; use view to observe completion, do not repeat update-branch",
+                    retryable=False, fallback_eligible=False, disposition="stop",
+                    write_outcome="unknown", completed_steps=["update_branch_accepted"],
+                    failed_step="observe_updated_head",
+                ),
+                api_result={
+                    "actor": accepted.actor, "expected_actor": accepted.expected_actor,
+                    "status": accepted.status,
+                },
+                observation_error=exc.payload.get("api_result"),
                 repo=repo, pr=number, updateAccepted=True, previousHeadSha=expected_head,
-                completed_steps=["update_branch_accepted"],
             ) from exc
         observed_head = str((refreshed.get("head") or {}).get("sha") or "")
         changed = FULL_SHA_PATTERN.fullmatch(observed_head) and observed_head != expected_head

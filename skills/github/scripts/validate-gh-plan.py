@@ -5160,7 +5160,7 @@ def test_update_branch_guards_head_and_reports_async_state() -> None:
         def fake_call(method: str, path: str, body: Any = None, **kwargs: Any) -> Any:
             calls.append((method, path, body))
             response = {"message": "Updating pull request branch."} if method == "PUT" else {
-                **metadata, "head": {**metadata["head"], "sha": new_head if changed and len(calls) > 2 else old_head},
+                **metadata, "head": {**metadata["head"], "sha": new_head if changed and len(calls) > (3 if wait_seconds else 2) else old_head},
             }
             return pr.github_api_core.ApiResult(
                 ok=True, status=202 if method == "PUT" else 200, body=response,
@@ -5172,7 +5172,7 @@ def test_update_branch_guards_head_and_reports_async_state() -> None:
         assert calls == [
             ("GET", "/repos/owner/repo/pulls/12", None),
             ("PUT", "/repos/owner/repo/pulls/12/update-branch", {"expected_head_sha": old_head}),
-            ("GET", "/repos/owner/repo/pulls/12", None),
+            *[("GET", "/repos/owner/repo/pulls/12", None)] * (2 if wait_seconds else 1),
         ], calls
         assert result["actor"] == pr.EXPECTED_ACTOR, result
         assert result["update"]["accepted"] is True, result
@@ -5206,6 +5206,36 @@ def test_update_branch_unknown_write_and_rejection_never_replay() -> None:
             else:
                 raise AssertionError("Unconfirmed updates must fail")
         assert calls == ["GET", "PUT"], calls
+
+
+def test_update_branch_failed_observation_preserves_accepted_nonretryable_write() -> None:
+    pr = load_pr_module()
+    calls: list[str] = []
+    def fake_call(method: str, _path: str, _body: Any = None, **kwargs: Any) -> Any:
+        calls.append(method)
+        failure = pr.github_api_core.FailureDetail(
+            cause="network_provider_failure", message="Observation read failed",
+            retryable=True, fallback_eligible=False, disposition="retry",
+        ) if len(calls) == 3 else None
+        return pr.github_api_core.ApiResult(
+            ok=failure is None, status=502 if failure else (202 if method == "PUT" else 200),
+            body={"state": "open", "head": {"sha": "a" * 40}},
+            operation=kwargs.get("operation"), actor=pr.EXPECTED_ACTOR,
+            expected_actor=pr.EXPECTED_ACTOR, host="github.com", bucket="rest_core", failure=failure,
+        )
+    stdout, stderr = StringIO(), StringIO()
+    with (patch.object(pr.github_api_core, "call_gh", fake_call),
+          patch.object(sys, "argv", ["gh-pr.py", "--repo", "owner/repo", "update-branch", "12", "--wait-seconds", "0"]),
+          redirect_stdout(stdout), redirect_stderr(stderr)):
+        assert pr.main() != 0
+    result = json.loads(stdout.getvalue())
+    assert calls == ["GET", "PUT", "GET"], calls
+    assert result["updateAccepted"] is True, result
+    assert result["retryable"] is False and result["retry_eligible"] is False, result
+    assert result["disposition"] == "stop", result
+    assert result["write_outcome"] == "unknown" and result["outcome_certainty"] == "unknown", result
+    assert result["recommended_next_action"] == "observe_branch_update", result
+    assert result["completed_steps"] == ["update_branch_accepted"], result
 
 
 def test_merge_refuses_head_behind_strict_base() -> None:
@@ -6882,6 +6912,7 @@ def main() -> None:
         test_merge_reconciliation_rejects_head_drift,
         test_update_branch_guards_head_and_reports_async_state,
         test_update_branch_unknown_write_and_rejection_never_replay,
+        test_update_branch_failed_observation_preserves_accepted_nonretryable_write,
         test_merge_refuses_head_behind_strict_base,
         test_merge_identity_reread_rejects_head_drift,
         test_pr_helper_merge_404_includes_recovery_context,

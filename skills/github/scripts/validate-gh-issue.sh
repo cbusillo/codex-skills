@@ -403,22 +403,22 @@ grep -q '^commit_tokens=||$' "$env_log"
 
 # Every integration mode uses the same identity and token-free child environment.
 for git_command in commit merge pull rebase cherry-pick revert am; do
-    : >"$env_log"
-    : >"$log"
-    PATH="$tmpdir:$PATH" GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
-        GH_ISSUE_ENV_LOG="$env_log" CODEX_AUTOMATION_LOGIN=fixture-automation \
-        CODEX_AUTOMATION_EMAIL=fixture-automation@example.invalid CODEX_GITHUB_TOKEN=must-not-reach-hook \
-        GH_TOKEN=must-not-reach-hook GITHUB_TOKEN=must-not-reach-hook \
-        "$repo_root/github/scripts/git-commit-as-bot" --git-command "$git_command" --continue >/dev/null
-    grep -qx "$git_command --continue" "$log"
-    grep -q '^author=fixture-automation <fixture-automation@example.invalid> committer=fixture-automation <fixture-automation@example.invalid>$' "$env_log"
-    grep -q '^commit_tokens=||$' "$env_log"
+	: >"$env_log"
+	: >"$log"
+	PATH="$tmpdir:$PATH" GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
+	    GH_ISSUE_ENV_LOG="$env_log" CODEX_AUTOMATION_LOGIN=fixture-automation \
+	    CODEX_AUTOMATION_EMAIL=fixture-automation@example.invalid CODEX_GITHUB_TOKEN=must-not-reach-hook \
+	    GH_TOKEN=must-not-reach-hook GITHUB_TOKEN=must-not-reach-hook \
+	    "$repo_root/github/scripts/git-commit-as-bot" --git-command "$git_command" --continue >/dev/null
+	grep -qx "$git_command --continue" "$log"
+	grep -q '^author=fixture-automation <fixture-automation@example.invalid> committer=fixture-automation <fixture-automation@example.invalid>$' "$env_log"
+	grep -q '^commit_tokens=||$' "$env_log"
 done
 : >"$log"
 if GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
-    "$repo_root/github/scripts/git-commit-as-bot" --git-command push origin branch >/dev/null 2>"$stderr_log"; then
-    echo "error: commit wrapper accepted an unsupported command" >&2
-    exit 1
+	"$repo_root/github/scripts/git-commit-as-bot" --git-command push origin branch >/dev/null 2>"$stderr_log"; then
+	echo "error: commit wrapper accepted an unsupported command" >&2
+	exit 1
 fi
 [[ ! -s "$log" ]]
 
