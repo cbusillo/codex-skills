@@ -12,26 +12,28 @@ import subprocess
 from pathlib import Path
 
 ITEM = re.compile(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)")
+QUESTION_PREFIXES = ("Director question:", "Owner question:")
+DECISION_PREFIXES = ("Director decision", "Owner decision")
 
 
 def questions(comments, owner, decision_authors):
     results = []
     for i, question in enumerate(comments):
         body = question.get("body", "").strip()
-        if not body.lstrip("*").startswith("Owner question:"):
+        if not body.lstrip("*").startswith(QUESTION_PREFIXES):
             continue
         answers = []
         for answer in comments[i + 1 :]:
             author = answer.get("author")
             text = answer.get("body", "").lstrip().lstrip("*")
             authorized = author == owner or (
-                author in decision_authors and text.startswith("Owner decision")
+                author in decision_authors and text.startswith(DECISION_PREFIXES)
             )
             # Later unrelated replies never resolve a question. Require its id or URL.
             linked = question["url"] in text or re.search(
                 rf"(?<!\d){question['id']}(?!\d)", text
             )
-            if authorized and linked and not text.startswith("Owner question:"):
+            if authorized and linked and not text.startswith(QUESTION_PREFIXES):
                 answers.append(answer["url"])
         results.append(
             {

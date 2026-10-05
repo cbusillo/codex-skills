@@ -4244,7 +4244,10 @@ def owner_reaction_decision(
 ) -> dict[str, Any] | None:
     # An exact first line binds the reaction to this issue and this action.
     body = comment.get("body")
-    if not isinstance(body, str) or body.splitlines()[:1] != [f"Owner decision: Close #{number} as not planned."]:
+    if not isinstance(body, str) or body.splitlines()[:1] not in (
+        [f"Director decision: Close #{number} as not planned."],
+        [f"Owner decision: Close #{number} as not planned."],
+    ):
         return None
     comment_id = comment.get("id")
     if not isinstance(comment_id, int) or isinstance(comment_id, bool):

@@ -429,6 +429,35 @@ class LedgerTests(unittest.TestCase):
 
 
 class QuestionTests(unittest.TestCase):
+    def test_both_spellings_preserve_answer_authority_and_question_link(self):
+        for question_role in ("Director", "Owner"):
+            for decision_role in ("Director", "Owner"):
+                with self.subTest(question=question_role, decision=decision_role):
+                    question = {
+                        "id": 123,
+                        "url": "https://example.test/questions/123",
+                        "body": f"**{question_role} question:** proceed?",
+                        "author": "bot",
+                    }
+                    answers = [
+                        {"author": "outsider", "body": f"{decision_role} decision: yes 123", "url": "foreign"},
+                        {"author": "bot", "body": f"{decision_role} decision: yes 1234", "url": "unlinked"},
+                        {"author": "bot", "body": "yes 123", "url": "unrecorded"},
+                    ]
+                    # Even the Director's linked follow-up question is not an answer.
+                    answers.extend(
+                        {"id": comment_id, "author": "director", "body": f"{role} question: about 123?", "url": role}
+                        for comment_id, role in enumerate(("Director", "Owner"), start=124)
+                    )
+                    self.assertEqual(oq.questions([question, *answers], "director", {"bot"})[0]["status"], "needs_review")
+                    for body in (f"**{decision_role} decision:** yes 123", f"{decision_role} decision, recorded: {question['url']}"):
+                        answer = {"author": "bot", "body": body, "url": "recorded"}
+                        result = oq.questions([question, *answers, answer], "director", {"bot"})[0]
+                        self.assertEqual(result["answers"], ["recorded"])
+                        self.assertEqual(result["status"], "answered")
+                    direct = {"author": "director", "body": "yes 123", "url": "direct"}
+                    self.assertEqual(oq.questions([question, direct], "director", {"bot"})[0]["answers"], ["direct"])
+
     def test_all_questions_and_only_linked_authorized_answers(self):
         q1 = {
             "id": 1,

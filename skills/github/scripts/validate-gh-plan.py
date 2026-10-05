@@ -2428,10 +2428,10 @@ def test_close_not_planned_allows_direction_milestone_work_with_owner_comment() 
     assert calls[:4] == ["direction", "last_edited", "comments", "close"], calls
 
 
-def recorded_decision() -> dict[str, Any]:
+def recorded_decision(role: str = "Owner") -> dict[str, Any]:
     return owner_comment("shiny-code-bot", "2026-09-19T00:00:00Z") | {
         "id": 5_920_161_975, "node_id": "IC_decision",
-        "body": "Owner decision: Close #10 as not planned.\nReason: superseded by #11.",
+        "body": f"{role} decision: Close #10 as not planned.\nReason: superseded by #11.",
     }
 
 
@@ -2441,77 +2441,81 @@ def approving_reaction() -> dict[str, Any]:
 
 
 def test_close_not_planned_accepts_owner_reaction_on_unedited_decision() -> None:
-    _plan, calls, output = owner_decision_close(
-        reason="not_planned", milestone="Holds in use", comments=[recorded_decision()],
-        reactions=[approving_reaction()],
-    )
-    decision = json.loads(output.getvalue())["closed"]["owner_decision"]
-    assert decision["approval"] == "owner_reaction" and decision["reaction_id"] == 456, decision
-    assert calls[:6] == ["direction", "last_edited", "comments", "edit_history", "reactions", "edit_history"], calls
+    for role in ("Director", "Owner"):
+        _plan, calls, output = owner_decision_close(
+            reason="not_planned", milestone="Holds in use", comments=[recorded_decision(role)],
+            reactions=[approving_reaction()],
+        )
+        decision = json.loads(output.getvalue())["closed"]["owner_decision"]
+        assert decision["approval"] == "owner_reaction" and decision["reaction_id"] == 456, decision
+        assert calls[:6] == ["direction", "last_edited", "comments", "edit_history", "reactions", "edit_history"], calls
     assert "close" in calls, calls
 
 
 def test_close_not_planned_rejects_unqualified_reactions() -> None:
-    comment, reaction = recorded_decision(), approving_reaction()
-    cases = [
-        (comment, reaction | {"user": {"login": "shiny-code-bot"}}, None),
-        (comment, reaction | {"user": {"login": "other-owner"}}, None),
-        (comment, reaction | {"user": {}}, None),
-        (comment, reaction | {"content": "heart"}, None),
-        (comment, reaction | {"created_at": "2026-09-20T00:00:00Z"}, None),
-        (comment, reaction | {"created_at": "invalid"}, None),
-        (comment, reaction | {"created_at": None}, None),
-        (comment, reaction | {"created_at": "2026-09-21T00:00:00"}, None),
-        (comment | {"body": "Owner question: Close #10 as not planned."}, reaction, None),
-        (comment | {"body": "Owner decision: Close #11 as not planned."}, reaction, None),
-        (comment | {"body": "Owner decision: Close #10 as completed."}, reaction, None),
-        (comment | {"node_id": None}, reaction, None),
-        (comment, reaction, "2026-09-19T00:00:00Z"),  # same-second edit
-        (comment, reaction, "2026-09-22T00:00:00Z"),
-        (comment, reaction, lambda node: {"data": {"node": {k: v for k, v in node.items() if k != "lastEditedAt"}}}),
-        (comment, reaction, lambda node: {"data": {"node": None}}),
-        (comment, reaction, lambda node: {"data": {"node": node}, "errors": [{"message": "partial read"}]}),
-        (comment, reaction, lambda node: {"data": {"node": node | {"body": "changed"}}}),
-    ]
-    for candidate, approval, edits in cases:
-        plan = load_plan_module()
-        try:
-            owner_decision_close(reason="not_planned", milestone="Holds in use",
-                                 comments=[candidate], reactions=[approval], edit_history=edits, plan=plan)
-        except plan.PlanError as exc:
-            assert exc.failure.write_outcome == "not_started", exc.failure
-        else:
-            raise AssertionError(f"Unqualified approval accepted: {candidate}, {approval}, {edits}")
+    for role in ("Director", "Owner"):
+        comment, reaction = recorded_decision(role), approving_reaction()
+        cases = [
+            (comment, reaction | {"user": {"login": "shiny-code-bot"}}, None),
+            (comment, reaction | {"user": {"login": "other-owner"}}, None),
+            (comment, reaction | {"user": {}}, None),
+            (comment, reaction | {"content": "heart"}, None),
+            (comment, reaction | {"created_at": "2026-09-20T00:00:00Z"}, None),
+            (comment, reaction | {"created_at": "invalid"}, None),
+            (comment, reaction | {"created_at": None}, None),
+            (comment, reaction | {"created_at": "2026-09-21T00:00:00"}, None),
+            (comment | {"body": f"{role} question: Close #10 as not planned."}, reaction, None),
+            (comment | {"body": f"{role} decision: Close #11 as not planned."}, reaction, None),
+            (comment | {"body": f"{role} decision: Close #10 as completed."}, reaction, None),
+            (comment | {"node_id": None}, reaction, None),
+            (comment, reaction, "2026-09-19T00:00:00Z"),  # same-second edit
+            (comment, reaction, "2026-09-22T00:00:00Z"),
+            (comment, reaction, lambda node: {"data": {"node": {k: v for k, v in node.items() if k != "lastEditedAt"}}}),
+            (comment, reaction, lambda node: {"data": {"node": None}}),
+            (comment, reaction, lambda node: {"data": {"node": node}, "errors": [{"message": "partial read"}]}),
+            (comment, reaction, lambda node: {"data": {"node": node | {"body": "changed"}}}),
+        ]
+        for candidate, approval, edits in cases:
+            plan = load_plan_module()
+            try:
+                owner_decision_close(reason="not_planned", milestone="Holds in use",
+                                     comments=[candidate], reactions=[approval], edit_history=edits, plan=plan)
+            except plan.PlanError as exc:
+                assert exc.failure.write_outcome == "not_started", exc.failure
+            else:
+                raise AssertionError(f"Unqualified approval accepted: {candidate}, {approval}, {edits}")
 
 
 def test_close_not_planned_rejects_edit_during_reaction_read_and_unreadable_history() -> None:
-    count = 0
-    def edited_after_read(node: dict[str, Any]) -> dict[str, Any]:
-        nonlocal count
-        count += 1
-        return {"data": {"node": node | {"lastEditedAt": None if count == 1 else "2026-09-22T00:00:00Z"}}}
-    def unreadable(_node: dict[str, Any]) -> Any:
-        raise plan.PlanError("edit metadata unavailable")
-    for history in (edited_after_read, unreadable):
-        plan = load_plan_module()
-        try:
-            owner_decision_close(reason="not_planned", milestone="Holds in use", comments=[recorded_decision()],
-                                 reactions=[approving_reaction()], edit_history=history, plan=plan)
-        except plan.PlanError as exc:
-            assert exc.failure.write_outcome == "not_started", exc.failure
-        else:
-            raise AssertionError("Edited or unreadable decision was accepted")
+    for role in ("Director", "Owner"):
+        count = 0
+        def edited_after_read(node: dict[str, Any]) -> dict[str, Any]:
+            nonlocal count
+            count += 1
+            return {"data": {"node": node | {"lastEditedAt": None if count == 1 else "2026-09-22T00:00:00Z"}}}
+        def unreadable(_node: dict[str, Any]) -> Any:
+            raise plan.PlanError("edit metadata unavailable")
+        for history in (edited_after_read, unreadable):
+            plan = load_plan_module()
+            try:
+                owner_decision_close(reason="not_planned", milestone="Holds in use", comments=[recorded_decision(role)],
+                                     reactions=[approving_reaction()], edit_history=history, plan=plan)
+            except plan.PlanError as exc:
+                assert exc.failure.write_outcome == "not_started", exc.failure
+            else:
+                raise AssertionError("Edited or unreadable decision was accepted")
 
 
 def test_close_not_planned_rejects_unreadable_reactions_before_writes() -> None:
-    plan = load_plan_module()
-    try:
-        owner_decision_close(reason="not_planned", milestone="Holds in use", comments=[recorded_decision()],
-                             reactions=[approving_reaction()], reaction_read_fails=True, plan=plan)
-    except plan.PlanError as exc:
-        assert exc.failure.write_outcome == "not_started" and exc.failure.cause == "read_failure", exc.failure
-    else:
-        raise AssertionError("Unreadable reaction approval was accepted")
+    for role in ("Director", "Owner"):
+        plan = load_plan_module()
+        try:
+            owner_decision_close(reason="not_planned", milestone="Holds in use", comments=[recorded_decision(role)],
+                                 reactions=[approving_reaction()], reaction_read_fails=True, plan=plan)
+        except plan.PlanError as exc:
+            assert exc.failure.write_outcome == "not_started" and exc.failure.cause == "read_failure", exc.failure
+        else:
+            raise AssertionError("Unreadable reaction approval was accepted")
 
 
 def test_close_completed_and_unlisted_milestones_skip_owner_decision() -> None:
