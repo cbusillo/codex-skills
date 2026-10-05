@@ -10,6 +10,8 @@ read the Director's overall `DIRECTION.md` in the repository owner's
 [AGENTS.md](AGENTS.md) holds execution details for both hosts and is the only
 repository agent-instruction filename; path-specific instructions use nested
 `AGENTS.md` files. Generated host-global instructions remain host-specific.
+Every Code and Codex Lab are retired execution targets; retained traces,
+fixtures, and artifact readers describe historical behavior.
 
 Each skill lives in its own directory under [`skills/`](skills) with a `SKILL.md`
 file; `skills/` is the catalog that hosts load. Skills can include
@@ -223,6 +225,9 @@ Omit `--codex-hook` to synchronize instructions alone.
 If the local source is missing, restore it in the runtime checkout before
 synchronizing. If you intend to remove all private instructions, use an empty
 `.local/global-instructions.md` there, inspect the preview, then synchronize.
+The helper also supports `--allow-missing-local`, which intentionally overwrites
+generated instructions without the private source; it is not the task-worktree
+maintenance path.
 
 Codex 0.157.0 supports a blocking `PreToolUse` hook, exposes shell calls as
 `Bash` with `tool_input.command`, and honors exit 2 with a stderr reason.
@@ -373,9 +378,10 @@ For work in this repository, use the direction files linked above and the
 [executing loop](skills/references/executing-loop.md). Issue-backed work is
 claimed before its linked worktree is created. This repository's
 [GitHub metadata](.github/github.json) enables Launchplane's merge train:
-after current-head CI passes and required model-review findings are accounted
-for, comment `Ready for the merge train` on the PR and hand it to the direction
-or Supervisor session. Executing agents do not label or merge it themselves.
+use the [Launchplane skill](skills/launchplane/SKILL.md#merge-train-controller)
+for authorized train entry and landing, rather than merging by hand. A task
+brief that assigns routing to a direction or Supervisor session owns that
+handoff.
 After a confirmed landing, reconcile the runtime checkout as described in
 [AGENTS.md](AGENTS.md#runtime-checkout-discipline).
 
@@ -499,6 +505,10 @@ See the [Codex hook contract](https://learn.chatgpt.com/docs/hooks) and
 ## Instruction scope
 
 Execution skills share [task scope and authorization](skills/references/execution-scope.md).
+The [shared global instructions](instructions/global.md) tell agents on both
+hosts to read repository `AGENTS.md` and relevant nested files explicitly when
+the host has not already supplied them; repository guidance does not depend on
+Claude Code discovering that filename automatically.
 They name people and permissions with the shared [role words](skills/references/role-words.md):
 Director, Client, and admin.
 Existing authorization is reused within its scope; exact-action approvals and
