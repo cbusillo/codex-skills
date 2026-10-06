@@ -890,6 +890,17 @@ Use PRs for all non-trivial changes.
 
 ## Merging
 
+For a single PR or a stack, resolve the landing route before any direct merge
+or branch integration. When Launchplane's active policy, repository instructions,
+or task context assigns landing to its merge train, load
+[`launchplane`](../launchplane/SKILL.md#merge-train-controller) and use that
+workflow. Follow the task's assigned direction or Supervisor handoff; otherwise
+use the train workflow within the task's existing landing authorization.
+Repository metadata is only a routing hint; use the Launchplane skill's
+enrollment read when the route is unresolved. An unavailable read leaves
+enrollment unknown: report its reason and retain the PR for authoritative
+routing; it does not establish a direct merge path.
+
 Merging implementation work means merging its PR through GitHub. Never merge a
 task branch locally into a protected branch as a shortcut; local integration is
 only for explicit synchronization or stack maintenance, and the result still
@@ -897,7 +908,8 @@ lands through a PR. If that happens by accident, preserve the work, restore the
 local protected branch to the remote tip, push the task branch, and continue
 through the PR. Never push the accidental merge.
 
-Before a merge:
+Before any merge or authorized train entry, apply these checks regardless of
+the landing route:
 
 - **Authority**: Merge only when [task scope](../references/execution-scope.md)
   authorizes the change and destination. A readiness question is not merge
@@ -925,17 +937,8 @@ say you are using a normal merge commit and run `scripts/gh-pr.py merge <pr> --m
 or `--method rebase` only when the user asks, repo policy requires it, or you ask and get
 confirmation.
 
-For stacked PRs, when Launchplane policy, repository instructions or task
-context says Launchplane owns the
-merge train, delegate stack handling to the `launchplane` workflow and never
-hand-collapse the stack in GitHub. Otherwise consider a rollup branch when
+Outside a train-owned landing, consider a rollup branch for stacked PRs when
 merging each layer would rerun expensive checks or churn conflicts.
-
-For Launchplane-managed landing, an unknown enrollment read never establishes
-a direct merge path. Preserve an existing repository/task train handoff; when
-the route is unresolved, use `merge-train-policy-read` and report its reason
-while retaining the PR for authoritative routing. Repository JSON is a routing
-hint, not enrollment evidence.
 
 ## After A Merge
 
