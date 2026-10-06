@@ -2277,16 +2277,16 @@ def test_global_waits_belong_to_their_own_open_waiting_issue() -> None:
 
 
 def test_global_agent_only_waits_are_unowned_and_real_holds_stay_parked() -> None:
-    reasons = ["Supervisor routing", "engineering selection", "separately authorized activation", "future work", "None"]
+    reasons = ["Supervisor routing", "engineering selection", "separately authorized activation", "future work", "None", "live acceptance"]
     items = [global_issue("someone/tools", number, labels=["plan", "plan:waiting"], body="## Current Status\nState: Waiting.\nBlocked by: None\nWaiting for: " + reason) for number, reason in enumerate(reasons, 1)]
     genuine = global_issue("someone/tools", 20, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Chris to perform the device test after #21 closes.")
     closed = global_issue("someone/tools", 21, state="closed")
     with global_fixture([], [closed], {}, discovered=[*items, genuine]) as (module, result, _reads):
         module.cmd_next(next_args())
-    assert {row["number"] for row in result["unowned"]} == set(range(1, 6))
+    assert {row["number"] for row in result["unowned"]} == set(range(1, 7))
     assert [row["number"] for row in result["waiting"]] == [20]
     assert result["waiting"][0]["stale_wait_evidence"] is None
-    assert {row["number"] for row in result["stale_wait_report"]["items"]} == set(range(1, 6))
+    assert {row["number"] for row in result["stale_wait_report"]["items"]} == {1, 2, 4, 5}
     assert result["candidates"] == []  # Report-only evidence never releases a hold.
 
 
@@ -2341,7 +2341,73 @@ def test_global_wait_reference_budget_and_auth_stop_are_explicit() -> None:
             raise AssertionError("quota failure must retain the shared stop policy")
 
 
+def test_global_no_wait_notes_do_not_park_active_work() -> None:
+    root = track("someone/direction", 1, "First")
+    for note in ("\n\nThe behavior tests pass.", "\n- Notes: The next agent can implement this."):
+        ready = global_issue("someone/product", 2, body="## Current Status\nState: Active.\nBlocked by: None\nWaiting for: None" + note)
+        with global_fixture([root], [ready], {(root["repo"], 1): relationships(sub_issues=[ready])}) as (module, result, _reads):
+            module.cmd_next(next_args())
+        assert [item["number"] for item in result["candidates"]] == [2]
+        assert result["waiting"] == result["recorded_waits"] == []
+
+
+def test_global_unowned_authorization_holds_never_become_candidates_or_stale() -> None:
+    for labels in ([], ["plan:waiting"]):
+        item = global_issue("someone/tools", 10, labels=labels, body="## Current Status\nState: Waiting.\nBlocked by: None\nWaiting for: separately authorized activation")
+        with global_fixture([], [], {}, discovered=[item]) as (module, result, _reads):
+            module.cmd_next(next_args())
+        assert result["candidates"] == []
+        assert next(row for row in result["excluded"] if row["number"] == 10)["exclusion"] == "waiting"
+        assert result["stale_wait_report"]["items"] == []
+        if labels:
+            assert result["unowned"][0]["number"] == 10
+        else:
+            assert result["recorded_waits"][0]["number"] == 10
+
+
+def test_global_cross_repo_link_label_does_not_create_a_local_reference() -> None:
+    pending = global_issue("someone/business", 10, labels=["plan:waiting"], body="## Current Status\nWaiting for: Alex to review [#12](https://github.com/other/product/issues/12)")
+    other = global_issue("other/product", 12)
+    wrong = global_issue("someone/business", 12, state="closed")
+    with global_fixture([], [other, wrong], {}, discovered=[pending]) as (module, result, _reads):
+        base_api = module.api_json
+        reads = []
+        def api(method: str, path: str, **kwargs: Any) -> Any:
+            reads.append(path)
+            return base_api(method, path, **kwargs)
+        with patch.object(module, "api_json", api):
+            module.cmd_next(next_args())
+    assert [(ref["repo"], ref["number"]) for ref in result["waiting"][0]["references"]] == [("other/product", 12)]
+    assert result["waiting"][0]["closed_references"] == []
+    assert "/repos/someone/business/issues/12" not in reads
+
+
+def test_global_parent_only_stale_wait_moves_out_of_current_waiting() -> None:
+    parent = global_issue("someone/business", 10, labels=["plan:waiting"], body="## Current Status\nState: Waiting.\nBlocked by: None\nWaiting for: PR #11 to merge")
+    child = global_issue("someone/business", 20)
+    edges = {(parent["repo"], 10): relationships(sub_issues=[child])}
+    with global_fixture([], [parent], edges, discovered=[child]) as (module, result, _reads):
+        base_api = module.api_json
+        def merged(method: str, path: str, **kwargs: Any) -> Any:
+            if path == "/repos/someone/business/issues/11":
+                return "automation-gh", {"state": "closed", "pull_request": {}}
+            if path == "/repos/someone/business/pulls/11":
+                return "automation-gh", {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}}
+            return base_api(method, path, **kwargs)
+        with patch.object(module, "api_json", merged):
+            module.cmd_next(next_args())
+    assert result["waiting"] == []
+    assert result["stale_waits"][0]["number"] == 10
+    assert result["candidates"] == []
+    assert next(item for item in result["excluded"] if item["number"] == 20)["exclusion"] == "parent_waiting"
+
+
 TESTS = [
+    test_global_no_wait_notes_do_not_park_active_work,
+    test_global_unowned_authorization_holds_never_become_candidates_or_stale,
+    test_global_cross_repo_link_label_does_not_create_a_local_reference,
+    test_global_parent_only_stale_wait_moves_out_of_current_waiting,
+
     test_global_waits_belong_to_their_own_open_waiting_issue,
     test_global_agent_only_waits_are_unowned_and_real_holds_stay_parked,
     test_global_stale_wait_report_reuses_merged_pr_proof_and_refuses_capacity,

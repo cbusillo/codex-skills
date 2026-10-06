@@ -453,7 +453,7 @@ def tooling_capacity_context(
         own_status = section_map((entry.get("discussion") or {}).get("body", "")).get("Current Status", "")
         own_waits = waiting_records(entry, own_status)
         if (entry.get("plan_status") != "waiting" or not own_waits
-                or any(row["non_external"] for row in own_waits) or entry.get("stale_wait_evidence")):
+                or any(row.get("unowned", row["non_external"]) for row in own_waits) or entry.get("stale_wait_evidence")):
             return {**result, "issue": f"{entry['repo']}#{entry['number']}", "required": "current_own_issue_wait"}
         review = reviews.get(f"{entry['repo']}#{entry['number']}".casefold(), {})
         discussion = entry.get("discussion") or {}
@@ -650,7 +650,7 @@ def rank_portfolio_work(
             if key in seen_waits:
                 continue
             seen_waits.add(key)
-            if row["non_external"]:
+            if row.get("unowned", row["non_external"]):
                 if entry.get("plan_status") == "waiting":
                     unowned.append({**row, "review_required": True})
             elif entry.get("stale_wait_evidence"):
@@ -681,7 +681,7 @@ def non_external_wait(reason: str) -> bool:
         r"(?:the |an |a )?(?:next )?agent(?: selection| assignment)?|"
         r"(?:the )?supervisor(?: routing| to route(?: the (?:PR|train))?)?|"
         r"(?:provider |spare )?capacity|engineering selection|future work|"
-        r"future engineering selection|separately authorized (?:activation|work)|"
+        r"future engineering selection|"
         r"nothing[;.]\s*(?:this is |only )?agent work",
         reason.strip().rstrip(" ."), re.I,
     ))
@@ -692,8 +692,7 @@ def waiting_records(issue: dict[str, Any], status_text: str) -> list[dict[str, A
     records: list[dict[str, Any]] = []
     verified = re.search(r"(?im)^\s*(?:[-*]\s+)?Last verified:\s*(.+)$", status_text)
     fields = re.split(
-        r"(?im)(?=^\s*(?:[-*]\s+)?(?:State|Next action|Blocked by|Waiting for|"
-        r"Parked until|Last verified|Validation|Evidence|Retention|Recovery|Worker|Session|Branch):)",
+        r"(?im)(?=^[ \t]*(?:[-*]\s+)?[A-Za-z][A-Za-z /-]*:)|\n[ \t]*\n",
         status_text,
     )
     for entry in fields:
@@ -704,9 +703,10 @@ def waiting_records(issue: dict[str, Any], status_text: str) -> list[dict[str, A
         if not reason:
             continue
         references: dict[tuple[str, int], dict[str, Any]] = {}
+        plain = re.sub(r"\[([^]]+)]\(([^)]+)\)", r"\2", reason)
         for ref in re.finditer(
             r"https://github\.com/([^/\s)]+/[^/\s)]+)/(issues|pull)/(\d+)"
-            r"|(?<![\w/])([\w.-]+/[\w.-]+)?#(\d+)\b", reason,
+            r"|(?<![\w/])([\w.-]+/[\w.-]+)?#(\d+)\b", plain,
         ):
             repo = ref.group(1) or ref.group(4) or issue["repo"]
             number = int(ref.group(3) or ref.group(5))
@@ -723,6 +723,9 @@ def waiting_records(issue: dict[str, Any], status_text: str) -> list[dict[str, A
             "last_verified": verified[1].strip() if verified else None,
             "references": list(references.values()),
             "non_external": non_external_wait(reason),
+            "unowned": non_external_wait(reason) or bool(re.fullmatch(
+                r"separately authorized [\w -]+|live acceptance", reason.strip().rstrip(" ."), re.I,
+            )),
         })
     return records
 

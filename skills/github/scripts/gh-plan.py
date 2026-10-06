@@ -3588,7 +3588,9 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         inventory_complete=candidate_coverage_complete,
     )
     stale = {(row["repo"].casefold(), row["number"]): row for row in wait_context["items"]}
-    for entry in [*ranked["candidates"], *ranked["excluded"], *discoveries]:
+    reported_entries = [*ranked["candidates"], *ranked["excluded"], *discoveries]
+    reported_parents = [parent for entry in reported_entries for parent in (entry.get("discussion") or {}).get("parents", [])]
+    for entry in [*reported_entries, *reported_parents]:
         evidence = stale.get((entry["repo"].casefold(), entry["number"]))
         if evidence:
             entry["stale_wait_evidence"] = evidence
