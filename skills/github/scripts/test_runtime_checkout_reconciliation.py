@@ -824,13 +824,14 @@ def test_automatic_reconciliation_finishes_a_merge_after_the_read_budget(tmp_pat
     fixture = session_fixture(tmp_path)
     reconcile = runpy.run_path(str(fixture.runtime / fixture.helper_relative_path))["reconcile_runtime_checkout"]
     actual_run = subprocess.run
+    clock = [0.0]
     def slow_merge(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
         if "merge" in argv:
-            assert kwargs["timeout"] > 2
-            time.sleep(2)
+            assert kwargs["timeout"] > 30
+            clock[0] = 31.0
         return actual_run(argv, **kwargs)
-    with mock.patch.dict(os.environ, {"HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home)}), mock.patch.object(reconcile.__globals__["subprocess"], "run", side_effect=slow_merge):
-        receipt = reconcile(fixture.runtime, fixture.repo, None, timeout_seconds=2)
+    with mock.patch.dict(os.environ, {"HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home)}), mock.patch.object(reconcile.__globals__["subprocess"], "run", side_effect=slow_merge), mock.patch.object(reconcile.__globals__["time"], "monotonic", side_effect=lambda: clock[0]):
+        receipt = reconcile(fixture.runtime, fixture.repo, None, timeout_seconds=30)
     assert receipt["status"] == "synchronized"
     assert receipt["after_sha"] == fixture.landing_sha
     assert git(fixture.runtime, "status", "--porcelain") == ""
