@@ -465,10 +465,11 @@ decision comments to migrate them, or bypass a closure refusal through another t
 Prefer non-closing `Refs` from PRs unless the Director requests auto-close or an
 internal task is conclusively complete. After a landing, reconcile issues
 referenced by the canonical PR body and comments and every issue it unblocks,
-including cross-repository dependents. Check remaining waits against the landed
-evidence; update Current Status, labels and native relationships under
-[Status Labels](#status-labels), preserving unresolved blockers and Director
-holds. Close only issues whose finish lines are satisfied; end every other one
+including cross-repository dependents, under
+[task scope and authorization](../references/execution-scope.md). Check remaining
+waits against the landed evidence; update Current Status, labels and native
+relationships under [Status Labels](#status-labels), preserving unresolved waits,
+blockers and Director holds. Close only issues whose finish lines are satisfied; end every other one
 done or split as the [executing loop](../references/executing-loop.md) says.
 Use `gh-plan.py close --comment-file` for durable plan issues.
 
