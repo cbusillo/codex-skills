@@ -593,7 +593,7 @@ def enrich_waiting_inbound_blockers(
 
 
 def parked_issue(issue: dict[str, Any]) -> bool:
-    labels = {label.get("name", "").casefold() for label in issue.get("labels") or []}
+    labels = {label.casefold() for label in github_direction_next.normalize_labels(issue.get("labels"))}
     return ("pull_request" not in issue and issue.get("state", "open") == "open"
             and bool(labels & {"plan:waiting", "plan:blocked"}))
 
@@ -686,17 +686,11 @@ def stale_wait_report(
         for field, reason in fields:
             # Reuse the claim helper's explicit no-wait semantics. Match the
             # whole agent phrase so a continued approval clause stays a hold.
-            agent_wait = re.fullmatch(
-                r"(?:the |an |a )?(?:next )?agent(?: selection| assignment)?|"
-                r"(?:the )?supervisor(?: routing| to route(?: the (?:PR|train))?)?|"
-                r"(?:provider |spare )?capacity|engineering selection|future work",
-                reason.strip().rstrip(" ."), re.I,
-            )
             if github_plan_claim.no_wait_reason(reason, field="Waiting for"):
                 if field.casefold() != "blocked by":
                     evidence.append({"kind": "no_external_wait", "field": field, "recorded": reason})
                 continue
-            if agent_wait:
+            if github_direction_next.non_external_wait(reason):
                 evidence.append({"kind": "no_external_wait", "field": field, "recorded": reason})
                 continue
 

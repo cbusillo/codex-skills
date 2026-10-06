@@ -99,6 +99,23 @@ and marked-incident handling. Other source bounds/failures remain in
 `discovery_context.repositories`; omitted counts are not a complete portfolio
 inventory when those sources are truncated or inaccessible.
 
+The `waiting` list identifies each open issue labeled waiting by its own
+Current Status. References in that text stay in `references`, resolved relative
+to that issue's repository, with closed/unavailable targets flagged for review.
+`last_verified` comes from the issue's own field; `reported_at` is its separate
+GitHub update time. Active issues with recorded partial holds appear in
+`recorded_waits`; children excluded by an ancestor hold do not inherit its prose
+as their own status. Known agent-only or missing waits appear in `unowned`.
+None of these reports clears a label, hold, dependency or claim.
+
+Global next also reuses the direction audit's `stale_wait_report`, scoped to
+its evaluated issues, with explicit coverage and read bounds. Review its full
+threads before correcting status; a closed prerequisite can represent a split.
+Verified obsolete waits move to `stale_waits`, outside the current `waiting` list.
+A reported stale or unowned wait cannot establish spare-capacity admission.
+Capacity proof still requires current complete caller review of each frontier
+issue, now including its own waiting label and nonempty pending wait.
+
 The helper's `candidates` are possible work and may need review;
 `available_candidates` contains only current caller-reviewed work. An empty
 available list with nonzero `review_required_count` means selection is unfinished,

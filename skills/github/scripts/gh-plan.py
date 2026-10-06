@@ -3254,6 +3254,77 @@ def repository_direction_milestones(source: dict[str, Any]) -> list[str] | None:
     return titles
 
 
+def next_wait_context(
+    issues: list[dict[str, Any]], *, scan_limit: int, inventory_complete: bool,
+) -> dict[str, Any]:
+    """Reuse the direction audit's stale report within the already-read scope."""
+    root = str(pathlib.Path(__file__).resolve().parents[3])
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from skills.direction.scripts import direction_audit
+
+    cache: dict[str, Any] = {}
+    unavailable: list[dict[str, Any]] = []
+    budget = max(1, scan_limit) * 5
+
+    def fetch(argv: list[str]) -> Any:
+        path = "/" + argv[1].lstrip("/")
+        if path not in cache:
+            if len(cache) >= budget:
+                raise direction_audit.AuditError("wait read limit reached")
+            try:
+                _, cache[path] = api_json("GET", path, bucket="rest_core", failed_step="next_wait_evidence")
+            except PlanError as exc:
+                # Preserve the shared stop policy for auth, quota and provider
+                # failures. Only unavailable records degrade this report.
+                detail = next_source_error(exc)
+                cache[path] = direction_audit.AuditError(detail)
+        if isinstance(cache[path], direction_audit.AuditError):
+            raise cache[path]
+        return cache[path]
+
+    unique = {(item["repo"].casefold(), item["number"]): item for item in issues}
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in list(unique.values())[:scan_limit]:
+        groups.setdefault(item["repo"], []).append(item)
+    reports: list[dict[str, Any]] = []
+    complete = inventory_complete and len(unique) <= scan_limit
+    references: dict[str, dict[str, Any]] = {}
+    checked = 0
+    for repo, items in groups.items():
+        config = load_config(repo)
+        report = direction_audit.stale_wait_report(items, repo, fetch=fetch, inventory_complete=complete)
+        reports.extend({**row, "repo": repo} for row in report["items"])
+        unavailable.extend({**row, "repo": repo} for row in report["unavailable"])
+        checked += report["checked"]
+        complete &= report["complete"]
+        for item in items:
+            if str(item.get("state", "")).casefold() != "open":
+                continue
+            status = section_map(item.get("body") or "").get("Current Status", "")
+            own = {**compact_list_issue(repo, item), "plan_status": next_plan_status(item, config)}
+            for row in github_direction_next.waiting_records(own, status):
+                for reference in row["references"]:
+                    url = reference["url"]
+                    if url in references:
+                        continue
+                    try:
+                        target = fetch(["api", f"repos/{reference['repo']}/issues/{reference['number']}"])
+                        state = target.get("state") if isinstance(target, dict) else None
+                        if state not in {"open", "closed"}:
+                            raise direction_audit.AuditError("unknown wait reference state")
+                        references[url] = {**reference, "state": state, "closed_at": target.get("closed_at"),
+                                           "state_reason": target.get("state_reason")}
+                    except direction_audit.AuditError:
+                        references[url] = {**reference, "state": "unknown"}
+                        unavailable.append({"repo": repo, "number": item["number"], "source": "wait_reference", "url": url, "reason": "unavailable"})
+                        complete = False
+    return {"read_only": True, "complete": complete, "checked": checked, "items": reports,
+            "unavailable": unavailable, "references": references,
+            "inventory_complete": inventory_complete, "scope": "evaluated_global_next_issues",
+            "read_limit": budget, "read_count": len(cache)}
+
+
 def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     selection_context = next_selection_context(args)
     direction_text = load_direction(repo)
@@ -3310,6 +3381,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
             if raw_issue is None:
                 issue_actor, raw_issue = get_issue(str(number), issue_repo)
                 actor = issue_actor or actor
+            seeds[key] = {**raw_issue, "repo": issue_repo}
             if issue_repo not in contexts:
                 target_config = load_config(issue_repo)
                 focus_actor, focus_values, focus_context = next_focus_context(issue_repo, target_config)
@@ -3510,6 +3582,16 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     ]
     discovery["incomplete_milestone_repositories"] = incomplete_milestone_sources
     candidate_coverage_complete = bool(graph_coverage["complete"] and (scope is not None or discovery.get("complete")))
+    wait_context = next_wait_context(
+        [seeds[key] for key in nodes if key in seeds],
+        scan_limit=args.scan_limit * 2,
+        inventory_complete=candidate_coverage_complete,
+    )
+    stale = {(row["repo"].casefold(), row["number"]): row for row in wait_context["items"]}
+    for entry in [*ranked["candidates"], *ranked["excluded"], *discoveries]:
+        evidence = stale.get((entry["repo"].casefold(), entry["number"]))
+        if evidence:
+            entry["stale_wait_evidence"] = evidence
     portfolio = github_direction_next.rank_portfolio_work(
         ranked, discoveries, milestone_titles=titles, selection_context=selection_context,
         coverage_complete=scope is None and graph_coverage["complete"] and not unevaluated_milestones and not incomplete_milestone_sources,
@@ -3518,6 +3600,12 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         repository_waypoints={source["repo"]: repository_direction_milestones(source) for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
     )
     ranked.update(portfolio)
+    ranked["stale_wait_report"] = {key: value for key, value in wait_context.items() if key != "references"}
+    for row in [*ranked["waiting"], *ranked["recorded_waits"], *ranked["stale_waits"]]:
+        row["references"] = [wait_context["references"].get(ref["url"], {**ref, "state": "unknown"}) for ref in row["references"]]
+        row["closed_references"] = [ref for ref in row["references"] if ref["state"] == "closed"]
+        row["stale_wait_evidence"] = stale.get((row["repo"].casefold(), row["number"]))
+        row["review_required"] = True
     ranked["client_context"] = {key: {field: value for field, value in record.items() if field != "login"} for key, record in client_records.items()}
     github_agent.filter_selection(ranked, github_agent.running_agent(getattr(args, "agent", None)))
     ranked["candidates"] = ranked["candidates"][:args.limit]
