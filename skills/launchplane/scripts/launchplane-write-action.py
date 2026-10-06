@@ -4096,6 +4096,10 @@ def summarize_success(
 def _controller_error_diagnostics(provider_payload: dict[str, Any]) -> dict[str, object]:
     """Retain independently validated identifiers even when the rest is unprojectable."""
     diagnostics: dict[str, object] = {}
+    details = provider_payload.get("details")
+    number = details.get("pull_request_number") if isinstance(details, dict) else None
+    if isinstance(number, int) and not isinstance(number, bool) and number > 0:
+        diagnostics["pull_request_number"] = number
     try:
         trace_id = public_trace_id(provider_payload.get("trace_id"))
         if trace_id:

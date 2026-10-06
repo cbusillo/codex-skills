@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -120,6 +121,97 @@ class TrainDriveTests(unittest.TestCase):
                                                "CODEX_SKILLS_ENV_FILE": "/missing/train-fixture"})
         environment.start()
         self.addCleanup(environment.stop)
+        home = patch.object(train_drive.Path, "home", return_value=Path(directory.name))
+        home.start()
+        self.addCleanup(home.stop)
+
+    def test_live_driver_refuses_second_cli_and_releases_on_process_death(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+        script = '''
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location("driver", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+module.Path.home = lambda: pathlib.Path(sys.argv[2])
+with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8)) as holder:
+    assert holder is None
+    print("ready", flush=True)
+    sys.stdin.read()
+'''
+        child = subprocess.Popen([sys.executable, "-c", script, str(SCRIPT_DIR / "launchplane-train-drive.py"),
+                                  str(Path.home())], cwd=Path.home(), stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        def cleanup() -> None:
+            if child.poll() is None:
+                child.kill()
+            child.communicate(timeout=10)
+        self.addCleanup(cleanup)
+        self.assertEqual(child.stdout.readline().strip(), "ready")
+        output = StringIO()
+        with patch.object(train_drive, "live_io") as live, redirect_stdout(output):
+            code = train_drive.main(["--repo", REPO, "--pr", "7"])
+        live.assert_not_called()
+        stop = json.loads(output.getvalue())["payload"]
+        self.assertEqual((code, stop["outcome"], stop["running_driver"]["pr"]), (2, "needs_owner", 8))
+        self.assertTrue(stop["running_driver"]["started_at"])
+        self.assertIn("ready-to-merge", stop["recommendation"])
+        for settings in (train_drive.DriveSettings(repository="other/app", number=9),
+                         train_drive.DriveSettings(repository=REPO, number=9, base_branch="release")):
+            with train_drive.local_driver(settings) as holder:
+                self.assertIsNone(holder)
+        child.kill()
+        child.communicate(timeout=10)
+        train = FakeTrain([_response("land_batch")], merge_after={7: 0})
+        with patch.object(train_drive, "live_io", return_value=train.io()), redirect_stdout(StringIO()):
+            self.assertEqual(train_drive.main(["--repo", REPO, "--pr", "7"]), 0)
+
+    def test_cli_exception_releases_local_driver_lock(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+        with patch.object(train_drive, "live_io", side_effect=RuntimeError("fixture")), self.assertRaises(RuntimeError):
+            train_drive.main(["--repo", REPO, "--pr", "7"])
+        train = FakeTrain([_response("idle")], merge_after={7: 0})
+        with patch.object(train_drive, "live_io", return_value=train.io()), redirect_stdout(StringIO()):
+            self.assertEqual(train_drive.main(["--repo", REPO, "--pr", "7"]), 0)
+
+    def test_own_merge_refusal_stops_early_with_diagnostics(self) -> None:
+        refusal = _refusal("github_merge_rejected")
+        refusal["summary"]["pull_request_number"] = 7
+        train = FakeTrain([refusal])
+        outcome, events = _drive(train, max_helper_failures=10)
+        stop = events[-1][1]
+        self.assertEqual((outcome, train.calls), ("needs_owner", 3))
+        self.assertEqual((stop["error_code"], stop["http_status"], stop["trace_id"]),
+                         ("github_merge_rejected", 409, "refused"))
+
+    def test_own_refusal_streak_resets_on_progress_or_other_refusal(self) -> None:
+        refusal = _refusal("github_merge_rejected")
+        refusal["summary"]["pull_request_number"] = 7
+        other_code = _refusal("different")
+        other_code["summary"]["pull_request_number"] = 7
+        other_pr = _refusal("github_merge_rejected")
+        other_pr["summary"]["pull_request_number"] = 8
+        for interruption in (_response("plan_candidate"), other_code, other_pr,
+                             _refusal(train_drive.LEASE_HELD_CODE), None):
+            with self.subTest(interruption=interruption):
+                train = FakeTrain([refusal, refusal, interruption, refusal, refusal, _response("land_batch")],
+                                  merge_after={7: 6})
+                self.assertEqual(_drive(train, max_helper_failures=10)[0], "landed")
+
+    def test_other_pr_refusals_keep_existing_failure_budget(self) -> None:
+        refusal = _refusal("github_merge_rejected")
+        refusal["summary"]["pull_request_number"] = 8
+        train = FakeTrain([refusal])
+        self.assertEqual(_drive(train)[0], "error")
+        self.assertEqual(train.calls, train_drive.DriveSettings(repository=REPO, number=7).max_helper_failures)
+
+    def test_landing_racing_own_refusal_preserves_success(self) -> None:
+        refusal = _refusal("github_merge_rejected")
+        refusal["summary"]["pull_request_number"] = 7
+        train = FakeTrain([refusal], merge_after={7: 3})
+        self.assertEqual(_drive(train)[0], "landed")
 
     def test_live_quota_wait_requires_zero_budget_and_refreshes_evidence(self) -> None:
         import json

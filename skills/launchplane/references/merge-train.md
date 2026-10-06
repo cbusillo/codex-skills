@@ -74,7 +74,17 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   to policy. Treat forked, ambiguous, sibling, cyclic, stale-head, or
   permission-limited stacks as blocked/unsupported instead of mutating by hand.
 - **Retry Model**: Repeated controller calls are expected; let
-  `scripts/launchplane-train-drive.py` make them. It pauses on every non-terminal
+  `scripts/launchplane-train-drive.py` make them. The CLI holds an OS file lock
+  per repository/base train in the user's shared cache, across worktrees.
+  A second local driver exits with `needs_owner`, naming the running PR and
+  start time and suggesting enqueueing the PR for that driver. Process exit
+  releases the lock; stale metadata never keeps a train locked. Drivers on
+  other hosts still obey Launchplane's controller lease.
+  Three consecutive refusals with the same code and this driver's PR number
+  stop with `needs_owner`, preserving the code, HTTP status and trace ID.
+  Progress, a different refusal, and lease contention reset that streak;
+  unassigned refusals keep the existing helper-failure budget.
+  It pauses on every non-terminal
   state, treats a candidate made stale by a queue change as rebuildable, waits
   out a block raised only because the batch candidate's checks are still
   running or another driver holds the controller lease, treats a branch the

@@ -32,14 +32,22 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WRITE_ACTION = SCRIPT_DIR / "launchplane-write-action.py"
@@ -83,6 +91,7 @@ class DriveSettings:
     allow_branch_update: bool = False
     max_branch_updates: int = 3
     max_helper_failures: int = 5
+    max_own_refusals: int = 3
     ineligible_passes: int = 2
     empty_candidate_failures: int = 5
     max_stack_finish_passes: int = 5
@@ -102,6 +111,39 @@ class DriveState:
     candidate_active: bool = False
     unchanged_passes: int = 0
     quota_waited: bool = False
+    own_refusal_code: str = ""
+    own_refusal_streak: int = 0
+
+
+@contextmanager
+def local_driver(settings: DriveSettings) -> Iterator[dict[str, Any] | None]:
+    """Hold a host-local train lock across the entire CLI run, including read-back.
+
+    Never unlink the file: waiters must keep referring to the same inode.
+    The OS releases ownership on exit, even when the driver is killed.
+    """
+    if fcntl is None:
+        raise OSError("local train-driver locking requires POSIX flock")
+    root = Path.home() / ".cache" / "codex-skills" / "train-drivers"
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    key = hashlib.sha256(json.dumps([settings.repository.casefold(), settings.base_branch]).encode()).hexdigest()
+    fd = os.open(root / f"{key}.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "r+", encoding="utf-8") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            try:
+                holder = json.load(handle)
+            except (ValueError, OSError):
+                holder = {}
+            yield holder if isinstance(holder, dict) else {}
+            return
+        handle.seek(0)
+        handle.truncate()
+        json.dump({"pid": os.getpid(), "pr": settings.number,
+                   "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, handle)
+        handle.flush()
+        yield None
 
 
 def _pause(settings: DriveSettings, io: DriveIO, state: DriveState, *, minimum: float = 0.0) -> None:
@@ -166,6 +208,7 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
         key = f"train-drive-{settings.repository.replace('/', '-')}-{settings.number}-{pass_number}-{int(io.now())}"
         response = io.controller(settings.repository, settings.base_branch, key)
         if response is None or response.get("status") == "no_response":
+            state.own_refusal_streak = 0
             state.candidate_active = False
             state.helper_failures += 1
             state.lease_held = None
@@ -177,6 +220,23 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
         if response.get("status") not in {"accepted", "ok"}:
             state.candidate_active = False
             snapshot = _snapshot(settings, state, "controller_refused", response)
+            code = str(snapshot["error_code"] or "")
+            own_refusal = code != LEASE_HELD_CODE and bool(code) and (
+                (response.get("summary") or {}).get("pull_request_number") == settings.number
+            )
+            state.own_refusal_streak = (
+                state.own_refusal_streak + 1 if own_refusal and code == state.own_refusal_code
+                else 1 if own_refusal else 0
+            )
+            state.own_refusal_code = code if own_refusal else ""
+            if state.own_refusal_streak >= settings.max_own_refusals:
+                emit("snapshot", snapshot)
+                if _record_landings(settings, io, state, emit) == "landed":
+                    _finish_landing(settings, io, state, emit, started)
+                    return _stop(settings, state, emit, "landed")
+                return _stop(settings, state, emit, "needs_owner", reason="repeated controller refusal for this pull request",
+                             refusal_count=state.own_refusal_streak,
+                             **{key: snapshot[key] for key in ("error_code", "http_status", "trace_id")})
             if snapshot["error_code"] == "github_request_failed" and not state.quota_waited:
                 wait = io.quota_wait()
                 if wait > 0:
@@ -202,6 +262,7 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
             _pause(settings, io, state)
             continue
         state.helper_failures = 0
+        state.own_refusal_streak = 0
         state.quota_waited = False
         state.lease_held = None
         result = response.get("result") or {}
@@ -572,7 +633,18 @@ def main(argv: list[str]) -> int:
         poll_seconds=args.poll_seconds,
         allow_branch_update=args.allow_branch_update,
     )
-    outcome = drive(settings, live_io(args.helper_timeout, deadline_at=settings.deadline, repository_context=settings.repository), emit)
+    try:
+        with local_driver(settings) as holder:
+            if holder is not None:
+                outcome = _stop(settings, DriveState(batch={settings.number}), emit, "needs_owner",
+                                reason="another local driver is running for this train", running_driver=holder,
+                                recommendation="Add ready-to-merge and leave the PR to the running driver.")
+            else:
+                outcome = drive(settings, live_io(args.helper_timeout, deadline_at=settings.deadline,
+                                                 repository_context=settings.repository), emit)
+    except OSError:
+        outcome = _stop(settings, DriveState(batch={settings.number}), emit, "error",
+                        reason="train-driver lock or I/O unavailable")
     return EXIT_CODES[outcome]
 
 
