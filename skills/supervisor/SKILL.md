@@ -203,10 +203,11 @@ records that run.
    ledger or running a helper; the catalog supplies all seven pilot helpers.
 6. Post a takeover comment on the pilot issue: what you found, what you
    corrected, and the "needs the Director" list.
-7. When a finding would retire, stop, or redirect work, load `direction`
+7. Once per Supervisor session, run a parked-issue sweep across the Director's repositories using [#1304's method](https://github.com/cbusillo/codex-skills/issues/1304), as [Chris requested on #1316](https://github.com/cbusillo/codex-skills/issues/1316), until #1316's report lands.
+8. When a finding would retire, stop, or redirect work, load `direction`
    again and open an issue labeled `direction` under its escalation
    procedure. The Supervisor never acts on such a finding or declines it.
-8. Keep working through compaction, preserving the brief, issue and current
+9. Keep working through compaction, preserving the brief, issue and current
    step in Keep instructions. Close out only when compaction fails, the work
    is done, or the account needs the session gone; then write the handoff below
    and use `work-closeout`. This is the Director's one-week experiment from
