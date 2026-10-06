@@ -116,11 +116,19 @@ no request/response bodies, endpoint queries or credentials. Delegating watchers
 pass their caller name to the PR helper, so its reads count toward that watcher.
 
 HTTP attempts and primary requests are separate: authenticated 304 responses
-and `/rate_limit` probes use no primary requests. GraphQL point costs remain
+and `/rate_limit` probes use no primary requests. Local App actor replies
+are marked synthetic and excluded from HTTP and quota accounting. Existing
+receipts predating this marker can overcount actor probes; preserve that
+limitation when comparing historical samples. GraphQL point costs remain
 unknown rather than being counted as REST requests. Raw CLI calls without HTTP
 headers and Launchplane's server-side GitHub calls are outside this ledger;
 the result is a lower bound, not an installation-wide audit. Offline tests must
 set a temporary `GITHUB_RETRY_STATE_DIR`, which also isolates these receipts.
+
+Read-only planning `show`, `index` and `next` REST observations use conditional
+validators but always contact GitHub, including immediately repeated reads.
+Write preflights/readbacks and explicit active-auth routes retain uncached reads.
+Permission and actor failures never reuse a cached success.
 
 PR watchers back off unchanged pending snapshots to their quiet interval,
 returning to the active interval when evidence changes. Shared core-budget

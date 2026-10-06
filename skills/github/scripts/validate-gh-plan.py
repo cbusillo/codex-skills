@@ -6839,8 +6839,70 @@ def test_graphql_budget_retries_until_matrix_operation_has_capacity() -> None:
     assert plan.CURRENT_RETRY_FIELDS["last_bucket"] == "graphql", plan.CURRENT_RETRY_FIELDS
 
 
+def test_read_only_planning_revalidates_cache_and_keeps_write_preflights_fresh() -> None:
+    plan = load_plan_module()
+    plan.CURRENT_OPERATION = "github.plan.show"
+    plan.CURRENT_IS_WRITE = False
+    body = {"number": 7, "state": "open"}
+    def response(status: int, payload: Any, actor: str = "shiny-code-bot") -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess([], 0, stdout=(
+            f'HTTP/2 {status}\ncontent-type: application/json\netag: "issue-v1"\nx-poll-interval: 60\n\n'
+            + (json.dumps(payload) if payload is not None else "")
+        ).encode(), stderr=f"GitHub automation actor: {actor} (source: github_app)".encode())
+
+    with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+        "GITHUB_READ_CACHE_DIR": directory, "GITHUB_RETRY_STATE_DIR": str(Path(directory) / "retry"),
+        "GH_PLAN_SKIP_BOT": "0", "GH_PLAN_ALLOW_ACTIVE_FIRST": "0",
+        "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "0", "GH_WITH_ENV_TOKEN_OWN_USER": "0",
+    }), patch.object(plan.subprocess, "run", side_effect=[response(200, body), response(304, None),
+                                                        response(200, {**body, "state": "closed"})]) as transport:
+        for _ in range(2):
+            actor, observed = plan.api_json("GET", "/repos/example/app/issues/7")
+            assert actor == "shiny-code-bot" and observed == body
+        assert transport.call_count == 2, "even an immediate observation must revalidate"
+        assert 'If-None-Match: "issue-v1"' in transport.call_args.args[0]
+        _, observed = plan.api_json("GET", "/repos/example/app/issues/7")
+        assert observed["state"] == "closed"
+        plan.CURRENT_IS_WRITE = True
+        plan.run_raw = lambda args, **_kwargs: ("automation-gh", 'HTTP/2 200\n\n' + json.dumps(body), "")
+        _, observed = plan.api_json("GET", "/repos/example/app/issues/7")
+        assert observed == body and transport.call_count == 3
+        plan.CURRENT_IS_WRITE = False
+        for override in ("GH_PLAN_SKIP_BOT", "GH_PLAN_ALLOW_ACTIVE_FIRST",
+                         "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK", "GH_WITH_ENV_TOKEN_OWN_USER"):
+            with patch.dict(os.environ, {override: "1"}):
+                _, observed = plan.api_json("GET", "/repos/example/app/issues/7")
+                assert observed == body and transport.call_count == 3
+
+
+def test_planning_conditional_reads_do_not_hide_permission_or_actor_failures() -> None:
+    plan = load_plan_module()
+    plan.CURRENT_OPERATION = "github.plan.show"
+    plan.CURRENT_IS_WRITE = False
+    with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+        "GITHUB_READ_CACHE_DIR": directory, "GITHUB_RETRY_STATE_DIR": str(Path(directory) / "retry"),
+        "GH_PLAN_SKIP_BOT": "0", "GH_PLAN_ALLOW_ACTIVE_FIRST": "0",
+        "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "0", "GH_WITH_ENV_TOKEN_OWN_USER": "0",
+    }):
+        def response(status: int, actor: str) -> subprocess.CompletedProcess[bytes]:
+            return subprocess.CompletedProcess([], int(status >= 400), stdout=(
+                f'HTTP/2 {status}\ncontent-type: application/json\netag: "v1"\n\n{{"message":"denied"}}'
+            ).encode(), stderr=f"using the active gh account '{actor}'".encode())
+        for failure in (response(403, "shiny-code-bot"), response(200, "wrong-actor")):
+            with patch.object(plan.subprocess, "run", side_effect=[response(200, "shiny-code-bot"), failure]):
+                plan.api_json("GET", "/repos/example/app/issues/7")
+                try:
+                    plan.api_json("GET", "/repos/example/app/issues/7")
+                except plan.PlanError as error:
+                    assert error.failure.cause in {"permission_denied", "actor_mismatch"}
+                else:
+                    raise AssertionError("cached planning data hid a live failure")
+
+
 def main() -> None:
     tests = [
+        test_read_only_planning_revalidates_cache_and_keeps_write_preflights_fresh,
+        test_planning_conditional_reads_do_not_hide_permission_or_actor_failures,
         test_contributor_plan_update_preserves_original_body_verbatim,
         test_contributor_empty_body_preserves_original_title,
         test_contributor_repeat_update_only_changes_managed_block,

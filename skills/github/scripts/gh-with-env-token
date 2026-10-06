@@ -657,7 +657,7 @@ is_actor_probe() {
 
 print_app_actor_probe() {
 	if [ "$actor_probe_include" -eq 1 ]; then
-		printf 'HTTP/2.0 200\r\ncontent-type: application/json\r\n\r\n'
+		printf 'HTTP/2.0 200\r\ncontent-type: application/json\r\nx-codex-synthetic-response: app-actor\r\n\r\n'
 	fi
 	if [ "$actor_probe_jq" -eq 1 ]; then
 		printf '%s\n' "$app_login"

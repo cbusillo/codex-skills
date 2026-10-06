@@ -177,7 +177,7 @@ class ConditionalResponseCache:
                     body_path.unlink()
                 except OSError:
                     pass
-            if cached and now - float(cached.get("validated_at") or 0) <= max(self.coalesce_seconds, poll_interval(cached["headers"])):
+            if cached and not reader.cache_revalidate and now - float(cached.get("validated_at") or 0) <= max(self.coalesce_seconds, poll_interval(cached["headers"])):
                 result = github_api_core.ApiResult(
                     ok=True, status=200, body=cached["body"], headers=dict(cached["headers"]),
                     operation=reader.operation, actor=reader.expected_actor,
@@ -238,6 +238,7 @@ class GitHubReader:
         strict_actor: bool = False,
         cache_enabled: bool = False,
         cache_coalesce_seconds: float = 5.0,
+        cache_revalidate: bool = False,
         deadline_at: Optional[float] = None,
     ) -> None:
         self.gh_cmd = gh_cmd
@@ -249,6 +250,7 @@ class GitHubReader:
         self.strict_actor = strict_actor
         self.cache_enabled = cache_enabled
         self.cache_coalesce_seconds = cache_coalesce_seconds
+        self.cache_revalidate = cache_revalidate
         self.deadline_at = deadline_at
         self.completed_steps: list[str] = []
         self.requests: list[dict[str, Any]] = []
