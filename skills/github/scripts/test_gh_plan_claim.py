@@ -1456,6 +1456,8 @@ class ClaimTests(unittest.TestCase):
             "Released by trial-b\nif CI passes",
             "Released by trial-b\r\nonce PR #99 merges",
             "Released by trial-b\nSource work is finished; release is pending CI.",
+            "Released by trial-b\n\nThis only takes effect after PR #99 merges; do not claim until then.",
+            "Released by trial-b\n\nIf CI passes, the next worker may claim.",
             "Released by **trial-b** if CI passes",
             "> Released by trial-b\n\nHistorical handoff, not a new release.",
         )
@@ -1482,8 +1484,8 @@ class ClaimTests(unittest.TestCase):
     def test_standalone_legacy_release_allows_authorized_successor(self):
         for release in (
             "Released by trial-b",
-            "Released by trial-b\n\nSource session finished. The next worker rechecks ownership.",
-            "Released by trial-b \t\r\n\r\nSource session finished.\r\n",
+            "Released by trial-b \t\r\n",
+            "Released by trial-b\n\n<!-- github-skill-operation:abc123 -->\n",
         ):
             with self.subTest(release=release):
                 self.setUp()
@@ -1500,7 +1502,7 @@ class ClaimTests(unittest.TestCase):
                 self.setUp()
                 self.comments = [
                     {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
-                    {"id": 2, "body": "Released by trial-b\n\nSource session finished.", "user": {"login": TEST_BOT}},
+                    {"id": 2, "body": "Released by trial-b", "user": {"login": TEST_BOT}},
                 ]
                 if evidence == "later_claim":
                     self.comments.append({"id": 3, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}})
@@ -1513,11 +1515,12 @@ class ClaimTests(unittest.TestCase):
                 with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
                 self.assert_no_writes()
 
-    def test_legacy_retained_branch_requires_standalone_release(self):
+    def test_legacy_retained_branch_requires_unambiguous_release(self):
         for release, allowed in (
-            ("Released by trial-b\n\nSource session finished. Retain work/other-42 for the successor.", True),
+            ("Released by trial-b\n\n<!-- github-skill-operation:abc123 -->", True),
             ("Released by trial-b\nif CI passes", False),
             ("Released by trial-b once PR #99 merges", False),
+            ("Released by trial-b\n\nSource session finished. Retain work/other-42 for the successor.", False),
         ):
             with self.subTest(release=release):
                 self.setUp()

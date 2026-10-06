@@ -610,11 +610,13 @@ prerequisite and proving its finish line is separate from release: `next` and
 `claim` accept a closed native blocker without deleting dependency history.
 
 Use a unique worker token per native session. Legacy `Released by <worker>`
-comments must start with that exact line as a standalone first paragraph;
-trailing horizontal whitespace is allowed. Put handoff prose after a blank
-line. Conditional suffixes or a continuation in that paragraph never release
-ownership. They are accepted only when the earlier structured claims for that
-token all belong to one session; reuse requires exact comment-ID releases.
+comments must contain only that exact directive, optionally followed by the
+helper's operation marker; trailing whitespace is allowed. Conditional suffixes,
+continuations and other paragraphs never release ownership through this legacy
+form. Use `Released claim <claim-comment-id>` followed by a blank line and the
+handoff prose for a release with context. Bare legacy releases are accepted only
+when the earlier structured claims for that token all belong to one session;
+reuse requires exact comment-ID releases.
 To recover an older ambiguous legacy release, the source author posts a new
 `Released claim <claim-comment-id>` comment for each original claim. For a
 closed automation session, use the evidence-backed `release-claim` route above.

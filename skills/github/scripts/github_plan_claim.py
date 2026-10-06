@@ -64,12 +64,15 @@ def same_owner(record: dict[str, str], claim: dict[str, str]) -> bool:
                     for key in ("refresh_pr", "retained_handoff", "resume_from")))
 
 
+def without_operation_marker(text: str) -> str:
+    """Remove the helper's trailing transport marker, not handoff prose."""
+    return re.sub(r"\n\s*<!-- github-skill-operation:[0-9a-f]+ -->\s*$", "", text).rstrip()
+
+
 def legacy_release_worker(text: str) -> str | None:
-    """Require a standalone first paragraph, not a conditional prefix."""
-    lines = text.splitlines()
-    if not lines or len(lines) > 1 and lines[1].strip():
-        return None
-    match = re.fullmatch(r"Released by (\S+)[ \t]*", lines[0])
+    """Only a bare legacy directive releases; handoffs use exact claim IDs."""
+    text = without_operation_marker("\n".join(text.splitlines()))
+    match = re.fullmatch(r"Released by (\S+)", text)
     return match.group(1) if match else None
 
 
@@ -80,8 +83,7 @@ def released_claim_id(text: str) -> int | None:
     if match:
         return int(match.group(1))
     text = "\n".join(line if line.strip() else "" for line in text.splitlines())
-    # Helpers append this transport marker; it is not handoff prose.
-    text = re.sub(r"\n\s*<!-- github-skill-operation:[0-9a-f]+ -->\s*$", "", text).rstrip()
+    text = without_operation_marker(text)
     lines = text.splitlines()
     if len(lines) < 3 or lines[-2].strip():
         return None
