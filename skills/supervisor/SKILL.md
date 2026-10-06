@@ -201,7 +201,15 @@ records that run.
    Codex turn ends. A notice prompts verification, never a completion verdict.
    Read [helper setup](references/helpers.md) before rebuilding the private
    ledger or running a helper; the catalog supplies all seven pilot helpers.
-6. Once per Supervisor session, run a parked-issue sweep across the Director's repositories following [#1304's completed sweep](https://github.com/cbusillo/codex-skills/issues/1304#issuecomment-6019788099), including findings in the takeover comment, as [Chris requested on #1316](https://github.com/cbusillo/codex-skills/issues/1316), until #1316's report PR removes this step.
+6. Read `stale_wait_report` from the existing
+   `uv run skills/direction/scripts/direction_audit.py --repo OWNER/REPO --stale-waits-only` output for
+   each Director repository returned in `discovery_context.repositories` by
+   `gh-plan.py --repo OWNER/direction next` under `github-plan`. Include report
+   findings and repository-discovery or report coverage gaps in the takeover
+   comment. Review each reported wait
+   against the full issue and current evidence before correcting its status;
+   this report-only mode leaves weekly audit markers untouched and grants no
+   release of a real hold.
 7. Post a takeover comment on the pilot issue: what you found, what you
    corrected, and the "needs the Director" list.
 8. When a finding would retire, stop, or redirect work, load `direction`

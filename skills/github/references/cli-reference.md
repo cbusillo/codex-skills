@@ -472,6 +472,16 @@ and continue independent work.
 
 Unstructured Current Status ownership evidence remains fail-closed for `Owned by`,
 `Claimed by`, and worker/session fields, including informal prose and Markdown.
+Human ownership prose is normalized before classification: inline code,
+emphasis, link labels and block quotes retain their text without formatting.
+Quoted hard wraps preserve qualifiers, fields and paragraph boundaries. Claim
+markers, exact-ID release directives and recorded intent/history provenance
+continue to use their exact source forms. Legacy `Released by` keeps its exact
+prefix; its formatted holder token is normalized for legacy claims, including
+the reused-worker session check, without releasing structured records by alias.
+Code-span contents remain literal, unresolved reference-link text remains
+visible, and a quoted legacy claim header in a comment does not claim the
+issue on behalf of the quoting author.
 Recognized responsibility sentences start a line with entries, records, or
 resources, optionally prefixed by `Remaining`, a two-group count, or `provider-only`.
 `After these proposals,` may precede that resource subject. They assign one actor

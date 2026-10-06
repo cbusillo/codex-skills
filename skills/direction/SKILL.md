@@ -295,6 +295,30 @@ listed milestone since the prior audit, with who added each. It is not a
 finding and does not affect `ok`. Read each issue and keep it in the milestone
 or move it out.
 
+The audit also returns `stale_wait_report` for open `plan:waiting` and
+`plan:blocked` issues in the audited repository, including unmilestoned work.
+It reports closed native blockers, merged PRs or completed issues that the
+Current Status waits on, and explicit waits on agents or capacity instead of
+people or events, only when no recorded hold or open native blocker remains.
+`complete`, `inventory_complete`, and `unavailable` expose
+missing coverage. Unknown prose, elapsed time, unrelated merged PRs, and
+acceptance or live-test waits do not establish completion. These are review
+prompts, separate from audit findings and exit status: read the full issue and
+current evidence before correcting a status through `github-plan`. Nothing is
+selected, relabeled, or released automatically. This does not change global
+`next` wait classification or the claim guard. For a Supervisor check, use
+`--stale-waits-only` with the existing audit command: it reads only open issues
+and their prerequisites, leaving weekly audit markers and windows untouched.
+Unrecognized status formats and prerequisites closed as abandoned or duplicate
+remain unproven; closure evidence includes the issue closure reason. A recorded
+PR landing requires its default-branch destination; a merge means the PR merged
+into its recorded base. A closed issue may be a split rather than a fulfilled
+finish line: known split status and unfinished native children stay unproven,
+and every reported closure still needs full-thread review.
+The report bounds issue checks by the existing inventory size and native
+blocker reads to two pages, skips known-empty native relationships, and caches
+reference reads; any limit or unread evidence keeps `complete` false.
+
 The audit of `OWNER/direction` also returns `capacity`, the overall
 direction's weekly numbers for the window since the prior audit: merged pull
 requests per rank, the own-projects share against the 20% floor, milestones
