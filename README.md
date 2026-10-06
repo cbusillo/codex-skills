@@ -112,7 +112,7 @@ updates; removing all catalog hooks opts out of that refresh. The existing sessi
 one catalog line for a stale or blocked checkout, a failed update, or a scheduled
 check older than twelve hours. A manual pull that changes shared instructions
 also reports a stale installation until the instruction refresh runs. Session
-start performs no network calls. State
+catch-up is described under [runtime binding lookup](#runtime-binding-lookup). State
 and logs live in the checkout's ignored `.local/` directory.
 Run `uv run scripts/catalog_runtime.py --update` for a manual guarded update on
 macOS or Linux. To stop scheduled updates, run

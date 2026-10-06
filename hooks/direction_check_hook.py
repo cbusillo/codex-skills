@@ -91,7 +91,8 @@ def catch_up_runtime(catalog: Path) -> str:
         detail = receipt.get("detail") or receipt["reason_code"]
         return f"Catalog catch-up {receipt['status']}: {detail} ({catalog})."
     except Exception:  # A broken or older helper must not prevent the session from starting.
-        return f"Catalog catch-up unavailable: could not reconcile {catalog}."
+        return (f"Catalog catch-up unavailable: could not reconcile {catalog}. "
+                "See README.md#runtime-binding-lookup for the guarded manual catch-up command.")
 
 
 def marker_path(env: Mapping[str, str] | None = None) -> Path:

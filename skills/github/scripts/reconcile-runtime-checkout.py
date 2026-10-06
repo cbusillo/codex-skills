@@ -118,16 +118,27 @@ def reconcile_runtime_checkout(
         time.monotonic() + timeout_seconds if timeout_seconds is not None else None
     )
     try:
-        return _reconcile_runtime_checkout(merged_worktree, expected_repo, landing_sha)
+        receipt = _reconcile_runtime_checkout(merged_worktree, expected_repo, landing_sha)
+        deadline = RECONCILIATION_DEADLINE.get()
+        if deadline is not None and time.monotonic() >= deadline:
+            # A deadline still in force proves no fast-forward was started.
+            receipt["runtime_mutated"] = False
+            return finish(receipt, "retryable", "runtime_catchup_timeout")
+        return receipt
     except ReconciliationBusy:
         receipt = base_receipt(landing_sha)
         receipt["expected_repo"] = expected_repo
         return finish(receipt, "blocked", "runtime_reconciliation_busy", applicable=True)
     except GitCommandError as exc:
+        if timeout_seconds is None:
+            raise  # Preserve the manual/train caller's existing error handling.
         receipt = base_receipt(landing_sha)
         receipt["expected_repo"] = expected_repo
         receipt["failed_operation"] = exc.operation
-        return finish(receipt, "retryable", "runtime_catchup_timeout" if timeout_seconds is not None else "unexpected_git_error")
+        deadline = RECONCILIATION_DEADLINE.get()
+        if deadline is not None and time.monotonic() >= deadline:
+            return finish(receipt, "retryable", "runtime_catchup_timeout")
+        return finish(receipt, "failed", "unexpected_git_error")
     finally:
         RECONCILIATION_DEADLINE.reset(token)
 
