@@ -322,6 +322,23 @@ def _judge(
     if action == "block" and isinstance(blocking_reason, dict) and blocking_reason.get("code") in WAITING_BLOCK_CODES:
         return None
     if action in {"block", "stack_unsupported"}:
+        selected = ((result.get("dry_run_result") or {}).get("selected_pr") or {}).get("number")
+        if isinstance(selected, int) and selected != settings.number:
+            applied = result.get("block_result") or {}
+            if (
+                action == "block"
+                and applied.get("status") == "blocked"
+                and applied.get("pull_request_number") == selected
+                and applied.get("train_should_continue") is True
+            ):
+                return None
+            return "needs_owner", {
+                "reason": "another pull request is blocking the train",
+                "blocking_pull_request_number": selected,
+                "tracked_pull_request_number": settings.number,
+                "controller_action": action,
+                "blocking_reason": blocking_reason,
+            }
         return "failed", {"reason": action, "blocking_reason": blocking_reason}
     if action == "candidate_failed":
         candidate = result.get("candidate") or {}
