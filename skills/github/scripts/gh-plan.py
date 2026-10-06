@@ -867,8 +867,8 @@ def api_json(
         and BOT_GH.exists() and EXPECTED_ACTOR
         and os.environ.get("GH_PLAN_SKIP_BOT") != "1"
         and os.environ.get("GH_PLAN_ALLOW_ACTIVE_FIRST") != "1"
-        and os.environ.get("GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK") != "1"
-        and os.environ.get("GH_WITH_ENV_TOKEN_OWN_USER") != "1"
+        and not github_identity.active_auth_fallback_allowed()
+        and not github_identity.own_user_opted_in()
     ):
         reader = github_read.GitHubReader(
             gh_cmd=str(BOT_GH), expected_actor=EXPECTED_ACTOR, actor=EXPECTED_ACTOR,
@@ -883,7 +883,7 @@ def api_json(
             record_retry_fields(exc.result)
             raise PlanError(str(exc), failure=exc.result.failure, api_result=exc.result.as_dict()) from exc
         record_retry_fields(result)
-        return result.actor or "automation-gh", result.body
+        return "automation-gh", result.body
     args = [
         "api",
         *API_VERSION_ARGS,

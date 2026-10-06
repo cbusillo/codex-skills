@@ -6858,7 +6858,7 @@ def test_read_only_planning_revalidates_cache_and_keeps_write_preflights_fresh()
                                                         response(200, {**body, "state": "closed"})]) as transport:
         for _ in range(2):
             actor, observed = plan.api_json("GET", "/repos/example/app/issues/7")
-            assert actor == "shiny-code-bot" and observed == body
+            assert actor == "automation-gh" and observed == body
         assert transport.call_count == 2, "even an immediate observation must revalidate"
         assert 'If-None-Match: "issue-v1"' in transport.call_args.args[0]
         _, observed = plan.api_json("GET", "/repos/example/app/issues/7")
@@ -6873,6 +6873,16 @@ def test_read_only_planning_revalidates_cache_and_keeps_write_preflights_fresh()
             with patch.dict(os.environ, {override: "1"}):
                 _, observed = plan.api_json("GET", "/repos/example/app/issues/7")
                 assert observed == body and transport.call_count == 3
+        for value in ("true", "TRUE", "yes", "YES"):
+            with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": value,
+                                         "GH_WITH_ENV_TOKEN_OWN_USER": value}):
+                _, observed = plan.api_json("GET", "/repos/example/app/issues/7")
+                assert observed == body and transport.call_count == 3
+        env_file = Path(directory) / "local.env"
+        env_file.write_text("GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=true\n")
+        with patch.dict(os.environ, {"CODEX_SKILLS_ENV_FILE": str(env_file)}):
+            _, observed = plan.api_json("GET", "/repos/example/app/issues/7")
+            assert observed == body and transport.call_count == 3
 
 
 def test_planning_conditional_reads_do_not_hide_permission_or_actor_failures() -> None:
@@ -6899,8 +6909,26 @@ def test_planning_conditional_reads_do_not_hide_permission_or_actor_failures() -
                     raise AssertionError("cached planning data hid a live failure")
 
 
+def test_authorized_planning_fallback_retains_uncached_actor_route() -> None:
+    plan = load_plan_module()
+    plan.CURRENT_OPERATION = "github.plan.show"
+    plan.CURRENT_IS_WRITE = False
+    with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+        "GITHUB_READ_CACHE_DIR": str(Path(directory) / "cache"),
+        "GITHUB_RETRY_STATE_DIR": str(Path(directory) / "retry"),
+        "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "true",
+    }), patch.object(plan.subprocess, "run", return_value=subprocess.CompletedProcess([], 0,
+        stdout='HTTP/2 200\ncontent-type: application/json\netag: "v1"\n\n{"number":7}',
+        stderr="explicitly authorized active-auth fallback; retrying with the active gh account 'active-user'"
+    )):
+        actor, body = plan.api_json("GET", "/repos/example/app/issues/7")
+        assert actor == "active-user" and body == {"number": 7}
+        assert not (Path(directory) / "cache").exists()
+
+
 def main() -> None:
     tests = [
+        test_authorized_planning_fallback_retains_uncached_actor_route,
         test_read_only_planning_revalidates_cache_and_keeps_write_preflights_fresh,
         test_planning_conditional_reads_do_not_hide_permission_or_actor_failures,
         test_contributor_plan_update_preserves_original_body_verbatim,

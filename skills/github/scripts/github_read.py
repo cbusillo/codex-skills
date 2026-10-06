@@ -192,6 +192,11 @@ class ConditionalResponseCache:
                     validators["If-None-Match"] = cached["etag"]
                 elif isinstance(cached.get("last_modified"), str):
                     validators["If-Modified-Since"] = cached["last_modified"]
+            if reader.cache_revalidate:
+                # Revalidation never coalesces: another reader must be free to
+                # wait on the shared transport cooldown independently. Cache
+                # publication already uses an atomic replace.
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
             result = reader._transport_request(method, path, step=step, extra_headers={**headers, **validators})
             if result.status == 304:
                 if cached is None:

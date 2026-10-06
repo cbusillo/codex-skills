@@ -163,10 +163,9 @@ a slow review system or active fix train, and every push or rerun. Do not ask
 whether to keep polling, and do not end the turn while a watcher is running
 unless a stop condition has been reached.
 
-The watcher manages cadence: about one minute while anything is active or
-changing, five minutes once CI is green and the PR is unchanged, and provider
-cooldowns in between. A cooldown is a managed wait, not a request for
-permission.
+Follow the watcher's emitted interval and the
+[Request Use](../github/references/cli-reference.md#request-use) reference.
+Provider cooldowns are managed waits and need no permission.
 
 ## CI Failures
 
