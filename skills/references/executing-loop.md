@@ -43,11 +43,13 @@ Every issue ends done or split. Done means the result a person can see is
 real: the lane reads green, the record reads back, the feature runs. A merge
 alone is not done; when the rest is ordinary engineering, deploy it, switch it
 on, and read it back yourself. Split means you open one issue for what is
-left, naming who acts next: the Director (ask them on that issue and name them
-in `Waiting for:`), a named event, or the next agent. Then close yours, saying
-the rest moved there. If the result can only show later, close on what you can
-check now and open a small issue to look again. Never close with a comment standing in for a step, and
-never leave an issue open waiting on nobody.
+left, naming the next action and who takes it. Ask the Director on that issue
+when their action or decision is needed. Before recording a split or handoff,
+read github-plan's [Status Labels](../github-plan/SKILL.md#status-labels).
+Then close yours, saying the rest moved there. If the result can only show later,
+close on what you can check now and open a small issue to look again. Never close
+with a comment standing in for a step, and never leave an issue open waiting on
+nobody.
 
 Use [reviews by another model](model-review.md) to decide when a review is
 needed. For milestone work, honor the same authorization and direction stop

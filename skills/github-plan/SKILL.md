@@ -379,20 +379,26 @@ creating, changing, assessing, or closing a milestone, read the
 issues. With `DIRECTION.md`, only listed milestone titles are eligible; propose
 new waypoints through `direction`.
 
+## Status Labels
+
 Use status labels narrowly:
 
-- `plan:active`: actionable now.
+- `plan:active`: actionable now, including work whose next actor is any agent.
+  Keep actionable unstarted follow-ups, capacity/selection queues, and Supervisor
+  handoffs active. Put the agent's next step in `Next action:`; record
+  `Waiting for: None` only when no person, decision or external-event wait
+  remains. Ordinary delivery awaiting agent or automated QA, review,
+  merge-train routing, or deployment stays active too.
 - `plan:blocked`: a current dependency, preferably an open native blocker.
-- `plan:waiting`: a durable plan parked on a named person, decision, or event.
-  Do not apply it to ordinary bugs or PRs awaiting QA, review, or deployment.
+- `plan:waiting`: a durable plan parked on a named person, decision, or external
+  event. Name who acts and on what in `Waiting for:` or `Parked until:`.
 - `plan:stale`: needs review before guiding work.
 - `plan:done`: completed or deliberately superseded.
 
-Do not label an item blocked just because it is out of focus. Without an open
-native blocker, prefer `plan:waiting`; use `Waiting for:` or `Parked until:`
-with the concrete condition.
-For a blocking non-issue condition, say `Blocked by: No native issue blocker;
-waiting for ...`.
+Separate independent actionable work from an unresolved person or event wait
+into its own issue, so it can be selected and claimed without clearing that wait.
+For `plan:waiting` without a native issue blocker, say `Blocked by: No native
+issue blocker; waiting for ...`.
 
 When Projects are configured or requested, use them as automatic views of the
 issue graph. Do not maintain Focus, Manager, Finish Line, or roadmap dates in
@@ -426,7 +432,8 @@ Stale GitHub planning state is a regression source. Before closeout, handoff,
 or declaring a workstream done, search related issues. Update every related
 issue whose Current Status, labels, blockers, relationships, or acceptance
 criteria changed. Reconcile stale or duplicate plans rather than leaving
-corrections only in chat or PR comments.
+corrections only in chat or PR comments. Record the winning and superseded PRs
+on the owning issue when competing PRs are resolved.
 
 Before calling the plan captured or complete, verify that stale, duplicate,
 related, and PR-linked issues were swept, the canonical graph has the needed
@@ -459,10 +466,15 @@ Record the exact action in a new comment; never edit existing question or
 decision comments to migrate them, or bypass a closure refusal through another tool.
 
 Prefer non-closing `Refs` from PRs unless the Director requests auto-close or an
-internal task is conclusively complete. After merge, inspect referenced issues:
-close only those whose finish lines are satisfied; end every other one done
-or split as the [executing loop](../references/executing-loop.md) says. Use
-`gh-plan.py close --comment-file` for durable plan issues.
+internal task is conclusively complete. After a landing, reconcile issues
+referenced by the canonical PR body and comments and every issue it unblocks,
+including cross-repository dependents, within
+[existing posting authority](#missing-cross-repository-gates). Check remaining
+waits against the landed evidence; update Current Status, labels and native
+relationships under [Status Labels](#status-labels), preserving unresolved waits,
+blockers and Director holds. Close only issues whose finish lines are satisfied; end every other one
+done or split as the [executing loop](../references/executing-loop.md) says.
+Use `gh-plan.py close --comment-file` for durable plan issues.
 
 For closure failures, partial Project synchronization, quota or retry/reconciliation,
 or helper output details, read

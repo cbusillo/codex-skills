@@ -167,16 +167,12 @@ Repo-local values override workspace defaults.
 
 Planning labels and the `audit` label are the only labels created by
 `gh-plan.py ensure-labels` by default. They describe durable issue-backed plans, not transient PR execution
-state.
+state. Before assigning a planning status label, read github-plan's
+[Status Labels](../../github-plan/SKILL.md#status-labels).
 
 | Label          | Purpose                                                                                                                                                        |
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `plan`         | Durable planning issue.                                                                                                                                        |
-| `plan:active`  | Plan is actionable now.                                                                                                                                        |
-| `plan:blocked` | Plan is blocked by a real open native dependency issue.                                                                                                        |
-| `plan:waiting` | Durable plan is parked on a decision, external event, or other non-issue condition. Do not use for ordinary PR QA, preview review, deploy, or merge readiness. |
-| `plan:stale`   | Plan needs review before it should guide work.                                                                                                                 |
-| `plan:done`    | Plan is completed or superseded.                                                                                                                               |
 | `audit`        | Question or completed work for the weekly direction audit.                                                                                                     |
 
 Workflow labels are repo-local opt-ins. Agents may recognize these names, but
