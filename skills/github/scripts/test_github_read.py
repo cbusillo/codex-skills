@@ -971,6 +971,14 @@ def test_revalidation_readers_do_not_hold_cache_lock_during_transport_wait() -> 
                 release.set()
                 worker.join(timeout=3)
             assert not worker.is_alive() and results == [{"value": 1}]
+        # Forced reads can complete out of order, so they must not seed a
+        # watcher entry that may serve a recent body without revalidation.
+        watcher = github_read.GitHubReader(expected_actor="fixture-automation", cache_enabled=True)
+        latest = github_read.github_api_core.ApiResult(ok=True, status=200, body={"value": 3}, headers={"etag": '"v3"'})
+        with patch.object(watcher, "_transport_request", return_value=latest) as remote:
+            assert watcher.get_json("/repos/o/r/issues/1", step="watch") == {"value": 3}
+            assert remote.call_count == 1
+            assert "If-None-Match" not in remote.call_args.kwargs["extra_headers"]
 
 
 def main() -> None:

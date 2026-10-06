@@ -104,7 +104,8 @@ class ConditionalResponseCache:
         # The expected actor is identity context, not a credential.  The digest
         # keeps private repository paths out of filenames and diagnostics.
         scope = hashlib.sha256(
-            f"{github_api_core.DEFAULT_HOST}\0{reader.expected_actor.casefold()}".encode()
+            (f"{github_api_core.DEFAULT_HOST}\0{reader.expected_actor.casefold()}"
+             + ("\0revalidate" if reader.cache_revalidate else "")).encode()
         ).hexdigest()
         return cls(root, scope=scope, coalesce_seconds=reader.cache_coalesce_seconds)
 
@@ -201,7 +202,7 @@ class ConditionalResponseCache:
             if result.status == 304:
                 if cached is None:
                     # A malformed/corrupt cache cannot manufacture success. Make
-                    # one unconditioned recovery request while holding the lock.
+                    # one unconditioned recovery request for a valid body.
                     result = reader._transport_request(method, path, step=step, extra_headers=headers)
                 else:
                     cached["validated_at"] = time.time()

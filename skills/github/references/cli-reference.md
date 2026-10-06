@@ -127,6 +127,7 @@ set a temporary `GITHUB_RETRY_STATE_DIR`, which also isolates these receipts.
 
 Read-only planning `show`, `index` and `next` REST observations use conditional
 validators but always contact GitHub, including immediately repeated reads.
+Their cache namespace is separate from observers that coalesce recent replies.
 Write preflights/readbacks and explicit active-auth routes retain uncached reads.
 Permission and actor failures never reuse a cached success.
 
