@@ -721,7 +721,7 @@ def global_fixture(
             for name, values in edges.get((target_repo, number), relationships()).items()
         }, []
 
-    def wait_api(method: str, path: str, **kwargs: Any) -> Any:
+    def wait_api(method: str, path: str, **_kwargs: Any) -> Any:
         assert method == "GET", "global next must remain read-only"
         parts = path.split("?", 1)[0].strip("/").split("/")
         target = "/".join(parts[1:3])
@@ -2304,11 +2304,11 @@ def test_global_stale_wait_report_reuses_merged_pr_proof_and_refuses_capacity() 
             if path == "/repos/someone/business/pulls/11":
                 return "automation-gh", {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}}
             return base_api(method, path, **kwargs)
-        with patch.object(module, "api_json", merged):
+        with patch.multiple(module, api_json=merged):
             module.cmd_next(next_args())
             rows = {item["number"]: item for item in [*result["candidates"], *result["excluded"]]}
             context = {"issues": {"someone/business#10": reviewed(rows[10], "waiting", waiting_on="person"), "someone/tools#20": reviewed(rows[20], category="repeated_stop_tooling")}}
-            with patch.object(module, "next_selection_context", lambda _args: context):
+            with patch.multiple(module, next_selection_context=lambda _args: context):
                 module.cmd_next(next_args())
     assert result["stale_wait_report"]["items"][0]["evidence"][0]["kind"] == "merged_wait_pr"
     assert result["tooling_capacity_context"]["admitted"] is False
@@ -2322,7 +2322,7 @@ def test_global_wait_reference_budget_and_auth_stop_are_explicit() -> None:
     module = load_module()
     item = global_issue("someone/business", 10, body="## Current Status\nWaiting for: Review " + " ".join(f"#{number}" for number in range(20, 32)))
     reads = []
-    def read(method: str, path: str, **kwargs: Any) -> Any:
+    def read(method: str, path: str, **_kwargs: Any) -> Any:
         assert method == "GET"
         reads.append(path)
         return "automation-gh", {"state": "open"}
@@ -2372,7 +2372,7 @@ def test_global_cross_repo_link_label_does_not_create_a_local_reference() -> Non
         def api(method: str, path: str, **kwargs: Any) -> Any:
             reads.append(path)
             return base_api(method, path, **kwargs)
-        with patch.object(module, "api_json", api):
+        with patch.multiple(module, api_json=api):
             module.cmd_next(next_args())
     assert [(ref["repo"], ref["number"]) for ref in result["waiting"][0]["references"]] == [("other/product", 12)]
     assert result["waiting"][0]["closed_references"] == []
@@ -2391,7 +2391,7 @@ def test_global_parent_only_stale_wait_moves_out_of_current_waiting() -> None:
             if path == "/repos/someone/business/pulls/11":
                 return "automation-gh", {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}}
             return base_api(method, path, **kwargs)
-        with patch.object(module, "api_json", merged):
+        with patch.multiple(module, api_json=merged):
             module.cmd_next(next_args())
     assert result["waiting"] == []
     assert result["stale_waits"][0]["number"] == 10
