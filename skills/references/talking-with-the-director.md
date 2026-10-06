@@ -46,6 +46,11 @@ changes on yes.
 - When a decision belongs to the Director, ask a direct question that says what
   is being decided, your recommendation, and what each choice changes. Separate
   what the Director must do by hand from what you will do after the answer.
+- In chat, give each question a short ID: Q1, Q2, and so on within the
+  conversation. An ID never changes and is never reused: when you ask the same
+  question again, even reworded, keep its ID. Restate the question each time
+  you list it, so the Director can answer "Q2 yes" without scrolling back. On
+  GitHub, the question's link is its ID.
 - Reuse decisions already made. When the Director says a discussed proposal is
   basically approved, act within that approval instead of asking again.
 - Describe a hold by the action it stops and the condition that ends it. If

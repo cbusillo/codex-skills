@@ -14,7 +14,7 @@ Executing loop for this repository (from DIRECTION.md):
   go <milestone title>  work that milestone's issues in next order without stopping between them
   next and go   both
   escalate      a finding that retires, stops, or redirects work is an issue labeled direction, not a change
-  land          load github to open and merge the PR, babysit-pr to watch until merged, then reconcile the runtime checkout
+  land          load github to open and land the PR by its Merging procedure; honor assigned train handoffs and complete After A Merge
   close out     load work-closeout to update the plan issue, open follow-up issues without starting them, remove the worktree (with the retire command its lock reason names, if any), leave main clean
 ```
 
@@ -34,14 +34,18 @@ independent item available to this session.
 `go` authorizes implementation; merge still requires authorization for the
 change and destination under [task scope and authorization](execution-scope.md).
 When that authorization exists, carry `land` through without asking again.
+The GitHub skill's [Merging procedure](../github/SKILL.md#merging) owns routing
+for single PRs and stacks; load `launchplane` when it delegates landing to the
+train. Use `babysit-pr` for CI and review follow-through, then complete GitHub's
+[After A Merge](../github/SKILL.md#after-a-merge) procedure after confirmed landing.
 
 Every issue ends done or split. Done means the result a person can see is
 real: the lane reads green, the record reads back, the feature runs. A merge
 alone is not done; when the rest is ordinary engineering, deploy it, switch it
 on, and read it back yourself. Split means you open one issue for what is
-left, naming who acts next: the Director (ask him on that issue and name him in
-`Waiting for:`), a named event, or the next agent. Then close yours, saying the
-rest moved there. If the result can only show later, close on what you can
+left, naming who acts next: the Director (ask them on that issue and name them
+in `Waiting for:`), a named event, or the next agent. Then close yours, saying
+the rest moved there. If the result can only show later, close on what you can
 check now and open a small issue to look again. Never close with a comment standing in for a step, and
 never leave an issue open waiting on nobody.
 

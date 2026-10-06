@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import os
 import pathlib
@@ -2794,6 +2794,119 @@ def read_next_inbound_blockers(repo: str, *, scan_limit: int) -> tuple[str, list
     }
 
 
+def read_next_train_enrollment(repo: str) -> dict[str, Any]:
+    """Reuse Launchplane's bounded, public-safe policy projection."""
+    helper = SKILL_DIR.parent / "launchplane/scripts/launchplane-write-action.py"
+    try:
+        result = subprocess.run(
+            ["uv", "run", "--no-project", "--no-config", "--python", "3.12", "python",
+             str(helper), "merge-train-policy-read", "--repo", repo],
+            capture_output=True, text=True, timeout=30,
+        )
+        payload = json.loads(result.stdout)
+        summary = payload.get("result", {})
+        if (result.returncode == 0 and payload.get("status") == "available"
+                and summary.get("source") == "launchplane"
+                and summary.get("status") in {"enrolled", "not_enrolled"}):
+            return summary
+    except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+        pass
+    # Never expose subprocess diagnostics: they can contain private config.
+    return {"source": "launchplane", "status": "unknown"}
+
+
+def next_dependabot_work(
+    sources: list[dict[str, Any]], *, scan_limit: int, limit: int,
+    now: datetime | None = None, inventory_complete: bool = True,
+) -> dict[str, Any]:
+    """List old PR facts separately from ranked issues and ownership judgments."""
+    observed_at = now or datetime.now(timezone.utc)
+    candidates: list[dict[str, Any]] = []
+    unverified: list[dict[str, Any]] = []
+    coverage: dict[str, Any] = {
+        "complete": inventory_complete, "repositories": [],
+        "pull_request_limit_per_repository": scan_limit,
+        "observed_at": observed_at.isoformat(),
+    }
+    seen: set[str] = set()
+    enrollment_unavailable = False
+    for source in sources:
+        repo = source.get("repo")
+        if not isinstance(repo, str) or repo.casefold() in seen:
+            continue
+        seen.add(repo.casefold())
+        if source.get("exclusion") in {"other_owner", "archived_or_disabled", "invalid_repository_inventory_entry", "empty_without_open_issues"}:
+            continue
+        context: dict[str, Any] = {"repo": repo}
+        coverage["repositories"].append(context)
+        if source.get("hold"):
+            context.update(exclusion="repository_held", hold=source["hold"])
+            continue
+        try:
+            _, pulls = collect_paged_rest_items(
+                f"/repos/{repo}/pulls",
+                query={"state": "open", "sort": "created", "direction": "asc"},
+                bucket="rest_core", step_prefix="next_dependabot_pulls", limit=scan_limit + 1,
+            )
+        except PlanError as exc:
+            context.update(complete=False, error=next_source_error(exc))
+            coverage["complete"] = False
+            continue
+        context.update(complete=len(pulls) <= scan_limit,
+                       truncated=len(pulls) > scan_limit, pull_request_count=min(len(pulls), scan_limit))
+        coverage["complete"] &= context["complete"]
+        observations: list[dict[str, Any]] = []
+        for pull in pulls[:scan_limit]:
+            if pull.get("state") != "open" or (pull.get("user") or {}).get("login") != "dependabot[bot]":
+                continue
+            try:
+                created = datetime.fromisoformat(pull["created_at"].replace("Z", "+00:00"))
+                age = (observed_at - created).total_seconds()
+            except (KeyError, ValueError, TypeError, AttributeError):
+                context["complete"] = coverage["complete"] = False
+                context["invalid_created_at"] = True
+                continue
+            if age <= 24 * 60 * 60:
+                continue
+            observations.append({
+                "repo": repo, "number": pull["number"], "url": pull["html_url"],
+                "title": pull["title"], "record_type": "pull_request",
+                "created_at": pull["created_at"], "age_hours": round(age / 3600, 1),
+                "age": f"{age / 3600:.1f} hours", "head_sha": (pull.get("head") or {}).get("sha"),
+                "base_branch": (pull.get("base") or {}).get("ref"),
+                "reasons": ["dependabot_open_more_than_one_day"],
+                "next_action": "Review the PR discussion, changelog, compatibility and current ownership before taking work.",
+                "ownership": "not_checked",
+            })
+        if not observations:
+            context["enrollment"] = {"source": "launchplane", "status": "not_read", "reason": "no_old_dependabot_prs"}
+            continue
+        enrollment: dict[str, Any] = ({"source": "launchplane", "status": "unknown",
+                                      "reason": "earlier_enrollment_read_unavailable"}
+                                     if enrollment_unavailable else read_next_train_enrollment(repo))
+        status = enrollment["status"]
+        context["enrollment"] = enrollment
+        if status == "not_enrolled":
+            continue
+        if status == "unknown":
+            enrollment_unavailable = True
+            context["complete"] = coverage["complete"] = False
+        branches = {target["baseBranch"] for target in enrollment.get("targets", [])}
+        for observation in observations:
+            if status == "enrolled" and observation["base_branch"] not in branches:
+                continue
+            observation["enrollment"] = status
+            (candidates if status == "enrolled" else unverified).append(observation)
+    for items in (candidates, unverified):
+        items.sort(key=lambda entry: (datetime.fromisoformat(entry["created_at"].replace("Z", "+00:00")), entry["repo"].casefold(), entry["number"]))
+    coverage["result_truncated"] = len(candidates) > limit or len(unverified) > limit
+    return {
+        "dependabot_candidates": candidates[:limit], "dependabot_candidate_count": len(candidates),
+        "dependabot_unverified_candidates": unverified[:limit],
+        "dependabot_unverified_candidate_count": len(unverified), "dependabot_context": coverage,
+    }
+
+
 def cmd_next(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     if github_direction_next.is_direction_repository(repo):
@@ -2948,6 +3061,7 @@ def cmd_next(args: argparse.Namespace) -> None:
         notes.append("project_focus_truncated")
     if dependency_degraded_count:
         notes.append("dependency_reads_degraded")
+    dependabot = next_dependabot_work([{"repo": repo}], scan_limit=args.scan_limit, limit=args.limit)
     emit({
         "ok": True,
         "actor": actor,
@@ -2980,6 +3094,7 @@ def cmd_next(args: argparse.Namespace) -> None:
         "running_agent": agent,
         "excluded": excluded,
         "notes": notes,
+        **dependabot,
     })
 
 
@@ -3419,6 +3534,10 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     }
     ranked["truncated"] |= bool(discovery.get("inventory_truncated") or discovery.get("unevaluated_count") or any(source.get("truncated") and not source.get("hold") for source in discovery.get("repositories", [])))
     sections = section_map(direction_text or "")
+    dependabot = next_dependabot_work(
+        discovery.get("repositories", []), scan_limit=args.scan_limit, limit=args.limit,
+        inventory_complete=not discovery.get("inventory_truncated", False) and "error" not in discovery,
+    ) if scope is None else {"dependabot_context": {"complete": False, "exclusion": "explicit_milestone_scope"}}
     emit({
         "ok": True, "actor": actor, "repo": repo,
         "scope": {"kind": "direction", "owner": repo.split("/")[0], "milestone": scope},
@@ -3427,6 +3546,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         "focus_context": {"repositories": focus_contexts},
         "inventory_count": len(issues), "inventory_limit": NEXT_PLAN_INVENTORY_LIMIT,
         **ranked,
+        **dependabot,
         "notes": [
             "native_blocked_by_relationships_are_authoritative",
             "tracking_wait_labels_do_not_hide_linked_work",
@@ -4265,7 +4385,7 @@ def unedited_owner_decision(comment: dict[str, Any]) -> bool:
     )
     node = (data.get("data") or {}).get("node")
     if data.get("errors") or not isinstance(node, dict) or "lastEditedAt" not in node:
-        raise PlanError("Owner decision edit history is unavailable")
+        raise PlanError("Director decision edit history is unavailable")
     return (
         node["lastEditedAt"] is None
         and node.get("databaseId") == comment.get("id")
@@ -4279,7 +4399,10 @@ def owner_reaction_decision(
 ) -> dict[str, Any] | None:
     # An exact first line binds the reaction to this issue and this action.
     body = comment.get("body")
-    if not isinstance(body, str) or body.splitlines()[:1] != [f"Owner decision: Close #{number} as not planned."]:
+    if not isinstance(body, str) or body.splitlines()[:1] not in (
+        [f"Director decision: Close #{number} as not planned."],
+        [f"Owner decision: Close #{number} as not planned."],
+    ):
         return None
     comment_id = comment.get("id")
     if not isinstance(comment_id, int) or isinstance(comment_id, bool):
@@ -4390,9 +4513,9 @@ def check_owner_decides_not_planned(issue_repo: str, number: int, issue: dict[st
     raise owner_decision_refusal(
         f"Cannot close {issue_repo}#{number} as not planned: it is in milestone {title!r} listed in "
         f"{issue_repo}:{DIRECTION_FILE}, and no comment by the repository owner {repo_owner!r} after the "
-        f"last Current Status update ({status_updated_at}) records the decision. Ask the owner to comment "
+        f"last Current Status update ({status_updated_at}) records the decision. Ask the Director to comment "
         "on the issue, or react with thumbs-up to an unedited comment whose first line is "
-        f"\"Owner decision: Close #{number} as not planned.\", then rerun; do not close it another way."
+        f"\"Director decision: Close #{number} as not planned.\", then rerun; do not close it another way."
     )
 
 
