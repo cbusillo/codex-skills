@@ -156,9 +156,10 @@ def references_issue(text: str, number: int) -> bool:
 
 def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = None) -> bool:
     """Ignore explicit absence only at the assertion, never a whole status."""
+    text = "\n".join(text.splitlines())
     # Strip Markdown around labels, preserving punctuation inside identity tokens.
-    text = re.sub(r"(?:[*]{2}|__|`)(?=owned by|claimed by|worker\b|session\b)", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"((?:owned by|claimed by|worker|session):?)(?:[*]{2}|__|`)(?=[\s:])", r"\1", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?:[*]{1,2}|_{1,2}|`)(?=owned by|claimed by|worker\b|session\b)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"((?:owned by|claimed by|worker|session):?)(?:[*]{1,2}|_{1,2}|`)(?=[\s:])", r"\1", text, flags=re.IGNORECASE)
     if own_claim:
         # Match complete identity lines before splitting prose punctuation:
         # worker/session tokens may themselves contain dots or semicolons.
@@ -168,7 +169,7 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
     # Structured markers were checked separately. Preserve logical paragraphs
     # when prose is hard-wrapped, while fields and list items stay independent.
     text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("<!-- " + MARKER))
-    text = re.sub(r"(?m)(?<!\n)\n(?![ \t]*(?:\n|[-*+]\s|[*_`]*[\w][\w /-]*[*_`]*:|<!--|>))", " ", text)
+    text = re.sub(r"(?<!\n)\n(?![ \t]*(?:\n|[-*+]\s|[*_`]*\w[\w /-]*:[*_`]*(?=[ \t]|$)|<!--|>))", " ", text)
     boundary = r"[;!?\n]|\.(?=\s|$)"
     subject = (
         r"(?:timing|(?:code )?changes?|(?:not-planned )?closures?|"
@@ -179,9 +180,9 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
         rf"no {subject}(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+){subject})*"
         r"(?:\s+(?:is|are|was|were|has been|have been))?\s*"
     )
-    for match in re.finditer(r"\b(?:owned by|claimed by|worker\s*:|session\s*:)", text, re.IGNORECASE):
+    for match in re.finditer(r"owned by|claimed by|\bworker\s*:|\bsession\s*:", text, re.IGNORECASE):
         raw_prefix = re.split(boundary, text[:match.start()])[-1]
-        raw_prefix = raw_prefix.replace("**", "").replace("__", "").replace("`", "").strip(" -*+")
+        raw_prefix = raw_prefix.replace("**", "").replace("__", "").replace("`", "").strip(" -*+_")
         prefix = re.sub(r"^[^:]+:\s*", "", raw_prefix)
         ending = re.split(rf"({boundary})", text[match.end():], maxsplit=1)
         suffix = ending[0].strip()
@@ -199,7 +200,7 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
             if not match.group().rstrip().endswith(":"):
                 negated = (
                     re.search(r"\b(?:not|never)(?:\s+(?:yet|currently))?(?:\s+been)?\s*$|"
-                              r"\b(?:is|are|was|were|has|have|had)n['’]t(?:\s+been)?\s*$|\bno longer\s*$",
+                              r"\b(?:is|are|was|were|has|have|had)n['’]t(?:\s+been)?\s*$|\b(?:no longer|un|dis)\s*$",
                               prefix, re.IGNORECASE)
                     or re.fullmatch(negative_subject, prefix, re.IGNORECASE)
                 )

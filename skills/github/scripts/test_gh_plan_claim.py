@@ -776,6 +776,8 @@ class ClaimTests(unittest.TestCase):
     def test_disclaimer_does_not_hide_another_status_assertion(self):
         for ownership in (
             "Implementation is claimed by another-worker.",
+            "Reclaimed by another-worker after the stale release.",
+            "_Claimed by another-worker_", "_Owned by another-worker_",
             "Currently owned by another-worker",
             "Worker: another-worker", "Session: another-session",
             "Worker: unknown", "Session: pending", "Worker:",
@@ -940,6 +942,8 @@ class ClaimTests(unittest.TestCase):
             "* No ownership is claimed by this sweep.",
             "Worker: nobody\nSession: no one",
             "**Not** claimed by this sweep.",
+            "Unclaimed by this sweep.", "Work remains unowned by the sweep.",
+            "Disowned by this sweep.",
         ):
             with self.subTest(status=status):
                 self.setUp()
@@ -954,6 +958,8 @@ class ClaimTests(unittest.TestCase):
             ("If the review lands first, this issue is\nnot claimed by another-worker.", True),
             ("Not claimed by claude-opus-5.5 but by another-worker.", True),
             ("Not claimed by claude-opus-5.5.", False),
+            ("No ownership is claimed by this sweep\nbecause another-worker opened https://github.com/owner/repo/pull/12.", True),
+            ("Not claimed by the sweep\nsince another-worker resumed it at 10:54 AM ET.", True),
             ("No ownership is claimed by this sweep.\nWorker: another-worker", True),
             ("No ownership is claimed by this sweep\n* Implementation is claimed by another-worker.", True),
         ):
@@ -980,6 +986,20 @@ class ClaimTests(unittest.TestCase):
                 self.issue["body"] += f"\nWorker: {holder}"
                 with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
                 self.assert_no_writes()
+
+    def test_crlf_current_status_supports_structured_and_legacy_recovery(self):
+        for structured in (True, False):
+            with self.subTest(structured=structured):
+                self.setUp()
+                self.run_claim()
+                if not structured:
+                    self.issue["body"] = "\n".join(line for line in self.issue["body"].splitlines()
+                                                    if not line.startswith("<!-- " + CLAIM.MARKER))
+                self.issue["body"] = self.issue["body"].replace("\n", "\r\n")
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                self.issue["body"] += "\r\nReclaimed by another-worker after the release."
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
 
     def test_responsibility_status_with_released_claim_allows_new_claim(self):
         self.issue["body"] += "\n" + RESPONSIBILITY_STATUS
