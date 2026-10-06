@@ -1446,6 +1446,99 @@ class ClaimTests(unittest.TestCase):
             self.run_claim()
         self.assert_no_writes()
 
+    def test_conditional_legacy_releases_preserve_real_claims(self):
+        releases = (
+            "Released by trial-b if CI passes",
+            "Released by trial-b once PR #99 merges",
+            "Released by trial-b pending owner approval",
+            "Released by trial-b; release takes effect after landing",
+            "Released by trial-b. If CI passes, the next worker may claim.",
+            "Released by trial-b\nif CI passes",
+            "Released by trial-b\r\nonce PR #99 merges",
+            "Released by trial-b\nSource work is finished; release is pending CI.",
+            "Released by **trial-b** if CI passes",
+            "> Released by trial-b\n\nHistorical handoff, not a new release.",
+        )
+        for source in (CLAIM.marker(OTHER), "Claimed by trial-b\nSession: session-b\nBranch: work/other-42"):
+            for release in releases:
+                with self.subTest(source=source, release=release):
+                    self.setUp()
+                    self.comments = [
+                        {"id": 1, "body": source, "user": {"login": TEST_BOT}},
+                        {"id": 2, "body": release, "user": {"login": TEST_BOT}},
+                    ]
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                        self.run_claim()
+                    self.assertIn(1, [e.get("id") for e in caught.exception.payload["competing_evidence"]])
+                    self.assert_no_writes()
+                    # An ambiguous older record is recovered by its author,
+                    # without deleting history or broadening the worker alias.
+                    self.comments.append({"id": 3, "body": "Released claim 1\n\n"
+                                          "Source session finished; the retained PR still follows its own gates.",
+                                          "user": {"login": TEST_BOT}})
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_standalone_legacy_release_allows_authorized_successor(self):
+        for release in (
+            "Released by trial-b",
+            "Released by trial-b\n\nSource session finished. The next worker rechecks ownership.",
+            "Released by trial-b \t\r\n\r\nSource session finished.\r\n",
+        ):
+            with self.subTest(release=release):
+                self.setUp()
+                self.comments = [
+                    {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
+                    {"id": 2, "body": release, "user": {"login": TEST_BOT}},
+                ]
+                self.run_claim()
+                self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
+
+    def test_legacy_release_does_not_clear_later_claim_or_independent_artifacts(self):
+        for evidence in ("later_claim", "branch", "worktree", "pr"):
+            with self.subTest(evidence=evidence):
+                self.setUp()
+                self.comments = [
+                    {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
+                    {"id": 2, "body": "Released by trial-b\n\nSource session finished.", "user": {"login": TEST_BOT}},
+                ]
+                if evidence == "later_claim":
+                    self.comments.append({"id": 3, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}})
+                elif evidence == "branch":
+                    self.inventory["remote_branches"] = ["work/issue-42-prior"]
+                elif evidence == "worktree":
+                    self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": OTHER["branch"]}]
+                else:
+                    self.pulls = [{"number": 99, "body": "Refs #42", "head": {"ref": OTHER["branch"]}}]
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_legacy_retained_branch_requires_standalone_release(self):
+        for release, allowed in (
+            ("Released by trial-b\n\nSource session finished. Retain work/other-42 for the successor.", True),
+            ("Released by trial-b\nif CI passes", False),
+            ("Released by trial-b once PR #99 merges", False),
+        ):
+            with self.subTest(release=release):
+                self.setUp()
+                self.args.resume_from = 1
+                self.comments = [
+                    {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
+                    {"id": 2, "body": release, "user": {"login": TEST_BOT}},
+                ]
+                self.inventory["local_branches"] = [OTHER["branch"]]
+                self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": OTHER["branch"]}]
+                if allowed:
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                else:
+                    with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                    self.assert_no_writes()
+                    self.comments.append({"id": 3, "body": "Released claim 1\n\nSource session finished.",
+                                          "user": {"login": TEST_BOT}})
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
     def test_plain_human_request_is_not_adopted_by_claim(self):
         self.issue["user"] = {"login": "contributor"}
         self.issue["body"] = "Fix this please"
