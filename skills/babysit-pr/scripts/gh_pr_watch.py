@@ -1673,9 +1673,13 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
             result["skipped_run_ids"].append(run_id)
             continue
         if recovery:
-            fresh_pr = resolve_pr(str(pr["number"]), pr["repo"])
-            if (fresh_pr["head_sha"] != pr["head_sha"] or fresh_pr["closed"]
-                    or fresh_pr["merged"] or fresh_pr["base_branch"] != pr["base_branch"]):
+            fresh_pr = submission_reader.get_json(
+                f"/repos/{pr['repo']}/pulls/{pr['number']}", step="acquisition_pr_readback",
+            )
+            if (not isinstance(fresh_pr, dict) or fresh_pr.get("state") != "open"
+                    or fresh_pr.get("merged") is not False
+                    or (fresh_pr.get("head") or {}).get("sha") != pr["head_sha"]
+                    or (fresh_pr.get("base") or {}).get("ref") != pr["base_branch"]):
                 result["reason"] = "pr_changed"
                 break
         if not cycle_charged:

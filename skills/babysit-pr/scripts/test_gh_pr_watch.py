@@ -1777,6 +1777,8 @@ def test_retry_rechecks_run_after_snapshot_lock_gap(monkeypatch, tmp_path, fresh
 class AcquisitionReader:
     def __init__(self):
         self.results = []
+        self.cache_enabled = True
+        self.pr = {"state": "open", "merged": False, "head": {"sha": "abc123"}, "base": {"ref": "main"}}
         self.degraded_reasons = []
         self.jobs: list[dict[str, Any]] = [{"id": 7, "run_id": 1, "run_attempt": 1, "head_sha": "abc123",
                       "runner_id": 0, "steps": [], "status": "completed", "conclusion": "cancelled",
@@ -1800,6 +1802,9 @@ class AcquisitionReader:
 
     def get_json(self, path, **_kwargs):
         self.paths.append(path)
+        if "/pulls/" in path:
+            assert not self.cache_enabled
+            return self.pr
         return self.check if "/check-runs/" in path else self.run
 
     def graphql_json(self, _query, variables, **_kwargs):
@@ -1896,7 +1901,7 @@ def test_acquisition_full_retry_preserves_budget_and_intent(monkeypatch, tmp_pat
         assert len(writes) == 1
 
 
-@pytest.mark.parametrize("change", ["head", "attempt", "evidence", "budget"])
+@pytest.mark.parametrize("change", ["head", "base", "closed", "attempt", "evidence", "budget"])
 def test_acquisition_retry_revalidates_before_write(monkeypatch, tmp_path, change):
     run = {**failed_run(1), "retry_mode": "runner_acquisition"}
     _, path = retry_snapshot(monkeypatch, tmp_path, [run], [])
@@ -1904,7 +1909,13 @@ def test_acquisition_retry_revalidates_before_write(monkeypatch, tmp_path, chang
     monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
     monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *a, **kw: [reader.run])
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *a: {**sample_pr(), "head_sha": "new" if change == "head" else "abc123"})
-    if change == "attempt":
+    if change == "head":
+        reader.pr["head"]["sha"] = "new"
+    elif change == "base":
+        reader.pr["base"]["ref"] = "other"
+    elif change == "closed":
+        reader.pr["state"] = "closed"
+    elif change == "attempt":
         reader.run["run_attempt"] = 2
     elif change == "evidence":
         reader.node["isRequired"] = False
@@ -2005,6 +2016,31 @@ def test_acquisition_bad_pagination_declines_without_crashing():
         raise gh_pr_watch.github_read.GitHubReadShapeError("repeated page")
     reader.paged_json = bad_shape
     assert not gh_pr_watch.runner_acquisition_retry(sample_pr(), failed_run(1), reader)
+
+
+def test_changed_pr_preserves_an_earlier_ordinary_retry(monkeypatch, tmp_path):
+    recovery = {**failed_run(2), "retry_mode": "runner_acquisition"}
+    _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1), recovery], [failed_job(1)])
+    reader = AcquisitionReader()
+    reader.run["id"] = 2
+    reader.jobs[0]["run_id"] = 2
+    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
+    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *_a, **_kw: [
+        {**reader.run, "id": 1}, reader.run,
+    ])
+    writes = []
+    def submit(args, **_kw):
+        writes.append(args)
+        reader.pr["head"]["sha"] = "new"
+    monkeypatch.setattr(gh_pr_watch, "gh_text", submit)
+    result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+    assert result["reason"] == "pr_changed"
+    assert result["rerun_run_ids"] == [1]
+    assert result["rerun_count"] == 1
+    assert result["retries_used"] == 1
+    assert writes == [["run", "rerun", "1", "--failed"]]
+    saved = gh_pr_watch.load_state(path)[0]
+    assert saved["pending_reruns_by_sha"]["abc123"] == {"1": {"outcome": "confirmed", "run_attempt": 1}}
 
 
 if __name__ == "__main__":
