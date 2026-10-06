@@ -30,7 +30,7 @@ if str(GITHUB_SCRIPTS) not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from skills.github.scripts import github_identity, github_rulesets
+from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim
 from skills.direction.scripts import direction_mark
 
 REQUIRED_HEADINGS = ("Purpose", "Stop Boundaries", "Journey", "Retired", "Milestones")
@@ -588,6 +588,126 @@ def enrich_waiting_inbound_blockers(
     return incomplete
 
 
+def parked_issue(issue: dict[str, Any]) -> bool:
+    labels = {label.get("name", "").casefold() for label in issue.get("labels") or []}
+    return ("pull_request" not in issue and issue.get("state", "open") == "open"
+            and bool(labels & {"plan:waiting", "plan:blocked"}))
+
+
+def stale_wait_report(
+    issues: list[dict[str, Any]], repo: str, *, fetch: Callable[[list[str]], Any],
+    inventory_complete: bool = True,
+) -> dict[str, Any]:
+    """Evidence for reviewing parked records, never a release or selection gate.
+
+    Check native blockers and mechanically verifiable waits in Current Status.
+    History, elapsed time, and a merged implementation do not prove acceptance.
+    """
+    rows: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    cache: dict[str, Any] = {}
+
+    def read(path: str) -> Any:
+        if path not in cache:
+            try:
+                cache[path] = fetch(["api", path, "--method", "GET"])
+            except AuditError as exc:
+                cache[path] = exc
+        if isinstance(cache[path], AuditError):
+            raise cache[path]
+        return cache[path]
+
+    checked = 0
+    for issue in issues:
+        if not parked_issue(issue):
+            continue
+        checked += 1
+        number = issue["number"]
+        status = github_direction_next.section_map(str(issue.get("body") or "")).get("Current Status", "")
+        evidence: list[dict[str, Any]] = []
+        fields: list[tuple[str, str]] = []
+        for entry in re.split(r"(?m)(?=^\s*(?:[-*]\s+)?[\w -]+:)", status):
+            match = re.match(r"\s*(?:[-*]\s+)?(Waiting for|Blocked by|Parked until):\s*(.+)", entry, re.I | re.S)
+            if match:
+                fields.append((match[1], match[2].split("\n\n", 1)[0].strip()))
+        for field, reason in fields:
+            # Use the claim helper's explicit no-wait semantics. Only a whole
+            # agent/capacity phrase is known invalid; unknown prose stays a wait.
+            agent_wait = re.fullmatch(
+                r"(?:the |an |a )?(?:next )?agent(?: selection| assignment)?|"
+                r"(?:the )?supervisor(?: routing| to route(?: the (?:PR|train))?)?|"
+                r"(?:provider |spare )?capacity|engineering selection|future work",
+                reason.strip().rstrip(" ."), re.I,
+            )
+            if (field.casefold() != "blocked by" and
+                    (github_plan_claim.no_wait_reason(reason, field="Waiting for") or agent_wait)):
+                evidence.append({"kind": "no_external_wait", "field": field, "recorded": reason})
+
+        try:
+            blockers, cut = fetch_paginated(
+                f"repos/{repo}/issues/{number}/dependencies/blocked_by", fetch=lambda args: read(args[1]),
+            )
+            if cut:
+                errors.append({"number": number, "source": "native_blockers", "reason": "page_limit"})
+            for blocker in blockers:
+                if blocker.get("state") == "closed" and "pull_request" not in blocker:
+                    evidence.append({"kind": "closed_native_blocker", "url": blocker.get("html_url"),
+                                     "number": blocker.get("number"), "closed_at": blocker.get("closed_at")})
+        except AuditError:
+            errors.append({"number": number, "source": "native_blockers", "reason": "unavailable"})
+
+        for field, reason in fields:
+            # Restrict completion checks to a wait *on the reference*. Chris
+            # accepting a PR, a credential retirement, or a live test is not
+            # satisfied by that reference merging or closing.
+            plain = re.sub(r"\[([^]]+)\]\(([^)]+)\)", r"\1 \2", reason).strip()
+            if not re.match(
+                r"(?i)^(?:(?:the |a |an )?(?:source |train |open |native )?"
+                r"(?:PR\b|pull request\b|issue\b|blocker\b)|"
+                r"(?:merge|merging|landing|closure|completion) of\b|"
+                r"(?:[\w.-]+/[\w.-]+)?#\d+\b|https://github\.com/)", plain,
+            ):
+                continue
+            if not re.search(r"(?i)\b(?:merge|merging|landing|land|lands|close|closes|closure|completion|complete|finish|finishes|open)\b", plain):
+                continue
+            refs: dict[tuple[str, int], str] = {}
+            for ref in re.finditer(
+                r"https://github\.com/([\w.-]+/[\w.-]+)/(issues|pull)/(\d+)"
+                r"|(?<![\w/])([\w.-]+/[\w.-]+)?#(\d+)\b", reason,
+            ):
+                target_repo = ref.group(1) or ref.group(4) or repo
+                target_number = int(ref.group(3) or ref.group(5))
+                refs[(target_repo, target_number)] = ref.group(2) or "issues"
+            for (target_repo, target_number), kind in refs.items():
+                try:
+                    target = read(f"repos/{target_repo}/issues/{target_number}")
+                    if not isinstance(target, dict) or target.get("state") not in {"open", "closed"}:
+                        raise AuditError("unreadable wait target")
+                    if "pull_request" in target or kind == "pull":
+                        pull = read(f"repos/{target_repo}/pulls/{target_number}")
+                        if not isinstance(pull, dict) or "merged_at" not in pull:
+                            raise AuditError("unreadable wait pull")
+                        if pull.get("merged_at"):
+                            evidence.append({"kind": "merged_wait_pr", "field": field, "recorded": reason,
+                                             "url": f"https://github.com/{target_repo}/pull/{target_number}",
+                                             "merged_at": pull["merged_at"]})
+                    elif target.get("state") == "closed" and target.get("state_reason") != "not_planned":
+                        evidence.append({"kind": "completed_wait_issue", "field": field, "recorded": reason,
+                                         "url": f"https://github.com/{target_repo}/issues/{target_number}",
+                                         "closed_at": target.get("closed_at")})
+                except AuditError:
+                    errors.append({"number": number, "source": "wait_reference",
+                                   "url": f"https://github.com/{target_repo}/{kind}/{target_number}",
+                                   "reason": "unavailable"})
+        if evidence:
+            rows.append({"number": number, "title": issue.get("title"),
+                         "url": f"https://github.com/{repo}/issues/{number}", "evidence": evidence,
+                         "review_required": True})
+    return {"read_only": True, "complete": inventory_complete and not errors,
+            "checked": checked, "items": rows, "unavailable": errors,
+            "inventory_complete": inventory_complete}
+
+
 def fetch_audit_issues(
     repo: str, milestones: list[dict[str, Any]], milestone_lines: dict[str, str],
     since: dt.datetime, *, fetch: Callable[[list[str]], Any],
@@ -890,6 +1010,9 @@ def main(argv: list[str] | None = None) -> int:
         owner_identity_explicit=owner_reader or args.automation is not None,
         capacity=capacity,
         repo=repo,
+    )
+    result["stale_wait_report"] = stale_wait_report(
+        issues, repo, fetch=fetch, inventory_complete="issues" not in truncated,
     )
     result.update({"repo": repo, "direction_source": f"{repo}:DIRECTION.md@default-branch", "read_only": True})
     result["audit_since"] = audit_since.isoformat().replace("+00:00", "Z")

@@ -295,6 +295,18 @@ listed milestone since the prior audit, with who added each. It is not a
 finding and does not affect `ok`. Read each issue and keep it in the milestone
 or move it out.
 
+The audit also returns `stale_wait_report` for open `plan:waiting` and
+`plan:blocked` issues in the audited repository, including unmilestoned work.
+It reports closed native blockers, merged PRs or completed issues that the
+Current Status waits on, and explicit waits on agents or capacity instead of
+people or events. `complete`, `inventory_complete`, and `unavailable` expose
+missing coverage. Unknown prose, elapsed time, unrelated merged PRs, and
+acceptance or live-test waits do not establish completion. These are review
+prompts, separate from audit findings and exit status: read the full issue and
+current evidence before correcting a status through `github-plan`. Nothing is
+selected, relabeled, or released automatically. This does not change global
+`next` wait classification or the claim guard.
+
 The audit of `OWNER/direction` also returns `capacity`, the overall
 direction's weekly numbers for the window since the prior audit: merged pull
 requests per rank, the own-projects share against the 20% floor, milestones

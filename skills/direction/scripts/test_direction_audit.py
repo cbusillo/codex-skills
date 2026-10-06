@@ -1189,6 +1189,147 @@ def test_only_the_direction_repository_audit_counts_capacity() -> None:
     assert windows == [("o/direction", SINCE)]
 
 
+def test_stale_wait_report_checks_realistic_parked_records_without_writes() -> None:
+    module = load()
+    rows = [
+        issue(41, "Agent handoff parked as a wait", labels=("plan", "plan:waiting"),
+              body="## Current Status\nState: Waiting.\nWaiting for: Supervisor routing.\n"),
+        issue(42, "Source landing prerequisite", labels=("plan", "plan:blocked"),
+              body="## Current Status\nWaiting for: PR owner/tools#71 to merge.\n"),
+        issue(43, "Consumer proof after blocker", labels=("plan", "plan:blocked"),
+              body="## Current Status\nBlocked by: Native blocker owner/product#13.\nWaiting for: Next agent.\n"),
+        issue(44, "Test after the tracked migration completes", labels=("plan:waiting",),
+              body="## Current Status\nWaiting for: Completion of owner/product#14.\n"),
+        issue(45, "CM website acceptance", labels=("plan", "plan:waiting"),
+              body="## Problem\nWaiting for: Next agent.\n## Current Status\n"
+                   "State: Waiting.\nWaiting for: Justin to accept the first release; source PR "
+                   "https://github.com/owner/tools/pull/71 has merged.\n"
+                   "Next action: Run the gated release after Justin accepts.\n"),
+        issue(46, "A real capacity reset event", labels=("plan:waiting",),
+              body="## Current Status\nWaiting for: Provider capacity reset tomorrow at noon.\n"),
+        issue(47, "Merged code still needs a device test", labels=("plan:waiting",),
+              body="## Current Status\nWaiting for: Chris to test PR owner/tools#71 on the device.\n"),
+        issue(48, "Active engineering", labels=("plan:active",),
+              body="## Current Status\nWaiting for: None.\n"),
+        {**issue(49, "Closed work", labels=("plan:waiting",),
+                  body="## Current Status\nWaiting for: Capacity.\n"), "state": "closed"},
+        {**issue(50, "A pull request is not a plan", labels=("plan:waiting",)), "pull_request": {}},
+    ]
+    calls: list[str] = []
+
+    def fetch(args: list[str]) -> Any:
+        assert args[0] == "api" and args[-2:] == ["--method", "GET"], args
+        path = args[1]
+        calls.append(path)
+        if "/dependencies/blocked_by" in path:
+            return ([{"number": 13, "state": "closed", "closed_at": stamp(NOW),
+                      "html_url": "https://github.com/owner/product/issues/13"}]
+                    if "/issues/43/" in path else [])
+        if path == "repos/owner/tools/issues/71":
+            return {"state": "closed", "pull_request": {}}
+        if path == "repos/owner/tools/pulls/71":
+            return {"state": "closed", "merged_at": stamp(NOW)}
+        if path == "repos/owner/product/issues/14":
+            return {"state": "closed", "state_reason": "completed", "closed_at": stamp(NOW)}
+        raise AssertionError(path)
+
+    before = json.dumps(rows, sort_keys=True)
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
+    assert json.dumps(rows, sort_keys=True) == before
+    assert report["read_only"] and report["complete"]
+    assert report["checked"] == 7
+    by_number = {item["number"]: item for item in report["items"]}
+    assert set(by_number) == {41, 42, 43, 44}, report
+    assert by_number[42]["evidence"][0]["url"] == "https://github.com/owner/tools/pull/71"
+    assert {item["kind"] for item in by_number[43]["evidence"]} == {"no_external_wait", "closed_native_blocker"}
+    assert by_number[44]["evidence"][0]["kind"] == "completed_wait_issue"
+    assert all(item["review_required"] for item in report["items"])
+    assert calls.count("repos/owner/tools/pulls/71") == 1
+
+
+def test_stale_wait_report_preserves_open_closed_unmerged_and_unknown_conditions() -> None:
+    module = load()
+    rows = [issue(n, reason, labels=("plan:waiting",),
+                  body=f"## Current Status\nWaiting for: {reason}\n") for n, reason in enumerate((
+        "PR #71 to merge.",
+        "Landing of [tools#72](https://github.com/owner/tools/pull/72).",
+        "Completion of owner/product#14.",
+        "Chris's decision after tomorrow's meeting.",
+        "Observation of 24 hours of successful worker passes.",
+        "Supervisor to ask Chris for approval.",
+        "Capacity; Chris must select a paid plan.",
+        "Capacity.\nChris must approve the paid plan first.",
+        "None; waiting for Chris to finish testing.",
+    ), 1)]
+
+    def fetch(args: list[str]) -> Any:
+        path = args[1]
+        if "/dependencies/blocked_by" in path:
+            return [{"number": 90, "state": "open"}]
+        if "/issues/71" in path:
+            return {"state": "open", "pull_request": {}}
+        if "/issues/72" in path:
+            return {"state": "closed", "pull_request": {}}
+        if "/pulls/" in path:
+            return {"merged_at": None}
+        if "/issues/14" in path:
+            return {"state": "closed", "state_reason": "not_planned"}
+        raise AssertionError(path)
+
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
+    assert report["complete"] and report["items"] == [], report
+
+
+def test_stale_wait_report_exposes_unread_coverage_and_caches_wait_targets() -> None:
+    module = load()
+    rows = [issue(n, "Landing", labels=("plan:waiting",),
+                  body="## Current Status\nWaiting for: PR #71 to merge.\n") for n in (1, 2)]
+    calls: list[str] = []
+
+    def fetch(args: list[str]) -> Any:
+        path = args[1]
+        calls.append(path)
+        if "/issues/1/dependencies/" in path:
+            return [{"number": 90, "state": "open"}] * 100
+        raise module.AuditError("HTTP 403: permission denied")
+
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch, inventory_complete=False)
+    assert not report["complete"] and not report["inventory_complete"]
+    assert report["items"] == []
+    assert {item["reason"] for item in report["unavailable"]} == {"page_limit", "unavailable"}
+    assert calls.count("repos/owner/catalog/issues/71") == 1
+    assert len([item for item in report["unavailable"] if item["source"] == "wait_reference"]) == 2
+
+
+def test_audit_cli_includes_stale_wait_report_without_changing_exit_status() -> None:
+    module = load()
+    row = issue(41, "Parked on an agent", labels=("plan:waiting",),
+                body="## Current Status\nWaiting for: Next agent.\n")
+    with (tempfile.TemporaryDirectory() as tmp,
+          patch.dict("os.environ", {"DIRECTION_MARKER": str(Path(tmp) / "marker.json")}),
+          patch.dict(vars(module), {
+              "merged_direction": lambda *_args, **_kwargs: DIRECTION,
+              "fetch_audit_issues": lambda *_args, **_kwargs: ([row], []),
+              "gh_json": lambda args, **_kwargs: (
+                  [milestone(1, "Thin fork decision"), milestone(2, "Dogfood week")]
+                  if "/milestones" in args[1] else []),
+              "fetch_rulesets": lambda *_args, **_kwargs: (None, False),
+          })):
+        # Ruleset absence is already an audit finding; stale waits must not add
+        # a new exit-status gate. Compare the same audit without parked records.
+        output = StringIO()
+        with redirect_stdout(output):
+            code = module.main(["--repo", "owner/catalog", "--automation", "bot", "--gh", "fixture-gh"])
+        result = json.loads(output.getvalue())
+        assert result["stale_wait_report"]["items"][0]["number"] == 41
+        with patch.dict(vars(module), {"fetch_audit_issues": lambda *_args, **_kwargs: ([], [])}):
+            clean_output = StringIO()
+            with redirect_stdout(clean_output):
+                clean_code = module.main(["--repo", "owner/catalog", "--automation", "bot", "--gh", "fixture-gh"])
+        assert code == clean_code
+        assert result["findings"] == json.loads(clean_output.getvalue())["findings"]
+
+
 def main() -> int:
     tests = [value for name, value in globals().items() if name.startswith("test_") and callable(value)]
     for test in tests:
