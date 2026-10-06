@@ -201,9 +201,9 @@ records that run.
    Codex turn ends. A notice prompts verification, never a completion verdict.
    Read [helper setup](references/helpers.md) before rebuilding the private
    ledger or running a helper; the catalog supplies all seven pilot helpers.
-6. Post a takeover comment on the pilot issue: what you found, what you
+6. Once per Supervisor session, run a parked-issue sweep across the Director's repositories following [#1304's completed sweep](https://github.com/cbusillo/codex-skills/issues/1304#issuecomment-6019788099), including findings in the takeover comment, as [Chris requested on #1316](https://github.com/cbusillo/codex-skills/issues/1316), until #1316's report PR removes this step.
+7. Post a takeover comment on the pilot issue: what you found, what you
    corrected, and the "needs the Director" list.
-7. Once per Supervisor session, run a parked-issue sweep across the Director's repositories following [#1304's completed sweep](https://github.com/cbusillo/codex-skills/issues/1304#issuecomment-6019788099), as [Chris requested on #1316](https://github.com/cbusillo/codex-skills/issues/1316), until #1316's report PR removes this step.
 8. When a finding would retire, stop, or redirect work, load `direction`
    again and open an issue labeled `direction` under its escalation
    procedure. The Supervisor never acts on such a finding or declines it.
