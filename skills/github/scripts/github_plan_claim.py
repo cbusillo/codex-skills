@@ -172,33 +172,35 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
     )
     negative_subject = (
         rf"no {subject}(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+){subject})*"
-        r"\s+(?:is|are|was|were|has been|have been)\s*"
+        r"(?:\s+(?:is|are|was|were|has been|have been))?\s*"
     )
     for match in re.finditer(r"\b(?:owned by|claimed by|worker\s*:|session\s*:)", text, re.IGNORECASE):
-        prefix = re.split(r"[.;!?\n]", text[:match.start()])[-1].strip(" -")
-        prefix = re.sub(r"^(?:Scope(?: and recovery)?|State|Status|Next action):\s*", "", prefix, flags=re.IGNORECASE)
+        raw_prefix = re.split(r"[.;!?\n]", text[:match.start()])[-1]
+        raw_prefix = raw_prefix.replace("**", "").replace("__", "").replace("`", "").strip(" -*+")
+        prefix = re.sub(r"^[^:]+:\s*", "", raw_prefix)
         ending = re.split(r"([.;!?\n])", text[match.end():], maxsplit=1)
         suffix = ending[0].strip()
         # Conditional or contrastive denials are not proof that nobody holds it.
         uncertain = (
             len(ending) > 1 and ending[1] == "?"
             or re.search(r"\b(?:if|unless|until|except|but|however|instead|rather|whether|"
-                         r"other than|besides|apart from|save for)\b", prefix + " " + suffix, re.IGNORECASE)
-            or re.match(r"no\b", prefix, re.IGNORECASE) and re.search(r"\b(?:not|never)\s*$", prefix, re.IGNORECASE)
+                         r"other than|besides|apart from|save for)\b", raw_prefix + " " + suffix, re.IGNORECASE)
+            or re.match(r"no\b", prefix, re.IGNORECASE) and re.search(r"\b(?:not|never|no longer)\s*$", prefix, re.IGNORECASE)
         )
         if not uncertain:
-            field = match.group().casefold()
-            own_key = "session" if field.startswith("session") else "worker"
-            if own_claim and suffix == own_claim[own_key]:
+            if suffix.casefold().lstrip(": ") in {"none", "unassigned", "n/a", "-", "nobody", "no one"}:
                 continue
-            if match.group().rstrip().endswith(":"):
-                if suffix.casefold() in {"none", "unassigned", "n/a", "-"}:
-                    continue
-            else:
-                if suffix.casefold().lstrip(": ") in {"none", "nobody", "no one"}:
-                    continue
-                if (re.search(r"\b(?:not|never)(?:\s+yet)?\s*$", prefix, re.IGNORECASE)
-                        or re.fullmatch(negative_subject, prefix, re.IGNORECASE)):
+            if not match.group().rstrip().endswith(":"):
+                negated = (
+                    re.search(r"\b(?:not|never)(?:\s+(?:yet|currently))?(?:\s+been)?\s*$|"
+                              r"\b(?:is|are|was|were|has|have|had)n['’]t(?:\s+been)?\s*$|\bno longer\s*$",
+                              prefix, re.IGNORECASE)
+                    or re.fullmatch(negative_subject, prefix, re.IGNORECASE)
+                )
+                # A denial may name its subject, but trailing narrative can
+                # describe a handoff or another holder without our keywords.
+                if negated and re.fullmatch(r"(?:(?:this|the|a|an|any|another|current)\s+)?"
+                                            r"[\w-]+(?:\s+(?:worker|session|agent))?", suffix, re.IGNORECASE):
                     continue
         return True
     return False

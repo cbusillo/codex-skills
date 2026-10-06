@@ -903,6 +903,50 @@ class ClaimTests(unittest.TestCase):
                 with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
                 self.assert_no_writes()
 
+    def test_denial_does_not_hide_narrative_handoff_or_active_work(self):
+        for status in (
+            "Not claimed by the sweep, which handed it to another-worker.",
+            "Not claimed by the sweep while another-worker finishes the repair.",
+            "No implementation ownership is claimed by this sweep because another-worker has work/repair open.",
+        ):
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["body"] += "\n" + status
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_second_holder_with_caller_name_prefix_still_refuses(self):
+        for assertion in ("Also owned by", "Worker:", "Session:"):
+            for punctuation in (".", ";", "!", "?"):
+                with self.subTest(assertion=assertion, punctuation=punctuation):
+                    self.setUp()
+                    key = "session" if assertion == "Session:" else "worker"
+                    self.issue["body"] += "\n" + CLAIM.marker(OWNER)
+                    self.issue["body"] += f"\n{assertion} {OWNER[key]}{punctuation}successor"
+                    with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                    self.assert_no_writes()
+
+    def test_common_sweep_negations_and_formatting_allow_fresh_claims(self):
+        for status in (
+            "This issue has not been claimed by the sweep.",
+            "Implementation has never been owned by the audit session.",
+            "This task isn't claimed by this sweep.",
+            "This issue is not currently claimed by a worker.",
+            "The repair is no longer owned by the audit session.",
+            "No ownership claimed by this sweep.",
+            "**Scope:** No implementation ownership is claimed by this sweep.",
+            "Current status: No work is claimed by the sweep.",
+            "Sweep note: No implementation ownership is claimed by this sweep.",
+            "* No ownership is claimed by this sweep.",
+            "Worker: nobody\nSession: no one",
+            "**Not** claimed by this sweep.",
+        ):
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["body"] += "\n" + status
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
     def test_responsibility_status_with_released_claim_allows_new_claim(self):
         self.issue["body"] += "\n" + RESPONSIBILITY_STATUS
         self.comments = [
