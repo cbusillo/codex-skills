@@ -385,8 +385,9 @@ Use status labels narrowly:
 
 - `plan:active`: actionable now, including work whose next actor is any agent.
   Keep actionable unstarted follow-ups, capacity/selection queues, and Supervisor
-  handoffs active. For an agent next step, use `Next action:` and record
-  `Waiting for: None`. Ordinary delivery awaiting agent or automated QA, review,
+  handoffs active. Put the agent's next step in `Next action:`; record
+  `Waiting for: None` only when no person, decision or external-event wait
+  remains. Ordinary delivery awaiting agent or automated QA, review,
   merge-train routing, or deployment stays active too.
 - `plan:blocked`: a current dependency, preferably an open native blocker.
 - `plan:waiting`: a durable plan parked on a named person, decision, or external
@@ -465,8 +466,8 @@ decision comments to migrate them, or bypass a closure refusal through another t
 Prefer non-closing `Refs` from PRs unless the Director requests auto-close or an
 internal task is conclusively complete. After a landing, reconcile issues
 referenced by the canonical PR body and comments and every issue it unblocks,
-including cross-repository dependents, under
-[task scope and authorization](../references/execution-scope.md). Check remaining
+including cross-repository dependents, within
+[existing posting authority](#missing-cross-repository-gates). Check remaining
 waits against the landed evidence; update Current Status, labels and native
 relationships under [Status Labels](#status-labels), preserving unresolved waits,
 blockers and Director holds. Close only issues whose finish lines are satisfied; end every other one
