@@ -1405,6 +1405,22 @@ def test_controller_http_error_keeps_safe_identifiers_without_raw_error_text() -
         assert "private-fixture-value" not in json.dumps(payload)
 
 
+def test_controller_merge_refusal_projects_only_valid_pr_number() -> None:
+    for number in (7, True, -1, 0, "7", "Bearer private-fixture-value"):
+        response = {
+            "trace_id": "launchplane_req_http", "error": {"code": "github_merge_rejected"},
+            "details": {"pull_request_number": number, "message": "Bearer private-fixture-value"},
+        }
+        error = urllib.error.HTTPError(
+            "https://launchplane.example.invalid/controller", 409, "Rejected", Message(),
+            io.BytesIO(json.dumps(response).encode()),
+        )
+        status, payload = _run_controller_response(error)
+        assert status == 1
+        assert payload["summary"].get("pull_request_number") == (7 if number == 7 else None)
+        assert "private-fixture-value" not in json.dumps(payload)
+
+
 def test_merge_train_idle_preserves_author_refusal_without_pr_content() -> None:
     result = _summarize_queue_response(_queue_refusal_response())
     dry_run = result["result"]["dry_run_result"]
