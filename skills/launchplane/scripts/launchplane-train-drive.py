@@ -10,11 +10,11 @@ Each pass calls `launchplane-write-action.py merge-train-controller-run-once
 
 - landed:      the PR merged (by this train run or another one); every other
                PR seen in the batch is reported too
-- failed:      the controller blocked, or a train candidate failed its checks; a block
+- failed:      this PR or an unattributed train action was blocked, or a candidate failed; a block
                only because the batch candidate's checks are still running waits
 - needs_owner: the PR was closed, stays ineligible, or needs a branch update
                this command may not make; another local driver is running,
-               or this PR repeatedly gets the same controller refusal
+               this PR repeatedly gets the same controller refusal, or another PR blocks the train
 - error:       no response kept coming back, the controller kept refusing, or
                the wall-clock deadline passed, or local locking is unavailable
 
@@ -296,6 +296,10 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
             emit("snapshot", _snapshot(settings, state, action, response))
         state.last_action = action
 
+        applied_block = result.get("block_result") or {}
+        if action == "block" and applied_block.get("status") == "blocked":
+            emit("pr_blocked", {"pull_request_number": applied_block.get("pull_request_number"),
+                                "train_should_continue": applied_block.get("train_should_continue")})
         verdict = _judge(settings, io, state, result, action)
         if verdict is not None:
             outcome, detail = verdict
@@ -323,7 +327,7 @@ def _judge(
         return None
     if action in {"block", "stack_unsupported"}:
         selected = ((result.get("dry_run_result") or {}).get("selected_pr") or {}).get("number")
-        if isinstance(selected, int) and selected != settings.number:
+        if action == "block" and isinstance(selected, int) and selected != settings.number:
             applied = result.get("block_result") or {}
             if (
                 action == "block"
