@@ -892,6 +892,31 @@ class ClaimTests(unittest.TestCase):
                 with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
                 self.assert_no_writes()
 
+    def test_literal_blocks_never_hide_visible_ownership(self):
+        for opener, closer in (("~~~", "~~~"), ("```", ""), ("<pre>", "</pre>")):
+            for holder in ("[Owned by another-worker]: work/repair",
+                           "Not claimed by [this sweep](another-worker)"):
+                with self.subTest(opener=opener, holder=holder):
+                    self.setUp()
+                    self.issue["body"] += f"\nNot claimed by this sweep.\n\n{opener}\n\n{holder}\n{closer}"
+                    with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                    self.assert_no_writes()
+
+    def test_formatted_legacy_release_cannot_bypass_reused_worker_guard(self):
+        for holder in (OTHER["worker"], f"`{OTHER['worker']}`", f"**{OTHER['worker']}**"):
+            with self.subTest(holder=holder):
+                self.setUp()
+                self.comments = [
+                    {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
+                    {"id": 2, "body": CLAIM.marker({**OTHER, "session": "second-session"}), "user": {"login": TEST_BOT}},
+                    {"id": 3, "body": "Released claim 1", "user": {"login": TEST_BOT}},
+                    {"id": 4, "body": "Released claim 2", "user": {"login": TEST_BOT}},
+                    {"id": 5, "body": f"Claimed by {OTHER['worker']}", "user": {"login": TEST_BOT}},
+                    {"id": 6, "body": f"Released by {holder}", "user": {"login": TEST_BOT}},
+                ]
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
     def test_linked_denial_preserves_valid_destinations_and_titles(self):
         for destination in (
             'https://example.com/status', 'https://example.com/status_(prior)',

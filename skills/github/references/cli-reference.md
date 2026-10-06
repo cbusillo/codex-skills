@@ -475,8 +475,10 @@ Unstructured Current Status ownership evidence remains fail-closed for `Owned by
 Human ownership prose is normalized before classification: inline code,
 emphasis, link labels and block quotes retain their text without formatting.
 Quoted hard wraps preserve qualifiers, fields and paragraph boundaries. Claim
-markers, authored release directives and recorded intent/history provenance
-continue to use their exact source forms.
+markers, exact-ID release directives and recorded intent/history provenance
+continue to use their exact source forms. Legacy `Released by` keeps its exact
+prefix; its formatted holder token is normalized for legacy claims, including
+the reused-worker session check, without releasing structured records by alias.
 Code-span contents remain literal, unresolved reference-link text remains
 visible, and a quoted legacy claim header in a comment does not claim the
 issue on behalf of the quoting author.

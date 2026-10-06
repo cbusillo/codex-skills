@@ -164,6 +164,31 @@ def ownership_text(text: str, *, strip_quotes: bool = True) -> str:
         code.append(match.group(2))
         return f"\x00{len(code) - 1}\x00"
 
+    # Block contents are literal too, including tilde and unclosed fences.
+    lines = text.splitlines()
+    protected = []
+    index = 0
+    while index < len(lines):
+        line = re.sub(r"^[ \t]*(?:>[ \t]?)+", "", lines[index])
+        fence = re.match(r" {0,3}(`{3,}|~{3,})", line)
+        html = re.match(r" {0,3}<(pre|code|blockquote|details|script|style|textarea)[\s>]", line, re.IGNORECASE)
+        if not fence and not html:
+            protected.append(lines[index])
+            index += 1
+            continue
+        start = index
+        html_end = f"</{html.group(1).casefold()}>" if html else None
+        index += 1
+        if not html_end or html_end not in line.casefold():
+            while index < len(lines):
+                closing = re.sub(r"^[ \t]*(?:>[ \t]?)+", "", lines[index])
+                index += 1
+                if (html_end and html_end in closing.casefold()
+                        or fence and re.fullmatch(rf" {{0,3}}{re.escape(fence.group(1)[0])}{{{len(fence.group(1))},}}[ \t]*", closing)):
+                    break
+        code.append("\n".join(lines[start:index]))
+        protected.append(f"\x00{len(code) - 1}\x00")
+    text = "\n".join(protected)
     text = re.sub(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", keep_code, text, flags=re.DOTALL)
     # Keep paragraph and list boundaries, including hard-wrapped quoted prose.
     if strip_quotes:
@@ -316,15 +341,17 @@ def discussion_evidence(
         if match:
             author = (comment.get("user") or {}).get("login", "")
             worker = match.group(1)
+            legacy_worker = ownership_text(worker, strip_quotes=False)
             prior_sessions = {
                 record["session"] for prior in comments[:index]
                 if (prior.get("user") or {}).get("login", "") == author
-                for record in records(prior.get("body") or "") if record["worker"] == worker
+                for record in records(prior.get("body") or "")
+                if record["worker"] == worker or ownership_text(record["worker"], strip_quotes=False) == legacy_worker
             }
             # A reused token cannot release a different native session.
             if len(prior_sessions) <= 1:
                 released[worker, author] = index
-                legacy_released[ownership_text(worker, strip_quotes=False), author] = index
+                legacy_released[legacy_worker, author] = index
         release_id = released_claim_id(comment.get("body") or "")
         if release_id is not None:
             author = (comment.get("user") or {}).get("login", "")
