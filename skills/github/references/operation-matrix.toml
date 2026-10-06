@@ -1791,6 +1791,46 @@ test_refs = ["github/scripts/test_github_capabilities.py"]
 
 
 [[operations]]
+id = "github.pr.runner_acquisition_evidence"
+entrypoint = "babysit-pr/scripts/gh_pr_watch.py runner acquisition recovery"
+intent = "Verify exact-attempt unexecuted cancelled jobs, acquisition annotations and PR-required checks; unavailable evidence excludes recovery."
+current_transport = "composite"
+selected_transport = "composite"
+endpoint_or_command = "GET /repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs; GET /repos/{repo}/check-runs/{id}; GET /repos/{repo}/check-runs/{id}/annotations; GET /repos/{repo}/actions/runs/{run_id}; POST /graphql node CheckRun isRequired(pullRequestNumber)"
+quota_bucket = "mixed"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "GraphQL CheckRun.isRequired supplies the PR-specific required-check decision absent from the REST check run."
+source_refs = ["babysit-pr/scripts/gh_pr_watch.py:runner_acquisition_retry"]
+test_refs = ["babysit-pr/scripts/test_gh_pr_watch.py:test_required_runner_acquisition_admitted_without_logs", "babysit-pr/scripts/test_gh_pr_watch.py:test_acquisition_exclusions_and_unavailable_evidence"]
+capabilities = ["actions_read", "checks_read", "pull_requests_read"]
+permission_mode = "fixed"
+permission_note = "Existing repository read grants and safe probes only; failed or incomplete evidence never allows recovery. No default-profile expansion."
+
+[[operations]]
+id = "github.pr.retry_checks"
+entrypoint = "babysit-pr/scripts/gh_pr_watch.py --retry-failed-now"
+intent = "Submit failed-job retries or verified unexecuted required acquisition-failure full retries within persisted per-head cycle accounting."
+current_transport = "gh_cli"
+selected_transport = "gh_cli"
+endpoint_or_command = "gh run rerun {run_id} --failed; gh run rerun {run_id}"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "create"
+idempotency = "non_idempotent"
+retry_eligibility = "manual"
+reconciliation_strategy = "fail_closed_write"
+retained_graphql_rationale = "No GraphQL write. Persist intent before submission; higher run_attempt resolves readback, unknown outcome never replays."
+source_refs = ["babysit-pr/scripts/gh_pr_watch.py:retry_failed_now", "babysit-pr/scripts/gh_pr_watch.py:submit_locked_reruns"]
+test_refs = ["babysit-pr/scripts/test_gh_pr_watch.py:test_acquisition_full_retry_preserves_budget_and_intent", "babysit-pr/scripts/test_gh_pr_watch.py:test_acquisition_retry_revalidates_before_write"]
+capabilities = ["actions_write"]
+permission_mode = "fixed"
+permission_note = "Existing Actions write grant with read-only Actions safe probe; no rerun probe or grant change. Rejected writes refund only unconsumed cycles; confirmed or unknown writes retain intent and budget."
+
+[[operations]]
 id = "github.pr.watch"
 entrypoint = "babysit-pr/scripts/gh_pr_watch.py --watch"
 intent = "Read PR review, check and workflow evidence through the existing conditional reader."
@@ -2168,7 +2208,7 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github-work-rollup/scripts/github_unanswered_comments.py" = "ca855657a3e3e47dad5080b48d0525a817dfbd29151e5ed84decdbd1f78fdc74"
 "github-work-rollup/scripts/github_work_rollup.py" = "cd77d9191d131d4514826aacb8259c059d69ea8a0ce097bb1bd1b109216b57af"
 "github-work-rollup/scripts/verify_work_brief.py" = "379cfec37182c96c01ac5ae2b930ca7cdd9fc34a1bacba5f5f3510d918f9074c"
-"babysit-pr/scripts/gh_pr_watch.py" = "07e16710b41b106e78be2bdb3992b8fad8886d383257524706fdd0de338c4f5b"
+"babysit-pr/scripts/gh_pr_watch.py" = "a66857fb8052624c95f2385d0029520d729abb492c886bcee3fdc5557367c008"
 "direction/scripts/direction_audit.py" = "0379e289aefb382bfd691113c14eb89769d4e6fd839876709c448b0f52092f93"
 "github/scripts/github_plan_claim.py" = "8145378a5ee48b5139c9939705c8e96086712f45517214caa6423e71a1cd5bcf"
 "github/scripts/github_plan_release.py" = "23e334369bd1caebfbad012fa913cdaa5604aa52727c6d8b8a6d857e821d47d8"

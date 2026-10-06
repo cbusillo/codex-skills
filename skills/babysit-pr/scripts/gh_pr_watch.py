@@ -1388,6 +1388,10 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
     checks_summary = apply_unfinished_workflow_runs(checks_summary, workflow_runs, pr["head_sha"])
     failed_runs = failed_runs_from_workflow_runs(workflow_runs, pr["head_sha"])
     failed_jobs = failed_jobs_from_workflow_runs(pr["repo"], workflow_runs, pr["head_sha"], reader=reader)
+    ordinary_retry_ids = {run["run_id"] for run in retryable_failed_runs(failed_runs, failed_jobs)}
+    for run in failed_runs:
+        if run["run_id"] not in ordinary_retry_ids and runner_acquisition_retry(pr, run, reader):
+            run["retry_mode"] = "runner_acquisition"
 
     review_diagnostic = None
     if is_review_readiness_unavailable(pr, checks_summary, new_review_items):
@@ -1454,7 +1458,73 @@ def retryable_failed_runs(failed_runs, failed_jobs):
         if job.get("status") == "completed"
         and job.get("conclusion") in {"failure", "timed_out"}
     }
-    return [run for run in failed_runs if run.get("run_id") in failed_job_runs]
+    return [run for run in failed_runs if run.get("run_id") in failed_job_runs
+            or run.get("retry_mode") == "runner_acquisition"]
+
+
+def runner_acquisition_retry(pr, run, reader):
+    """Admit a full retry only when no job executed and a check is required."""
+    run_id, attempt = run.get("run_id"), run.get("run_attempt")
+    if (run.get("status") != "completed" or run.get("conclusion") != "failure"
+            or type(attempt) is not int or attempt <= 0 or type(run_id) is not int):
+        return False
+    try:
+        jobs = reader.paged_json(
+            f"/repos/{pr['repo']}/actions/runs/{run_id}/attempts/{attempt}/jobs",
+            step_prefix="acquisition_jobs", collection_key="jobs",
+        )
+        if not jobs:
+            return False
+        required = False
+        for job in jobs:
+            if (job.get("status") != "completed" or job.get("conclusion") != "cancelled"
+                    or job.get("steps") != [] or job.get("head_sha") != pr["head_sha"]
+                    or job.get("run_id") != run_id or job.get("run_attempt") != attempt
+                    or job.get("runner_id") != 0):
+                return False
+            path = urlparse(str(job.get("check_run_url") or ""))
+            prefix = f"/repos/{pr['repo']}/check-runs/"
+            if (path.scheme != "https" or path.netloc != "api.github.com"
+                    or not path.path.startswith(prefix) or not path.path[len(prefix):].isdigit()
+                    or path.query or path.fragment):
+                return False
+            check = reader.get_json(path.path, step="acquisition_check")
+            if (check.get("head_sha") != pr["head_sha"] or check.get("conclusion") != "cancelled"
+                    or check.get("id") != int(path.path[len(prefix):])):
+                return False
+            annotations = reader.paged_json(
+                path.path + "/annotations", step_prefix="acquisition_annotations",
+            )
+            message = "The job was not acquired by Runner of type hosted even after multiple attempts"
+            if not any(a.get("annotation_level") == "failure"
+                       and str(a.get("message") or "").strip().rstrip(".") == message
+                       for a in annotations):
+                return False
+            result = reader.graphql_json(
+                "query($id: ID!, $number: Int!) { node(id: $id) { ... on CheckRun { "
+                "databaseId isRequired(pullRequestNumber: $number) "
+                "checkSuite { repository { nameWithOwner } } } } }",
+                {"id": check.get("node_id"), "number": pr["number"]},
+                step="acquisition_required_check",
+                retry_policy=github_api.RetryPolicy(max_wait_seconds=2.0, max_attempts=1),
+                deadline_at=time.time() + 2.0,
+            )
+            body = result.body if result.ok else None
+            node = body.get("data", {}).get("node") if isinstance(body, dict) else None
+            if (not isinstance(node, dict) or body.get("errors")
+                    or node.get("databaseId") != check.get("id")
+                    or node.get("checkSuite", {}).get("repository", {}).get("nameWithOwner") != pr["repo"]
+                    or type(node.get("isRequired")) is not bool):
+                return False
+            required = required or node["isRequired"]
+        fresh_run = reader.get_json(f"/repos/{pr['repo']}/actions/runs/{run_id}", step="acquisition_run_readback")
+        return (required and fresh_run.get("id") == run_id
+                and fresh_run.get("head_sha") == pr["head_sha"]
+                and fresh_run.get("run_attempt") == attempt
+                and fresh_run.get("status") == "completed" and fresh_run.get("conclusion") == "failure"
+                and not any(r.get("component") == "actor" for r in reader.degraded_reasons))
+    except (github_read.GitHubReadError, GhCommandError):
+        return False
 
 
 def reconcile_pending_reruns(state, head_sha, workflow_runs):
@@ -1531,6 +1601,13 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
     current_runs = {
         run.get("id"): run for run in get_workflow_runs_for_sha(pr["repo"], pr["head_sha"], reader=watcher_reader())
     } if eligible_runs else {}
+    recovery_runs = [run for run in eligible_runs if run.get("retry_mode") == "runner_acquisition"]
+    if recovery_runs:
+        fresh_pr = resolve_pr(str(pr["number"]), pr["repo"])
+        if (fresh_pr["head_sha"] != pr["head_sha"] or fresh_pr["closed"]
+                or fresh_pr["merged"] or fresh_pr["base_branch"] != pr["base_branch"]):
+            result["reason"] = "pr_changed"
+            return result
     cycle_charged = False
     for run in eligible_runs:
         run_id = run.get("run_id")
@@ -1542,16 +1619,24 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
                 or current_run.get("status") != "completed"):
             result["skipped_run_ids"].append(run_id)
             continue
+        recovery = run.get("retry_mode") == "runner_acquisition"
+        if recovery and not runner_acquisition_retry(pr, {
+            **run, "conclusion": current_run.get("conclusion"),
+        }, watcher_reader()):
+            result["skipped_run_ids"].append(run_id)
+            continue
         if not cycle_charged:
             set_retry_count(state, pr["head_sha"], retries_used + 1)
             cycle_charged = True
         # Persist intent before submitting a write. A crash or ambiguous error
         # must not let the next invocation replay the same run attempt.
         pending[str(run_id)] = {"run_attempt": run.get("run_attempt"), "outcome": "submitting"}
+        if recovery:
+            pending[str(run_id)]["retry_mode"] = "runner_acquisition"
         save_state(state_path, state)
         result["rerun_attempted"] = True
         try:
-            gh_text(["run", "rerun", str(run_id), "--failed"], repo=pr["repo"])
+            gh_text(["run", "rerun", str(run_id)] + ([] if recovery else ["--failed"]), repo=pr["repo"])
         except GhCommandError as err:
             detail = github_api.redact_string(str(err))
             # gh rewrites HTTP 403 into this message, dropping the status.
