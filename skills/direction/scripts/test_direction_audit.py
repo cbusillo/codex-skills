@@ -1229,7 +1229,7 @@ def test_stale_wait_report_checks_realistic_parked_records_without_writes() -> N
             return {"state": "closed", "pull_request": {}}
         if path == "repos/owner/tools/pulls/71":
             return {"state": "closed", "merged_at": stamp(NOW)}
-        if path == "repos/owner/product/issues/14":
+        if path in {"repos/owner/product/issues/13", "repos/owner/product/issues/14"}:
             return {"state": "closed", "state_reason": "completed", "closed_at": stamp(NOW)}
         raise AssertionError(path)
 
@@ -1241,7 +1241,7 @@ def test_stale_wait_report_checks_realistic_parked_records_without_writes() -> N
     by_number = {item["number"]: item for item in report["items"]}
     assert set(by_number) == {41, 42, 43, 44}, report
     assert by_number[42]["evidence"][0]["url"] == "https://github.com/owner/tools/pull/71"
-    assert {item["kind"] for item in by_number[43]["evidence"]} == {"no_external_wait", "closed_native_blocker"}
+    assert {item["kind"] for item in by_number[43]["evidence"]} == {"no_external_wait", "closed_native_blocker", "completed_wait_issue"}
     assert by_number[44]["evidence"][0]["kind"] == "completed_wait_issue"
     assert all(item["review_required"] for item in report["items"])
     assert calls.count("repos/owner/tools/pulls/71") == 1
@@ -1260,6 +1260,8 @@ def test_stale_wait_report_preserves_open_closed_unmerged_and_unknown_conditions
         "Capacity; Chris must select a paid plan.",
         "Capacity.\nChris must approve the paid plan first.",
         "None; waiting for Chris to finish testing.",
+        "PR #71 requires Chris to confirm the production backup after merge.",
+        "PR #71 awaits publication to the Marketplace.",
     ), 1)]
 
     def fetch(args: list[str]) -> Any:
@@ -1328,6 +1330,111 @@ def test_audit_cli_includes_stale_wait_report_without_changing_exit_status() -> 
                 clean_code = module.main(["--repo", "owner/catalog", "--automation", "bot", "--gh", "fixture-gh"])
         assert code == clean_code
         assert result["findings"] == json.loads(clean_output.getvalue())["findings"]
+
+
+def test_stale_wait_report_requires_all_holds_and_all_references_to_be_met() -> None:
+    module = load()
+    rows = [
+        issue(1, "Open native blocker", labels=("plan:blocked",),
+              body="## Current Status\nBlocked by: owner/product#90\nWaiting for: None.\n"),
+        issue(2, "Historical closed blocker plus an open blocker", labels=("plan:blocked",)),
+        issue(3, "Acceptance after source prerequisite", labels=("plan:waiting",),
+              body="## Current Status\nWaiting for: Justin to accept the first release.\nParked until: None.\n"),
+        issue(4, "A stack that has only partly merged", labels=("plan:waiting",),
+              body="## Current Status\nWaiting for: PR #71 and #72 to merge.\n"),
+        issue(5, "Device acceptance after merge", labels=("plan:waiting",),
+              body="## Current Status\nWaiting for: Merge of #71, then Chris's device sign-off.\n"),
+        issue(6, "Acceptance with an old closed native blocker", labels=("plan:waiting",),
+              body="## Current Status\nWaiting for: Justin to accept the first release.\n"),
+    ]
+    def fetch(args: list[str]) -> Any:
+        path = args[1]
+        if "/dependencies/blocked_by" in path:
+            closed = {"number": 13, "state": "closed"}
+            opened = {"number": 90, "state": "open"}
+            if "/issues/1/" in path:
+                return [opened]
+            if "/issues/2/" in path:
+                return [closed, opened]
+            if "/issues/6/" in path:
+                return [closed]
+            return []
+        if path == "repos/owner/catalog/issues/71":
+            return {"state": "closed", "pull_request": {}}
+        if path == "repos/owner/catalog/issues/72":
+            return {"state": "open", "pull_request": {}}
+        if path == "repos/owner/catalog/pulls/71":
+            return {"merged_at": stamp(NOW)}
+        if path == "repos/owner/catalog/pulls/72":
+            return {"merged_at": None}
+        if path == "repos/owner/product/issues/90":
+            return {"state": "open"}
+        raise AssertionError(path)
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
+    assert report["complete"] and report["items"] == [], report
+
+
+def test_stale_wait_report_covers_passive_completion_and_text_only_blockers() -> None:
+    module = load()
+    rows = [issue(n, "Prerequisite", labels=("plan:blocked",), body="## Current Status\n" + condition)
+            for n, condition in enumerate((
+                "Blocked by: Supervisor routing.\n",
+                "Waiting for: PR #71 to be merged.\n",
+                "Waiting for: Issue #14 to be closed.\n",
+                "Blocked by: #14\nWaiting for: None.\n",
+            ), 1)]
+    def fetch(args: list[str]) -> Any:
+        path = args[1]
+        if "/dependencies/blocked_by" in path:
+            return []
+        if "/issues/71" in path:
+            return {"state": "closed", "pull_request": {}}
+        if "/pulls/71" in path:
+            return {"merged_at": stamp(NOW)}
+        if "/issues/14" in path:
+            return {"state": "closed", "state_reason": "completed"}
+        raise AssertionError(path)
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
+    assert report["complete"] and {item["number"] for item in report["items"]} == {1, 2, 3, 4}, report
+
+
+def test_stale_wait_report_bounds_reads_and_skips_native_zero_summary() -> None:
+    module = load()
+    rows = [{**issue(n, "Agent routing", labels=("plan:waiting",),
+                    body="## Current Status\nWaiting for: Next agent.\n"),
+             "issue_dependencies_summary": {"blocked_by": 0}} for n in (1, 2)]
+    def unexpected(_args: list[str]) -> Any:
+        raise AssertionError("a known empty native relationship needs no API call")
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=unexpected, max_issues=1)
+    assert report["checked"] == 1 and not report["complete"]
+    assert report["unavailable"] == [{"number": 2, "source": "issue", "reason": "issue_limit"}]
+    assert [item["number"] for item in report["items"]] == [1]
+
+
+def test_stale_wait_report_only_cli_never_reads_or_advances_audit_marker() -> None:
+    module = load()
+    row = {**issue(41, "Agent routing", labels=("plan:waiting",),
+                   body="## Current Status\nWaiting for: Next agent.\n"),
+           "issue_dependencies_summary": {"blocked_by": 0}}
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        original = json.dumps({"audits": {"owner/catalog": stamp(SINCE)}, "turns": {"owner/catalog": stamp(NOW)}})
+        marker.write_text(original)
+        def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("report-only mode must not consume direction-audit records")
+        def fetch(args: list[str], **_kwargs: Any) -> Any:
+            assert args[0] == "api" and args[-2:] == ["--method", "GET"]
+            assert args[1].startswith("repos/owner/catalog/issues?state=open&")
+            return [row]
+        with (patch.dict("os.environ", {"DIRECTION_MARKER": str(marker)}),
+              patch.dict(vars(module), {"gh_json": fetch, "previous_audit_stamp": forbidden,
+                                       "record_audit": forbidden, "merged_direction": forbidden})):
+            output = StringIO()
+            with redirect_stdout(output):
+                assert module.main(["--repo", "owner/catalog", "--stale-waits-only", "--gh", "fixture-gh"]) == 0
+            report = json.loads(output.getvalue())["stale_wait_report"]
+            assert report["complete"] and report["items"][0]["number"] == 41
+        assert marker.read_text() == original
 
 
 def main() -> int:

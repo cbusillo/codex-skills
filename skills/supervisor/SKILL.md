@@ -202,11 +202,12 @@ records that run.
    Read [helper setup](references/helpers.md) before rebuilding the private
    ledger or running a helper; the catalog supplies all seven pilot helpers.
 6. Read `stale_wait_report` from the existing
-   `skills/direction/scripts/direction_audit.py --repo OWNER/REPO` output for
+   `uv run skills/direction/scripts/direction_audit.py --repo OWNER/REPO --stale-waits-only` output for
    each Director repository in the takeover inventory, and include findings
    and incomplete reads in the takeover comment. Review each reported wait
    against the full issue and current evidence before correcting its status;
-   the report changes nothing and grants no release of a real hold.
+   this report-only mode leaves weekly audit markers untouched and grants no
+   release of a real hold.
 7. Post a takeover comment on the pilot issue: what you found, what you
    corrected, and the "needs the Director" list.
 8. When a finding would retire, stop, or redirect work, load `direction`

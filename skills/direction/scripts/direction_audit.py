@@ -50,6 +50,10 @@ GATE_PHRASES: tuple[tuple[str, re.Pattern[str]], ...] = (
 WRAPPER = pathlib.Path(__file__).resolve().parents[2] / "github" / "scripts" / "gh-with-env-token"
 MAX_ADMISSION_ISSUES = 50
 MAX_INBOUND_ISSUES = 50
+WAIT_REFERENCE = re.compile(
+    r"https://github\.com/([\w.-]+/[\w.-]+)/(issues|pull)/(\d+)"
+    r"|(?<![\w/])([\w.-]+/[\w.-]+)?#(\d+)\b"
+)
 
 # The capacity count of the overall direction (`OWNER/direction` only). The
 # map is data in that repository, changed by pull request like DIRECTION.md.
@@ -596,12 +600,12 @@ def parked_issue(issue: dict[str, Any]) -> bool:
 
 def stale_wait_report(
     issues: list[dict[str, Any]], repo: str, *, fetch: Callable[[list[str]], Any],
-    inventory_complete: bool = True,
+    inventory_complete: bool = True, max_issues: int = MAX_PAGES * 100,
 ) -> dict[str, Any]:
-    """Evidence for reviewing parked records, never a release or selection gate.
+    """Report verifiably obsolete waits, never release or select their work.
 
-    Check native blockers and mechanically verifiable waits in Current Status.
-    History, elapsed time, and a merged implementation do not prove acceptance.
+    All recorded holds and native blockers must be satisfied or agent-only.
+    Unknown prose, history, and elapsed time cannot prove acceptance.
     """
     rows: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
@@ -621,63 +625,75 @@ def stale_wait_report(
     for issue in issues:
         if not parked_issue(issue):
             continue
-        checked += 1
         number = issue["number"]
+        if checked >= max_issues:
+            errors.append({"number": number, "source": "issue", "reason": "issue_limit"})
+            continue
+        checked += 1
         status = github_direction_next.section_map(str(issue.get("body") or "")).get("Current Status", "")
         evidence: list[dict[str, Any]] = []
+        pending = False
+        unread = False
         fields: list[tuple[str, str]] = []
         for entry in re.split(r"(?m)(?=^\s*(?:[-*]\s+)?[\w -]+:)", status):
             match = re.match(r"\s*(?:[-*]\s+)?(Waiting for|Blocked by|Parked until):\s*(.+)", entry, re.I | re.S)
             if match:
                 fields.append((match[1], match[2].split("\n\n", 1)[0].strip()))
+        try:
+            blockers, cut = ([], False) if (issue.get("issue_dependencies_summary") or {}).get("blocked_by") == 0 else fetch_paginated(
+                f"repos/{repo}/issues/{number}/dependencies/blocked_by", fetch=lambda args: read(args[1]), max_pages=2,
+            )
+            if cut or any(blocker.get("state") not in {"open", "closed"} for blocker in blockers):
+                unread = True
+                errors.append({"number": number, "source": "native_blockers", "reason": "page_limit" if cut else "unknown_state"})
+            pending = any(blocker.get("state") == "open" for blocker in blockers)
+            for blocker in blockers:
+                if blocker.get("state") == "closed" and "pull_request" not in blocker:
+                    evidence.append({"kind": "closed_native_blocker", "url": blocker.get("html_url"),
+                                     "number": blocker.get("number"), "closed_at": blocker.get("closed_at")})
+        except AuditError:
+            unread = True
+            errors.append({"number": number, "source": "native_blockers", "reason": "unavailable"})
+
         for field, reason in fields:
-            # Use the claim helper's explicit no-wait semantics. Only a whole
-            # agent/capacity phrase is known invalid; unknown prose stays a wait.
+            # Reuse the claim helper's explicit no-wait semantics. Match the
+            # whole agent phrase so a continued approval clause stays a hold.
             agent_wait = re.fullmatch(
                 r"(?:the |an |a )?(?:next )?agent(?: selection| assignment)?|"
                 r"(?:the )?supervisor(?: routing| to route(?: the (?:PR|train))?)?|"
                 r"(?:provider |spare )?capacity|engineering selection|future work",
                 reason.strip().rstrip(" ."), re.I,
             )
-            if (field.casefold() != "blocked by" and
-                    (github_plan_claim.no_wait_reason(reason, field="Waiting for") or agent_wait)):
+            if github_plan_claim.no_wait_reason(reason, field=field):
+                if field.casefold() != "blocked by":
+                    evidence.append({"kind": "no_external_wait", "field": field, "recorded": reason})
+                continue
+            if agent_wait:
                 evidence.append({"kind": "no_external_wait", "field": field, "recorded": reason})
-
-        try:
-            blockers, cut = fetch_paginated(
-                f"repos/{repo}/issues/{number}/dependencies/blocked_by", fetch=lambda args: read(args[1]),
-            )
-            if cut:
-                errors.append({"number": number, "source": "native_blockers", "reason": "page_limit"})
-            for blocker in blockers:
-                if blocker.get("state") == "closed" and "pull_request" not in blocker:
-                    evidence.append({"kind": "closed_native_blocker", "url": blocker.get("html_url"),
-                                     "number": blocker.get("number"), "closed_at": blocker.get("closed_at")})
-        except AuditError:
-            errors.append({"number": number, "source": "native_blockers", "reason": "unavailable"})
-
-        for field, reason in fields:
-            # Restrict completion checks to a wait *on the reference*. Chris
-            # accepting a PR, a credential retirement, or a live test is not
-            # satisfied by that reference merging or closing.
-            plain = re.sub(r"\[([^]]+)\]\(([^)]+)\)", r"\1 \2", reason).strip()
-            if not re.match(
-                r"(?i)^(?:(?:the |a |an )?(?:source |train |open |native )?"
-                r"(?:PR\b|pull request\b|issue\b|blocker\b)|"
-                r"(?:merge|merging|landing|closure|completion) of\b|"
-                r"(?:[\w.-]+/[\w.-]+)?#\d+\b|https://github\.com/)", plain,
-            ):
                 continue
-            if not re.search(r"(?i)\b(?:merge|merging|landing|land|lands|close|closes|closure|completion|complete|finish|finishes|open)\b", plain):
-                continue
+
+            # Recognize complete reference-completion phrases, rather than
+            # guessing whether arbitrary trailing prose still names a hold.
+            plain = re.sub(r"\[([^]]+)\]\(([^)]+)\)", r"\2", reason)
+            normalized = WAIT_REFERENCE.sub("REF", plain).strip().rstrip(" .")
+            references_phrase = r"REF(?:\s*(?:and|,|&|\+)\s*(?:(?:PR|issue)\s+)?REF)*"
+            mechanical = bool(re.fullmatch(
+                rf"(?:(?:the |a |an )?(?:source |train |open |native )?"
+                rf"(?:PR|pull request|issue|blocker)\s+)?{references_phrase}"
+                rf"(?:\s+to\s+(?:be\s+)?(?:merge|merged|land|close|closed|complete|completed))?|"
+                rf"(?:merge|merging|landing|closure|completion) of\s+{references_phrase}",
+                normalized, re.I,
+            ))
             refs: dict[tuple[str, int], str] = {}
-            for ref in re.finditer(
-                r"https://github\.com/([\w.-]+/[\w.-]+)/(issues|pull)/(\d+)"
-                r"|(?<![\w/])([\w.-]+/[\w.-]+)?#(\d+)\b", reason,
-            ):
-                target_repo = ref.group(1) or ref.group(4) or repo
-                target_number = int(ref.group(3) or ref.group(5))
-                refs[(target_repo, target_number)] = ref.group(2) or "issues"
+            if mechanical:
+                for ref in WAIT_REFERENCE.finditer(plain):
+                    target_repo = ref.group(1) or ref.group(4) or repo
+                    target_number = int(ref.group(3) or ref.group(5))
+                    refs[(target_repo, target_number)] = ref.group(2) or "issues"
+            if not refs:
+                pending = True
+                continue
+            completed: list[dict[str, Any]] = []
             for (target_repo, target_number), kind in refs.items():
                 try:
                     target = read(f"repos/{target_repo}/issues/{target_number}")
@@ -688,18 +704,23 @@ def stale_wait_report(
                         if not isinstance(pull, dict) or "merged_at" not in pull:
                             raise AuditError("unreadable wait pull")
                         if pull.get("merged_at"):
-                            evidence.append({"kind": "merged_wait_pr", "field": field, "recorded": reason,
-                                             "url": f"https://github.com/{target_repo}/pull/{target_number}",
-                                             "merged_at": pull["merged_at"]})
+                            completed.append({"kind": "merged_wait_pr", "field": field, "recorded": reason,
+                                              "url": f"https://github.com/{target_repo}/pull/{target_number}",
+                                              "merged_at": pull["merged_at"]})
                     elif target.get("state") == "closed" and target.get("state_reason") != "not_planned":
-                        evidence.append({"kind": "completed_wait_issue", "field": field, "recorded": reason,
-                                         "url": f"https://github.com/{target_repo}/issues/{target_number}",
-                                         "closed_at": target.get("closed_at")})
+                        completed.append({"kind": "completed_wait_issue", "field": field, "recorded": reason,
+                                          "url": f"https://github.com/{target_repo}/issues/{target_number}",
+                                          "closed_at": target.get("closed_at")})
                 except AuditError:
+                    unread = True
                     errors.append({"number": number, "source": "wait_reference",
                                    "url": f"https://github.com/{target_repo}/{kind}/{target_number}",
                                    "reason": "unavailable"})
-        if evidence:
+            if len(completed) == len(refs):
+                evidence.extend(completed)
+            else:
+                pending = True
+        if evidence and not pending and not unread:
             rows.append({"number": number, "title": issue.get("title"),
                          "url": f"https://github.com/{repo}/issues/{number}", "evidence": evidence,
                          "review_required": True})
@@ -920,12 +941,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--owner", help="login treated as the owner; defaults to the repo owner")
     parser.add_argument("--automation", help="automation login allowed to create milestones; defaults to the wrapper's account")
     parser.add_argument("--gh", default=str(WRAPPER), help="gh-compatible command used for reads")
+    parser.add_argument("--stale-waits-only", action="store_true", help="read parked waits without running or stamping a direction audit")
     parser.add_argument("--prune-unadopted", action="store_true", help="preview removal of unadopted repositories from the local marker")
     parser.add_argument("--apply-prune", action="store_true", help="apply the pruning preview with a recoverable backup")
     parser.add_argument("--remove-missing-repo", action="append", default=[], metavar="OWNER/REPO",
                         help="owner-approved marker removal when this exact repository returns HTTP 404; repeat per repository")
     args = parser.parse_args(argv)
 
+    if args.stale_waits_only and (args.prune_unadopted or args.apply_prune or args.remove_missing_repo):
+        parser.error("--stale-waits-only cannot prune audit markers")
     if args.apply_prune and not args.prune_unadopted:
         parser.error("--apply-prune requires --prune-unadopted")
     if args.remove_missing_repo and not args.prune_unadopted:
@@ -953,6 +977,15 @@ def main(argv: list[str] | None = None) -> int:
 
     owner_reader = pathlib.Path(shutil.which(args.gh) or args.gh).resolve() == pathlib.Path(shutil.which("gh") or "gh").resolve()
     fetch = lambda a: gh_json(a, gh=args.gh)  # noqa: E731
+    if args.stale_waits_only:
+        try:
+            issues, cut = fetch_paginated(f"repos/{repo}/issues?state=open", fetch=fetch)
+            report = stale_wait_report(issues, repo, fetch=fetch, inventory_complete=not cut)
+        except AuditError:
+            report = {"read_only": True, "complete": False, "inventory_complete": False,
+                      "checked": 0, "items": [], "unavailable": [{"source": "issues", "reason": "unavailable"}]}
+        print(json.dumps({"repo": repo, "read_only": True, "stale_wait_report": report}, indent=2, sort_keys=True))
+        return 0
     try:
         # The merged default-branch file is the owner-approved one; a checkout may hold an unapproved edit.
         direction_text = merged_direction(repo, fetch=fetch)

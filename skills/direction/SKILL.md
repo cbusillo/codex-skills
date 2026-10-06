@@ -299,13 +299,19 @@ The audit also returns `stale_wait_report` for open `plan:waiting` and
 `plan:blocked` issues in the audited repository, including unmilestoned work.
 It reports closed native blockers, merged PRs or completed issues that the
 Current Status waits on, and explicit waits on agents or capacity instead of
-people or events. `complete`, `inventory_complete`, and `unavailable` expose
+people or events, only when no recorded hold or open native blocker remains.
+`complete`, `inventory_complete`, and `unavailable` expose
 missing coverage. Unknown prose, elapsed time, unrelated merged PRs, and
 acceptance or live-test waits do not establish completion. These are review
 prompts, separate from audit findings and exit status: read the full issue and
 current evidence before correcting a status through `github-plan`. Nothing is
 selected, relabeled, or released automatically. This does not change global
-`next` wait classification or the claim guard.
+`next` wait classification or the claim guard. For a Supervisor check, use
+`--stale-waits-only` with the existing audit command: it reads only open issues
+and their prerequisites, leaving weekly audit markers and windows untouched.
+The report bounds issue checks by the existing inventory size and native
+blocker reads to two pages, skips known-empty native relationships, and caches
+reference reads; any limit or unread evidence keeps `complete` false.
 
 The audit of `OWNER/direction` also returns `capacity`, the overall
 direction's weekly numbers for the window since the prior audit: merged pull
