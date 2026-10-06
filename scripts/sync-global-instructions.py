@@ -177,6 +177,11 @@ def upgrade_legacy_session_hooks(groups: list, catalog: Path) -> list:
                 handlers.append(handler)
                 continue
             tokens = shlex.split(handler["command"])
+            if (len(tokens) == 5 and tokens[0] == "env" and tokens[2:4] == ["sh", "-c"]
+                    and tokens[1].startswith("CLAUDE_PLUGIN_ROOT=")
+                    and Path(tokens[1].partition("=")[2]).resolve() == catalog.resolve()):
+                tokens = [token.replace("${CLAUDE_PLUGIN_ROOT}", str(catalog)).replace("$CLAUDE_PLUGIN_ROOT", str(catalog))
+                          for token in shlex.split(tokens[4])]
             paths = [Path(os.path.expandvars(token)).expanduser() for token in tokens[2:]]
             script_count = sum(path.is_absolute() and path.resolve() == script for path in paths)
             allowed = {"--quiet", "--no-python-downloads", "--runtime-catchup"}
@@ -191,8 +196,7 @@ def upgrade_legacy_session_hooks(groups: list, catalog: Path) -> list:
             upgraded = {**handler, "command": declaration["command"], "timeout": declaration["timeout"]}
             upgraded.pop("timeout_sec", None)
             handlers.append(upgraded)
-        if handlers:
-            retained.append({**group, "hooks": handlers})
+        retained.append({**group, "hooks": handlers})
     return retained
 
 

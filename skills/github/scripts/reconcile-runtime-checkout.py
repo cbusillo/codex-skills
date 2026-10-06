@@ -123,6 +123,7 @@ def reconcile_runtime_checkout(
         if deadline is not None and time.monotonic() >= deadline:
             # A deadline still in force proves no fast-forward was started.
             receipt["runtime_mutated"] = False
+            receipt["detail"] = None
             return finish(receipt, "retryable", "runtime_catchup_timeout")
         return receipt
     except ReconciliationBusy:

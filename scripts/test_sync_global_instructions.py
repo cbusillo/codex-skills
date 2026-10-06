@@ -54,6 +54,22 @@ class GlobalInstructionsTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), before)
             self.assertIn("echo before", sync.prepare_codex_hooks(codex)[path])
 
+    def test_upgrade_preserves_empty_groups_and_recognizes_plain_catalog_shell_wrapper(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex = Path(directory)
+            path = codex / "hooks.json"
+            command = shlex.join(["env", f"CLAUDE_PLUGIN_ROOT={sync.ROOT}", "sh", "-c",
+                                  'uv run --quiet --no-python-downloads "${CLAUDE_PLUGIN_ROOT}/hooks/direction_check_hook.py"'])
+            legacy = {"command": command, "timeout_sec": 15}
+            empty = {"matcher": "startup", "hooks": []}
+            path.write_text(json.dumps({"hooks": {"SessionStart": [empty, {"hooks": [legacy]}]}}))
+            outputs = sync.prepare_codex_hooks(codex, upgrade_session_start=True)
+            groups = json.loads(outputs[path])["hooks"]["SessionStart"]
+            self.assertEqual(groups[0], empty)
+            self.assertNotIn("timeout_sec", groups[1]["hooks"][0])
+            sync.write_codex_hooks(outputs, codex)
+            self.assertEqual(sync.prepare_codex_hooks(codex, upgrade_session_start=True)[path], outputs[path])
+
     def test_compact_only_direction_hook_keeps_managed_startup_reminder(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             codex = Path(directory)

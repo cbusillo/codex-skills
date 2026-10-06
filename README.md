@@ -337,9 +337,10 @@ has fallen behind, run its own copy:
 `uv run <runtime-checkout>/skills/github/scripts/reconcile-runtime-checkout.py --repo cbusillo/codex-skills`.
 
 The registered session-start hook also runs this catch-up for its bound catalog,
-so a landing without a local train driver is picked up on the next startup,
-resume, or clear on either harness. It skips development checkouts and
-compaction, bounds discovery and network reads to five seconds, and reports a
+so a landing without a local train driver is picked up on configured startup,
+resume, or clear events on either harness. The maintained declarations skip
+compaction; legacy matcher scope remains as configured. Manual unbound development
+invocations skip catch-up. Discovery and network reads are bounded to five seconds, reporting a
 blocker or failure without preventing the session from starting. Startup guidance
 is flushed first. A local fast-forward and its verification retain the
 reconciler's normal command bound, so the short read budget cannot interrupt them.
