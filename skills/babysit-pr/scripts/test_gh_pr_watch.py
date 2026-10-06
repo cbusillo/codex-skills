@@ -3,10 +3,12 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "pytest==9.1.1",
+#     "PyYAML==6.0.3",
 # ]
 # ///
 
 import argparse
+import base64
 import json
 import multiprocessing
 import os
@@ -1775,28 +1777,28 @@ def test_retry_rechecks_run_after_snapshot_lock_gap(monkeypatch, tmp_path, fresh
 class AcquisitionReader:
     def __init__(self):
         self.degraded_reasons = []
-        self.jobs = [{"id": 7, "run_id": 1, "run_attempt": 1, "head_sha": "abc123",
+        self.jobs: list[dict[str, Any]] = [{"id": 7, "run_id": 1, "run_attempt": 1, "head_sha": "abc123",
                       "runner_id": 0, "steps": [], "status": "completed", "conclusion": "cancelled",
                       "check_run_url": "https://api.github.com/repos/openai/codex/check-runs/9"}]
-        self.annotations = [{"annotation_level": "failure", "message":
+        self.annotations: list[dict[str, Any]] = [{"annotation_level": "failure", "message":
             "The job was not acquired by Runner of type hosted even after multiple attempts."}]
         self.check = {"id": 9, "node_id": "check9", "head_sha": "abc123", "conclusion": "cancelled"}
         self.run = {"id": 1, "head_sha": "abc123", "run_attempt": 1,
                     "status": "completed", "conclusion": "failure"}
-        self.node = {"databaseId": 9, "isRequired": True,
+        self.node: dict[str, Any] = {"databaseId": 9, "isRequired": True,
                      "checkSuite": {"repository": {"nameWithOwner": "openai/codex"}}}
         self.errors = None
         self.paths = []
 
-    def paged_json(self, path, **kwargs):
+    def paged_json(self, path, **_kwargs):
         self.paths.append(path)
         return self.annotations if path.endswith("/annotations") else self.jobs
 
-    def get_json(self, path, **kwargs):
+    def get_json(self, path, **_kwargs):
         self.paths.append(path)
         return self.check if "/check-runs/" in path else self.run
 
-    def graphql_json(self, query, variables, **kwargs):
+    def graphql_json(self, _query, variables, **_kwargs):
         assert variables == {"id": "check9", "number": 123}
         return SimpleNamespace(ok=True, body={"data": {"node": self.node}, "errors": self.errors})
 
@@ -1825,7 +1827,7 @@ def test_required_runner_acquisition_admitted_without_logs():
 ])
 def test_acquisition_rejects_nonrequired_executed_or_stale_evidence(target, changes):
     reader = AcquisitionReader()
-    record = reader.jobs[0] if target == "jobs" else getattr(reader, target)
+    record: dict[str, Any] = reader.jobs[0] if target == "jobs" else getattr(reader, target)
     record.update(changes)
     assert not gh_pr_watch.runner_acquisition_retry(sample_pr(), failed_run(1), reader)
 
@@ -1845,7 +1847,7 @@ def test_acquisition_exclusions_and_unavailable_evidence(case):
     elif case == "actor":
         reader.degraded_reasons = [{"component": "actor"}]
     elif case == "read_error":
-        def unavailable(*args, **kwargs):
+        def unavailable(*_args, **_kwargs):
             raise gh_pr_watch.github_read.GitHubReadError("unavailable", result=None, diagnostics={})
         reader.paged_json = unavailable
     elif case == "mixed_success":
@@ -1864,10 +1866,10 @@ def test_acquisition_full_retry_preserves_budget_and_intent(monkeypatch, tmp_pat
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *a: sample_pr())
     monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *a, **kw: [reader.run])
     writes = []
-    def submit(args, **kwargs):
-        state = gh_pr_watch.load_state(path)[0]
-        assert state["retries_by_sha"]["abc123"] == 1
-        assert state["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "submitting"
+    def submit(args, **_kwargs):
+        saved = gh_pr_watch.load_state(path)[0]
+        assert saved["retries_by_sha"]["abc123"] == 1
+        assert saved["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "submitting"
         writes.append(args)
         if outcome == "rejected":
             raise gh_pr_watch.GhCommandError("HTTP 422: This workflow run cannot be retried")
@@ -1908,6 +1910,85 @@ def test_acquisition_retry_revalidates_before_write(monkeypatch, tmp_path, chang
     result = gh_pr_watch.retry_failed_now(argparse.Namespace())
     assert not result["rerun_attempted"]
     assert gh_pr_watch.current_retry_count(gh_pr_watch.load_state(path)[0], "abc123") == (3 if change == "budget" else 0)
+
+
+@pytest.mark.parametrize("case", ["required", "optional", "other_tool", "other_workflow", "comment_only", "malformed", "wrong_path"])
+def test_codeql_ruleset_requires_real_analysis_workflow(case):
+    reader = AcquisitionReader()
+    pr = sample_pr()
+    run = {**reader.run, "path": ".github/workflows/scan.yml"}
+    rules = [{"type": "code_scanning", "parameters": {
+        "code_scanning_tools": [{"tool": "Other" if case == "other_tool" else "CodeQL"}]}}]
+    if case == "optional":
+        rules = []
+    workflow = "jobs:\n  scan:\n    steps:\n      - uses: github/codeql-action/analyze@v4\n"
+    if case == "other_workflow":
+        workflow = "jobs: {notice: {steps: [{run: echo notification}]}}"
+    elif case == "comment_only":
+        workflow = "# uses: github/codeql-action/analyze@v4\njobs: {}"
+    elif case == "malformed":
+        workflow = "jobs: [invalid"
+    content = {"path": "different.yml" if case == "wrong_path" else run["path"],
+               "encoding": "base64", "content": base64.b64encode(workflow.encode()).decode()}
+    paths = []
+    def read_rules(path, **_kwargs):
+        paths.append(path)
+        return rules
+    def read_source(path, **_kwargs):
+        paths.append(path)
+        return content
+    reader.paged_json = read_rules
+    reader.get_json = read_source
+    assert gh_pr_watch.required_codeql_workflow(pr, run, reader) == (case == "required")
+    if case == "required":
+        assert paths == ["/repos/openai/codex/rules/branches/main",
+                         "/repos/openai/codex/contents/.github/workflows/scan.yml?ref=abc123"]
+
+
+def test_ruleset_requirement_admits_acquisition_when_job_is_not_required(monkeypatch):
+    reader = AcquisitionReader()
+    reader.node["isRequired"] = False
+    seen = []
+    def required(pr, run, evidence):
+        seen.append((pr["head_sha"], run["run_attempt"], evidence))
+        return True
+    monkeypatch.setattr(gh_pr_watch, "required_codeql_workflow", required)
+    assert gh_pr_watch.runner_acquisition_retry(sample_pr(), failed_run(1), reader)
+    assert seen == [("abc123", 1, reader)]
+
+
+@pytest.mark.parametrize("body", [{"data": None, "errors": [{"message": "timeout"}]},
+                                 {"data": {"node": {"databaseId": 9, "checkSuite": None}}},
+                                 {"data": {"node": {"databaseId": 9, "checkSuite": {"repository": None}}}}])
+def test_acquisition_partial_graphql_declines_without_crashing(body):
+    reader = AcquisitionReader()
+    reader.graphql_json = lambda *_a, **_kw: SimpleNamespace(ok=True, body=body)
+    assert not gh_pr_watch.runner_acquisition_retry(sample_pr(), failed_run(1), reader)
+
+
+def test_acquisition_repository_names_are_case_insensitive():
+    reader = AcquisitionReader()
+    assert gh_pr_watch.runner_acquisition_retry({**sample_pr(), "repo": "OpenAI/Codex"}, failed_run(1), reader)
+
+
+@pytest.mark.parametrize("admit", [True, False])
+def test_snapshot_offers_only_verified_acquisition_recovery(monkeypatch, tmp_path, admit):
+    reader = AcquisitionReader()
+    reader.results = []
+    reader.diagnostics = lambda: {}
+    if not admit:
+        reader.annotations = []
+    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
+    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_a, **_kw: "fixture-bot")
+    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *_a, **_kw: [])
+    monkeypatch.setattr(gh_pr_watch.github_read, "pull_request_checks", lambda *_a, **_kw: {})
+    monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *_a, **_kw: sample_checks(failed_count=1))
+    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *_a, **_kw: [reader.run])
+    monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *_a, **_kw: [failed_job(1, "cancelled")])
+    args = argparse.Namespace(max_flaky_retries=3)
+    snapshot, _ = gh_pr_watch.collect_locked_snapshot(args, sample_pr(), {}, tmp_path / "state.json")
+    assert ("retry_failed_checks" in snapshot["actions"]) == admit
+    assert (snapshot["failed_runs"][0].get("retry_mode") == "runner_acquisition") == admit
 
 
 if __name__ == "__main__":

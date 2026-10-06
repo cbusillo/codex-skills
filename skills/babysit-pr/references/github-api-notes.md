@@ -101,10 +101,14 @@ has no executed steps or assigned runner, and has the explicit failure annotatio
 "The job was not acquired by Runner of type hosted even after multiple attempts".
 At least one associated check must be required for this PR, verified with
 [`CheckRun.isRequired`](https://docs.github.com/en/graphql/reference/checks).
+Alternatively, a CodeQL code-scanning rule must apply to the PR base branch,
+and the workflow source at the exact PR head must contain the CodeQL analysis
+action. This covers rules requiring scan results rather than Actions job checks.
 Jobs, checks and run readback must match the head and attempt. Missing or
 unavailable evidence never admits this recovery.
 
-Before the write the helper rechecks the PR head/base, run attempt, annotations
+Before the write the helper bypasses polling cache coalescing and rechecks
+the PR head/base, run attempt, annotations
 and requirement. The full retry uses the same persisted intent, same actor,
 readback and per-head cycle budget as failed-job retries. A cancelled run,
 notification or concurrency cancellation, or an attempt with any executed or

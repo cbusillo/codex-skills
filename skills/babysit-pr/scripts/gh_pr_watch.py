@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["PyYAML==6.0.3"]
 # ///
 """Watch GitHub PR CI and review activity for PR babysitting workflows."""
 
 import argparse
+import base64
 import fcntl
 from contextlib import contextmanager
 import json
@@ -18,7 +19,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
+import yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_GH = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-with-env-token"
@@ -1485,7 +1487,7 @@ def runner_acquisition_retry(pr, run, reader):
             path = urlparse(str(job.get("check_run_url") or ""))
             prefix = f"/repos/{pr['repo']}/check-runs/"
             if (path.scheme != "https" or path.netloc != "api.github.com"
-                    or not path.path.startswith(prefix) or not path.path[len(prefix):].isdigit()
+                    or not path.path.casefold().startswith(prefix.casefold()) or not path.path[len(prefix):].isdigit()
                     or path.query or path.fragment):
                 return False
             check = reader.get_json(path.path, step="acquisition_check")
@@ -1506,18 +1508,25 @@ def runner_acquisition_retry(pr, run, reader):
                 "checkSuite { repository { nameWithOwner } } } } }",
                 {"id": check.get("node_id"), "number": pr["number"]},
                 step="acquisition_required_check",
+                operation="github.pr.runner_acquisition_evidence",
                 retry_policy=github_api.RetryPolicy(max_wait_seconds=2.0, max_attempts=1),
                 deadline_at=time.time() + 2.0,
             )
             body = result.body if result.ok else None
-            node = body.get("data", {}).get("node") if isinstance(body, dict) else None
+            data = body.get("data") if isinstance(body, dict) else None
+            node = data.get("node") if isinstance(data, dict) else None
+            suite = node.get("checkSuite") if isinstance(node, dict) else None
+            repository = suite.get("repository") if isinstance(suite, dict) else None
             if (not isinstance(node, dict) or body.get("errors")
                     or node.get("databaseId") != check.get("id")
-                    or node.get("checkSuite", {}).get("repository", {}).get("nameWithOwner") != pr["repo"]
+                    or not isinstance(repository, dict)
+                    or str(repository.get("nameWithOwner") or "").casefold() != pr["repo"].casefold()
                     or type(node.get("isRequired")) is not bool):
                 return False
             required = required or node["isRequired"]
         fresh_run = reader.get_json(f"/repos/{pr['repo']}/actions/runs/{run_id}", step="acquisition_run_readback")
+        if not required:
+            required = required_codeql_workflow(pr, fresh_run, reader)
         return (required and fresh_run.get("id") == run_id
                 and fresh_run.get("head_sha") == pr["head_sha"]
                 and fresh_run.get("run_attempt") == attempt
@@ -1525,6 +1534,42 @@ def runner_acquisition_retry(pr, run, reader):
                 and not any(r.get("component") == "actor" for r in reader.degraded_reasons))
     except (github_read.GitHubReadError, GhCommandError):
         return False
+
+
+def required_codeql_workflow(pr, run, reader):
+    """Code-scanning rules require a tool rather than its Actions job check."""
+    path = run.get("path")
+    if (not isinstance(path, str) or not path.startswith(".github/workflows/")
+            or not path.endswith((".yml", ".yaml")) or ".." in path.split("/")):
+        return False
+    rules = reader.paged_json(
+        f"/repos/{pr['repo']}/rules/branches/{quote(pr['base_branch'], safe='')}",
+        step_prefix="acquisition_scan_rules",
+    )
+    if not any(rule.get("type") == "code_scanning" and any(
+            tool.get("tool") == "CodeQL"
+            for tool in rule.get("parameters", {}).get("code_scanning_tools", [])
+    ) for rule in rules):
+        return False
+    content = reader.get_json(
+        f"/repos/{pr['repo']}/contents/{quote(path, safe='/')}?ref={quote(pr['head_sha'], safe='')}",
+        step="acquisition_workflow_source",
+    )
+    if content.get("encoding") != "base64" or content.get("path") != path:
+        return False
+    try:
+        workflow = yaml.safe_load(base64.b64decode(content["content"]).decode("utf-8"))
+    except (KeyError, ValueError, yaml.YAMLError):
+        return False
+    if not isinstance(workflow, dict) or not isinstance(workflow.get("jobs"), dict):
+        return False
+    return any(
+        isinstance(job, dict) and isinstance(job.get("steps"), list) and any(
+            isinstance(step, dict) and isinstance(step.get("uses"), str)
+            and step["uses"].startswith("github/codeql-action/analyze@")
+            for step in job["steps"]
+        ) for job in workflow["jobs"].values()
+    )
 
 
 def reconcile_pending_reruns(state, head_sha, workflow_runs):
@@ -1598,16 +1643,15 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
     if pending:
         result["reason"] = "rerun_outcome_pending"
         return result
-    current_runs = {
-        run.get("id"): run for run in get_workflow_runs_for_sha(pr["repo"], pr["head_sha"], reader=watcher_reader())
-    } if eligible_runs else {}
     recovery_runs = [run for run in eligible_runs if run.get("retry_mode") == "runner_acquisition"]
+    submission_reader = watcher_reader()
     if recovery_runs:
-        fresh_pr = resolve_pr(str(pr["number"]), pr["repo"])
-        if (fresh_pr["head_sha"] != pr["head_sha"] or fresh_pr["closed"]
-                or fresh_pr["merged"] or fresh_pr["base_branch"] != pr["base_branch"]):
-            result["reason"] = "pr_changed"
-            return result
+        # Pre-write acquisition evidence must reach GitHub, even inside the
+        # polling cache's short coalescing window.
+        submission_reader.cache_enabled = False
+    current_runs = {
+        run.get("id"): run for run in get_workflow_runs_for_sha(pr["repo"], pr["head_sha"], reader=submission_reader)
+    } if eligible_runs else {}
     cycle_charged = False
     for run in eligible_runs:
         run_id = run.get("run_id")
@@ -1622,9 +1666,15 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
         recovery = run.get("retry_mode") == "runner_acquisition"
         if recovery and not runner_acquisition_retry(pr, {
             **run, "conclusion": current_run.get("conclusion"),
-        }, watcher_reader()):
+        }, submission_reader):
             result["skipped_run_ids"].append(run_id)
             continue
+        if recovery:
+            fresh_pr = resolve_pr(str(pr["number"]), pr["repo"])
+            if (fresh_pr["head_sha"] != pr["head_sha"] or fresh_pr["closed"]
+                    or fresh_pr["merged"] or fresh_pr["base_branch"] != pr["base_branch"]):
+                result["reason"] = "pr_changed"
+                break
         if not cycle_charged:
             set_retry_count(state, pr["head_sha"], retries_used + 1)
             cycle_charged = True
@@ -1666,7 +1716,7 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
         result["rerun_count"] = len(result["rerun_run_ids"])
         save_state(state_path, state)
 
-    if result["reason"] not in {"rerun_outcome_unknown", "rerun_rejected"}:
+    if result["reason"] not in {"rerun_outcome_unknown", "rerun_rejected", "pr_changed"}:
         if result["rerun_run_ids"]:
             result["reason"] = "rerun_triggered"
         else:
