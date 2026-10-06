@@ -13,9 +13,10 @@ Each pass calls `launchplane-write-action.py merge-train-controller-run-once
 - failed:      the controller blocked, or a train candidate failed its checks; a block
                only because the batch candidate's checks are still running waits
 - needs_owner: the PR was closed, stays ineligible, or needs a branch update
-               this command may not make
+               this command may not make; another local driver is running,
+               or this PR repeatedly gets the same controller refusal
 - error:       no response kept coming back, the controller kept refusing, or
-               the wall-clock deadline passed
+               the wall-clock deadline passed, or local locking is unavailable
 
 A controller lease held by another driver is a wait, not a failure; if it is
 still held at the deadline the outcome is needs_owner.
@@ -243,9 +244,12 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
             state.own_refusal_code = code if own_refusal else ""
             if state.own_refusal_streak >= settings.max_own_refusals:
                 emit("snapshot", snapshot)
-                if _record_landings(settings, io, state, emit) == "landed":
+                landing = _record_landings(settings, io, state, emit)
+                if landing == "landed":
                     _finish_landing(settings, io, state, emit, started)
                     return _stop(settings, state, emit, "landed")
+                if landing == "needs_owner":
+                    return _stop(settings, state, emit, "needs_owner", reason="pull request is closed")
                 return _stop(settings, state, emit, "needs_owner", reason="repeated controller refusal for this pull request",
                              refusal_count=state.own_refusal_streak,
                              **{key: snapshot[key] for key in ("error_code", "http_status", "trace_id")})
@@ -649,9 +653,10 @@ def main(argv: list[str]) -> int:
         with local_driver(settings) as holder:
             if holder is not None:
                 outcome = _stop(settings, DriveState(batch={settings.number}), emit, "needs_owner",
-                                reason="another local driver is running for this train", running_driver=holder,
+                                reason="another local driver is running for this train", running_driver=holder, prs=[],
                                 recommendation="Add ready-to-merge and leave the PR to the running driver. "
-                                               "If it exits before this PR lands, rerun this driver.")
+                                               "If it exits before this PR lands, rerun this driver. "
+                                               "No Director decision is needed for local contention.")
             else:
                 outcome = drive(settings, live_io(args.helper_timeout, deadline_at=settings.deadline,
                                                  repository_context=settings.repository), emit)
