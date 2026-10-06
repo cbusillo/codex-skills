@@ -379,18 +379,21 @@ creating, changing, assessing, or closing a milestone, read the
 issues. With `DIRECTION.md`, only listed milestone titles are eligible; propose
 new waypoints through `direction`.
 
+## Status Labels
+
 Use status labels narrowly:
 
-- `plan:active`: actionable now.
+- `plan:active`: actionable now, including work whose next actor is any agent.
+  Keep actionable unstarted follow-ups, capacity/selection queues, and Supervisor
+  handoffs active. Ordinary delivery awaiting QA, review, the merge train, or deployment
+  stays active too.
 - `plan:blocked`: a current dependency, preferably an open native blocker.
-- `plan:waiting`: a durable plan parked on a named person, decision, or event.
-  Do not apply it to ordinary bugs or PRs awaiting QA, review, or deployment.
+- `plan:waiting`: a durable plan parked on a named person, decision, or external
+  event. Name who acts and on what in `Waiting for:` or `Parked until:`.
 - `plan:stale`: needs review before guiding work.
 - `plan:done`: completed or deliberately superseded.
 
-Do not label an item blocked just because it is out of focus. Without an open
-native blocker, prefer `plan:waiting`; use `Waiting for:` or `Parked until:`
-with the concrete condition.
+Being out of focus or awaiting an agent is not a blocker or a waiting condition.
 For a blocking non-issue condition, say `Blocked by: No native issue blocker;
 waiting for ...`.
 
@@ -459,10 +462,14 @@ Record the exact action in a new comment; never edit existing question or
 decision comments to migrate them, or bypass a closure refusal through another tool.
 
 Prefer non-closing `Refs` from PRs unless the Director requests auto-close or an
-internal task is conclusively complete. After merge, inspect referenced issues:
-close only those whose finish lines are satisfied; end every other one done
-or split as the [executing loop](../references/executing-loop.md) says. Use
-`gh-plan.py close --comment-file` for durable plan issues.
+internal task is conclusively complete. After a landing, reconcile issues
+referenced by the canonical PR body and comments and every issue it unblocks,
+including cross-repository dependents. Check remaining waits against the landed
+evidence; update Current Status, labels and native relationships under
+[Status Labels](#status-labels), preserving unresolved blockers and Director
+holds. Close only issues whose finish lines are satisfied; end every other one
+done or split as the [executing loop](../references/executing-loop.md) says.
+Use `gh-plan.py close --comment-file` for durable plan issues.
 
 For closure failures, partial Project synchronization, quota or retry/reconciliation,
 or helper output details, read

@@ -357,18 +357,8 @@ covers that same action and scope; ask only for a missing disposal/preservation
 choice or an expanded scope. Prefer `git branch -d <branch>` after worktree
 removal when Git can prove the branch is merged.
 
-Issue closeout belongs to the winning PR. After the canonical PR merges, sweep
-every issue referenced by that PR body or its closing comments. For each issue:
-
-- close it only when the merged PR conclusively satisfies the issue finish line
-  and acceptance criteria
-- otherwise update `Current Status` or add a comment with what remains and leave
-  it open
-- use `scripts/gh-issue close` with stdin for close comments so Markdown is
-  passed through a formatting-safe close path
-
-Also update stale planning state, duplicate issues, or workstream comments so
-future agents can see which PR was selected and which PRs were superseded.
+For issue closeout after the winning PR lands, follow github-plan's
+[Close Or Hand Off](../../github-plan/SKILL.md#close-or-hand-off).
 
 Handoff content follows the same durability rule. For GitHub-backed work, write
 recovery-critical handoff notes to the owning issue or PR timeline. Local
@@ -383,10 +373,8 @@ required checks, or release policy.
 
 Keep planning state separate from PR execution state:
 
-- `plan:*` labels belong on durable planning issues. `plan:waiting` means a plan
-  is parked on a decision, external event, or other non-issue condition. It is
-  not the right label for an ordinary bug waiting on QA, a PR waiting on preview
-  review, or a branch waiting on merge approval.
+- `plan:*` labels belong on durable planning issues; before setting them, read
+  github-plan's [Status Labels](../../github-plan/SKILL.md#status-labels).
 - `preview-ready` means a preview environment is available for review. It is
   repo-local workflow evidence, not approval and not a QA result.
 - `awaiting-qa` is an optional repo-local manual QA handoff label. Use it only

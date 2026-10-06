@@ -966,9 +966,8 @@ failure and never causes a merge retry.
   reconciler. Never reset, stash, clean, or overwrite an unsafe checkout. The
   active task worktree stays the agent's source.
 - **Verify and sweep**: Check Actions and relevant security and quality signals
-  before closing planning state. `Refs #...` is non-closing: after the canonical
-  PR merges, close only issues whose finish line is conclusively met and update
-  the rest.
+  before closing planning state, then follow github-plan's
+  [Close Or Hand Off](../github-plan/SKILL.md#close-or-hand-off) reconciliation.
 
 ## Diagnostics And Hygiene
 
