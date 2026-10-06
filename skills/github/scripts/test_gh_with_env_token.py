@@ -912,7 +912,7 @@ def test_pr_create_validation_refusal_preserves_unknown_write_controls() -> None
                 [sys.executable, str(SCRIPT.with_name("gh-pr.py")), "--repo", "director/catalog",
                  "create", "--title", "fixture", "--body-file", str(body),
                  "--base", "main", "--head", "work/fixture"],
-                env=env, text=True, capture_output=True, check=False, timeout=30,
+                env=env, text=True, capture_output=True, timeout=30,
             )
             assert result.returncode == 1, result
             payload = json.loads(result.stdout)

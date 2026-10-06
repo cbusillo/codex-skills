@@ -1313,8 +1313,8 @@ def _is_pr_create_validation_refusal(stderr: str) -> bool:
         return False
     return all(
         re.fullmatch(
-            r"(?:Head sha can't be blank|Base sha can't be blank|"
-            r"Head ref must be a branch|No commits between [^\s,()]+ and [^\s,()]+)",
+            r"Head sha can't be blank|Base sha can't be blank|"
+            r"Head ref must be a branch|No commits between [^\s,()]+ and [^\s,()]+",
             error,
         ) is not None
         for error in match.group(1).split(", ")
