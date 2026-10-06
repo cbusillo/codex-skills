@@ -482,8 +482,8 @@ ownership is claimed by`, and an empty holder (`Claimed by no one`,
 `Worker: None`, `Session: unassigned`) do not assert an executing worker.
 Denials apply only to their own assertion; conditional, contrastive, or
 unknown-holder statements and trailing handoff/work narrative remain ambiguous.
-Single newlines inside prose do not end its ownership context; fields, list
-items and paragraph boundaries stay separate, and dots inside identity tokens
+Single newlines inside prose do not end its ownership context; fields, claim
+headers, list items and paragraph boundaries stay separate, and dots inside identity tokens
 do not hide later qualifiers.
 Non-ownership prose such as
 `no claims` or `releases claim` never releases an existing claim: only the

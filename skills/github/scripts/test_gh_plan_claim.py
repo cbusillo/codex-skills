@@ -871,7 +871,7 @@ class ClaimTests(unittest.TestCase):
         self.assert_no_writes()
 
     def test_generated_identity_accepts_valid_punctuation_tokens(self):
-        for token in ("claude-opus-5.5", "capacity;run", "capacity!run", "capacity?run", "worker__repair"):
+        for token in ("claude-opus-5.5", "capacity;run", "capacity!run", "capacity?run", "worker__repair", "ci_worker", "run_session", "_worker"):
             for field in ("worker", "session"):
                 with self.subTest(token=token, field=field):
                     self.setUp()
@@ -942,6 +942,9 @@ class ClaimTests(unittest.TestCase):
             "* No ownership is claimed by this sweep.",
             "Worker: nobody\nSession: no one",
             "**Not** claimed by this sweep.",
+            "No longer owned by this sweep.",
+            "No implementation ownership is claimed by the direction sweep.",
+            "Not claimed by this sweep run.",
             "Unclaimed by this sweep.", "Work remains unowned by the sweep.",
             "Disowned by this sweep.",
         ):
@@ -1000,6 +1003,15 @@ class ClaimTests(unittest.TestCase):
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
                 self.issue["body"] += "\r\nReclaimed by another-worker after the release."
                 with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+
+    def test_no_change_summary_does_not_hide_a_copied_claim_header(self):
+        for status in ("No changes\nOwned by trial-b", "- No code changes\n  Claimed by trial-b",
+                       "No work - claimed by trial-b.", "No ownership\nOwned by trial-b"):
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["body"] += "\n" + status
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
 
     def test_responsibility_status_with_released_claim_allows_new_claim(self):
         self.issue["body"] += "\n" + RESPONSIBILITY_STATUS
