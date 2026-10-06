@@ -59,7 +59,7 @@ def format_ownership(text: str) -> tuple[str, ...]:
     return (
         text, f"`{text}`", f"``{text}``", f"**{text}**", f"_{text}_",
         f"***{text}***", f"[{text}](https://example.com/status)",
-        f"[{text}][status]", "> " + text.replace("\n", "\n> "),
+        f"[{text}][status]\n\n[status]: https://example.com/status", "> " + text.replace("\n", "\n> "),
         text.replace("claimed by", "**claimed** by").replace("owned by", "owned **by**"),
         text.replace("this sweep", "[`this sweep`](https://example.com/status)"),
     )
@@ -793,8 +793,10 @@ class ClaimTests(unittest.TestCase):
                 self.assertIn("post", self.events)
 
     def test_real_sweep_statuses_allow_claims_with_markdown(self):
-        for status in (BD_SWEEP_STATUS, SWEEP_DISCLAIMERS[0]):
-            for formatted in format_ownership(status):
+        for status in (BD_SWEEP_STATUS, SWEEP_DISCLAIMERS[0],
+                       "no implementation ownership is claimed by this sweep."):
+            variants = (status,) if status == BD_SWEEP_STATUS else format_ownership(status)
+            for formatted in variants:
                 with self.subTest(status=formatted):
                     self.setUp()
                     self.issue["body"] += "\n" + formatted
@@ -821,6 +823,8 @@ class ClaimTests(unittest.TestCase):
 
     def test_formatted_legacy_claim_comments_still_refuse(self):
         for formatted in format_ownership("Claimed by another-worker\nSession: another-session"):
+            if formatted.startswith("> "):
+                continue
             with self.subTest(comment=formatted):
                 self.setUp()
                 self.issue["body"] += "\n" + BD_SWEEP_STATUS
@@ -840,12 +844,33 @@ class ClaimTests(unittest.TestCase):
             "Implementation is ~~not~~ claimed by another-worker.",
             "~~No~~ implementation ownership is claimed by another-worker.",
             "Not claimed by [this sweep](another-worker holds work/repair)",
+            "No implementation ownership is claimed by [this sweep][another-worker still holds work/repair].",
+            "No implementation ownership is claimed by `[this sweep](another-worker)`.",
+            "No implementation ownership is claimed by `[this sweep][another-worker]`.",
         ):
             with self.subTest(status=status):
                 self.setUp()
                 self.issue["body"] += "\n" + status
                 with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
                 self.assert_no_writes()
+
+    def test_quote_does_not_claim_on_behalf_of_comment_author(self):
+        self.compete()
+        self.comments += [
+            {"id": 2, "body": "> **Claimed by another-worker**\n\nIs this still active?", "user": {"login": "reader"}},
+            {"id": 3, "body": "Released claim 1"},
+        ]
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_defined_reference_link_denials_allow_fresh_claim(self):
+        for holder, definition in (("[this sweep][Prior Sweep]", "[prior sweep]"),
+                                   ("[this sweep][]", "[THIS SWEEP]")):
+            with self.subTest(holder=holder):
+                self.setUp()
+                self.issue["body"] += f"\nNot claimed by {holder}.\n\n{definition}: https://example.com/status"
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_linked_denial_preserves_valid_destinations_and_titles(self):
         for destination in (

@@ -154,29 +154,43 @@ def references_issue(text: str, number: int) -> bool:
                 or re.search(rf"(?:^|/){number}[-_]", text))
 
 
-def ownership_text(text: str) -> str:
+def ownership_text(text: str, *, strip_quotes: bool = True) -> str:
     """Unwrap human-readable Markdown without changing machine directives."""
     text = "\n".join(text.splitlines())
+    # Code content is literal Markdown: protect it while unwrapping other spans.
+    code: list[str] = []
+
+    def keep_code(match: re.Match[str]) -> str:
+        code.append(match.group(2))
+        return f"\x00{len(code) - 1}\x00"
+
+    text = re.sub(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", keep_code, text, flags=re.DOTALL)
     # Keep paragraph and list boundaries, including hard-wrapped quoted prose.
-    text = re.sub(r"(?m)^[ \t]*(?:>[ \t]?)+", "", text)
+    if strip_quotes:
+        text = re.sub(r"(?m)^[ \t]*(?:>[ \t]?)+", "", text)
     # Retain link labels; destinations and optional titles are not holder prose.
     destination = r"(?:<[^>\n]*>|[^()\s]*(?:\([^()\s]*\)[^()\s]*)*)"
     title = r'''(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?'''
+
+    def reference_key(label: str) -> str:
+        return " ".join(label.split()).casefold()
+
+    definitions = re.compile(rf"(?m)^ {{0,3}}\[([^\]\n]+)\]:[ \t]*{destination}{title}[ \t]*$")
+    references = {reference_key(match.group(1)) for match in definitions.finditer(text)}
+    text = definitions.sub("", text)
     text = re.sub(rf"\[([^\[\]]*)\]\([ \t]*{destination}{title}[ \t]*\)", r"\1", text)
-    text = re.sub(r"\[([^\[\]]+)\]\[[^\]\n]*\]", r"\1", text)
+    text = re.sub(r"\[([^\[\]]+)\]\[([^\]\n]*)\]",
+                  lambda match: match.group(1) if reference_key(match.group(2) or match.group(1)) in references
+                  else match.group(), text)
     # Paired delimiters only: underscores inside identity tokens are literal.
     # Repetition handles nested emphasis and links inside emphasized spans.
-    patterns = (
-        r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)",
-        r"(?<!\w)(\*{1,3}|_{1,3})(?=\S)(.+?)(?<=\S)\1(?!\w)",
-    )
-    for pattern in patterns:
-        while True:
-            unwrapped = re.sub(pattern, r"\2", text, flags=re.DOTALL)
-            if unwrapped == text:
-                break
-            text = unwrapped
-    return text
+    emphasis = r"(?<!\w)(\*{1,3}|_{1,3})(?=\S)(.+?)(?<=\S)\1(?!\w)"
+    while True:
+        unwrapped = re.sub(emphasis, r"\2", text, flags=re.DOTALL)
+        if unwrapped == text:
+            break
+        text = unwrapped
+    return re.sub(r"\x00(\d+)\x00", lambda match: code[int(match.group(1))], text)
 
 
 def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = None) -> bool:
@@ -307,7 +321,8 @@ def discussion_evidence(
         comment_id = comment.get("id")
         if comment_id is not None and released_ids.get((comment_id, author), -1) > index:
             continue
-        prose = ownership_text(text)
+        # A quoted historical header is not a claim by the quoting author.
+        prose = ownership_text(text, strip_quotes=False)
         legacy = re.match(r"Claimed by:?\s+(\S+)", prose, re.IGNORECASE)
         if legacy and not parsed and has_ownership_assertion(text):
             worker = legacy.group(1)
