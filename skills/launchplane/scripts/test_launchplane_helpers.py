@@ -6795,6 +6795,111 @@ def _promotion_status_response() -> dict[str, object]:
     }
 
 
+def _run_read_transport(
+    argv: list[str], *, response: object, required_seconds: float = 0,
+) -> tuple[int, dict[str, Any], list[dict[str, object]]]:
+    calls: list[dict[str, object]] = []
+
+    class Response:
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        @staticmethod
+        def read() -> bytes:
+            if isinstance(response, BaseException):
+                raise response
+            return json.dumps(response).encode()
+
+    def fake_open(request: urllib.request.Request, *, timeout: float) -> Response:
+        calls.append({"method": request.get_method(), "timeout": timeout})
+        # Controlled clock: the complete checklist takes about 16 seconds.
+        if timeout < required_seconds:
+            raise urllib.error.URLError(TimeoutError("fixture-private-message"))
+        return Response()
+
+    output = io.StringIO()
+    with (
+        temporary_attribute(write_action, "prepare_operator_settings", lambda **_kwargs: SETTINGS),
+        temporary_attribute(write_action, "safe_urlopen", fake_open),
+        redirect_stdout(output),
+    ):
+        status = write_action.main(argv)
+    return status, json.loads(output.getvalue()), calls
+
+
+def test_complete_promotion_read_budget_and_explicit_override_reach_transport() -> None:
+    argv = ["product-promotion-status-read", "--product", "example-product"]
+    response = _promotion_status_response()
+    status, payload, calls = _run_read_transport(argv, response=response, required_seconds=16)
+    assert status == 0, payload
+    assert payload["summary"]["trace_id"] == response["trace_id"]
+    assert len(calls) == 1
+    assert calls[0]["method"] == "GET"
+    write = write_action.parse_args(["product-promotion-dry-run", "--product", "example-product",
+        "--reason", "fixture", "--evidence-fingerprint", "d" * 64, "--idempotency-key", "fixture"])
+    controller = write_action.parse_args(["merge-train-controller-run-once", "--repo", "example/repo"])
+    assert write.timeout < 16 <= calls[0]["timeout"] < controller.timeout
+    ordinary = write_action.parse_args(["product-profile-read", "--product", "example-product"])
+    policy = write_action.parse_args(["merge-train-policy-read", "--repo", "example/repo"])
+    assert ordinary.timeout == policy.timeout == write.timeout
+    for budget, expected_status in ((7.5, 1), (22.5, 0)):
+        status, payload, calls = _run_read_transport(
+            ["--timeout", str(budget), *argv], response=response, required_seconds=16,
+        )
+        assert status == expected_status, payload
+        assert calls == [{"method": "GET", "timeout": budget}]
+        if status:
+            assert payload["summary"]["error_code"] == "client_timeout"
+            assert payload["summary"]["timeout_seconds"] == budget
+
+
+@pytest.mark.parametrize("argv", [
+    ["product-promotion-status-read", "--product", "example-product"],
+    ["product-profile-read", "--product", "example-product"],
+    ["integration-allowances-read", "--product", "example-product", "--context", "example", "--instance", "testing"],
+    ["target-replacement-plan-read", "--product", "example-product", "--instance", "testing"],
+    ["repository-inventory-read", "--repository-id", "42"],
+    ["production-backup-authority-read", "--product", "example-product", "--context", "example", "--instance", "prod", "--promotion-action", "generic_web_prod_promotion"],
+    ["private-health-endpoint-read", "--product", "example-product", "--context", "example"],
+])
+@pytest.mark.parametrize("error", [
+    TimeoutError("fixture-private-message"),
+    urllib.error.URLError(TimeoutError("fixture-private-message")),
+])
+def test_read_socket_timeout_is_client_expiry_without_retry(argv: list[str], error: Exception) -> None:
+    status, payload, calls = _run_read_transport(["--timeout", "7.5", *argv], response=error)
+    assert status == 1, payload
+    assert len(calls) == 1
+    assert payload["summary"]["error_code"] == "client_timeout"
+    assert payload["summary"]["timeout_seconds"] == 7.5
+    assert payload["warnings"][0]["code"] == "client_timeout"
+    assert "7.5 s" in payload["warnings"][0]["message"]
+    assert "--timeout" in payload["summary"]["recommendation"]
+    assert not payload["summary"].get("trace_id")
+    assert "fixture-private-message" not in json.dumps(payload)
+    assert "inspect the Launchplane trace" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("response,expected_code", [
+    (ConnectionRefusedError("fixture-private-message"), "provider_unavailable"),
+    (urllib.error.URLError("fixture-private-message"), "provider_unavailable"),
+    (urllib.error.HTTPError("https://example.invalid", 403, "Forbidden", Message(),
+        io.BytesIO(b'{"error_code":"authorization_denied","trace_id":"launchplane_req_denied"}')), "denied"),
+    ({"status": "ok", "promotion_status": []}, "invalid_response"),
+])
+def test_read_timeout_does_not_reclassify_other_failures(response: object, expected_code: str) -> None:
+    status, payload, calls = _run_read_transport(
+        ["product-promotion-status-read", "--product", "example-product"], response=response,
+    )
+    assert status == 1, payload
+    assert len(calls) == 1
+    assert payload["warnings"][0]["code"] == expected_code
+    assert "fixture-private-message" not in json.dumps(payload)
+
+
 def test_product_promotion_status_keeps_the_fingerprint_and_drops_release_detail() -> None:
     status, payload, _posts, reads = _run_main(
         ["product-promotion-status-read", "--product", "example-product"],

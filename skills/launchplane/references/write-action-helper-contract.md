@@ -29,6 +29,22 @@ when their path spellings differ. A repository-local link to an external payload
 and an external link to repository-local data are both refused; an external payload,
 including an external link to another external file, is accepted.
 
+## Read budgets and timeout diagnostics
+
+`product-promotion-status-read` defaults to a bounded 30-second HTTP socket
+timeout to accommodate complete release-checklist compilation. Other reads,
+including the read-only POST used by `target-replacement-plan-read`, keep their
+10-second default. An explicit `--timeout` before the subcommand overrides
+the budget. Write and dry-run commands retain their existing budgets; the
+controller budget is described in [Merge Train Controller](#merge-train-controller).
+
+A direct or URL-wrapped socket timeout returns `unavailable` with
+`client_timeout` and `timeout_seconds`. It means the client budget expired,
+not that Launchplane is down. No response trace was received; retry the read
+with a longer explicit budget. Other connection failures, HTTP refusals,
+configuration failures and invalid projections keep their distinct diagnostics.
+The helper does not retry automatically.
+
 ## Merge-train enrollment read
 
 `merge-train-policy-read --repo OWNER/REPO` calls the complete active-policy
@@ -967,8 +983,9 @@ compact evidence. Repeated calls should read the action before deciding whether
 to run again.
 
 Both dry-run and mutating controller calls default to a 180-second HTTP timeout;
-other commands keep their 10-second default. An explicit `--timeout` before the
-subcommand overrides either default. A client timeout returns `client_timeout`
+other write and dry-run commands keep their 10-second default. Read budgets
+are described in [Read budgets and timeout diagnostics](#read-budgets-and-timeout-diagnostics).
+An explicit `--timeout` before the subcommand overrides the default. A client timeout returns `client_timeout`
 with `timeout_seconds` and a message saying how long it waited. It does not
 establish a service outage. A mutating pass may have completed after the client
 stopped waiting: read the PR and controller state before any retry.
