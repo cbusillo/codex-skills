@@ -36,7 +36,7 @@ timeout to accommodate complete release-checklist compilation. Other reads,
 including the read-only POST used by `target-replacement-plan-read`, keep their
 10-second default. An explicit `--timeout` before the subcommand overrides
 the budget. Write and dry-run commands retain their existing budgets; the
-controller budget is described in [Controller](#controller).
+controller budget is described in [Merge Train Controller](#merge-train-controller).
 
 A direct or URL-wrapped socket timeout returns `unavailable` with
 `client_timeout` and `timeout_seconds`. It means the client budget expired,
