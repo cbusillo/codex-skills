@@ -120,11 +120,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "label_defs": {
         **github_agent.LABEL_DEFS,
         "plan": {"color": "5319e7", "description": "Durable planning issue"},
-        "plan:active": {"color": "0e8a16", "description": "Plan is actionable now"},
-        "plan:blocked": {"color": "d93f0b", "description": "Plan blocked by an open native dependency issue"},
-        "plan:waiting": {"color": "fbca04", "description": "Durable plan parked pending a decision, event, or non-issue condition; not for PR QA"},
-        "plan:stale": {"color": "bfbfbf", "description": "Plan needs review before guiding work"},
-        "plan:done": {"color": "006b75", "description": "Plan completed or superseded"},
+        "plan:active": {"color": "0e8a16", "description": "See https://github.com/cbusillo/codex-skills/blob/main/skills/github-plan/SKILL.md#status-labels"},
+        "plan:blocked": {"color": "d93f0b", "description": "See https://github.com/cbusillo/codex-skills/blob/main/skills/github-plan/SKILL.md#status-labels"},
+        "plan:waiting": {"color": "fbca04", "description": "See https://github.com/cbusillo/codex-skills/blob/main/skills/github-plan/SKILL.md#status-labels"},
+        "plan:stale": {"color": "bfbfbf", "description": "See https://github.com/cbusillo/codex-skills/blob/main/skills/github-plan/SKILL.md#status-labels"},
+        "plan:done": {"color": "006b75", "description": "See https://github.com/cbusillo/codex-skills/blob/main/skills/github-plan/SKILL.md#status-labels"},
         "audit": {"color": "d4c5f9", "description": "Question or completed work for the weekly direction audit"},
     },
     "default_sections": [
