@@ -58,9 +58,10 @@ def format_ownership(text: str) -> tuple[str, ...]:
     """Common status formatting, including formatting inside an assertion."""
     return (
         text, f"`{text}`", f"``{text}``", f"**{text}**", f"_{text}_",
-        f"***{text}***", f"~~{text}~~", f"[{text}](https://example.com/status)",
+        f"***{text}***", f"[{text}](https://example.com/status)",
         f"[{text}][status]", "> " + text.replace("\n", "\n> "),
         text.replace("claimed by", "**claimed** by").replace("owned by", "owned **by**"),
+        text.replace("this sweep", "[`this sweep`](https://example.com/status)"),
     )
 
 
@@ -826,6 +827,37 @@ class ClaimTests(unittest.TestCase):
                 self.comments = [{"id": 1, "body": formatted, "user": {"login": TEST_BOT}}]
                 with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
                 self.assert_no_writes()
+
+        for comment in ("**Claimed by:** another-worker", "**claimed by:** unknown"):
+            with self.subTest(comment=comment):
+                self.setUp()
+                self.comments = [{"id": 1, "body": comment, "user": {"login": TEST_BOT}}]
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_retracted_negations_and_visible_non_link_text_still_refuse(self):
+        for status in (
+            "Implementation is ~~not~~ claimed by another-worker.",
+            "~~No~~ implementation ownership is claimed by another-worker.",
+            "Not claimed by [this sweep](another-worker holds work/repair)",
+        ):
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["body"] += "\n" + status
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_linked_denial_preserves_valid_destinations_and_titles(self):
+        for destination in (
+            'https://example.com/status', 'https://example.com/status_(prior)',
+            'https://example.com/status "prior sweep"', "https://example.com/status 'prior sweep'",
+            '<https://example.com/prior sweep>', '',
+        ):
+            with self.subTest(destination=destination):
+                self.setUp()
+                self.issue["body"] += f"\nNot claimed by [this sweep]({destination})."
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_formatted_denial_never_releases_structured_claims(self):
         for formatted in format_ownership("No implementation ownership is claimed by this sweep."):

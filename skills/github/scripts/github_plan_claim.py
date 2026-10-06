@@ -160,13 +160,15 @@ def ownership_text(text: str) -> str:
     # Keep paragraph and list boundaries, including hard-wrapped quoted prose.
     text = re.sub(r"(?m)^[ \t]*(?:>[ \t]?)+", "", text)
     # Retain link labels; destinations and optional titles are not holder prose.
-    text = re.sub(r"\[([^\[\]]*)\]\((?:[^()\n]|\([^()\n]*\))*\)", r"\1", text)
+    destination = r"(?:<[^>\n]*>|[^()\s]*(?:\([^()\s]*\)[^()\s]*)*)"
+    title = r'''(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?'''
+    text = re.sub(rf"\[([^\[\]]*)\]\([ \t]*{destination}{title}[ \t]*\)", r"\1", text)
     text = re.sub(r"\[([^\[\]]+)\]\[[^\]\n]*\]", r"\1", text)
     # Paired delimiters only: underscores inside identity tokens are literal.
     # Repetition handles nested emphasis and links inside emphasized spans.
     patterns = (
         r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)",
-        r"(?<!\w)(\*{1,3}|_{1,3}|~~)(?=\S)(.+?)(?<=\S)\1(?!\w)",
+        r"(?<!\w)(\*{1,3}|_{1,3})(?=\S)(.+?)(?<=\S)\1(?!\w)",
     )
     for pattern in patterns:
         while True:
@@ -306,7 +308,7 @@ def discussion_evidence(
         if comment_id is not None and released_ids.get((comment_id, author), -1) > index:
             continue
         prose = ownership_text(text)
-        legacy = re.match(r"Claimed by (\S+)", prose)
+        legacy = re.match(r"Claimed by:?\s+(\S+)", prose, re.IGNORECASE)
         if legacy and not parsed and has_ownership_assertion(text):
             worker = legacy.group(1)
             if released.get((worker, author), -1) > index:
