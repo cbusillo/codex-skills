@@ -144,8 +144,8 @@ records that run.
    Director says yes, the wider scope goes in a new brief for a fresh
    session; the running session's brief stays as it was.
 2. **Director questions live on the item's issue**, as a comment that starts
-   `Owner question:`. The Director answers in chat, Discord, or on GitHub. The
-   Supervisor records the answer as an `Owner decision` comment on that issue,
+   `Director question:`. The Director answers in chat, Discord, or on GitHub. The
+   Supervisor records the answer as a `Director decision:` comment on that issue,
    quoting the Director's words, saying where they were said, linking the
    question comment it answers, and points
    the session at it. It records only what the Director said. Briefs accept a decision recorded by the

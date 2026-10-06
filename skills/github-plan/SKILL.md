@@ -255,6 +255,18 @@ not override candidate exclusions or authorize starting it. Report incomplete
 `blocking_work_elsewhere_context` separately from candidate/dependency coverage,
 including truncation, unread gates, and unavailable reads.
 
+Also report `dependabot_candidates` as PR work needing an agent, with each PR's
+link and age. Read the PR discussion and check current ownership before taking
+it on; the PR is its work record, and issue-only `claim` does not claim a PR.
+For an authorized `go` on a PR candidate, load `github` and follow its existing
+PR workflow after the ownership check, using the PR record rather than creating
+an issue per PR. Uncertain or competing ownership remains a stop.
+Report `dependabot_unverified_candidates` and incomplete `dependabot_context`
+as uncertainty. Read [Next Work](../github/references/cli-reference.md#planning-next-work)
+for the PR discovery bounds. An empty issue list with PR candidates does not
+mean no work is available. This visibility changes no priority, hold, or merge
+authority.
+
 Check beyond occupied results before saying no work is available.
 `candidate_count` greater than the returned list calls for a larger bounded
 `--limit`; truncated inventory or incomplete dependencies remain a partial
@@ -426,11 +438,10 @@ labels, cleanup of stale `plan:active`, `plan:blocked`, `plan:waiting`, and
 `github/scripts/gh-issue close` helper is for non-plan issues, or when the plan
 helper is unavailable. Closing a durable plan with the generic issue helper can
 leave planning labels or Project Status stale.
-It also skips the relationship and not-planned decision preflight; perform those
-checks below yourself before using that fallback. For reaction approval, read
-the comment's `lastEditedAt` (must be explicitly null) and all reaction pages
-to verify that the repository owner reacted and when; if that evidence is
-unavailable, require the Director's typed decision comment.
+It also skips the relationship and not-planned decision preflight. Before using
+that fallback, read and apply the
+[closure decision contract](../github/references/cli-reference.md#planning-management),
+including its identity, timing, and edit-history checks.
 
 Before closing a planning issue, run
 `uv run <skill-dir>/../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
@@ -442,13 +453,10 @@ reads complete. Issues the plan blocks do not prevent its closure. Use
 `--reason not_planned` only for explicitly superseded or abandoned plans;
 retained open relationships are not completion evidence. For an issue in a
 milestone listed in merged `DIRECTION.md`, a `not_planned` close requires the
-Director's decision comment, posted as the repository owner after the last
-Current Status update, or the repository owner's thumbs-up reaction after that
-update on an unedited comment whose first line is
-`Owner decision: Close #<number> as not planned.` Record the exact action in a
-new comment; editing a reacted-to decision invalidates it. If reaction identity,
-time, or edit history cannot be read, the helper rejects it. Never bypass a
-closure refusal through another tool.
+Director's approval through the
+[closure decision contract](../github/references/cli-reference.md#planning-management).
+Record the exact action in a new comment; never edit existing question or
+decision comments to migrate them, or bypass a closure refusal through another tool.
 
 Prefer non-closing `Refs` from PRs unless the Director requests auto-close or an
 internal task is conclusively complete. After merge, inspect referenced issues:

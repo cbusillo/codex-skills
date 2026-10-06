@@ -406,6 +406,13 @@ label cleanup; an unavailable policy read leaves that part unverified.
 
 ## Merge Readiness
 
+First resolve the landing route under the GitHub skill's
+[Merging procedure](../SKILL.md#merging), for a single PR or a stack.
+Train-owned branch refresh and landing follow the Launchplane workflow or the
+assigned handoff. Apply the fresh-read checklist below before any merge or
+authorized train entry; only the direct merge and branch-update operations are
+replaced by that route.
+
 Before merging any PR, do a fresh PR read and account for feedback:
 
 - confirm merge state, draft state, base/head branches, and required checks with
@@ -462,8 +469,8 @@ retrying GraphQL-backed `gh pr view` or `gh pr merge`. Use the PR helper and
 report GraphQL-only surfaces, such as Projects or native sub-issues, as deferred
 when the helper cannot update or inspect them safely.
 
-For stacked PRs, consider a rollup/integration PR when the stack is more than
-two PRs deep or expensive checks would rerun at every layer.
+Outside a train-owned landing, consider a rollup/integration PR for stacks more
+than two PRs deep or when expensive checks would rerun at every layer.
 
 ## CI Failure Diagnosis
 
