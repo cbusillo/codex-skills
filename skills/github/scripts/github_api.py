@@ -1359,6 +1359,12 @@ def classify_legacy_failure(
         retryable = False
         fallback_eligible = False
         write_outcome = not_started
+    elif is_write and command_started and not stdout.strip() and _is_pr_create_validation_refusal(stderr):
+        cause = "validation_error"
+        disposition = "stop"
+        retryable = False
+        fallback_eligible = False
+        write_outcome = rejected
     elif any(text in lowered for text in ("deadline exceeded", "timed out", "timeout")):
         cause = "deadline_exceeded"
         disposition = "stop" if is_write else "retry"
@@ -1413,12 +1419,6 @@ def classify_legacy_failure(
         disposition = "requires_authorization"
         retryable = False
         fallback_eligible = True
-        write_outcome = rejected
-    elif is_write and command_started and not stdout.strip() and _is_pr_create_validation_refusal(stderr):
-        cause = "validation_error"
-        disposition = "stop"
-        retryable = False
-        fallback_eligible = False
         write_outcome = rejected
     elif "invalid character '<'" in lowered or "unexpected character '<'" in lowered:
         cause = "network_provider_failure"

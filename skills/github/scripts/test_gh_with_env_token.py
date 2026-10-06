@@ -857,6 +857,9 @@ def test_pr_create_validation_refusal_preserves_unknown_write_controls() -> None
     )
     cases = [
         (refusal, "", "validation_error", "rejected"),
+        (refusal.replace("work/fixture", "fix/retry-after-header"), "", "validation_error", "rejected"),
+        (refusal.replace("work/fixture", "fix/rate_limited"), "", "validation_error", "rejected"),
+        (refusal.replace("work/fixture", "fix/timeout"), "", "validation_error", "rejected"),
         ("HTTP 503: Service Unavailable", "", "network_provider_failure", "unknown"),
         (refusal + "\nconnection reset by peer", "", "network_provider_failure", "unknown"),
         (refusal, "https://github.com/director/catalog/pull/9\n", "network_provider_failure", "unknown"),
