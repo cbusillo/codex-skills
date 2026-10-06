@@ -310,7 +310,11 @@ selected, relabeled, or released automatically. This does not change global
 `--stale-waits-only` with the existing audit command: it reads only open issues
 and their prerequisites, leaving weekly audit markers and windows untouched.
 Unrecognized status formats and prerequisites closed as abandoned or duplicate
-remain unproven; completion evidence includes the issue closure reason.
+remain unproven; closure evidence includes the issue closure reason. A recorded
+PR landing requires its default-branch destination; a merge means the PR merged
+into its recorded base. A closed issue may be a split rather than a fulfilled
+finish line: known split status and unfinished native children stay unproven,
+and every reported closure still needs full-thread review.
 The report bounds issue checks by the existing inventory size and native
 blocker reads to two pages, skips known-empty native relationships, and caches
 reference reads; any limit or unread evidence keeps `complete` false.

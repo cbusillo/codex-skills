@@ -1267,7 +1267,7 @@ def test_stale_wait_report_preserves_open_closed_unmerged_and_unknown_conditions
     def fetch(args: list[str]) -> Any:
         path = args[1]
         if "/dependencies/blocked_by" in path:
-            return [{"number": 90, "state": "open"}]
+            return []
         if "/issues/71" in path:
             return {"state": "open", "pull_request": {}}
         if "/issues/72" in path:
@@ -1484,6 +1484,58 @@ def test_stale_wait_report_does_not_treat_abandoned_or_duplicate_work_as_complet
             if "/dependencies/" in _[1] else {"state": "closed", "state_reason": reason}
         ))
         assert report["complete"] and report["items"] == [], report
+
+
+def test_stale_wait_report_preserves_contradictory_status_and_split_prerequisites() -> None:
+    module = load()
+    bodies = (
+        "## Current Status\nJustin has not accepted yet.\nWaiting for: Supervisor routing.\n",
+        "## Current Status\nWaiting for: Supervisor routing.\nNext action: After Justin approves, release.\n",
+        "## Current Status\nState: Blocked on Justin's approval.\nWaiting for: Next agent.\n",
+        "## Current Status\nState: Pending Justin.\nWaiting for: Next agent.\n",
+        "## Current Status\nBlocked by: None. Justin must approve first.\nWaiting for: Next agent.\n",
+        "## Current Status\nWaiting for: Completion of #14.\n",
+    )
+    rows = [issue(n, "Unproven wait", labels=("plan:waiting",), body=body)
+            for n, body in enumerate(bodies, 1)]
+    def fetch(args: list[str]) -> Any:
+        if "/dependencies/" in args[1]:
+            return []
+        return {"state": "closed", "state_reason": "completed",
+                "body": "## Current Status\nState: Split. Live testing moved to #20.\n"}
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
+    assert report["complete"] and not report["items"], report
+    parent = {"state": "closed", "sub_issues_summary": {"total": 2, "completed": 1}}
+    assert not module.closed_wait_prerequisite(parent)
+
+
+def test_stale_wait_report_landing_requires_default_branch_but_merge_means_merge() -> None:
+    module = load()
+    rows = [issue(n, "Stacked child", labels=("plan:waiting",),
+                  body=f"## Current Status\nWaiting for: PR #71 to {action}.\n")
+            for n, action in ((1, "land"), (2, "merge"))]
+    def fetch(args: list[str]) -> Any:
+        path = args[1]
+        if "/dependencies/" in path:
+            return []
+        if "/issues/71" in path:
+            return {"state": "closed", "pull_request": {}}
+        if "/pulls/71" in path:
+            return {"merged_at": stamp(NOW), "base": {"ref": "work/root"}}
+        if path == "repos/owner/catalog":
+            return {"default_branch": "main"}
+        raise AssertionError(path)
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
+    assert report["complete"] and [item["number"] for item in report["items"]] == [2], report
+
+
+def test_stale_wait_report_reports_explicit_absence_of_all_waits() -> None:
+    module = load()
+    row = {**issue(41, "Parked on nobody", labels=("plan:waiting",),
+                   body="## Current Status\nWaiting for: None.\nBlocked by: None.\n"),
+           "issue_dependencies_summary": {"total_blocked_by": 0}}
+    report = module.stale_wait_report([row], "owner/catalog", fetch=lambda _: [])
+    assert report["complete"] and report["items"][0]["number"] == 41, report
 
 
 def main() -> int:

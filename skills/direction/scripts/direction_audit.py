@@ -598,6 +598,17 @@ def parked_issue(issue: dict[str, Any]) -> bool:
             and bool(labels & {"plan:waiting", "plan:blocked"}))
 
 
+def closed_wait_prerequisite(target: dict[str, Any]) -> bool:
+    """A closure is review evidence, not proof that a split's remainder ran."""
+    if target.get("state") != "closed" or target.get("state_reason") not in {None, "completed"}:
+        return False
+    summary = target.get("sub_issues_summary") or {}
+    if isinstance(summary.get("total"), int) and isinstance(summary.get("completed"), int):
+        if summary["completed"] < summary["total"]:
+            return False
+    return not re.search(r"(?im)^\s*State:\s*Split\b", str(target.get("body") or ""))
+
+
 def stale_wait_report(
     issues: list[dict[str, Any]], repo: str, *, fetch: Callable[[list[str]], Any],
     inventory_complete: bool = True, max_issues: int = MAX_PAGES * 100,
@@ -633,15 +644,24 @@ def stale_wait_report(
         sections = github_direction_next.section_map(str(issue.get("body") or ""))
         status = next((text for title, text in sections.items() if title.casefold() == "current status"), "")
         evidence: list[dict[str, Any]] = []
-        pending = False
         unread = False
         fields: list[tuple[str, str]] = []
-        status_field = r"State|Next action|Blocked by|Waiting for|Parked until|Last verified|Validation|Evidence|Retention|Recovery|Worker|Session|Branch"
-        for entry in re.split(rf"(?im)(?=^\s*(?:[-*]\s+)?(?:{status_field}):)", status):
+        status_field = r"(?:State|Next action|Blocked by|Waiting for|Parked until|Last verified|Validation|Evidence|Retention|Recovery|Worker|Session|Branch)"
+        entries = re.split(rf"(?im)(?=^\s*(?:[-*]\s+)?{status_field}:)", status)
+        unknown_context = False
+        for entry in entries:
             match = re.match(r"\s*(?:[-*]\s+)?(Waiting for|Blocked by|Parked until):\s*(.+)", entry, re.I | re.S)
             if match:
                 fields.append((match[1], match[2].strip()))
-        pending = not fields or bool(re.search(r"(?im)^\s*(?:[-*]\s+)?(?:Waiting on:|State:.*(?:waiting for|awaiting|waiting on|parked until))", status))
+            elif entry.strip():
+                known = re.match(rf"\s*(?:[-*]\s+)?{status_field}:\s*(.*)", entry, re.I | re.S)
+                if not known:
+                    unknown_context = True
+                elif re.match(r"\s*(?:[-*]\s+)?State:", entry, re.I):
+                    unknown_context |= not bool(re.fullmatch(r"(?:active|waiting|blocked|parked|unstarted|not started)[. ]*", known[1].strip(), re.I))
+                elif re.match(r"\s*(?:[-*]\s+)?Next action:", entry, re.I):
+                    unknown_context |= bool(re.search(r"\b(?:after|until|approv\w*|accept\w*|decision)\b", known[1], re.I))
+        pending = unknown_context or not fields or bool(re.search(r"(?im)^\s*(?:[-*]\s+)?(?:Waiting on:|State:.*(?:waiting for|awaiting|waiting on|parked until))", status))
         try:
             total = (issue.get("issue_dependencies_summary") or {}).get("total_blocked_by")
             blockers, cut = ([], False) if type(total) is int and total == 0 else fetch_paginated(
@@ -650,10 +670,9 @@ def stale_wait_report(
             if cut or any(blocker.get("state") not in {"open", "closed"} for blocker in blockers):
                 unread = True
                 errors.append({"number": number, "source": "native_blockers", "reason": "page_limit" if cut else "unknown_state"})
-            pending = pending or any(blocker.get("state") == "open" or blocker.get("state_reason") not in {None, "completed"} for blocker in blockers)
+            pending = pending or any(not closed_wait_prerequisite(blocker) for blocker in blockers)
             for blocker in blockers:
-                if (blocker.get("state") == "closed" and "pull_request" not in blocker
-                        and blocker.get("state_reason") in {None, "completed"}):
+                if closed_wait_prerequisite(blocker) and "pull_request" not in blocker:
                     evidence.append({"kind": "closed_native_blocker", "url": blocker.get("html_url"),
                                      "number": blocker.get("number"), "closed_at": blocker.get("closed_at"),
                                      "state_reason": blocker.get("state_reason")})
@@ -670,7 +689,7 @@ def stale_wait_report(
                 r"(?:provider |spare )?capacity|engineering selection|future work",
                 reason.strip().rstrip(" ."), re.I,
             )
-            if github_plan_claim.no_wait_reason(reason, field=field):
+            if github_plan_claim.no_wait_reason(reason, field="Waiting for"):
                 if field.casefold() != "blocked by":
                     evidence.append({"kind": "no_external_wait", "field": field, "recorded": reason})
                 continue
@@ -709,11 +728,19 @@ def stale_wait_report(
                         pull = read(f"repos/{target_repo}/pulls/{target_number}")
                         if not isinstance(pull, dict) or "merged_at" not in pull:
                             raise AuditError("unreadable wait pull")
-                        if pull.get("merged_at"):
+                        landed = True
+                        if pull.get("merged_at") and re.search(r"\b(?:land|landing)\b", normalized, re.I):
+                            repository = read(f"repos/{target_repo}")
+                            default_branch = repository.get("default_branch") if isinstance(repository, dict) else None
+                            base_branch = (pull.get("base") or {}).get("ref")
+                            if not default_branch or not base_branch:
+                                raise AuditError("unreadable landing destination")
+                            landed = base_branch == default_branch
+                        if pull.get("merged_at") and landed:
                             completed.append({"kind": "merged_wait_pr", "field": field, "recorded": reason,
                                               "url": f"https://github.com/{target_repo}/pull/{target_number}",
                                               "merged_at": pull["merged_at"]})
-                    elif target.get("state") == "closed" and target.get("state_reason") in {None, "completed"}:
+                    elif closed_wait_prerequisite(target):
                         completed.append({"kind": "completed_wait_issue", "field": field, "recorded": reason,
                                           "url": f"https://github.com/{target_repo}/issues/{target_number}",
                                           "closed_at": target.get("closed_at"), "state_reason": target.get("state_reason")})
