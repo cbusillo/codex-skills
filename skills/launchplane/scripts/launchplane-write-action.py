@@ -2121,7 +2121,8 @@ def _project_integration_allowances_plan(result: object) -> dict[str, object]:
         "context": public_identifier(source.get("context")),
         "instance": public_identifier(source.get("instance")),
         "environment_class": public_code(source.get("environment_class")),
-        "reason": public_operator_text(source.get("reason")),
+        # This plan is review-bound by its service digest, not projected prose.
+        "reason": public_operator_text(source.get("reason"), redact_denied_markers=True),
         "source_label": public_identifier(source.get("source_label")),
         "record_sha256_before": _optional_sha256(source.get("record_sha256_before")),
         "record_sha256_after": _optional_sha256(source.get("record_sha256_after")),

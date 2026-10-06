@@ -2422,6 +2422,75 @@ def test_integration_allowances_projection_refuses_unknown_fields() -> None:
         raise AssertionError("unknown allowance field was accepted")
 
 
+def test_integration_allowance_removal_with_credential_prose() -> None:
+    response = json.loads(
+        (SCRIPT_DIR / "fixtures" / "integration-allowances-removal-response.json").read_text()
+    )
+    plan = response["result"]
+    request = {
+        "schema_version": 1,
+        **{key: plan[key] for key in ("product", "context", "instance", "reason")},
+        "allowances": [
+            {key: change["after"][key] for key in ("integration", "kind", "reason", "evidence")}
+            for change in plan["changes"] if change["after"] is not None
+        ],
+    }
+    with TemporaryDirectory() as directory:
+        payload_file = _write_json(directory, "removal.json", request)
+        argv = ["integration-allowances-dry-run", "--payload-file", payload_file]
+        status, output, posts, reads = _run_main(argv, post=response)
+        assert status == 0, output
+        assert output["status"] == "accepted"
+        assert output["result"]["applied"] is False
+        assert output["summary"]["trace_id"] == response["trace_id"]
+        assert output["summary"]["plan_sha256"] == plan["plan_sha256"]
+        assert output["result"]["record_sha256_before"] == plan["record_sha256_before"]
+        assert [change["action"] for change in output["result"]["changes"]] == [
+            change["action"] for change in plan["changes"]
+        ]
+        removed = output["result"]["changes"][-1]
+        assert removed["before"]["integration"] == "legacy_source"
+        assert "after" not in removed
+        assert output["result"]["reason"] == "[redacted]"
+        assert len(posts) == 1 and not reads
+        assert posts[0]["body"] == {**request, "mode": "dry-run"}
+
+        evidence_file = _write_json(directory, "review.json", output)
+        applied = copy.deepcopy(response)
+        applied["result"].update(mode="apply", applied=True, read_back_matches=True)
+        applied["result"]["read_back"] = [
+            change["after"] for change in plan["changes"] if change["after"] is not None
+        ]
+        apply_argv = [
+            "integration-allowances-apply", "--payload-file", payload_file,
+            *_reviewed_apply_argv(plan["plan_sha256"], evidence_file),
+        ]
+        status, receipt, posts, _reads = _run_main(apply_argv, post=applied)
+        assert status == 0 and receipt["result"]["read_back_matches"] is True
+        assert posts[0]["body"] == {
+            **request, "mode": "apply", "reviewed_plan_sha256": plan["plan_sha256"],
+        }
+        wrong_digest = copy.deepcopy(output)
+        wrong_digest["result"]["plan_sha256"] = "0" * 64
+        _write_json(directory, "review.json", wrong_digest)
+        status, _rejected, posts, reads = _run_main(apply_argv, post=applied)
+        assert status == 2 and not posts and not reads
+
+        # A valid removal fixture must not turn malformed or secret-bearing
+        # responses into reviewable evidence.
+        for replacement in (
+            {"kind": "unsupported_kind"},
+            {"value": "fixture-private-value"},
+            {"reason": None},
+        ):
+            invalid = copy.deepcopy(response)
+            invalid["result"]["changes"][-1]["before"].update(replacement)
+            status, rejected, _posts, _reads = _run_main(argv, post=invalid)
+            assert status == 1 and rejected["status"] == "invalid"
+            assert rejected["result"] == {}
+            assert "fixture-private-value" not in json.dumps(rejected)
+
+
 def test_integration_allowances_read_summary_projects_allowances() -> None:
     result = write_action.summarize_integration_allowances_read(
         request={"payload_source": "operator_argument"},
@@ -7031,6 +7100,25 @@ def test_operator_free_text_redacts_credentials_and_urls() -> None:
     assert allowance["evidence"] == examples[1][1]
     for invalid in (None, {}, "", "x" * 501):
         _expect_error(lambda value=invalid: project(value), "invalid_response")
+
+
+def test_allowance_plan_prose_fallback_keeps_other_reviewed_reasons_strict() -> None:
+    for raw in (
+        "Remove unused credentials through the approved path.",
+        "Rotated 2fa_cookie: Xy.Zw9q", "2fa_token=12-34-56",
+        "api_key is Abc.Def9", "cookie Abc.Def9", "hunter2cookie",
+    ):
+        # Callers that compare projected reasons must retain their old refusal.
+        _expect_error(lambda value=raw: write_action.public_operator_text(value), "invalid_response")
+        projected = write_action.public_operator_text(raw, redact_denied_markers=True)
+        assert projected == "[redacted]"
+        assert write_action.public_operator_text(projected) == projected
+        write_action.assert_public_safe_shape({"reason": projected})
+    for invalid in (None, {}, "", "x" * 501):
+        _expect_error(
+            lambda value=invalid: write_action.public_operator_text(value, redact_denied_markers=True),
+            "invalid_response",
+        )
 
 
 def test_redacted_reasons_allow_matching_reviewed_apply() -> None:
