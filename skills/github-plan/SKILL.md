@@ -395,6 +395,8 @@ Use status labels narrowly:
 - `plan:stale`: needs review before guiding work.
 - `plan:done`: completed or deliberately superseded.
 
+Separate independent actionable work from an unresolved person or event wait
+into its own issue, so it can be selected and claimed without clearing that wait.
 For `plan:waiting` without a native issue blocker, say `Blocked by: No native
 issue blocker; waiting for ...`.
 
