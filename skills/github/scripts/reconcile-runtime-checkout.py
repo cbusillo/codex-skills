@@ -696,6 +696,7 @@ def run_git(
         proc = subprocess.run(
             [
                 "git",
+                "--no-optional-locks",
                 "-c",
                 f"core.hooksPath={os.devnull}",
                 "-c",

@@ -290,7 +290,7 @@ def reminder(marker: dict[str, object], now: dt.datetime, repo: str | None, path
     )
 
 
-def main(*, skills_only: bool = False, catalog_root: Path | None = None) -> int:
+def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime_catchup: bool = False) -> int:
     try:
         if os.environ.get("CLAUDECODE") == "1":
             try:
@@ -327,9 +327,10 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None) -> int:
         reminder_text = reminder(marker, dt.datetime.now(dt.timezone.utc), origin_repo(root), path)
         if reminder_text:
             print(reminder_text, flush=True)
-        catchup_line = catch_up_runtime(catalog)
-        if catchup_line:
-            print(catchup_line, flush=True)
+        if runtime_catchup:
+            catchup_line = catch_up_runtime(catalog)
+            if catchup_line:
+                print(catchup_line, flush=True)
     except Exception:  # noqa: BLE001 - a reminder must never break a session start
         pass
     return 0
@@ -339,6 +340,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skills-only", action="store_true")
+    parser.add_argument("--runtime-catchup", action="store_true", help="Enable catch-up with the updated native hook timeout")
     parser.add_argument("--catalog-root", type=Path, help="Catalog checkout for status diagnostics")
     args = parser.parse_args()
-    sys.exit(main(skills_only=args.skills_only, catalog_root=args.catalog_root))
+    sys.exit(main(skills_only=args.skills_only, catalog_root=args.catalog_root, runtime_catchup=args.runtime_catchup))

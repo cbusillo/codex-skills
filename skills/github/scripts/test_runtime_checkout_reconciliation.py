@@ -699,13 +699,15 @@ def session_fixture(tmp_path: Path) -> RuntimeFixture:
 def start_session(
     fixture: RuntimeFixture, *args: str, catalog: Path | None = None,
     extra_env: dict[str, str] | None = None,
+    runtime_catchup: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, "HOME": str(fixture.code_home.parent / "host-home"),
            "CODE_HOME": str(fixture.code_home), "CODEX_HOME": str(fixture.code_home.parent / "unused"),
            "CLAUDE_CONFIG_DIR": str(fixture.code_home.parent / "unused-claude"),
            "DIRECTION_MARKER": str(fixture.code_home.parent / "missing-marker.json"), **(extra_env or {})}
     return subprocess.run(
-        [sys.executable, str((catalog or fixture.runtime) / "hooks/direction_check_hook.py"), *args],
+        [sys.executable, str((catalog or fixture.runtime) / "hooks/direction_check_hook.py"),
+         *(["--runtime-catchup"] if runtime_catchup else []), *args],
         cwd=fixture.code_home, env=env, capture_output=True, text=True, timeout=15,
     )
 
@@ -757,7 +759,7 @@ def test_session_start_preserves_unsafe_runtime(tmp_path: Path, unsafe: str) -> 
 
 def test_session_start_skips_development_checkout_and_compaction(tmp_path: Path) -> None:
     fixture = session_fixture(tmp_path)
-    for result in (start_session(fixture, catalog=fixture.merged), start_session(fixture, "--skills-only")):
+    for result in (start_session(fixture, catalog=fixture.merged), start_session(fixture, "--skills-only"), start_session(fixture, runtime_catchup=False)):
         assert result.returncode == 0
         assert "Catalog catch-up" not in result.stdout
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
