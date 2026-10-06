@@ -209,6 +209,14 @@ status/header/body evidence wins over diagnostics, and the bounded
 `GET /rate_limit` probe is used only when legacy output reports a rate limit
 without identifying its bucket.
 
+For PR creation, the complete legacy `pull request create failed: GraphQL:`
+diagnostic ending in `(createPullRequest)` is a confirmed `validation_error` /
+`rejected` when it contains only blank head/base SHA, non-branch head, or
+no-commits-between input errors and no stdout. It offers no retry or actor
+fallback. Mixed diagnostics, partial output, and transport failures retain
+unknown-write reconciliation; a generic validation phrase is not rejection
+evidence.
+
 Schema version 2 of `references/operation-matrix.toml` is the machine-readable source of truth for
 each public helper operation's live and selected transport, quota bucket, actor
 policy, idempotency/retry posture, reconciliation strategy, and retained
