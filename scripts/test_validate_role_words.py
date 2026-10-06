@@ -89,6 +89,30 @@ def test_frontmatter_carry_stops_at_boundaries() -> None:
                 raise AssertionError(module.findings(text))
 
 
+def test_frontmatter_paragraph_breaks_preserve_prose_fields() -> None:
+    module = load_module()
+    for field in ("description", "purpose", "message"):
+        for blank in ("", "  "):
+            # Both top-level and nested policy messages resume after a break.
+            for prefix, indent in (("", ""), ("policies:\n  - id: x\n", "    ")):
+                text = (
+                    f"---\n{prefix}{indent}{field}: >\n{indent}  Sync files.\n"
+                    f"{blank}\n{indent}  Ask the owner first.\n"
+                    f"{indent}argv: >\n{indent}  operator owner\n---\n"
+                )
+                expected_line = 5 if not prefix else 7
+                if module.findings(text) != [(expected_line, "owner")]:
+                    raise AssertionError(module.findings(text))
+        # A blank paragraph resets phrase carry while leaving the field active.
+        for qualifier, word, expected in (
+            ("repository", "owner", [(5, "owner")]),
+            ("policy", "administrator", []),
+        ):
+            text = f"---\n{field}: >\n  Sync the {qualifier}\n\n  {word} approves.\n---\n"
+            if module.findings(text) != expected:
+                raise AssertionError(module.findings(text))
+
+
 def test_preserves_carry_within_folded_frontmatter_fields() -> None:
     module = load_module()
     for field in ("description", "purpose", "message"):
@@ -204,6 +228,7 @@ def main() -> int:
     test_flags_wrapped_policy_administrator()
     test_flags_folded_frontmatter_prose()
     test_frontmatter_carry_stops_at_boundaries()
+    test_frontmatter_paragraph_breaks_preserve_prose_fields()
     test_preserves_carry_within_folded_frontmatter_fields()
     test_flags_blockquote_and_hyphen_wraps()
     test_never_carries_prose_across_fences()
