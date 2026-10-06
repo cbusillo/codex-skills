@@ -2451,7 +2451,7 @@ def test_integration_allowance_removal_with_credential_prose() -> None:
         removed = output["result"]["changes"][-1]
         assert removed["before"]["integration"] == "legacy_source"
         assert "after" not in removed
-        assert output["result"]["reason"] == plan["reason"].replace("credentials", "[redacted]")
+        assert output["result"]["reason"] == "[redacted]"
         assert len(posts) == 1 and not reads
         assert posts[0]["body"] == {**request, "mode": "dry-run"}
 
@@ -7046,7 +7046,12 @@ def test_operator_free_text_redacts_credentials_and_urls() -> None:
         ("Use Bearer abcdefghijklmnop next.", "Use [redacted] next."),
         ("Use rk_live_1234567890abcdefghijkl next.", "Use [redacted] next."),
         ("Use ghp_example123 next.", "Use [redacted] next."),
-        ("Remove unused credentials through the approved path.", "Remove unused [redacted] through the approved path."),
+        ("Remove unused credentials through the approved path.", "[redacted]"),
+        ("Rotated 2fa_cookie: Xy.Zw9q", "[redacted]"),
+        ("2fa_token=12-34-56", "[redacted]"),
+        ("api_key is Abc.Def9", "[redacted]"),
+        ("cookie Abc.Def9", "[redacted]"),
+        ("hunter2cookie", "[redacted]"),
         ('Updated env_vars="password=demo-pass"', 'Updated env_vars=[redacted]'),
         ('Use password="demo secret without closing quote', 'Use [redacted]'),
         ('updated password="demo API_KEY="superSecret123"', 'updated [redacted]'),
