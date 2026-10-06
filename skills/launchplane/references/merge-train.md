@@ -79,7 +79,8 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   A block selecting another PR reports `needs_owner` with both PR numbers,
   rather than failing the tracked PR. When the controller confirms that other
   PR's block was applied and its policy permits continuation, the driver proceeds.
-  Blocks on the tracked PR and blocks without a selected PR remain failures.
+  Blocks on the tracked PR, unsupported stacks and blocks without a selected PR
+  remain failures.
   A second local driver exits with `needs_owner`, naming the running PR and
   start time and suggesting enqueueing the PR for that driver. If that driver
   exits before the queued PR lands, rerun the refused driver; a driver stops

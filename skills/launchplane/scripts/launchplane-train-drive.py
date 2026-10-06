@@ -299,7 +299,8 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
         applied_block = result.get("block_result") or {}
         if action == "block" and applied_block.get("status") == "blocked":
             emit("pr_blocked", {"pull_request_number": applied_block.get("pull_request_number"),
-                                "train_should_continue": applied_block.get("train_should_continue")})
+                                "train_should_continue": applied_block.get("train_should_continue"),
+                                "detail": (result.get("dry_run_result") or {}).get("next_action_detail") or applied_block.get("detail")})
         verdict = _judge(settings, io, state, result, action)
         if verdict is not None:
             outcome, detail = verdict
@@ -342,6 +343,7 @@ def _judge(
                 "tracked_pull_request_number": settings.number,
                 "controller_action": action,
                 "blocking_reason": blocking_reason,
+                "block_detail": (result.get("dry_run_result") or {}).get("next_action_detail") or applied.get("detail"),
             }
         return "failed", {"reason": action, "blocking_reason": blocking_reason}
     if action == "candidate_failed":

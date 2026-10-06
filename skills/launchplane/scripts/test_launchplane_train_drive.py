@@ -477,7 +477,7 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         for block_result in ({}, {"status": "blocked", "pull_request_number": 2, "train_should_continue": False}):
             with self.subTest(block_result=block_result):
                 train = FakeTrain([_response(
-                    "block", dry_run_result={"selected_pr": {"number": 2}},
+                    "block", dry_run_result={"selected_pr": {"number": 2}, "next_action_detail": "Required checks failed."},
                     block_result=block_result,
                 )])
                 outcome, events = _drive(train)
@@ -486,6 +486,7 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
                 self.assertEqual(stop["reason"], "another pull request is blocking the train")
                 self.assertEqual(stop["blocking_pull_request_number"], 2)
                 self.assertEqual(stop["tracked_pull_request_number"], 7)
+                self.assertEqual(stop["block_detail"], "Required checks failed.")
                 self.assertEqual(train.calls, 1)
 
     def test_applied_other_pr_block_continues_only_when_policy_allows(self) -> None:
