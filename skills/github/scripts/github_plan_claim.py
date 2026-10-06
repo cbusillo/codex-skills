@@ -64,6 +64,18 @@ def same_owner(record: dict[str, str], claim: dict[str, str]) -> bool:
                     for key in ("refresh_pr", "retained_handoff", "resume_from")))
 
 
+def without_operation_marker(text: str) -> str:
+    """Remove the helper's trailing transport marker, not handoff prose."""
+    return re.sub(r"\n\s*<!-- github-skill-operation:[0-9a-f]+ -->\s*$", "", text).rstrip()
+
+
+def legacy_release_worker(text: str) -> str | None:
+    """Only a bare legacy directive releases; handoffs use exact claim IDs."""
+    text = without_operation_marker("\n".join(text.splitlines()))
+    match = re.fullmatch(r"Released by (\S+)", text)
+    return match.group(1) if match else None
+
+
 def released_claim_id(text: str) -> int | None:
     """Read a first-line release or a standalone final release paragraph."""
     first = text.splitlines()[:1]
@@ -71,8 +83,7 @@ def released_claim_id(text: str) -> int | None:
     if match:
         return int(match.group(1))
     text = "\n".join(line if line.strip() else "" for line in text.splitlines())
-    # Helpers append this transport marker; it is not handoff prose.
-    text = re.sub(r"\n\s*<!-- github-skill-operation:[0-9a-f]+ -->\s*$", "", text).rstrip()
+    text = without_operation_marker(text)
     lines = text.splitlines()
     if len(lines) < 3 or lines[-2].strip():
         return None
@@ -337,10 +348,9 @@ def discussion_evidence(
     legacy_released: dict[tuple[str, str], int] = {}
     released_ids: dict[tuple[int, str], int] = {}
     for index, comment in enumerate(comments):
-        match = re.match(r"Released by (\S+)", comment.get("body") or "")
-        if match:
+        worker = legacy_release_worker(comment.get("body") or "")
+        if worker is not None:
             author = (comment.get("user") or {}).get("login", "")
-            worker = match.group(1)
             legacy_worker = ownership_text(worker, strip_quotes=False)
             prior_sessions = {
                 record["session"] for prior in comments[:index]
@@ -446,9 +456,8 @@ def retained_branch(comments: list[dict[str, Any]], comment_id: int) -> str:
     for comment in comments[source_index + 1:]:
         if (comment.get("user") or {}).get("login") != author:
             continue
-        first = (comment.get("body") or "").splitlines()[0:1]
         if (released_claim_id(comment.get("body") or "") == comment_id
-                or first == [f"Released by {parsed[0]['worker']}"]):
+                or legacy_release_worker(comment.get("body") or "") == parsed[0]["worker"]):
             return parsed[0]["branch"]
     raise ValueError("Resume source claim has not been released by its author")
 
