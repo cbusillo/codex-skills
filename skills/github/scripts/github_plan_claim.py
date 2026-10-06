@@ -165,6 +165,11 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
         for assertion, key in ((r"(?:State: Active;\s*)?(?:owned by|claimed by|Worker:)", "worker"),
                                (r"Session:", "session")):
             text = re.sub(rf"(?im)^\s*{assertion}\s+{re.escape(own_claim[key])}\.?[ \t]*$", "", text)
+    # Structured markers were checked separately. Preserve logical paragraphs
+    # when prose is hard-wrapped, while fields and list items stay independent.
+    text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("<!-- " + MARKER))
+    text = re.sub(r"(?m)(?<!\n)\n(?![ \t]*(?:\n|[-*+]\s|[*_`]*[\w][\w /-]*[*_`]*:|<!--|>))", " ", text)
+    boundary = r"[;!?\n]|\.(?=\s|$)"
     subject = (
         r"(?:timing|(?:code )?changes?|(?:not-planned )?closures?|"
         r"(?:implementation |execution )?ownership|implementation|work|"
@@ -175,10 +180,10 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
         r"(?:\s+(?:is|are|was|were|has been|have been))?\s*"
     )
     for match in re.finditer(r"\b(?:owned by|claimed by|worker\s*:|session\s*:)", text, re.IGNORECASE):
-        raw_prefix = re.split(r"[.;!?\n]", text[:match.start()])[-1]
+        raw_prefix = re.split(boundary, text[:match.start()])[-1]
         raw_prefix = raw_prefix.replace("**", "").replace("__", "").replace("`", "").strip(" -*+")
         prefix = re.sub(r"^[^:]+:\s*", "", raw_prefix)
-        ending = re.split(r"([.;!?\n])", text[match.end():], maxsplit=1)
+        ending = re.split(rf"({boundary})", text[match.end():], maxsplit=1)
         suffix = ending[0].strip()
         # Conditional or contrastive denials are not proof that nobody holds it.
         uncertain = (
@@ -188,7 +193,8 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
             or re.match(r"no\b", prefix, re.IGNORECASE) and re.search(r"\b(?:not|never|no longer)\s*$", prefix, re.IGNORECASE)
         )
         if not uncertain:
-            if suffix.casefold().lstrip(": ") in {"none", "unassigned", "n/a", "-", "nobody", "no one"}:
+            empty_holder = suffix.lstrip(": ").strip("*_`").casefold()
+            if empty_holder in {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", "nobody", "no one", "no-one"}:
                 continue
             if not match.group().rstrip().endswith(":"):
                 negated = (
@@ -200,7 +206,7 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
                 # A denial may name its subject, but trailing narrative can
                 # describe a handoff or another holder without our keywords.
                 if negated and re.fullmatch(r"(?:(?:this|the|a|an|any|another|current)\s+)?"
-                                            r"[\w-]+(?:\s+(?:worker|session|agent))?", suffix, re.IGNORECASE):
+                                            r"[\w.-]+(?:\s+(?:worker|session|agent))?", suffix, re.IGNORECASE):
                     continue
         return True
     return False

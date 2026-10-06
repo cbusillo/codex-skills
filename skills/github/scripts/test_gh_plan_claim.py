@@ -947,6 +947,40 @@ class ClaimTests(unittest.TestCase):
                 self.run_claim()
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
+    def test_wrapped_prose_preserves_denials_and_ambiguous_continuations(self):
+        for status, conflict in (
+            ("No implementation ownership is claimed by\nthis sweep.", False),
+            ("No implementation ownership is claimed by this sweep\nbecause another-worker has work/repair open.", True),
+            ("If the review lands first, this issue is\nnot claimed by another-worker.", True),
+            ("Not claimed by claude-opus-5.5 but by another-worker.", True),
+            ("Not claimed by claude-opus-5.5.", False),
+            ("No ownership is claimed by this sweep.\nWorker: another-worker", True),
+            ("No ownership is claimed by this sweep\n* Implementation is claimed by another-worker.", True),
+        ):
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["body"] += "\n" + status
+                if conflict:
+                    with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                    self.assert_no_writes()
+                else:
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_formatted_empty_holders_do_not_hide_uncertainty(self):
+        for holder in ("**none**", "`n/a`", "_None_", "unclaimed", "not assigned", "no-one"):
+            with self.subTest(holder=holder):
+                self.setUp()
+                self.issue["body"] += f"\nWorker: {holder}\nSession: {holder}"
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        for holder in ("TBD", "unknown", "pending", "**none** until the prior worker confirms"):
+            with self.subTest(holder=holder):
+                self.setUp()
+                self.issue["body"] += f"\nWorker: {holder}"
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
     def test_responsibility_status_with_released_claim_allows_new_claim(self):
         self.issue["body"] += "\n" + RESPONSIBILITY_STATUS
         self.comments = [
