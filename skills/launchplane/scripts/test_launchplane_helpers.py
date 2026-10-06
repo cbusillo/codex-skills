@@ -2422,6 +2422,54 @@ def test_integration_allowances_projection_refuses_unknown_fields() -> None:
         raise AssertionError("unknown allowance field was accepted")
 
 
+def test_integration_allowance_removal_with_credential_prose() -> None:
+    response = json.loads(
+        (SCRIPT_DIR / "fixtures" / "integration-allowances-removal-response.json").read_text()
+    )
+    plan = response["result"]
+    request = {
+        "schema_version": 1,
+        **{key: plan[key] for key in ("product", "context", "instance", "reason")},
+        "allowances": [
+            {key: change["after"][key] for key in ("integration", "kind", "reason", "evidence")}
+            for change in plan["changes"] if change["after"] is not None
+        ],
+    }
+    with TemporaryDirectory() as directory:
+        payload_file = _write_json(directory, "removal.json", request)
+        argv = ["integration-allowances-dry-run", "--payload-file", payload_file]
+        status, output, posts, reads = _run_main(argv, post=response)
+        assert status == 0, output
+        assert output["status"] == "accepted"
+        assert output["result"]["applied"] is False
+        assert output["summary"]["trace_id"] == response["trace_id"]
+        assert output["summary"]["plan_sha256"] == plan["plan_sha256"]
+        assert output["result"]["record_sha256_before"] == plan["record_sha256_before"]
+        assert [change["action"] for change in output["result"]["changes"]] == [
+            change["action"] for change in plan["changes"]
+        ]
+        removed = output["result"]["changes"][-1]
+        assert removed["before"]["integration"] == "legacy_source"
+        assert "after" not in removed
+        assert output["result"]["reason"] == plan["reason"].replace("credentials", "[redacted]")
+        assert len(posts) == 1 and not reads
+        assert posts[0]["body"] == {**request, "mode": "dry-run"}
+
+        # A valid removal fixture must not turn malformed or secret-bearing
+        # responses into reviewable evidence.
+        for replacement in (
+            {"kind": "unsupported_kind"},
+            {"value": "fixture-private-value"},
+            {"reason": None},
+        ):
+            invalid = copy.deepcopy(response)
+            invalid["result"]["changes"][-1]["before"].update(replacement)
+            status, rejected, _posts, _reads = _run_main(argv, post=invalid)
+            assert status == 1 and rejected["status"] == "invalid"
+            assert rejected["result"] == {}
+            assert "fixture-private-value" not in json.dumps(rejected)
+
+
 def test_integration_allowances_read_summary_projects_allowances() -> None:
     result = write_action.summarize_integration_allowances_read(
         request={"payload_source": "operator_argument"},
@@ -6998,6 +7046,7 @@ def test_operator_free_text_redacts_credentials_and_urls() -> None:
         ("Use Bearer abcdefghijklmnop next.", "Use [redacted] next."),
         ("Use rk_live_1234567890abcdefghijkl next.", "Use [redacted] next."),
         ("Use ghp_example123 next.", "Use [redacted] next."),
+        ("Remove unused credentials through the approved path.", "Remove unused [redacted] through the approved path."),
         ('Updated env_vars="password=demo-pass"', 'Updated env_vars=[redacted]'),
         ('Use password="demo secret without closing quote', 'Use [redacted]'),
         ('updated password="demo API_KEY="superSecret123"', 'updated [redacted]'),

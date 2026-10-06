@@ -1,0 +1,81 @@
+{
+  "status": "accepted",
+  "trace_id": "launchplane_req_fixture_allowance_removal",
+  "records": {
+    "product_profile": "fixture-product",
+    "context": "fixture",
+    "instance": "testing"
+  },
+  "result": {
+    "status": "ok",
+    "mode": "dry-run",
+    "product": "fixture-product",
+    "context": "fixture",
+    "instance": "testing",
+    "environment_class": "testing",
+    "changed": true,
+    "applied": false,
+    "changes": [
+      {
+        "integration": "catalog_source",
+        "action": "update",
+        "before": {
+          "integration": "catalog_source",
+          "kind": "pre_live",
+          "reason": "Waiting for a dedicated read-only account.",
+          "evidence": "",
+          "recorded_by": "local-operator:fixture-agent",
+          "recorded_at": "2026-10-01T12:00:00Z"
+        },
+        "after": {
+          "integration": "catalog_source",
+          "kind": "read_only_source",
+          "reason": "Testing imports with a SELECT-only source account.",
+          "evidence": "SHOW GRANTS read-back has SELECT only with TLS and no write or grant option.",
+          "recorded_by": "local-operator:fixture-agent",
+          "recorded_at": "2026-10-06T15:00:00Z"
+        }
+      },
+      {
+        "integration": "inventory_source",
+        "action": "unchanged",
+        "before": {
+          "integration": "inventory_source",
+          "kind": "read_only_source",
+          "reason": "Testing imports inventory with a read-only account.",
+          "evidence": "SHOW GRANTS read-back has SELECT and SHOW VIEW only.",
+          "recorded_by": "local-operator:fixture-agent",
+          "recorded_at": "2026-10-01T12:00:00Z"
+        },
+        "after": {
+          "integration": "inventory_source",
+          "kind": "read_only_source",
+          "reason": "Testing imports inventory with a read-only account.",
+          "evidence": "SHOW GRANTS read-back has SELECT and SHOW VIEW only.",
+          "recorded_by": "local-operator:fixture-agent",
+          "recorded_at": "2026-10-01T12:00:00Z"
+        }
+      },
+      {
+        "integration": "legacy_source",
+        "action": "remove",
+        "before": {
+          "integration": "legacy_source",
+          "kind": "pre_live",
+          "reason": "Testing is the working instance until the source cutover.",
+          "evidence": "",
+          "recorded_by": "local-operator:fixture-agent",
+          "recorded_at": "2026-10-01T12:00:00Z"
+        },
+        "after": null
+      }
+    ],
+    "read_back": [],
+    "read_back_matches": null,
+    "reason": "Remove the legacy allowance while credentials are removed through a separately authorized path; retain the verified read-only sources.",
+    "source_label": "service:integration-allowances",
+    "record_sha256_before": "b59be558b39ed87eb6af10d388797387c15b6d180514143c24d16be53e97382b",
+    "record_sha256_after": "",
+    "plan_sha256": "07684e385e2238945d4e41fad98de924b05c4dc9ea382b864edca7e4c0bf3406"
+  }
+}

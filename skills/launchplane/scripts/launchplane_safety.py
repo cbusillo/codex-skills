@@ -340,6 +340,10 @@ def public_operator_text(value: object, *, max_length: int = 500) -> str:
     redacted = FREE_TEXT_URL_RE.sub("[redacted]", redacted)
     redacted = _redact_token_like(redacted)
     redacted = CREDENTIAL_LIKE_WORD_RE.sub("[redacted]", redacted)
+    # Prose can name a denied marker without carrying its value (for example,
+    # "credentials are removed"). Redact it before strict summary validation.
+    for fragment in SUMMARY_VALUE_DENYLIST:
+        redacted = re.sub(re.escape(fragment) + r"\w*", "[redacted]", redacted, flags=re.IGNORECASE)
     return public_summary_string(redacted, max_length=max_length)
 
 

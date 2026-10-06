@@ -1146,6 +1146,8 @@ Every emitted admin `reason` or prose `evidence` uses the shared
 credential assignments (including quoted values), known token forms, long
 mixed letter/digit token-like words, and URLs of any scheme. URLs are omitted
 because admin prose can name private hosts even without credentials.
+Summary-denied marker words are also redacted, so prose such as
+"credentials are removed" does not discard an otherwise valid plan.
 Structural fields retain their existing strict validators; invalid types,
 empty or oversized text, and other unsafe summary shapes still fail closed.
 Apply checks that compare a reviewed reason use this projection on both sides.
