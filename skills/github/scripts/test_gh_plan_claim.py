@@ -34,6 +34,16 @@ RESPONSIBILITY_STATUS = (
     "After these proposals, 61 OPW and 57 CM provider-only entries would remain, "
     "owned by Launchplane engineering for evidence and Chris for production disposition approval."
 )
+SWEEP_DISCLAIMERS = (
+    "Scope and recovery: No timing, code change or not-planned closure is claimed by this sweep; keep all coverage and injected-clock rules.",
+    "Scope: no implementation ownership is claimed by this sweep.",
+    "No claims, implementation or worktrees were created. This issue is not claimed by the audit session.",
+    "The repair was never owned by the sweep; source work can begin after a fresh claim.",
+    "Implementation is not yet claimed by a worker. No implementation or execution ownership has been claimed by this sweep.",
+    "Worker: None\nSession: unassigned\nNext action: recheck ownership before creating a worktree.",
+    "**Claimed by:** no one\n**Worker:** none\n**Session:** n/a",
+    "The sweep releases claim bookkeeping to the next agent; no ownership is claimed by this sweep.",
+)
 
 
 class ClaimTests(unittest.TestCase):
@@ -753,6 +763,255 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(PLAN.ClassifiedPlanError):
             self.run_claim()
         self.assert_no_writes()
+
+    def test_sweep_disclaimers_allow_a_fresh_claim(self):
+        for status in SWEEP_DISCLAIMERS:
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["body"] += "\n" + status
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                self.assertIn("post", self.events)
+
+    def test_disclaimer_does_not_hide_another_status_assertion(self):
+        for ownership in (
+            "Implementation is claimed by another-worker.",
+            "Reclaimed by another-worker after the stale release.",
+            "_Claimed by another-worker_", "_Owned by another-worker_",
+            "Currently owned by another-worker",
+            "Worker: another-worker", "Session: another-session",
+            "Worker: unknown", "Session: pending", "Worker:",
+        ):
+            for separator in (" ", "\n", "; "):
+                with self.subTest(ownership=ownership, separator=separator):
+                    self.setUp()
+                    self.issue["body"] += "\n" + SWEEP_DISCLAIMERS[0] + separator + ownership
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                        self.run_claim()
+                    self.assertEqual(caught.exception.code, "claim_conflict")
+                    self.assert_no_writes()
+
+    def test_uncertain_denials_remain_ownership_evidence(self):
+        for status in (
+            "If implementation is not claimed by the current worker, start it.",
+            "If approved: no ownership is claimed by the sweep.",
+            "No evidence shows whether this issue is claimed by another-worker.",
+            "No objection remains; implementation is claimed by another-worker.",
+            "No blockers remain and this issue is claimed by another-worker.",
+            "The repair is not claimed by the sweep but by another-worker.",
+            "Work is not only owned by engineering; the Supervisor is involved.",
+            "Claimed by no one except another-worker.",
+            "Worker: None, pending confirmation from another-session.",
+        ):
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["body"] += "\n" + status
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assert_no_writes()
+
+    def test_matching_identity_does_not_hide_a_second_holder(self):
+        for marker in ("", CLAIM.marker(OWNER)):
+            for ownership in ("Implementation is claimed by another-worker.",
+                              "Worker: unknown", "Session: another-session"):
+                with self.subTest(marker=marker, ownership=ownership):
+                    self.setUp()
+                    self.issue["body"] += (
+                        f"\nState: Active; owned by {OWNER['worker']}\nWorker: {OWNER['worker']}"
+                        f"\nSession: {OWNER['session']}\nBranch: {OWNER['branch']}\n{marker}"
+                        "\n" + SWEEP_DISCLAIMERS[0] + "\n" + ownership
+                    )
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                        self.run_claim()
+                    self.assertEqual(caught.exception.code, "claim_conflict")
+                    self.assert_no_writes()
+
+    def test_disclaimer_does_not_clear_independent_ownership(self):
+        for source in ("status_marker", "comment", "legacy_comment", "branch", "worktree", "pr"):
+            with self.subTest(source=source):
+                self.setUp()
+                self.issue["body"] += "\n" + SWEEP_DISCLAIMERS[0]
+                if source == "status_marker": self.issue["body"] += "\n" + CLAIM.marker(OTHER)
+                elif source == "comment": self.compete()
+                elif source == "legacy_comment":
+                    self.comments = [{"id": 1, "body": "Claimed by another-worker\nSession: another-session"}]
+                elif source == "branch": self.inventory["remote_branches"] = ["work/issue-42-other"]
+                elif source == "worktree":
+                    self.inventory["worktrees"] = [{"branch": "work/issue-42-other", "path": "/retained/repair"}]
+                else: self.pulls = [{"number": 99, "state": "open", "body": "Refs #42", "head": {"ref": "work/repair"}}]
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assert_no_writes()
+
+    def test_non_ownership_comment_is_not_a_claim_or_release(self):
+        for comment in ("Claimed by no one\n\nThe sweep only reconciled stale waits.",
+                        "No claims, implementation or worktrees. Not claimed by this sweep.",
+                        "The sweep releases claim bookkeeping to a future worker."):
+            with self.subTest(comment=comment):
+                self.setUp()
+                self.comments = [{"id": 1, "body": comment, "user": {"login": TEST_BOT}}]
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                self.setUp()
+                self.compete()
+                self.comments.append({"id": 2, "body": comment, "user": {"login": TEST_BOT}})
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_matching_legacy_comment_preserves_second_holder(self):
+        self.comments = [{"id": 1, "body": (
+            f"Claimed by {OWNER['worker']}\nSession: {OWNER['session']}\nBranch: {OWNER['branch']}"
+            "\nNo implementation ownership is claimed by this sweep. Worker: another-worker"
+        )}]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        self.assert_no_writes()
+
+    def test_generated_identity_accepts_valid_punctuation_tokens(self):
+        for token in ("claude-opus-5.5", "capacity;run", "capacity!run", "capacity?run", "worker__repair", "ci_worker", "run_session", "_worker"):
+            for field in ("worker", "session"):
+                with self.subTest(token=token, field=field):
+                    self.setUp()
+                    setattr(self.args, field, token)
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                    self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
+
+    def test_recorded_next_action_is_intent_and_preserves_other_assertions(self):
+        self.args.next_action = "Repair the sync code owned by the importer"
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.issue["body"] += "\nImplementation is claimed by another-worker."
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+
+    def test_recorded_wait_resolution_does_not_reclaim_a_released_holder(self):
+        self.ordinary_handoff_fixture()
+        self.args.wait_resolved = "Previously claimed by trial-b; exact claim 1 was released and the brief authorizes successor work."
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.issue["body"] += "\nWorker: another-worker"
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+
+    def test_questions_and_negated_exceptions_remain_ambiguous(self):
+        for status in ("Is this issue not claimed by another-worker?",
+                       "Not owned by anyone other than another-worker.",
+                       "No work is not owned by another-worker."):
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["body"] += "\n" + status
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_denial_does_not_hide_narrative_handoff_or_active_work(self):
+        for status in (
+            "Not claimed by the sweep, which handed it to another-worker.",
+            "Not claimed by the sweep while another-worker finishes the repair.",
+            "No implementation ownership is claimed by this sweep because another-worker has work/repair open.",
+        ):
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["body"] += "\n" + status
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_second_holder_with_caller_name_prefix_still_refuses(self):
+        for assertion in ("Also owned by", "Worker:", "Session:"):
+            for punctuation in (".", ";", "!", "?"):
+                with self.subTest(assertion=assertion, punctuation=punctuation):
+                    self.setUp()
+                    key = "session" if assertion == "Session:" else "worker"
+                    self.issue["body"] += "\n" + CLAIM.marker(OWNER)
+                    self.issue["body"] += f"\n{assertion} {OWNER[key]}{punctuation}successor"
+                    with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                    self.assert_no_writes()
+
+    def test_common_sweep_negations_and_formatting_allow_fresh_claims(self):
+        for status in (
+            "This issue has not been claimed by the sweep.",
+            "Implementation has never been owned by the audit session.",
+            "This task isn't claimed by this sweep.",
+            "This issue is not currently claimed by a worker.",
+            "The repair is no longer owned by the audit session.",
+            "No ownership claimed by this sweep.",
+            "**Scope:** No implementation ownership is claimed by this sweep.",
+            "Current status: No work is claimed by the sweep.",
+            "Sweep note: No implementation ownership is claimed by this sweep.",
+            "* No ownership is claimed by this sweep.",
+            "Worker: nobody\nSession: no one",
+            "**Not** claimed by this sweep.",
+            "No longer owned by this sweep.",
+            "No implementation ownership is claimed by the direction sweep.",
+            "Not claimed by this sweep run.",
+            "Unclaimed by this sweep.", "Work remains unowned by the sweep.",
+            "Disowned by this sweep.",
+        ):
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["body"] += "\n" + status
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_wrapped_prose_preserves_denials_and_ambiguous_continuations(self):
+        for status, conflict in (
+            ("No implementation ownership is claimed by\nthis sweep.", False),
+            ("No implementation ownership is claimed by this sweep\nbecause another-worker has work/repair open.", True),
+            ("If the review lands first, this issue is\nnot claimed by another-worker.", True),
+            ("Not claimed by claude-opus-5.5 but by another-worker.", True),
+            ("Not claimed by claude-opus-5.5.", False),
+            ("No ownership is claimed by this sweep\nbecause another-worker opened https://github.com/owner/repo/pull/12.", True),
+            ("Not claimed by the sweep\nsince another-worker resumed it at 10:54 AM ET.", True),
+            ("No ownership is claimed by this sweep.\nWorker: another-worker", True),
+            ("No ownership is claimed by this sweep\n* Implementation is claimed by another-worker.", True),
+        ):
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["body"] += "\n" + status
+                if conflict:
+                    with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                    self.assert_no_writes()
+                else:
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_formatted_empty_holders_do_not_hide_uncertainty(self):
+        for holder in ("**none**", "`n/a`", "_None_", "unclaimed", "not assigned", "no-one"):
+            with self.subTest(holder=holder):
+                self.setUp()
+                self.issue["body"] += f"\nWorker: {holder}\nSession: {holder}"
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        for holder in ("TBD", "unknown", "pending", "**none** until the prior worker confirms"):
+            with self.subTest(holder=holder):
+                self.setUp()
+                self.issue["body"] += f"\nWorker: {holder}"
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_crlf_current_status_supports_structured_and_legacy_recovery(self):
+        for structured in (True, False):
+            with self.subTest(structured=structured):
+                self.setUp()
+                self.run_claim()
+                if not structured:
+                    self.issue["body"] = "\n".join(line for line in self.issue["body"].splitlines()
+                                                    if not line.startswith("<!-- " + CLAIM.MARKER))
+                self.issue["body"] = self.issue["body"].replace("\n", "\r\n")
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                self.issue["body"] += "\r\nReclaimed by another-worker after the release."
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+
+    def test_no_change_summary_does_not_hide_a_copied_claim_header(self):
+        for status in ("No changes\nOwned by trial-b", "- No code changes\n  Claimed by trial-b",
+                       "No work - claimed by trial-b.", "No ownership\nOwned by trial-b"):
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["body"] += "\n" + status
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
 
     def test_responsibility_status_with_released_claim_allows_new_claim(self):
         self.issue["body"] += "\n" + RESPONSIBILITY_STATUS

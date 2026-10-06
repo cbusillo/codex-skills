@@ -154,6 +154,68 @@ def references_issue(text: str, number: int) -> bool:
                 or re.search(rf"(?:^|/){number}[-_]", text))
 
 
+def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = None) -> bool:
+    """Ignore explicit absence only at the assertion, never a whole status."""
+    text = "\n".join(text.splitlines())
+    if own_claim:
+        # Match complete identity lines before splitting prose punctuation:
+        # worker/session tokens may themselves contain dots or semicolons.
+        for assertion, key in ((r"(?:State: Active;\s*)?(?:owned by|claimed by|Worker:)", "worker"),
+                               (r"Session:", "session")):
+            text = re.sub(rf"(?im)^\s*{assertion}\s+{re.escape(own_claim[key])}\.?[ \t]*$", "", text)
+    # Strip Markdown around labels only after removing exact generated identity
+    # lines, so an underscore in a worker/session token is never formatting.
+    text = re.sub(r"(?<!\w)(?:[*]{1,2}|_{1,2}|`)(?=owned by|claimed by|worker\b|session\b)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"((?:owned by|claimed by|worker|session):?)(?:[*]{1,2}|_{1,2}|`)(?=[\s:])", r"\1", text, flags=re.IGNORECASE)
+    # Structured markers were checked separately. Preserve logical paragraphs
+    # when prose is hard-wrapped, while fields and list items stay independent.
+    text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("<!-- " + MARKER))
+    text = re.sub(r"(?i)(?<!\n)\n(?![ \t]*(?:\n|[-*+]\s|(?:re)?(?:owned|claimed) by\b|"
+                  r"[*_`]*\w[\w /-]*:[*_`]*(?=[ \t]|$)|<!--|>))", " ", text)
+    boundary = r"[;!?\n]|\.(?=\s|$)"
+    subject = (
+        r"(?:timing|(?:code )?changes?|(?:not-planned )?closures?|"
+        r"(?:implementation |execution )?ownership|implementation|work|"
+        r"(?:executing )?workers?|claims?|(?:this |the )?(?:issue|task))"
+    )
+    negative_subject = (
+        rf"(?:no {subject}(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+){subject})*"
+        r"\s+(?:is|are|was|were|has been|have been)|no (?:implementation |execution )?ownership)\s*"
+    )
+    for match in re.finditer(r"owned by|claimed by|\bworker\s*:|\bsession\s*:", text, re.IGNORECASE):
+        raw_prefix = re.split(boundary, text[:match.start()])[-1]
+        raw_prefix = raw_prefix.replace("**", "").replace("__", "").replace("`", "").lstrip(" -*+_").rstrip(" *_")
+        prefix = re.sub(r"^[^:]+:\s*", "", raw_prefix)
+        ending = re.split(rf"({boundary})", text[match.end():], maxsplit=1)
+        suffix = ending[0].strip()
+        # Conditional or contrastive denials are not proof that nobody holds it.
+        uncertain = (
+            len(ending) > 1 and ending[1] == "?"
+            or re.search(r"\b(?:if|unless|until|except|but|however|instead|rather|whether|"
+                         r"other than|besides|apart from|save for)\b", raw_prefix + " " + suffix, re.IGNORECASE)
+            or (prefix.casefold() != "no longer" and re.match(r"no\b", prefix, re.IGNORECASE)
+                and re.search(r"\b(?:not|never|no longer)\s*$", prefix, re.IGNORECASE))
+        )
+        if not uncertain:
+            empty_holder = suffix.lstrip(": ").strip("*_`").casefold()
+            if empty_holder in {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", "nobody", "no one", "no-one"}:
+                continue
+            if not match.group().rstrip().endswith(":"):
+                negated = (
+                    re.search(r"\b(?:not|never)(?:\s+(?:yet|currently))?(?:\s+been)?\s*$|"
+                              r"\b(?:is|are|was|were|has|have|had)n['’]t(?:\s+been)?\s*$|\b(?:no longer|un|dis)\s*$",
+                              prefix, re.IGNORECASE)
+                    or re.fullmatch(negative_subject, prefix, re.IGNORECASE)
+                )
+                # A denial may name its subject, but trailing narrative can
+                # describe a handoff or another holder without our keywords.
+                if negated and re.fullmatch(r"(?:(?:this|the|a|an|any|another|current)\s+)?"
+                                            r"[\w.-]+(?:\s+(?:worker|session|agent|sweep|pass|run|audit))?", suffix, re.IGNORECASE):
+                    continue
+        return True
+    return False
+
+
 def discussion_evidence(
     status: str, comments: list[dict[str, Any]], claim: dict[str, str], *, resume_from: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
@@ -162,7 +224,6 @@ def discussion_evidence(
     comments = effective_comments(comments)
     conflicts: list[dict[str, Any]] = []
     owned = []
-    original_status = status
     status = resumed_status(status, comments, resume_from)
     status_records = records(status)
     for record in status_records:
@@ -183,12 +244,22 @@ def discussion_evidence(
         "",
         status,
     )
-    if (not status_records or status != original_status) and re.search(
-        r"(?im)owned by|claimed by|\bworker\s*:|\bsession\s*:",
-        ownership_status,
-    ):
-        if any(claim[key] not in status for key in ("worker", "session", "branch")):
-            conflicts.append({"source": "current_status", "text": status, "certainty": "ambiguous"})
+    # A matching marker or complete legacy identity accounts only for that
+    # owner's assertions; it must not hide a second holder in the same status.
+    own_claim = claim if owned or all(claim[key] in status for key in ("worker", "session", "branch")) else None
+    if owned:
+        # The helper copies these intent/history lines from its claim comment.
+        # Ignore only exact recorded lines, never an arbitrary Next action or
+        # another assertion added beside the matching marker.
+        intent_lines = {
+            line for comment in comments
+            if any(same_owner(record, claim) for record in records(comment.get("body") or ""))
+            for line in (comment.get("body") or "").splitlines()
+            if line.startswith(("Next action: ", "Wait resolution: "))
+        }
+        ownership_status = "\n".join(line for line in ownership_status.splitlines() if line not in intent_lines)
+    if has_ownership_assertion(ownership_status, own_claim=own_claim):
+        conflicts.append({"source": "current_status", "text": status, "certainty": "ambiguous"})
     released: dict[tuple[str, str], int] = {}
     released_ids: dict[tuple[int, str], int] = {}
     for index, comment in enumerate(comments):
@@ -216,11 +287,12 @@ def discussion_evidence(
         if comment_id is not None and released_ids.get((comment_id, author), -1) > index:
             continue
         legacy = re.match(r"Claimed by (\S+)", text)
-        if legacy and not parsed:
+        if legacy and not parsed and has_ownership_assertion(text):
             worker = legacy.group(1)
             if released.get((worker, author), -1) > index:
                 continue
-            if worker != claim["worker"] or any(claim[key] not in text for key in ("session", "branch")):
+            if (worker != claim["worker"] or any(claim[key] not in text for key in ("session", "branch"))
+                    or has_ownership_assertion(text, own_claim=claim)):
                 conflicts.append({"source": "comment", "id": comment.get("id"), "text": text,
                                   "certainty": "current_or_stale"})
             else:
