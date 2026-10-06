@@ -167,7 +167,9 @@ preserved, or intentionally left in place.
    declaring the work parked or safe to exit. For an already merged or closed PR,
    a `babysit-pr --once` snapshot can be closeout evidence.
 5. Use `github-plan` for durable plan state, blockers, stale/duplicate plan
-   cleanup, and Project planning state. Use legacy `plan` only for explicit
+   cleanup, and Project planning state. Before recording a follow-up or handoff,
+   read its [Status Labels](../github-plan/SKILL.md#status-labels).
+   Use legacy `plan` only for explicit
    local/offline plan files that already exist or that the user asks to keep.
    If source-of-truth docs, runbooks, deployment notes, or another durable record
    contain the decisive completion or blocker evidence, compare that state with
@@ -352,10 +354,8 @@ checks below as relevant.
 - Treat an accurate issue graph as closeout evidence. A handoff that describes
   work not represented in the owning issue, PR, or related issue graph is
   incomplete unless the user explicitly asked for private/offline parking.
-- After a PR merges, sweep issues referenced by the canonical merged PR body and
-  comments. `Refs #...` is intentionally non-closing; close only issues whose
-  acceptance criteria were conclusively satisfied by the merge. Otherwise,
-  update `Current Status` or leave a comment with what remains.
+- After a landing, follow github-plan's
+  [Close Or Hand Off](../github-plan/SKILL.md#close-or-hand-off) reconciliation.
 - Mark completed checklist items, record blockers, and remove or rewrite stale
   assumptions in the GitHub plan issue.
 - Before declaring safe to exit after closing or merging implementation work,

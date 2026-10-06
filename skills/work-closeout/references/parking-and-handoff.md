@@ -58,7 +58,8 @@ exists, retain the original work, name the missing choice, and continue any
 independent authorized cleanup.
 
 Keep the owning issue's Current Status, labels, and native relationships current
-when parking work. Projects remain automatic views; do not maintain manual
+under github-plan's [Status Labels](../../github-plan/SKILL.md#status-labels)
+when parking or handing off work. Projects remain automatic views; do not maintain manual
 Focus, Manager, Finish Line, or roadmap fields. For completed planning issues,
 use the `github-plan` close flow so done labels and Project Status are updated.
 
