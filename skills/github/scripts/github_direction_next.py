@@ -651,7 +651,7 @@ def rank_portfolio_work(
                 continue
             seen_waits.add(key)
             if row.get("unowned", row["non_external"]):
-                if entry.get("plan_status") == "waiting":
+                if entry.get("plan_status") == "waiting" or entry.get("exclusion") == "waiting":
                     unowned.append({**row, "review_required": True})
             elif entry.get("stale_wait_evidence"):
                 stale_waits.append({**row, "stale_wait_evidence": entry["stale_wait_evidence"], "review_required": True})

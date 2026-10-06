@@ -2359,10 +2359,7 @@ def test_global_unowned_authorization_holds_never_become_candidates_or_stale() -
         assert result["candidates"] == []
         assert next(row for row in result["excluded"] if row["number"] == 10)["exclusion"] == "waiting"
         assert result["stale_wait_report"]["items"] == []
-        if labels:
-            assert result["unowned"][0]["number"] == 10
-        else:
-            assert result["recorded_waits"][0]["number"] == 10
+        assert result["unowned"][0]["number"] == 10
 
 
 def test_global_cross_repo_link_label_does_not_create_a_local_reference() -> None:
