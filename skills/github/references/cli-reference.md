@@ -477,8 +477,16 @@ resources, optionally prefixed by `Remaining`, a two-group count, or `provider-o
 `After these proposals,` may precede that resource subject. They assign one actor
 for evidence and another for disposition approval; these are not worker claims.
 Other resource-prose shapes remain ambiguous and refuse conservatively.
+Explicit ownership denials such as `not claimed by`, `no implementation
+ownership is claimed by`, and an empty holder (`Claimed by no one`,
+`Worker: None`, `Session: unassigned`) do not assert an executing owner.
+Denials apply only to their own assertion; conditional, contrastive, or
+unknown-holder statements remain ambiguous. Non-ownership prose such as
+`no claims` or `releases claim` never releases an existing claim: only the
+authored release forms below do that.
 Other ownership assertions in the same status, structured claims, and unreleased
-claim comments still refuse independently.
+claim comments still refuse independently, including a second holder beside
+the caller's own marker or complete legacy identity.
 
 An issue URL on a PR body line starting exactly `Code follow-ups recorded
 without starting implementation:` is context-only. Title or branch ownership,
