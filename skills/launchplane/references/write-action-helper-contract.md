@@ -31,12 +31,12 @@ including an external link to another external file, is accepted.
 
 ## Read budgets and timeout diagnostics
 
-Commands ending in `-read` default to a bounded 30-second HTTP budget per
-request, including the read-only POST used by `target-replacement-plan-read`.
-This accommodates complete release-checklist compilation. An explicit
-`--timeout` before the subcommand overrides the budget. Write and dry-run
-commands retain their existing budgets; the controller budget is described
-in [Controller](#controller).
+`product-promotion-status-read` defaults to a bounded 30-second HTTP socket
+timeout to accommodate complete release-checklist compilation. Other reads,
+including the read-only POST used by `target-replacement-plan-read`, keep their
+10-second default. An explicit `--timeout` before the subcommand overrides
+the budget. Write and dry-run commands retain their existing budgets; the
+controller budget is described in [Controller](#controller).
 
 A direct or URL-wrapped socket timeout returns `unavailable` with
 `client_timeout` and `timeout_seconds`. It means the client budget expired,

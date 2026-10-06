@@ -6842,6 +6842,9 @@ def test_complete_promotion_read_budget_and_explicit_override_reach_transport() 
         "--reason", "fixture", "--evidence-fingerprint", "d" * 64, "--idempotency-key", "fixture"])
     controller = write_action.parse_args(["merge-train-controller-run-once", "--repo", "example/repo"])
     assert write.timeout < 16 <= calls[0]["timeout"] < controller.timeout
+    ordinary = write_action.parse_args(["product-profile-read", "--product", "example-product"])
+    policy = write_action.parse_args(["merge-train-policy-read", "--repo", "example/repo"])
+    assert ordinary.timeout == policy.timeout == write.timeout
     for budget, expected_status in ((7.5, 1), (22.5, 0)):
         status, payload, calls = _run_read_transport(
             ["--timeout", str(budget), *argv], response=response, required_seconds=16,

@@ -8419,7 +8419,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--url", help="Optional Launchplane service URL override.")
     parser.add_argument(
         "--timeout", type=float, default=argparse.SUPPRESS,
-        help="HTTP timeout seconds (reads: 30; controller: 180; other commands: 10).",
+        help="HTTP timeout seconds (promotion status: 30; controller: 180; other commands: 10).",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -8902,7 +8902,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args.timeout = getattr(
         args, "timeout",
         180.0 if args.command == "merge-train-controller-run-once"
-        else 30.0 if args.command.endswith("-read") else 10.0,
+        else 30.0 if args.command == "product-promotion-status-read" else 10.0,
     )
     return args
 
