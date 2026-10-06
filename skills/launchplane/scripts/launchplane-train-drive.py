@@ -115,6 +115,10 @@ class DriveState:
     own_refusal_streak: int = 0
 
 
+class DriverLockError(Exception):
+    """Local lock setup failed before the controller was called."""
+
+
 @contextmanager
 def local_driver(settings: DriveSettings) -> Iterator[dict[str, Any] | None]:
     """Hold a host-local train lock across the entire CLI run, including read-back.
@@ -123,11 +127,14 @@ def local_driver(settings: DriveSettings) -> Iterator[dict[str, Any] | None]:
     The OS releases ownership on exit, even when the driver is killed.
     """
     if fcntl is None:
-        raise OSError("local train-driver locking requires POSIX flock")
-    root = Path.home() / ".cache" / "codex-skills" / "train-drivers"
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    key = hashlib.sha256(json.dumps([settings.repository.casefold(), settings.base_branch]).encode()).hexdigest()
-    fd = os.open(root / f"{key}.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        raise DriverLockError("local train-driver locking requires POSIX flock")
+    try:
+        root = Path.home() / ".cache" / "codex-skills" / "train-drivers"
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        key = hashlib.sha256(json.dumps([settings.repository.casefold(), settings.base_branch]).encode()).hexdigest()
+        fd = os.open(root / f"{key}.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as error:
+        raise DriverLockError from error
     with os.fdopen(fd, "r+", encoding="utf-8") as handle:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -138,11 +145,16 @@ def local_driver(settings: DriveSettings) -> Iterator[dict[str, Any] | None]:
                 holder = {}
             yield holder if isinstance(holder, dict) else {}
             return
-        handle.seek(0)
-        handle.truncate()
-        json.dump({"pid": os.getpid(), "pr": settings.number,
-                   "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, handle)
-        handle.flush()
+        except OSError as error:
+            raise DriverLockError from error
+        try:
+            handle.seek(0)
+            handle.truncate()
+            json.dump({"pid": os.getpid(), "pr": settings.number,
+                       "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, handle)
+            handle.flush()
+        except OSError as error:
+            raise DriverLockError from error
         yield None
 
 
@@ -638,13 +650,14 @@ def main(argv: list[str]) -> int:
             if holder is not None:
                 outcome = _stop(settings, DriveState(batch={settings.number}), emit, "needs_owner",
                                 reason="another local driver is running for this train", running_driver=holder,
-                                recommendation="Add ready-to-merge and leave the PR to the running driver.")
+                                recommendation="Add ready-to-merge and leave the PR to the running driver. "
+                                               "If it exits before this PR lands, rerun this driver.")
             else:
                 outcome = drive(settings, live_io(args.helper_timeout, deadline_at=settings.deadline,
                                                  repository_context=settings.repository), emit)
-    except OSError:
+    except DriverLockError:
         outcome = _stop(settings, DriveState(batch={settings.number}), emit, "error",
-                        reason="train-driver lock or I/O unavailable")
+                        reason="local train-driver lock unavailable; no controller call made")
     return EXIT_CODES[outcome]
 
 

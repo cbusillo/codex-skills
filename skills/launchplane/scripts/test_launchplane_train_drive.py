@@ -170,11 +170,22 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
     def test_cli_exception_releases_local_driver_lock(self) -> None:
         from contextlib import redirect_stdout
         from io import StringIO
-        with patch.object(train_drive, "live_io", side_effect=RuntimeError("fixture")), self.assertRaises(RuntimeError):
+        with patch.object(train_drive, "live_io", side_effect=OSError("fixture")), self.assertRaises(OSError):
             train_drive.main(["--repo", REPO, "--pr", "7"])
         train = FakeTrain([_response("idle")], merge_after={7: 0})
         with patch.object(train_drive, "live_io", return_value=train.io()), redirect_stdout(StringIO()):
             self.assertEqual(train_drive.main(["--repo", REPO, "--pr", "7"]), 0)
+
+    def test_cli_lock_setup_failure_never_calls_controller(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+        output = StringIO()
+        with patch.object(train_drive.os, "open", side_effect=OSError("fixture")), patch.object(
+            train_drive, "live_io"
+        ) as live, redirect_stdout(output):
+            code = train_drive.main(["--repo", REPO, "--pr", "7"])
+        live.assert_not_called()
+        self.assertEqual((code, json.loads(output.getvalue())["payload"]["outcome"]), (3, "error"))
 
     def test_own_merge_refusal_stops_early_with_diagnostics(self) -> None:
         refusal = _refusal("github_merge_rejected")

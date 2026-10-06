@@ -77,7 +77,9 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   `scripts/launchplane-train-drive.py` make them. The CLI holds an OS file lock
   per repository/base train in the user's shared cache, across worktrees.
   A second local driver exits with `needs_owner`, naming the running PR and
-  start time and suggesting enqueueing the PR for that driver. Process exit
+  start time and suggesting enqueueing the PR for that driver. If that driver
+  exits before the queued PR lands, rerun the refused driver; a driver stops
+  when its own PR lands and does not promise to drain unrelated work. Process exit
   releases the lock; stale metadata never keeps a train locked. Drivers on
   other hosts still obey Launchplane's controller lease.
   Three consecutive refusals with the same code and this driver's PR number
