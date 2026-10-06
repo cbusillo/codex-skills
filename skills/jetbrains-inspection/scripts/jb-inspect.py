@@ -6830,7 +6830,7 @@ IDE_ROUTE_CONFIGURATION_REASONS = frozenset({"ide_selection_required", "ide_conf
 IDE_ROUTE_CONFIGURATION_NEXT_ACTION = (
     "This repository has no usable JetBrains IDE route, so repeating the inspection cannot succeed. "
     "Recommend to the user that the repository record its IDE in .github/github.json under "
-    'qualityGate.inspection, for example {"tool": "jetbrains", "ide": "PyCharm"}; name the IDE that fits the '
+    'qualityGate.inspection, for example {"ide": "PyCharm"}; name the IDE that fits the '
     "repository's main language and ask before writing it, because it is durable repository policy. "
     "For this one assessment, rerun once with --ide <IDE name> if the user names an IDE. "
     "Report the verdict as UNKNOWN with this recommendation; do not keep reporting that inspection is unavailable."
