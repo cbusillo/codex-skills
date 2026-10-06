@@ -336,6 +336,15 @@ behavior or provenance-sensitive evidence. A merge-train landing driven by
 has fallen behind, run its own copy:
 `uv run <runtime-checkout>/skills/github/scripts/reconcile-runtime-checkout.py --repo cbusillo/codex-skills`.
 
+The registered session-start hook also runs this catch-up for its bound catalog,
+so a landing without a local train driver is picked up on the next startup,
+resume, or clear on either harness. It skips development checkouts and
+compaction, gives reconciliation five seconds, and reports a blocker or failure
+without preventing the session from starting. The reconciler's provenance check
+still applies: if its source changed upstream, use the copy from a worktree at
+the reported tip. The new copy must be reconciled once after this change lands
+before the installed hook can provide automatic catch-up.
+
 ## Execution Environment
 
 Repository validation uses uv `>=0.11.29,<1`, keeps Python 3.12 as its minimum

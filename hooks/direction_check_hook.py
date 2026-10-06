@@ -25,10 +25,12 @@ import datetime as dt
 import json
 import os
 import re
+import runpy
 import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 
 MARKER_NAME = "direction-last-check.json"
 TURN_STALE = dt.timedelta(hours=24)
@@ -38,6 +40,41 @@ SKILLS_PROTOCOL_PATH = LOOP_PATH.with_name("using-skills.md")
 GH_READER = Path(__file__).resolve().parents[1] / "skills" / "github" / "scripts" / "gh-with-env-token"
 OVERALL_REPO = "direction"
 OVERALL_READ_TIMEOUT = 6
+RUNTIME_CATCHUP_TIMEOUT = 5
+
+
+def catch_up_runtime(catalog: Path) -> str:
+    """Catch up only the bound catalog, using the reconciler's existing safety gates."""
+    helper = catalog / "skills" / "github" / "scripts" / "reconcile-runtime-checkout.py"
+    if not helper.is_file():
+        return ""
+    try:
+        # run_path reads the script without writing __pycache__ into the runtime.
+        reconciler = SimpleNamespace(**runpy.run_path(str(helper)))
+        common = reconciler.git_common_dir(catalog)
+        bound = any(
+            reconciler.inspect_binding(path, common)[2] == catalog.resolve()
+            for path, _, _ in reconciler.runtime_skills_paths()
+        )
+        if not bound:
+            return ""
+        # A linked development checkout must not update a different runtime checkout.
+        branch = reconciler.resolve_default_branch(catalog)
+        blockers = reconciler.runtime_blockers(catalog, branch)
+        if blockers:
+            return f"Catalog catch-up blocked: {', '.join(blockers)} ({catalog})."
+        repo = reconciler.repository_from_remote_url(
+            reconciler.git_text(catalog, "config", "--get", "remote.origin.url")
+        )
+        receipt = reconciler.reconcile_runtime_checkout(
+            catalog, repo, None, timeout_seconds=RUNTIME_CATCHUP_TIMEOUT,
+        )
+        if receipt["status"] == "already_current":
+            return ""
+        detail = receipt.get("detail") or receipt["reason_code"]
+        return f"Catalog catch-up {receipt['status']}: {detail} ({catalog})."
+    except Exception:  # A broken or older helper must not prevent the session from starting.
+        return f"Catalog catch-up unavailable: could not reconcile {catalog}."
 
 
 def marker_path(env: Mapping[str, str] | None = None) -> Path:
@@ -245,10 +282,13 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None) -> int:
         if skills_only:
             return 0
         # Resolve the runtime catalog from this registered hook, never the task cwd.
+        catalog = catalog_root or Path(__file__).resolve().parents[1]
+        catchup_line = catch_up_runtime(catalog)
+        if catchup_line:
+            print(catchup_line)
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         try:
             from scripts.catalog_runtime import status_line
-            catalog = catalog_root or Path(__file__).resolve().parents[1]
             catalog_line = status_line(catalog) if (catalog / ".local" / "catalog-install.json").is_file() else ""
             if catalog_line:
                 print(catalog_line)

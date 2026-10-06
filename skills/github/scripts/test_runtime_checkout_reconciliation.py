@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import shlex
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -33,10 +36,11 @@ class RuntimeFixture:
     initial_sha: str
     head_sha: str
     landing_sha: str
+    helper_relative_path: Path = Path("github/scripts") / SCRIPT.name
 
     @property
     def script(self) -> Path:
-        return self.merged / "github" / "scripts" / SCRIPT.name
+        return self.merged / self.helper_relative_path
 
     def run(
         self,
@@ -103,7 +107,11 @@ def commit_file(repo: Path, relative_path: str, content: str, message: str) -> s
     return git(repo, "rev-parse", "HEAD")
 
 
-def build_runtime_fixture(tmp_path: Path, *, helper_in_initial: bool = True) -> RuntimeFixture:
+def build_runtime_fixture(
+    tmp_path: Path, *, helper_in_initial: bool = True,
+    helper_relative_path: Path = Path("github/scripts") / SCRIPT.name,
+    extra_files: dict[str, Path] | None = None,
+) -> RuntimeFixture:
     repo = "example/repo"
     remote = tmp_path / "example" / "repo.git"
     seed = tmp_path / "seed"
@@ -132,10 +140,15 @@ def build_runtime_fixture(tmp_path: Path, *, helper_in_initial: bool = True) -> 
     (seed / ".gitignore").write_text("runtime-secret.txt\n")
     git(seed, "add", ".github/github.json", ".gitignore")
     if helper_in_initial:
-        copied_script = seed / "github" / "scripts" / SCRIPT.name
+        copied_script = seed / helper_relative_path
         copied_script.parent.mkdir(parents=True)
         shutil.copy2(SCRIPT, copied_script)
-        git(seed, "add", f"github/scripts/{SCRIPT.name}")
+        git(seed, "add", str(helper_relative_path))
+    for relative, source in (extra_files or {}).items():
+        copied = seed / relative
+        copied.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, copied)
+        git(seed, "add", relative)
     git(seed, "commit", "-m", "initial runtime helper")
     initial_sha = git(seed, "rev-parse", "HEAD")
     git(seed, "remote", "add", "origin", str(remote))
@@ -150,10 +163,10 @@ def build_runtime_fixture(tmp_path: Path, *, helper_in_initial: bool = True) -> 
     configure_git(runtime)
     git(runtime, "worktree", "add", "-b", "runtime-test-source", str(merged), "main")
     if not helper_in_initial:
-        copied_script = merged / "github" / "scripts" / SCRIPT.name
+        copied_script = merged / helper_relative_path
         copied_script.parent.mkdir(parents=True)
         shutil.copy2(SCRIPT, copied_script)
-        git(merged, "add", f"github/scripts/{SCRIPT.name}")
+        git(merged, "add", str(helper_relative_path))
     (merged / "feature.txt").write_text("feature\n")
     git(merged, "add", "feature.txt")
     git(merged, "commit", "-m", "feature change")
@@ -184,6 +197,7 @@ def build_runtime_fixture(tmp_path: Path, *, helper_in_initial: bool = True) -> 
         initial_sha=initial_sha,
         head_sha=head_sha,
         landing_sha=landing_sha,
+        helper_relative_path=helper_relative_path,
     )
 
 
@@ -670,6 +684,123 @@ def test_a_helper_outside_the_merged_worktree_says_which_copy_to_run(tmp_path: P
     assert receipt["reason_code"] == "invalid_merged_worktree"
     detail = receipt["detail"]
     assert isinstance(detail, str) and "is not inside" in detail
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
+
+
+def session_fixture(tmp_path: Path) -> RuntimeFixture:
+    root = SCRIPT.resolve().parents[3]
+    return build_runtime_fixture(
+        tmp_path, helper_relative_path=Path("skills/github/scripts") / SCRIPT.name,
+        extra_files={"hooks/direction_check_hook.py": root / "hooks/direction_check_hook.py"},
+    )
+
+
+def start_session(fixture: RuntimeFixture, *args: str, catalog: Path | None = None) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, "HOME": str(fixture.code_home.parent / "host-home"),
+           "CODE_HOME": str(fixture.code_home), "CODEX_HOME": str(fixture.code_home.parent / "unused"),
+           "CLAUDE_CONFIG_DIR": str(fixture.code_home.parent / "unused-claude"),
+           "DIRECTION_MARKER": str(fixture.code_home.parent / "missing-marker.json")}
+    return subprocess.run(
+        [sys.executable, str((catalog or fixture.runtime) / "hooks/direction_check_hook.py"), *args],
+        cwd=fixture.code_home, env=env, capture_output=True, text=True, timeout=15,
+    )
+
+
+def test_session_start_catches_up_without_a_driver_and_keeps_the_reminder(tmp_path: Path) -> None:
+    fixture = session_fixture(tmp_path)
+    first = start_session(fixture)
+    assert first.returncode == 0
+    assert "Catalog catch-up synchronized" in first.stdout
+    assert "Direction check overdue" in first.stdout
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
+    assert git(fixture.runtime, "status", "--porcelain") == ""
+    second = start_session(fixture)
+    assert second.returncode == 0
+    assert "Catalog catch-up" not in second.stdout
+
+
+@pytest.mark.parametrize("unsafe", ["dirty", "untracked", "branch", "detached", "hidden", "ahead", "diverged"])
+def test_session_start_preserves_unsafe_runtime(tmp_path: Path, unsafe: str) -> None:
+    fixture = session_fixture(tmp_path)
+    feature = fixture.runtime / "feature.txt"
+    if unsafe == "dirty":
+        (fixture.runtime / ".gitignore").write_text("local edit\n")
+    elif unsafe == "untracked":
+        feature.write_text("untracked local work\n")
+    elif unsafe == "branch":
+        git(fixture.runtime, "checkout", "-b", "local-work")
+    elif unsafe == "detached":
+        git(fixture.runtime, "checkout", "--detach")
+    elif unsafe == "hidden":
+        git(fixture.runtime, "update-index", "--assume-unchanged", ".gitignore")
+        (fixture.runtime / ".gitignore").write_text("hidden local edit\n")
+    elif unsafe == "ahead":
+        git(fixture.runtime, "fetch", "origin", "main")
+        git(fixture.runtime, "merge", "--ff-only", fixture.landing_sha)
+        commit_file(fixture.runtime, "local.txt", "local work\n", "local commit")
+    else:
+        commit_file(fixture.runtime, "local.txt", "local work\n", "divergent commit")
+    before = git(fixture.runtime, "rev-parse", "HEAD")
+    status = git(fixture.runtime, "status", "--porcelain")
+    content = {p: (fixture.runtime / p).read_bytes() for p in (".gitignore", "local.txt", "feature.txt") if (fixture.runtime / p).exists()}
+    result = start_session(fixture)
+    assert result.returncode == 0
+    assert "Catalog catch-up blocked" in result.stdout
+    assert git(fixture.runtime, "rev-parse", "HEAD") == before
+    assert git(fixture.runtime, "status", "--porcelain") == status
+    assert all((fixture.runtime / p).read_bytes() == data for p, data in content.items())
+
+
+def test_session_start_skips_development_checkout_and_compaction(tmp_path: Path) -> None:
+    fixture = session_fixture(tmp_path)
+    for result in (start_session(fixture, catalog=fixture.merged), start_session(fixture, "--skills-only")):
+        assert result.returncode == 0
+        assert "Catalog catch-up" not in result.stdout
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
+
+
+def test_session_start_reports_changed_helper_without_moving_runtime(tmp_path: Path) -> None:
+    fixture = session_fixture(tmp_path)
+    helper = fixture.landing / fixture.helper_relative_path
+    helper.write_text(helper.read_text() + "\n# changed upstream\n")
+    git(fixture.landing, "commit", "-am", "change reconciler")
+    tip = git(fixture.landing, "rev-parse", "HEAD")
+    git(fixture.landing, "push", "origin", "main")
+    result = start_session(fixture)
+    assert result.returncode == 0
+    assert "Catalog catch-up failed" in result.stdout and tip in result.stdout
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX lock contention fixture")
+def test_session_start_does_not_wait_for_another_reconciliation(tmp_path: Path) -> None:
+    import fcntl
+    fixture = session_fixture(tmp_path)
+    with (fixture.runtime / ".git/every-code-runtime-reconciliation.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = start_session(fixture)
+    assert result.returncode == 0
+    assert "runtime_reconciliation_busy" in result.stdout
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
+
+
+def test_automatic_reconciliation_bounds_a_slow_fetch(tmp_path: Path) -> None:
+    fixture = session_fixture(tmp_path)
+    namespace = runpy.run_path(str(fixture.runtime / fixture.helper_relative_path))
+    reconcile = namespace["reconcile_runtime_checkout"]
+    globals_ = reconcile.__globals__
+    actual_run = subprocess.run
+    def slow_fetch(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        if "fetch" in argv:
+            return actual_run([sys.executable, "-c", "import time; time.sleep(10)"], **kwargs)
+        return actual_run(argv, **kwargs)
+    env = {"HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home),
+           "CODEX_HOME": str(fixture.code_home.parent / "unused"), "CLAUDE_CONFIG_DIR": str(fixture.code_home.parent / "unused-claude")}
+    with mock.patch.dict(os.environ, env), mock.patch.object(globals_["subprocess"], "run", side_effect=slow_fetch):
+        started = time.monotonic()
+        receipt = reconcile(fixture.runtime, fixture.repo, None, timeout_seconds=1)
+        assert time.monotonic() - started < 3
+    assert receipt["status"] == "retryable" and receipt["reason_code"] == "fetch_failed"
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 

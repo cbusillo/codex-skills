@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import contextvars
 import hashlib
 import json
 import os
 import re
 import subprocess
+import time
 import urllib.parse
 from pathlib import Path
 from typing import Any, Iterator
@@ -24,6 +26,9 @@ HELPER_IN_CATALOG = Path("skills/github/scripts/reconcile-runtime-checkout.py")
 SUCCESS_STATUSES = frozenset({"synchronized", "already_current", "not_applicable"})
 LANDING_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+RECONCILIATION_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "reconciliation_deadline", default=None,
+)
 UNSAFE_GIT_ENVIRONMENT = frozenset(
     {
         "GIT_ALTERNATE_OBJECT_DIRECTORIES",
@@ -49,6 +54,10 @@ class GitCommandError(RuntimeError):
         super().__init__(operation)
         self.operation = operation
         self.stderr = stderr.strip()
+
+
+class ReconciliationBusy(RuntimeError):
+    pass
 
 
 def parse_args() -> argparse.Namespace:
@@ -96,6 +105,25 @@ def main() -> int:
 
 
 def reconcile_runtime_checkout(
+    merged_worktree: Path,
+    expected_repo: str,
+    landing_sha: str | None,
+    *,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Use a bounded, nonblocking reconciliation for automatic session startup."""
+    token = RECONCILIATION_DEADLINE.set(
+        time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+    )
+    try:
+        return _reconcile_runtime_checkout(merged_worktree, expected_repo, landing_sha)
+    except ReconciliationBusy:
+        return finish(base_receipt(landing_sha), "blocked", "runtime_reconciliation_busy")
+    finally:
+        RECONCILIATION_DEADLINE.reset(token)
+
+
+def _reconcile_runtime_checkout(
     merged_worktree: Path,
     expected_repo: str,
     landing_sha: str | None,
@@ -628,6 +656,10 @@ def run_git(
     input_data: bytes | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     env = sanitized_git_environment()
+    deadline = RECONCILIATION_DEADLINE.get()
+    timeout = 120.0 if deadline is None else deadline - time.monotonic()
+    if timeout <= 0:
+        raise GitCommandError(args[0] if args else "git", "Reconciliation deadline expired")
     try:
         proc = subprocess.run(
             [
@@ -644,7 +676,7 @@ def run_git(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
-            timeout=120,
+            timeout=timeout,
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
@@ -674,7 +706,13 @@ def reconciliation_lock(common_dir: Path) -> Iterator[None]:
         if os.name == "posix":
             import fcntl
 
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            flags = fcntl.LOCK_EX
+            if RECONCILIATION_DEADLINE.get() is not None:
+                flags |= fcntl.LOCK_NB
+            try:
+                fcntl.flock(lock_file.fileno(), flags)
+            except BlockingIOError as exc:
+                raise ReconciliationBusy from exc
         elif os.name == "nt":
             import msvcrt
 
@@ -683,7 +721,11 @@ def reconciliation_lock(common_dir: Path) -> Iterator[None]:
                 lock_file.write(b"\0")
                 lock_file.flush()
             lock_file.seek(0)
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            mode = msvcrt.LK_NBLCK if RECONCILIATION_DEADLINE.get() is not None else msvcrt.LK_LOCK
+            try:
+                msvcrt.locking(lock_file.fileno(), mode, 1)
+            except OSError as exc:
+                raise ReconciliationBusy from exc
         else:
             raise OSError("Unsupported platform for runtime reconciliation locking")
         try:
