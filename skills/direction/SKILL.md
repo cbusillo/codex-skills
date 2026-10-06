@@ -309,6 +309,8 @@ selected, relabeled, or released automatically. This does not change global
 `next` wait classification or the claim guard. For a Supervisor check, use
 `--stale-waits-only` with the existing audit command: it reads only open issues
 and their prerequisites, leaving weekly audit markers and windows untouched.
+Unrecognized status formats and prerequisites closed as abandoned or duplicate
+remain unproven; completion evidence includes the issue closure reason.
 The report bounds issue checks by the existing inventory size and native
 blocker reads to two pages, skips known-empty native relationships, and caches
 reference reads; any limit or unread evidence keeps `complete` false.

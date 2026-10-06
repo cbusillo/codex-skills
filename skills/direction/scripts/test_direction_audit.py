@@ -1402,7 +1402,7 @@ def test_stale_wait_report_bounds_reads_and_skips_native_zero_summary() -> None:
     module = load()
     rows = [{**issue(n, "Agent routing", labels=("plan:waiting",),
                     body="## Current Status\nWaiting for: Next agent.\n"),
-             "issue_dependencies_summary": {"blocked_by": 0}} for n in (1, 2)]
+             "issue_dependencies_summary": {"blocked_by": 0, "total_blocked_by": 0}} for n in (1, 2)]
     def unexpected(_args: list[str]) -> Any:
         raise AssertionError("a known empty native relationship needs no API call")
     report = module.stale_wait_report(rows, "owner/catalog", fetch=unexpected, max_issues=1)
@@ -1415,7 +1415,7 @@ def test_stale_wait_report_only_cli_never_reads_or_advances_audit_marker() -> No
     module = load()
     row = {**issue(41, "Agent routing", labels=("plan:waiting",),
                    body="## Current Status\nWaiting for: Next agent.\n"),
-           "issue_dependencies_summary": {"blocked_by": 0}}
+           "issue_dependencies_summary": {"blocked_by": 0, "total_blocked_by": 0}}
     with tempfile.TemporaryDirectory() as tmp:
         marker = Path(tmp) / "marker.json"
         original = json.dumps({"audits": {"owner/catalog": stamp(SINCE)}, "turns": {"owner/catalog": stamp(NOW)}})
@@ -1435,6 +1435,55 @@ def test_stale_wait_report_only_cli_never_reads_or_advances_audit_marker() -> No
             report = json.loads(output.getvalue())["stale_wait_report"]
             assert report["complete"] and report["items"][0]["number"] == 41
         assert marker.read_text() == original
+
+
+def test_stale_wait_report_reads_closed_native_history_despite_zero_open_count() -> None:
+    module = load()
+    row = {**issue(41, "Prerequisite finished", labels=("plan:blocked",),
+                   body="## Current Status\nWaiting for: None.\n"),
+           "issue_dependencies_summary": {"blocked_by": 0, "total_blocked_by": 1}}
+    calls: list[str] = []
+    def fetch(args: list[str]) -> Any:
+        calls.append(args[1])
+        return [{"number": 13, "state": "closed", "state_reason": "completed",
+                 "html_url": "https://github.com/owner/product/issues/13"}]
+    report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
+    assert report["complete"] and len(calls) == 1
+    evidence = report["items"][0]["evidence"]
+    assert any(item["kind"] == "closed_native_blocker" and item["state_reason"] == "completed" for item in evidence)
+
+
+def test_stale_wait_report_preserves_unparsed_waits_and_continued_notes() -> None:
+    module = load()
+    bodies = (
+        "## Current Status\nState: Waiting for Justin to accept the release.\n",
+        "## Current Status\nWaiting on: Justin to accept the release.\n",
+        "## Current status\nWaiting for: Justin to accept the release.\n",
+        "## Objective\nJustin must accept the release.\n",
+        "## Current Status\nWaiting for: Capacity.\n\nChris must pick the paid plan first.\n",
+        "## Current Status\nWaiting for: Supervisor routing.\nNote: only after Justin approves.\n",
+        "## Current Status\nWaiting for: Supervisor routing.\nhttps://github.com/owner/product/issues/90 is still awaiting Justin.\n",
+        "## Current Status\nState: Waiting for Justin to accept.\nWaiting for: None.\n",
+    )
+    rows = [{**issue(n, "Genuine acceptance wait", labels=("plan:waiting",), body=body),
+             "issue_dependencies_summary": {"blocked_by": 0, "total_blocked_by": 1}}
+            for n, body in enumerate(bodies, 1)]
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=lambda _: [
+        {"number": 13, "state": "closed", "state_reason": "completed"},
+    ])
+    assert report["complete"] and report["items"] == [], report
+
+
+def test_stale_wait_report_does_not_treat_abandoned_or_duplicate_work_as_completed() -> None:
+    module = load()
+    for reason in ("not_planned", "duplicate"):
+        row = issue(41, "Abandoned prerequisite", labels=("plan:blocked",),
+                    body="## Current Status\nBlocked by: #13\nWaiting for: None.\n")
+        report = module.stale_wait_report([row], "owner/catalog", fetch=lambda _: (
+            [{"number": 13, "state": "closed", "state_reason": reason}]
+            if "/dependencies/" in _[1] else {"state": "closed", "state_reason": reason}
+        ))
+        assert report["complete"] and report["items"] == [], report
 
 
 def main() -> int:

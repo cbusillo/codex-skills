@@ -630,27 +630,33 @@ def stale_wait_report(
             errors.append({"number": number, "source": "issue", "reason": "issue_limit"})
             continue
         checked += 1
-        status = github_direction_next.section_map(str(issue.get("body") or "")).get("Current Status", "")
+        sections = github_direction_next.section_map(str(issue.get("body") or ""))
+        status = next((text for title, text in sections.items() if title.casefold() == "current status"), "")
         evidence: list[dict[str, Any]] = []
         pending = False
         unread = False
         fields: list[tuple[str, str]] = []
-        for entry in re.split(r"(?m)(?=^\s*(?:[-*]\s+)?[\w -]+:)", status):
+        status_field = r"State|Next action|Blocked by|Waiting for|Parked until|Last verified|Validation|Evidence|Retention|Recovery|Worker|Session|Branch"
+        for entry in re.split(rf"(?im)(?=^\s*(?:[-*]\s+)?(?:{status_field}):)", status):
             match = re.match(r"\s*(?:[-*]\s+)?(Waiting for|Blocked by|Parked until):\s*(.+)", entry, re.I | re.S)
             if match:
-                fields.append((match[1], match[2].split("\n\n", 1)[0].strip()))
+                fields.append((match[1], match[2].strip()))
+        pending = not fields or bool(re.search(r"(?im)^\s*(?:[-*]\s+)?(?:Waiting on:|State:.*(?:waiting for|awaiting|waiting on|parked until))", status))
         try:
-            blockers, cut = ([], False) if (issue.get("issue_dependencies_summary") or {}).get("blocked_by") == 0 else fetch_paginated(
+            total = (issue.get("issue_dependencies_summary") or {}).get("total_blocked_by")
+            blockers, cut = ([], False) if type(total) is int and total == 0 else fetch_paginated(
                 f"repos/{repo}/issues/{number}/dependencies/blocked_by", fetch=lambda args: read(args[1]), max_pages=2,
             )
             if cut or any(blocker.get("state") not in {"open", "closed"} for blocker in blockers):
                 unread = True
                 errors.append({"number": number, "source": "native_blockers", "reason": "page_limit" if cut else "unknown_state"})
-            pending = any(blocker.get("state") == "open" for blocker in blockers)
+            pending = pending or any(blocker.get("state") == "open" or blocker.get("state_reason") not in {None, "completed"} for blocker in blockers)
             for blocker in blockers:
-                if blocker.get("state") == "closed" and "pull_request" not in blocker:
+                if (blocker.get("state") == "closed" and "pull_request" not in blocker
+                        and blocker.get("state_reason") in {None, "completed"}):
                     evidence.append({"kind": "closed_native_blocker", "url": blocker.get("html_url"),
-                                     "number": blocker.get("number"), "closed_at": blocker.get("closed_at")})
+                                     "number": blocker.get("number"), "closed_at": blocker.get("closed_at"),
+                                     "state_reason": blocker.get("state_reason")})
         except AuditError:
             unread = True
             errors.append({"number": number, "source": "native_blockers", "reason": "unavailable"})
@@ -674,7 +680,7 @@ def stale_wait_report(
 
             # Recognize complete reference-completion phrases, rather than
             # guessing whether arbitrary trailing prose still names a hold.
-            plain = re.sub(r"\[([^]]+)\]\(([^)]+)\)", r"\2", reason)
+            plain = re.sub(r"\[([^]]+)]\(([^)]+)\)", r"\2", reason)
             normalized = WAIT_REFERENCE.sub("REF", plain).strip().rstrip(" .")
             references_phrase = r"REF(?:\s*(?:and|,|&|\+)\s*(?:(?:PR|issue)\s+)?REF)*"
             mechanical = bool(re.fullmatch(
@@ -707,10 +713,10 @@ def stale_wait_report(
                             completed.append({"kind": "merged_wait_pr", "field": field, "recorded": reason,
                                               "url": f"https://github.com/{target_repo}/pull/{target_number}",
                                               "merged_at": pull["merged_at"]})
-                    elif target.get("state") == "closed" and target.get("state_reason") != "not_planned":
+                    elif target.get("state") == "closed" and target.get("state_reason") in {None, "completed"}:
                         completed.append({"kind": "completed_wait_issue", "field": field, "recorded": reason,
                                           "url": f"https://github.com/{target_repo}/issues/{target_number}",
-                                          "closed_at": target.get("closed_at")})
+                                          "closed_at": target.get("closed_at"), "state_reason": target.get("state_reason")})
                 except AuditError:
                     unread = True
                     errors.append({"number": number, "source": "wait_reference",

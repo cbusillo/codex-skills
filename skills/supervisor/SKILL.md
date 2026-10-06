@@ -203,8 +203,10 @@ records that run.
    ledger or running a helper; the catalog supplies all seven pilot helpers.
 6. Read `stale_wait_report` from the existing
    `uv run skills/direction/scripts/direction_audit.py --repo OWNER/REPO --stale-waits-only` output for
-   each Director repository in the takeover inventory, and include findings
-   and incomplete reads in the takeover comment. Review each reported wait
+   each Director repository returned in `discovery_context.repositories` by
+   `gh-plan.py --repo OWNER/direction next` under `github-plan`. Include report
+   findings and repository-discovery or report coverage gaps in the takeover
+   comment. Review each reported wait
    against the full issue and current evidence before correcting its status;
    this report-only mode leaves weekly audit markers untouched and grants no
    release of a real hold.
