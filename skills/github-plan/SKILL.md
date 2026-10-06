@@ -385,8 +385,9 @@ Use status labels narrowly:
 
 - `plan:active`: actionable now, including work whose next actor is any agent.
   Keep actionable unstarted follow-ups, capacity/selection queues, and Supervisor
-  handoffs active. Ordinary delivery awaiting QA, review, the merge train, or deployment
-  stays active too.
+  handoffs active. Ordinary delivery awaiting QA, review, the merge train, or
+  deployment stays active too. Put the agent's next step in `Next action:` and
+  record `Waiting for: None`.
 - `plan:blocked`: a current dependency, preferably an open native blocker.
 - `plan:waiting`: a durable plan parked on a named person, decision, or external
   event. Name who acts and on what in `Waiting for:` or `Parked until:`.
@@ -394,8 +395,8 @@ Use status labels narrowly:
 - `plan:done`: completed or deliberately superseded.
 
 Being out of focus or awaiting an agent is not a blocker or a waiting condition.
-For a blocking non-issue condition, say `Blocked by: No native issue blocker;
-waiting for ...`.
+For `plan:waiting` without a native issue blocker, say `Blocked by: No native
+issue blocker; waiting for ...`.
 
 When Projects are configured or requested, use them as automatic views of the
 issue graph. Do not maintain Focus, Manager, Finish Line, or roadmap dates in
@@ -429,7 +430,8 @@ Stale GitHub planning state is a regression source. Before closeout, handoff,
 or declaring a workstream done, search related issues. Update every related
 issue whose Current Status, labels, blockers, relationships, or acceptance
 criteria changed. Reconcile stale or duplicate plans rather than leaving
-corrections only in chat or PR comments.
+corrections only in chat or PR comments. Record the winning and superseded PRs
+on the owning issue when competing PRs are resolved.
 
 Before calling the plan captured or complete, verify that stale, duplicate,
 related, and PR-linked issues were swept, the canonical graph has the needed
