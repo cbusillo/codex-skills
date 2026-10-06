@@ -849,6 +849,83 @@ def test_app_actor_probe_does_not_fabricate_other_paths_or_writes() -> None:
         assert post_user.stdout == "real-gh-path\n"
 
 
+def test_pr_create_validation_refusal_preserves_unknown_write_controls() -> None:
+    refusal = (
+        "pull request create failed: GraphQL: Head sha can't be blank, "
+        "Base sha can't be blank, No commits between main and work/fixture, "
+        "Head ref must be a branch (createPullRequest)"
+    )
+    cases = [
+        (refusal, "", "validation_error", "rejected"),
+        ("HTTP 503: Service Unavailable", "", "network_provider_failure", "unknown"),
+        (refusal + "\nconnection reset by peer", "", "network_provider_failure", "unknown"),
+        (refusal, "https://github.com/director/catalog/pull/9\n", "network_provider_failure", "unknown"),
+        (refusal.replace(" (createPullRequest)", ""), "", "network_provider_failure", "unknown"),
+        (refusal.replace("Head ref must be a branch", "Internal Server Error"), "", "network_provider_failure", "unknown"),
+        (refusal + "\ncontext deadline exceeded", "", "deadline_exceeded", "unknown"),
+    ]
+    for stderr, stdout, cause, outcome in cases:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env_file = root / "local.env"
+            env_file.write_text(
+                "GITHUB_APP_ID=12345\n"
+                "GITHUB_APP_INSTALLATION_ID=67890\n"
+                "GITHUB_APP_PRIVATE_KEY_PATH=/fake/app.pem\n"
+                "CODEX_AUTOMATION_LOGIN='catalog-app[bot]'\n",
+                encoding="utf-8",
+            )
+            identity = root / "identity.py"
+            write(identity, fake_app_identity())
+            calls = root / "calls.jsonl"
+            fake_gh = root / "gh"
+            write(
+                fake_gh,
+                f"#!{sys.executable}\n"
+                "import json, os, sys\n"
+                f"with open({str(calls)!r}, 'a') as stream:\n"
+                "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                "assert os.environ['GH_TOKEN'] == 'installation-token'\n"
+                "assert sys.argv[1:3] == ['pr', 'create']\n"
+                f"sys.stdout.write({stdout!r})\n"
+                f"sys.stderr.write({stderr!r} + '\\n')\n"
+                "sys.exit(1)\n",
+            )
+            body = root / "body.md"
+            body.write_text("Fixture body", encoding="utf-8")
+            env = {
+                "PATH": os.environ["PATH"],
+                "HOME": str(root),
+                "CODEX_SKILLS_ENV_FILE": str(env_file),
+                "GH_PR_GH": str(SCRIPT),
+                "GH_WITH_ENV_TOKEN_GH": str(fake_gh),
+                "GH_WITH_ENV_TOKEN_CLASSIFIER": str(SCRIPT.with_name("github_api.py")),
+                "GH_WITH_ENV_TOKEN_IDENTITY_HELPER": str(identity),
+                "GH_WITH_ENV_TOKEN_PYTHON": sys.executable,
+                "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1",
+                "GITHUB_RETRY_STATE_DIR": str(root / "retry"),
+            }
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT.with_name("gh-pr.py")), "--repo", "director/catalog",
+                 "create", "--title", "fixture", "--body-file", str(body),
+                 "--base", "main", "--head", "work/fixture"],
+                env=env, text=True, capture_output=True, check=False, timeout=30,
+            )
+            assert result.returncode == 1, result
+            payload = json.loads(result.stdout)
+            assert payload["failure"]["cause"] == cause, payload
+            assert payload["write_outcome"] == outcome, payload
+            assert payload["outcome_certainty"] == ("confirmed_not_applied" if outcome == "rejected" else "unknown"), payload
+            assert payload["fallback_eligible"] is False, payload
+            assert payload["retry_eligible"] is False, payload
+            assert payload["retryable"] is False, payload
+            assert payload["attempts"] == 1, payload
+            assert payload["actor"] == "catalog-app[bot]", payload
+            if outcome == "unknown":
+                assert payload["recommended_next_action"] == "follow_operation_reconciliation_strategy", payload
+            assert len(calls.read_text(encoding="utf-8").splitlines()) == 1
+
+
 def main() -> None:
     tests: list[Callable[[], None]] = [
         test_check_reports_app_identity_and_source,
@@ -873,6 +950,7 @@ def main() -> None:
         test_app_login_comparison_is_case_insensitive,
         test_print_auth_account_reports_verified_app_without_gh_auth_status,
         test_app_actor_probe_does_not_fabricate_other_paths_or_writes,
+        test_pr_create_validation_refusal_preserves_unknown_write_controls,
     ]
     for test in tests:
         test()

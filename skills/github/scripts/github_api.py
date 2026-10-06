@@ -1302,6 +1302,25 @@ def _failure_from_terminal_envelope(payload: Any, *, is_write: bool) -> Optional
     )
 
 
+def _is_pr_create_validation_refusal(stderr: str) -> bool:
+    # gh's create diagnostic identifies the mutation. Require the entire
+    # response and only known input errors; mixed/partial failures stay unknown.
+    match = re.fullmatch(
+        r"pull request create failed: GraphQL: (.+) \(createPullRequest\)",
+        stderr.strip(),
+    )
+    if match is None:
+        return False
+    return all(
+        re.fullmatch(
+            r"(?:Head sha can't be blank|Base sha can't be blank|"
+            r"Head ref must be a branch|No commits between [^\s,()]+ and [^\s,()]+)",
+            error,
+        ) is not None
+        for error in match.group(1).split(", ")
+    )
+
+
 def classify_legacy_failure(
     stderr: str,
     *,
@@ -1394,6 +1413,12 @@ def classify_legacy_failure(
         disposition = "requires_authorization"
         retryable = False
         fallback_eligible = True
+        write_outcome = rejected
+    elif is_write and command_started and not stdout.strip() and _is_pr_create_validation_refusal(stderr):
+        cause = "validation_error"
+        disposition = "stop"
+        retryable = False
+        fallback_eligible = False
         write_outcome = rejected
     elif "invalid character '<'" in lowered or "unexpected character '<'" in lowered:
         cause = "network_provider_failure"
