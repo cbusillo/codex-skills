@@ -868,6 +868,41 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "claim_conflict")
         self.assert_no_writes()
 
+    def test_generated_identity_accepts_valid_punctuation_tokens(self):
+        for token in ("claude-opus-5.5", "capacity;run", "capacity!run", "capacity?run", "worker__repair"):
+            for field in ("worker", "session"):
+                with self.subTest(token=token, field=field):
+                    self.setUp()
+                    setattr(self.args, field, token)
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                    self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
+
+    def test_recorded_next_action_is_intent_and_preserves_other_assertions(self):
+        self.args.next_action = "Repair the sync code owned by the importer"
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.issue["body"] += "\nImplementation is claimed by another-worker."
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+
+    def test_recorded_wait_resolution_does_not_reclaim_a_released_holder(self):
+        self.ordinary_handoff_fixture()
+        self.args.wait_resolved = "Previously claimed by trial-b; exact claim 1 was released and the brief authorizes successor work."
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.issue["body"] += "\nWorker: another-worker"
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+
+    def test_questions_and_negated_exceptions_remain_ambiguous(self):
+        for status in ("Is this issue not claimed by another-worker?",
+                       "Not owned by anyone other than another-worker.",
+                       "No work is not owned by another-worker."):
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["body"] += "\n" + status
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
     def test_responsibility_status_with_released_claim_allows_new_claim(self):
         self.issue["body"] += "\n" + RESPONSIBILITY_STATUS
         self.comments = [

@@ -156,19 +156,36 @@ def references_issue(text: str, number: int) -> bool:
 
 def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = None) -> bool:
     """Ignore explicit absence only at the assertion, never a whole status."""
-    text = text.replace("**", "").replace("__", "").replace("`", "")
+    # Strip Markdown around labels, preserving punctuation inside identity tokens.
+    text = re.sub(r"(?:[*]{2}|__|`)(?=owned by|claimed by|worker\b|session\b)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"((?:owned by|claimed by|worker|session):?)(?:[*]{2}|__|`)(?=[\s:])", r"\1", text, flags=re.IGNORECASE)
+    if own_claim:
+        # Match complete identity lines before splitting prose punctuation:
+        # worker/session tokens may themselves contain dots or semicolons.
+        for assertion, key in ((r"(?:State: Active;\s*)?(?:owned by|claimed by|Worker:)", "worker"),
+                               (r"Session:", "session")):
+            text = re.sub(rf"(?im)^\s*{assertion}\s+{re.escape(own_claim[key])}\.?[ \t]*$", "", text)
     subject = (
         r"(?:timing|(?:code )?changes?|(?:not-planned )?closures?|"
         r"(?:implementation |execution )?ownership|implementation|work|"
         r"(?:executing )?workers?|claims?|(?:this |the )?(?:issue|task))"
     )
-    negative_subject = rf"no {subject}(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+){subject})*\s+(?:is|are|was|were|has been|have been)\s*"
+    negative_subject = (
+        rf"no {subject}(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+){subject})*"
+        r"\s+(?:is|are|was|were|has been|have been)\s*"
+    )
     for match in re.finditer(r"\b(?:owned by|claimed by|worker\s*:|session\s*:)", text, re.IGNORECASE):
         prefix = re.split(r"[.;!?\n]", text[:match.start()])[-1].strip(" -")
         prefix = re.sub(r"^(?:Scope(?: and recovery)?|State|Status|Next action):\s*", "", prefix, flags=re.IGNORECASE)
-        suffix = re.split(r"[.;!?\n]", text[match.end():], maxsplit=1)[0].strip()
+        ending = re.split(r"([.;!?\n])", text[match.end():], maxsplit=1)
+        suffix = ending[0].strip()
         # Conditional or contrastive denials are not proof that nobody holds it.
-        uncertain = re.search(r"\b(?:if|unless|until|except|but|however|instead|rather|whether)\b", prefix + " " + suffix, re.IGNORECASE)
+        uncertain = (
+            len(ending) > 1 and ending[1] == "?"
+            or re.search(r"\b(?:if|unless|until|except|but|however|instead|rather|whether|"
+                         r"other than|besides|apart from|save for)\b", prefix + " " + suffix, re.IGNORECASE)
+            or re.match(r"no\b", prefix, re.IGNORECASE) and re.search(r"\b(?:not|never)\s*$", prefix, re.IGNORECASE)
+        )
         if not uncertain:
             field = match.group().casefold()
             own_key = "session" if field.startswith("session") else "worker"
@@ -218,6 +235,17 @@ def discussion_evidence(
     # A matching marker or complete legacy identity accounts only for that
     # owner's assertions; it must not hide a second holder in the same status.
     own_claim = claim if owned or all(claim[key] in status for key in ("worker", "session", "branch")) else None
+    if owned:
+        # The helper copies these intent/history lines from its claim comment.
+        # Ignore only exact recorded lines, never an arbitrary Next action or
+        # another assertion added beside the matching marker.
+        intent_lines = {
+            line for comment in comments
+            if any(same_owner(record, claim) for record in records(comment.get("body") or ""))
+            for line in (comment.get("body") or "").splitlines()
+            if line.startswith(("Next action: ", "Wait resolution: "))
+        }
+        ownership_status = "\n".join(line for line in ownership_status.splitlines() if line not in intent_lines)
     if has_ownership_assertion(ownership_status, own_claim=own_claim):
         conflicts.append({"source": "current_status", "text": status, "certainty": "ambiguous"})
     released: dict[tuple[str, str], int] = {}
