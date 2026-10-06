@@ -606,7 +606,7 @@ def closed_wait_prerequisite(target: dict[str, Any]) -> bool:
     if isinstance(summary.get("total"), int) and isinstance(summary.get("completed"), int):
         if summary["completed"] < summary["total"]:
             return False
-    return not re.search(r"(?im)^\s*State:\s*Split\b", str(target.get("body") or ""))
+    return not re.search(r"(?im)^\s*(?:[-*]\s+)?State:\s*Split\b", str(target.get("body") or ""))
 
 
 def stale_wait_report(
@@ -659,8 +659,11 @@ def stale_wait_report(
                     unknown_context = True
                 elif re.match(r"\s*(?:[-*]\s+)?State:", entry, re.I):
                     unknown_context |= not bool(re.fullmatch(r"(?:active|waiting|blocked|parked|unstarted|not started)[. ]*", known[1].strip(), re.I))
-                elif re.match(r"\s*(?:[-*]\s+)?Next action:", entry, re.I):
-                    unknown_context |= bool(re.search(r"\b(?:after|until|approv\w*|accept\w*|decision)\b", known[1], re.I))
+                else:
+                    unknown_context |= bool(re.search(
+                        r"\b(?:after|until|once|when|awaiting|pending|must|has not|hasn't|not yet|approv\w*|accept\w*|decision)\b",
+                        known[1], re.I,
+                    ))
         pending = unknown_context or not fields or bool(re.search(r"(?im)^\s*(?:[-*]\s+)?(?:Waiting on:|State:.*(?:waiting for|awaiting|waiting on|parked until))", status))
         try:
             total = (issue.get("issue_dependencies_summary") or {}).get("total_blocked_by")

@@ -1494,6 +1494,8 @@ def test_stale_wait_report_preserves_contradictory_status_and_split_prerequisite
         "## Current Status\nState: Blocked on Justin's approval.\nWaiting for: Next agent.\n",
         "## Current Status\nState: Pending Justin.\nWaiting for: Next agent.\n",
         "## Current Status\nBlocked by: None. Justin must approve first.\nWaiting for: Next agent.\n",
+        "## Current Status\nWaiting for: Next agent.\nLast verified: Monday; Justin has not accepted the release yet.\n",
+        "## Current Status\nWaiting for: Supervisor routing.\nNext action: Once Chris confirms the backup, release.\n",
         "## Current Status\nWaiting for: Completion of #14.\n",
     )
     rows = [issue(n, "Unproven wait", labels=("plan:waiting",), body=body)
@@ -1507,6 +1509,10 @@ def test_stale_wait_report_preserves_contradictory_status_and_split_prerequisite
     assert report["complete"] and not report["items"], report
     parent = {"state": "closed", "sub_issues_summary": {"total": 2, "completed": 1}}
     assert not module.closed_wait_prerequisite(parent)
+    assert not module.closed_wait_prerequisite({"state": "closed", "body": "## Current Status\n- State: Split. Live test moved to #20.\n"})
+    guarded = issue(99, "Unfinished parent", labels=("plan:blocked",),
+                    body="## Current Status\nWaiting for: None.\n")
+    assert not module.stale_wait_report([guarded], "owner/catalog", fetch=lambda _: [parent])["items"]
 
 
 def test_stale_wait_report_landing_requires_default_branch_but_merge_means_merge() -> None:
@@ -1527,6 +1533,11 @@ def test_stale_wait_report_landing_requires_default_branch_but_merge_means_merge
         raise AssertionError(path)
     report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
     assert report["complete"] and [item["number"] for item in report["items"]] == [2], report
+    def default_landing(args: list[str]) -> Any:
+        value = fetch(args)
+        return {**value, "base": {"ref": "main"}} if "/pulls/71" in args[1] else value
+    landed = module.stale_wait_report(rows, "owner/catalog", fetch=default_landing)
+    assert landed["complete"] and [item["number"] for item in landed["items"]] == [1, 2], landed
 
 
 def test_stale_wait_report_reports_explicit_absence_of_all_waits() -> None:
