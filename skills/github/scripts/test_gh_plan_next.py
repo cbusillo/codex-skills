@@ -2399,7 +2399,83 @@ def test_global_parent_only_stale_wait_moves_out_of_current_waiting() -> None:
     assert next(item for item in result["excluded"] if item["number"] == 20)["exclusion"] == "parent_waiting"
 
 
+def test_global_adjacent_notes_preserve_absence_and_pending_clauses() -> None:
+    root = track("someone/direction", 1, "First")
+    for note, selectable in (("PR #12 merged; next agent continues step 2.", True), ("Chris's acceptance is pending.", False)):
+        raw = global_issue("someone/product", 2, body="## Current Status\nState: Active.\nWaiting for: Nothing.\n" + note)
+        with global_fixture([root], [raw], {(root["repo"], 1): relationships(sub_issues=[raw])}) as (module, result, _reads):
+            module.cmd_next(next_args())
+        assert bool(result["candidates"]) is selectable
+    for reason in ("Supervisor to route the PR.", "provider capacity"):
+        raw = global_issue("someone/product", 2, labels=[], body="## Current Status\nWaiting for: " + reason)
+        with global_fixture([], [], {}, discovered=[raw]) as (module, result, _reads):
+            module.cmd_next(next_args())
+        assert result["candidates"] == []
+        assert result["unowned"][0]["waiting_for"] == reason
+        assert result["excluded"][0]["exclusion"] == "waiting"
+
+
+def test_global_partial_unowned_holds_and_caller_wait_evidence_remain_visible() -> None:
+    root = track("someone/direction", 1, "First")
+    parent = global_issue("someone/product", 2, body="## Current Status\nState: Active.\nWaiting for: separately authorized production activation")
+    child = global_issue("someone/product", 3)
+    edges = {(root["repo"], 1): relationships(sub_issues=[parent]), (parent["repo"], 2): relationships(sub_issues=[child])}
+    with global_fixture([root], [parent, child], edges) as (module, result, _reads):
+        module.cmd_next(next_args())
+    assert [item["number"] for item in result["candidates"]] == [3]
+    assert result["recorded_waits"][0]["number"] == 2
+    assert result["recorded_waits"][0]["unowned"] is True
+    shared = module.github_direction_next
+    raw = global_issue("someone/product", 4, body="## Current Status\nWaiting for: the next agent")
+    item = {**shared.compact_list_issue(raw["repo"], raw), "plan_status": "active", "discussion": shared.discussion_snapshot(raw, [], complete=True)}
+    context = {"issues": {"someone/product#4": reviewed(item, "waiting", reason="Chris must finish the device test.")}}
+    ranked = shared.rank_portfolio_work({"candidates": [item]}, [], milestone_titles=[], selection_context=context)
+    assert any(row["waiting_for"] == context["issues"]["someone/product#4"]["reason"] and row.get("source") == "caller_review" for row in ranked["recorded_waits"])
+    assert ranked["candidates"] == []
+
+
+def test_global_wait_comments_named_actors_and_wrapped_urls_use_own_evidence() -> None:
+    root = track("someone/direction", 1, "First")
+    comment = global_issue("someone/product", 2, labels=["plan:waiting"], body="## Current Status\n<!--\nWaiting for: who or what\n-->")
+    named = global_issue("someone/product", 3, labels=["plan:waiting"], body="## Current Status\nWaiting for: separately authorized activation by Chris")
+    wrapped = global_issue("someone/product", 4, labels=["plan:waiting"], body="## Current Status\nWaiting for: approved prerequisite readback\nhttps://github.com/other/product/issues/12")
+    target = global_issue("other/product", 12, state="closed")
+    with global_fixture([root], [comment, named, wrapped, target], {(root["repo"], 1): relationships(sub_issues=[comment, named, wrapped])}) as (module, result, _reads):
+        module.cmd_next(next_args())
+    assert not any(row["number"] == 2 for row in result["waiting"])
+    assert any(row["number"] == 2 for row in result["unowned"])
+    assert not any(row["number"] == 3 for row in result["unowned"])
+    rows = {row["number"]: row for row in result["waiting"]}
+    assert rows[4]["closed_references"][0]["repo"] == "other/product"
+    assert rows[4]["stale_wait_evidence"] is None
+    assert module.github_direction_next.waiting_records({**module.compact_list_issue(comment['repo'], comment), "plan_status": "waiting"}, comment['body']) == []
+
+
+def test_global_unread_frontier_wait_prevents_capacity_without_unrelated_veto() -> None:
+    module = load_module()
+    raw = global_issue("someone/business", 3, labels=["plan:waiting"], milestone=milestone_data(1, "First", created_at="2026-01-01"), body="## Current Status\nWaiting for: Customer testing.")
+    shared = module.github_direction_next
+    item = {**shared.compact_list_issue(raw['repo'], raw), "plan_status": "waiting", "exclusion": "waiting", "milestone": raw['milestone'], "discussion": shared.discussion_snapshot(raw, [], complete=True)}
+    context = {"issues": {"someone/business#3": reviewed(item, "waiting", waiting_on="person")}}
+    graph = {"candidates": [], "excluded": [item], "dependency_context": {"complete": True}}
+    with patch.multiple(module, api_json=Mock(side_effect=AssertionError('unselected wait must not be read')), load_config=lambda *_: module.DEFAULT_CONFIG):
+        report = module.next_wait_context([global_issue('someone/other', 1), raw], scan_limit=1, inventory_complete=True)
+    checked = {(row['repo'], row['number']) for row in report['checked_issues']}
+    item['wait_evidence_complete'] = (raw['repo'], raw['number']) in checked
+    ranked = shared.rank_portfolio_work(graph, [], milestone_titles=['First'], selection_context=context, repository_waypoints={raw['repo']: ['First']}, coverage_complete=True)
+    assert ranked['tooling_capacity_context']['required'] == 'current_wait_evidence'
+    assert ranked['tooling_capacity_context']['admitted'] is False
+    item['wait_evidence_complete'] = True
+    ranked = shared.rank_portfolio_work(graph, [], milestone_titles=['First'], selection_context=context, repository_waypoints={raw['repo']: ['First']}, coverage_complete=True)
+    assert ranked['tooling_capacity_context']['admitted'] is True  # Other report coverage does not replace this own-issue proof.
+
+
 TESTS = [
+    test_global_adjacent_notes_preserve_absence_and_pending_clauses,
+    test_global_partial_unowned_holds_and_caller_wait_evidence_remain_visible,
+    test_global_wait_comments_named_actors_and_wrapped_urls_use_own_evidence,
+    test_global_unread_frontier_wait_prevents_capacity_without_unrelated_veto,
+
     test_global_no_wait_notes_do_not_park_active_work,
     test_global_unowned_authorization_holds_never_become_candidates_or_stale,
     test_global_cross_repo_link_label_does_not_create_a_local_reference,

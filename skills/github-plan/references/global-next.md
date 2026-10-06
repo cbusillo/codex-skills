@@ -114,7 +114,10 @@ threads before correcting status; a closed prerequisite can represent a split.
 Verified obsolete waits move to `stale_waits`, outside the current `waiting` list.
 A reported stale or unowned wait cannot establish spare-capacity admission.
 Capacity proof still requires current complete caller review of each frontier
-issue, now including its own waiting label and nonempty pending wait.
+issue, now including its own waiting label and nonempty pending wait. A skipped
+or unavailable wait read for that frontier issue cannot establish capacity
+admission; increase the bounded scan or resolve its unavailable reference.
+Unrelated gaps in the stale report remain coverage warnings, not a global veto.
 
 The helper's `candidates` are possible work and may need review;
 `available_candidates` contains only current caller-reviewed work. An empty

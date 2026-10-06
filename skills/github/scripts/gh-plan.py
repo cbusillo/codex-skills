@@ -3285,7 +3285,8 @@ def next_wait_context(
 
     unique = {(item["repo"].casefold(), item["number"]): item for item in issues}
     groups: dict[str, list[dict[str, Any]]] = {}
-    for item in list(unique.values())[:scan_limit]:
+    selected = list(unique.values())[:scan_limit]
+    for item in selected:
         groups.setdefault(item["repo"], []).append(item)
     reports: list[dict[str, Any]] = []
     complete = inventory_complete and len(unique) <= scan_limit
@@ -3322,7 +3323,8 @@ def next_wait_context(
     return {"read_only": True, "complete": complete, "checked": checked, "items": reports,
             "unavailable": unavailable, "references": references,
             "inventory_complete": inventory_complete, "scope": "evaluated_global_next_issues",
-            "read_limit": budget, "read_count": len(cache)}
+            "read_limit": budget, "read_count": len(cache),
+            "checked_issues": [{"repo": item["repo"], "number": item["number"]} for item in selected]}
 
 
 def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
@@ -3588,10 +3590,14 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         inventory_complete=candidate_coverage_complete,
     )
     stale = {(row["repo"].casefold(), row["number"]): row for row in wait_context["items"]}
+    checked_waits = {(row["repo"].casefold(), row["number"]) for row in wait_context["checked_issues"]}
+    unread_waits = {(row["repo"].casefold(), row["number"]) for row in wait_context["unavailable"]}
     reported_entries = [*ranked["candidates"], *ranked["excluded"], *discoveries]
     reported_parents = [parent for entry in reported_entries for parent in (entry.get("discussion") or {}).get("parents", [])]
     for entry in [*reported_entries, *reported_parents]:
-        evidence = stale.get((entry["repo"].casefold(), entry["number"]))
+        wait_key = (entry["repo"].casefold(), entry["number"])
+        entry["wait_evidence_complete"] = wait_key in checked_waits and wait_key not in unread_waits
+        evidence = stale.get(wait_key)
         if evidence:
             entry["stale_wait_evidence"] = evidence
     portfolio = github_direction_next.rank_portfolio_work(
@@ -3602,6 +3608,8 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         repository_waypoints={source["repo"]: repository_direction_milestones(source) for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
     )
     ranked.update(portfolio)
+    for entry in [*ranked["candidates"], *ranked["excluded"], *ranked["underway"]]:
+        entry.pop("wait_evidence_complete", None)
     ranked["stale_wait_report"] = {key: value for key, value in wait_context.items() if key != "references"}
     for row in [*ranked["waiting"], *ranked["recorded_waits"], *ranked["stale_waits"]]:
         row["references"] = [wait_context["references"].get(ref["url"], {**ref, "state": "unknown"}) for ref in row["references"]]
