@@ -2455,6 +2455,27 @@ def test_integration_allowance_removal_with_credential_prose() -> None:
         assert len(posts) == 1 and not reads
         assert posts[0]["body"] == {**request, "mode": "dry-run"}
 
+        evidence_file = _write_json(directory, "review.json", output)
+        applied = copy.deepcopy(response)
+        applied["result"].update(mode="apply", applied=True, read_back_matches=True)
+        applied["result"]["read_back"] = [
+            change["after"] for change in plan["changes"] if change["after"] is not None
+        ]
+        apply_argv = [
+            "integration-allowances-apply", "--payload-file", payload_file,
+            *_reviewed_apply_argv(plan["plan_sha256"], evidence_file),
+        ]
+        status, receipt, posts, _reads = _run_main(apply_argv, post=applied)
+        assert status == 0 and receipt["result"]["read_back_matches"] is True
+        assert posts[0]["body"] == {
+            **request, "mode": "apply", "reviewed_plan_sha256": plan["plan_sha256"],
+        }
+        wrong_digest = copy.deepcopy(output)
+        wrong_digest["result"]["plan_sha256"] = "0" * 64
+        _write_json(directory, "review.json", wrong_digest)
+        status, _rejected, posts, reads = _run_main(apply_argv, post=applied)
+        assert status == 2 and not posts and not reads
+
         # A valid removal fixture must not turn malformed or secret-bearing
         # responses into reviewable evidence.
         for replacement in (
@@ -7046,12 +7067,6 @@ def test_operator_free_text_redacts_credentials_and_urls() -> None:
         ("Use Bearer abcdefghijklmnop next.", "Use [redacted] next."),
         ("Use rk_live_1234567890abcdefghijkl next.", "Use [redacted] next."),
         ("Use ghp_example123 next.", "Use [redacted] next."),
-        ("Remove unused credentials through the approved path.", "[redacted]"),
-        ("Rotated 2fa_cookie: Xy.Zw9q", "[redacted]"),
-        ("2fa_token=12-34-56", "[redacted]"),
-        ("api_key is Abc.Def9", "[redacted]"),
-        ("cookie Abc.Def9", "[redacted]"),
-        ("hunter2cookie", "[redacted]"),
         ('Updated env_vars="password=demo-pass"', 'Updated env_vars=[redacted]'),
         ('Use password="demo secret without closing quote', 'Use [redacted]'),
         ('updated password="demo API_KEY="superSecret123"', 'updated [redacted]'),
@@ -7085,6 +7100,25 @@ def test_operator_free_text_redacts_credentials_and_urls() -> None:
     assert allowance["evidence"] == examples[1][1]
     for invalid in (None, {}, "", "x" * 501):
         _expect_error(lambda value=invalid: project(value), "invalid_response")
+
+
+def test_allowance_plan_prose_fallback_keeps_other_reviewed_reasons_strict() -> None:
+    for raw in (
+        "Remove unused credentials through the approved path.",
+        "Rotated 2fa_cookie: Xy.Zw9q", "2fa_token=12-34-56",
+        "api_key is Abc.Def9", "cookie Abc.Def9", "hunter2cookie",
+    ):
+        # Callers that compare projected reasons must retain their old refusal.
+        _expect_error(lambda value=raw: write_action.public_operator_text(value), "invalid_response")
+        projected = write_action.public_operator_text(raw, redact_denied_markers=True)
+        assert projected == "[redacted]"
+        assert write_action.public_operator_text(projected) == projected
+        write_action.assert_public_safe_shape({"reason": projected})
+    for invalid in (None, {}, "", "x" * 501):
+        _expect_error(
+            lambda value=invalid: write_action.public_operator_text(value, redact_denied_markers=True),
+            "invalid_response",
+        )
 
 
 def test_redacted_reasons_allow_matching_reviewed_apply() -> None:

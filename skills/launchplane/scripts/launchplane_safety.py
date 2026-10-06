@@ -307,7 +307,9 @@ CREDENTIAL_VALUE_RE = re.compile(
 FREE_TEXT_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s<>\"']+", re.IGNORECASE)
 
 
-def public_operator_text(value: object, *, max_length: int = 500) -> str:
+def public_operator_text(
+    value: object, *, max_length: int = 500, redact_denied_markers: bool = False
+) -> str:
     """Project operator prose, redacting credential assignments, tokens and URLs.
 
     URLs are omitted even without userinfo: operator prose may name private hosts.
@@ -342,7 +344,9 @@ def public_operator_text(value: object, *, max_length: int = 500) -> str:
     redacted = CREDENTIAL_LIKE_WORD_RE.sub("[redacted]", redacted)
     # A leftover marker may be prose or an unrecognized credential assignment.
     # Hide the entire field rather than risk publishing an adjacent value.
-    if any(fragment in redacted.lower() for fragment in SUMMARY_VALUE_DENYLIST):
+    if redact_denied_markers and any(
+        fragment in redacted.lower() for fragment in SUMMARY_VALUE_DENYLIST
+    ):
         redacted = "[redacted]"
     return public_summary_string(redacted, max_length=max_length)
 

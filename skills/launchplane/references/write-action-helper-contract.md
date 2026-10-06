@@ -1146,9 +1146,12 @@ Every emitted admin `reason` or prose `evidence` uses the shared
 credential assignments (including quoted values), known token forms, long
 mixed letter/digit token-like words, and URLs of any scheme. URLs are omitted
 because admin prose can name private hosts even without credentials.
-If sanitized prose still contains a summary-denied marker, the whole field is
-redacted; it may be an unrecognized assignment with an adjacent value. Thus
-"credentials are removed" does not discard an otherwise valid plan.
+For an integration-allowance plan's reason only, a summary-denied marker left
+after sanitization redacts the whole field: it may be an unrecognized assignment
+with an adjacent value. Thus "credentials are removed" does not discard an
+otherwise valid plan. Its review remains bound by the service's plan digest.
+Other prose retains strict summary validation, including callers that compare
+reviewed reasons.
 Structural fields retain their existing strict validators; invalid types,
 empty or oversized text, and other unsafe summary shapes still fail closed.
 Apply checks that compare a reviewed reason use this projection on both sides.
