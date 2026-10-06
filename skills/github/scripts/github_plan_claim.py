@@ -201,24 +201,24 @@ def ownership_text(text: str, *, strip_quotes: bool = True) -> str:
         return " ".join(label.split()).casefold()
 
     reference_destination = r"(?:<[^>\n]*>|[^()\s]+(?:\([^()\s]*\)[^()\s]*)*)"
-    definition = re.compile(rf" {{0,3}}\[([^\]\n]+)\]:[ \t]*{reference_destination}{title}[ \t]*")
+    definition = re.compile(rf" {{0,3}}\[([^]\n]+)]:[ \t]*{reference_destination}{title}[ \t]*")
     references: set[str] = set()
     lines = []
     block_start = True
     for line in text.splitlines():
-        match = definition.fullmatch(line) if block_start else None
-        if match:
-            references.add(reference_key(match.group(1)))
+        definition_match = definition.fullmatch(line) if block_start else None
+        if definition_match:
+            references.add(reference_key(definition_match.group(1)))
             lines.append("")
         else:
             lines.append(line)
             block_start = not line.strip()
     text = "\n".join(lines)
-    text = re.sub(rf"\[([^\[\]]*)\]\([ \t]*{destination}{title}[ \t]*\)", r"\1", text)
-    text = re.sub(r"\[([^\[\]]+)\]\[([^\]\n]*)\]",
+    text = re.sub(rf"\[([^][]*)]\([ \t]*{destination}{title}[ \t]*\)", r"\1", text)
+    text = re.sub(r"\[([^][]+)]\[([^]\n]*)]",
                   lambda match: match.group(1) if reference_key(match.group(2) or match.group(1)) in references
                   else match.group(), text)
-    text = re.sub(r"\[([^\[\]]+)\]",
+    text = re.sub(r"\[([^][]+)]",
                   lambda match: match.group(1) if reference_key(match.group(1)) in references else match.group(), text)
     # Paired delimiters only: underscores inside identity tokens are literal.
     # Repetition handles nested emphasis and links inside emphasized spans.
