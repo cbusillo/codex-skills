@@ -4214,6 +4214,29 @@ def emit_provider_unavailable(
     )
 
 
+def emit_read_transport_error(
+    *, operation: str, request: dict[str, object], timeout: float, exc: OSError
+) -> None:
+    if not (
+        isinstance(exc, TimeoutError)
+        or (isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError))
+    ):
+        emit_provider_unavailable(operation=operation, request=request)
+        return
+    payload = unavailable_payload(
+        operation=operation, request=request, status="unavailable",
+        code="client_timeout", message=f"Read request timed out after {timeout:g} s.",
+    )
+    payload["summary"] = {
+        "error_code": "client_timeout", "timeout_seconds": timeout,
+        "recommendation": (
+            "The client read budget expired; this does not establish a service outage. "
+            "No response trace was received. Retry the read with a longer --timeout before the subcommand."
+        ),
+    }
+    emit(payload)
+
+
 def emit_invalid_response(*, operation: str, request: dict[str, object]) -> None:
     emit(
         unavailable_payload(
@@ -4592,8 +4615,10 @@ def execute_lane_config_read(
     except LaunchplaneSafetyError as exc:
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError):
-        emit_provider_unavailable(operation=operation, request=request)
+    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        emit_read_transport_error(
+            operation=operation, request=request, timeout=args.timeout, exc=exc,
+        )
         return 1
 
 
@@ -4908,8 +4933,10 @@ def execute_target_replacement_plan_read(*, args: argparse.Namespace) -> int:
     except LaunchplaneSafetyError as exc:
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError):
-        emit_provider_unavailable(operation=operation, request=request)
+    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        emit_read_transport_error(
+            operation=operation, request=request, timeout=args.timeout, exc=exc,
+        )
         return 1
 
 
@@ -5007,8 +5034,10 @@ def execute_product_read(
     except LaunchplaneSafetyError as exc:
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError):
-        emit_provider_unavailable(operation=operation, request=request)
+    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        emit_read_transport_error(
+            operation=operation, request=request, timeout=args.timeout, exc=exc,
+        )
         return 1
 
 
@@ -6292,8 +6321,10 @@ def execute_repository_inventory_read(
     except LaunchplaneSafetyError as exc:
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError):
-        emit_provider_unavailable(operation=operation, request=request)
+    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        emit_read_transport_error(
+            operation=operation, request=request, timeout=args.timeout, exc=exc,
+        )
         return 1
     except (ValueError, json.JSONDecodeError):
         emit_invalid_response(operation=operation, request=request)
@@ -7815,8 +7846,10 @@ def execute_production_backup_authority_read(
     except LaunchplaneSafetyError as exc:
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError):
-        emit_provider_unavailable(operation=operation, request=request)
+    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        emit_read_transport_error(
+            operation=operation, request=request, timeout=args.timeout, exc=exc,
+        )
         return 1
     except (ValueError, json.JSONDecodeError):
         emit_invalid_response(operation=operation, request=request)
@@ -8137,8 +8170,10 @@ def execute_private_health_endpoint_read(
     except LaunchplaneSafetyError as exc:
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError):
-        emit_provider_unavailable(operation=operation, request=request)
+    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        emit_read_transport_error(
+            operation=operation, request=request, timeout=args.timeout, exc=exc,
+        )
         return 1
     except (ValueError, json.JSONDecodeError):
         emit_invalid_response(operation=operation, request=request)
@@ -8346,8 +8381,10 @@ def execute_product_promotion_status_read(
     except LaunchplaneSafetyError as exc:
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError):
-        emit_provider_unavailable(operation=operation, request=request)
+    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        emit_read_transport_error(
+            operation=operation, request=request, timeout=args.timeout, exc=exc,
+        )
         return 1
     except (ValueError, json.JSONDecodeError):
         emit_invalid_response(operation=operation, request=request)
@@ -8382,7 +8419,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--url", help="Optional Launchplane service URL override.")
     parser.add_argument(
         "--timeout", type=float, default=argparse.SUPPRESS,
-        help="HTTP timeout seconds (controller: 180; other commands: 10).",
+        help="HTTP timeout seconds (reads: 30; controller: 180; other commands: 10).",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -8863,7 +8900,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     remediation.add_argument("--reviewed-dry-run", action="store_true")
     args = parser.parse_args(argv)
     args.timeout = getattr(
-        args, "timeout", 180.0 if args.command == "merge-train-controller-run-once" else 10.0,
+        args, "timeout",
+        180.0 if args.command == "merge-train-controller-run-once"
+        else 30.0 if args.command.endswith("-read") else 10.0,
     )
     return args
 
