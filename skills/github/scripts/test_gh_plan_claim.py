@@ -847,6 +847,9 @@ class ClaimTests(unittest.TestCase):
             "No implementation ownership is claimed by [this sweep][another-worker still holds work/repair].",
             "No implementation ownership is claimed by `[this sweep](another-worker)`.",
             "No implementation ownership is claimed by `[this sweep][another-worker]`.",
+            "No implementation ownership is claimed by this sweep.\n[Claimed by another-worker]: work/repair",
+            "No implementation ownership is claimed by this sweep.\n\n[Claimed by another-worker]:",
+            "Not claimed by [this sweep][another-worker holds repair].\n\n[another-worker holds repair]:",
         ):
             with self.subTest(status=status):
                 self.setUp()
@@ -865,12 +868,29 @@ class ClaimTests(unittest.TestCase):
 
     def test_defined_reference_link_denials_allow_fresh_claim(self):
         for holder, definition in (("[this sweep][Prior Sweep]", "[prior sweep]"),
-                                   ("[this sweep][]", "[THIS SWEEP]")):
+                                   ("[this sweep][]", "[THIS SWEEP]"),
+                                   ("[this sweep]", "[THIS SWEEP]")):
             with self.subTest(holder=holder):
                 self.setUp()
                 self.issue["body"] += f"\nNot claimed by {holder}.\n\n{definition}: https://example.com/status"
                 self.run_claim()
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_legacy_holder_formatting_preserves_authored_release(self):
+        for holder in (f"`{OTHER['worker']}`", f"**{OTHER['worker']}**", f"_{OTHER['worker']}_"):
+            with self.subTest(holder=holder):
+                self.setUp()
+                self.comments = [
+                    {"id": 1, "body": f"Claimed by {holder}", "user": {"login": TEST_BOT}},
+                    {"id": 2, "body": f"Released by {holder}", "user": {"login": TEST_BOT}},
+                ]
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                self.setUp()
+                self.compete()
+                self.comments.append({"id": 2, "body": f"Released by {holder}"})
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
 
     def test_linked_denial_preserves_valid_destinations_and_titles(self):
         for destination in (

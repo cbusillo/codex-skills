@@ -175,13 +175,26 @@ def ownership_text(text: str, *, strip_quotes: bool = True) -> str:
     def reference_key(label: str) -> str:
         return " ".join(label.split()).casefold()
 
-    definitions = re.compile(rf"(?m)^ {{0,3}}\[([^\]\n]+)\]:[ \t]*{destination}{title}[ \t]*$")
-    references = {reference_key(match.group(1)) for match in definitions.finditer(text)}
-    text = definitions.sub("", text)
+    reference_destination = r"(?:<[^>\n]*>|[^()\s]+(?:\([^()\s]*\)[^()\s]*)*)"
+    definition = re.compile(rf" {{0,3}}\[([^\]\n]+)\]:[ \t]*{reference_destination}{title}[ \t]*")
+    references: set[str] = set()
+    lines = []
+    block_start = True
+    for line in text.splitlines():
+        match = definition.fullmatch(line) if block_start else None
+        if match:
+            references.add(reference_key(match.group(1)))
+            lines.append("")
+        else:
+            lines.append(line)
+            block_start = not line.strip()
+    text = "\n".join(lines)
     text = re.sub(rf"\[([^\[\]]*)\]\([ \t]*{destination}{title}[ \t]*\)", r"\1", text)
     text = re.sub(r"\[([^\[\]]+)\]\[([^\]\n]*)\]",
                   lambda match: match.group(1) if reference_key(match.group(2) or match.group(1)) in references
                   else match.group(), text)
+    text = re.sub(r"\[([^\[\]]+)\]",
+                  lambda match: match.group(1) if reference_key(match.group(1)) in references else match.group(), text)
     # Paired delimiters only: underscores inside identity tokens are literal.
     # Repetition handles nested emphasis and links inside emphasized spans.
     emphasis = r"(?<!\w)(\*{1,3}|_{1,3})(?=\S)(.+?)(?<=\S)\1(?!\w)"
@@ -296,6 +309,7 @@ def discussion_evidence(
     if has_ownership_assertion(ownership_status, own_claim=own_claim):
         conflicts.append({"source": "current_status", "text": status, "certainty": "ambiguous"})
     released: dict[tuple[str, str], int] = {}
+    legacy_released: dict[tuple[str, str], int] = {}
     released_ids: dict[tuple[int, str], int] = {}
     for index, comment in enumerate(comments):
         match = re.match(r"Released by (\S+)", comment.get("body") or "")
@@ -310,6 +324,7 @@ def discussion_evidence(
             # A reused token cannot release a different native session.
             if len(prior_sessions) <= 1:
                 released[worker, author] = index
+                legacy_released[ownership_text(worker, strip_quotes=False), author] = index
         release_id = released_claim_id(comment.get("body") or "")
         if release_id is not None:
             author = (comment.get("user") or {}).get("login", "")
@@ -326,7 +341,7 @@ def discussion_evidence(
         legacy = re.match(r"Claimed by:?\s+(\S+)", prose, re.IGNORECASE)
         if legacy and not parsed and has_ownership_assertion(text):
             worker = legacy.group(1)
-            if released.get((worker, author), -1) > index:
+            if legacy_released.get((worker, author), -1) > index:
                 continue
             if (worker != claim["worker"] or any(claim[key] not in text for key in ("session", "branch"))
                     or has_ownership_assertion(text, own_claim=claim)):
