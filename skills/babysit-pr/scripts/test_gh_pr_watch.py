@@ -1776,6 +1776,7 @@ def test_retry_rechecks_run_after_snapshot_lock_gap(monkeypatch, tmp_path, fresh
 
 class AcquisitionReader:
     def __init__(self):
+        self.results = []
         self.degraded_reasons = []
         self.jobs: list[dict[str, Any]] = [{"id": 7, "run_id": 1, "run_attempt": 1, "head_sha": "abc123",
                       "runner_id": 0, "steps": [], "status": "completed", "conclusion": "cancelled",
@@ -1789,6 +1790,9 @@ class AcquisitionReader:
                      "checkSuite": {"repository": {"nameWithOwner": "openai/codex"}}}
         self.errors = None
         self.paths = []
+
+    def diagnostics(self):
+        return {}
 
     def paged_json(self, path, **_kwargs):
         self.paths.append(path)
@@ -1825,7 +1829,7 @@ def test_required_runner_acquisition_admitted_without_logs():
     ("node", {"isRequired": False}),
     ("node", {"checkSuite": {"repository": {"nameWithOwner": "other/repo"}}}),
 ])
-def test_acquisition_rejects_nonrequired_executed_or_stale_evidence(target, changes):
+def test_acquisition_rejects_nonrequired_executed_or_stale_evidence(target: str, changes: dict[str, Any]):
     reader = AcquisitionReader()
     record: dict[str, Any] = reader.jobs[0] if target == "jobs" else getattr(reader, target)
     record.update(changes)
@@ -1972,23 +1976,35 @@ def test_acquisition_repository_names_are_case_insensitive():
 
 
 @pytest.mark.parametrize("admit", [True, False])
-def test_snapshot_offers_only_verified_acquisition_recovery(monkeypatch, tmp_path, admit):
+@pytest.mark.parametrize("gate", ["terminal", "pending", "closed", "budget"])
+def test_snapshot_offers_only_verified_acquisition_recovery(monkeypatch, tmp_path, admit, gate):
     reader = AcquisitionReader()
-    reader.results = []
-    reader.diagnostics = lambda: {}
     if not admit:
         reader.annotations = []
+    pr = sample_pr()
+    if gate == "closed":
+        pr["closed"] = True
+    if gate in {"closed", "pending", "budget"}:
+        reader.paged_json = lambda *_a, **_kw: pytest.fail("premature acquisition proof read")
     monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
     monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_a, **_kw: "fixture-bot")
     monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *_a, **_kw: [])
     monkeypatch.setattr(gh_pr_watch.github_read, "pull_request_checks", lambda *_a, **_kw: {})
-    monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *_a, **_kw: sample_checks(failed_count=1))
+    monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *_a, **_kw: sample_checks(failed_count=1, all_terminal=gate != "pending"))
     monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *_a, **_kw: [reader.run])
     monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *_a, **_kw: [failed_job(1, "cancelled")])
-    args = argparse.Namespace(max_flaky_retries=3)
-    snapshot, _ = gh_pr_watch.collect_locked_snapshot(args, sample_pr(), {}, tmp_path / "state.json")
-    assert ("retry_failed_checks" in snapshot["actions"]) == admit
-    assert (snapshot["failed_runs"][0].get("retry_mode") == "runner_acquisition") == admit
+    args = argparse.Namespace(max_flaky_retries=0 if gate == "budget" else 3)
+    snapshot, _ = gh_pr_watch.collect_locked_snapshot(args, pr, {}, tmp_path / "state.json")
+    assert ("retry_failed_checks" in snapshot["actions"]) == (admit and gate == "terminal")
+    assert (snapshot["failed_runs"][0].get("retry_mode") == "runner_acquisition") == (admit and gate == "terminal")
+
+
+def test_acquisition_bad_pagination_declines_without_crashing():
+    reader = AcquisitionReader()
+    def bad_shape(*_a, **_kw):
+        raise gh_pr_watch.github_read.GitHubReadShapeError("repeated page")
+    reader.paged_json = bad_shape
+    assert not gh_pr_watch.runner_acquisition_retry(sample_pr(), failed_run(1), reader)
 
 
 if __name__ == "__main__":

@@ -113,7 +113,9 @@ and requirement. The full retry uses the same persisted intent, same actor,
 readback and per-head cycle budget as failed-job retries. A cancelled run,
 notification or concurrency cancellation, or an attempt with any executed or
 successful job remains excluded from full retry. This bounded route does not
-implement [individual cancelled-job retries](https://cli.github.com/manual/gh_run_rerun)
+cover CodeQL default setup, which has no exact-head authored workflow source
+to verify here (see the recovery investigation in [#1103](https://github.com/cbusillo/codex-skills/issues/1103)),
+or implement [individual cancelled-job retries](https://cli.github.com/manual/gh_run_rerun)
 for mixed-success workflows; those require a distinct job-selection contract.
 
 ## Review-related endpoints

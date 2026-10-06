@@ -1390,10 +1390,15 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
     checks_summary = apply_unfinished_workflow_runs(checks_summary, workflow_runs, pr["head_sha"])
     failed_runs = failed_runs_from_workflow_runs(workflow_runs, pr["head_sha"])
     failed_jobs = failed_jobs_from_workflow_runs(pr["repo"], workflow_runs, pr["head_sha"], reader=reader)
-    ordinary_retry_ids = {run["run_id"] for run in retryable_failed_runs(failed_runs, failed_jobs)}
-    for run in failed_runs:
-        if run["run_id"] not in ordinary_retry_ids and runner_acquisition_retry(pr, run, reader):
-            run["retry_mode"] = "runner_acquisition"
+    pending_reruns = reconcile_pending_reruns(state, pr["head_sha"], workflow_runs)
+    retries_used = current_retry_count(state, pr["head_sha"])
+    if (not pr["closed"] and not pr["merged"] and not pending_reruns
+            and checks_summary.get("evidence_complete") is True and checks_summary["all_terminal"]
+            and retries_used < args.max_flaky_retries):
+        ordinary_retry_ids = {run["run_id"] for run in retryable_failed_runs(failed_runs, failed_jobs)}
+        for run in failed_runs:
+            if run["run_id"] not in ordinary_retry_ids and runner_acquisition_retry(pr, run, reader):
+                run["retry_mode"] = "runner_acquisition"
 
     review_diagnostic = None
     if is_review_readiness_unavailable(pr, checks_summary, new_review_items):
@@ -1401,8 +1406,6 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
         apply_review_readiness(pr, review)
         review_diagnostic = review_readiness_diagnostic(reader, review)
 
-    pending_reruns = reconcile_pending_reruns(state, pr["head_sha"], workflow_runs)
-    retries_used = current_retry_count(state, pr["head_sha"])
     actions = recommend_actions(
         pr,
         checks_summary,
@@ -1532,7 +1535,7 @@ def runner_acquisition_retry(pr, run, reader):
                 and fresh_run.get("run_attempt") == attempt
                 and fresh_run.get("status") == "completed" and fresh_run.get("conclusion") == "failure"
                 and not any(r.get("component") == "actor" for r in reader.degraded_reasons))
-    except (github_read.GitHubReadError, GhCommandError):
+    except (github_read.GitHubReadError, github_read.GitHubReadShapeError, GhCommandError):
         return False
 
 
