@@ -339,11 +339,19 @@ has fallen behind, run its own copy:
 The registered session-start hook also runs this catch-up for its bound catalog,
 so a landing without a local train driver is picked up on the next startup,
 resume, or clear on either harness. It skips development checkouts and
-compaction, gives reconciliation five seconds, and reports a blocker or failure
-without preventing the session from starting. The reconciler's provenance check
+compaction, bounds discovery and network reads to five seconds, and reports a
+blocker or failure without preventing the session from starting. Startup guidance
+is flushed first. A local fast-forward and its verification retain the
+reconciler's normal command bound, so the short read budget cannot interrupt them.
+Claude plugin cache copies resolve the catalog through the runtime bindings above.
+The reconciler's provenance check
 still applies: if its source changed upstream, use the copy from a worktree at
 the reported tip. The new copy must be reconciled once after this change lands
-before the installed hook can provide automatic catch-up.
+before the installed hook can provide automatic catch-up. Refresh an existing
+Codex session hook by previewing
+`uv run scripts/sync-global-instructions.py --codex-hook --hooks-only`, then
+adding `--write` to pick up the updated hook timeout; Claude reads it from
+`hooks/hooks.json`.
 
 ## Execution Environment
 

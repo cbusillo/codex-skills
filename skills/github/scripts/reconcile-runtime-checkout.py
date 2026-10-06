@@ -10,10 +10,12 @@ from __future__ import annotations
 import argparse
 import contextlib
 import contextvars
+import errno
 import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import time
 import urllib.parse
@@ -118,7 +120,14 @@ def reconcile_runtime_checkout(
     try:
         return _reconcile_runtime_checkout(merged_worktree, expected_repo, landing_sha)
     except ReconciliationBusy:
-        return finish(base_receipt(landing_sha), "blocked", "runtime_reconciliation_busy")
+        receipt = base_receipt(landing_sha)
+        receipt["expected_repo"] = expected_repo
+        return finish(receipt, "blocked", "runtime_reconciliation_busy", applicable=True)
+    except GitCommandError as exc:
+        receipt = base_receipt(landing_sha)
+        receipt["expected_repo"] = expected_repo
+        receipt["failed_operation"] = exc.operation
+        return finish(receipt, "retryable", "runtime_catchup_timeout" if timeout_seconds is not None else "unexpected_git_error")
     finally:
         RECONCILIATION_DEADLINE.reset(token)
 
@@ -330,6 +339,14 @@ def _reconcile_runtime_checkout(
                 receipt["blockers"] = pre_merge_blockers or ["runtime_head_changed"]
                 receipt["after_sha"] = pre_merge_sha
                 return finish(receipt, "blocked", "runtime_changed_before_fast_forward")
+
+            deadline = RECONCILIATION_DEADLINE.get()
+            if deadline is not None and deadline - time.monotonic() < 1:
+                receipt["after_sha"] = current_sha
+                return finish(receipt, "retryable", "deadline_before_fast_forward")
+            # Do not let the short network/read budget interrupt a checkout mutation
+            # or its postconditions. The existing per-command bound remains in effect.
+            RECONCILIATION_DEADLINE.set(None)
 
             try:
                 git_text(
@@ -660,6 +677,10 @@ def run_git(
     timeout = 120.0 if deadline is None else deadline - time.monotonic()
     if timeout <= 0:
         raise GitCommandError(args[0] if args else "git", "Reconciliation deadline expired")
+    if deadline is not None and args and args[0] == "fetch":
+        configured = run_git(repo, "config", "--get", "core.sshCommand", check=False)
+        ssh = env.get("GIT_SSH_COMMAND") or configured.stdout.decode().strip() or shlex.quote(env.get("GIT_SSH", "ssh"))
+        env["GIT_SSH_COMMAND"] = ssh + " -o BatchMode=yes"
     try:
         proc = subprocess.run(
             [
@@ -725,7 +746,9 @@ def reconciliation_lock(common_dir: Path) -> Iterator[None]:
             try:
                 msvcrt.locking(lock_file.fileno(), mode, 1)
             except OSError as exc:
-                raise ReconciliationBusy from exc
+                if mode == msvcrt.LK_NBLCK and exc.errno in {errno.EACCES, errno.EDEADLK}:
+                    raise ReconciliationBusy from exc
+                raise
         else:
             raise OSError("Unsupported platform for runtime reconciliation locking")
         try:

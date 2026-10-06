@@ -18,7 +18,7 @@
           {
             "type": "command",
             "command": "uv run --quiet --no-python-downloads \"${CLAUDE_PLUGIN_ROOT}/hooks/direction_check_hook.py\"",
-            "timeout": 15
+            "timeout": 180
           }
         ]
       },

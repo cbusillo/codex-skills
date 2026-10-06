@@ -28,6 +28,7 @@ import re
 import runpy
 import subprocess
 import sys
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,34 +42,50 @@ GH_READER = Path(__file__).resolve().parents[1] / "skills" / "github" / "scripts
 OVERALL_REPO = "direction"
 OVERALL_READ_TIMEOUT = 6
 RUNTIME_CATCHUP_TIMEOUT = 5
+RUNTIME_HELPER = Path("skills/github/scripts/reconcile-runtime-checkout.py")
 
 
 def catch_up_runtime(catalog: Path) -> str:
     """Catch up only the bound catalog, using the reconciler's existing safety gates."""
-    helper = catalog / "skills" / "github" / "scripts" / "reconcile-runtime-checkout.py"
+    helper = catalog / RUNTIME_HELPER
     if not helper.is_file():
         return ""
     try:
         # run_path reads the script without writing __pycache__ into the runtime.
         reconciler = SimpleNamespace(**runpy.run_path(str(helper)))
-        common = reconciler.git_common_dir(catalog)
-        bound = any(
-            reconciler.inspect_binding(path, common)[2] == catalog.resolve()
-            for path, _, _ in reconciler.runtime_skills_paths()
-        )
-        if not bound:
-            return ""
-        # A linked development checkout must not update a different runtime checkout.
-        branch = reconciler.resolve_default_branch(catalog)
-        blockers = reconciler.runtime_blockers(catalog, branch)
-        if blockers:
-            return f"Catalog catch-up blocked: {', '.join(blockers)} ({catalog})."
-        repo = reconciler.repository_from_remote_url(
-            reconciler.git_text(catalog, "config", "--get", "remote.origin.url")
-        )
-        receipt = reconciler.reconcile_runtime_checkout(
-            catalog, repo, None, timeout_seconds=RUNTIME_CATCHUP_TIMEOUT,
-        )
+        deadline = time.monotonic() + RUNTIME_CATCHUP_TIMEOUT
+        token = reconciler.RECONCILIATION_DEADLINE.set(deadline)
+        try:
+            roots = []
+            for path, _, _ in reconciler.runtime_skills_paths():
+                if not path.exists():
+                    continue
+                try:
+                    root = reconciler.git_root(path)
+                except (reconciler.GitCommandError, OSError):
+                    continue
+                if (root / RUNTIME_HELPER).is_file() and root not in roots:
+                    roots.append(root)
+            if catalog.resolve() not in roots:
+                # Only a registered plugin hook may fall back from its cache copy.
+                # An unbound development invocation must leave the install alone.
+                plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+                if not plugin_root or Path(plugin_root).resolve() != catalog.resolve() or not roots:
+                    return ""
+                catalog = next((root for root in roots if reconciler.current_branch(root) == reconciler.resolve_default_branch(root)), roots[0])
+            blockers = reconciler.runtime_blockers(catalog, reconciler.resolve_default_branch(catalog))
+            if blockers:
+                return f"Catalog catch-up blocked: {', '.join(blockers)} ({catalog})."
+            repo = reconciler.repository_from_remote_url(
+                reconciler.git_text(catalog, "config", "--get", "remote.origin.url")
+            )
+            # Execute the bound checkout's copy, preserving its provenance check.
+            runtime = SimpleNamespace(**runpy.run_path(str(catalog / RUNTIME_HELPER)))
+            receipt = runtime.reconcile_runtime_checkout(
+                catalog, repo, None, timeout_seconds=max(0, deadline - time.monotonic()),
+            )
+        finally:
+            reconciler.RECONCILIATION_DEADLINE.reset(token)
         if receipt["status"] == "already_current":
             return ""
         detail = receipt.get("detail") or receipt["reason_code"]
@@ -276,22 +293,19 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None) -> int:
     try:
         if os.environ.get("CLAUDECODE") == "1":
             try:
-                print(SKILLS_PROTOCOL_PATH.read_text().strip())
+                print(SKILLS_PROTOCOL_PATH.read_text().strip(), flush=True)
             except OSError:
                 pass  # A missing protocol must not hide the loop or reminder.
         if skills_only:
             return 0
         # Resolve the runtime catalog from this registered hook, never the task cwd.
         catalog = catalog_root or Path(__file__).resolve().parents[1]
-        catchup_line = catch_up_runtime(catalog)
-        if catchup_line:
-            print(catchup_line)
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         try:
             from scripts.catalog_runtime import status_line
             catalog_line = status_line(catalog) if (catalog / ".local" / "catalog-install.json").is_file() else ""
             if catalog_line:
-                print(catalog_line)
+                print(catalog_line, flush=True)
         except (ImportError, OSError):
             pass
         path = marker_path()
@@ -303,15 +317,18 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None) -> int:
             loop = ""  # A missing loop reference must not hide an overdue reminder.
         if root is not None:
             if loop:
-                print(loop)
+                print(loop, flush=True)
         else:
             checkout = checkout_root(Path.cwd())
             overall = overall_direction(origin_repo(checkout), checkout, marker, loop)
             if overall:
-                print(overall)
+                print(overall, flush=True)
         reminder_text = reminder(marker, dt.datetime.now(dt.timezone.utc), origin_repo(root), path)
         if reminder_text:
-            print(reminder_text)
+            print(reminder_text, flush=True)
+        catchup_line = catch_up_runtime(catalog)
+        if catchup_line:
+            print(catchup_line, flush=True)
     except Exception:  # noqa: BLE001 - a reminder must never break a session start
         pass
     return 0

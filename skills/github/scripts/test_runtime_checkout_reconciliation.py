@@ -695,11 +695,14 @@ def session_fixture(tmp_path: Path) -> RuntimeFixture:
     )
 
 
-def start_session(fixture: RuntimeFixture, *args: str, catalog: Path | None = None) -> subprocess.CompletedProcess[str]:
+def start_session(
+    fixture: RuntimeFixture, *args: str, catalog: Path | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, "HOME": str(fixture.code_home.parent / "host-home"),
            "CODE_HOME": str(fixture.code_home), "CODEX_HOME": str(fixture.code_home.parent / "unused"),
            "CLAUDE_CONFIG_DIR": str(fixture.code_home.parent / "unused-claude"),
-           "DIRECTION_MARKER": str(fixture.code_home.parent / "missing-marker.json")}
+           "DIRECTION_MARKER": str(fixture.code_home.parent / "missing-marker.json"), **(extra_env or {})}
     return subprocess.run(
         [sys.executable, str((catalog or fixture.runtime) / "hooks/direction_check_hook.py"), *args],
         cwd=fixture.code_home, env=env, capture_output=True, text=True, timeout=15,
@@ -759,6 +762,19 @@ def test_session_start_skips_development_checkout_and_compaction(tmp_path: Path)
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
+def test_claude_plugin_cache_hook_resolves_the_bound_runtime(tmp_path: Path) -> None:
+    fixture = session_fixture(tmp_path / "fixture")
+    cache = tmp_path / "plugin-cache"
+    for relative in ("hooks/direction_check_hook.py", str(fixture.helper_relative_path)):
+        copied = cache / relative
+        copied.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(fixture.runtime / relative, copied)
+    result = start_session(fixture, catalog=cache, extra_env={"CLAUDECODE": "1", "CLAUDE_PLUGIN_ROOT": str(cache)})
+    assert result.returncode == 0
+    assert "Catalog catch-up synchronized" in result.stdout
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
+
+
 def test_session_start_reports_changed_helper_without_moving_runtime(tmp_path: Path) -> None:
     fixture = session_fixture(tmp_path)
     helper = fixture.landing / fixture.helper_relative_path
@@ -801,6 +817,40 @@ def test_automatic_reconciliation_bounds_a_slow_fetch(tmp_path: Path) -> None:
         receipt = reconcile(fixture.runtime, fixture.repo, None, timeout_seconds=1)
         assert time.monotonic() - started < 3
     assert receipt["status"] == "retryable" and receipt["reason_code"] == "fetch_failed"
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
+
+
+def test_automatic_reconciliation_finishes_a_merge_after_the_read_budget(tmp_path: Path) -> None:
+    fixture = session_fixture(tmp_path)
+    reconcile = runpy.run_path(str(fixture.runtime / fixture.helper_relative_path))["reconcile_runtime_checkout"]
+    actual_run = subprocess.run
+    def slow_merge(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        if "merge" in argv:
+            assert kwargs["timeout"] > 2
+            time.sleep(2)
+        return actual_run(argv, **kwargs)
+    with mock.patch.dict(os.environ, {"HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home)}), mock.patch.object(reconcile.__globals__["subprocess"], "run", side_effect=slow_merge):
+        receipt = reconcile(fixture.runtime, fixture.repo, None, timeout_seconds=2)
+    assert receipt["status"] == "synchronized"
+    assert receipt["after_sha"] == fixture.landing_sha
+    assert git(fixture.runtime, "status", "--porcelain") == ""
+
+
+def test_automatic_fetch_uses_batch_mode_and_preserves_custom_ssh(tmp_path: Path) -> None:
+    fixture = session_fixture(tmp_path)
+    git(fixture.runtime, "remote", "set-url", "origin", "git@example.invalid:example/repo.git")
+    reconcile = runpy.run_path(str(fixture.runtime / fixture.helper_relative_path))["reconcile_runtime_checkout"]
+    actual_run = subprocess.run
+    captured = []
+    def reject_fetch(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        if "fetch" in argv:
+            captured.append(kwargs["env"]["GIT_SSH_COMMAND"])
+            return subprocess.CompletedProcess(argv, 1, b"", b"offline")
+        return actual_run(argv, **kwargs)
+    with mock.patch.dict(os.environ, {"HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home), "GIT_SSH_COMMAND": "ssh -i /existing/key"}), mock.patch.object(reconcile.__globals__["subprocess"], "run", side_effect=reject_fetch):
+        receipt = reconcile(fixture.runtime, fixture.repo, None, timeout_seconds=5)
+    assert receipt["reason_code"] == "fetch_failed"
+    assert captured == ["ssh -i /existing/key -o BatchMode=yes"]
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
