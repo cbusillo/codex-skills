@@ -102,6 +102,10 @@ def prose_lines(text: str) -> Iterable[tuple[int, str]]:
                 in_frontmatter = False
                 previous = ""
                 continue
+            if not line.strip():
+                # A paragraph break ends carry, but not its prose field.
+                previous = ""
+                continue
             # Descriptions, purposes, and policy messages are prose, including
             # their folded continuation lines; argv, paths, and other metadata
             # are not. Carry stays within a single prose field.
