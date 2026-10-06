@@ -349,11 +349,13 @@ still applies: if its source changed upstream, use the copy from a worktree at
 the reported tip. The new copy must be reconciled once after this change lands
 before the installed hook can provide automatic catch-up. Refresh an existing
 Codex session hook from the reconciled runtime checkout by previewing
-`uv run <runtime-checkout>/scripts/sync-global-instructions.py --codex-hook --hooks-only`, then
+`uv run <runtime-checkout>/scripts/sync-global-instructions.py --codex-hook --hooks-only --upgrade-session-start`, then
 adding `--write` to pick up the updated hook timeout; Claude reads it from
 `hooks/hooks.json`. The updated command opts in with `--runtime-catchup`; old
 registered commands keep printing guidance without starting a catch-up under
 their shorter timeout. If Codex asks to trust the refreshed hook, use `/hooks`.
+The explicit upgrade adopts plain legacy catalog invocations; custom commands
+remain preserved, and omitting the option retains the installer's existing behavior.
 
 ## Execution Environment
 

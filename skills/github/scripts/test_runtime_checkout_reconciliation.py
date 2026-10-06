@@ -692,7 +692,9 @@ def session_fixture(tmp_path: Path) -> RuntimeFixture:
     root = SCRIPT.resolve().parents[3]
     return build_runtime_fixture(
         tmp_path, helper_relative_path=Path("skills/github/scripts") / SCRIPT.name,
-        extra_files={"hooks/direction_check_hook.py": root / "hooks/direction_check_hook.py"},
+        extra_files={relative: root / relative for relative in (
+            "hooks/direction_check_hook.py", "hooks/hooks.json", "scripts/sync-global-instructions.py",
+        )},
     )
 
 
@@ -778,6 +780,27 @@ def test_claude_plugin_cache_hook_resolves_the_bound_runtime(tmp_path: Path) -> 
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
 
 
+def test_upgraded_codex_hook_command_catches_up_the_bound_runtime(tmp_path: Path) -> None:
+    fixture = session_fixture(tmp_path)
+    config = fixture.code_home / "hooks.json"
+    legacy = {"command": f"uv run --quiet --no-python-downloads {fixture.runtime / 'hooks/direction_check_hook.py'}", "timeout_sec": 15}
+    config.write_text(json.dumps({"hooks": {"SessionStart": [{"matcher": "startup", "hooks": [legacy]}]}}))
+    upgraded = subprocess.run([
+        sys.executable, str(fixture.runtime / "scripts/sync-global-instructions.py"),
+        "--codex-dir", str(fixture.code_home), "--codex-hook", "--hooks-only", "--upgrade-session-start", "--write",
+    ], text=True, capture_output=True)
+    assert upgraded.returncode == 0, upgraded.stderr
+    handler = json.loads(config.read_text())["hooks"]["SessionStart"][0]["hooks"][0]
+    env = {**os.environ, "HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home),
+           "CODEX_HOME": str(fixture.code_home), "CLAUDE_CONFIG_DIR": str(fixture.code_home.parent / "unused-claude"),
+           "DIRECTION_MARKER": str(fixture.code_home.parent / "missing-marker.json")}
+    result = subprocess.run(["sh", "-c", handler["command"]], cwd=fixture.code_home, env=env,
+                            text=True, capture_output=True, timeout=handler["timeout"])
+    assert result.returncode == 0, result.stderr
+    assert "Catalog catch-up synchronized" in result.stdout
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
+
+
 def test_session_start_reports_changed_helper_without_moving_runtime(tmp_path: Path) -> None:
     fixture = session_fixture(tmp_path)
     helper = fixture.landing / fixture.helper_relative_path
@@ -807,7 +830,6 @@ def test_automatic_reconciliation_bounds_a_slow_fetch(tmp_path: Path) -> None:
     fixture = session_fixture(tmp_path)
     namespace = runpy.run_path(str(fixture.runtime / fixture.helper_relative_path))
     reconcile = namespace["reconcile_runtime_checkout"]
-    globals_ = reconcile.__globals__
     actual_run = subprocess.run
     def slow_fetch(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
         if "fetch" in argv:
@@ -815,7 +837,7 @@ def test_automatic_reconciliation_bounds_a_slow_fetch(tmp_path: Path) -> None:
         return actual_run(argv, **kwargs)
     env = {"HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home),
            "CODEX_HOME": str(fixture.code_home.parent / "unused"), "CLAUDE_CONFIG_DIR": str(fixture.code_home.parent / "unused-claude")}
-    with mock.patch.dict(os.environ, env), mock.patch.object(globals_["subprocess"], "run", side_effect=slow_fetch):
+    with mock.patch.dict(os.environ, env), mock.patch("subprocess.run", side_effect=slow_fetch):
         started = time.monotonic()
         receipt = reconcile(fixture.runtime, fixture.repo, None, timeout_seconds=1)
         assert time.monotonic() - started < 3
@@ -834,7 +856,7 @@ def test_automatic_reconciliation_finishes_a_merge_after_the_read_budget(tmp_pat
             assert kwargs["timeout"] > 30
             clock[0] = 31.0
         return actual_run(argv, **kwargs)
-    with mock.patch.dict(os.environ, {"HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home)}), mock.patch.object(reconcile.__globals__["subprocess"], "run", side_effect=slow_merge), mock.patch.object(reconcile.__globals__["time"], "monotonic", side_effect=lambda: clock[0]):
+    with mock.patch.dict(os.environ, {"HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home)}), mock.patch("subprocess.run", side_effect=slow_merge), mock.patch("time.monotonic", side_effect=lambda: clock[0]):
         receipt = reconcile(fixture.runtime, fixture.repo, None, timeout_seconds=30)
     assert receipt["status"] == "synchronized"
     assert receipt["after_sha"] == fixture.landing_sha
@@ -852,7 +874,7 @@ def test_automatic_fetch_uses_batch_mode_and_preserves_custom_ssh(tmp_path: Path
             captured.append(kwargs["env"]["GIT_SSH_COMMAND"])
             return subprocess.CompletedProcess(argv, 1, b"", b"offline")
         return actual_run(argv, **kwargs)
-    with mock.patch.dict(os.environ, {"HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home), "GIT_SSH_COMMAND": "ssh -i /existing/key"}), mock.patch.object(reconcile.__globals__["subprocess"], "run", side_effect=reject_fetch):
+    with mock.patch.dict(os.environ, {"HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home), "GIT_SSH_COMMAND": "ssh -i /existing/key"}), mock.patch("subprocess.run", side_effect=reject_fetch):
         receipt = reconcile(fixture.runtime, fixture.repo, None, timeout_seconds=5)
     assert receipt["reason_code"] == "fetch_failed"
     assert captured == ["ssh -i /existing/key -o BatchMode=yes"]
@@ -868,7 +890,7 @@ def test_budget_expiry_during_a_read_reports_no_checkout_mutation(tmp_path: Path
         if "cat-file" in argv and "blob" in argv:
             clock[0] = 31.0
         return actual_run(argv, **kwargs)
-    with mock.patch.dict(os.environ, {"HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home)}), mock.patch.object(reconcile.__globals__["subprocess"], "run", side_effect=expire_read), mock.patch.object(reconcile.__globals__["time"], "monotonic", side_effect=lambda: clock[0]):
+    with mock.patch.dict(os.environ, {"HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home)}), mock.patch("subprocess.run", side_effect=expire_read), mock.patch("time.monotonic", side_effect=lambda: clock[0]):
         receipt = reconcile(fixture.runtime, fixture.repo, None, timeout_seconds=30)
     assert receipt["status"] == "retryable"
     assert receipt["reason_code"] == "runtime_catchup_timeout"

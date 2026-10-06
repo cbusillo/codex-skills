@@ -23,6 +23,37 @@ SPEC.loader.exec_module(sync)
 
 
 class GlobalInstructionsTests(unittest.TestCase):
+    def test_explicit_upgrade_adopts_legacy_catalog_hook_and_preserves_other_handlers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex = Path(directory)
+            path = codex / "hooks.json"
+            unrelated = {"command": "other-startup"}
+            legacy = {"command": f"uv run --quiet --no-python-downloads {sync.ROOT / 'hooks/direction_check_hook.py'}", "timeout_sec": 15}
+            path.write_text(json.dumps({"hooks": {"SessionStart": [{"matcher": "startup", "hooks": [legacy, unrelated]}]}}))
+            native_state = f'[hooks.state."{path}:session_start:0:1"]\nenabled=false\ntrusted_hash="owner-state"\n'
+            (codex / "config.toml").write_text(native_state)
+            before = path.read_bytes()
+            outputs = sync.prepare_codex_hooks(codex, upgrade_session_start=True)
+            self.assertEqual(path.read_bytes(), before)
+            rendered = json.loads(outputs[path])["hooks"]["SessionStart"]
+            self.assertEqual(len(rendered), 1)
+            self.assertEqual(rendered[0]["matcher"], "startup")
+            self.assertEqual(rendered[0]["hooks"][1], unrelated)
+            sync.write_codex_hooks(outputs, codex)
+            self.assertEqual((codex / "config.toml").read_text(), native_state)
+            self.assertEqual(sync.prepare_codex_hooks(codex, upgrade_session_start=True)[path], outputs[path])
+
+    def test_explicit_upgrade_refuses_custom_wrappers_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex = Path(directory)
+            path = codex / "hooks.json"
+            path.write_text(json.dumps({"hooks": {"SessionStart": [{"hooks": [{"command": f"echo before; uv run {sync.ROOT / 'hooks/direction_check_hook.py'}"}]}]}}))
+            before = path.read_bytes()
+            with self.assertRaisesRegex(ValueError, "Custom catalog session hook preserved"):
+                sync.prepare_codex_hooks(codex, upgrade_session_start=True)
+            self.assertEqual(path.read_bytes(), before)
+            self.assertIn("echo before", sync.prepare_codex_hooks(codex)[path])
+
     def test_compact_only_direction_hook_keeps_managed_startup_reminder(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             codex = Path(directory)

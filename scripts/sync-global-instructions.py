@@ -165,7 +165,38 @@ def existing_session_hook(groups: list, catalog: Path) -> bool:
 
 
 
-def prepare_codex_hooks(codex: Path, catalog: Path = ROOT) -> HookOutputs:
+def upgrade_legacy_session_hooks(groups: list, catalog: Path) -> list:
+    """Explicitly adopt only plain catalog invocations, leaving custom commands intact."""
+    retained = []
+    script = (catalog / "hooks" / "direction_check_hook.py").resolve()
+    declaration = json.loads(render_codex_hook_content({}, Path("hooks.json"), catalog, include_session_start=True))["hooks"]["SessionStart"][0]["hooks"][0]
+    for group in groups:
+        handlers = []
+        for handler in group["hooks"]:
+            if not existing_session_hook([{"hooks": [handler]}], catalog):
+                handlers.append(handler)
+                continue
+            tokens = shlex.split(handler["command"])
+            paths = [Path(os.path.expandvars(token)).expanduser() for token in tokens[2:]]
+            script_count = sum(path.is_absolute() and path.resolve() == script for path in paths)
+            allowed = {"--quiet", "--no-python-downloads", "--runtime-catchup"}
+            plain = handler["command"] == declaration["command"] or (tokens[:2] == ["uv", "run"] and script_count == 1 and all(
+                token in allowed or (path.is_absolute() and path.resolve() == script)
+                for token, path in zip(tokens[2:], paths)
+            ))
+            if not plain:
+                raise ValueError("Custom catalog session hook preserved: --upgrade-session-start only adopts plain uv run invocations. Omit this option to retain the custom hook while continuing setup.")
+            # Keep matcher, handler position and native state keys stable. Only the
+            # command and budget are adopted from the maintained declaration.
+            upgraded = {**handler, "command": declaration["command"], "timeout": declaration["timeout"]}
+            upgraded.pop("timeout_sec", None)
+            handlers.append(upgraded)
+        if handlers:
+            retained.append({**group, "hooks": handlers})
+    return retained
+
+
+def prepare_codex_hooks(codex: Path, catalog: Path = ROOT, *, upgrade_session_start: bool = False) -> HookOutputs:
     """Move event definitions, leaving Codex-managed trust and settings in TOML."""
     hook_path, config_path = codex / "hooks.json", codex / "config.toml"
     hook_text = safe_content(hook_path)
@@ -214,6 +245,11 @@ def prepare_codex_hooks(codex: Path, catalog: Path = ROOT) -> HookOutputs:
                     raise ValueError(f"Conflicting {event} definitions in both sources; reconcile the duplicate hooks before rerunning. Install with --skip-codex-hooks, or synchronize instructions without --codex-hook, to keep working.")
         hooks[event] = existing + [group for group in groups if group not in existing]
     sessions = hooks.get("SessionStart", [])
+    if upgrade_session_start:
+        # Native trust/state remains Codex-owned; this never fabricates approval.
+        if any(item["event"] == "SessionStart" for item in disabled_migrated):
+            raise ValueError("Disabled session hook preserved: omit --upgrade-session-start and review its disabled state in /hooks before upgrading.")
+        sessions = hooks["SessionStart"] = upgrade_legacy_session_hooks(sessions, catalog)
     existing_session = existing_session_hook(sessions, catalog)
     try:
         json.dumps(config)
@@ -350,6 +386,7 @@ def main() -> int:
     parser.add_argument("--allow-missing-local", action="store_true", help="Explicitly overwrite existing instruction files without the local source, dropping private instructions")
     parser.add_argument("--codex-hook", action="store_true", help="Consolidate Codex user hooks into hooks.json and register catalog hooks; trust remains Codex-managed")
     parser.add_argument("--hooks-only", action="store_true", help="Migrate/register Codex hooks without synchronizing global instructions")
+    parser.add_argument("--upgrade-session-start", action="store_true", help="Explicitly replace plain legacy catalog startup invocations with the maintained declaration; native trust remains unchanged")
     parser.add_argument("--show-diff", action="store_true", help="Include full local diffs, which may contain private configuration")
     args = parser.parse_args()
     if args.home_dir and (args.codex_dir or args.claude_dir):
@@ -362,7 +399,9 @@ def main() -> int:
     try:
         if args.hooks_only and not args.codex_hook:
             parser.error("--hooks-only requires --codex-hook")
-        hook_outputs = prepare_codex_hooks(codex_dir) if args.codex_hook else {}
+        if args.upgrade_session_start and not args.codex_hook:
+            parser.error("--upgrade-session-start requires --codex-hook")
+        hook_outputs = prepare_codex_hooks(codex_dir, upgrade_session_start=args.upgrade_session_start) if args.codex_hook else {}
         hook_previews = [entry for path, content in hook_outputs.items() for entry in synchronize(content, [path], write=False)]
         local_missing = not args.local_source.exists()
         outputs = [] if args.hooks_only else synchronize(render(args.source, args.local_source), [
