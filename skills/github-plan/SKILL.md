@@ -385,16 +385,15 @@ Use status labels narrowly:
 
 - `plan:active`: actionable now, including work whose next actor is any agent.
   Keep actionable unstarted follow-ups, capacity/selection queues, and Supervisor
-  handoffs active. Ordinary delivery awaiting QA, review, the merge train, or
-  deployment stays active too. Put the agent's next step in `Next action:` and
-  record `Waiting for: None`.
+  handoffs active. For an agent next step, use `Next action:` and record
+  `Waiting for: None`. Ordinary delivery awaiting agent or automated QA, review,
+  merge-train routing, or deployment stays active too.
 - `plan:blocked`: a current dependency, preferably an open native blocker.
 - `plan:waiting`: a durable plan parked on a named person, decision, or external
   event. Name who acts and on what in `Waiting for:` or `Parked until:`.
 - `plan:stale`: needs review before guiding work.
 - `plan:done`: completed or deliberately superseded.
 
-Being out of focus or awaiting an agent is not a blocker or a waiting condition.
 For `plan:waiting` without a native issue blocker, say `Blocked by: No native
 issue blocker; waiting for ...`.
 
