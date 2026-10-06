@@ -154,6 +154,29 @@ def references_issue(text: str, number: int) -> bool:
                 or re.search(rf"(?:^|/){number}[-_]", text))
 
 
+def ownership_text(text: str) -> str:
+    """Unwrap human-readable Markdown without changing machine directives."""
+    text = "\n".join(text.splitlines())
+    # Keep paragraph and list boundaries, including hard-wrapped quoted prose.
+    text = re.sub(r"(?m)^[ \t]*(?:>[ \t]?)+", "", text)
+    # Retain link labels; destinations and optional titles are not holder prose.
+    text = re.sub(r"\[([^\[\]]*)\]\((?:[^()\n]|\([^()\n]*\))*\)", r"\1", text)
+    text = re.sub(r"\[([^\[\]]+)\]\[[^\]\n]*\]", r"\1", text)
+    # Paired delimiters only: underscores inside identity tokens are literal.
+    # Repetition handles nested emphasis and links inside emphasized spans.
+    patterns = (
+        r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)",
+        r"(?<!\w)(\*{1,3}|_{1,3}|~~)(?=\S)(.+?)(?<=\S)\1(?!\w)",
+    )
+    for pattern in patterns:
+        while True:
+            unwrapped = re.sub(pattern, r"\2", text, flags=re.DOTALL)
+            if unwrapped == text:
+                break
+            text = unwrapped
+    return text
+
+
 def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = None) -> bool:
     """Ignore explicit absence only at the assertion, never a whole status."""
     text = "\n".join(text.splitlines())
@@ -163,10 +186,18 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
         for assertion, key in ((r"(?:State: Active;\s*)?(?:owned by|claimed by|Worker:)", "worker"),
                                (r"Session:", "session")):
             text = re.sub(rf"(?im)^\s*{assertion}\s+{re.escape(own_claim[key])}\.?[ \t]*$", "", text)
-    # Strip Markdown around labels only after removing exact generated identity
-    # lines, so an underscore in a worker/session token is never formatting.
-    text = re.sub(r"(?<!\w)(?:[*]{1,2}|_{1,2}|`)(?=owned by|claimed by|worker\b|session\b)", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"((?:owned by|claimed by|worker|session):?)(?:[*]{1,2}|_{1,2}|`)(?=[\s:])", r"\1", text, flags=re.IGNORECASE)
+    text = ownership_text(text)
+    # Exclude only resource prose with separately scoped evidence and approval
+    # responsibilities, after formatting has been normalized.
+    text = re.sub(
+        r"(?im)^\s*(?:After these proposals,\s+)?"
+        r"(?:Remaining |\d+ [\w-]+ and \d+ [\w-]+ )?(?:provider-only )?"
+        r"(?:entries|records|resources)\b(?:\s+(?:would remain,|are))?\s+"
+        r"owned by (?:(?!\b(?:owned|claimed) by\b)[\w -])+ for evidence and "
+        r"(?:(?!\b(?:owned|claimed) by\b)[\w -])+ for (?:production )?disposition approval"
+        r"(?:\.(?=\s|$)|(?=\n|$))",
+        "", text,
+    )
     # Structured markers were checked separately. Preserve logical paragraphs
     # when prose is hard-wrapped, while fields and list items stay independent.
     text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("<!-- " + MARKER))
@@ -184,7 +215,7 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
     )
     for match in re.finditer(r"owned by|claimed by|\bworker\s*:|\bsession\s*:", text, re.IGNORECASE):
         raw_prefix = re.split(boundary, text[:match.start()])[-1]
-        raw_prefix = raw_prefix.replace("**", "").replace("__", "").replace("`", "").lstrip(" -*+_").rstrip(" *_")
+        raw_prefix = raw_prefix.lstrip(" -*+").rstrip()
         prefix = re.sub(r"^[^:]+:\s*", "", raw_prefix)
         ending = re.split(rf"({boundary})", text[match.end():], maxsplit=1)
         suffix = ending[0].strip()
@@ -197,7 +228,7 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
                 and re.search(r"\b(?:not|never|no longer)\s*$", prefix, re.IGNORECASE))
         )
         if not uncertain:
-            empty_holder = suffix.lstrip(": ").strip("*_`").casefold()
+            empty_holder = suffix.lstrip(": ").casefold()
             if empty_holder in {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", "nobody", "no one", "no-one"}:
                 continue
             if not match.group().rstrip().endswith(":"):
@@ -231,19 +262,7 @@ def discussion_evidence(
             owned.append(record)
         else:
             conflicts.append({"source": "current_status", "record": record})
-    # Exclude only resource prose with separately scoped evidence and approval
-    # responsibilities. Keep the broad fail-closed scan for other ownership,
-    # including another assertion on the same line or elsewhere in the status.
-    ownership_status = re.sub(
-        r"(?im)^\s*(?:After these proposals,\s+)?"
-        r"(?:Remaining |\d+ [\w-]+ and \d+ [\w-]+ )?(?:provider-only )?"
-        r"(?:entries|records|resources)\b(?:\s+(?:would remain,|are))?\s+"
-        r"owned by (?:(?!\b(?:owned|claimed) by\b)[\w -])+ for evidence and "
-        r"(?:(?!\b(?:owned|claimed) by\b)[\w -])+ for (?:production )?disposition approval"
-        r"(?:\.(?=\s|$)|(?=\n|$))",
-        "",
-        status,
-    )
+    ownership_status = status
     # A matching marker or complete legacy identity accounts only for that
     # owner's assertions; it must not hide a second holder in the same status.
     own_claim = claim if owned or all(claim[key] in status for key in ("worker", "session", "branch")) else None
@@ -286,7 +305,8 @@ def discussion_evidence(
         comment_id = comment.get("id")
         if comment_id is not None and released_ids.get((comment_id, author), -1) > index:
             continue
-        legacy = re.match(r"Claimed by (\S+)", text)
+        prose = ownership_text(text)
+        legacy = re.match(r"Claimed by (\S+)", prose)
         if legacy and not parsed and has_ownership_assertion(text):
             worker = legacy.group(1)
             if released.get((worker, author), -1) > index:

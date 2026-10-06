@@ -472,6 +472,11 @@ and continue independent work.
 
 Unstructured Current Status ownership evidence remains fail-closed for `Owned by`,
 `Claimed by`, and worker/session fields, including informal prose and Markdown.
+Human ownership prose is normalized before classification: inline code,
+emphasis, link labels and block quotes retain their text without formatting.
+Quoted hard wraps preserve qualifiers, fields and paragraph boundaries. Claim
+markers, authored release directives and recorded intent/history provenance
+continue to use their exact source forms.
 Recognized responsibility sentences start a line with entries, records, or
 resources, optionally prefixed by `Remaining`, a two-group count, or `provider-only`.
 `After these proposals,` may precede that resource subject. They assign one actor

@@ -44,6 +44,24 @@ SWEEP_DISCLAIMERS = (
     "**Claimed by:** no one\n**Worker:** none\n**Session:** n/a",
     "The sweep releases claim bookkeeping to the next agent; no ownership is claimed by this sweep.",
 )
+# Exact historical BD_to_AVP#744 status paragraph preserved in codex-skills#1309
+# comment 6022593581. The context-panel#726 sweep status is SWEEP_DISCLAIMERS[0].
+BD_SWEEP_STATUS = (
+    "Preserved sweep ownership evidence (the claim helper flagged this exact negative assertion as ambiguous): "
+    "`no implementation ownership is claimed by this sweep.` No competing positive implementation claim "
+    "appears in this issue's discussion; available session inventory is partial and is not proof of "
+    "exclusive availability. The helper refusal was not bypassed or retried."
+)
+
+
+def format_ownership(text: str) -> tuple[str, ...]:
+    """Common status formatting, including formatting inside an assertion."""
+    return (
+        text, f"`{text}`", f"``{text}``", f"**{text}**", f"_{text}_",
+        f"***{text}***", f"~~{text}~~", f"[{text}](https://example.com/status)",
+        f"[{text}][status]", "> " + text.replace("\n", "\n> "),
+        text.replace("claimed by", "**claimed** by").replace("owned by", "owned **by**"),
+    )
 
 
 class ClaimTests(unittest.TestCase):
@@ -772,6 +790,77 @@ class ClaimTests(unittest.TestCase):
                 self.run_claim()
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
                 self.assertIn("post", self.events)
+
+    def test_real_sweep_statuses_allow_claims_with_markdown(self):
+        for status in (BD_SWEEP_STATUS, SWEEP_DISCLAIMERS[0]):
+            for formatted in format_ownership(status):
+                with self.subTest(status=formatted):
+                    self.setUp()
+                    self.issue["body"] += "\n" + formatted
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                    self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
+
+    def test_formatted_denials_preserve_real_and_ambiguous_holders(self):
+        for status in (
+            "Claimed by another-worker.", "Owned by another-worker.",
+            "Worker: unknown", "Session: pending", "Worker:",
+            "Claimed by no one except another-worker.",
+            "Not claimed by the sweep but by another-worker.",
+            "No ownership is claimed by this sweep because another-worker has work/repair open.",
+        ):
+            for formatted in format_ownership(status):
+                with self.subTest(status=formatted):
+                    self.setUp()
+                    self.issue["body"] += "\n" + BD_SWEEP_STATUS + "\n" + formatted
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                        self.run_claim()
+                    self.assertEqual(caught.exception.code, "claim_conflict")
+                    self.assert_no_writes()
+
+    def test_formatted_legacy_claim_comments_still_refuse(self):
+        for formatted in format_ownership("Claimed by another-worker\nSession: another-session"):
+            with self.subTest(comment=formatted):
+                self.setUp()
+                self.issue["body"] += "\n" + BD_SWEEP_STATUS
+                self.comments = [{"id": 1, "body": formatted, "user": {"login": TEST_BOT}}]
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_formatted_denial_never_releases_structured_claims(self):
+        for formatted in format_ownership("No implementation ownership is claimed by this sweep."):
+            for source in ("status", "comment"):
+                with self.subTest(status=formatted, source=source):
+                    self.setUp()
+                    self.issue["body"] += "\n" + formatted
+                    if source == "status": self.issue["body"] += "\n" + CLAIM.marker(OTHER)
+                    else: self.compete()
+                    with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                    self.assert_no_writes()
+
+    def test_quoted_wrapped_denial_preserves_qualifiers_and_fields(self):
+        for status, conflict in (
+            ("> No implementation ownership is claimed by\n> this sweep.", False),
+            ("> No ownership is claimed by this sweep\n> because another-worker has work/repair open.", True),
+            ("> No ownership is claimed by this sweep.\n> **Worker:** another-worker", True),
+        ):
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["body"] += "\n" + status
+                if conflict:
+                    with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                    self.assert_no_writes()
+                else:
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_formatted_responsibility_prose_is_normalized_before_classification(self):
+        for formatted in format_ownership(RESPONSIBILITY_STATUS):
+            with self.subTest(status=formatted):
+                conflicts, _ = CLAIM.discussion_evidence(formatted, [], OWNER)
+                self.assertEqual(conflicts, [])
+                conflicts, _ = CLAIM.discussion_evidence(formatted + "\n**Worker:** unknown", [], OWNER)
+                self.assertTrue(conflicts)
 
     def test_disclaimer_does_not_hide_another_status_assertion(self):
         for ownership in (
