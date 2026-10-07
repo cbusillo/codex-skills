@@ -1684,6 +1684,45 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(PLAN.PlanError): self.run_claim()
         self.assert_no_writes()
 
+    def test_conditional_first_line_exact_releases_preserve_and_recover_claims(self):
+        releases = (
+            "Released claim 1\n\nIf CI passes, the next worker may claim.",
+            "Released claim 1. Takes effect once PR #99 merges.",
+            "Released claim 1. If CI passes, the next worker may claim.",
+            "Released claim 1\r\n\r\nOnce PR #99 merges, the next worker may claim.",
+            "Released claim 1\nUnless CI fails, the next worker may claim.",
+            "Released claim 1\n\nThis only takes effect after PR #99 merges; do not claim until then.",
+        )
+        for release in releases:
+            for retained in (False, True):
+                with self.subTest(release=release, retained=retained):
+                    self.setUp()
+                    if retained:
+                        self.released_status_fixture(release)
+                    else:
+                        self.comments = [
+                            {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
+                            {"id": 2, "body": release, "user": {"login": TEST_BOT}},
+                        ]
+                    with self.assertRaises(PLAN.ClassifiedPlanError):
+                        self.run_claim()
+                    self.assert_no_writes()
+                    self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
+                                          "created_at": "2026-10-01T00:02:00Z",
+                                          "user": {"login": TEST_BOT}})
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_unconditional_first_line_handoff_keeps_downstream_gates_separate(self):
+        self.refresh_fixture()
+        self.comments[2]["body"] = (
+            "Released claim 1. Source session finished.\n\n"
+            "Handoff: PR #99 and #100. Supervisor owns routing after CI passes; "
+            "keep the worktree until landing. No consumer work before the Owner decision."
+        )
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
     def test_embedded_release_recovers_reported_finished_session(self):
         for role in ("Director", "Owner"):
             self.setUp()

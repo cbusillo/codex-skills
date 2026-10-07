@@ -536,8 +536,13 @@ identity. Release affects that exact comment, not another worker's
 record or retained branch/worktree evidence; those still need ordinary
 ownership and preservation review.
 The first release line is exactly `Released claim <id>`, or ends its exact ID
-with a period followed by optional handoff prose. Conditional prose after a
-bare ID does not release ownership.
+with a period followed by optional handoff prose. Explicit conditions in that
+same-line prose, a following line starting with `If`, `After`, `Once`, `When`,
+`Unless`, or `Until`, or a following “takes effect after/once/if” clause refuse
+rather than release ownership early. Downstream gates within ordinary handoff
+prose remain independent. Recover ambiguous conditional handoffs with a new,
+unconditional first-line exact-ID release from the source author after the
+source claim; the helper does not infer that a condition has become true.
 
 An exact release may also be a standalone final paragraph after the handoff
 prose, optionally followed by the helper's operation marker. It must be an

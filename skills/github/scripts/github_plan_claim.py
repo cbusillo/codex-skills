@@ -81,6 +81,15 @@ def released_claim_id(text: str) -> int | None:
     first = text.splitlines()[:1]
     match = re.fullmatch(r"Released claim (\d+)(?:\.(?:\s.*)?|[ \t]*)", first[0]) if first else None
     if match:
+        # The directive cannot outrun an explicit condition in its handoff.
+        # Downstream gates within ordinary handoff prose remain independent.
+        suffix = first[0][match.end(1):].lstrip(". \t")
+        following = "\n".join(text.splitlines()[1:])
+        condition = r"(?:if|after|once|when|unless|until)\b"
+        if (re.search(rf"(?i)\b{condition}", suffix)
+                or re.search(rf"(?im)^[ \t]*{condition}", following)
+                or re.search(rf"(?i)\btakes? effect\s+(?:only\s+)?{condition}", following)):
+            return None
         return int(match.group(1))
     text = "\n".join(line if line.strip() else "" for line in text.splitlines())
     text = without_operation_marker(text)
