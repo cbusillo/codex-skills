@@ -83,7 +83,7 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     # worktree cleanup. A condition directly after the ID also qualifies
     # the directive even when it leaves that subject implicit.
     # Identity tokens and hidden transport/release receipts are not prose.
-    condition = r"(?<![\w/.-])(?:if|after|once|when|unless|until|before|pending|provided|conditional|subject to|as soon as|on (?:merge|landing)|wait(?:ing)? for)(?![\w/-])"
+    condition = r"(?<![\w/.-])(?:if|after|once|when|unless|until|before|pending|provided|conditional|contingent on|subject to|as soon as|on (?:merge|landing)|wait(?:ing)? for)(?![\w/-])"
     if final_paragraph:
         condition = rf"(?:{condition}|\b(?:upon|post-(?:merge|landing)|at (?:merge|landing))\b)"
     handoff = re.sub(r"(?s)<!--.*?-->", "", text)
@@ -92,7 +92,8 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     statements = [statement.strip() for statement in re.split(r"(?<=[.!?;])\s+|\n[ \t]*\n", prose) if statement.strip()]
     ownership = r"\b(?:releases?|claims?|claiming|reclaim(?:ing)?|ownership|takes? effect|effective)\b"
     successor_action = r"(?:pick (?:this|it) up|pick up (?:this|the) issue|takes? (?:(?:it|this) )?over|taking over|resumes?|resuming)"
-    successor = rf"\b(?:{successor_action}|handoff (?:is )?complete[ds]?)\b"
+    handoff_effect = r"\bhands? off to (?:the )?next (?:worker|session)\b"
+    successor = rf"(?:\b(?:{successor_action}|handoff (?:is )?complete[ds]?)\b|{handoff_effect})"
     # An instruction about what to do on resumption does not defer ownership.
     resumption_instruction = rf"^(?:(?:When|If) you {successor_action}|(?:When|If|After|Once) resuming),(?![^.!?;]*\bdo so\b)\s*"
     instruction_indexes = {index for index, statement in enumerate(statements)
@@ -111,6 +112,8 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
             or re.search(effective, prose if final_paragraph else ownership_text(suffix), re.IGNORECASE)):
         return True
     for index, statement in enumerate(statements):
+        if re.search(rf"{handoff_effect}[^.!?;]*\bupon\b", statement, re.IGNORECASE):
+            return True
         if not (re.search(condition, statement, re.IGNORECASE)
                 or re.search(required_step, statement, re.IGNORECASE)):
             continue

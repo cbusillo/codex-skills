@@ -564,6 +564,10 @@ standalone prerequisite: `Released claim 1. PR #99 must merge first.` refuses,
 as does `PR #99 must merge first.` immediately before a final release paragraph.
 Resuming permission and standalone `Wait until CI finishes`, `Please wait until
 PR #99 merges`, and `Hold off until PR #99 merges` prerequisites are checked too.
+Explicit release contingency (`Release is contingent on PR #99 merging`) and
+successor handoff effects (`Hands off to the next worker upon merge`) refuse
+in both placements. A deployment contingency or Supervisor routing condition
+does not itself defer ownership.
 Downstream routing and cleanup gates, such as `After PR #99 lands, close out
 the issue`, remain independent. Recover ambiguous conditional handoffs (including
 destination/action wording such as `merges to deploy`) with a
