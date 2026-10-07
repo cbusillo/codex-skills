@@ -18,6 +18,7 @@ from collections.abc import Callable
 from typing import Any
 
 import github_agent
+import github_plan_claim
 import github_client
 import github_milestone as github_milestone_core
 
@@ -449,6 +450,13 @@ def tooling_capacity_context(
     for entry in frontier:
         if entry.get("exclusion") not in {None, "waiting", "parent_waiting"}:
             return {**result, "reason": "milestone_issue_excluded", "issue": f"{entry['repo']}#{entry['number']}", "exclusion": entry["exclusion"]}
+        if entry.get("wait_evidence_complete") is False:
+            return {**result, "issue": f"{entry['repo']}#{entry['number']}", "required": "current_wait_evidence"}
+        own_status = section_map((entry.get("discussion") or {}).get("body", "")).get("Current Status", "")
+        own_waits = waiting_records(entry, own_status)
+        if (entry.get("plan_status") != "waiting" or not own_waits
+                or any(row.get("unowned", row["non_external"]) for row in own_waits) or entry.get("stale_wait_evidence")):
+            return {**result, "issue": f"{entry['repo']}#{entry['number']}", "required": "current_own_issue_wait"}
         review = reviews.get(f"{entry['repo']}#{entry['number']}".casefold(), {})
         discussion = entry.get("discussion") or {}
         if (
@@ -543,7 +551,6 @@ def rank_portfolio_work(
     reviews = {key.casefold(): value for key, value in context.get("issues", {}).items()}
     candidates: list[dict[str, Any]] = []
     excluded = list(graph.get("excluded", []))
-    waiting = list(graph.get("waiting", []))
     underway: list[dict[str, Any]] = []
     seen = {f"{entry['repo']}#{entry['number']}".casefold() for entry in excluded if entry.get("exclusion") != "outside_direction_tracks"}
     work = [(entry, False) for entry in graph["candidates"]] + [(entry, True) for entry in discoveries]
@@ -563,13 +570,6 @@ def rank_portfolio_work(
             continue
         if item.get("exclusion"):
             excluded.append(item)
-            if item["exclusion"] in {"waiting", "parent_waiting"}:
-                status_text = section_map((item.get("discussion") or {}).get("body", "")).get("Current Status", "")
-                waiting.extend(waiting_records(item, status_text) or [{
-                    "repo": item["repo"], "number": item["number"], "url": item["url"],
-                    "waiting_for": item.get("waiting_on_parent") or status_text or "Waiting party or condition not recorded",
-                    "reported_by": item["url"], "reported_at": item.get("updated_at"),
-                }])
             continue
         discussion = item.get("discussion") or {}
         review = reviews.get(key)
@@ -583,7 +583,6 @@ def rank_portfolio_work(
             underway.append({**item, "availability": "underway", "review": review})
             continue
         elif review["state"] == "waiting":
-            waiting.append({**item, "waiting_for": review["reason"], "review": review})
             excluded.append({**item, "exclusion": "reviewed_wait", "review": review})
             continue
         elif review["state"] == "ineligible":
@@ -623,53 +622,134 @@ def rank_portfolio_work(
     ))
     for rank, item in enumerate(candidates, 1):
         item["rank"] = rank
+    recorded_waits: list[dict[str, Any]] = []
+    unowned: list[dict[str, Any]] = []
+    current_waits: list[dict[str, Any]] = []
+    stale_waits: list[dict[str, Any]] = []
+    seen_waits: set[tuple[str, int, str]] = set()
+    # Reconstruct from each issue's own status, never a parent's text or a
+    # reference used as the identity of a child. Parent exclusions stay intact.
+    entries = [*graph.get("candidates", []), *excluded, *discoveries, *underway]
+    parents = [parent for entry in entries for parent in (entry.get("discussion") or {}).get("parents", [])]
+    for entry in [*entries, *parents]:
+        if entry.get("exclusion") in {"completed", "stale_needs_review", "outside_direction_tracks"}:
+            continue
+        body = (entry.get("discussion") or {}).get("body", "")
+        status = section_map(body).get("Current Status", "")
+        rows = waiting_records(entry, status)
+        if entry.get("exclusion") == "reviewed_wait":
+            recorded_waits.append({"repo": entry["repo"], "number": entry["number"], "url": entry["url"],
+                                   "waiting_for": entry["review"]["reason"], "reported_by": entry["url"],
+                                   "reported_at": entry.get("updated_at"), "last_verified": None,
+                                   "references": [], "review": entry["review"], "source": "caller_review"})
+        if not rows and entry.get("plan_status") == "waiting":
+            rows = [{"repo": entry["repo"], "number": entry["number"], "url": entry["url"],
+                     "waiting_for": "Waiting party or condition not recorded", "reported_by": entry["url"],
+                     "reported_at": entry.get("updated_at"), "last_verified": None,
+                     "references": [], "non_external": True}]
+        for row in rows:
+            key = (row["repo"].casefold(), row["number"], row["waiting_for"])
+            if key in seen_waits:
+                continue
+            seen_waits.add(key)
+            if row.get("unowned", row["non_external"]):
+                if entry.get("plan_status") == "waiting" or entry.get("exclusion") == "waiting":
+                    unowned.append({**row, "review_required": True})
+                elif not row["non_external"]:
+                    recorded_waits.append({**row, "review_required": True})
+            elif entry.get("stale_wait_evidence"):
+                stale_waits.append({**row, "stale_wait_evidence": entry["stale_wait_evidence"], "review_required": True})
+            elif entry.get("plan_status") == "waiting":
+                current_waits.append(row)
+            else:
+                recorded_waits.append({**row, "review_required": True})
+    waiting = current_waits
     available = [item for item in candidates if item["availability"] == "available"]
     return {
         "candidates": candidates, "candidate_count": len(candidates),
         "available_candidates": available, "available_candidate_count": len(available),
         "review_required_count": len(candidates) - len(available),
-        "underway": underway, "waiting": waiting, "excluded": excluded,
+        "underway": underway, "waiting": waiting, "unowned": unowned,
+        "recorded_waits": recorded_waits, "stale_waits": stale_waits, "excluded": excluded,
         "tooling_capacity_context": capacity,
         "repository_holds": context.get("repository_holds", {}),
         "ownership_context": {"source": "caller_evidence", "all_active_sessions_searched": False},
     }
 
 
-def waiting_records(issue: dict[str, Any], status_text: str) -> list[dict[str, Any]]:
-    """Keep explicitly reported waits separate from a parent's independent work.
+def no_current_wait(reason: str) -> bool:
+    """Explicit absence may carry a completion note, never a pending clause."""
+    if github_plan_claim.no_wait_reason(reason, field="Waiting for"):
+        return True
+    if re.fullmatch(r"nothing[;.]\s*(?:this is |only )?agent work", reason.strip().rstrip(" ."), re.I):
+        return True
+    lines = reason.splitlines()
+    if len(lines) > 1 and github_plan_claim.no_wait_reason(lines[0], field="Waiting for"):
+        return not re.search(
+            r"\b(?:if|wait\w*|await\w*|pending|parked|blocked|until|unless|except|but|after|"
+            r"requir\w*|need\w*|approv\w*|authoriz\w*|decision|accept\w*)\b",
+            "\n".join(lines[1:]), re.I,
+        )
+    return False
 
-    Only Current Status is consulted. References identify the subject of a wait,
-    not another dependency edge; prose never grants permission to execute it.
-    """
+
+def non_external_wait(reason: str) -> bool:
+    """Recognize agent work and explicit absence; never clear an actual hold."""
+    if github_plan_claim.no_wait_reason(reason, field="Waiting for"):
+        return True
+    return bool(re.fullmatch(
+        r"(?:the |an |a )?(?:next )?agent(?: selection| assignment)?|"
+        r"(?:the )?supervisor(?: routing| to route(?: the (?:PR|train))?)?|"
+        r"(?:provider |spare )?capacity|engineering selection|future work|"
+        r"future engineering selection|"
+        r"nothing[;.]\s*(?:this is |only )?agent work",
+        reason.strip().rstrip(" ."), re.I,
+    ))
+
+
+def waiting_records(issue: dict[str, Any], status_text: str) -> list[dict[str, Any]]:
+    """A wait belongs to its reporting issue; references are supporting context."""
     records: list[dict[str, Any]] = []
-    for line in status_text.splitlines():
-        match = re.match(r"\s*(?:[-*]\s+)?(?:Waiting for|Parked until):\s*(.+)", line, re.I)
+    status_text = re.sub(r"<!--.*?-->", "", status_text, flags=re.S)
+    verified = re.search(r"(?im)^\s*(?:[-*]\s+)?Last verified:\s*(.+)$", status_text)
+    fields = re.split(
+        r"(?im)(?=^[ \t]*(?:[-*]\s+)?(?:State|Next action|Blocked by|Waiting for|"
+        r"Parked until|Last verified|Validation|Evidence|Retention|Recovery|Worker|Session|Branch|Notes):)|\n[ \t]*\n",
+        status_text,
+    )
+    for entry in fields:
+        match = re.match(r"\s*(?:[-*]\s+)?(?:Waiting for|Parked until):\s*(.+)", entry, re.I | re.S)
         if not match:
             continue
-        reason = match.group(1).strip()
-        if reason.casefold().rstrip(" .") in {"none", "n/a", "nothing", "-"}:
+        reason = re.sub(r"<!--.*?-->", "", match[1], flags=re.S).strip()
+        if not reason:
             continue
-        references: dict[tuple[str, int], str] = {}
+        references: dict[tuple[str, int], dict[str, Any]] = {}
+        plain = re.sub(r"\[([^]]+)]\(([^)]+)\)", r"\2", reason)
         for ref in re.finditer(
             r"https://github\.com/([^/\s)]+/[^/\s)]+)/(issues|pull)/(\d+)"
-            r"|(?<![\w/])([\w.-]+/[\w.-]+)?#(\d+)\b",
-            reason,
+            r"|(?<![\w/])([\w.-]+/[\w.-]+)?#(\d+)\b", plain,
         ):
             repo = ref.group(1) or ref.group(4) or issue["repo"]
             number = int(ref.group(3) or ref.group(5))
             kind = ref.group(2) or "issues"
-            references[(repo, number)] = f"https://github.com/{repo}/{kind}/{number}"
-        if not references:
-            references[(issue["repo"], issue["number"])] = issue["url"]
-        for (repo, number), url in references.items():
-            records.append({
-                "repo": repo,
-                "number": number,
-                "url": url,
-                "waiting_for": reason,
-                "reported_by": issue["url"],
-                "reported_at": issue.get("updated_at"),
-            })
+            references[(repo, number)] = {
+                "repo": repo, "number": number,
+                "url": f"https://github.com/{repo}/{kind}/{number}",
+            }
+        records.append({
+            "repo": issue["repo"], "number": issue["number"], "url": issue["url"],
+            "state": issue.get("state"), "plan_status": issue.get("plan_status"),
+            "waiting_for": reason, "reported_by": issue["url"],
+            "reported_at": issue.get("updated_at"),
+            "last_verified": verified[1].strip() if verified else None,
+            "references": list(references.values()),
+            "no_current_wait": no_current_wait(reason),
+            "non_external": no_current_wait(reason) or non_external_wait(reason),
+            "unowned": no_current_wait(reason) or non_external_wait(reason) or bool(re.fullmatch(
+                r"separately authorized (?:production |live )?(?:activation|work)|live acceptance|approval|authorization", reason.strip().rstrip(" ."), re.I,
+            )),
+        })
     return records
 
 
@@ -697,7 +777,7 @@ def evaluate_direction_node(
         return {"item": {**item, "exclusion": "pull_request"}}
     status_text = section_map(issue.get("body") or "").get("Current Status", "")
     status_text = re.sub(r"<!--.*?-->", "", status_text, flags=re.S).strip()
-    reports = waiting_records(item, status_text)
+    reports = [row for row in waiting_records(item, status_text) if not row["no_current_wait"]]
     summary = next_relationship_summary(relationships or {})
     if (
         next_plan_status(issue, config) == "waiting"
