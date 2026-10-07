@@ -48,7 +48,7 @@ PATH_RE = re.compile(
     # first so those components remain useful evidence rather than local paths.
     r"(?P<url>(?i:https?)://[^\s<>\"'`]+)|"
     rf"(?P<quoted>[\"'`])/{LOCAL_PATH_ROOTS}/[^\n]*?(?:(?P=quoted)|(?=\n|$))|"
-    rf"/{LOCAL_PATH_ROOTS}/(?:\\ |[^\s,'\"`])+"
+    rf"(?:/Volumes/[^/\n,;:'\"`<>]+/|/{LOCAL_PATH_ROOTS}/)(?:\\ |[^\s,'\"`])+"
 )
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 MENTION_RE = re.compile(
@@ -462,6 +462,10 @@ def redact_path_match(match: re.Match[str]) -> str:
     if local:
         scheme, separator, remainder = url.partition("://")
         return scheme + separator + PATH_RE.sub(redact_path_match, remainder)
+    query_or_fragment = re.search(r"[?#]", url)
+    if query_or_fragment:
+        index = query_or_fragment.start()
+        return url[:index] + PATH_RE.sub(redact_path_match, url[index:])
     return url
 
 
