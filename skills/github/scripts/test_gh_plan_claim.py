@@ -2002,7 +2002,9 @@ class ClaimTests(unittest.TestCase):
             "After resuming, wait until CI is green.",
         ):
             for release in ("Released claim 1\n\n" + instruction,
-                            "Source session finished. " + instruction + "\n\nReleased claim 1"):
+                            "Source session finished. " + instruction + "\n\nReleased claim 1",
+                            "Released claim 1\n\nThe next worker can take over. " + instruction,
+                            "The next worker can take over. " + instruction + "\n\nReleased claim 1"):
                 with self.subTest(release=release):
                     self.setUp()
                     self.released_status_fixture(release)
