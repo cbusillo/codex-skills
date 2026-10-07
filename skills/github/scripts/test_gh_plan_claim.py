@@ -1839,6 +1839,14 @@ class ClaimTests(unittest.TestCase):
             "The next session can take over once PR #99 lands.",
             "Handoff completes when PR #99 merges.",
             "PR #99 must merge first. Then the next worker may claim.",
+            "The next worker can pick it up once PR #99 merges.",
+            "The next session takes over once PR #99 lands.",
+            "Resume once CI is green.",
+            "The successor may resume after PR #99 merges.",
+            "The next Claude session can resume once CI is green.",
+            "PR #99 must be merged first. Then the next worker may claim.",
+            "CI must be green first. Then the next worker may claim.",
+            "First, PR #99 must merge. Then the next worker may claim.",
         )
         for handoff in handoffs:
             for final in (False, True):
@@ -1885,6 +1893,8 @@ class ClaimTests(unittest.TestCase):
             "Next worker may resume immediately.",
             "The next session can take over. After PR #99 lands, close out the issue.",
             "Handoff completes now. Supervisor routes after CI passes.",
+            "The next session takes over now. Resume immediately.",
+            "Fix is effective across repos.",
             "PR #99 must merge first. Then close out the issue.",
             "Source session finished. After PR #99 lands, close out the issue. When resuming, rebase onto main.",
         )

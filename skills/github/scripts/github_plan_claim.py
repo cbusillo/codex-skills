@@ -88,9 +88,9 @@ def conditional_release_prose(text: str, *, suffix: str) -> bool:
     prose = ownership_text(handoff)
     statements = re.split(r"(?<=[.!?;])\s+|\n[ \t]*\n", prose)
     ownership = (r"\b(?:releases?|claims?|claiming|reclaim(?:ing)?|ownership|takes? effect|effective|"
-                 r"pick this up|take over|handoff completes?)\b|"
-                 r"\b(?:next|successor|another|new)\s+(?:worker|session|agent)\b[^.!?;]*\bresume\b")
-    prerequisite = r"\bmust\s+(?:merge|land|pass|finish|complete)\b[^.!?;]*\bfirst\b"
+                 r"pick (?:this|it) up|takes? over|resumes?|handoff completes?)\b")
+    prerequisite = (r"\bmust\s+(?:be\s+)?(?:merge[ds]?|land(?:ed)?|pass(?:ed)?|finish(?:ed)?|complete[ds]?|green)\b[^.!?;]*\bfirst\b|"
+                    r"^First,?\s+[^.!?;]*\bmust\s+(?:be\s+)?(?:merge[ds]?|land(?:ed)?|pass(?:ed)?|finish(?:ed)?|complete[ds]?|green)\b")
     effective = r"\b(?:takes? effect|effective)\b(?!\s+(?:now|immediately)\b)"
     if (re.match(r"(?:only\s+|not\s+)?" + condition, ownership_text(suffix), re.IGNORECASE)
             or re.search(effective, ownership_text(suffix), re.IGNORECASE)
@@ -126,7 +126,7 @@ def released_claim_id(text: str) -> int | None:
     preceding = text.rsplit("\n\n", 1)[0].rstrip()
     paragraph = preceding.rsplit("\n\n", 1)[-1].strip()
     if (preceding.endswith(":") or re.match(r"(?i)(?:if|after|once|when|unless|until)\b", paragraph)
-            or conditional_release_prose(preceding, suffix=paragraph)):
+            or conditional_release_prose(preceding, suffix="")):
         return None
     # A final line inside an unclosed code fence or raw HTML block is an example,
     # not a release. Quoted and indented directives never match the exact line.
