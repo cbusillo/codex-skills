@@ -91,14 +91,33 @@ def section_map(body: str) -> dict[str, str]:
     return sections
 
 
+def milestone_order_wait(reason: str, milestone_titles: list[str]) -> bool:
+    """Match only milestone ordering, preserving any additional person/event hold."""
+    plain = re.sub(r"[`*_]", "", reason).casefold().rstrip(" .")
+    plain = re.sub(r";\s*since\s+\d{4}-\d{2}-\d{2}(?:T\S+)?$", "", plain)
+    completion = r"(?:\s+(?:(?:to\s+)?(?:finish(?:ed|es)?|complete(?:d|s)?|land(?:ed|s)?|end(?:ed|s)?|ship(?:ped|s)?)|(?:is|are)\s+done))?"
+    generic = r"(?:the\s+)?(?:another|other|earlier|previous)\s+milestones?" + completion
+    if re.fullmatch(generic, plain):
+        return True
+    if not milestone_titles:
+        return False
+    title = "(?:" + "|".join(re.escape(value.casefold()) for value in milestone_titles) + ")"
+    milestone = r"(?:milestones?\s+)?(?:the\s+)?['\"]?" + title + r"['\"]?(?:\s+milestone)?" + completion
+    prefix = r"(?:(?:starts?|starting)\s+)?(?:(?:after|until|following|once)\s+)?(?:[\w.-]+/direction\s+)?"
+    return re.fullmatch(prefix + milestone + r"(?:\s+and\s+" + milestone + ")*", plain) is not None
+
+
 def milestone_wait_evidence(item: dict[str, Any], status_text: str, milestone_titles: list[str]) -> dict[str, Any]:
     """Validate the recorded wait, leaving person/event interpretation to review."""
     status_text = re.sub(r"<!--.*?-->", "", status_text, flags=re.DOTALL)
     status_text = re.sub(r"\*\*(Waiting for|Parked until|Blocked by|Waiting since)(:?)\*\*(:?)", r"\1\2\3", status_text, flags=re.IGNORECASE)
     rows = waiting_records(item, status_text)
     pending = [row for row in rows if not row["no_current_wait"]]
-    reason = (pending or rows or [{"waiting_for": ""}])[0]["waiting_for"]
-    if not reason:
+    valid_pending = [row for row in pending
+                     if row["waiting_for"].strip().casefold().rstrip(" .") not in {"tbd", "unknown", "not recorded", "testing", "people"}
+                     and not milestone_order_wait(row["waiting_for"], milestone_titles)]
+    reason = (valid_pending or pending or rows or [{"waiting_for": ""}])[0]["waiting_for"]
+    if not reason or no_current_wait(reason):
         fallback = re.search(r"(?im)^[ \t]*(?:[-*][ \t]+)?Blocked by:[^\n]*?\bwaiting for[ \t]+([^\n]*)", status_text)
         if fallback:
             reason = fallback.group(1).strip()
@@ -109,18 +128,13 @@ def milestone_wait_evidence(item: dict[str, Any], status_text: str, milestone_ti
     invalid = None
     if not plain or no_current_wait(reason) or plain in {"tbd", "unknown", "not recorded", "testing", "people"}:
         invalid = "wait_names_no_person_or_event"
-    elif (plain in {"another milestone", "other milestones"}
-          or any(re.match(
-              r"^(?:(?:starts?|starting)\s+)?(?:(?:after|until|following|once)\s+)?(?:[\w.-]+/direction\s+)?"
-              r"(?:milestones?\s+)?(?:the\s+)?['\"]?" + re.escape(title.casefold())
-              + r"['\"]?(?:\s+milestone)?(?:$|\s+(?:to\s+)?(?:finish|complete|land|end)\w*\b|\s+and\b)", plain)
-              for title in milestone_titles)):
+    elif milestone_order_wait(reason, milestone_titles):
         invalid = "wait_names_another_milestone"
     # updated_at is evidence of when the record was observed, not a fabricated
     # start date. Only an explicit since field establishes how long it waited.
     since = re.search(r"(?im)^[ \t]*(?:[-*][ \t]+)?Waiting since:[ \t]*([^\n]+)", status_text)
     if since is None:
-        since = re.search(r"\bsince\s+(\d{4}-\d{2}-\d{2}(?:T\S+)?)", reason, re.IGNORECASE)
+        since = re.search(r"(?:^|;\s*)since\s+(\d{4}-\d{2}-\d{2}(?:T\S+)?)", reason, re.IGNORECASE)
     start = since.group(1).strip().rstrip(".,;") if since else None
     if start:
         dated_note = re.match(r"^(\d{4}-\d{2}-\d{2})(?:\s+.*)?$", start)

@@ -2636,7 +2636,25 @@ def test_capacity_wait_dates_belong_to_each_frontier_issue() -> None:
         assert (records["Second"]["waiting_for"], records["Second"]["since"]) == ("Sam to test.", "2026-09-02")
 
 
-TESTS.extend([test_capacity_wait_dates_belong_to_each_frontier_issue, test_milestone_order_wait_is_a_finding_and_remains_available,
+def test_milestone_order_detection_preserves_additional_human_holds() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    for reason in ("First and Chris approves the testing date.", "starts after First and Chris to sign the contract.",
+                   "First\nParked until: Alex approves the copy."):
+        leaf = global_issue("someone/business", 120, labels=["plan", "plan:waiting"],
+                            body="## Current Status\nWaiting for: " + reason)
+        with global_fixture(roots, [leaf], {(roots[1]["repo"], 2): relationships(sub_issues=[leaf])}) as (module, result, _reads):
+            module.cmd_next(next_args())
+            assert not result["candidates"] and not result["findings"]
+            assert result["waiting"]
+    shared = load_module().github_direction_next
+    item = {"repo": "someone/business", "number": 120, "url": "https://github.com/someone/business/issues/120"}
+    for reason in ("First to ship", "Second is done", "earlier milestones to finish", "the previous milestone"):
+        assert not shared.milestone_wait_evidence(item, "Waiting for: " + reason, ["First", "Second"])["valid"]
+    assert shared.milestone_wait_evidence(item, "Waiting for: Alex to retest the build shipped since 2026-07-01", ["First"])["since"] is None
+    assert shared.milestone_wait_evidence(item, "Waiting for: Alex to test; since 2026-08-20", ["First"])["since"] == "2026-08-20"
+
+
+TESTS.extend([test_milestone_order_detection_preserves_additional_human_holds, test_capacity_wait_dates_belong_to_each_frontier_issue, test_milestone_order_wait_is_a_finding_and_remains_available,
               test_capacity_names_each_milestone_and_wait_start_for_shared_person_gate])
 
 
