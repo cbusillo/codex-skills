@@ -26,10 +26,8 @@ evidence. Adopted conflict runs remain foreign-owned and are never cancelled.
 During `agent-inspect`, `inspect`, and `inspect-closeout`, problems retrieval reuses the trigger's
 scope, unversioned-file policy, changed-files mode, profile, and targeted file
 selectors rather than reconstructing a broader request.
-If the reason is `ide_selection_required`, `ide_config_ambiguous`, or
-`ide_config_missing`, say directly that the repo needs preferred JetBrains IDE
-metadata in `.github/github.json`; do not frame that as merely optional when
-the same repo will be inspected again.
+For IDE-selection failures, follow the lane or single-IDE guidance in
+[Result Policy](../SKILL.md#result-policy).
 The helper appends each `UNKNOWN` verdict to
 `${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-inspection/unknown-verdicts.jsonl`
 so repeated blockers can be fixed later. Set `JB_INSPECT_UNKNOWN_LOG=0` to
