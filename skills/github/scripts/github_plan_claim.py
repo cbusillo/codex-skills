@@ -352,8 +352,8 @@ def discussion_evidence(
         if worker is not None:
             author = (comment.get("user") or {}).get("login", "")
             legacy_worker = ownership_text(worker, strip_quotes=False)
-            prior_sessions: set[str | None] = set()
-            for prior in comments[:index]:
+            prior_sessions: set[str | int] = set()
+            for prior_index, prior in enumerate(comments[:index]):
                 if (prior.get("user") or {}).get("login", "") != author:
                     continue
                 prior_text = prior.get("body") or ""
@@ -366,10 +366,10 @@ def discussion_evidence(
                     prior_prose = ownership_text(prior_text, strip_quotes=False)
                     header = re.match(r"Claimed by:?\s+(\S+)", prior_prose, re.IGNORECASE)
                     if header and header.group(1) == legacy_worker and has_ownership_assertion(prior_text):
-                        sessions = re.findall(r"(?im)^[ \t]*Session:[ \t]*(\S+)", prior_prose)
+                        sessions = re.findall(r"(?i)\bSession:[ \t]*(\S+)", prior_prose)
                         # Missing identity cannot establish that two claims are
                         # the same session; exact comment IDs remain recoverable.
-                        prior_sessions.update(sessions or [None])
+                        prior_sessions.update(sessions or [prior_index])
             # A reused token cannot release a different native session.
             if len(prior_sessions) <= 1:
                 released[worker, author] = index

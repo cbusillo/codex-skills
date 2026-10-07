@@ -919,6 +919,29 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
+    def test_legacy_alias_preserves_list_inline_and_missing_session_identity(self):
+        for template in (
+            "Claimed by old-worker\n- Session: {session}\n- Branch: work/old",
+            "Claimed by old-worker; Session: {session}\nBranch: work/old",
+            "Claimed by old-worker\nBranch: work/old",
+        ):
+            with self.subTest(template=template):
+                self.setUp()
+                self.comments = [
+                    {"id": 1, "body": template.format(session="old-session-a"), "user": {"login": TEST_BOT}},
+                    {"id": 2, "body": template.format(session="old-session-b"), "user": {"login": TEST_BOT}},
+                    {"id": 3, "body": "Released by old-worker", "user": {"login": TEST_BOT}},
+                ]
+                with self.assertRaises(PLAN.ClassifiedPlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+                self.comments.extend([
+                    {"id": 4, "body": "Released claim 1", "user": {"login": TEST_BOT}},
+                    {"id": 5, "body": "Released claim 2", "user": {"login": TEST_BOT}},
+                ])
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
     def test_legacy_alias_still_releases_repeated_same_session(self):
         self.comments = [
             {"id": 1, "body": "Claimed by old-worker\nSession: old-session\nBranch: work/old", "user": {"login": TEST_BOT}},
