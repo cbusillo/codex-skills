@@ -3313,12 +3313,15 @@ def next_wait_context(
     complete = inventory_complete and len(unique) <= scan_limit
     references: dict[str, dict[str, Any]] = {}
     checked = 0
+    checked_issues = []
     for repo, items in groups.items():
         config = load_config(repo)
-        report = direction_audit.stale_wait_report(items, repo, fetch=fetch, inventory_complete=complete)
+        report = direction_audit.stale_wait_report(items, repo, fetch=fetch, inventory_complete=complete,
+                                                 active_label=config["labels"]["active"])
         reports.extend({**row, "repo": repo} for row in report["items"])
         unavailable.extend({**row, "repo": repo} for row in report["unavailable"])
         checked += report["checked"]
+        checked_issues.extend({"repo": repo, "number": number} for number in report["checked_issues"])
         complete &= report["complete"]
         for item in items:
             if str(item.get("state", "")).casefold() != "open":
@@ -3345,7 +3348,7 @@ def next_wait_context(
             "unavailable": unavailable, "references": references,
             "inventory_complete": inventory_complete, "scope": "evaluated_global_next_issues",
             "read_limit": budget, "read_count": len(cache),
-            "checked_issues": [{"repo": item["repo"], "number": item["number"]} for item in selected]}
+            "checked_issues": checked_issues}
 
 
 def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:

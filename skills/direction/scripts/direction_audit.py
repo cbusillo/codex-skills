@@ -55,6 +55,8 @@ WAIT_REFERENCE = re.compile(
     r"|(?<![\w/])([\w.-]+/[\w.-]+)?#(\d+)\b"
 )
 
+STATUS_FIELD = r"(?:State|Next action|Blocked by|Waiting for|Parked until|Last verified|Validation|Evidence|Retention|Recovery|Worker|Session|Branch)"
+
 # The capacity count of the overall direction (`OWNER/direction` only). The
 # map is data in that repository, changed by pull request like DIRECTION.md.
 RANK_MAP_PATH = "ranks.toml"
@@ -612,17 +614,23 @@ def closed_wait_prerequisite(target: dict[str, Any]) -> bool:
 def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
                          read: Callable[[str], Any]) -> dict[str, Any] | None:
     """A merge makes an old status suspect, never proves the finish line."""
-    refs = {(ref.group(1) or ref.group(4) or repo, int(ref.group(3) or ref.group(5))): ref.group(2)
-            for ref in WAIT_REFERENCE.finditer(status)}
+    next_action = re.search(
+        rf"(?ims)^\s*(?:[-*]\s+)?Next action:\s*(.*?)(?=^\s*(?:[-*]\s+)?{STATUS_FIELD}:|\Z)", status,
+    )
+    def references(text: str) -> dict[tuple[str, int], str | None]:
+        return {(ref.group(1) or ref.group(4) or repo, int(ref.group(3) or ref.group(5))): ref.group(2)
+                for ref in WAIT_REFERENCE.finditer(text)}
+    # Delivery targets own the stack guard and implementation association;
+    # historical PRs elsewhere in status cannot cancel or authorize selection.
+    refs = references(next_action[1]) if next_action else {}
+    if not refs:
+        refs = references(status)
     if not refs:
         return None
-    # updated_at includes comments and edits: newer activity conservatively
-    # prevents a stale claim when the exact status revision is unavailable.
     recorded = _parse_time(issue.get("updated_at"))
-    if recorded is None or recorded.tzinfo is None:
-        return None
+    timestamp_proven = recorded is not None and recorded.tzinfo is not None
     evidence = []
-    implements = False
+    implements = True
     for (target_repo, number), kind in refs.items():
         if kind != "pull":
             target = read(f"repos/{target_repo}/issues/{number}")
@@ -636,46 +644,50 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
         merged = _parse_time(pull.get("merged_at"))
         if merged is None:
             return None  # A partially landed stack still needs engineering.
-        if merged.tzinfo is None or recorded >= merged:
-            return None
+        if merged.tzinfo is None:
+            raise AuditError("unreadable merge timestamp")
+        predates = bool(recorded is not None and recorded.tzinfo is not None and recorded < merged)
+        timestamp_proven &= predates
         repository = read(f"repos/{target_repo}")
         default = repository.get("default_branch") if isinstance(repository, dict) else None
         if not default or not (pull.get("base") or {}).get("ref"):
             raise AuditError("unreadable landing destination")
         if (pull.get("base") or {}).get("ref") != default:
             return None
+        own_implementation = False
         for line in str(pull.get("body") or "").splitlines():
             if not re.match(r"\s*(?:Refs|Fixes|Closes|Resolves|Implements)\b", line, re.I):
                 continue
-            implements |= any((ref.group(1) or ref.group(4) or target_repo).casefold() == repo.casefold()
+            own_implementation |= any((ref.group(1) or ref.group(4) or target_repo).casefold() == repo.casefold()
                               and int(ref.group(3) or ref.group(5)) == issue["number"]
                               and ref.group(2) != "pull" for ref in WAIT_REFERENCE.finditer(line))
+        implements &= own_implementation
         evidence.append({"kind": "merged_active_pr", "url": f"https://github.com/{target_repo}/pull/{number}",
-                         "merged_at": pull["merged_at"], "status_predates_merge": issue["updated_at"]})
+                         "merged_at": pull["merged_at"], "status_predates_merge": issue.get("updated_at") if predates else None})
     if not evidence:
         return None
-    next_action = re.search(
-        r"(?ims)^\s*(?:[-*]\s+)?Next action:\s*(.*?)(?=^\s*(?:[-*]\s+)?[\w ]+:|\Z)", status,
-    )
     # Recognize only complete delivery/bookkeeping clauses. Anything outside
     # this grammar is remaining work, including wrapped and inflected actions.
     action = " ".join(WAIT_REFERENCE.sub("REF", next_action[1]).split()) if next_action else ""
     action = re.sub(r"\[([^]]+)]\(REF\)", "REF", action).rstrip(" .")
-    clauses = [part.strip() for part in re.split(r",|;|\band\b|\bthen\b", action, flags=re.I) if part.strip()]
+    raw_clauses = re.split(r",|;|\band\b|\bthen\b", action, flags=re.I)
+    clauses = [part.strip() for part in raw_clauses if part.strip()]
     first = r"(?:the )?Supervisor (?:routes|lands|merges) (?:PR )?REF(?: through (?:Launchplane(?:'s)? )?(?:the )?(?:merge train|train))?"
     bookkeeping = (r"(?:verifies|confirms) (?:the )?(?:final )?landing(?: SHA)?|"
                    r"closes (?:this|the) issue|reconciles (?:the )?(?:runtime(?: checkout)?|closure)")
-    delivery = bool(clauses and re.fullmatch(first, clauses[0], re.I)
+    delivery = bool(clauses and raw_clauses[-1].strip() and re.fullmatch(first, clauses[0], re.I)
                     and all(re.fullmatch(bookkeeping, clause, re.I) for clause in clauses[1:]))
     return {"number": issue["number"], "title": issue.get("title"),
             "url": f"https://github.com/{repo}/issues/{issue['number']}", "evidence": evidence,
             "review_required": True, "completion_proven": False,
-            "selection_exclusion": delivery and implements}
+            "selection_exclusion": delivery and implements and timestamp_proven,
+            "evidence_complete": timestamp_proven}
 
 
 def stale_wait_report(
     issues: list[dict[str, Any]], repo: str, *, fetch: Callable[[list[str]], Any],
     inventory_complete: bool = True, max_issues: int = MAX_PAGES * 100,
+    active_label: str = "plan:active",
 ) -> dict[str, Any]:
     """Report verifiably obsolete waits, never release or select their work.
 
@@ -697,9 +709,10 @@ def stale_wait_report(
         return cache[path]
 
     checked = 0
+    checked_issues = []
     for issue in issues:
         labels = {label.casefold() for label in github_direction_next.normalize_labels(issue.get("labels"))}
-        active = ("plan:active" in labels and "pull_request" not in issue
+        active = (active_label.casefold() in labels and "pull_request" not in issue
                   and issue.get("state", "open") == "open")
         if not parked_issue(issue) and not active:
             continue
@@ -708,6 +721,7 @@ def stale_wait_report(
             errors.append({"number": number, "source": "issue", "reason": "issue_limit"})
             continue
         checked += 1
+        checked_issues.append(number)
         sections = github_direction_next.section_map(str(issue.get("body") or ""))
         status = next((text for title, text in sections.items() if title.casefold() == "current status"), "")
         if active and not parked_issue(issue):
@@ -715,13 +729,16 @@ def stale_wait_report(
                 row = active_merged_status(issue, repo, status, read=read)
                 if row:
                     rows.append(row)
+                    if not row["evidence_complete"]:
+                        errors.append({"number": number, "source": "active_status_timestamp",
+                                       "reason": "status_revision_unproven"})
             except AuditError:
                 errors.append({"number": number, "source": "active_linked_pr", "reason": "unavailable"})
             continue
         evidence: list[dict[str, Any]] = []
         unread = False
         fields: list[tuple[str, str]] = []
-        status_field = r"(?:State|Next action|Blocked by|Waiting for|Parked until|Last verified|Validation|Evidence|Retention|Recovery|Worker|Session|Branch)"
+        status_field = STATUS_FIELD
         entries = re.split(rf"(?im)(?=^\s*(?:[-*]\s+)?{status_field}:)", status)
         unknown_context = False
         for entry in entries:
@@ -830,7 +847,7 @@ def stale_wait_report(
                          "url": f"https://github.com/{repo}/issues/{number}", "evidence": evidence,
                          "review_required": True})
     return {"read_only": True, "complete": inventory_complete and not errors,
-            "checked": checked, "items": rows, "unavailable": errors,
+            "checked": checked, "checked_issues": checked_issues, "items": rows, "unavailable": errors,
             "inventory_complete": inventory_complete}
 
 

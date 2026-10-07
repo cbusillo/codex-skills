@@ -1576,10 +1576,12 @@ def test_active_merged_status_preserves_split_remainders_and_unproven_delivery()
         raise AssertionError(path)
     before = json.dumps(rows, sort_keys=True)
     report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
-    assert report["complete"] and json.dumps(rows, sort_keys=True) == before
+    assert not report["complete"] and json.dumps(rows, sort_keys=True) == before
     found = {row["number"]: row for row in report["items"]}
-    assert set(found) == {1, 2}
+    assert set(found) == {1, 2, 3, 4}
     assert found[1]["selection_exclusion"] and not found[2]["selection_exclusion"]
+    assert not found[3]["evidence_complete"] and not found[4]["evidence_complete"]
+    assert {row["number"] for row in report["unavailable"]} == {3, 4}
     assert all(row["review_required"] and not row["completion_proven"] for row in found.values())
     assert calls.count("repos/owner/catalog/pulls/71") == 1
     for base, merged, updated in (("work/root", "2026-10-06T04:36:00Z", old), ("main", None, old), ("main", "2026-10-06T04:36:00Z", "2026-10-06T04:36:00Z")):
@@ -1587,7 +1589,11 @@ def test_active_merged_status_preserves_split_remainders_and_unproven_delivery()
         def unproven(args: list[str]) -> Any:
             value = fetch(args)
             return {"merged_at": merged, "base": {"ref": base}} if "/pulls/" in args[1] else value
-        assert not module.stale_wait_report([row], "owner/catalog", fetch=unproven)["items"]
+        report = module.stale_wait_report([row], "owner/catalog", fetch=unproven)
+        if base == "main" and merged is not None:
+            assert not report["complete"] and not report["items"][0]["selection_exclusion"]
+        else:
+            assert not report["items"]
     def unavailable(_args: list[str]) -> Any:
         raise module.AuditError("missing record")
     partial = module.stale_wait_report([rows[0]], "owner/catalog", fetch=unavailable)
@@ -1604,6 +1610,11 @@ def test_active_delivery_grammar_preserves_wrapped_and_inflected_remaining_steps
         "Implement the merge queue consumer after PR #71.",
         "Supervisor lands PR #71 then switches it on and reads it back.",
         "Supervisor routes PR #71 through the merge train, then observes it in production.",
+        "Supervisor routes PR #71 through the merge train, then\n  https://github.com/owner/catalog/blob/main/docs/deploy.md staging deployment and readback.",
+        "Supervisor routes PR #71 through the merge train,\n  then at 10:30 AM ET deploys to production.",
+        "Supervisor lands PR #71 and",
+        "Supervisor lands PR #71, then",
+        "Supervisor lands PR #71,",
     )
     for action in actions:
         row = {**issue(1, "Remaining consumer work", labels=("plan:active",),
@@ -1629,6 +1640,36 @@ def test_active_delivery_grammar_preserves_wrapped_and_inflected_remaining_steps
     assert module.stale_wait_report([row], "owner/catalog", fetch=fetch)["items"][0]["selection_exclusion"]
     row["body"] = "## Current Status\nNext action: Implement after #3.\n"
     assert not module.stale_wait_report([row], "owner/catalog", fetch=lambda _: {"state": "closed"})["items"]
+
+
+def test_active_landing_ignores_history_and_uses_the_named_prs_own_association() -> None:
+    module = load()
+    row = {**issue(1, "Second slice already landed", labels=("plan:active",), body=
+                   "## Current Status\nState: First slice PR #65 landed; unrelated PR #66 stays open.\n"
+                   "Next action: Supervisor lands PR #71 and closes this issue.\nWaiting for: None.\n"),
+           "updated_at": "2026-10-04T12:00:00Z"}
+    calls = []
+    def fetch(args: list[str]) -> Any:
+        calls.append(args[1])
+        if args[1] == "repos/owner/catalog":
+            return {"default_branch": "main"}
+        if args[1].endswith("/pulls/71"):
+            return {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #1"}
+        if args[1].endswith("/issues/71"):
+            return {"state": "closed", "pull_request": {}}
+        raise AssertionError("unrelated historical PR must not control selection: " + args[1])
+    report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
+    assert report["complete"] and report["items"][0]["selection_exclusion"]
+    row["body"] = row["body"].replace("PR #71 and closes", "PR #40 and closes").replace("First slice PR #65 landed", "Own source PR #71 landed")
+    def prerequisite(args: list[str]) -> Any:
+        return {"default_branch": "main"} if args[1] == "repos/owner/catalog" else (
+            {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #2"}
+            if "/pulls/" in args[1] else {"state": "closed", "pull_request": {}})
+    assert not module.stale_wait_report([row], "owner/catalog", fetch=prerequisite)["items"][0]["selection_exclusion"]
+    row = {**row, "labels": [{"name": "custom-active"}], "body": "## Current Status\nNext action: Supervisor lands PR #71 and closes this issue.\n"}
+    report = module.stale_wait_report([row], "owner/catalog", fetch=fetch, active_label="custom-active")
+    assert report["checked_issues"] == [1] and report["items"][0]["selection_exclusion"]
+    assert not module.stale_wait_report([row], "owner/catalog", fetch=fetch)["checked_issues"]
 
 
 def main() -> int:

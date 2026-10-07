@@ -33,6 +33,8 @@ def load_module() -> Any:
         raise RuntimeError(f"Unable to load {SCRIPT}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # Every test starts offline; fixtures opt into the API evidence they own.
+    module.api_json = Mock(side_effect=module.PlanError("offline fixture record unavailable"))
     module.real_next_dependabot_work = module.next_dependabot_work
     module.next_dependabot_work = lambda *_args, **_kwargs: {"dependabot_candidates": [], "dependabot_candidate_count": 0}
     module.real_read_next_train_enrollment = module.read_next_train_enrollment
@@ -2516,7 +2518,31 @@ def test_active_post_merge_read_gaps_remain_visible_on_selection_candidates() ->
     assert candidates[0]["post_merge_evidence_complete"] is False
 
 
+def test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output() -> None:
+    module = load_module()
+    row = global_issue("someone/product", 10, labels=["plan", "custom-active"],
+                       updated_at="2026-10-06T12:00:00Z",
+                       body="## Current Status\nNext action: Supervisor lands PR https://github.com/someone/product/pull/71 and closes this issue.\n")
+    def fetch(_method: str, path: str, **_kwargs: Any) -> Any:
+        return "automation-gh", ({"default_branch": "main"} if path == "/repos/someone/product" else
+                                 {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #10"})
+    config = {**module.DEFAULT_CONFIG, "labels": {**module.DEFAULT_CONFIG["labels"], "active": "custom-active"}}
+    with patch.multiple(module, api_json=fetch, load_config=lambda *_: config):
+        report = module.next_wait_context([row], scan_limit=1, inventory_complete=True)
+    candidates = [module.compact_list_issue(row["repo"], row)]
+    module.exclude_landed_candidates(candidates, [], report)
+    assert report["checked_issues"] == [{"repo": row["repo"], "number": 10}]
+    assert not report["complete"] and not report["items"][0]["selection_exclusion"]
+    assert candidates[0]["post_merge_evidence_complete"] is False
+    row["labels"] = [{"name": "plan"}]
+    with patch.multiple(module, api_json=Mock(side_effect=AssertionError("unlabeled record is unexamined")), load_config=lambda *_: config):
+        report = module.next_wait_context([row], scan_limit=1, inventory_complete=True)
+    module.exclude_landed_candidates(candidates, [], report)
+    assert report["checked_issues"] == [] and candidates[0]["post_merge_evidence_complete"] is False
+
+
 TESTS = [
+    test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output,
     test_active_post_merge_read_gaps_remain_visible_on_selection_candidates,
     test_local_and_global_next_exclude_stale_landing_but_keep_split_work,
     test_global_adjacent_notes_preserve_absence_and_pending_clauses,

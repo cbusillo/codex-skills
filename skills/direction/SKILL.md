@@ -308,7 +308,8 @@ current evidence before correcting a status through `github-plan`. Nothing is
 closed, relabeled, or released automatically. Active records with linked PRs
 merged into the default branch after their GitHub `updated_at` carry
 `merged_active_pr` evidence and `completion_proven: false`. Newer comments or
-edits conservatively prevent that timestamp proof. When the recorded next
+edits can prevent that timestamp proof; those records carry
+`status_revision_unproven` coverage and never establish completion. When the recorded next
 action consists only of routing or landing and bookkeeping, and that PR
 references this issue as implemented work, `selection_exclusion` keeps local
 and global `next` from assigning duplicate implementation. Split remainders,
