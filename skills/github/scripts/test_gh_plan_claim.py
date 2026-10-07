@@ -1929,6 +1929,15 @@ class ClaimTests(unittest.TestCase):
                     release = (handoff + "\n\nReleased claim 1" if final
                                else "Released claim 1\n\n" + handoff)
                     self.released_status_fixture(release)
+                    # Final-paragraph effective prose retains main's conservative
+                    # refusal; recover with a new unconditional authored release.
+                    if final and handoff == "Fix is effective across repos.":
+                        with self.assertRaises(PLAN.ClassifiedPlanError):
+                            self.run_claim()
+                        self.assert_no_writes()
+                        self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
+                                              "created_at": "2026-10-01T00:02:00Z",
+                                              "user": {"login": TEST_BOT}})
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
