@@ -1939,6 +1939,76 @@ class ClaimTests(unittest.TestCase):
                         self.run_claim()
                         self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
+    def test_implicit_prerequisites_and_resuming_preserve_and_recover_claims(self):
+        releases = (
+            "Released claim 1. PR #99 must merge first.",
+            "Released claim 1. Wait until PR #99 merges.",
+            "PR #99 must merge first.\n\nReleased claim 1",
+            "Released claim 1\n\nThe next session is resuming once CI is green.",
+            "Released claim 1\n\nThe next worker can take over. Wait until CI finishes.",
+            "The next worker can take over. Wait until CI finishes.\n\nReleased claim 1",
+            "Released claim 1\n\nThe next worker can take over. Please wait until PR #99 merges.",
+            "The next worker can take over. Please wait until PR #99 merges.\n\nReleased claim 1",
+            "Released claim 1\n\nThe next worker can take over. Hold off until PR #99 merges.",
+            "The next worker can take over. Hold off until PR #99 merges.\n\nReleased claim 1",
+        )
+        for release in releases:
+            for retained in (False, True):
+                with self.subTest(release=release, retained=retained):
+                    self.setUp()
+                    if retained:
+                        self.released_status_fixture(release)
+                    else:
+                        self.comments = [
+                            {"id": 1, "body": CLAIM.marker(OTHER), "created_at": "2026-10-01T00:00:00Z",
+                             "user": {"login": TEST_BOT}},
+                            {"id": 2, "body": release, "created_at": "2026-10-01T00:01:00Z",
+                             "user": {"login": TEST_BOT}},
+                        ]
+                    with self.assertRaises(PLAN.ClassifiedPlanError):
+                        self.run_claim()
+                    self.assert_no_writes()
+                    self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
+                                          "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_implicit_permission_keeps_downstream_prerequisites_usable(self):
+        for handoff in (
+            "PR #99 must merge first. Then close out the issue.",
+            "Wait until PR #99 merges. Then close out the issue.",
+            "The next worker can take over. Wait until CI finishes. Then merge PR #99.",
+            "The next worker can take over. Please wait until PR #99 merges to close out the issue.",
+            "The next worker can take over. Hold off until PR #99 merges before closing out the issue.",
+            "The next session is resuming now. After PR #99 lands, close out the issue.",
+            "Source session finished. When resuming, rebase onto main.",
+        ):
+            for release in ("Released claim 1. " + handoff, handoff + "\n\nReleased claim 1"):
+                with self.subTest(release=release):
+                    self.setUp()
+                    self.released_status_fixture(release)
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_implicit_prerequisite_refresh_needs_fresh_unconditional_handoff(self):
+        for handoff in (
+            "PR #99 must merge first.",
+            "The next session is resuming once CI is green.",
+            "The next worker can take over. Please wait until PR #99 merges.",
+        ):
+            with self.subTest(handoff=handoff):
+                self.setUp()
+                self.refresh_fixture()
+                self.comments[2]["body"] = "Released claim 1. " + handoff + "\nHandoff: PR #99 and #100."
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+                self.comments.append({"id": 4, "body": "Released claim 1\nHandoff: PR #99 and #100.",
+                                      "user": {"login": TEST_BOT}})
+                self.args.handoff_comment = 4
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
     def test_reversed_claim_permission_preserves_and_recovers_claims(self):
         for prose in (
             "The next worker may claim. PR #99 must merge first.",
