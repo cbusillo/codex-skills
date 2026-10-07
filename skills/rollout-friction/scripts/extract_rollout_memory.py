@@ -47,8 +47,8 @@ PATH_RE = re.compile(
     # Public URLs may contain the same root names as local paths. Match them
     # first so those components remain useful evidence rather than local paths.
     r"(?P<url>(?i:https?)://[^\s<>\"'`]+)|"
-    rf"(?P<quoted>[\"'`])/{LOCAL_PATH_ROOTS}/[^\n]*?(?P=quoted)|"
-    rf"/{LOCAL_PATH_ROOTS}/(?:\\ |[^\s,;:\"'`<>)\]}}])+"
+    rf"(?P<quoted>[\"'`])/{LOCAL_PATH_ROOTS}/[^\n]*?(?:(?P=quoted)|(?=\n|$))|"
+    rf"/{LOCAL_PATH_ROOTS}/(?:\\ |[^\s,'\"`])+"
 )
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 MENTION_RE = re.compile(
@@ -451,11 +451,12 @@ def redact_path_match(match: re.Match[str]) -> str:
         return "<path-redacted>"
     try:
         host = urlsplit(url).hostname or ""
-        local = host == "localhost" or host.endswith((".localhost", ".local", ".internal"))
         try:
-            local = local or ip_address(host).is_private
+            local = not ip_address(host).is_global
         except ValueError:
-            pass  # A hostname is not an IP address.
+            local = "." not in host or host.endswith(
+                (".localhost", ".local", ".internal", ".lan", ".home.arpa", ".test", ".ts.net")
+            )
     except ValueError:
         local = True  # Malformed URLs do not establish a public host.
     if local:

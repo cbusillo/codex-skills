@@ -254,8 +254,16 @@ def test_redact_mounted_paths_in_text_context_and_prompts() -> None:
         ("http://127.0.0.1:5173/@fs/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
         ("http://workstation.local/view?path=/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
         ("http://192.168.1.2/view?path=/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
+        ("http://workstation:5173/@fs/Users/example/sample.py", "example/sample.py"),
+        ("http://100.101.102.103:5173/@fs/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
+        ("http://workstation.tail1234.ts.net/view?path=/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
+        ("http://workstation.home.arpa/view?path=/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
+        ("http://workstation.test/view?path=/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
+        ("/Volumes/EXAMPLE/Photos(2024)/sample.png", "Photos(2024)/sample.png"),
+        ("/Users/example/[draft]/notes.md", "[draft]/notes.md"),
+        ('"/Volumes/Example Disk/worktrees/sample', "Disk/worktrees/sample"),
     )
-    public_url = "https://example.test/Volumes/EXAMPLE/worktrees/sample"
+    public_url = "https://example.com/Volumes/EXAMPLE/worktrees/sample"
     for path, private_tail in paths:
         messages = (
             f"Remember worktrees live under {path}; keep reusable workflows simple.",
@@ -271,7 +279,8 @@ def test_redact_mounted_paths_in_text_context_and_prompts() -> None:
         context = redacted[0].context
         if private_tail in text or any(private_tail in event["text"].replace(public_url, "") for event in context):
             raise AssertionError(f"candidate text/context leaked {path}: {redacted}")
-        if "keep reusable workflows simple." not in text:
+        unterminated_quote = path[0] in ('"', "'", "`") and not path.endswith(path[0])
+        if not unterminated_quote and "keep reusable workflows simple." not in text:
             raise AssertionError(f"path redaction consumed neighboring prose: {text}")
         if not any(public_url in event["text"] for event in context):
             raise AssertionError(f"path redaction damaged public URL: {context}")
