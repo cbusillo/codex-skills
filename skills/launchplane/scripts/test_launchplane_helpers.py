@@ -1260,6 +1260,42 @@ def test_controller_block_and_reconciliation_preserve_durable_diagnostics() -> N
     assert _run_controller_response(response)[1]["result"]["active_record_id"] is None
 
 
+def test_controller_applied_block_reaches_driver_with_attribution_and_policy() -> None:
+    block = {"status": "blocked", "repository": "example/repo", "base_branch": "main",
+             "pull_request_number": 42, "blocked_label": "held", "train_should_continue": True,
+             "detail": "Applied held to pull request #42."}
+    response = _queue_refusal_response()
+    response["result"]["controller_action"] = "block"
+    response["result"]["mode"] = "block"
+    response["result"]["dry_run_result"]["selected_pr"] = response["result"]["dry_run_result"]["queue"][0]
+    response["result"]["block_result"] = block
+    status, payload = _run_controller_response(response, mutate=True)
+    assert status == 0
+    assert payload["result"]["block_result"] == block
+    driver = load_module("launchplane-train-drive.py", "block_projection_driver")
+    settings = driver.DriveSettings(repository="example/repo", number=43)
+    assert driver._judge(settings, None, driver.DriveState(), payload["result"], "block") is None
+    block["train_should_continue"] = False
+    status, payload = _run_controller_response(response, mutate=True)
+    assert status == 0
+    outcome, detail = driver._judge(settings, None, driver.DriveState(), payload["result"], "block")
+    assert outcome == "needs_owner"
+    assert detail["blocking_pull_request_number"] == 42
+
+
+def test_controller_block_projection_rejects_unsafe_or_invalid_fields() -> None:
+    for block in (
+        {"status": "blocked", "pull_request_number": 42, "train_should_continue": "true"},
+        {"status": "blocked", "pull_request_number": True, "train_should_continue": True},
+        {"status": "blocked", "pull_request_number": 42, "train_should_continue": True, "extra": "x"},
+    ):
+        response = _queue_refusal_response()
+        response["result"]["block_result"] = block
+        status, payload = _run_controller_response(response, mutate=True)
+        assert status != 0
+        assert payload["status"] == "invalid"
+
+
 def test_controller_client_timeout_is_not_a_service_outage_and_never_retries() -> None:
     for error in (
         TimeoutError("timed out"),
