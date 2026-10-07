@@ -1866,6 +1866,8 @@ class ClaimTests(unittest.TestCase):
             "Handoff completed when PR #99 merges.",
             "Wait until PR #99 merges. Then take over.",
             "Wait until PR #99 merges. The next worker can take over.",
+            "Wait until PR #99 is merged. Then take over.",
+            "Wait until PR #99 merges into main. The next worker can take over.",
         )
         for handoff in handoffs:
             for final in (False, True):
@@ -1907,7 +1909,11 @@ class ClaimTests(unittest.TestCase):
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_reversed_successor_prerequisites_preserve_and_recover_claims(self):
-        for prerequisite in ("PR #99 must merge first.", "Wait until PR #99 merges."):
+        for prerequisite in (
+            "PR #99 must merge first.", "Wait until PR #99 merges.",
+            "Hold until PR #99 merges.", "Not until PR #99 merges.", "Only after PR #99 merges.",
+            "Wait until PR #99 is merged.", "Wait until PR #99 merges into main.",
+        ):
             prose = "The next worker can take over. " + prerequisite
             for release in ("Released claim 1\n\n" + prose, prose + "\n\nReleased claim 1"):
                 for retained in (False, True):
