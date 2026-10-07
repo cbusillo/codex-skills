@@ -663,8 +663,12 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
         rf"(?ims)^\s*(?:[-*]\s+)?Next action:\s*(.*?)(?=^\s*(?:[-*]\s+)?{STATUS_FIELD}:|\Z)", status,
     )
     def references(reference_text: str) -> dict[tuple[str, int], str | None]:
-        return {(ref.group(1) or ref.group(4) or repo, int(ref.group(3) or ref.group(5))): ref.group(2)
-                for ref in WAIT_REFERENCE.finditer(reference_text)}
+        found: dict[tuple[str, int], str | None] = {}
+        for ref in WAIT_REFERENCE.finditer(reference_text):
+            key = (ref.group(1) or ref.group(4) or repo, int(ref.group(3) or ref.group(5)))
+            if found.get(key) != "pull":
+                found[key] = ref.group(2)
+        return found
 
     def implements_issue(source_pull: dict[str, Any], source_repo: str) -> bool:
         return any(
@@ -706,7 +710,13 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
         text = str(issue.get("body") or "") + "\n" + "\n".join(str(comment.get("body") or "") for comment in comments)
         for (target_repo, number), kind in references(text).items():
             if kind != "pull":
-                continue
+                if target_repo.casefold() == repo.casefold() and number == issue["number"]:
+                    continue
+                target = read(f"repos/{target_repo}/issues/{number}")
+                if not isinstance(target, dict):
+                    raise AuditError("unreadable handoff issue")
+                if "pull_request" not in target:
+                    continue
             pull = read(f"repos/{target_repo}/pulls/{number}")
             if not isinstance(pull, dict):
                 raise AuditError("unreadable handoff pull")
@@ -835,9 +845,6 @@ def stale_wait_report(
                 row = active_merged_status(issue, repo, status, read=read)
                 if row:
                     rows.append(row)
-                    if not row["evidence_complete"]:
-                        errors.append({"number": number, "source": "active_status_timestamp",
-                                       "reason": "status_revision_unproven"})
             except AuditError:
                 errors.append({"number": number, "source": "active_linked_pr", "reason": "unavailable"})
             if (active and not parked_issue(issue)) or row:

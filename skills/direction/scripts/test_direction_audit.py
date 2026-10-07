@@ -1873,6 +1873,8 @@ def test_closeout_wait_preserves_real_holds_partial_stacks_and_unknown_history()
             return [{"body": "Source https://github.com/owner/catalog/pull/71"}]
         if path == "repos/owner/catalog/issues/3":
             return {"state": "open"}
+        if path == "repos/owner/catalog/issues/72":
+            return {"state": "open", "pull_request": {}}
         if "/pulls/" in path:
             return {"merged_at": "2026-10-06T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #3"}
         if path == "repos/owner/catalog":
@@ -1891,12 +1893,21 @@ def test_closeout_wait_preserves_real_holds_partial_stacks_and_unknown_history()
             value = fetch(args)
             return {**value, **change} if "/pulls/" in args[1] else value
         assert not module.stale_wait_report([row], "owner/catalog", fetch=incomplete)["items"]
-    def partial_stack(args: list[str]) -> Any:
+    for second_slice in ("https://github.com/owner/catalog/pull/72", "PR #72", "#72"):
+        def partial_stack(args: list[str]) -> Any:
+            value = fetch(args)
+            if "/comments?" in args[1]:
+                return value + [{"body": "Second slice " + second_slice}]
+            return {**value, "merged_at": None} if args[1].endswith("/pulls/72") else value
+        assert not module.stale_wait_report([row], "owner/catalog", fetch=partial_stack)["items"]
+    def repeated_reference(args: list[str]) -> Any:
         value = fetch(args)
         if "/comments?" in args[1]:
-            return value + [{"body": "Second slice https://github.com/owner/catalog/pull/72"}]
-        return {**value, "merged_at": None} if args[1].endswith("/pulls/72") else value
-    assert not module.stale_wait_report([row], "owner/catalog", fetch=partial_stack)["items"]
+            return value + [{"body": "Source PR #71 is handed off."}]
+        # A later shorthand mention must not erase the earlier explicit pull link.
+        assert not args[1].endswith("/issues/71")
+        return value
+    assert module.stale_wait_report([row], "owner/catalog", fetch=repeated_reference)["items"]
     for unavailable in (False, True):
         def unread(args: list[str]) -> Any:
             if "/comments?" in args[1]:
