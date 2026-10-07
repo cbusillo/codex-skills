@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import contextvars
+import errno
 import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
+import time
 import urllib.parse
 from pathlib import Path
 from typing import Any, Iterator
@@ -24,6 +28,9 @@ HELPER_IN_CATALOG = Path("skills/github/scripts/reconcile-runtime-checkout.py")
 SUCCESS_STATUSES = frozenset({"synchronized", "already_current", "not_applicable"})
 LANDING_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+RECONCILIATION_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "reconciliation_deadline", default=None,
+)
 UNSAFE_GIT_ENVIRONMENT = frozenset(
     {
         "GIT_ALTERNATE_OBJECT_DIRECTORIES",
@@ -49,6 +56,10 @@ class GitCommandError(RuntimeError):
         super().__init__(operation)
         self.operation = operation
         self.stderr = stderr.strip()
+
+
+class ReconciliationBusy(RuntimeError):
+    pass
 
 
 def parse_args() -> argparse.Namespace:
@@ -96,6 +107,44 @@ def main() -> int:
 
 
 def reconcile_runtime_checkout(
+    merged_worktree: Path,
+    expected_repo: str,
+    landing_sha: str | None,
+    *,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Use a bounded, nonblocking reconciliation for automatic session startup."""
+    token = RECONCILIATION_DEADLINE.set(
+        time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+    )
+    try:
+        receipt = _reconcile_runtime_checkout(merged_worktree, expected_repo, landing_sha)
+        deadline = RECONCILIATION_DEADLINE.get()
+        if deadline is not None and time.monotonic() >= deadline:
+            # A deadline still in force proves no fast-forward was started.
+            receipt["runtime_mutated"] = False
+            receipt["detail"] = None
+            return finish(receipt, "retryable", "runtime_catchup_timeout")
+        return receipt
+    except ReconciliationBusy:
+        receipt = base_receipt(landing_sha)
+        receipt["expected_repo"] = expected_repo
+        return finish(receipt, "blocked", "runtime_reconciliation_busy", applicable=True)
+    except GitCommandError as exc:
+        if timeout_seconds is None:
+            raise  # Preserve the manual/train caller's existing error handling.
+        receipt = base_receipt(landing_sha)
+        receipt["expected_repo"] = expected_repo
+        receipt["failed_operation"] = exc.operation
+        deadline = RECONCILIATION_DEADLINE.get()
+        if deadline is not None and time.monotonic() >= deadline:
+            return finish(receipt, "retryable", "runtime_catchup_timeout")
+        return finish(receipt, "failed", "unexpected_git_error")
+    finally:
+        RECONCILIATION_DEADLINE.reset(token)
+
+
+def _reconcile_runtime_checkout(
     merged_worktree: Path,
     expected_repo: str,
     landing_sha: str | None,
@@ -302,6 +351,14 @@ def reconcile_runtime_checkout(
                 receipt["blockers"] = pre_merge_blockers or ["runtime_head_changed"]
                 receipt["after_sha"] = pre_merge_sha
                 return finish(receipt, "blocked", "runtime_changed_before_fast_forward")
+
+            deadline = RECONCILIATION_DEADLINE.get()
+            if deadline is not None and deadline - time.monotonic() < 1:
+                receipt["after_sha"] = current_sha
+                return finish(receipt, "retryable", "deadline_before_fast_forward")
+            # Do not let the short network/read budget interrupt a checkout mutation
+            # or its postconditions. The existing per-command bound remains in effect.
+            RECONCILIATION_DEADLINE.set(None)
 
             try:
                 git_text(
@@ -628,10 +685,19 @@ def run_git(
     input_data: bytes | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     env = sanitized_git_environment()
+    deadline = RECONCILIATION_DEADLINE.get()
+    timeout = 120.0 if deadline is None else deadline - time.monotonic()
+    if timeout <= 0:
+        raise GitCommandError(args[0] if args else "git", "Reconciliation deadline expired")
+    if deadline is not None and args and args[0] == "fetch":
+        configured = run_git(repo, "config", "--get", "core.sshCommand", check=False)
+        ssh = env.get("GIT_SSH_COMMAND") or configured.stdout.decode().strip() or shlex.quote(env.get("GIT_SSH", "ssh"))
+        env["GIT_SSH_COMMAND"] = ssh + " -o BatchMode=yes"
     try:
         proc = subprocess.run(
             [
                 "git",
+                "--no-optional-locks",
                 "-c",
                 f"core.hooksPath={os.devnull}",
                 "-c",
@@ -644,7 +710,7 @@ def run_git(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
-            timeout=120,
+            timeout=timeout,
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
@@ -674,7 +740,13 @@ def reconciliation_lock(common_dir: Path) -> Iterator[None]:
         if os.name == "posix":
             import fcntl
 
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            flags = fcntl.LOCK_EX
+            if RECONCILIATION_DEADLINE.get() is not None:
+                flags |= fcntl.LOCK_NB
+            try:
+                fcntl.flock(lock_file.fileno(), flags)
+            except BlockingIOError as exc:
+                raise ReconciliationBusy from exc
         elif os.name == "nt":
             import msvcrt
 
@@ -683,7 +755,13 @@ def reconciliation_lock(common_dir: Path) -> Iterator[None]:
                 lock_file.write(b"\0")
                 lock_file.flush()
             lock_file.seek(0)
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            mode = msvcrt.LK_NBLCK if RECONCILIATION_DEADLINE.get() is not None else msvcrt.LK_LOCK
+            try:
+                msvcrt.locking(lock_file.fileno(), mode, 1)
+            except OSError as exc:
+                if mode == msvcrt.LK_NBLCK and exc.errno in {errno.EACCES, errno.EDEADLK}:
+                    raise ReconciliationBusy from exc
+                raise
         else:
             raise OSError("Unsupported platform for runtime reconciliation locking")
         try:

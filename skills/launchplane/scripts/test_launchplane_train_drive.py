@@ -473,6 +473,49 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         self.assertEqual(outcome, "failed")
         self.assertEqual(events[-1][1]["blocking_reason"], reason)
 
+    def test_another_pull_request_block_is_reported_without_failing_target(self) -> None:
+        for block_result in ({}, {"status": "blocked", "pull_request_number": 2, "train_should_continue": False}):
+            with self.subTest(block_result=block_result):
+                train = FakeTrain([_response(
+                    "block", dry_run_result={"selected_pr": {"number": 2}, "next_action_detail": "Required checks failed."},
+                    block_result=block_result,
+                )])
+                outcome, events = _drive(train)
+                stop = events[-1][1]
+                self.assertEqual(outcome, "needs_owner")
+                self.assertEqual(stop["reason"], "another pull request is blocking the train")
+                self.assertEqual(stop["blocking_pull_request_number"], 2)
+                self.assertEqual(stop["tracked_pull_request_number"], 7)
+                self.assertEqual(stop["block_detail"], "Required checks failed.")
+                self.assertEqual(train.calls, 1)
+
+    def test_applied_other_pr_block_continues_only_when_policy_allows(self) -> None:
+        train = FakeTrain([
+            _response("block", dry_run_result={"selected_pr": {"number": 2}},
+                      block_result={"status": "blocked", "pull_request_number": 2, "train_should_continue": True}),
+            _response("plan_candidate"), _response("land_batch"),
+        ], merge_after={7: 3})
+        outcome, events = _drive(train)
+        self.assertEqual((outcome, train.calls), ("landed", 3))
+        self.assertTrue(any(event == "pr_blocked" and data["pull_request_number"] == 2 for event, data in events))
+
+    def test_own_block_and_mismatched_block_receipt_never_allow_continuation(self) -> None:
+        for selected in (7, 2):
+            with self.subTest(selected=selected):
+                train = FakeTrain([_response(
+                    "block", dry_run_result={"selected_pr": {"number": selected}},
+                    block_result={"status": "blocked", "pull_request_number": 7, "train_should_continue": True},
+                )])
+                outcome, _ = _drive(train)
+                self.assertEqual(outcome, "failed" if selected == 7 else "needs_owner")
+                self.assertEqual(train.calls, 1)
+
+    def test_unsupported_stack_root_is_not_assumed_unrelated_to_child(self) -> None:
+        outcome, _ = _drive(FakeTrain([_response(
+            "stack_unsupported", dry_run_result={"selected_pr": {"number": 2}},
+        )]))
+        self.assertEqual(outcome, "failed")
+
     def test_a_block_on_batch_checks_still_running_waits_for_them(self) -> None:
         waiting = {"code": "batch_pull_request_checks_not_ready", "message": "checks running"}
         train = FakeTrain(
