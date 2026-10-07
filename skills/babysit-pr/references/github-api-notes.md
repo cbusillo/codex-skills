@@ -24,9 +24,11 @@ owns adaptive cadence and budget behavior. This is still polling;
 Launchplane owns the event-driven
 follow-up under launchplane#2374.
 
-If a reader exhausts its retry budget or deadline, or refuses authentication,
-the watcher emits a terminal `read_error` JSON event with the shared API result
-and exits with status 1. This includes failure of the initial PR metadata helper.
+An uncaught shared transport failure emits a terminal `read_error` JSON event
+with the API result and exits with status 1. This includes retry-budget/deadline
+exhaustion, authentication refusals, and structured failure envelopes from the
+initial PR metadata helper. Invalid response shapes and local helper-launch or
+JSON parsing failures retain their existing exception handling.
 Inspect its failure cause and retry diagnostics before resuming; the watch loop
 adds no retries or identity fallback. Optional check and review-readiness reads
 may instead expose incomplete evidence in a snapshot; that evidence cannot

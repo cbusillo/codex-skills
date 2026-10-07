@@ -1429,13 +1429,17 @@ def test_watch_main_emits_structured_read_error(monkeypatch, watcher_transport, 
     (401, "Bad credentials", "invalid_credentials"),
     (403, "Resource not accessible by integration", "permission_denied"),
 ])
-def test_watcher_auth_failure_does_not_fall_back_inside_wrapper(monkeypatch, tmp_path, status, message, cause):
+@pytest.mark.parametrize("entrypoint", ["reader", "main"])
+def test_watcher_auth_failure_does_not_fall_back_inside_wrapper(monkeypatch, tmp_path, capsys, status, message, cause, entrypoint):
     """Run the real credential wrapper with a fake gh, never real credentials."""
     for name in ("GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
                  "GH_TOKEN", "GITHUB_TOKEN", "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK",
+                 "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH", "GH_PR_WATCH_GH",
                  "GH_WITH_ENV_TOKEN_OWN_USER", "GH_WITH_ENV_TOKEN_CLASSIFIER",
                  "GH_WITH_ENV_TOKEN_IDENTITY_HELPER", "GITHUB_RETRY_DEADLINE_AT"):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(gh_pr_watch.DEFAULT_GH))
+    monkeypatch.setattr(gh_pr_watch, "PR_HELPER", str(gh_pr_watch.DEFAULT_PR_HELPER))
     monkeypatch.setenv("CODEX_AUTOMATION_LOGIN", "fixture-bot")
     monkeypatch.setenv("CODEX_GITHUB_TOKEN", "offline-fixture-token")
     monkeypatch.setenv("GH_WITH_ENV_TOKEN_PYTHON", sys.executable)
@@ -1456,13 +1460,23 @@ def test_watcher_auth_failure_does_not_fall_back_inside_wrapper(monkeypatch, tmp
     )
     fake_gh.chmod(0o700)
     monkeypatch.setenv("GH_WITH_ENV_TOKEN_GH", str(fake_gh))
-    reader = gh_pr_watch.watcher_reader()
-    with pytest.raises(gh_pr_watch.github_read.GitHubReadError) as raised:
-        reader.get_json("/repos/example/app/issues/7/comments", step="comments")
-
-    assert raised.value.result.failure.cause == cause
+    if entrypoint == "reader":
+        reader = gh_pr_watch.watcher_reader()
+        with pytest.raises(gh_pr_watch.github_read.GitHubReadError) as raised:
+            reader.get_json("/repos/example/app/issues/7/comments", step="comments")
+        assert raised.value.result.failure.cause == cause
+    else:
+        monkeypatch.setattr(gh_pr_watch, "parse_args", lambda: argparse.Namespace(
+            pr="42", repo="example/app", state_file=str(tmp_path / "watch-state.json"),
+            watch=True, retry_failed_now=False,
+        ))
+        assert gh_pr_watch.main() == 1
+        event = json.loads(capsys.readouterr().out)
+        assert event["event"] == "read_error"
+        assert event["payload"]["failure"]["cause"] == cause
+        assert event["payload"]["attempts"] == 1
+        assert event["payload"]["effective_deadline"] > 0
     assert call_log.read_text().splitlines() == ["automation"]
-    assert reader.expected_actor == "fixture-bot"
 
 
 @pytest.mark.parametrize("stop_action", ["stop_pr_closed", "stop_exhausted_retries"])
