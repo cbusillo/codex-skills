@@ -92,7 +92,7 @@ def conditional_release_prose(text: str, *, suffix: str) -> bool:
     successor_action = r"(?:pick (?:this|it) up|pick up (?:this|the) issue|takes? (?:(?:it|this) )?over|taking over|resumes?)"
     successor = rf"\b(?:{successor_action}|handoff (?:is )?complete[ds]?)\b"
     # An instruction about what to do on resumption does not defer ownership.
-    statements = [re.sub(rf"^(?:When|If) you {successor_action},\s*", "", statement,
+    statements = [re.sub(rf"^(?:When|If) you {successor_action},(?!\s*do so\b)\s*", "", statement,
                          flags=re.IGNORECASE) for statement in statements]
     required_step = r"\bmust\s+(?:be\s+)?(?:merge[ds]?|land(?:ed)?|pass(?:ed)?|finish(?:ed)?|complete[ds]?|green)\b"
     prerequisite = rf"{required_step}[^.!?;]*\bfirst\b|^First,?\s+[^.!?;]*{required_step}"
@@ -109,10 +109,14 @@ def conditional_release_prose(text: str, *, suffix: str) -> bool:
                             and re.search(ownership, statements[index + 1], re.IGNORECASE))
                         or (index + 1 < len(statements)
                             and (re.search(prerequisite, statement, re.IGNORECASE)
-                                 or re.match(r"(?:Hold|Wait)\b", statement.strip(), re.IGNORECASE)
+                                 or re.match(r"Hold\s+" + condition, statement.strip(), re.IGNORECASE)
+                                 or (re.match(r"(?:only\s+|not\s+)?" + condition, statement.strip(), re.IGNORECASE)
+                                     and "," not in statement)
                                  or (re.match(r"Then\b", statements[index + 1].strip(), re.IGNORECASE)
                                      and (re.match(r"(?:only\s+|not\s+)?" + condition, statement.strip(), re.IGNORECASE)
-                                          or re.match(r"(?:Hold|Wait)\b", statement.strip(), re.IGNORECASE))))
+                                          or re.match(r"Hold\s+" + condition, statement.strip(), re.IGNORECASE)
+                                 or (re.match(r"(?:only\s+|not\s+)?" + condition, statement.strip(), re.IGNORECASE)
+                                     and "," not in statement))))
                             and re.search(successor, statements[index + 1], re.IGNORECASE)))
                    for index, statement in enumerate(statements))):
         return True
