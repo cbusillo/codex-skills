@@ -12,7 +12,7 @@ resources:
     description: Read-only audit of DIRECTION.md against GitHub milestones, standard rulesets, escalations, and approval-gate text in open issues; for OWNER/direction, also merged pull requests per rank, reopened issues, and reverts.
   - path: scripts/direction_mark.py
     kind: script
-    description: Records the end of a daily turn in the local marker the session-start reminder reads; audits are stamped by the audit script itself.
+    description: Records the end of a daily turn in the local marker and the shared turn record the session-start reminder reads; audits are stamped by the audit script itself.
 commands:
   - name: direction-audit
     source: skill
@@ -157,8 +157,8 @@ reader; successful search does not prove access to every repository. Report an
 unavailable search or a count reaching the limit as incomplete, not an empty
 or complete list. This is one cross-repository list, with no
 per-repository reads or copied repository inventory. The daily marker records
-the starting repository covered; one turn clears the daily reminder on the
-whole machine, without claiming that other repositories were checked.
+the starting repository covered; one turn clears the daily reminder on every
+machine, without claiming that other repositories were checked.
 
 A **weekly audit** is the full session repeated once per
 adopted repository, all from one session and one checkout: for each
@@ -184,6 +184,11 @@ End every daily turn by recording the starting repository it covered:
 uv run <skill-dir>/scripts/direction_mark.py turn --repo OWNER/REPO
 ```
 
+It writes the local marker, then keeps the shared turn record current: one
+open issue titled "Daily direction turns" in the covered repository account's
+`OWNER/direction`, written through the automation helpers. Exit 2 means the
+local turn was recorded but the shared record was not, so other machines keep
+reminding; report its `shared.error` to the Director.
 Only the direction agent runs that, at the end of a turn the Director took part
 in; an executing agent that runs it clears a reminder the Director never acted
 on. Weekly audits are not marked by hand. The audit script stamps its own
@@ -215,8 +220,12 @@ ran; otherwise reinsert just the removed audit entries, retaining newer stamps.
 The catalog's session-start hook reads that marker on every host and opens a
 session with one line when the last turn is more than a day old, or when the
 repository the session opened in has a `DIRECTION.md` whose last audit is
-more than a week old. The turn is one habit shared across repositories; the
-audit is per repository, and a fresh audit of one never silences another. A
+more than a week old. While this machine's own turn is more than a day old,
+it reads the shared turn record (in `OWNER/direction` for the account this
+machine last covered, else for the repository the session opened in) and uses
+a newer turn found there. When that record cannot be read, it says the turn is
+unconfirmed rather than overdue. Audits stay per machine. The turn is one
+habit shared across repositories; the audit is per repository, and a fresh audit of one never silences another. A
 reminder that will not clear means the marker was not written where the hook
 reads it; the reminder names the path. The marker is one file for every host,
 `~/.code/direction-last-check.json` unless `DIRECTION_MARKER` names another,

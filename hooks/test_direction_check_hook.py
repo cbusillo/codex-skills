@@ -314,5 +314,59 @@ class OverallDirectionTests(unittest.TestCase):
         self.assertIn("error connecting to api.github.com", text)
 
 
+class SharedTurnTests(unittest.TestCase):
+    """The hook consults the shared turn record only when this machine's turn is stale."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.tmp)], check=False))
+        self.calls = self.tmp / "calls"
+
+    def reader(self, issues: object = None, error: str | None = None) -> Path:
+        script = self.tmp / "reader"
+        (self.tmp / "issues.json").write_text(json.dumps(issues))
+        action = f"echo '{error}' >&2; exit 1" if error else f'cat "{self.tmp / "issues.json"}"'
+        script.write_text(f'#!/bin/sh\necho "$@" >> "{self.calls}"\n{action}\n')
+        script.chmod(0o755)
+        return script
+
+    def seen(self, local: dict[str, object], reader: Path) -> dict[str, object]:
+        with mock.patch.object(hook, "GH_READER", reader):
+            return hook.with_shared_turn(local, NOW, "owner/product")
+
+    @staticmethod
+    def record(stamp: str, **issue: object) -> dict[str, object]:
+        body = f"{hook.TURN_RECORD_TAG}\nLast daily turn: {stamp} covering owner/start\n"
+        return {"number": 1, "body": body, "author_association": "OWNER", "user": {"type": "User"}, **issue}
+
+    def test_a_current_turn_costs_no_read(self) -> None:
+        local = marker(ago(hours=2))
+        self.assertIs(self.seen(local, self.reader([])), local)
+        self.assertFalse(self.calls.exists())
+
+    def test_the_record_lives_with_this_machines_last_coverage(self) -> None:
+        local = {**marker(ago(days=2)), "turn_repo": "director/start"}
+        self.seen(local, self.reader([]))
+        self.assertIn("repos/director/direction/issues", self.calls.read_text())
+
+    def test_no_record_keeps_the_overdue_reminder(self) -> None:
+        seen = self.seen(marker(ago(days=2)), self.reader([]))
+        self.assertIn("Direction check overdue: the last direction turn was 2 days ago", hook.reminder(seen, NOW, None, MARKER))
+
+    def test_an_untrusted_or_older_record_does_not_clear_it(self) -> None:
+        forged = self.record("2026-09-22T11:00:00Z", author_association="NONE")
+        older = self.record("2026-09-19T11:00:00Z", number=2)
+        seen = self.seen(marker(ago(days=2)), self.reader([forged, older]))
+        self.assertEqual(seen["turn"], ago(days=2))
+
+    def test_unreadable_record_is_reported_without_claiming_overdue(self) -> None:
+        seen = self.seen(marker(None, owner__repo=ago(days=9)), self.reader(error="gh: Not Found (HTTP 404)"))
+        text = hook.reminder(seen, NOW, "owner/repo", MARKER)
+        self.assertIn("this machine has recorded no direction turn", text)
+        self.assertIn("owner/direction could not be read (GitHub read failed: gh: Not Found (HTTP 404))", text)
+        self.assertNotIn("no direction turn has been recorded", text)
+        self.assertIn("Direction check overdue: the last weekly audit of owner/repo was 9 days ago", text, "audits stay per machine")
+
+
 if __name__ == "__main__":
     unittest.main()
