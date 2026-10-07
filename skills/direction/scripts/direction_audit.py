@@ -631,6 +631,8 @@ def closed_wait_prerequisite(target: dict[str, Any]) -> bool:
 def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
                          read: Callable[[str], Any]) -> dict[str, Any] | None:
     """A merge makes an old status suspect, never proves the finish line."""
+    # Normalize field emphasis without rewriting reference URLs or body text.
+    status = re.sub(rf"(?m)^(\s*(?:[-*]\s+)?)(?:\*\*|__)({STATUS_FIELD}:)(?:\*\*|__)", r"\1\2", status)
     next_action = re.search(
         rf"(?ims)^\s*(?:[-*]\s+)?Next action:\s*(.*?)(?=^\s*(?:[-*]\s+)?{STATUS_FIELD}:|\Z)", status,
     )
@@ -701,11 +703,21 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
         reason = match[2].strip()
         hold_pending |= not (github_plan_claim.no_wait_reason(reason, field="Waiting for")
                              or github_direction_next.non_external_wait(reason))
+    for match in re.finditer(
+        rf"(?ims)^\s*(?:[-*]\s+)?(?:State|Validation):\s*(.*?)(?=^\s*(?:[-*]\s+)?{STATUS_FIELD}:|\Z)", status,
+    ):
+        text = re.sub(r"\bno (?:failed|pending)(?:[ /]+(?:failed|pending))* (?:checks|workflows)\b", "", match[1], flags=re.I)
+        hold_pending |= bool(re.search(r"\b(?:pending|awaiting|remaining|remainder|split|not yet)\b", text, re.I))
     timestamp_required = delivery and implements and not hold_pending
+    # The implementation is already merged even when later activity prevents
+    # proving the body age. Withhold only delivery-only instructions for review;
+    # this does not prove completion or release a recorded hold.
+    if not timestamp_proven and not timestamp_required:
+        return None
     return {"number": issue["number"], "title": issue.get("title"),
             "url": f"https://github.com/{repo}/issues/{issue['number']}", "evidence": evidence,
             "review_required": True, "completion_proven": False,
-            "selection_exclusion": timestamp_required and timestamp_proven,
+            "selection_exclusion": timestamp_required,
             "recorded_hold_pending": hold_pending,
             "evidence_complete": timestamp_proven or not timestamp_required}
 

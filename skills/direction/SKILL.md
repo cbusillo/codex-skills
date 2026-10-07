@@ -318,7 +318,10 @@ closed, relabeled, or released automatically. Active records with PRs named in C
 merged into the default branch after their GitHub `updated_at` carry
 `merged_active_pr` evidence and `completion_proven: false`. Newer comments or
 edits can prevent that timestamp proof; otherwise-excludable delivery records carry
-`status_revision_unproven` coverage and never establish completion. When the recorded next
+`status_revision_unproven` coverage and never establish completion. These
+delivery-only records are withheld from implementation selection for finish-line
+review even when body age is unproven; the PR itself is confirmed merged.
+Healthy remainders updated after their source merge produce no active warning. When the recorded next
 action consists only of routing or landing and bookkeeping, and that PR
 references this issue as implemented work, `selection_exclusion` keeps local
 and global `next` from assigning duplicate implementation. Split remainders,

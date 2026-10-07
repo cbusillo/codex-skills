@@ -1559,7 +1559,7 @@ def test_active_merged_status_preserves_split_remainders_and_unproven_delivery()
             for n, title, body, updated in (
                 (1, "Runner recovery already delivered", status, old),
                 (2, "Split remainder still needs runtime proof", status.replace("Supervisor routes PR #71 through the merge train, verifies landing, closes this issue.", "Test the split remainder after PR #71; source delivery alone does not meet the finish line."), old),
-                (3, "Status refreshed after landing", status, "2026-10-06T05:00:00Z"),
+                (3, "Later comment with obsolete landing action", status, "2026-10-06T05:00:00Z"),
                 (4, "Missing timestamp is unproven", status, None),
                 (5, "Partial stack", status.replace("PR #71", "PR #71 and PR #72"), old),
                 (6, "Unrelated merged PR only in historical context", "## Evidence\nPR #71 merged.\n## Current Status\nNext action: Implement the consumer.\n", old),
@@ -1583,6 +1583,7 @@ def test_active_merged_status_preserves_split_remainders_and_unproven_delivery()
     assert set(found) == {1, 2, 3, 4}
     assert found[1]["selection_exclusion"] and not found[2]["selection_exclusion"]
     assert not found[3]["evidence_complete"] and not found[4]["evidence_complete"]
+    assert found[3]["selection_exclusion"] and found[4]["selection_exclusion"]
     assert {row["number"] for row in report["unavailable"]} == {3, 4}
     assert all(row["review_required"] and not row["completion_proven"] for row in found.values())
     assert calls.count("repos/owner/catalog/pulls/71") == 1
@@ -1593,7 +1594,7 @@ def test_active_merged_status_preserves_split_remainders_and_unproven_delivery()
             return {**value, "merged_at": merged, "base": {"ref": base}} if "/pulls/" in args[1] else value
         report = module.stale_wait_report([row], "owner/catalog", fetch=unproven)
         if base == "main" and merged is not None:
-            assert not report["complete"] and not report["items"][0]["selection_exclusion"]
+            assert not report["complete"] and report["items"][0]["selection_exclusion"]
         else:
             assert not report["items"]
     def unavailable(_args: list[str]) -> Any:
@@ -1691,11 +1692,13 @@ def test_healthy_remainders_and_person_holds_do_not_create_false_coverage_gaps()
                 return ({"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #1"}
                         if "/pulls/" in args[1] else {"state": "closed", "pull_request": {}})
             report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
-            found = report["items"][0]
-            assert not found["selection_exclusion"] and not found["completion_proven"]
             needs_proof = action.startswith("Supervisor") and waiting == "None."
             assert report["complete"] is not needs_proof
-            assert found["recorded_hold_pending"] is (waiting != "None.")
+            if needs_proof:
+                assert report["items"][0]["selection_exclusion"]
+                assert not report["items"][0]["completion_proven"]
+            else:
+                assert not report["items"]
             row["updated_at"] = "2026-10-04T12:00:00Z"
             report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
             assert report["complete"]
@@ -1780,6 +1783,23 @@ def test_stale_reference_waits_preserve_start_metadata_and_real_holds() -> None:
         assert report["complete"] and [entry["number"] for entry in report["items"]] == [41]
         held = {**row, "body": row["body"] + "\nBlocked by: Chris's contract signature."}
         assert not module.stale_wait_report([held], "owner/catalog", fetch=fetch)["items"]
+
+
+def test_active_pending_and_bold_person_holds_preserve_remaining_work() -> None:
+    module = load()
+    for before in ("State: Source complete; staging readback still pending after landing.\n",
+                   "**Waiting for:** Chris to confirm on the phone.\n",
+                   "__Blocked by:__ Client acceptance.\n"):
+        row = {**issue(1, "Unfinished acceptance", labels=("plan:active",),
+                       body="## Current Status\n" + before + "Next action: Supervisor lands PR #71 and closes this issue.\n"),
+               "updated_at": "2026-10-04T12:00:00Z"}
+        def fetch(args: list[str]) -> Any:
+            if args[1] == "repos/owner/catalog":
+                return {"default_branch": "main"}
+            return ({"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #1"}
+                    if "/pulls/" in args[1] else {"state": "closed", "pull_request": {}})
+        found = module.stale_wait_report([row], "owner/catalog", fetch=fetch)["items"][0]
+        assert found["recorded_hold_pending"] and not found["selection_exclusion"] and not found["completion_proven"]
 
 
 def main() -> int:
