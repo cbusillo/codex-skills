@@ -3830,6 +3830,13 @@ def _project_success_output(
             provider_payload.get("records"), {"product_profile", "context", "instance"}
         )
         return records, _project_testing_hold_plan(provider_payload.get("result"))
+    if operation in {"health-monitoring-dry-run", "health-monitoring-apply"}:
+        records = _project_records(
+            provider_payload.get("records"), {"product_profile", "context", "instance", "health_check"}
+        )
+        return records, _project_health_monitoring_plan(
+            provider_payload.get("result"), request=request or {}
+        )
     if operation in {"product-repository-identity-dry-run", "product-repository-identity-apply"}:
         records = _project_records(
             provider_payload.get("records"), {"product_profile", "repository_inventory"}
@@ -3996,6 +4003,14 @@ def summarize_success(
                 if operation == "integration-allowances-dry-run"
                 else "Check read_back_matches. The allowances take effect at the lane's next "
                 "integration read-back."
+            )
+        elif operation in {"health-monitoring-dry-run", "health-monitoring-apply"}:
+            summary["plan_sha256"] = result.get("plan_sha256")
+            summary["recommendation"] = (
+                "Save and review this dry-run output, then apply the same arguments with "
+                "--expected-plan-digest."
+                if operation.endswith("dry-run")
+                else "Check read_back_matches and endpoint_preserved before relying on the policy."
             )
         elif operation in {"testing-hold-dry-run", "testing-hold-apply"}:
             summary["plan_sha256"] = result.get("plan_sha256")
@@ -5123,6 +5138,220 @@ def _required_argument(args: argparse.Namespace, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field}_required")
     return value.strip()
+
+
+HEALTH_MONITORING_KINDS = {"public_http", "private_http"}
+HEALTH_MONITORING_INTENTS = {"public", "private", "prelaunch"}
+HEALTH_MONITORING_PLAN_FIELDS = {
+    "status", "mode", "product", "context", "instance", "check_name", "current_check_kind",
+    "requested_check_kind", "current_monitoring_intent", "requested_monitoring_intent",
+    "operation", "current_enabled", "requested_enabled", "current_require_runtime_identity",
+    "requested_require_runtime_identity", "private_endpoint_key", "resolved_url", "changed",
+    "applied", "reason", "source_label", "profile_updated_at_before", "profile_updated_at_after",
+    "profile_sha256_before", "plan_sha256",
+}
+
+
+def _health_check_token(name: str) -> str:
+    # The service matches check names using this normalized record token.
+    return "".join(char if char.isalnum() else "-" for char in name.strip().lower()).strip("-")
+
+
+def health_monitoring_body(
+    args: argparse.Namespace, *, mode: str
+) -> tuple[dict[str, object], dict[str, object]]:
+    body: dict[str, object] = {
+        "schema_version": 1, "mode": mode,
+        **{field: _required_argument(args, field) for field in (
+            "product", "context", "instance", "check_name", "reason",
+        )},
+        "check_kind": args.check_kind, "monitoring_intent": args.monitoring_intent,
+        "enabled": args.enabled, "require_runtime_identity": args.require_runtime_identity,
+        "private_endpoint_key": args.private_endpoint_key.strip(),
+    }
+    for field in ("product", "context", "instance", "check_name"):
+        if not PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(cast(str, body[field])):
+            raise ValueError(f"invalid_{field}")
+    if body["private_endpoint_key"] and not PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(
+        cast(str, body["private_endpoint_key"])
+    ):
+        raise ValueError("invalid_private_endpoint_key")
+    if body["check_kind"] == "public_http" and body["private_endpoint_key"]:
+        raise ValueError("public_check_rejects_private_endpoint")
+    if body["check_kind"] == "private_http" and body["enabled"] and not body["private_endpoint_key"]:
+        raise ValueError("private_endpoint_key_required")
+    if not body["enabled"] and body["require_runtime_identity"]:
+        raise ValueError("disabled_check_rejects_runtime_identity")
+    request: dict[str, object] = {
+        "mode": mode, "payload_source": "operator_argument",
+        "payload_digest": metadata_review_digest(body),
+        **{field: public_identifier(body[field]) for field in (
+            "product", "context", "instance", "check_name",
+        )},
+        **{field: body[field] for field in (
+            "check_kind", "monitoring_intent", "enabled", "require_runtime_identity",
+        )},
+    }
+    if mode == "apply":
+        digest = _reviewed_apply_digest(args)
+        evidence, reviewed = _load_reviewed_evidence(
+            args, operation="health-monitoring-dry-run", expected_digest=digest,
+        )
+        if (
+            evidence["request"] != {**request, "mode": "dry-run"}
+            or reviewed.get("applied") is not False
+            or any(reviewed.get(field) != body[field] for field in ("product", "context", "instance"))
+            or _health_check_token(str(reviewed.get("check_name", ""))) != _health_check_token(args.check_name)
+            or any(reviewed.get("requested_" + field) != body[field] for field in (
+                "check_kind", "monitoring_intent", "enabled", "require_runtime_identity",
+            ))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(reviewed.get("endpoint_sha256", "")))
+        ):
+            raise ValueError("reviewed_dry_run_not_apply_eligible")
+        body["reviewed_plan_sha256"] = digest
+    return body, request
+
+
+def _project_health_monitoring_plan(
+    value: object, *, request: dict[str, object]
+) -> dict[str, object]:
+    source = _require_dict(value)
+    if source.keys() - HEALTH_MONITORING_PLAN_FIELDS:
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    mode = _reviewed_plan_mode(source.get("mode"))
+    if (
+        source.get("status") != "ok" or mode != request.get("mode")
+        or source.get("operation") not in {"create", "update", "unchanged"}
+        or source.get("current_check_kind") not in HEALTH_MONITORING_KINDS | {None}
+        or source.get("current_monitoring_intent") not in HEALTH_MONITORING_INTENTS
+        or source.get("applied") is not (mode == "apply")
+        or type(source.get("changed")) is not bool
+        or any(type(source.get(field)) is not bool for field in (
+            "requested_enabled", "requested_require_runtime_identity",
+        ))
+        or not isinstance(source.get("resolved_url"), str)
+        or any(source.get(field) != request.get(field) for field in ("product", "context", "instance"))
+        or _health_check_token(str(source.get("check_name", ""))) != _health_check_token(str(request.get("check_name", "")))
+        or any(source.get("requested_" + field) != request.get(field) for field in (
+            "check_kind", "monitoring_intent", "enabled", "require_runtime_identity",
+        ))
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "status": "ok", "mode": mode, "operation": source["operation"],
+        **{field: public_identifier(source.get(field)) for field in (
+            "product", "context", "instance", "check_name",
+        )},
+        **{field: source[field] for field in (
+            "requested_check_kind", "current_monitoring_intent", "requested_monitoring_intent",
+            "requested_enabled", "requested_require_runtime_identity", "changed", "applied",
+        )},
+        "current_check_kind": source.get("current_check_kind"),
+        "current_enabled": _optional_bool(source.get("current_enabled")),
+        "current_require_runtime_identity": _optional_bool(source.get("current_require_runtime_identity")),
+        "endpoint_sha256": _canonical_sha256(source["resolved_url"]),
+        "plan_sha256": _required_lower_sha256(source.get("plan_sha256"), code="invalid_response"),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def read_health_monitoring(
+    *, settings: dict[str, str], body: dict[str, object], timeout: float
+) -> tuple[dict[str, object], dict[str, object]]:
+    provider = request_launchplane_read(
+        service_url=settings["service_url"], settings=settings, query={}, timeout=timeout,
+        path=_product_read_path("product-profile-read", product=cast(str, body["product"])),
+    )
+    profile = _require_dict(provider.get("profile"))
+    if provider.get("status") != "ok" or profile.get("product") != body["product"]:
+        raise LaunchplaneSafetyError("invalid_response")
+    lanes = profile.get("lanes")
+    if not isinstance(lanes, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    matches = [lane for lane in lanes if isinstance(lane, dict) and all(
+        lane.get(field) == body[field] for field in ("context", "instance")
+    )]
+    if len(matches) != 1:
+        raise LaunchplaneSafetyError("invalid_response")
+    lane = matches[0]
+    policy = _require_dict(lane.get("health_monitoring"))
+    checks = policy.get("checks")
+    if not isinstance(checks, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    matches = [check for check in checks if isinstance(check, dict) and
+               _health_check_token(str(check.get("name", ""))) == _health_check_token(cast(str, body["check_name"]))]
+    if len(matches) > 1:
+        raise LaunchplaneSafetyError("invalid_response")
+    check = matches[0] if matches else {}
+    endpoint = {"url": check.get("url", ""), "health_url": lane.get("health_url", ""),
+                "base_url": lane.get("base_url", ""), "private_endpoint_key": check.get("private_endpoint_key", "")}
+    if not all(isinstance(value, str) for value in endpoint.values()):
+        raise LaunchplaneSafetyError("invalid_response")
+    public = {
+        "monitoring_intent": policy.get("monitoring_intent"), "kind": check.get("kind"),
+        "enabled": check.get("enabled"), "require_runtime_identity": check.get("require_runtime_identity"),
+    }
+    if (
+        public["monitoring_intent"] not in HEALTH_MONITORING_INTENTS
+        or (check and (public["kind"] not in HEALTH_MONITORING_KINDS
+                      or type(public["enabled"]) is not bool
+                      or type(public["require_runtime_identity"]) is not bool))
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    assert_public_safe_shape(public)
+    return public, endpoint
+
+
+def execute_health_monitoring_apply(
+    *, args: argparse.Namespace, body: dict[str, object], request: dict[str, object]
+) -> int:
+    _, reviewed = _load_reviewed_evidence(
+        args, operation="health-monitoring-dry-run", expected_digest=cast(str, body["reviewed_plan_sha256"]),
+    )
+    before: dict[str, object] = {}
+
+    def preflight(settings: dict[str, str]) -> dict[str, object] | None:
+        _policy, endpoint = read_health_monitoring(settings=settings, body=body, timeout=args.timeout)
+        resolved_url = (endpoint["url"] or endpoint["health_url"] or endpoint["base_url"]) if body["check_kind"] == "public_http" else ""
+        if _canonical_sha256(resolved_url) != reviewed["endpoint_sha256"]:
+            return {"error_code": "health_endpoint_changed_since_review",
+                    "recommendation": "The endpoint changed since review; run a new dry-run."}
+        before.update(endpoint)
+        return None
+
+    def finish(settings: dict[str, str], _provider: dict[str, Any], payload: dict[str, Any]) -> bool:
+        result = payload["result"]
+        applied_as_reviewed = (result["plan_sha256"] == body["reviewed_plan_sha256"]
+                               and result["endpoint_sha256"] == reviewed["endpoint_sha256"])
+        if not applied_as_reviewed:
+            payload["warnings"].append(warning("applied_plan_differs_from_review", "The applied monitoring plan differs from review."))
+
+        def read() -> dict[str, object]:
+            policy, endpoint = read_health_monitoring(settings=settings, body=body, timeout=args.timeout)
+            # A new private check may adopt its reviewed registered key. Public URLs,
+            # including an empty stored URL with lane fallback, stay byte-for-byte unchanged.
+            expected_endpoint = {**before}
+            if body["check_kind"] == "private_http" and body["private_endpoint_key"]:
+                expected_endpoint["private_endpoint_key"] = body["private_endpoint_key"]
+            return {**policy, "endpoint_preserved": endpoint == expected_endpoint}
+
+        verified = attach_read_back(
+            payload, read=read, label="health monitoring policy",
+            matches=lambda observed: observed["endpoint_preserved"] is True and all(
+                observed[field] == body[target] for field, target in (
+                    ("monitoring_intent", "monitoring_intent"), ("kind", "check_kind"),
+                    ("enabled", "enabled"), ("require_runtime_identity", "require_runtime_identity"),
+                )
+            ),
+        )
+        return applied_as_reviewed and verified
+
+    return execute_verified_apply(
+        args=args, operation="health-monitoring-apply", request=request, body=body,
+        path=helper_command_path("health-monitoring-apply"), preflight=preflight,
+        finish=finish, label="health monitoring policy",
+    )
 
 
 def testing_hold_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
@@ -8598,6 +8827,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Private saved JSON output from the reviewed integration-allowances dry-run.",
     )
 
+    for command in ("health-monitoring-dry-run", "health-monitoring-apply"):
+        monitoring = subparsers.add_parser(command, help="Plan or apply one lane's health monitoring check, preserving its endpoint.")
+        for argument in ("--product", "--context", "--instance", "--check-name", "--reason"):
+            monitoring.add_argument(argument, required=True)
+        monitoring.add_argument("--check-kind", choices=sorted(HEALTH_MONITORING_KINDS), required=True)
+        monitoring.add_argument("--monitoring-intent", choices=sorted(HEALTH_MONITORING_INTENTS), required=True)
+        monitoring.add_argument("--enabled", action=argparse.BooleanOptionalAction, required=True)
+        monitoring.add_argument("--require-runtime-identity", action=argparse.BooleanOptionalAction, required=True)
+        monitoring.add_argument("--private-endpoint-key", default="")
+        _add_reviewed_apply_arguments(monitoring, apply=command.endswith("-apply"))
+
     testing_hold_read = subparsers.add_parser(
         "testing-hold-read",
         help="Read a testing lane's staff-testing hold.",
@@ -9226,6 +9466,15 @@ def main(argv: list[str]) -> int:
             }
             return execute_product_read(
                 args=args, operation=args.command, request=request, path=path
+            )
+        if args.command in {"health-monitoring-dry-run", "health-monitoring-apply"}:
+            mode = "apply" if args.command.endswith("-apply") else "dry-run"
+            body, request = health_monitoring_body(args, mode=mode)
+            if mode == "apply":
+                return execute_health_monitoring_apply(args=args, body=body, request=request)
+            return execute_post(
+                args=args, operation=args.command, path=helper_command_path(args.command),
+                request=request, body=body,
             )
         if args.command in {"testing-hold-dry-run", "testing-hold-apply"}:
             mode = "apply" if args.command == "testing-hold-apply" else "dry-run"
