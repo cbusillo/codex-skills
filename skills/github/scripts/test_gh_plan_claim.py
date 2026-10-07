@@ -1701,6 +1701,15 @@ class ClaimTests(unittest.TestCase):
             "Released claim 1. Effective on merge of PR #99.",
             "Released claim 1. Wait for PR #99 to merge, then claim.",
             "Released claim 1\n\nThe next worker may claim as soon as CI is green.",
+            "Released claim 1. Takes effect upon merge of PR #99.",
+            "Released claim 1. Takes effect on merging PR #99.",
+            "Released claim 1. Effective post-merge.",
+            "Released claim 1. Takes effect at merge.",
+            "Released claim 1. Only after PR #99 merges.",
+            "Released claim 1. Only once CI passes.",
+            "Released claim 1. Not until PR #99 merges.",
+            "Released claim 1\n\nWait for PR #99 to merge. Then the next worker may claim.",
+            "Released claim 1\n\nIf CI passes:\n\n- the next worker may claim.",
         )
         for release in releases:
             for retained in (False, True):
@@ -1745,6 +1754,7 @@ class ClaimTests(unittest.TestCase):
             "Handoff: PR #99 and #100. Supervisor owns routing after CI passes; "
             "keep the worktree until landing. No consumer work before the Owner decision.",
             "Released claim 1. Session ended when context ran out.\nHandoff: PR #99 and #100.",
+            "Released claim 1. Effective immediately.\nHandoff: PR #99 and #100.",
             "Released claim 1. Worktree kept until landing.\nHandoff: PR #99 and #100.",
             "Released claim 1\n\nHandoff: PR #99 and #100.\n\n"
             "After PR #99 lands, close out the issue.\nWhen resuming, rebase onto main.",

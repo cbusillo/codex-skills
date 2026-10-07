@@ -90,11 +90,16 @@ def released_claim_id(text: str) -> int | None:
         handoff = re.sub(r"(?s)<!--.*?-->", "", suffix + "\n" + "\n".join(text.splitlines()[1:]))
         prose = ownership_text(handoff)
         statements = re.split(r"(?<=[.!?;])\s+|\n[ \t]*\n", prose)
-        if (re.match(condition, ownership_text(suffix), re.IGNORECASE)
+        ownership = r"\b(?:releases?|claims?|claiming|reclaim(?:ing)?|ownership|takes? effect|effective)\b"
+        effective = r"\b(?:takes? effect|effective)\b(?!\s+(?:now|immediately)\b)"
+        if (re.match(r"(?:only\s+|not\s+)?" + condition, ownership_text(suffix), re.IGNORECASE)
+                or re.search(effective, ownership_text(suffix), re.IGNORECASE)
                 or any(re.search(condition, statement, re.IGNORECASE)
-                       and re.search(r"\b(?:releases?|claims?|claiming|reclaim(?:ing)?|ownership|takes? effect|effective)\b",
-                                     statement, re.IGNORECASE)
-                       for statement in statements)):
+                       and (re.search(ownership, statement, re.IGNORECASE)
+                            or (index + 1 < len(statements)
+                                and re.match(r"(?:only\s+|not\s+)?" + condition, statement.strip(), re.IGNORECASE)
+                                and re.search(ownership, statements[index + 1], re.IGNORECASE)))
+                       for index, statement in enumerate(statements))):
             return None
         return int(match.group(1))
     text = "\n".join(line if line.strip() else "" for line in text.splitlines())
