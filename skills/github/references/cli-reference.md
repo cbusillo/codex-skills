@@ -556,6 +556,9 @@ merges`, `The next worker can pick this up once CI is green`, or
 `PR #99 must merge first. Then the next worker may claim` does not release the
 claim. Conditional successor actions (pick this up, resume, take over) and
 handoff completion are checked across the handoff for both release placements.
+An adjacent prerequisite after successor permission also refuses, such as
+`The next worker can take over. PR #99 must merge first.` or a standalone
+`Wait until PR #99 merges.` following that permission.
 Downstream routing and cleanup gates, such as `After PR #99 lands, close out
 the issue`, remain independent. Recover ambiguous conditional handoffs with a
 new, unconditional first-line exact-ID release from the source author after

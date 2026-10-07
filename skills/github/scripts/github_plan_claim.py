@@ -107,11 +107,15 @@ def conditional_release_prose(text: str, *, suffix: str) -> bool:
         if (re.search(ownership, statement, re.IGNORECASE)
                 or re.search(successor, statement, re.IGNORECASE)):
             return True
+        prerequisite_step = re.search(prerequisite, statement, re.IGNORECASE)
+        standalone_wait = re.fullmatch(r"Wait\s+until\b[^,;]*", statement.strip(), re.IGNORECASE)
+        if (index > 0 and (prerequisite_step or standalone_wait)
+                and re.search(successor, statements[index - 1], re.IGNORECASE)):
+            return True
         if index + 1 == len(statements):
             continue
         following = statements[index + 1].strip()
         starts_condition = re.match(r"(?:only\s+|not\s+)?" + condition, statement.strip(), re.IGNORECASE)
-        prerequisite_step = re.search(prerequisite, statement, re.IGNORECASE)
         if re.search(ownership, following, re.IGNORECASE) and (starts_condition or prerequisite_step):
             return True
         sequences_next = (re.match(r"Then\b", following, re.IGNORECASE)

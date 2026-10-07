@@ -1904,6 +1904,66 @@ class ClaimTests(unittest.TestCase):
                 self.run_claim()
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
+    def test_reversed_successor_prerequisites_preserve_and_recover_claims(self):
+        for prerequisite in ("PR #99 must merge first.", "Wait until PR #99 merges."):
+            prose = "The next worker can take over. " + prerequisite
+            for release in ("Released claim 1\n\n" + prose, prose + "\n\nReleased claim 1"):
+                for retained in (False, True):
+                    with self.subTest(release=release, retained=retained):
+                        self.setUp()
+                        if retained:
+                            self.released_status_fixture(release)
+                        else:
+                            self.comments = [
+                                {"id": 1, "body": CLAIM.marker(OTHER), "created_at": "2026-10-01T00:00:00Z",
+                                 "user": {"login": TEST_BOT}},
+                                {"id": 2, "body": release, "created_at": "2026-10-01T00:01:00Z",
+                                 "user": {"login": TEST_BOT}},
+                            ]
+                        with self.assertRaises(PLAN.PlanError):
+                            self.run_claim()
+                        self.assert_no_writes()
+                        recovery_id = len(self.comments) + 1
+                        self.comments.append({"id": recovery_id, "body": "Released claim 1. Source session finished.",
+                                              "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
+                        self.run_claim()
+                        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_reversed_successor_permission_keeps_downstream_actions_usable(self):
+        for downstream in (
+            "After PR #99 merges, close out the issue.",
+            "Wait until PR #99 merges, then close out the issue.",
+            "Keep the worktree until PR #99 merges.",
+        ):
+            prose = "The next worker can take over. " + downstream
+            for release in ("Released claim 1\n\n" + prose, prose + "\n\nReleased claim 1"):
+                with self.subTest(release=release):
+                    self.setUp()
+                    self.comments = [
+                        {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
+                        {"id": 2, "body": release, "user": {"login": TEST_BOT}},
+                    ]
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_reversed_successor_refresh_requires_unconditional_handoff(self):
+        for prerequisite in ("PR #99 must merge first.", "Wait until PR #99 merges."):
+            with self.subTest(prerequisite=prerequisite):
+                self.setUp()
+                self.refresh_fixture()
+                self.comments[2]["body"] = (
+                    "Released claim 1\n\nThe next worker can take over. " + prerequisite + "\nHandoff: PR #99 and #100."
+                )
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+                self.comments.append({"id": 4, "body": "Released claim 1\n\nThe next worker can take over. "
+                                      "Wait until PR #99 merges, then close out the issue.\nHandoff: PR #99 and #100.",
+                                      "user": {"login": TEST_BOT}})
+                self.args.handoff_comment = 4
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
     def test_unconditional_successor_actions_keep_downstream_gates_usable(self):
         handoffs = (
             "The next worker can pick this up now.",
