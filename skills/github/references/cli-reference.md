@@ -559,6 +559,11 @@ handoff completion are checked across the handoff for both release placements.
 An adjacent prerequisite after successor permission also refuses, such as
 `The next worker can take over. PR #99 must merge first.` or a standalone
 `Wait until PR #99 merges.` following that permission.
+The exact release directive also supplies implicit permission for an adjacent
+standalone prerequisite: `Released claim 1. PR #99 must merge first.` refuses,
+as does `PR #99 must merge first.` immediately before a final release paragraph.
+Resuming permission and standalone `Wait until CI finishes`, `Please wait until
+PR #99 merges`, and `Hold off until PR #99 merges` prerequisites are checked too.
 Downstream routing and cleanup gates, such as `After PR #99 lands, close out
 the issue`, remain independent. Recover ambiguous conditional handoffs (including
 destination/action wording such as `merges to deploy`) with a

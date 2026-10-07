@@ -89,14 +89,19 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     handoff = re.sub(r"(?s)<!--.*?-->", "", text)
     prose = ownership_text(handoff)
     prose = re.sub(r"(?m)^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", "", prose)
-    statements = re.split(r"(?<=[.!?;])\s+|\n[ \t]*\n", prose)
+    statements = [statement.strip() for statement in re.split(r"(?<=[.!?;])\s+|\n[ \t]*\n", prose) if statement.strip()]
     ownership = r"\b(?:releases?|claims?|claiming|reclaim(?:ing)?|ownership|takes? effect|effective)\b"
-    successor_action = r"(?:pick (?:this|it) up|pick up (?:this|the) issue|takes? (?:(?:it|this) )?over|taking over|resumes?)"
+    successor_action = r"(?:pick (?:this|it) up|pick up (?:this|the) issue|takes? (?:(?:it|this) )?over|taking over|resumes?|resuming)"
     successor = rf"\b(?:{successor_action}|handoff (?:is )?complete[ds]?)\b"
     # An instruction about what to do on resumption does not defer ownership.
-    statements = [re.sub(rf"^(?:When|If) you {successor_action},(?![^.!?;]*\bdo so\b)\s*", "", statement,
+    resumption_instruction = rf"^(?:(?:When|If) you {successor_action}|(?:When|If|After|Once) resuming),(?![^.!?;]*\bdo so\b)\s*"
+    instruction_indexes = {index for index, statement in enumerate(statements)
+                           if re.match(resumption_instruction, statement, re.IGNORECASE)}
+    statements = [re.sub(resumption_instruction, "", statement,
                          flags=re.IGNORECASE) for statement in statements]
-    step = r"(?:merge[ds]?|land(?:s|ed)?|pass(?:es|ed)?|finish(?:ed)?|complete[ds]?|green)"
+    step = r"(?:merge[ds]?|land(?:s|ed)?|pass(?:es|ed)?|finish(?:es|ed)?|complete[ds]?|green)"
+    wait_prefix = r"(?:Wait|Hold(?:\s+off)?)\s+"
+    wait_condition = rf"(?:Please\s+)?(?:{wait_prefix})?(?:only\s+|not\s+)?{condition}"
     required_step = rf"\bmust\s+(?:be\s+)?{step}\b"
     prerequisite = rf"{required_step}[^.!?;]*\bfirst\b|^First,?\s+[^.!?;]*{required_step}"
     effective = r"\b(?:takes? effect|effective)\b(?!\s+(?:now|immediately)\b)"
@@ -115,15 +120,19 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
         prerequisite_step = re.search(prerequisite, statement, re.IGNORECASE)
         standalone_prerequisite = re.fullmatch(rf"[^.!?;]*(?:{prerequisite})[.!?;]?", statement.strip(), re.IGNORECASE)
         standalone_condition = re.fullmatch(
-            rf"(?:(?:Hold|Wait)\s+)?(?:only\s+|not\s+)?{condition}[^,;.!?]*\b{step}(?:\s+(?:into|to|on)\s+[\w/-]+)?(?:\s+first)?[.!?;]?",
+            rf"{wait_condition}[^,;.!?]*\b{step}(?:\s+(?:into|to|on)\s+[\w/-]+)?(?:\s+first)?[.!?;]?",
             statement.strip(), re.IGNORECASE,
         )
         following = statements[index + 1].strip() if index + 1 < len(statements) else ""
         downstream_next = (re.match(r"Then\b", following, re.IGNORECASE)
                            and not re.search(rf"{ownership}|{successor}", following, re.IGNORECASE))
         downstream_step = re.search(rf"\b{step}\b[^.!?;]*\b(?:before|to)\s+(?:you\s+)?{step}\b", statement, re.IGNORECASE)
-        if (index > 0 and (standalone_prerequisite or standalone_condition) and not (downstream_next or downstream_step)
-                and re.search(rf"{ownership}|{successor}", statements[index - 1], re.IGNORECASE)):
+        # The directive itself supplies permission at its adjacent prose edge.
+        directive_adjacent = index == (len(statements) - 1 if final_paragraph else 0)
+        prior_permission = index > 0 and re.search(rf"{ownership}|{successor}", statements[index - 1], re.IGNORECASE)
+        if (index not in instruction_indexes and (standalone_prerequisite or standalone_condition)
+                and not (downstream_next or downstream_step)
+                and (directive_adjacent or prior_permission)):
             return True
         if index + 1 == len(statements):
             continue
@@ -133,7 +142,7 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
         sequences_next = (re.match(r"Then\b", following, re.IGNORECASE)
                           and (starts_condition or re.search(required_step, statement, re.IGNORECASE)))
         if ((prerequisite_step or sequences_next
-             or re.match(r"(?:Hold|Wait)\s+" + condition, statement.strip(), re.IGNORECASE)
+             or re.match(rf"(?:Please\s+)?(?:{wait_prefix}{condition}|wait(?:ing)? for\b)", statement.strip(), re.IGNORECASE)
              or (starts_condition and "," not in statement))
                 and re.search(successor, following, re.IGNORECASE)):
             return True
