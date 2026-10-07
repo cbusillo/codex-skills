@@ -78,7 +78,7 @@ def record_response(
     quota = {name: _integer(headers.get(f"x-ratelimit-{name}")) for name in ("limit", "remaining", "reset", "used")}
     caller = pathlib.Path(os.environ.get("GITHUB_REQUEST_CALLER") or sys.argv[0]).name
     session = (os.environ.get("GITHUB_REQUEST_SESSION") or os.environ.get("CODEX_THREAD_ID")
-               or os.environ.get("CLAUDE_SESSION_ID"))
+               or os.environ.get("CLAUDE_CODE_SESSION_ID"))
     if session and not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", session):
         session = None
     receipt = {
@@ -151,9 +151,14 @@ def report(
     windows: dict[tuple[str, str, str, str, int], dict[str, Any]] = {}
     sessions: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
     roots = list(dict.fromkeys(path.expanduser().resolve() for path in (state_dirs or [state_dir()])))
+    ledger_coverage = []
     seen: set[tuple[str, str, str]] = set()
     duplicates = unattributed = files_read = missing_files = unreadable = 0
-    for root in roots:
+    for index, root in enumerate(roots):
+        covered_files = files_read
+        absent_files = missing_files
+        covered_errors = unreadable
+        directory_present = (root / "request-usage").is_dir()
         for hour in range(int(since // 3600), int(timestamp // 3600) + 1):
             path = root / "request-usage" / f"requests-{hour}.jsonl"
             try:
@@ -167,6 +172,11 @@ def report(
                                 continue
                             if actor and str(item.get("actor") or "").casefold() != actor.casefold():
                                 continue
+                            status = item["status"]
+                            cost = item.get("primary_requests")
+                            if (not isinstance(status, int) or not isinstance(item.get("quota") or {}, dict)
+                                or (cost is not None and (not isinstance(cost, int) or cost < 0))):
+                                raise ValueError("invalid receipt")
                             key = tuple(str(item.get(field) or "unknown") for field in (
                                 "helper", "operation", "repository", "host", "actor", "bucket"
                             ))
@@ -196,6 +206,11 @@ def report(
                 continue
             except OSError:
                 unreadable += 1
+        ledger_coverage.append({
+            "directory_index": index, "status": "available" if directory_present else "missing_or_unavailable",
+            "files_read": files_read - covered_files, "missing_files": missing_files - absent_files,
+            "unreadable_records": unreadable - covered_errors,
+        })
     consumers = [dict(zip(("helper", "operation", "repository", "host", "actor", "bucket"), key), **tally)
                  for key, tally in tallies.items()]
     consumers.sort(key=lambda item: (-item["primary_requests"], -item["http_requests"], item["helper"]))
@@ -203,10 +218,12 @@ def report(
             "coverage": "instrumented HTTP attempts only; lower bound",
             "state_directory_count": len(roots), "files_read": files_read,
             "missing_files": missing_files,
+            "ledger_coverage": ledger_coverage,
             "duplicate_records": duplicates, "unreadable_records": unreadable, "consumers": consumers,
             "quota_windows": sorted(windows.values(), key=lambda item: (item["reset"], item["host"], item["actor"], item["owner"], item["bucket"])),
             "sessions": [dict(session=session, **counts) for session, counts in sorted(sessions.items())],
             "unattributed_requests": unattributed,
+            "quota_window_scope": "owner groups describe App installations; shared user-token peaks must not be added across owners",
             "session_ceiling": None,
             "ceiling_reason": "receipts do not prove complete fleet traffic or concurrent working-session and controller counts"}
 

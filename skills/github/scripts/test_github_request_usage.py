@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/usage-fixture.env"
 os.environ["CODEX_AUTOMATION_LOGIN"] = "fixture-bot"
+os.environ["GH_WITH_ENV_TOKEN_EXPECTED_LOGIN"] = "fixture-bot"
 
 import github_api
 import github_read
@@ -197,9 +198,11 @@ class UsageTests(unittest.TestCase):
         ledger = next(pathlib.Path(self.directory.name).rglob("*.jsonl"))
         record = json.loads(ledger.read_text())
         record.pop("session")
-        ledger.write_text(json.dumps(record) + '\n{"timestamp":\n')
+        broken_record = {**record, "quota": ["corrupt"]}
+        ledger.write_text(json.dumps(record) + '\n{"timestamp":\n' + json.dumps(broken_record) + '\n')
         result = usage.report(since=0, now=1100)
-        self.assertEqual((result["unreadable_records"], result["unattributed_requests"]), (1, 1))
+        self.assertEqual((result["unreadable_records"], result["unattributed_requests"]), (2, 1))
+        self.assertEqual(sum(row["http_requests"] for row in result["consumers"]), 1)
         self.assertEqual(result["sessions"], [])
         self.assertIsNone(result["session_ceiling"])
 
@@ -212,6 +215,28 @@ class UsageTests(unittest.TestCase):
         result = json.loads(output.stdout)
         self.assertEqual((result["state_directory_count"], result["files_read"]), (1, 1))
         self.assertEqual(sum(row["http_requests"] for row in result["consumers"]), 1)
+
+    def test_missing_input_directory_is_distinguished_from_a_sparse_ledger(self):
+        usage.record_response(method="GET", path="/repos/example/app", status=200, headers={},
+                              operation="github.read", actor="fixture-bot", now=1000)
+        root = pathlib.Path(self.directory.name)
+        result = usage.report(since=0, now=8000, state_dirs=[root, root / "missing"])
+        available, absent = result["ledger_coverage"]
+        self.assertEqual((available["status"], available["files_read"]), ("available", 1))
+        self.assertEqual((absent["status"], absent["files_read"]), ("missing_or_unavailable", 0))
+        self.assertNotIn(str(root), json.dumps(result))
+
+    def test_claude_native_attribution_and_background_driver_inheritance(self):
+        with patch.dict(os.environ, {"GITHUB_REQUEST_SESSION": "", "CODEX_THREAD_ID": "",
+                                   "CLAUDE_CODE_SESSION_ID": "claude-native"}):
+            usage.record_response(method="GET", path="/repos/example/app", status=200, headers={},
+                                  operation="github.read", actor="fixture-bot", now=1000)
+            with patch.dict(os.environ, {"GITHUB_REQUEST_CALLER": "launchplane-train-drive.py"}):
+                usage.record_response(method="GET", path="/repos/example/app", status=200, headers={},
+                                      operation="github.train.drive", actor="fixture-bot", now=1001)
+        result = usage.report(since=0, now=1100)
+        self.assertEqual(result["sessions"], [{"session": "claude-native", "http_requests": 2, "primary_requests": 2}])
+        self.assertEqual(len(result["consumers"]), 2)
 
 
 if __name__ == "__main__":

@@ -119,20 +119,27 @@ ledgers (or privately collected copies); explicit directories replace the defaul
 Copied receipts with the same host, actor and GitHub request ID count once.
 Records without IDs cannot be deduplicated. Missing files, unreadable records,
 and the number of files read are reported as coverage evidence.
+`ledger_coverage` separates each input directory by its index in the supplied
+list, without exposing private paths, and flags absent receipt directories.
 
 `quota_windows` groups response-header observations by host, actor, repository
 owner, quota bucket and reset epoch. Its peak `max_used` includes spending by
 other clients of that installation; local `primary_requests` remains the
 instrumented subset. The first/last observation times expose partial windows.
 These peaks are not interval-end totals and cannot attribute the unobserved
-spending to a controller. Unknown repository owners stay separate. Prefer these
-headers over a conflicting `/rate_limit` result, as
+spending to a controller. Unknown repository owners stay separate. Use these
+App-oriented owner groups only for installation quotas; a PAT or user token's
+quota can span owners, so its repeated peaks must not be added together. Prefer
+response headers over a conflicting `/rate_limit` result, as
 [GitHub documents](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#checking-the-status-of-your-rate-limit).
 
 New receipts optionally carry a private session identifier from
-`GITHUB_REQUEST_SESSION`, then `CODEX_THREAD_ID` or `CLAUDE_SESSION_ID` when
+`GITHUB_REQUEST_SESSION`, then `CODEX_THREAD_ID` or `CLAUDE_CODE_SESSION_ID` when
 available. The report lists attributed counts and unattributed requests; a
 distinct receipt session is not proof of a simultaneously working session.
+Background watchers and train drivers inherit their launching session's ID
+unless explicitly attributed with `GITHUB_REQUEST_SESSION`; their traffic is
+still identified separately by helper and operation in the consumer rows.
 `session_ceiling` remains null: declaring fleet capacity requires a timed load
 with verified concurrency, controller traffic and quota-window coverage.
 
