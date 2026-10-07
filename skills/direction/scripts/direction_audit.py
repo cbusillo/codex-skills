@@ -855,7 +855,6 @@ def stale_wait_report(
         status = next((text for title, text in sections.items() if title.casefold() == "current status"), "")
         normalized_status = re.sub(r"\*\*(Waiting for)(:?)\*\*(:?)", r"\1\2\3", status, flags=re.I)
         if (active and not parked_issue(issue)) or agent_delivery_wait(normalized_status, repo, number):
-            row = None
             try:
                 row = active_merged_status(issue, repo, status, read=read)
                 if row and parked_issue(issue) and row["recorded_hold_pending"]:
