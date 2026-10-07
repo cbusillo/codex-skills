@@ -737,6 +737,10 @@ class AccountChoiceTests(unittest.TestCase):
             path.write_text(ACCOUNTS_TOML.replace('provider = "anthropic"', 'provider = "openai"'))
             with self.assertRaisesRegex(ValueError, "must set CODEX_HOME"):
                 account_choice.load_config(env={"CODE_HOME": folder}, home=Path("/nowhere"))
+            for key in ("CODEX_HOME", "CLAUDE_CONFIG_DIRS"):
+                path.write_text(ACCOUNTS_TOML.replace("CLAUDE_CONFIG_DIR", key))
+                with self.subTest(key=key), self.assertRaisesRegex(ValueError, "must set CLAUDE_CONFIG_DIR"):
+                    account_choice.load_config(env={"CODE_HOME": folder}, home=Path("/nowhere"))
 
     def test_default_claude_profile_can_be_selected_by_use_next_or_name(self):
         config = accounts_config(ACCOUNTS_TOML.replace(
@@ -771,16 +775,12 @@ class TerminalTests(unittest.TestCase):
             fake_claude = Path(folder) / "claude"
             fake_claude.write_text('#!/bin/sh\nprintf "%s\\n" "${CLAUDE_CONFIG_DIR+set}" "$1"\n')
             fake_claude.chmod(0o700)
-            for launch_env in ({}, {"EXTRA_FLAG": "some value"}):
-                with self.subTest(env=launch_env):
-                    command = iterm_tab.with_account(
-                        f'cd / && {shlex.quote(str(fake_claude))} brief', {**choice, "env": launch_env}
-                    )
-                    launched = subprocess.run(
-                        ["/bin/sh", "-c", command], capture_output=True, text=True, check=True,
-                        env={**os.environ, "CLAUDE_CONFIG_DIR": "/inherited/alternate"},
-                    )
-                    self.assertEqual(launched.stdout.splitlines(), ["", "brief"])
+            command = iterm_tab.with_account(f'cd / && {shlex.quote(str(fake_claude))} brief', choice)
+            launched = subprocess.run(
+                ["/bin/sh", "-c", command], capture_output=True, text=True, check=True,
+                env={**os.environ, "CLAUDE_CONFIG_DIR": "/inherited/alternate"},
+            )
+            self.assertEqual(launched.stdout.splitlines(), ["", "brief"])
         with self.assertRaisesRegex(ValueError, "already sets CLAUDE_CONFIG_DIR"):
             iterm_tab.with_account("env CLAUDE_CONFIG_DIR=/other claude", choice)
 

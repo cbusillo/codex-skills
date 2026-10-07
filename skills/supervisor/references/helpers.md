@@ -164,10 +164,12 @@ env = {}
 ```
 
 Codex accounts must set `CODEX_HOME` to the account's home. Claude Code
-accounts set `CLAUDE_CONFIG_DIR` for an alternate profile or omit it for the
-default profile (`env = {}`). The launcher unsets an inherited
+accounts set `CLAUDE_CONFIG_DIR` for an alternate profile or use `env = {}`
+for the default profile. A nonempty env must include the provider's variable.
+The launcher unsets an inherited
 `CLAUDE_CONFIG_DIR` for the default profile; setting it to `~/.claude` selects
-an alternate profile, not the default. The helper never reads credentials and never changes a
+an alternate profile, not the default. The helper never reads credentials and
+never changes a
 login, including the desktop app's.
 
 ## Finished-session shutdown stages
