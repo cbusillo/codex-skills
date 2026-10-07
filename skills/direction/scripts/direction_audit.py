@@ -17,6 +17,7 @@ import json
 import os
 import pathlib
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -131,6 +132,7 @@ def audit(
     repo: str | None = None,
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
+    wait_findings: dict[tuple[str, int], dict[str, Any]] = {}
     limits: list[dict[str, Any]] = []
     milestone_additions: list[dict[str, Any]] = []
     audit_since = audit_since or now - dt.timedelta(days=7)
@@ -243,6 +245,19 @@ def audit(
                 if closed and audit_since <= closed <= now:
                     findings.append({"kind": "audit_judge", "number": number, "title": issue.get("title"), "closed_at": issue.get("closed_at")})
         milestone_title = str(((issue.get("milestone") or {}).get("title")) or "")
+        for finding in issue.get("_milestone_wait_findings", []):
+            wait_findings[(finding["repo"].casefold(), finding["number"])] = finding
+        if (state == "open" and milestone_title in listed
+                and not str(issue.get("title", "")).startswith("Track:")):
+            compact = github_direction_next.compact_list_issue(str(issue.get("repo") or owner), issue)
+            compact["plan_status"] = issue.get("_plan_status")
+            if compact["plan_status"] == "waiting":
+                compact["exclusion"] = "waiting"
+            status = github_direction_next.section_map(issue.get("body") or "").get("Current Status", "")
+            checked = github_direction_next.check_milestone_wait(compact, status, listed)
+            if checked.get("wait_finding"):
+                finding = checked["wait_finding"]
+                wait_findings[(finding["repo"].casefold(), finding["number"])] = finding
         added = issue.get("_milestone_added")
         added_at = _parse_time((added or {}).get("at"))
         if (added and milestone_title in milestone_lines and added["by"] != owner.lower()
@@ -261,6 +276,7 @@ def audit(
         if phrases and issue.get("state", "open") == "open":
             findings.append({"kind": "gate_phrase", "number": number, "title": issue.get("title"), "phrases": phrases})
 
+    findings.extend(wait_findings.values())
     if capacity is not None:
         if capacity["rank_map"] is None:
             findings.append({"kind": "rank_map_missing", "detail": f"{RANK_MAP_PATH} not found on the default branch; every repository is unranked"})
@@ -284,6 +300,7 @@ def audit(
         "milestone_creator": 7,
         "gate_phrase": 9,
         "waiting_blocks_other_repository": 8,
+        "milestone_wait_invalid": 8,
         "rank_map_missing": 10,
         "repository_unranked": 10,
         "own_share_below_floor": 10,
@@ -646,7 +663,7 @@ def stale_wait_report(
         evidence: list[dict[str, Any]] = []
         unread = False
         fields: list[tuple[str, str]] = []
-        status_field = r"(?:State|Next action|Blocked by|Waiting for|Parked until|Last verified|Validation|Evidence|Retention|Recovery|Worker|Session|Branch)"
+        status_field = r"(?:State|Next action|Blocked by|Waiting for|Parked until|Waiting since|Last verified|Validation|Evidence|Retention|Recovery|Worker|Session|Branch)"
         entries = re.split(rf"(?im)(?=^\s*(?:[-*]\s+)?{status_field}:)", status)
         unknown_context = False
         for entry in entries:
@@ -684,6 +701,7 @@ def stale_wait_report(
             errors.append({"number": number, "source": "native_blockers", "reason": "unavailable"})
 
         for field, reason in fields:
+            reason = github_direction_next.undated_wait_reason(reason)
             # Reuse the claim helper's explicit no-wait semantics. Match the
             # whole agent phrase so a continued approval clause stays a hold.
             if github_plan_claim.no_wait_reason(reason, field="Waiting for"):
@@ -799,7 +817,74 @@ def fetch_audit_issues(
         truncated.append("milestone_issue_events")
     if enrich_waiting_inbound_blockers(issues, repo, fetch=fetch):
         truncated.append("waiting_inbound_blockers")
+    if enrich_milestone_waits(issues, repo, list(milestone_lines), fetch=fetch,
+                              completed_titles=[item["title"] for item in milestones if item.get("state") == "closed"]):
+        truncated.append("milestone_waits")
     return issues, truncated
+
+
+def planning_config(repo: str) -> dict[str, Any]:
+    """Read labels through their owning helper, including its local overrides."""
+    return runpy.run_path(str(GITHUB_SCRIPTS / "gh-plan.py"))["load_config"](repo)
+
+
+def enrich_milestone_waits(
+    issues: list[dict[str, Any]], repo: str, titles: list[str], *, fetch: Callable[[list[str]], Any],
+    completed_titles: list[str] | None = None,
+) -> bool:
+    """Use the selection graph for overall Tracks; local audits check assigned work."""
+    seeds = {(repo.casefold(), item["number"]): item for item in issues}
+    for item in issues:
+        item["repo"] = repo
+    incomplete = False
+    configs: dict[str, dict[str, Any]] = {}
+
+    def config(target_repo: str) -> dict[str, Any]:
+        if target_repo not in configs:
+            configs[target_repo] = planning_config(target_repo)
+        return configs[target_repo]
+
+    for item in issues:
+        item["_plan_status"] = github_direction_next.next_plan_status(item, config(repo))
+
+    def read_node(target_repo: str, number: int) -> dict[str, Any]:
+        nonlocal incomplete
+        try:
+            raw = seeds.get((target_repo.casefold(), number))
+            if raw is None:
+                raw = fetch(["api", f"repos/{target_repo}/issues/{number}", "--method", "GET"])
+            relations: dict[str, list[dict[str, Any]]] = {}
+            for field, endpoint in (("blocked_by", "dependencies/blocked_by"), ("sub_issues", "sub_issues")):
+                values, cut = fetch_paginated(f"repos/{target_repo}/issues/{number}/{endpoint}", fetch=fetch, max_pages=2)
+                if cut:
+                    raise AuditError("milestone wait relationships truncated")
+                refs = []
+                for value in values:
+                    url = str(value.get("html_url") or "")
+                    match = re.search(r"github\.com/([^/]+/[^/]+)/issues/(\d+)", url)
+                    if not match or value.get("state") not in {"open", "closed"}:
+                        raise AuditError("milestone wait relationship identity unknown")
+                    refs.append({"repo": match.group(1), "number": int(match.group(2)),
+                                 "url": url, "state": value["state"]})
+                relations[field] = refs
+            return github_direction_next.evaluate_direction_node({**raw, "repo": target_repo}, config=config(target_repo),
+                                                                  focus=None, relationships=relations)
+        except AuditError:
+            incomplete = True
+            return {"item": {"repo": target_repo, "number": number,
+                             "url": f"https://github.com/{target_repo}/issues/{number}",
+                             "exclusion": "unknown_dependencies"}}
+
+    if github_direction_next.is_direction_repository(repo):
+        roots = [{**github_direction_next.compact_list_issue(repo, item), "milestone": item.get("milestone")}
+                 for item in issues if item.get("state", "open") == "open" and "pull_request" not in item]
+        graph = github_direction_next.rank_direction_work(roots, milestone_titles=titles, read_node=read_node,
+                                                          scan_limit=MAX_ADMISSION_ISSUES, completed_milestone_titles=completed_titles)
+        target = next((item for item in issues if "pull_request" not in item), None)
+        if target is not None:
+            target["_milestone_wait_findings"] = graph["findings"]
+        incomplete |= not graph["dependency_context"]["complete"]
+    return incomplete
 
 
 def parse_rank_map(text: str) -> dict[str, str]:

@@ -12,6 +12,7 @@ writes, owner-specific routing, or authorization decisions.
 from __future__ import annotations
 
 import hashlib
+import datetime as dt
 import json
 import re
 from collections.abc import Callable
@@ -88,6 +89,101 @@ def section_map(body: str) -> dict[str, str]:
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
         sections[name] = body[start:end].strip()
     return sections
+
+
+def undated_wait_reason(reason: str) -> str:
+    """Keep explicit wait-start metadata separate from the pending condition."""
+    return re.sub(r";\s*since\s+\d{4}-\d{2}-\d{2}(?:T\S+)?$", "", reason.strip().rstrip(" ."), flags=re.I)
+
+
+def unnamed_wait_reason(reason: str) -> bool:
+    plain = re.sub(r"[`*]", "", undated_wait_reason(reason)).casefold().rstrip(" .")
+    return not plain or no_current_wait(plain) or plain in {"tbd", "unknown", "not recorded", "testing", "people"}
+
+
+def milestone_order_wait(reason: str, milestone_titles: list[str]) -> bool:
+    """Match only milestone ordering, preserving any additional person/event hold."""
+    plain = re.sub(r"[`*]", "", undated_wait_reason(reason)).casefold().replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+    completion = r"(?:\s+(?:(?:(?:to\s+)?(?:be\s+)?)?(?:finish(?:ed|es)?|complete(?:d|s)?|land(?:ed|s)?|end(?:ed|s)?|ship(?:ped|s)?|close(?:d|s)?|wraps?\s+up)|(?:is|are)\s+(?:done|complete)))?"
+    generic = r"(?:the\s+)?(?:another|other|earlier|previous|next)\s+milestones?" + completion
+    if re.fullmatch(generic, plain):
+        return True
+    if not milestone_titles:
+        return False
+    title = "(?:" + "|".join(re.escape(value.casefold()) for value in milestone_titles) + ")"
+    milestone = r"(?:milestones?\s+)?(?:the\s+)?['\"]?" + title + r"['\"]?(?:\s+milestone)?" + completion
+    prefix = r"(?:(?:starts?|starting)\s+)?(?:(?:after|until|following|once)\s+)?(?:[\w.-]+/direction\s+)?"
+    return re.fullmatch(prefix + milestone + r"(?:\s+and\s+" + milestone + ")*", plain) is not None
+
+
+def milestone_wait_evidence(item: dict[str, Any], status_text: str, milestone_titles: list[str]) -> dict[str, Any]:
+    """Validate the recorded wait, leaving person/event interpretation to review."""
+    status_text = re.sub(r"<!--.*?-->", "", status_text, flags=re.DOTALL)
+    status_text = re.sub(r"\*\*(Waiting for|Parked until|Blocked by|Waiting since)(:?)\*\*(:?)", r"\1\2\3", status_text, flags=re.IGNORECASE)
+    rows = waiting_records(item, status_text)
+    pending = [row for row in rows if not row["no_current_wait"]]
+    valid_pending = [row for row in pending
+                     if not unnamed_wait_reason(row["waiting_for"])
+                     and not milestone_order_wait(row["waiting_for"], milestone_titles)]
+    other_holds = [match[1].strip() for match in re.finditer(r"(?im)^\s*(?:[-*]\s+)?Blocked by:\s*([^\n]+)", status_text)
+                   if not github_plan_claim.no_wait_reason(match[1], field="Blocked by")]
+    if rows:
+        other_holds.extend(match[1].strip() for match in re.finditer(
+            r"(?im)^\s*(?:[-*]\s+)?State:\s*(?:waiting on|waiting for|awaiting|parked until)\s+([^\n]+)", status_text))
+    for hold in other_holds:
+        suffix = re.search(r"\bwaiting for\s+(.+)", hold, re.I)
+        hold = suffix[1] if suffix else hold
+        if not unnamed_wait_reason(hold) and not milestone_order_wait(hold, milestone_titles):
+            valid_pending.append({"waiting_for": hold})
+    reason = (valid_pending or pending or rows or [{"waiting_for": ""}])[0]["waiting_for"]
+    if not reason or no_current_wait(reason):
+        fallback = re.search(r"(?im)^[ \t]*(?:[-*][ \t]+)?Blocked by:[^\n]*?\bwaiting for[ \t]+([^\n]*)", status_text)
+        if fallback:
+            reason = fallback.group(1).strip()
+    requested = bool((reason and not no_current_wait(reason)) or item.get("exclusion") == "waiting"
+                     or item.get("plan_status") == "waiting"
+                     or re.search(r"(?im)^\s*(?:[-*]\s+)?State:\s*(?:waiting|parked)\b", status_text))
+    invalid = None
+    if unnamed_wait_reason(reason):
+        invalid = "wait_names_no_person_or_event"
+    elif milestone_order_wait(reason, milestone_titles):
+        invalid = "wait_names_another_milestone"
+    # updated_at is evidence of when the record was observed, not a fabricated
+    # start date. Only an explicit since field establishes how long it waited.
+    since = re.search(r"(?im)^[ \t]*(?:[-*][ \t]+)?Waiting since:[ \t]*([^\n]+)", status_text)
+    if since is None:
+        since = re.search(r"(?:^|;\s*)since\s+(\d{4}-\d{2}-\d{2}(?:T\S+)?)", reason, re.IGNORECASE)
+    start = since.group(1).strip().rstrip(".,;") if since else None
+    if start:
+        dated_note = re.match(r"^(\d{4}-\d{2}-\d{2})(?:\s+.*)?$", start)
+        if dated_note:
+            start = dated_note.group(1)
+    if start:
+        try:
+            dt.datetime.fromisoformat(start)
+        except ValueError:
+            start = None
+    return {"requested": requested, "valid": invalid is None, "reason": invalid,
+            "waiting_for": reason, "since": start,
+            "recorded_at": item.get("updated_at")}
+
+
+def check_milestone_wait(item: dict[str, Any], status_text: str, milestone_titles: list[str]) -> dict[str, Any]:
+    if item.get("plan_status") in {"blocked", "stale", "done"} or item.get("exclusion") in {"completed", "stale_needs_review", "unknown_dependencies", "unknown_ancestry", "label_blocked_without_native_edge", "tracking", "tracking_without_open_work", "pull_request"}:
+        return item
+    evidence = milestone_wait_evidence(item, status_text, milestone_titles)
+    if not evidence["requested"] or evidence["valid"]:
+        return item
+    finding = {"kind": "milestone_wait_invalid", "repo": item["repo"], "number": item["number"],
+               "url": item["url"], **evidence}
+    result = {**item, "wait_finding": finding}
+    if item.get("blocked_by"):
+        return {**result, "exclusion": "blocked_by_open_dependency"}
+    if result.get("exclusion") == "waiting":
+        result.pop("exclusion")
+        if result.get("open_sub_issues"):
+            result["exclusion"] = "delegated_to_open_sub_issues"
+    return result
 
 
 def relationship_refs(items: list[dict[str, Any]], issue_repo: str) -> list[str]:
@@ -345,7 +441,7 @@ def include_parent_context(
         if (parent["repo"].casefold(), parent["number"]) in tracking:
             continue
         if parent.get("exclusion") in {"waiting", "label_blocked_without_native_edge"}:
-            return {**result, "exclusion": "parent_waiting", "waiting_on_parent": parent["url"]}
+            return {**result, "exclusion": "parent_waiting", "waiting_on_parent": parent["url"], "_own_exclusion": item.get("exclusion")}
     return result
 
 
@@ -372,6 +468,23 @@ def overall_milestone_context(
         linked = {entry["milestone"]["title"] for entry in linked_entries}
         blocked_match = any((entry["repo"].casefold(), entry["number"]) in blocking_keys for entry in linked_entries)
         return {"state": "matched", "titles": [title for title in milestone_titles if title in linked], "source": "native_track_links" if blocked_match else "native_track_ancestry"}
+    inherited = set()
+    for parent in (item.get("discussion") or {}).get("parents", []):
+        parent_milestone = parent.get("milestone") or {}
+        parent_titles = next((value for key, value in repository_milestones.items()
+                              if key.casefold() == parent["repo"].casefold()), None)
+        if (parent_milestone.get("state") == "open" and parent_milestone.get("title") in milestone_titles
+                and parent_milestone.get("title") in (parent_titles or [])):
+            inherited.add(parent_milestone["title"])
+    if inherited:
+        own_milestone = item.get("milestone") or {}
+        own_titles = next((value for key, value in repository_milestones.items()
+                           if key.casefold() == item["repo"].casefold()), None)
+        if (own_milestone.get("state") == "open" and own_milestone.get("title") in milestone_titles
+                and own_milestone.get("title") in (own_titles or [])):
+            inherited.add(own_milestone["title"])
+        return {"state": "matched", "titles": [title for title in milestone_titles if title in inherited],
+                "source": "native_milestone_ancestry"}
     repo = item["repo"]
     repository_titles = next((value for key, value in repository_milestones.items() if key.casefold() == repo.casefold()), None)
     local_title = (item.get("milestone") or {}).get("title")
@@ -467,6 +580,10 @@ def tooling_capacity_context(
             or review.get("ownership_complete") is not True
         ):
             return {**result, "issue": f"{entry['repo']}#{entry['number']}", "required": "current_complete_person_wait_review"}
+        source, status = entry, own_status
+        evidence = milestone_wait_evidence(source, status, milestone_titles)
+        if not evidence["valid"]:
+            return {**result, "reason": evidence["reason"], "issue": f"{entry['repo']}#{entry['number']}"}
     # Person-wait reviews enable the adapter's capacity-only ancestry reads.
     # Report that prerequisite before context those reads have not gathered.
     if unknown:
@@ -474,7 +591,37 @@ def tooling_capacity_context(
         return {**result, "reason": "unknown_milestone_context", "issue": f"{entry['repo']}#{entry['number']}"}
     if not frontier:
         return {**result, "reason": "no_milestone_waits"}
-    return {"admitted": True, "reason": "all_milestones_waiting_on_people", "milestone_wait_count": len(frontier)}
+    # Propagate every Track's title over the native edges, including shared
+    # prerequisites whose ranking path retains only the earliest milestone.
+    waits: dict[str, list[dict[str, Any]]] = {title: [] for title in milestone_titles
+                                          if title not in graph.get("completed_milestones", [])}
+    frontier_keys = {(entry["repo"].casefold(), entry["number"]) for entry in frontier}
+    for title, records in waits.items():
+        pending_keys = [key for key, entry in by_key.items()
+                        if title in overall_milestone_context(entry, graph, milestone_titles, repository_waypoints).get("titles", [])]
+        visited: set[tuple[str, int]] = set()
+        while pending_keys:
+            key = pending_keys.pop()
+            if key in visited:
+                continue
+            visited.add(key)
+            entry = by_key[key]
+            if key in frontier_keys:
+                source = entry
+                status = section_map((entry.get("discussion") or {}).get("body", "")).get("Current Status", "")
+                evidence = milestone_wait_evidence(source, status, milestone_titles)
+                record = {"repo": source["repo"], "number": source["number"], "url": source["url"],
+                                     "waiting_for": evidence["waiting_for"], "since": evidence["since"],
+                                     "recorded_at": evidence["recorded_at"]}
+                if record not in records:
+                    records.append(record)
+            pending_keys.extend((dep["repo"].casefold(), dep["number"])
+                                for dep in [*entry.get("blocked_by", []), *entry.get("open_sub_issues", [])]
+                                if (dep["repo"].casefold(), dep["number"]) in by_key)
+        if not records:
+            return {**result, "reason": "milestone_names_no_person", "milestone": title}
+    return {"admitted": True, "reason": "all_milestones_waiting_on_people", "milestone_wait_count": len(frontier),
+            "milestone_waits": [{"milestone": title, "waits": records} for title, records in waits.items()]}
 
 
 def with_client_milestone(
@@ -543,6 +690,45 @@ def rank_portfolio_work(
     graph = {**graph, "candidates": [client_milestone(item) for item in graph.get("candidates", [])],
              "excluded": [client_milestone(item) for item in graph.get("excluded", [])]}
     discoveries = [client_milestone(item) for item in discoveries]
+    findings = list(graph.get("findings", []))
+
+    def checked_wait(item: dict[str, Any]) -> dict[str, Any]:
+        if overall_milestone_context(item, graph, milestone_titles, repository_waypoints or {})["state"] != "matched":
+            return {key: value for key, value in item.items() if key != "_own_exclusion"}
+        if item.get("exclusion") == "parent_waiting":
+            valid_parent = None
+            tracking = {(root["repo"].casefold(), root["number"]) for root in graph.get("tracking_roots", [])}
+            for parent in (item.get("discussion") or {}).get("parents", []):
+                if (parent["repo"].casefold(), parent["number"]) in tracking:
+                    continue
+                status = section_map((parent.get("discussion") or {}).get("body", "")).get("Current Status", "")
+                checked = check_milestone_wait(parent, status, milestone_titles)
+                if checked.get("wait_finding") and checked["wait_finding"] not in findings:
+                    findings.append(checked["wait_finding"])
+                if checked.get("exclusion") in {"waiting", "label_blocked_without_native_edge"}:
+                    valid_parent = parent
+                    break
+            item = dict(item)
+            if valid_parent is not None:
+                item["waiting_on_parent"] = valid_parent["url"]
+            else:
+                item.pop("exclusion", None)
+                item.pop("waiting_on_parent", None)
+                if item.get("_own_exclusion"):
+                    item["exclusion"] = item["_own_exclusion"]
+            item.pop("_own_exclusion", None)
+        item = {key: value for key, value in item.items() if key != "_own_exclusion"}
+        status = section_map((item.get("discussion") or {}).get("body", "")).get("Current Status", "")
+        result = check_milestone_wait(item, status, milestone_titles)
+        if result.get("wait_finding") and result["wait_finding"] not in findings:
+            findings.append(result["wait_finding"])
+        return result
+
+    checked_excluded = [checked_wait(item) for item in graph.get("excluded", [])]
+    graph = {**graph, "candidates": [checked_wait(item) for item in graph.get("candidates", [])]
+             + [item for item in checked_excluded if not item.get("exclusion")],
+             "excluded": [item for item in checked_excluded if item.get("exclusion")]}
+    discoveries = [checked_wait(item) for item in discoveries]
     context = validate_selection_context(selection_context or {})
     capacity = tooling_capacity_context(
         graph, discoveries, milestone_titles=milestone_titles, context=context,
@@ -582,12 +768,14 @@ def rank_portfolio_work(
         elif review["state"] == "underway":
             underway.append({**item, "availability": "underway", "review": review})
             continue
-        elif review["state"] == "waiting":
+        elif review["state"] == "waiting" and not item.get("wait_finding"):
             excluded.append({**item, "exclusion": "reviewed_wait", "review": review})
             continue
         elif review["state"] == "ineligible":
             excluded.append({**item, "exclusion": "outside_owner_direction", "review": review})
             continue
+        elif review["state"] == "waiting":
+            item["review_required"] = "invalid_milestone_wait_needs_current_ownership_review"
         elif review.get("ownership_complete") is not True:
             item["review_required"] = "current_ownership_evidence_incomplete"
         else:
@@ -631,7 +819,10 @@ def rank_portfolio_work(
     # reference used as the identity of a child. Parent exclusions stay intact.
     entries = [*graph.get("candidates", []), *excluded, *discoveries, *underway]
     parents = [parent for entry in entries for parent in (entry.get("discussion") or {}).get("parents", [])]
+    invalid_waits = {finding["url"]: finding for finding in findings}
     for entry in [*entries, *parents]:
+        if entry.get("url") in invalid_waits:
+            entry = {**entry, "wait_finding": invalid_waits[entry["url"]]}
         if entry.get("exclusion") in {"completed", "stale_needs_review", "outside_direction_tracks"}:
             continue
         body = (entry.get("discussion") or {}).get("body", "")
@@ -659,6 +850,8 @@ def rank_portfolio_work(
                     recorded_waits.append({**row, "review_required": True})
             elif entry.get("stale_wait_evidence"):
                 stale_waits.append({**row, "stale_wait_evidence": entry["stale_wait_evidence"], "review_required": True})
+            elif entry.get("wait_finding"):
+                unowned.append({**row, "wait_finding": entry["wait_finding"], "review_required": True})
             elif entry.get("plan_status") == "waiting":
                 current_waits.append(row)
             else:
@@ -672,6 +865,7 @@ def rank_portfolio_work(
         "underway": underway, "waiting": waiting, "unowned": unowned,
         "recorded_waits": recorded_waits, "stale_waits": stale_waits, "excluded": excluded,
         "tooling_capacity_context": capacity,
+        "findings": findings,
         "repository_holds": context.get("repository_holds", {}),
         "ownership_context": {"source": "caller_evidence", "all_active_sessions_searched": False},
     }
@@ -711,10 +905,11 @@ def waiting_records(issue: dict[str, Any], status_text: str) -> list[dict[str, A
     """A wait belongs to its reporting issue; references are supporting context."""
     records: list[dict[str, Any]] = []
     status_text = re.sub(r"<!--.*?-->", "", status_text, flags=re.S)
+    status_text = re.sub(r"\*\*(Waiting for|Parked until|Blocked by|Waiting since)(:?)\*\*(:?)", r"\1\2\3", status_text, flags=re.I)
     verified = re.search(r"(?im)^\s*(?:[-*]\s+)?Last verified:\s*(.+)$", status_text)
     fields = re.split(
         r"(?im)(?=^[ \t]*(?:[-*]\s+)?(?:State|Next action|Blocked by|Waiting for|"
-        r"Parked until|Last verified|Validation|Evidence|Retention|Recovery|Worker|Session|Branch|Notes):)|\n[ \t]*\n",
+        r"Parked until|Waiting since|Last verified|Validation|Evidence|Retention|Recovery|Worker|Session|Branch|Notes):)|\n[ \t]*\n",
         status_text,
     )
     for entry in fields:
@@ -779,6 +974,8 @@ def evaluate_direction_node(
     status_text = re.sub(r"<!--.*?-->", "", status_text, flags=re.S).strip()
     reports = [row for row in waiting_records(item, status_text) if not row["no_current_wait"]]
     summary = next_relationship_summary(relationships or {})
+    if summary["open_sub_issues"]:
+        item["open_sub_issues"] = summary["open_sub_issues"]
     if (
         next_plan_status(issue, config) == "waiting"
         or re.search(r"(?im)^\s*State:\s*(?:waiting|parked)\b", status_text)
@@ -802,6 +999,7 @@ def rank_direction_work(
     scan_limit: int,
     completed_milestone_titles: list[str] | None = None,
     agent: str | None = None,
+    wait_milestone_titles: list[str] | None = None,
 ) -> dict[str, Any]:
     """Walk ordered Track issues through native blockers and sub-issues.
 
@@ -870,6 +1068,11 @@ def rank_direction_work(
             "milestone": milestone,
             "via": via,
         }
+        status_text = node.get("status_text")
+        if status_text is None:
+            status_text = section_map((item.get("discussion") or {}).get("body", "")).get("Current Status", "")
+        if not tracking:
+            item = check_milestone_wait(item, status_text, wait_milestone_titles or milestone_titles)
         reason = item.get("exclusion")
         blockers = node.get("blockers") or []
         children = node.get("children") or []
@@ -877,7 +1080,7 @@ def rank_direction_work(
             excluded.append(item)
             degraded += reason == "unknown_dependencies"
             continue
-        reports = node.get("waiting") or []
+        reports = [] if item.get("wait_finding") else node.get("waiting") or []
         waiting.extend({**report, "milestone": milestone, "via": via} for report in reports)
         if reason == "waiting" and not reports and not tracking:
             waiting.append({
@@ -917,6 +1120,7 @@ def rank_direction_work(
         "candidate_count": len(candidates),
         "excluded": excluded,
         "waiting": waiting,
+        "findings": [item["wait_finding"] for item in [*candidates, *excluded] if item.get("wait_finding")],
         "completed_milestones": [title for title in milestone_titles if title in completed],
         "tracking_roots": [{"repo": root["repo"], "number": root["number"]} for root in tracks],
         "tracking_milestones": [{"repo": root["repo"], "number": root["number"], "milestone": root["milestone"]} for root in tracks],
