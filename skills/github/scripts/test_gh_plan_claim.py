@@ -1995,6 +1995,20 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
+    def test_resumption_instructions_keep_downstream_waits_usable(self):
+        for instruction in (
+            "When you resume, wait for CI to finish.",
+            "When resuming, wait until CI finishes.",
+            "After resuming, wait until CI is green.",
+        ):
+            for release in ("Released claim 1\n\n" + instruction,
+                            "Source session finished. " + instruction + "\n\nReleased claim 1"):
+                with self.subTest(release=release):
+                    self.setUp()
+                    self.released_status_fixture(release)
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
     def test_implicit_prerequisite_refresh_needs_fresh_unconditional_handoff(self):
         for handoff in (
             "PR #99 must merge first.",

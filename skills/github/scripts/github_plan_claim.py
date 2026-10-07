@@ -94,7 +94,10 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     successor_action = r"(?:pick (?:this|it) up|pick up (?:this|the) issue|takes? (?:(?:it|this) )?over|taking over|resumes?|resuming)"
     successor = rf"\b(?:{successor_action}|handoff (?:is )?complete[ds]?)\b"
     # An instruction about what to do on resumption does not defer ownership.
-    statements = [re.sub(rf"^(?:(?:When|If) you {successor_action}|(?:When|If|After|Once) resuming),(?![^.!?;]*\bdo so\b)\s*", "", statement,
+    resumption_instruction = rf"^(?:(?:When|If) you {successor_action}|(?:When|If|After|Once) resuming),(?![^.!?;]*\bdo so\b)\s*"
+    instruction_indexes = {index for index, statement in enumerate(statements)
+                           if re.match(resumption_instruction, statement, re.IGNORECASE)}
+    statements = [re.sub(resumption_instruction, "", statement,
                          flags=re.IGNORECASE) for statement in statements]
     step = r"(?:merge[ds]?|land(?:s|ed)?|pass(?:es|ed)?|finish(?:es|ed)?|complete[ds]?|green)"
     wait_prefix = r"(?:Wait|Hold(?:\s+off)?)\s+"
@@ -125,7 +128,7 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
                            and not re.search(rf"{ownership}|{successor}", following, re.IGNORECASE))
         downstream_step = re.search(rf"\b{step}\b[^.!?;]*\b(?:before|to)\s+(?:you\s+)?{step}\b", statement, re.IGNORECASE)
         # The directive itself supplies permission at its adjacent prose edge.
-        directive_adjacent = index == (len(statements) - 1 if final_paragraph else 0)
+        directive_adjacent = index == (len(statements) - 1 if final_paragraph else 0) and index not in instruction_indexes
         prior_permission = index > 0 and re.search(rf"{ownership}|{successor}", statements[index - 1], re.IGNORECASE)
         if ((standalone_prerequisite or standalone_condition) and not (downstream_next or downstream_step)
                 and (directive_adjacent or prior_permission)):
