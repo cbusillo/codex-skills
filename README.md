@@ -122,6 +122,95 @@ then remove that specific plist; catalog bindings remain available.
 See [Codex skill discovery](https://learn.chatgpt.com/docs/build-skills) for
 current Codex locations and plugin-owned alternatives.
 
+### Walking a new person through setup
+
+Two setup steps happen on screens only the person can use: creating the GitHub
+App and its key in a browser, and trusting the catalog hooks in Codex. The agent
+prepares each command and says what to expect; the person types it and reads
+back what they see. Do them in this order, after `install-catalog.py --write`
+has succeeded.
+
+#### Create the automation App and its key
+
+The person signs in to GitHub in their default browser, as the account that
+will own the App, on the machine where the agents run. The agent fills in the
+`start` command from [Guided Separate Automation Identity](#guided-separate-automation-identity):
+`--owner` is that account's GitHub login, and `--name` should be unique, such as
+the login followed by "automation", because App names are unique across GitHub.
+The person runs it in their own Terminal window from the catalog checkout,
+because the command waits for them to press Enter.
+
+1. If it stops before opening a browser with `managed identity or host variables
+   already exist`, or says the account type does not match, stop and bring that
+   to the Director. Do not add `--replace-identity` without the Director.
+2. The terminal prints `Private setup record:` with a folder, then `Open` with a
+   local `http://127.0.0.1:` address, and the browser opens a short page with a
+   **Create GitHub App** button. If no page opens, paste that address into the
+   browser. Click the button.
+3. GitHub shows its create-App page for the account, with the name and the
+   permission list filled in. Check that the account is the intended one, change
+   the name if GitHub says it is taken, and confirm. The browser returns to a
+   local page reading "App key saved privately. Return to the terminal to
+   install the App." Nothing is downloaded: GitHub hands the key straight to the
+   helper, which keeps it in the `Private setup record:` folder.
+4. The browser opens GitHub's install page; if it does not, open the address on
+   the terminal's `Install on` line. Choose **Only select repositories**, pick
+   the repositories being adopted, and click **Install**.
+5. At `After installing in the browser, press Enter here:` press Enter. The
+   terminal ends with `Configured APP-SLUG[bot] in` and the `local.env` path. A
+   `Scope notice:` line means the App was installed on all repositories.
+6. The agent runs the `--check` once and the capabilities audit for each
+   repository chosen in step 4, from the same section. The reported actor must
+   be `APP-SLUG[bot]`, not the person's own login.
+
+If setup stops before step 5, for example `registration timed out; no
+credentials were configured` after 15 minutes:
+
+- If the browser showed "App key saved privately", the key is saved. Finish the
+  installation and have the agent run `resume` from the same section with the
+  `Private setup record:` folder as `--session`.
+- If GitHub's **Settings → Developer settings → GitHub Apps** lists no App with
+  that name, none was created. Run `start` again.
+- Otherwise download the key by hand, as follows.
+
+1. In that list, click **Edit** next to the App. Tell the agent the **App ID**
+   near the top of the page and the slug, the last part of the page address.
+2. Under **Private keys**, click **Generate a private key**. The browser
+   downloads a file named like `APP-SLUG.YYYY-MM-DD.private-key.pem`, usually
+   into Downloads. Tell the agent the file's name. Do not open it, paste it into
+   a chat, or send it anywhere.
+3. The agent restricts it with `chmod 600` and the file's path.
+4. If the App is not installed yet, use **Install App** in the same settings and
+   choose **Only select repositories** as in step 4 above.
+5. The agent runs `import` from the same section with `--owner`, the App ID, the
+   slug and the file's path. It prints a `Private setup record:` folder, which
+   now holds the key in use; keep it. It ends with the same `Configured` line.
+   After the `--check` and audit pass, delete the downloaded copy.
+
+#### Trust the catalog hooks in Codex
+
+Sessions started before the install do not see the catalog. The guiding session
+can stay open; restart other Codex and Claude Code sessions when convenient.
+Claude Code has no hook approval step.
+
+1. The person opens a new Terminal window and runs `codex`.
+2. Codex may open with **Hooks need review**, saying how many hooks are new or
+   changed and that hooks can run outside the sandbox once trusted. Choose
+   **Review hooks**. **Continue without trusting** or Esc leaves them off until
+   you come back through `/hooks`. If no prompt appears, type `/hooks` and press
+   Enter. The **Hooks** screen lists events with Installed and Active counts; a
+   **Review** column and a warning that hooks need review mean some are waiting.
+3. Use the arrow keys to select each event with a number under Review and press
+   Enter. The catalog registers PreToolUse, SessionStart, Stop and Interrupt.
+   Each hook shows its Event, Source, Command and Trust. A catalog hook's Command
+   starts with `env CLAUDE_PLUGIN_ROOT=` followed by the catalog checkout path,
+   and its Trust reads **New hook - review required** or **Modified since last
+   trusted - review required**. Press `t` to trust it, then Esc to go back.
+   Leave any hook you do not recognize alone. `t` on the event list trusts every
+   waiting hook in every event, including ones that are not the catalog's.
+4. The step is done when every catalog hook's Trust reads **Trusted**; hooks
+   left alone may still show as waiting. Start a new Codex session for work.
+
 ### Claude Code
 
 Claude Code reads personal skills from a flat `~/.claude/skills/<skill>/`
