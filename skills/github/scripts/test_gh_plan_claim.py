@@ -1836,6 +1836,7 @@ class ClaimTests(unittest.TestCase):
             "The next worker can pick this up once PR #99 merges.",
             "Next worker may resume once CI is green.",
             "Hold until PR #99 merges, then take over.",
+            "Hold until PR #99 merges. Then take over.",
             "The next session can take over once PR #99 lands.",
             "Handoff completes when PR #99 merges.",
             "PR #99 must merge first. Then the next worker may claim.",
@@ -1895,6 +1896,10 @@ class ClaimTests(unittest.TestCase):
             "Handoff completes now. Supervisor routes after CI passes.",
             "The next session takes over now. Resume immediately.",
             "Fix is effective across repos.",
+            "Source session finished. After PR #99 lands, close out the issue. The next session can take over now.",
+            "Source session finished. After PR #99 lands, close out the issue. Handoff complete.",
+            "Source session finished. When you resume, rebase onto main.",
+            "Source session finished. If you pick this up, start from the retained worktree.",
             "PR #99 must merge first. Then close out the issue.",
             "Source session finished. After PR #99 lands, close out the issue. When resuming, rebase onto main.",
         )

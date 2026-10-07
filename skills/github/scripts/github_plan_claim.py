@@ -87,8 +87,11 @@ def conditional_release_prose(text: str, *, suffix: str) -> bool:
     handoff = re.sub(r"(?s)<!--.*?-->", "", text)
     prose = ownership_text(handoff)
     statements = re.split(r"(?<=[.!?;])\s+|\n[ \t]*\n", prose)
-    ownership = (r"\b(?:releases?|claims?|claiming|reclaim(?:ing)?|ownership|takes? effect|effective|"
-                 r"pick (?:this|it) up|takes? over|resumes?|handoff completes?)\b")
+    ownership = r"\b(?:releases?|claims?|claiming|reclaim(?:ing)?|ownership|takes? effect|effective)\b"
+    successor = r"\b(?:pick (?:this|it) up|takes? over|resumes?|handoff completes?)\b"
+    # An instruction about what to do on resumption does not defer ownership.
+    statements = [re.sub(r"^(?:When|If) you (?:resume|pick (?:this|it) up),\s*", "", statement,
+                         flags=re.IGNORECASE) for statement in statements]
     prerequisite = (r"\bmust\s+(?:be\s+)?(?:merge[ds]?|land(?:ed)?|pass(?:ed)?|finish(?:ed)?|complete[ds]?|green)\b[^.!?;]*\bfirst\b|"
                     r"^First,?\s+[^.!?;]*\bmust\s+(?:be\s+)?(?:merge[ds]?|land(?:ed)?|pass(?:ed)?|finish(?:ed)?|complete[ds]?|green)\b")
     effective = r"\b(?:takes? effect|effective)\b(?!\s+(?:now|immediately)\b)"
@@ -97,10 +100,14 @@ def conditional_release_prose(text: str, *, suffix: str) -> bool:
             or any((re.search(condition, statement, re.IGNORECASE)
                     or re.search(prerequisite, statement, re.IGNORECASE))
                    and (re.search(ownership, statement, re.IGNORECASE)
+                        or re.search(successor, statement, re.IGNORECASE)
                         or (index + 1 < len(statements)
                             and (re.match(r"(?:only\s+|not\s+)?" + condition, statement.strip(), re.IGNORECASE)
                                  or re.search(prerequisite, statement, re.IGNORECASE))
-                            and re.search(ownership, statements[index + 1], re.IGNORECASE)))
+                            and re.search(ownership, statements[index + 1], re.IGNORECASE))
+                        or (index + 1 < len(statements)
+                            and re.match(r"Then\b", statements[index + 1].strip(), re.IGNORECASE)
+                            and re.search(successor, statements[index + 1], re.IGNORECASE)))
                    for index, statement in enumerate(statements))):
         return True
     return False
