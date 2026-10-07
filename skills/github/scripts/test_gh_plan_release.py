@@ -252,6 +252,19 @@ class ReleaseTests(unittest.TestCase):
         self.f.assert_no_writes()
         self.assertEqual(CLAIM.released_claim_id(self.f.emitted.call_args.args[0]["release_body"]), 1)
 
+    def test_generated_release_preserves_conditional_words_in_source_identity(self):
+        for identity in (
+            {"branch": "work/refresh-after-deploy"},
+            {"branch": "work/wait-until-ci", "worker": "trial-pending-review"},
+        ):
+            with self.subTest(identity=identity):
+                self.setUp()
+                source = {**fixtures.OTHER, **identity}
+                self.f.comments[0]["body"] = CLAIM.marker(source)
+                self.run_release()
+                self.successor()
+                self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
+
     def test_source_edit_invalidates_existing_release_at_successor_claim(self):
         self.run_release()
         self.f.comments[0]["updated_at"] = "2026-10-04T00:00:00Z"
