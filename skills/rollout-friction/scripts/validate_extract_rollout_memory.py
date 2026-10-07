@@ -265,6 +265,8 @@ def test_redact_mounted_paths_in_text_context_and_prompts() -> None:
         ("/Volumes/Example Disk/worktrees/sample", "Disk/worktrees/sample"),
         ("https://example.com/view?path=/Users/example/sample.py", "example/sample.py"),
         ("https://example.com/view#worktree=/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
+        ("https://example.com/@fs/Users/example/sample.py", "example/sample.py"),
+        ("http://workstation.localdomain/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
     )
     public_url = "https://example.com/Volumes/EXAMPLE/worktrees/sample"
     for path, private_tail in paths:

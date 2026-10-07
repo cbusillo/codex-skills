@@ -450,13 +450,16 @@ def redact_path_match(match: re.Match[str]) -> str:
     if url is None:
         return "<path-redacted>"
     try:
-        host = urlsplit(url).hostname or ""
+        parsed = urlsplit(url)
+        host = parsed.hostname or ""
         try:
             local = not ip_address(host).is_global
         except ValueError:
             local = "." not in host or host.endswith(
-                (".localhost", ".local", ".internal", ".lan", ".home.arpa", ".test", ".ts.net")
+                (".localhost", ".local", ".internal", ".lan", ".home.arpa", ".test", ".ts.net",
+                 ".localdomain", ".home", ".corp", ".intranet")
             )
+        local = local or parsed.path.startswith("/@fs/")
     except ValueError:
         local = True  # Malformed URLs do not establish a public host.
     if local:

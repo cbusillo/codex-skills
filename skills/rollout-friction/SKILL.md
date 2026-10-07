@@ -329,7 +329,10 @@ memory/profile/local-config candidates.
    Source-file metadata is masked in full regardless of its path root;
    `--trusted-originals` preserves the original source path.
    Mounted-volume paths in text and context are redacted, including quoted paths
-   with spaces; public HTTP(S) URLs remain readable. Under `--redact`, diagnostic
+   with spaces. Path redaction preserves public HTTP(S) URL paths except local
+   dev-server file links; query/fragment paths and person data are still redacted.
+   Quote paths with spaces: unquoted whitespace is ambiguous with neighboring
+   prose and can leave path fragments or consume prose. Under `--redact`, diagnostic
    artifact references are filenames relative to the output bundle, so its local
    directory is not exposed. Trusted mode retains the original artifact paths.
 2. Prefer destination-filtered passes when applying memory. Review `people`,
