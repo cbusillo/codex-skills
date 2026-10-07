@@ -299,9 +299,9 @@ Post it on the pilot issue as one comment:
   ready itself.
 - A killed train driver can leave a lease for a while, and two drivers on one
   repository is a wait, not a failure.
-- About a dozen sessions plus drivers on one App token trip GitHub's
-  secondary rate limit. Prefer per-repository listings with `since` over the
-  search API.
+- Prefer per-repository listings with `since` over the search API. Current
+  measured capacity is tracked in
+  [codex-skills#1191](https://github.com/cbusillo/codex-skills/issues/1191).
 - Shared CI runners saturate; private repositories run CI on self-hosted
   runners.
 - The Director answers in plain words and the Supervisor records them. Never

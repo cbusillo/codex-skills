@@ -200,6 +200,12 @@ class GhCommandError(RuntimeError):
     pass
 
 
+class PrHelperReadError(GhCommandError):
+    def __init__(self, message, payload):
+        super().__init__(message)
+        self.payload = github_api.redact_body(payload)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
@@ -344,7 +350,7 @@ def pr_helper_json(command, pr_spec=None, repo=None, allow_partial=False):
     if proc.returncode != 0 and not allow_partial:
         detail = str(payload.get("error") or payload.get("recommended_next_action") or "")
         suffix = f": {detail}" if detail else ""
-        raise GhCommandError(f"REST-first PR helper failed for {command}{suffix}")
+        raise PrHelperReadError(f"REST-first PR helper failed for {command}{suffix}", payload)
     return payload
 
 
@@ -1832,6 +1838,12 @@ def main():
         snapshot["state_file"] = str(state_path)
         print_json(snapshot)
         return 0
+    except github_read.GitHubReadError as err:
+        print_event("read_error", err.result.as_dict())
+        return 1
+    except PrHelperReadError as err:
+        print_event("read_error", err.payload)
+        return 1
     except (GhCommandError, RuntimeError, ValueError) as err:
         sys.stderr.write(f"gh_pr_watch.py error: {err}\n")
         return 1
