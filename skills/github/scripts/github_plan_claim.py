@@ -81,14 +81,18 @@ def released_claim_id(text: str) -> int | None:
     first = text.splitlines()[:1]
     match = re.fullmatch(r"Released claim (\d+)(?:\.(?:\s.*)?|[ \t]*)", first[0]) if first else None
     if match:
-        # The directive cannot outrun an explicit condition in its handoff.
-        # Downstream gates within ordinary handoff prose remain independent.
+        # Conditions must govern release/reclaiming, not downstream CI or
+        # worktree cleanup. A condition directly after the ID also qualifies
+        # the directive even when it leaves that subject implicit.
         suffix = first[0][match.end(1):].lstrip(". \t")
-        following = "\n".join(text.splitlines()[1:])
-        condition = r"(?:if|after|once|when|unless|until)\b"
-        if (re.search(rf"(?i)\b{condition}", suffix)
-                or re.search(rf"(?im)^[ \t]*{condition}", following)
-                or re.search(rf"(?i)\btakes? effect\s+(?:only\s+)?{condition}", following)):
+        condition = r"\b(?:if|after|once|when|unless|until|before|pending|provided|conditional|subject to)\b"
+        prose = ownership_text(suffix + "\n" + "\n".join(text.splitlines()[1:]))
+        statements = re.split(r"(?<=[.!?;])\s+|\n[ \t]*\n", prose)
+        if (re.match(condition, ownership_text(suffix), re.IGNORECASE)
+                or any(re.search(condition, statement, re.IGNORECASE)
+                       and re.search(r"\b(?:releases?|claims?|claiming|reclaim(?:ing)?|ownership|takes? effect|effective)\b",
+                                     statement, re.IGNORECASE)
+                       for statement in statements)):
             return None
         return int(match.group(1))
     text = "\n".join(line if line.strip() else "" for line in text.splitlines())
