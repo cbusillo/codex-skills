@@ -368,7 +368,7 @@ the canonical links, the return thread, and who verifies and connects the native
 blockers afterward. Explicitly request that return within existing posting
 authority; otherwise prepare the draft and name the remaining action. Read the
 [missing-gate template](../github/references/issue-templates.md#waiting-on-an-external-gate)
-for the waiting record. Once the gate is known, verify and link it without
+for the return request. Once the gate is known, verify and link it without
 adding another handoff.
 
 ## Milestones And Status
@@ -409,6 +409,8 @@ prerequisite has closed, reconcile the remaining work under these status labels.
 maintainer must identify or create it, follow [Missing Cross-Repository
 Gates](#missing-cross-repository-gates). Choose the status from the actual next
 action or wait; a missing edge alone does not imply `plan:waiting`.
+A parent delegated only to open sub-issues stays `plan:active`; native sub-issue
+links express that delegation without a `blocked-by` edge.
 
 When Projects are configured or requested, use them as automatic views of the
 issue graph. Do not maintain Focus, Manager, Finish Line, or roadmap dates in
