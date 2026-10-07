@@ -112,7 +112,7 @@ updates; removing all catalog hooks opts out of that refresh. The existing sessi
 one catalog line for a stale or blocked checkout, a failed update, or a scheduled
 check older than twelve hours. A manual pull that changes shared instructions
 also reports a stale installation until the instruction refresh runs. Session
-start performs no network calls. State
+catch-up is described under [runtime binding lookup](#runtime-binding-lookup). State
 and logs live in the checkout's ignored `.local/` directory.
 Run `uv run scripts/catalog_runtime.py --update` for a manual guarded update on
 macOS or Linux. To stop scheduled updates, run
@@ -335,6 +335,28 @@ behavior or provenance-sensitive evidence. A merge-train landing driven by
 `launchplane-train-drive.py` does this itself. To catch up a clean install that
 has fallen behind, run its own copy:
 `uv run <runtime-checkout>/skills/github/scripts/reconcile-runtime-checkout.py --repo cbusillo/codex-skills`.
+
+The registered session-start hook also runs this catch-up for its bound catalog,
+so a landing without a local train driver is picked up on configured startup,
+resume, or clear events on either harness. The maintained declarations skip
+compaction; legacy matcher scope remains as configured. Manual unbound development
+invocations skip catch-up. Discovery and network reads are bounded to five seconds, reporting a
+blocker or failure without preventing the session from starting. Startup guidance
+is flushed first. A local fast-forward and its verification retain the
+reconciler's normal command bound, so the short read budget cannot interrupt them.
+Claude plugin cache copies resolve the catalog through the runtime bindings above.
+The reconciler's provenance check
+still applies: if its source changed upstream, use the copy from a worktree at
+the reported tip. The new copy must be reconciled once after this change lands
+before the installed hook can provide automatic catch-up. Refresh an existing
+Codex session hook from the reconciled runtime checkout by previewing
+`uv run <runtime-checkout>/scripts/sync-global-instructions.py --codex-hook --hooks-only --upgrade-session-start`, then
+adding `--write` to pick up the updated hook timeout; Claude reads it from
+`hooks/hooks.json`. The updated command opts in with `--runtime-catchup`; old
+registered commands keep printing guidance without starting a catch-up under
+their shorter timeout. If Codex asks to trust the refreshed hook, use `/hooks`.
+The explicit upgrade adopts plain legacy catalog invocations; custom commands
+remain preserved, and omitting the option retains the installer's existing behavior.
 
 ## Execution Environment
 
