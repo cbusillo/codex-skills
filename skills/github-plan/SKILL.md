@@ -389,7 +389,8 @@ Use status labels narrowly:
   `Waiting for: None` only when no person, decision or external-event wait
   remains. Ordinary delivery awaiting agent or automated QA, review,
   merge-train routing, or deployment stays active too.
-- `plan:blocked`: a current dependency, preferably an open native blocker.
+- `plan:blocked`: a current dependency on an open issue linked by native
+  `blocked-by`.
 - `plan:waiting`: a durable plan parked on a named person, decision, or external
   event. Name who acts and on what in `Waiting for:` or `Parked until:`.
 - `plan:stale`: needs review before guiding work.
@@ -399,6 +400,14 @@ Separate independent actionable work from an unresolved person or event wait
 into its own issue, so it can be selected and claimed without clearing that wait.
 For `plan:waiting` without a native issue blocker, say `Blocked by: No native
 issue blocker; waiting for ...`.
+
+If `next` reports `label_blocked_without_native_edge`, reconcile the dependency:
+verify and link an open prerequisite with `gh-plan.py link <issue> blocked-by
+<prerequisite>`. A prose reference does not create that edge. If the prerequisite
+has closed, reconcile the remaining work under these status labels. If a
+maintainer must identify or create it, follow [Missing Cross-Repository
+Gates](#missing-cross-repository-gates). Choose the status from the actual next
+action or wait; a missing edge alone does not imply `plan:waiting`.
 
 When Projects are configured or requested, use them as automatic views of the
 issue graph. Do not maintain Focus, Manager, Finish Line, or roadmap dates in

@@ -130,10 +130,10 @@ Current Status section or an authorized bot-authored planning comment. Record:
   links and completion criteria
 - who will verify the returned gate and add or reconcile native blockers
 
-Until the gate exists, use `Waiting for:` and `Blocked by: No native issue
-blocker; waiting for ...`. Milestone membership or a mention is not a blocker
-edge. Do not claim a gate or link exists before verifying it. Once known, link
-it under existing authority without requiring another return round-trip.
+Use [Status Labels](../../github-plan/SKILL.md#status-labels) for the waiting
+record and dependency linkage. Do not claim a gate or link exists before
+verifying it. Once known, link it under existing authority without requiring
+another return round-trip.
 
 Example: "Please identify the prerequisite and reply to the coordinator here
 with its canonical link and completion criteria. The coordinator will verify
