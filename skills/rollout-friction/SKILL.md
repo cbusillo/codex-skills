@@ -328,6 +328,10 @@ memory/profile/local-config candidates.
    natural names, handles, and emails from candidate text and prompts.
    Source-file metadata is masked in full regardless of its path root;
    `--trusted-originals` preserves the original source path.
+   Mounted-volume paths in text and context are redacted, including quoted paths
+   with spaces; public HTTP(S) URLs remain readable. Under `--redact`, diagnostic
+   artifact references are filenames relative to the output bundle, so its local
+   directory is not exposed. Trusted mode retains the original artifact paths.
 2. Prefer destination-filtered passes when applying memory. Review `people`,
    `profile`, and `local-llm` separately from `repo-specific` and
    `rollout-friction` candidates so repo details do not pollute central memory.

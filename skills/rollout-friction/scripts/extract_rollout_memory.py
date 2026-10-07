@@ -40,7 +40,14 @@ SECRET_RE = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----|"
     r"(?:api[_-]?key|token|secret|password|credential)\s*[:=]\s*[^\s,'\"]+)"
 )
-PATH_RE = re.compile(r"/(?:Users|home|workspace|workspaces|tmp|var|private)/[^\s,'\"]+")
+LOCAL_PATH_ROOTS = r"(?:Users|home|workspace|workspaces|tmp|var|private|Volumes|mnt|media)"
+PATH_RE = re.compile(
+    # Public URLs may contain the same root names as local paths. Match them
+    # first so those components remain useful evidence rather than local paths.
+    r"(?P<url>https?://[^\s<>\"'`]+)|"
+    rf"(?P<quoted>[\"'`])/{LOCAL_PATH_ROOTS}/[^\n]*?(?P=quoted)|"
+    rf"(?<![\w/])/{LOCAL_PATH_ROOTS}/[^\s,;:\"'`<>)\]}}]+"
+)
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 MENTION_RE = re.compile(
     r"(?<![\w/])@[A-Za-z0-9][A-Za-z0-9_.-]{1,38}\b|"
@@ -430,7 +437,7 @@ def context_window(events: list[Event], index: int, radius: int, args: argparse.
 def clean_text(text: str, args: argparse.Namespace) -> str:
     cleaned = SECRET_RE.sub("<secret-redacted>", text)
     if args.redact:
-        cleaned = PATH_RE.sub("<path-redacted>", cleaned)
+        cleaned = PATH_RE.sub(lambda match: match.group() if match.group("url") else "<path-redacted>", cleaned)
         cleaned = redact_person_data(cleaned)
     cleaned = " ".join(cleaned.split())
     return cleaned.strip()
@@ -651,9 +658,9 @@ def write_artifacts(
         "bounds": safe_bounds(args),
         "privacy": privacy_summary(args),
         "artifacts": {
-            "candidates": str(candidates_path),
-            "llm_prompts": str(prompts_path),
-            "diagnostics": str(diagnostics_path),
+            "candidates": candidates_path.name if args.redact else str(candidates_path),
+            "llm_prompts": prompts_path.name if args.redact else str(prompts_path),
+            "diagnostics": diagnostics_path.name if args.redact else str(diagnostics_path),
         },
     }
     diagnostics_path.write_text(json.dumps(diagnostics, indent=2, ensure_ascii=False), encoding="utf-8")
