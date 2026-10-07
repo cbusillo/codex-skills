@@ -216,8 +216,193 @@ class RoutingScoreTests(unittest.TestCase):
             ([("read", "private-context.md"), ("skill", "docs-lookup"),
               ("read", "private-context.md")], False),
         ]:
-            seen = {"operations": [], "sequence": sequence}
+            messages = []
+            for number, (kind, value) in enumerate(sequence):
+                path = str(runner.ROOT / f"skills/{value}/SKILL.md") if kind == "skill" else value
+                use = call("Read", {"file_path": path})
+                use["message"]["content"][0]["id"] = str(number)
+                messages.extend([use, {"type": "user", "message": {"content": [{
+                    "type": "tool_result", "tool_use_id": str(number), "content": "source"}]}}])
+            with tempfile.TemporaryDirectory() as directory:
+                seen = runner.observe("claude", messages, [], Path(directory), runner.ROOT)
             self.assertEqual(runner.decision_checks(seen, expect)["owner_before_read"], passed)
+
+    def test_codex_completion_order_uses_invocations_not_operand_or_hook_order(self) -> None:
+        skill = str(runner.ROOT / "skills/docs-lookup/SKILL.md")
+        expect = {"owner_before_read": {"owner": "docs-lookup", "read": r"private-context\.md"}}
+
+        def event(phase, identity, command, exit_code=0):
+            return {"type": f"item.{phase}", "item": {"id": identity, "type": "command_execution",
+                    "command": command, "exit_code": exit_code}}
+
+        load, read = f"cat {skill}", "cat private-context.md"
+        cases = [
+            ([event("started", "a", load), event("completed", "a", load),
+              event("started", "b", read), event("completed", "b", read)], True),
+            ([event("started", "a", load), event("completed", "a", load),
+              event("started", "b", f"{load}; {read}"), event("completed", "b", f"{load}; {read}")], True),
+            ([event("started", "a", load), event("started", "b", read),
+              event("completed", "a", load), event("completed", "b", read)], False),
+            ([event("started", "a", f"{load} private-context.md"),
+              event("completed", "a", f"{load} private-context.md")], False),
+            ([event("started", "a", f"{load}; {read}"),
+              event("completed", "a", f"{load}; {read}")], False),
+            ([event("started", "a", f"{load}\n{read}"),
+              event("completed", "a", f"{load}\n{read}")], False),
+            ([event("completed", "a", load), event("completed", "b", read)], False),
+            ([event("started", "a", read), event("completed", "a", read),
+              event("started", "b", load), event("completed", "b", load),
+              event("started", "c", read), event("completed", "c", read)], False),
+            ([event("started", "a", load), event("completed", "a", load, 1),
+              event("started", "b", read), event("completed", "b", read)], False),
+            ([event("started", "a", read), event("started", "b", load),
+              event("completed", "b", load), event("started", "c", read),
+              event("completed", "c", read), event("completed", "a", read)], False),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            for messages, passed in cases:
+                # Hook order alone cannot show when an invocation finished.
+                hooks = [{"command": message["item"]["command"], "allowed": True}
+                         for message in messages if message["type"] == "item.completed"]
+                seen = runner.observe("codex", messages, hooks, Path(directory), runner.ROOT)
+                self.assertEqual(runner.decision_checks(seen, expect)["owner_before_read"], passed, messages)
+
+    def test_completion_grade_is_turn_local_and_records_invocation_evidence(self) -> None:
+        expect = {"owner": "docs-lookup", "owner_before_read": {
+            "owner": "docs-lookup", "read": r"private-context\.md"}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for host in ("codex", "claude"):
+                messages, hooks = [], []
+                for turn, load in ((1, True), (2, False)):
+                    messages.append({"type": "turn_marker", "turn": turn, "events": len(hooks)})
+                    paths = ([str(runner.ROOT / "skills/docs-lookup/SKILL.md")] if load else []) + ["private-context.md"]
+                    for number, path in enumerate(paths):
+                        identity = f"{turn}-{number}"
+                        if host == "codex":
+                            item = {"id": identity, "type": "command_execution", "command": f"cat {path}", "exit_code": 0}
+                            messages.extend([{"type": "item.started", "item": item}, {"type": "item.completed", "item": item}])
+                            hooks.append({"command": item["command"], "allowed": True})
+                        else:
+                            use = call("Read", {"file_path": path})
+                            use["message"]["content"][0]["id"] = identity
+                            messages.extend([use, {"type": "user", "message": {"content": [{
+                                "type": "tool_result", "tool_use_id": identity, "content": "source"}]}}])
+                (root / "trace.jsonl").write_text("\n".join(map(json.dumps, messages)))
+                (root / "shell-events.jsonl").write_text("\n".join(map(json.dumps, hooks)))
+                score = runner.score_turns(host, [{"expect": expect}] * 2, root)
+                self.assertTrue(score["checks"]["turn1_owner_before_read"], host)
+                self.assertFalse(score["checks"]["turn2_owner_before_read"], host)
+                first = score["turns"][0]["load_order"]
+                self.assertEqual(first["skills"][0]["invocation"], "1-0")
+                self.assertLess(first["skills"][0]["completed_at"], first["reads"][-1]["chosen_at"])
+
+    def test_newline_read_operands_preserve_quoted_filenames(self) -> None:
+        command = "cat 'first file.md'\ncat second.md\nrg -n needle ."
+        self.assertEqual(runner.shell_read_paths(command), ["first file.md", "second.md", "."])
+        self.assertEqual(runner.shell_read_paths("cat 'file\nname.md'\ncat last.md"), ["file\nname.md", "last.md"])
+        self.assertTrue(runner.reads_content("pwd\ncat second.md"))
+        self.assertEqual(runner.shell_read_paths("pwd # orient\ncat private-context.md"), ["private-context.md"])
+        self.assertEqual(runner.shell_read_paths("cat first.md # context\ncat second.md"), ["first.md", "second.md"])
+        self.assertEqual(runner.shell_read_paths("cat 'file#name.md' foo\\ #bar.md # comment\ncat last.md"),
+                         ["file#name.md", "foo #bar.md", "last.md"])
+        for command, paths in [
+            ("cat a.md \\\n  b.md", ["a.md", "b.md"]),
+            ("rg -n owner \\\n  private-context.md", ["private-context.md"]),
+            ("sed -n '1,200p' \\\n  docs/private-context.md", ["docs/private-context.md"]),
+            ("cat 'file\\\nname.md'", ["file\\\nname.md"]),
+            ('cat "file\\\nname.md"', ["filename.md"]),
+        ]:
+            self.assertEqual(runner.shell_read_paths(command), paths, command)
+
+    def test_claude_repeat_skill_invocation_needs_prior_catalog_confirmation(self) -> None:
+        expect = {"owner": "docs-lookup", "owner_before_read": {"owner": "docs-lookup", "read": r"private-context\.md"}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for confirmed, parallel, passed in ((True, False, True), (False, False, False), (True, True, False)):
+                first = call("Read", {"file_path": str(runner.ROOT / "skills/docs-lookup/SKILL.md")})
+                first["message"]["content"][0]["id"] = "source"
+                def result(identity, text):
+                    return {"type": "user", "message": {"content": [{
+                        "type": "tool_result", "tool_use_id": identity, "content": text}]}}
+                messages = [{"type": "turn_marker", "turn": 1}]
+                if confirmed:
+                    messages.extend([first, result("source", "source")])
+                messages.append({"type": "turn_marker", "turn": 2})
+                load = call("Skill", {"skill": "shared:docs-lookup"})
+                load["message"]["content"][0]["id"] = "reload"
+                read = call("Read", {"file_path": "private-context.md"})
+                read["message"]["content"][0]["id"] = "private"
+                if parallel:
+                    load["message"]["content"].extend(read["message"]["content"])
+                messages.extend([load, result("reload", "Launching skill: shared:docs-lookup")])
+                if not parallel:
+                    messages.append(read)
+                messages.append(result("private", "private source"))
+                (root / "trace.jsonl").write_text("\n".join(map(json.dumps, messages)))
+                score = runner.score_turns("claude", [{"expect": {"owner": []}}, {"expect": expect}], root)
+                self.assertEqual(score["checks"]["turn2_owner_before_read"], passed, (confirmed, parallel))
+
+    def test_completed_loads_need_catalog_provenance_and_delivered_reads(self) -> None:
+        expect = {"owner_before_read": {"owner": "docs-lookup", "read": r"private-context\.md"}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "catalog"
+            skill = catalog / "skills/docs-lookup/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("Complete synthetic skill source.\n")
+            for host in ("codex", "claude"):
+                for path, output, failed_read, passed in [
+                    (skill, skill.read_text(), False, True),
+                    (skill, "partial", False, False),
+                    (skill, skill.read_text(), True, False),
+                    (root / "foreign/skills/docs-lookup/SKILL.md", "", False, False),
+                ]:
+                    command = f"cat {path}; rg absent missing.txt"
+                    if host == "codex":
+                        messages = []
+                        for identity, cmd, code, text in [("load", command, 1, output),
+                                                         ("read", "cat private-context.md", int(failed_read), "")]:
+                            item = {"id": identity, "type": "command_execution", "command":
+                                    "/bin/zsh -lc " + runner.shlex.quote(cmd), "exit_code": code, "aggregated_output": text}
+                            messages.extend([{"type": "item.started", "item": item},
+                                             {"type": "item.completed", "item": item}])
+                    else:
+                        messages = []
+                        for identity, tool, arguments, error, text in [
+                            ("load", "Bash", {"command": command}, True, output),
+                            ("read", "Read", {"file_path": "private-context.md"}, failed_read, "private source")]:
+                            use = call(tool, arguments)
+                            use["message"]["content"][0]["id"] = identity
+                            messages.extend([use, {"type": "user", "message": {"content": [{
+                                "type": "tool_result", "tool_use_id": identity, "is_error": error, "content": text}]}}])
+                    seen = runner.observe(host, messages, [], root, catalog)
+                    self.assertEqual(runner.decision_checks(seen, expect)["owner_before_read"], passed,
+                                     (host, path, output, failed_read))
+
+    def test_claude_parallel_skill_and_read_need_an_earlier_completed_load(self) -> None:
+        expect = {"owner_before_read": {"owner": "docs-lookup", "read": r"private-context\.md"}}
+        load = call("Skill", {"skill": "shared:docs-lookup"})
+        load["message"]["id"] = "batch-load"
+        load["message"]["content"][0]["id"] = "load"
+        read = call("Read", {"file_path": "private-context.md"})
+        read["message"]["id"] = "batch-read"
+        read["message"]["content"][0]["id"] = "read"
+        source = {"type": "user", "message": {"content": [{"type": "text", "text":
+                  f"Base directory for this skill: {runner.ROOT / 'skills/docs-lookup'}\nsource"}]}}
+        result = {"type": "user", "message": {"content": [{"type": "tool_result",
+                  "tool_use_id": "read", "content": "private source"}]}}
+        parallel = {"type": "assistant", "message": {"id": "batch-load", "content": [
+                    load["message"]["content"][0], read["message"]["content"][0]]}}
+        split_read = {"type": "assistant", "message": {**read["message"], "id": "batch-load"}}
+        with tempfile.TemporaryDirectory() as directory:
+            for messages, passed in [([load, source, read, result], True),
+                                     ([parallel, source, result], False),
+                                     ([load, source, split_read, result], False),
+                                     ([load, read, source, result], False),
+                                     ([load, read, result, source, read, result], False)]:
+                seen = runner.observe("claude", messages, [], Path(directory), runner.ROOT)
+                self.assertEqual(runner.decision_checks(seen, expect)["owner_before_read"], passed, messages)
 
     def test_missing_context_accepts_variants_and_rejects_an_authority_guess(self) -> None:
         expect = runner.yaml.safe_load((runner.ROOT / "evals/multi-turn/docs-concision-missing-context/turns.yaml").read_text())["turns"][0]["expect"]
