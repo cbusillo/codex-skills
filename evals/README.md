@@ -102,13 +102,26 @@ not establish general semantic answer grading. Historical trial scores stay
 unchanged when the form list is extended.
 
 Private-documentation cases also use `owner_before_read` with an owning skill and
-a read pattern. It requires a delivered matching read and the owning skill
-before its first delivery, including turns with no operational command. Loading
-the skill afterward fails even if it is loaded before a later reread. This
-checks observed delivery order; it does not prove every recursive search path,
-the timing of a failed read attempt, or completion of a skill load before a
-read chosen in the same command or parallel tool batch. Inspect raw tool calls
-and results too.
+a read pattern. Grader version 4 requires a delivered matching read whose
+invocation starts after the owning skill finishes loading in the same turn.
+Codex command items retain their invocation IDs and start/completion positions;
+Claude tool uses retain invocation IDs and the earliest position of their
+assistant message ID, including split streamed records of the same batch.
+Per-turn `load_order` observations preserve these identities and positions.
+A combined shell command or Claude parallel Skill/Read batch fails unless an
+earlier completed load already covers it. Loading the skill after the first
+delivered matching read fails even if a later reread follows it. Missing read
+invocation/start evidence is unproven and fails; completion records or shell
+hook order alone cannot establish the stronger grade. Proven complete source
+delivery before a trailing nonzero search still counts as a load.
+
+Version 3 checked delivery order alone. Historical receipts and native scores
+remain unchanged; any new grading is separate evidence. The stronger check
+still cannot prove choices or outer batches omitted from the host trace (Codex
+records command starts), every recursive search path, or the timing of failed
+read attempts. Inspect raw tool calls and results too. Literal shell path
+extraction separates newline commands while preserving quoted filenames; it
+does not evaluate shell expansions.
 The nested source-planning fixture moves the synthetic route and operations
 file out of the repository root to qualify discovery cues separately from
 private-documentation authority. Its AGENTS override is offline plumbing,

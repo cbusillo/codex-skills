@@ -30,7 +30,7 @@ import yaml
 from shell_boundary import read_only
 
 ROOT = Path(__file__).resolve().parents[1]
-GRADER_VERSION = 3
+GRADER_VERSION = 4
 
 
 def recorded_shell_command(command: str) -> str:
@@ -82,17 +82,18 @@ raise SystemExit(0 if args.command == 'merge' else 1)
 
 def reads_content(command: str) -> bool:
     """A shell read that returns file content, not only names."""
-    return any(re.match(r"\s*(?:cat|head|tail|sed -n|rg(?!.*--files))\b", part) for part in re.split(r"&&|\|\||;|\|", command))
+    return any(re.match(r"\s*(?:cat|head|tail|sed -n|rg(?!.*--files))\b", part) for part in re.split(r"&&|\|\||;|\||\n", command))
 
 
 def shell_read_paths(command: str) -> list[str]:
     """Extract literal reader arguments without executing the recorded shell."""
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|\n")
+    lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     paths, segment = [], []
     try:
         for token in [*lexer, ";"]:
-            if token in {";", "&&", "||", "|"}:
+            if token and all(character in ";&|\n" for character in token):
                 if segment and reads_content(shlex.join(segment)):
                     arguments = segment[1:]
                     reader = Path(segment[0]).name
@@ -156,6 +157,96 @@ def load_trace(destination: Path) -> tuple[list[dict[str, Any]], list[dict[str, 
     return messages, events
 
 
+def load_read_observations(host: str, messages: list[dict[str, Any]], destination: Path,
+                           catalog: Path, confirmed: set[str]) -> dict[str, list[dict[str, Any]]]:
+    """Keep invocation choice and delivery separate from the legacy sequence."""
+    invocations: dict[str, dict[str, Any]] = {}
+    batches: dict[str, int] = {}
+    skills, reads = [], []
+    confirmed = set(confirmed)
+
+    def skill_name(path_text: str) -> str | None:
+        path = Path(path_text)
+        if not path.is_absolute():
+            path = destination / "workspace" / path
+        path = path.resolve()
+        root = (catalog / "skills").resolve()
+        relative = path.relative_to(root) if path.is_relative_to(root) else None
+        if relative and len(relative.parts) == 2 and relative.name == "SKILL.md" and not relative.parts[0].startswith("."):
+            return relative.parts[0]
+        return None
+
+    def complete_skill(source_name: str, record: dict[str, Any], completed_position: int) -> None:
+        observation_id = {key: record.get(key) for key in ("invocation", "batch", "chosen_at")}
+        skills.append({**observation_id, "value": source_name, "completed_at": completed_position})
+        confirmed.add(source_name)
+
+    def deliver(read_paths: list[str], record: dict[str, Any], delivered_position: int) -> None:
+        for path in read_paths:
+            observation_id = {key: record.get(key) for key in ("invocation", "batch", "chosen_at")}
+            reads.append({**observation_id, "value": path, "delivered_at": delivered_position})
+            read_skill = skill_name(path)
+            if read_skill:
+                complete_skill(read_skill, record, delivered_position)
+
+    for position, message in enumerate(messages):
+        if host == "codex" and message.get("type") in {"item.started", "item.completed"}:
+            item = message["item"]
+            if item.get("type") != "command_execution":
+                continue
+            identity = item.get("id")
+            command = recorded_shell_command(item.get("command", ""))
+            if message["type"] == "item.started":
+                if identity:
+                    invocations[identity] = {"invocation": identity, "batch": identity, "chosen_at": position}
+            else:
+                invocation = invocations.pop(identity, {"invocation": identity, "batch": None, "chosen_at": None})
+                paths = (shell_read_paths(command) if item.get("exit_code") == 0 else
+                         delivered_paths(command, item.get("aggregated_output", ""), destination, catalog))
+                deliver(paths, invocation, position)
+        elif host == "claude" and message.get("type") == "assistant":
+            payload = message.get("message", {})
+            batch = payload.get("id", f"message-{position}")
+            chosen = batches.setdefault(batch, position)
+            for block in payload.get("content", []):
+                if not isinstance(block, dict) or block.get("type") != "tool_use" or not block.get("id"):
+                    continue
+                arguments = block.get("input", {})
+                invocations[block["id"]] = {"invocation": block["id"], "batch": batch,
+                    "chosen_at": chosen, "tool": block.get("name"), "arguments": arguments}
+        elif host == "claude" and message.get("type") == "user":
+            for block in message.get("message", {}).get("content", []):
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text":
+                    match = re.match(r"Base directory for this skill: ([^\n]+)", block.get("text", ""))
+                    name = skill_name(str(Path(match[1]) / "SKILL.md")) if match else None
+                    if name:
+                        invocation = next((entry for entry in reversed(list(invocations.values()))
+                            if entry["tool"] == "Skill" and entry["arguments"].get("skill", "").split(":")[-1] == name), {})
+                        complete_skill(name, invocation, position)
+                elif block.get("type") == "tool_result":
+                    invocation = invocations.get(block.get("tool_use_id"))
+                    if invocation is None:
+                        continue
+                    tool, arguments = invocation["tool"], invocation["arguments"]
+                    if tool == "Bash":
+                        command = arguments.get("command", "")
+                        paths = (delivered_paths(command, str(block.get("content", "")), destination, catalog)
+                                 if block.get("is_error") else shell_read_paths(command))
+                        deliver(paths, invocation, position)
+                    elif not block.get("is_error"):
+                        if tool == "Read":
+                            deliver([arguments.get("file_path", "")], invocation, position)
+                        elif tool == "Grep" and arguments.get("output_mode") == "content":
+                            deliver([arguments.get("path", "")], invocation, position)
+                        elif tool == "Skill":
+                            launched = re.fullmatch(r"Launching skill: (?:[\w-]+:)?([\w-]+)", str(block.get("content", "")).strip())
+                            if launched and launched[1] in confirmed:
+                                complete_skill(launched[1], invocation, position)
+    return {"skills": skills, "reads": reads}
+
+
 def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, Any]], destination: Path,
             catalog: Path, confirmed: set[str] | None = None) -> dict[str, Any]:
     """Order skill loads and shell commands as the host recorded them.
@@ -165,6 +256,7 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
     from the tested catalog earlier in the same run.
     """
     confirmed = set() if confirmed is None else confirmed
+    load_order = load_read_observations(host, messages, destination, catalog, confirmed)
     sequence: list[tuple[str, str]] = []
     failed: set[str] = set()
     commands_by_id: dict[str, str] = {}
@@ -268,6 +360,7 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
             "final": final, "protocol_copies": protocol_copies, "skill_paths": skill_paths,
             "foreign_skill_reads": foreign_skill_reads,
             "read_attempts": read_attempts,
+            "load_order": load_order,
             "workspace": destination / "workspace",
             "compacted": any(message.get("subtype") == "compact_boundary" for message in messages)}
 
@@ -314,11 +407,13 @@ def decision_checks(seen: dict[str, Any], expect: dict[str, Any]) -> dict[str, b
         checks["read_before_operation"] = any(kind == "read" and re.search(expect["read"], value) for kind, value in before)
     if "owner_before_read" in expect:
         requirement = expect["owner_before_read"]
-        sequence = seen["sequence"]
-        first_read = next((index for index, (kind, value) in enumerate(sequence)
-                           if kind == "read" and re.search(requirement["read"], value)), None)
-        checks["owner_before_read"] = (first_read is not None
-                                       and ("skill", requirement["owner"]) in sequence[:first_read])
+        observations = seen["load_order"]
+        first_read = next((read for read in observations["reads"]
+                           if re.search(requirement["read"], read["value"])), None)
+        checks["owner_before_read"] = bool(first_read is not None and first_read["chosen_at"] is not None
+            and any(skill["value"] == requirement["owner"]
+                    and skill["completed_at"] < first_read["chosen_at"]
+                    and skill.get("batch") != first_read["batch"] for skill in observations["skills"]))
     if "final" in expect:
         checks["final_matches"] = re.search(expect["final"], seen["final"], re.IGNORECASE) is not None
     if "final_any" in expect:
@@ -388,7 +483,8 @@ def score_turns(host: str, turns: list[dict[str, Any]], destination: Path, catal
             turn_checks = owner_checks(seen, expect["owner"], expect.get("helper")) | decision_checks(seen, expect)
         checks |= {f"turn{number}_{name}": value for name, value in turn_checks.items()}
         reports.append({"turn": number, "loaded_skills": seen["loaded"],
-                        "first_operation": seen["operations"][0][1] if seen["operations"] else None})
+                        "first_operation": seen["operations"][0][1] if seen["operations"] else None,
+                        "load_order": seen["load_order"]})
     # Compaction starts a fresh context, and the startup hook delivers the guide to it again.
     compactions = sum(message.get("subtype") == "compact_boundary" for message in messages)
     checks["single_protocol_delivery"] = protocol_copies <= 1 + compactions
