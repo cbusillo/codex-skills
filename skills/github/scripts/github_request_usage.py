@@ -64,7 +64,7 @@ def record_response(
     CLI commands without HTTP headers are deliberately outside this ledger;
     the report is a lower bound, not an installation-wide audit.
     """
-    if status <= 0:
+    if status <= 0 or headers.get("x-codex-synthetic-response") == "app-actor":
         return
     timestamp = time.time() if now is None else now
     parts = urllib.parse.urlsplit(path).path.strip("/").split("/")
