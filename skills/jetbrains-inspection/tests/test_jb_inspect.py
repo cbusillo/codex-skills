@@ -2491,6 +2491,57 @@ class LaneIdeAdviceTest(unittest.TestCase):
                 opened.assert_called_once()
             self.assertEqual(json.loads((root / ".github" / "github.json").read_text()), metadata)
 
+    def test_low_level_route_error_keeps_lane_context_without_lifecycle_wrapper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            root = home / "repo"
+            self.make_repo(root)
+            make_config_dir(home, "PyCharm2026.1")
+            make_config_dir(home, "IntelliJIdea2026.1")
+            output = io.StringIO()
+            with (
+                patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "", "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root)}),
+                patch.object(jb_inspect.sys, "platform", "darwin"),
+                patch.object(jb_inspect.Path, "home", return_value=home),
+                patch.object(jb_inspect, "discover_identities", return_value=[]),
+                patch.object(jb_inspect, "open_project_for_lifecycle") as opened,
+                patch.object(sys, "argv", [str(SCRIPT_PATH), "get-status", "--repo", str(root), "--open", "--json"]),
+                redirect_stdout(output),
+            ):
+                self.assertEqual(jb_inspect.main(), 3)
+                opened.assert_not_called()
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["error_reason"], "ide_selection_required")
+            self.assertEqual(payload["next_action"], payload["agent_result"]["next_action"])
+            self.assertIn("lanes", payload["hint"])
+            self.assertNotIn("prepared", [entry.name for entry in root.iterdir()])
+
+    def test_explicit_lane_open_with_missing_ide_recommends_configuration_repair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            root = home / "repo"
+            metadata = self.make_repo(root)
+            make_config_dir(home, "IntelliJIdea2026.1")
+            output = io.StringIO()
+            with (
+                patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "", "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root)}),
+                patch.object(jb_inspect.sys, "platform", "darwin"),
+                patch.object(jb_inspect.Path, "home", return_value=home),
+                patch.object(jb_inspect, "find_exact_route", return_value=None),
+                patch.object(jb_inspect, "open_project_for_lifecycle") as opened,
+                patch.object(sys, "argv", [str(SCRIPT_PATH), "open-worktree", "--repo", str(root), "--ide", "PyCharm", "--json"]),
+                redirect_stdout(output),
+            ):
+                self.assertEqual(jb_inspect.main(), 3)
+                opened.assert_not_called()
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["error_reason"], "ide_config_missing")
+            advice = payload["agent_result"]["next_action"]
+            self.assertEqual(payload["next_action"], advice)
+            self.assertIn("launch", advice)
+            self.assertNotIn("open-worktree --ide", advice)
+            self.assertEqual(json.loads((root / ".github" / "github.json").read_text()), metadata)
+
     def test_selected_lane_configuration_failure_preserves_lane_policy(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp).resolve()
@@ -2503,7 +2554,6 @@ class LaneIdeAdviceTest(unittest.TestCase):
             ):
                 with self.assertRaises(jb_inspect.InspectError) as raised:
                     jb_inspect.jetbrains_config_dirs(context)
-            raised.exception.payload["context"] = context
             payload = jb_inspect.error_payload(raised.exception)
             jb_inspect.apply_verdict(payload)
             self.assertEqual(payload["error_reason"], "ide_config_missing")

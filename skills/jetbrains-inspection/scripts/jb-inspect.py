@@ -698,9 +698,10 @@ def normalize_reason(value: Any) -> str:
 def lane_ide_selection_advice(reason: str, context: Any) -> str | None:
     if not isinstance(context, dict) or reason not in IDE_ROUTE_CONFIGURATION_REASONS:
         return None
-    if context.get("inspection_lane"):
+    if context.get("inspection_lane") or (context.get("inspection_lanes") and reason != "ide_selection_required"):
         return (
-            "Check the configured lane's IDE and installed IDE/version before another assessment. "
+            "Check the selected lane's IDE and installed IDE/version; launch that IDE once "
+            "to create its configuration before another assessment or open. "
             "Preserve qualityGate.inspection.lanes in .github/github.json; ask before changing lane policy."
         )
     if context.get("inspection_lanes"):
@@ -10649,6 +10650,7 @@ def jetbrains_config_dirs(context: dict[str, Any]) -> list[Path]:
                 "ide_selection": selection.public() if selection else None,
                 "available_config_dirs": available,
                 "error_reason": "ide_config_missing",
+                "context": public_context(context),
                 "next_action": lane_ide_selection_advice("ide_config_missing", context) or "Launch the selected JetBrains IDE once, or update .github/github.json to name an installed JetBrains IDE/version.",
                 "hint": lane_ide_selection_advice("ide_config_missing", context) or "Use product-level metadata such as jetbrains.ide = WebStorm for latest stable. EAP requires explicit metadata such as jetbrains.ideChannel = eap and jetbrains.ideVersion = 2026.2.",
                 "matched_product": product.display_name if product else None,
@@ -10662,6 +10664,7 @@ def jetbrains_config_dirs(context: dict[str, Any]) -> list[Path]:
         {
             "available_config_dirs": [candidate.name for candidate in sorted(candidates, key=lambda item: item.name)],
             "error_reason": "ide_selection_required",
+            "context": public_context(context),
             "next_action": lane_ide_selection_advice("ide_selection_required", context) or "Add preferred JetBrains IDE metadata to .github/github.json, for example jetbrains.ide = WebStorm, PyCharm, or IntelliJ IDEA. Use --ide only for a one-off run.",
             "hint": lane_ide_selection_advice("ide_selection_required", context) or "Set jetbrains.ide in repo metadata so the helper updates the intended JetBrains product instead of guessing across installed IDEs.",
         },
