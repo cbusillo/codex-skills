@@ -18,7 +18,7 @@ Supported config fields:
 - `timezone`
 - `default_window`
 - `report_recipient`
-- `people_index`: optional private people index path for recipient tailoring
+- `people_index`: optional private people index path for recipient tailoring and for the comment radar's Director names and automation accounts; the radar otherwise reads the people skill's default indexes
 - `subjects`
 - `repo_owners`
 - `repositories`

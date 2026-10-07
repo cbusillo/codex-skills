@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -34,9 +35,22 @@ IDENTITY_SCRIPT_DIR = ROOT / "github" / "scripts"
 if str(IDENTITY_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(IDENTITY_SCRIPT_DIR))
 import github_identity
+import github_direction_next
 
 
-GH = os.environ.get("GITHUB_UNANSWERED_COMMENTS_GH") or rollup.GH
+def load_sibling_module(name: str, path: Path) -> Any:
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+resolve_person = load_sibling_module("resolve_person", ROOT / "people" / "scripts" / "resolve_person.py")
+director_questions = load_sibling_module("oq", ROOT / "supervisor" / "scripts" / "oq.py")
+
+
+GH =os.environ.get("GITHUB_UNANSWERED_COMMENTS_GH") or rollup.GH
 DEFAULT_CONFIG = ROOT / ".local/github-work-rollup.yaml"
 DEFAULT_WINDOW = "30d"
 DEFAULT_BOT_LOGINS = ()
@@ -44,6 +58,10 @@ MAX_WORKERS = 8
 EXIT_CLEAR = 0
 EXIT_ATTENTION = 2
 EXIT_DEGRADED = 3
+OPENING_POST = "issue_body"
+WAITING_LABEL = "plan:waiting"
+DIRECTOR_ROLE_WORDS = ("Director",)
+POSSIBLE_AUTOMATION_LOGIN = re.compile(r"(?:^|[-_])(?:bot|automation)$", re.IGNORECASE)
 REACTIONS_QUERY = """
 query($id: ID!, $after: String) {
   node(id: $id) {
@@ -108,6 +126,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--thread", action="append", default=[], help="Full-history OWNER/REPO#NUMBER or GitHub issue/PR URL.")
     parser.add_argument("--self-login", action="append", default=[], help="Human owner login whose reactions and replies count.")
     parser.add_argument("--bot-login", action="append", default=[], help="Automation login whose targeted replies count.")
+    parser.add_argument(
+        "--people-index",
+        type=Path,
+        help="Private people YAML naming the Director and other people's automation accounts; defaults to the people skill's index.",
+    )
     parser.add_argument("--window", help="Lookback such as 24h, 30d, or 12w.")
     parser.add_argument("--since", help="UTC ISO timestamp for the scan start.")
     parser.add_argument("--until", help="UTC ISO timestamp for the scan end.")
@@ -168,6 +191,7 @@ def resolve_settings(
         "until": until.astimezone(timezone.utc),
         "window_label": window_label,
         "limit_repos": args.limit_repos,
+        "people_index": args.people_index or (Path(str(config["people_index"])) if config.get("people_index") else None),
     }
 
 
@@ -279,6 +303,73 @@ def normalize_login(value: object) -> str:
     return str(value or "").strip().casefold().removeprefix("@")
 
 
+def github_logins(person: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Return a person's own GitHub logins and the automation logins that act for them."""
+    own: list[str] = []
+    automation: list[str] = []
+    entries = [person.get("github")]
+    contacts = person.get("contacts")
+    if isinstance(contacts, dict):
+        entries.append(contacts.get("github"))
+    for entry in entries:
+        if isinstance(entry, str):
+            own.append(entry)
+        elif isinstance(entry, dict):
+            own.extend(rollup.as_str_list(entry.get("username")) + rollup.as_str_list(entry.get("handle")))
+            automation.extend(rollup.as_str_list(entry.get("bot_usernames")) + rollup.as_str_list(entry.get("bot_handles")))
+    return (
+        [login for login in map(normalize_login, own) if login],
+        [login for login in map(normalize_login, automation) if login],
+    )
+
+
+def people_identities(self_logins: set[str], index_path: Path | None) -> dict[str, Any]:
+    """Read who acts for whom from the people index.
+
+    Index entries only label accounts: they never exclude anyone from the
+    report, since the Director is inferred from scanned repository owners.
+    Only configured automation (--bot-login and its sources) is excluded.
+    """
+    empty = {"director_names": [], "director_ambiguous": False, "automation": {}}
+    if index_path is not None and not index_path.expanduser().is_file():
+        # An index someone named must exist; only the default index is optional.
+        return {**empty, "status": "error", "error": f"people index {index_path} does not exist"}
+    try:
+        if index_path is not None:
+            status, people, _sources = resolve_person.load_scoped_people(scope="global", global_index=index_path)
+        else:
+            status, people, _sources = resolve_person.load_scoped_people()
+    except resolve_person.PeopleConfigError as exc:
+        return {**empty, "status": "error", "error": str(exc)}
+    directors = [person for person in people if set(github_logins(person)[0]) & self_logins]
+    automation: dict[str, str] = {}
+    for person in people:
+        label = str(person.get("preferred_reference") or person.get("display_name") or person.get("id") or "")
+        for login in github_logins(person)[1]:
+            automation[login] = label
+    if len(directors) != 1:
+        # Scanning another person's repository makes them match too; use no
+        # names rather than guess which match is the Director.
+        return {**empty, "status": status, "director_ambiguous": len(directors) > 1, "automation": automation}
+    [director] = directors
+    names = [
+        *rollup.as_str_list(director.get("display_name")),
+        *rollup.as_str_list(director.get("preferred_reference")),
+        *rollup.as_str_list(director.get("aliases")),
+    ]
+    return {**empty, "status": status, "director_names": rollup.unique(names), "automation": automation}
+
+
+def author_class(author: str, automation_logins: dict[str, str]) -> tuple[str, str | None]:
+    """Say whether an external author is a person, a known automation account, or looks like automation."""
+    login = normalize_login(author)
+    if login in automation_logins:
+        return "automation", automation_logins[login] or None
+    if POSSIBLE_AUTOMATION_LOGIN.search(login):
+        return "possible_automation", None
+    return "person", None
+
+
 def is_github_bot(author: str, author_type: str) -> bool:
     login = normalize_login(author)
     return normalize_login(author_type) == "bot" or login.endswith("[bot]")
@@ -286,7 +377,8 @@ def is_github_bot(author: str, author_type: str) -> bool:
 
 def is_external_comment(comment: Comment, self_logins: set[str], bot_logins: set[str]) -> bool:
     author = normalize_login(comment.author)
-    if not author or not comment.body.strip():
+    # Opening an issue or PR needs attention even with an empty description.
+    if not author or (not comment.body.strip() and comment.kind != OPENING_POST):
         return False
     if author in self_logins or author in bot_logins:
         return False
@@ -356,6 +448,33 @@ def normalize_review_comment(repo: str, item: dict[str, Any]) -> Comment | None:
     )
 
 
+def normalize_opening_post(repo: str, item: dict[str, Any]) -> Comment | None:
+    """Treat the issue or PR description as its author's first message.
+
+    Its edit time comes from GraphQL ``lastEditedAt``: the REST ``updated_at``
+    moves with every comment and label change.
+    """
+    number = item.get("number")
+    thread_id = item.get("id")
+    if not isinstance(number, int) or not isinstance(thread_id, int):
+        return None
+    user = item.get("user") if isinstance(item.get("user"), dict) else {}
+    created_at = str(item.get("created_at") or "")
+    return Comment(
+        repo=repo,
+        number=number,
+        kind=OPENING_POST,
+        comment_id=thread_id,
+        author=str(user.get("login") or ""),
+        author_type=str(user.get("type") or ""),
+        created_at=created_at,
+        updated_at=created_at,
+        body=str(item.get("body") or ""),
+        url=str(item.get("html_url") or ""),
+        node_id=str(item.get("node_id") or ""),
+    )
+
+
 def normalize_review(repo: str, number: int, item: dict[str, Any]) -> Comment | None:
     review_id = item.get("id")
     if not isinstance(review_id, int):
@@ -379,6 +498,29 @@ def normalize_review(repo: str, number: int, item: dict[str, Any]) -> Comment | 
 
 def format_api_timestamp(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def opened_threads(repo: str, since: datetime, until: datetime, *, per_page: int = 100) -> list[dict[str, Any]]:
+    """Read issues and PRs created in the window, newest first, stopping at ``since``."""
+    opened: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        query = urlencode({"state": "all", "sort": "created", "direction": "desc", "per_page": per_page, "page": page})
+        payload = run_json([GH, "api", f"repos/{repo}/issues?{query}"])
+        if not isinstance(payload, list):
+            raise rollup.RollupError(f"GitHub returned an invalid issue page for {repo}.")
+        items = [item for item in payload if isinstance(item, dict)]
+        for item in items:
+            created_at = rollup.parse_timestamp(str(item.get("created_at") or ""))
+            if created_at is None:
+                raise rollup.RollupError(f"GitHub returned an issue without a creation time for {repo}.")
+            if created_at < since:
+                return opened
+            if created_at <= until:
+                opened.append(item)
+        if len(payload) < per_page:
+            return opened
+        page += 1
 
 
 def repository_activity(
@@ -417,6 +559,15 @@ def repository_activity(
             ):
                 continue
             candidate_ids.setdefault(comment.thread_key, set()).add(comment.key)
+    try:
+        threads = opened_threads(repo, since, until)
+    except rollup.RollupError as exc:
+        errors.append({"repo": repo, "lane": "opened_threads", "error": rollup.trim(str(exc))})
+        threads = []
+    for item in threads:
+        opening = normalize_opening_post(repo, item)
+        if opening is not None and is_external_comment(opening, self_logins, bot_logins):
+            candidate_ids.setdefault(opening.thread_key, set()).add(opening.key)
     return candidate_ids, errors
 
 
@@ -433,6 +584,9 @@ def collect_thread(
         return None, [], [{"repo": repo, "lane": "thread", "error": "GitHub returned an invalid thread payload."}]
 
     comments: list[Comment] = []
+    opening = normalize_opening_post(repo, thread)
+    if opening is not None:
+        comments.append(opening)
     try:
         issue_items = api_list(f"repos/{repo}/issues/{number}/comments?per_page=100")
         comments.extend(
@@ -591,6 +745,11 @@ def review_thread_root(comment: Comment) -> int | None:
 
 
 def exact_comment_reference(response: Comment, external: Comment) -> bool:
+    if external.kind == OPENING_POST:
+        # The thread URL followed by a fragment links a comment, not the description.
+        if external.url and re.search(rf"{re.escape(external.url)}(?![A-Za-z0-9/#-])", response.body):
+            return True
+        return bool(re.search(rf"#issue-{external.comment_id}(?!\d)", response.body))
     if external.url and re.search(rf"{re.escape(external.url)}(?![A-Za-z0-9])", response.body):
         return True
     fragments = (
@@ -621,10 +780,13 @@ def response_targets(
         ]
         return len(eligible) == 1 and eligible[0].key == external.key
     if allow_unambiguous_mention and mentions_login(response.body, external.author):
+        # A mention after the author's later comments answers those comments;
+        # the opening post never makes them ambiguous.
         eligible = [
             candidate
             for candidate in external_comments
             if normalize_login(candidate.author) == normalize_login(external.author)
+            and (candidate.kind != OPENING_POST or external.kind == OPENING_POST)
             and response_is_after(response, candidate, until)
         ]
         return len(eligible) == 1 and eligible[0].key == external.key
@@ -684,6 +846,7 @@ def comment_states_for_thread(
     bot_logins: set[str],
     reactions_by_comment: dict[tuple[str, int], list[Reaction] | None],
     until: datetime | None = None,
+    automation_logins: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     effective_until = until or datetime.max.replace(tzinfo=timezone.utc)
     owner_logins = self_logins - bot_logins
@@ -756,6 +919,7 @@ def comment_states_for_thread(
             attention_state = "seen_unanswered"
         else:
             attention_state = "handled"
+        author_kind, automation_for = author_class(comment.author, automation_logins or {})
 
         results.append(
             {
@@ -769,6 +933,8 @@ def comment_states_for_thread(
                 "comment_id": comment.comment_id,
                 "comment_url": comment.url,
                 "author": comment.author,
+                "author_class": author_kind,
+                "automation_for": automation_for,
                 "created_at": comment.created_at,
                 "updated_at": comment.updated_at,
                 "body_excerpt": compact_body(comment.body),
@@ -781,6 +947,124 @@ def comment_states_for_thread(
             }
         )
     return results
+
+
+def names_director(text: str, terms: list[str], logins: set[str] | frozenset[str] = frozenset()) -> bool:
+    def pattern(term: str) -> str:
+        name = re.escape(term.removeprefix("@"))
+        if normalize_login(term) in logins:
+            # A login inside OWNER/REPO or a URL names a repository, not the Director.
+            return rf"(?<![\w/-])@?{name}(?![\w/-])"
+        return rf"(?<![\w-])@?{name}(?![\w-])"
+
+    return any(re.search(pattern(term), text, flags=re.IGNORECASE) for term in terms if term.strip())
+
+
+def current_director_wait(
+    reason: str, terms: list[str], logins: set[str] | frozenset[str] = frozenset()
+) -> str | None:
+    """Classify a recorded wait that is on the Director now.
+
+    Only the first step of a sequence is current ("Mike's testing, then Chris"),
+    and negated clauses ("no Director decision") name nobody. Wording of a hold
+    the Director imposed ("Chris to resume ...", "Chris selects it") makes it a
+    ``director_hold``: still listed, since that wording can also describe a real
+    pending decision, but not attention on its own. Anything else is a
+    ``decision``.
+    """
+    current = re.split(
+        r"(?:[,;]\s*|\s+)(?:then|thereafter|followed by|after which)\b", reason, maxsplit=1, flags=re.IGNORECASE
+    )[0]
+    asserted = re.sub(r"\b(?:no|not|nothing|without|never)\b[^.;]*", "", current, flags=re.IGNORECASE)
+    if not names_director(asserted, terms, logins):
+        return None
+    if re.search(r"\b(?:resum\w*|park\w*|holds?|select\w*|reprioriti\w*|revisit\w*)\b", asserted, re.IGNORECASE):
+        return "director_hold"
+    return "decision"
+
+
+def director_wait_reason(
+    repo: str, issue: dict[str, Any], terms: list[str], logins: set[str] | frozenset[str] = frozenset()
+) -> tuple[str, str] | None:
+    """Return the recorded wait on the Director now and its kind, preferring a decision."""
+    body = str(issue.get("body") or "")
+    sections = github_direction_next.section_map(body)
+    status = next((text for title, text in sections.items() if title.casefold() == "current status"), body)
+    record = {"repo": repo, "number": issue.get("number"), "url": str(issue.get("html_url") or "")}
+    found: tuple[str, str] | None = None
+    for wait in github_direction_next.waiting_records(record, status):
+        kind = None if wait["non_external"] else current_director_wait(wait["waiting_for"], terms, logins)
+        if kind == "decision":
+            return str(wait["waiting_for"]), kind
+        if kind and found is None:
+            found = str(wait["waiting_for"]), kind
+    return found
+
+
+def question_gap(comments: list[Comment], director_logins: set[str], decision_authors: set[str]) -> str | None:
+    """Say why a wait on the Director has no open question, or None when one is open."""
+    director = "director"
+    discussion = [
+        {
+            "body": comment.body,
+            "author": director if normalize_login(comment.author) in director_logins else normalize_login(comment.author),
+            "url": comment.url,
+            "id": comment.comment_id,
+        }
+        for comment in sorted(comments, key=event_sort_key)
+        if comment.kind == "issue_comment"
+    ]
+    asked = director_questions.questions(discussion, director, decision_authors)
+    if not asked:
+        return "no_question"
+    if all(question["status"] == "answered" for question in asked):
+        return "questions_answered"
+    return None
+
+
+def unasked_director_waits(
+    repo: str,
+    terms: list[str],
+    director_logins: set[str],
+    decision_authors: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    query = urlencode({"state": "open", "labels": WAITING_LABEL, "per_page": 100})
+    try:
+        issues = api_list(f"repos/{repo}/issues?{query}")
+    except rollup.RollupError as exc:
+        return [], [{"repo": repo, "lane": "director_waits", "error": rollup.trim(str(exc))}]
+    rows: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for issue in issues:
+        if "pull_request" in issue or not isinstance(issue.get("number"), int):
+            continue
+        wait = director_wait_reason(repo, issue, terms, director_logins)
+        if wait is None:
+            continue
+        waiting_for, wait_kind = wait
+        number = issue["number"]
+        try:
+            items = api_list(f"repos/{repo}/issues/{number}/comments?per_page=100")
+        except rollup.RollupError as exc:
+            errors.append({"repo": repo, "lane": f"director_waits/{number}", "error": rollup.trim(str(exc))})
+            continue
+        comments = [comment for item in items if (comment := normalize_issue_comment(repo, item)) is not None]
+        gap = question_gap(comments, director_logins, decision_authors)
+        if gap is None:
+            continue
+        rows.append(
+            {
+                "repo": repo,
+                "number": number,
+                "title": str(issue.get("title") or ""),
+                "url": str(issue.get("html_url") or ""),
+                "waiting_for": compact_body(waiting_for),
+                "wait_kind": wait_kind,
+                "question_gap": gap,
+                "updated_at": str(issue.get("updated_at") or ""),
+            }
+        )
+    return rows, errors
 
 
 def merge_candidate_ids(
@@ -804,9 +1088,14 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
 
     repositories = resolve_repositories(settings)
     self_logins.update(normalize_login(repo.split("/", 1)[0]) for repo in repositories if "/" in repo)
-    self_logins.difference_update(bot_logins)
     candidate_ids: dict[tuple[str, int], set[tuple[str, int]]] = {}
     coverage_errors: list[dict[str, str]] = []
+    people = people_identities(self_logins - bot_logins, settings.get("people_index"))
+    if people["status"] == "error":
+        coverage_errors.append({"repo": "-", "lane": "people_index", "error": rollup.trim(people["error"])})
+    self_logins.difference_update(bot_logins)
+    wait_terms = rollup.unique([*sorted(self_logins), *people["director_names"], *DIRECTOR_ROLE_WORDS])
+    unasked_waits: list[dict[str, Any]] = []
 
     worker_count = min(MAX_WORKERS, max(1, len(repositories)))
     if settings["scan_repository_scope"]:
@@ -822,10 +1111,19 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
                 ): repo
                 for repo in repositories
             }
+            wait_futures = [
+                executor.submit(unasked_director_waits, repo, wait_terms, self_logins, bot_logins)
+                for repo in repositories
+            ]
             for future in as_completed(futures):
                 repo_candidates, repo_errors = future.result()
                 merge_candidate_ids(candidate_ids, repo_candidates)
                 coverage_errors.extend(repo_errors)
+            for future in as_completed(wait_futures):
+                wait_rows, wait_errors = future.result()
+                unasked_waits.extend(wait_rows)
+                coverage_errors.extend(wait_errors)
+        unasked_waits.sort(key=lambda row: (row["repo"], row["number"]))
 
     full_history_threads = set(settings["threads"])
     for thread_key in full_history_threads:
@@ -893,6 +1191,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
                 bot_logins,
                 reactions_by_comment,
                 settings["until"],
+                people["automation"],
             )
         )
 
@@ -912,11 +1211,12 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
         )
     }
     coverage_errors.sort(key=lambda item: (item.get("repo") or "", item.get("lane") or "", item.get("error") or ""))
-    status = "degraded" if coverage_errors else "attention" if attention else "clear"
+    decisions = [row for row in unasked_waits if row["wait_kind"] == "decision"]
+    status = "degraded" if coverage_errors else "attention" if attention or decisions else "clear"
     return {
         "ok": not coverage_errors,
-        "schema_version": 2,
-        "script_version": 2,
+        "schema_version": 3,
+        "script_version": 3,
         "generated_at": format_api_timestamp(datetime.now(timezone.utc)),
         "status": status,
         "window": {
@@ -938,10 +1238,26 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             "external_comments": len(comment_states),
             "attention": len(attention),
             **state_counts,
+            "unasked_director_waits": len(decisions),
+            "unasked_director_holds": len(unasked_waits) - len(decisions),
+            **{
+                f"author_{kind}": sum(1 for item in attention if item["author_class"] == kind)
+                for kind in ("person", "automation", "possible_automation")
+            },
         },
         "attention": attention,
+        "unasked_director_waits": unasked_waits,
+        "people_index": {
+            "status": people["status"],
+            "director_named": bool(people["director_names"]),
+            "director_ambiguous": people["director_ambiguous"],
+            "automation_logins": len(people["automation"]),
+        },
         "limitations": [
-            "Repository scans cover issue/PR conversation comments and inline PR review comments; full-history --thread scans also cover non-empty PR review bodies.",
+            "Repository scans cover issues and PRs opened in the window, issue/PR conversation comments and inline PR review comments; full-history --thread scans also cover the opening post and non-empty PR review bodies.",
+            "An edit to an issue or PR description is caught only by a full-history --thread scan or when the thread is opened in the window.",
+            "Only configured automation is excluded; people-index automation accounts (contacts.github.bot_usernames) are labeled with who they act for, and unlisted logins ending in bot or automation are marked possible_automation.",
+            "Waits on the Director are open plan:waiting issues whose current Waiting for step names the Director's login, a people-index name, or the Director role, with no Director or Owner question still open; negated mentions are left out, and waits worded as the Director's own hold (resume, park, hold, select, revisit) are listed as director_hold without raising attention; repository scans only.",
             "Any owner reaction after the current comment version proves personal acknowledgement; owner replies require an exact permalink or an inline-review thread with one eligible external comment.",
             "A targeted automation reply may also use an unambiguous single-author mention, but it never proves the owner saw the comment.",
             "External comments outside the configured lookback window are not included.",
@@ -959,8 +1275,10 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"- Portfolio window: `{window['since']}` through `{window['until']}`",
         f"- Full-history threads: {payload['coverage']['full_history_thread_count']}",
         f"- Repositories scanned: {payload['coverage']['repository_count']}",
-        f"- Comments needing attention: {counts['attention']}",
-        f"- Handled comments: {counts['handled']}",
+        f"- Messages needing attention: {counts['attention']}",
+        f"- Handled messages: {counts['handled']}",
+        f"- Waits on you with no open question: {counts.get('unasked_director_waits', 0)}"
+        f" (plus {counts.get('unasked_director_holds', 0)} worded as a hold)",
     ]
     sections = (
         ("needs_your_eyes", "Needs Your Eyes"),
@@ -977,8 +1295,15 @@ def render_markdown(payload: dict[str, Any]) -> str:
             label = f"{item['repo']}#{item['number']}"
             title = item["title"] or label
             lines.append("")
-            lines.append(f"- [{label}: {title}]({item['thread_url']}) — `@{item['author']}` at `{item['created_at']}`")
-            lines.append(f"  - [Open comment]({item['comment_url']})")
+            author = f"`@{item['author']}`"
+            if item.get("author_class") == "automation":
+                author += f" (automation for {item.get('automation_for') or 'another person'})"
+            elif item.get("author_class") == "possible_automation":
+                author += " (possibly automation; not in the people index)"
+            opened = item.get("comment_kind") == OPENING_POST
+            lines.append(f"- [{label}: {title}]({item['thread_url']}) — {author} {'opened it' if opened else 'commented'} at `{item['created_at']}`")
+            if not opened:
+                lines.append(f"  - [Open comment]({item['comment_url']})")
             if item["public_response_actor"] == "bot":
                 lines.append(f"  - [Bot response]({item['public_response_url']})")
             evidence = item.get("owner_seen_evidence")
@@ -986,7 +1311,29 @@ def render_markdown(payload: dict[str, Any]) -> str:
                 lines.append(f"  - Owner reaction: `{evidence.get('content') or 'reaction'}`")
             if item["body_excerpt"]:
                 lines.append(f"  - {item['body_excerpt']}")
-    if not payload["attention"]:
+    waits = payload.get("unasked_director_waits") or []
+    for kind, heading in (
+        ("decision", "Waiting On You — No Question Asked"),
+        ("director_hold", "Waiting On You, Worded As A Hold — No Question Asked"),
+    ):
+        rows = [wait for wait in waits if wait.get("wait_kind", "decision") == kind]
+        if not rows:
+            continue
+        lines.extend(["", f"## {heading}"])
+        for wait in rows:
+            reason = "no question was posted" if wait["question_gap"] == "no_question" else "every question is answered"
+            lines.append("")
+            lines.append(f"- [{wait['repo']}#{wait['number']}: {wait['title']}]({wait['url']}) — {reason}")
+            lines.append(f"  - Waiting for: {wait['waiting_for']}")
+    people = payload.get("people_index") or {}
+    if people and not people.get("director_named"):
+        detail = (
+            "several people in the people index match the scanned owners"
+            if people.get("director_ambiguous")
+            else "the people index does not name the Director"
+        )
+        lines.extend(["", f"Waits that name the Director only by name were not matched: {detail}."])
+    if not payload["attention"] and not waits:
         message = (
             "No surfaced comments require attention, but coverage is incomplete; this is not an all-clear."
             if payload["status"] == "degraded"
@@ -1007,8 +1354,8 @@ def render_markdown(payload: dict[str, Any]) -> str:
 def render_failure(error: str, fmt: str) -> str:
     payload = {
         "ok": False,
-        "schema_version": 2,
-        "script_version": 2,
+        "schema_version": 3,
+        "script_version": 3,
         "generated_at": format_api_timestamp(datetime.now(timezone.utc)),
         "status": "degraded",
         "error": error,

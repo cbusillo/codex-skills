@@ -146,6 +146,26 @@ def upsert_person(data: dict[str, Any], args: argparse.Namespace) -> tuple[str, 
                 preferences[field] = value
                 changed.append(f"preferences.{field}")
 
+    bots = split_csv(args.github_bot)
+    if bots:
+        contacts = ensure_mapping(existing, "contacts")
+        github = contacts.get("github")
+        if isinstance(github, str):
+            github = {"username": github}
+        elif not isinstance(github, dict):
+            github = {}
+        contacts["github"] = github
+        current = github.get("bot_usernames")
+        if not isinstance(current, list):
+            current = []
+        merged = [item for item in current if isinstance(item, str) and item.strip()]
+        for bot in bots:
+            if bot.casefold() not in {item.casefold() for item in merged}:
+                merged.append(bot)
+        if merged != current:
+            github["bot_usernames"] = merged
+            changed.append("contacts.github.bot_usernames")
+
     if args.details_file is not None:
         resolve_person.validate_detail_file(args.details_file, 0)
         if existing.get("details_file") != args.details_file:
@@ -181,6 +201,11 @@ def parse_args() -> argparse.Namespace:
     upsert.add_argument("--display-name", help="Human display name")
     upsert.add_argument("--preferred-reference", help="Preferred short reference")
     upsert.add_argument("--github", help="GitHub username without @")
+    upsert.add_argument(
+        "--github-bot",
+        action="append",
+        help="GitHub automation account that acts for this person; repeat or comma-separate",
+    )
     upsert.add_argument("--alias", action="append", help="Alias; repeat or comma-separate")
     upsert.add_argument("--role", action="append", help="Role; repeat or comma-separate")
     upsert.add_argument("--company", help="Organization company")
