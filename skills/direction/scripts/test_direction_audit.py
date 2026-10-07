@@ -1578,13 +1578,13 @@ def test_active_merged_status_preserves_split_remainders_and_unproven_delivery()
         raise AssertionError(path)
     before = json.dumps(rows, sort_keys=True)
     report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
-    assert not report["complete"] and json.dumps(rows, sort_keys=True) == before
+    assert report["complete"] and json.dumps(rows, sort_keys=True) == before
     found = {row["number"]: row for row in report["items"]}
     assert set(found) == {1, 2, 3, 4}
     assert found[1]["selection_exclusion"] and not found[2]["selection_exclusion"]
-    assert not found[3]["evidence_complete"] and not found[4]["evidence_complete"]
+    assert found[3]["evidence_complete"] and found[4]["evidence_complete"]
     assert found[3]["selection_exclusion"] and found[4]["selection_exclusion"]
-    assert {row["number"] for row in report["unavailable"]} == {3, 4}
+    assert not report["unavailable"]
     assert all(row["review_required"] and not row["completion_proven"] for row in found.values())
     assert calls.count("repos/owner/catalog/pulls/71") == 1
     for base, merged, updated in (("work/root", "2026-10-06T04:36:00Z", old), ("main", None, old), ("main", "2026-10-06T04:36:00Z", "2026-10-06T04:36:00Z")):
@@ -1594,7 +1594,7 @@ def test_active_merged_status_preserves_split_remainders_and_unproven_delivery()
             return {**value, "merged_at": merged, "base": {"ref": base}} if "/pulls/" in args[1] else value
         report = module.stale_wait_report([row], "owner/catalog", fetch=unproven)
         if base == "main" and merged is not None:
-            assert not report["complete"] and report["items"][0]["selection_exclusion"]
+            assert report["complete"] and report["items"][0]["selection_exclusion"]
         else:
             assert not report["items"]
     def unavailable(_args: list[str]) -> Any:
@@ -1693,7 +1693,7 @@ def test_healthy_remainders_and_person_holds_do_not_create_false_coverage_gaps()
                         if "/pulls/" in args[1] else {"state": "closed", "pull_request": {}})
             report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
             needs_proof = action.startswith("Supervisor") and waiting == "None."
-            assert report["complete"] is not needs_proof
+            assert report["complete"]
             if needs_proof:
                 assert report["items"][0]["selection_exclusion"]
                 assert not report["items"][0]["completion_proven"]
@@ -1802,6 +1802,121 @@ def test_active_pending_and_bold_person_holds_preserve_remaining_work() -> None:
                     if "/pulls/" in args[1] else {"state": "closed", "pull_request": {}})
         found = module.stale_wait_report([row], "owner/catalog", fetch=fetch)["items"][0]
         assert found["recorded_hold_pending"] and not found["selection_exclusion"] and not found["completion_proven"]
+
+
+def test_edited_supervisor_closeout_waits_find_their_own_landed_source() -> None:
+    module = load()
+    # #1211 named its PR in State; #3073 named it only in a released handoff.
+    routing = (
+        "## Current Status\nState: Implementation handed off — [PR #1294]"
+        "(https://github.com/owner/catalog/pull/1294) is green and reviewed.\n"
+        "Next action: Supervisor routes train entry/landing, reconciles the runtime checkout "
+        "with the final landing SHA, verifies this issue's finish line on main, "
+        "then closes it and retires the task worktree.\n"
+        "Blocked by: No native issue blocker.\n"
+        "Waiting for: Supervisor train routing and confirmed landing.\n"
+    )
+    closeout = (
+        "## Current Status\nState: Invitation source is deployed; the existing receipt is verified.\n"
+        "Next action: Supervisor reconciles this delivery issue and its earlier source "
+        "worktree/evidence. The exact candidate's visible invitation is already present; "
+        "actual acceptance and gated release/drill proof remain #2682.\n"
+        "Blocked by: No source/deployment or current-candidate receipt blocker identified.\n"
+        "Waiting for: Supervisor delivery closeout; Justin's acceptance belongs to #2682. "
+        "No new Director decision is open.\n"
+    )
+    rows = [{**issue(n, "Landed delivery", labels=("plan:active",), body=body),
+             "updated_at": "2026-10-07T20:00:00Z",
+             "issue_dependencies_summary": {"total_blocked_by": 0}}
+            for n, body in ((1211, routing), (3073, closeout))]
+    calls = []
+    def fetch(args: list[str]) -> Any:
+        assert args[-2:] == ["--method", "GET"]
+        path = args[1]; calls.append(path)
+        if path == "repos/owner/catalog":
+            return {"default_branch": "main"}
+        if path == "repos/owner/catalog/issues/2682":
+            return {"state": "open"}
+        if "/comments?" in path:
+            return [{"body": "A prerequisite: https://github.com/owner/catalog/pull/3078"},
+                    {"body": "Released claim: source https://github.com/owner/catalog/pull/3087"}]
+        if "/pulls/" in path:
+            n = int(path.rsplit("/", 1)[1])
+            return {"merged_at": None if n == 3078 else "2026-10-06T12:00:00Z",
+                    "base": {"ref": "main"}, "body": f"Refs #{1211 if n == 1294 else 3073 if n == 3087 else 999}"}
+        raise AssertionError(path)
+    before = json.dumps(rows, sort_keys=True)
+    for label in ("plan:active", "plan:waiting"):
+        selected = [{**row, "labels": [{"name": label}]} for row in rows]
+        report = module.stale_wait_report(selected, "owner/catalog", fetch=fetch)
+        assert report["complete"] and not report["unavailable"]
+        found = {row["number"]: row for row in report["items"]}
+        assert set(found) == {1211, 3073}
+        assert all(row["review_required"] and not row["completion_proven"] for row in found.values())
+        assert found[3073]["evidence"][0]["url"].endswith("/pull/3087")
+    assert json.dumps(rows, sort_keys=True) == before
+    assert not any("issues/1211/comments" in path for path in calls)
+
+
+def test_closeout_wait_preserves_real_holds_partial_stacks_and_unknown_history() -> None:
+    module = load()
+    row = {**issue(3, "Closeout", labels=("plan:active",), body=
+                   "## Current Status\nState: Source complete.\n"
+                   "Next action: Supervisor closes this issue.\nBlocked by: None.\n"
+                   "Waiting for: Supervisor delivery closeout.\n"),
+           "updated_at": "2026-10-07T20:00:00Z",
+           "issue_dependencies_summary": {"total_blocked_by": 0}}
+    def fetch(args: list[str]) -> Any:
+        assert args[-2:] == ["--method", "GET"]
+        path = args[1]
+        if "/comments?" in path:
+            return [{"body": "Source https://github.com/owner/catalog/pull/71"}]
+        if path == "repos/owner/catalog/issues/3":
+            return {"state": "open"}
+        if "/pulls/" in path:
+            return {"merged_at": "2026-10-06T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #3"}
+        if path == "repos/owner/catalog":
+            return {"default_branch": "main"}
+        raise AssertionError(path)
+    for patch_field in (
+        "Waiting for: Supervisor routing and Justin's acceptance.",
+        "Waiting for: Justin to test the source.",
+        "Waiting for: Tomorrow's release and rollback drill.",
+        "Waiting for: Supervisor delivery closeout; Justin's acceptance belongs to #3. No new Director decision is open.",
+    ):
+        held = {**row, "body": row["body"].replace("Waiting for: Supervisor delivery closeout.", patch_field)}
+        assert not module.stale_wait_report([held], "owner/catalog", fetch=fetch)["items"]
+    for change in ({"merged_at": None}, {"base": {"ref": "work/root"}}, {"body": "Refs #4"}):
+        def incomplete(args: list[str]) -> Any:
+            value = fetch(args)
+            return {**value, **change} if "/pulls/" in args[1] else value
+        assert not module.stale_wait_report([row], "owner/catalog", fetch=incomplete)["items"]
+    def partial_stack(args: list[str]) -> Any:
+        value = fetch(args)
+        if "/comments?" in args[1]:
+            return value + [{"body": "Second slice https://github.com/owner/catalog/pull/72"}]
+        return {**value, "merged_at": None} if args[1].endswith("/pulls/72") else value
+    assert not module.stale_wait_report([row], "owner/catalog", fetch=partial_stack)["items"]
+    for unavailable in (False, True):
+        def unread(args: list[str]) -> Any:
+            if "/comments?" in args[1]:
+                if unavailable:
+                    raise module.AuditError("discussion unavailable")
+                return [{"body": "historical comment"}] * 100
+            return fetch(args)
+        report = module.stale_wait_report([row], "owner/catalog", fetch=unread)
+        assert not report["complete"] and report["unavailable"] and not report["items"]
+    # A stale agent step is review evidence; a remaining deployment stays work.
+    remainder = {**row, "body": row["body"].replace("closes this issue", "routes PR #71, then deploys to staging")}
+    def with_issue(args: list[str]) -> Any:
+        return {"state": "closed", "pull_request": {}} if args[1].endswith("/issues/71") else fetch(args)
+    result = module.stale_wait_report([remainder], "owner/catalog", fetch=with_issue)["items"][0]
+    assert not result["selection_exclusion"] and not result["completion_proven"]
+    blocked = {**remainder, "issue_dependencies_summary": {"total_blocked_by": 1}}
+    def native_blocker(args: list[str]) -> Any:
+        return [{"state": "open"}] if "/dependencies/" in args[1] else with_issue(args)
+    result = module.stale_wait_report([blocked], "owner/catalog", fetch=native_blocker)["items"][0]
+    assert result["recorded_hold_pending"] and not result["selection_exclusion"]
 
 
 def main() -> int:
