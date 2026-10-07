@@ -1613,6 +1613,24 @@ def test_local_wait_findings_need_no_dependency_reads() -> None:
     assert "milestone_wait_invalid" in kinds(run(module, issues=[custom]))
 
 
+def test_stale_reference_waits_preserve_start_metadata_and_real_holds() -> None:
+    module = load()
+    bodies = ("Waiting for: PR #71 to merge; since 2026-08-20", "Waiting for: PR #71 to merge\nWaiting since: 2026-08-20")
+    def fetch(args: list[str]) -> Any:
+        if "/issues/71" in args[1]:
+            return {"state": "closed", "pull_request": {}}
+        if "/pulls/71" in args[1]:
+            return {"merged_at": stamp(NOW), "base": {"ref": "main"}}
+        raise AssertionError(args[1])
+    for body in bodies:
+        row = {**issue(41, "Parked on a merged PR", labels=("plan:waiting",), body="## Current Status\n" + body),
+               "issue_dependencies_summary": {"total_blocked_by": 0}}
+        report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
+        assert report["complete"] and [entry["number"] for entry in report["items"]] == [41]
+        held = {**row, "body": row["body"] + "\nBlocked by: Chris's contract signature."}
+        assert not module.stale_wait_report([held], "owner/catalog", fetch=fetch)["items"]
+
+
 def main() -> int:
     tests = [value for name, value in globals().items() if name.startswith("test_") and callable(value)]
     for test in tests:

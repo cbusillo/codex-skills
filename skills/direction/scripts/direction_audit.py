@@ -663,7 +663,7 @@ def stale_wait_report(
         evidence: list[dict[str, Any]] = []
         unread = False
         fields: list[tuple[str, str]] = []
-        status_field = r"(?:State|Next action|Blocked by|Waiting for|Parked until|Last verified|Validation|Evidence|Retention|Recovery|Worker|Session|Branch)"
+        status_field = r"(?:State|Next action|Blocked by|Waiting for|Parked until|Waiting since|Last verified|Validation|Evidence|Retention|Recovery|Worker|Session|Branch)"
         entries = re.split(rf"(?im)(?=^\s*(?:[-*]\s+)?{status_field}:)", status)
         unknown_context = False
         for entry in entries:
@@ -701,6 +701,7 @@ def stale_wait_report(
             errors.append({"number": number, "source": "native_blockers", "reason": "unavailable"})
 
         for field, reason in fields:
+            reason = github_direction_next.undated_wait_reason(reason)
             # Reuse the claim helper's explicit no-wait semantics. Match the
             # whole agent phrase so a continued approval clause stays a hold.
             if github_plan_claim.no_wait_reason(reason, field="Waiting for"):

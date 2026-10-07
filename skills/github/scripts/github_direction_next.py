@@ -91,12 +91,21 @@ def section_map(body: str) -> dict[str, str]:
     return sections
 
 
+def undated_wait_reason(reason: str) -> str:
+    """Keep explicit wait-start metadata separate from the pending condition."""
+    return re.sub(r";\s*since\s+\d{4}-\d{2}-\d{2}(?:T\S+)?$", "", reason.strip().rstrip(" ."), flags=re.I)
+
+
+def unnamed_wait_reason(reason: str) -> bool:
+    plain = re.sub(r"[`*]", "", undated_wait_reason(reason)).casefold().rstrip(" .")
+    return not plain or no_current_wait(plain) or plain in {"tbd", "unknown", "not recorded", "testing", "people"}
+
+
 def milestone_order_wait(reason: str, milestone_titles: list[str]) -> bool:
     """Match only milestone ordering, preserving any additional person/event hold."""
-    plain = re.sub(r"[`*_]", "", reason).casefold().rstrip(" .")
-    plain = re.sub(r";\s*since\s+\d{4}-\d{2}-\d{2}(?:T\S+)?$", "", plain)
-    completion = r"(?:\s+(?:(?:to\s+)?(?:finish(?:ed|es)?|complete(?:d|s)?|land(?:ed|s)?|end(?:ed|s)?|ship(?:ped|s)?)|(?:is|are)\s+done))?"
-    generic = r"(?:the\s+)?(?:another|other|earlier|previous)\s+milestones?" + completion
+    plain = re.sub(r"[`*]", "", undated_wait_reason(reason)).casefold().replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+    completion = r"(?:\s+(?:(?:(?:to\s+)?(?:be\s+)?)?(?:finish(?:ed|es)?|complete(?:d|s)?|land(?:ed|s)?|end(?:ed|s)?|ship(?:ped|s)?|close(?:d|s)?|wraps?\s+up)|(?:is|are)\s+(?:done|complete)))?"
+    generic = r"(?:the\s+)?(?:another|other|earlier|previous|next)\s+milestones?" + completion
     if re.fullmatch(generic, plain):
         return True
     if not milestone_titles:
@@ -114,19 +123,28 @@ def milestone_wait_evidence(item: dict[str, Any], status_text: str, milestone_ti
     rows = waiting_records(item, status_text)
     pending = [row for row in rows if not row["no_current_wait"]]
     valid_pending = [row for row in pending
-                     if row["waiting_for"].strip().casefold().rstrip(" .") not in {"tbd", "unknown", "not recorded", "testing", "people"}
+                     if not unnamed_wait_reason(row["waiting_for"])
                      and not milestone_order_wait(row["waiting_for"], milestone_titles)]
+    other_holds = [match[1].strip() for match in re.finditer(r"(?im)^\s*(?:[-*]\s+)?Blocked by:\s*([^\n]+)", status_text)
+                   if not github_plan_claim.no_wait_reason(match[1], field="Blocked by")]
+    if rows:
+        other_holds.extend(match[1].strip() for match in re.finditer(
+            r"(?im)^\s*(?:[-*]\s+)?State:\s*(?:waiting on|waiting for|awaiting|parked until)\s+([^\n]+)", status_text))
+    for hold in other_holds:
+        suffix = re.search(r"\bwaiting for\s+(.+)", hold, re.I)
+        hold = suffix[1] if suffix else hold
+        if not unnamed_wait_reason(hold) and not milestone_order_wait(hold, milestone_titles):
+            valid_pending.append({"waiting_for": hold})
     reason = (valid_pending or pending or rows or [{"waiting_for": ""}])[0]["waiting_for"]
     if not reason or no_current_wait(reason):
         fallback = re.search(r"(?im)^[ \t]*(?:[-*][ \t]+)?Blocked by:[^\n]*?\bwaiting for[ \t]+([^\n]*)", status_text)
         if fallback:
             reason = fallback.group(1).strip()
-    plain = re.sub(r"[`*_]", "", reason).casefold().rstrip(" .")
     requested = bool((reason and not no_current_wait(reason)) or item.get("exclusion") == "waiting"
                      or item.get("plan_status") == "waiting"
                      or re.search(r"(?im)^\s*(?:[-*]\s+)?State:\s*(?:waiting|parked)\b", status_text))
     invalid = None
-    if not plain or no_current_wait(reason) or plain in {"tbd", "unknown", "not recorded", "testing", "people"}:
+    if unnamed_wait_reason(reason):
         invalid = "wait_names_no_person_or_event"
     elif milestone_order_wait(reason, milestone_titles):
         invalid = "wait_names_another_milestone"
@@ -151,7 +169,7 @@ def milestone_wait_evidence(item: dict[str, Any], status_text: str, milestone_ti
 
 
 def check_milestone_wait(item: dict[str, Any], status_text: str, milestone_titles: list[str]) -> dict[str, Any]:
-    if item.get("plan_status") in {"blocked", "stale", "done"} or item.get("exclusion") in {"completed", "stale_needs_review", "unknown_dependencies", "unknown_ancestry", "label_blocked_without_native_edge", "tracking", "tracking_without_open_work"}:
+    if item.get("plan_status") in {"blocked", "stale", "done"} or item.get("exclusion") in {"completed", "stale_needs_review", "unknown_dependencies", "unknown_ancestry", "label_blocked_without_native_edge", "tracking", "tracking_without_open_work", "pull_request"}:
         return item
     evidence = milestone_wait_evidence(item, status_text, milestone_titles)
     if not evidence["requested"] or evidence["valid"]:
@@ -699,6 +717,7 @@ def rank_portfolio_work(
                 if item.get("_own_exclusion"):
                     item["exclusion"] = item["_own_exclusion"]
             item.pop("_own_exclusion", None)
+        item = {key: value for key, value in item.items() if key != "_own_exclusion"}
         status = section_map((item.get("discussion") or {}).get("body", "")).get("Current Status", "")
         result = check_milestone_wait(item, status, milestone_titles)
         if result.get("wait_finding") and result["wait_finding"] not in findings:
@@ -800,7 +819,10 @@ def rank_portfolio_work(
     # reference used as the identity of a child. Parent exclusions stay intact.
     entries = [*graph.get("candidates", []), *excluded, *discoveries, *underway]
     parents = [parent for entry in entries for parent in (entry.get("discussion") or {}).get("parents", [])]
+    invalid_waits = {finding["url"]: finding for finding in findings}
     for entry in [*entries, *parents]:
+        if entry.get("url") in invalid_waits:
+            entry = {**entry, "wait_finding": invalid_waits[entry["url"]]}
         if entry.get("exclusion") in {"completed", "stale_needs_review", "outside_direction_tracks"}:
             continue
         body = (entry.get("discussion") or {}).get("body", "")

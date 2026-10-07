@@ -2580,7 +2580,7 @@ TESTS = [
 
 def test_milestone_order_wait_is_a_finding_and_remains_available() -> None:
     roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
-    for reason in ("starts after milestones 'First' and 'Second'", "", "nothing", "TBD"):
+    for reason in ("starts after milestones 'First' and 'Second'", "", "nothing", "TBD", "TBD; since 2026-08-20", "unknown; since 2026-08-20"):
         leaf = global_issue("someone/business", 120, labels=["plan", "plan:waiting"],
                             body="## Current Status\nState: Waiting.\nWaiting for: " + reason)
         edges = {(roots[1]["repo"], 2): relationships(sub_issues=[leaf])}
@@ -2639,7 +2639,8 @@ def test_capacity_wait_dates_belong_to_each_frontier_issue() -> None:
 def test_milestone_order_detection_preserves_additional_human_holds() -> None:
     roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
     for reason in ("First and Chris approves the testing date.", "starts after First and Chris to sign the contract.",
-                   "First\nParked until: Alex approves the copy."):
+                   "First\nParked until: Alex approves the copy.",
+                   "First\nBlocked by: Chris's contract signature.", "First\nState: Waiting on Alex."):
         leaf = global_issue("someone/business", 120, labels=["plan", "plan:waiting"],
                             body="## Current Status\nWaiting for: " + reason)
         with global_fixture(roots, [leaf], {(roots[1]["repo"], 2): relationships(sub_issues=[leaf])}) as (module, result, _reads):
@@ -2648,8 +2649,8 @@ def test_milestone_order_detection_preserves_additional_human_holds() -> None:
             assert result["waiting"]
     shared = load_module().github_direction_next
     item = {"repo": "someone/business", "number": 120, "url": "https://github.com/someone/business/issues/120"}
-    for reason in ("First to ship", "Second is done", "earlier milestones to finish", "the previous milestone"):
-        assert not shared.milestone_wait_evidence(item, "Waiting for: " + reason, ["First", "Second"])["valid"]
+    for reason in ("First to ship", "Second is done", "earlier milestones to finish", "the previous milestone", "the next milestone", "First closes", "First is complete", "First wraps up", "First to be completed", "‘First’", "v2_beta"):
+        assert not shared.milestone_wait_evidence(item, "Waiting for: " + reason, ["First", "Second", "v2_beta"])["valid"]
     assert shared.milestone_wait_evidence(item, "Waiting for: Alex to retest the build shipped since 2026-07-01", ["First"])["since"] is None
     assert shared.milestone_wait_evidence(item, "Waiting for: Alex to test; since 2026-08-20", ["First"])["since"] == "2026-08-20"
 
@@ -2811,7 +2812,7 @@ def test_discovery_preserves_valid_waits_above_invalid_child_or_parent_waits() -
                          body="## Current Status\nWaiting for: Alex to sign the contract.")
     parent = global_issue("someone/business", 41, labels=["plan:waiting"],
                           body="## Current Status\nWaiting for: TBD.")
-    for chain in ([grand], [parent, grand]):
+    for chain in ([grand], [parent, grand], [parent]):
         child = global_issue("someone/business", 50, labels=["plan:waiting"],
                              milestone=milestone_data(7, "First", created_at="2026-01-01"),
                              body="## Current Status\nWaiting for: TBD.")
@@ -2821,9 +2822,14 @@ def test_discovery_preserves_valid_waits_above_invalid_child_or_parent_waits() -
             module.discover_direction_work = lambda *_a, **_kw: ([child], {"complete": True,
                 "repositories": [{"repo": child["repo"], "direction": DIRECTION}]})
             module.cmd_next(next_args())
-            assert not result["candidates"]
-            item = next(item for item in result["excluded"] if item["number"] == 50)
-            assert item["exclusion"] == "parent_waiting" and item["waiting_on_parent"] == grand["html_url"]
+            assert not any(row["number"] == 41 for row in result["waiting"])
+            if grand in chain:
+                assert not result["candidates"]
+                item = next(item for item in result["excluded"] if item["number"] == 50)
+                assert item["exclusion"] == "parent_waiting" and item["waiting_on_parent"] == grand["html_url"]
+            else:
+                assert [item["number"] for item in result["candidates"]] == [50]
+                assert any(finding["number"] == 41 for finding in result["findings"])
 
 
 def test_blocked_wait_and_unknown_start_do_not_become_available_or_dated() -> None:
@@ -2882,6 +2888,17 @@ def test_unmatched_parent_wait_does_not_emit_internal_exclusion() -> None:
 
 TESTS.extend([test_excluded_unrelated_wait_failure_preserves_ordinary_coverage,
               test_unmatched_parent_wait_does_not_emit_internal_exclusion])
+
+
+def test_waiting_pr_does_not_become_an_invalid_issue_wait() -> None:
+    root = track("someone/direction", 1, "First")
+    pull = {**global_issue("someone/business", 120, labels=["plan:waiting"]), "pull_request": {}}
+    with global_fixture([root], [pull], {(root["repo"], 1): relationships(sub_issues=[pull])}) as (module, result, _reads):
+        module.cmd_next(next_args())
+        assert not result["findings"] and not result["candidates"]
+
+
+TESTS.append(test_waiting_pr_does_not_become_an_invalid_issue_wait)
 
 
 def main() -> None:

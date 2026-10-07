@@ -83,8 +83,8 @@ changing what it proves remains Director direction.
 Global `next` and audits report milestone waits that name another milestone or
 no person or event, keep independent work selectable after normal ownership
 review and native dependency checks, and admit capacity tooling only with a
-reviewed named person wait for every listed open milestone and its known or
-explicitly unknown start.
+reviewed named person wait for every listed open milestone, reporting each
+wait's start or explicitly marking it unknown.
 
 A proposal that adds a fourth container or a second human gate is the signal
 that the design is getting too complicated. Prefer deleting a concept to adding
