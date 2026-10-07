@@ -1902,6 +1902,9 @@ class ClaimTests(unittest.TestCase):
     def test_conditional_final_paragraph_releases_preserve_and_recover_claims(self):
         for condition in (
             "Takes effect upon merge.",
+            "Takes effect upon merge.\n\nSource work is finished.",
+            "Effective post-merge.\n\nSource work is finished.",
+            "Ownership transfers upon merge.\n\nSource work is finished.",
             "The release takes effect once PR #99 merges.",
             "The next worker may claim only after CI passes.",
             "**Effective** post-merge.",
@@ -1930,7 +1933,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_final_paragraph_release_keeps_downstream_gates_and_refresh_identity(self):
         self.refresh_fixture()
-        prefix = ("Handoff from trial-b\nSource claim 1; Session: session-b; PR #99 and #100.\n\n")
+        prefix = "Handoff from trial-b\nSource claim 1; Session: session-b; PR #99 and #100.\n\n"
         self.comments[2]["body"] = prefix + "Takes effect upon merge.\n\nReleased claim 1"
         with self.assertRaises(PLAN.PlanError):
             self.run_claim()
@@ -1938,7 +1941,8 @@ class ClaimTests(unittest.TestCase):
         self.comments.append({"id": 4, "body": prefix +
                               "Source session finished. Effective immediately. "
                               "Supervisor routes PR #99 after CI passes; keep the worktree until landing.\n\n"
-                              "Released claim 1", "user": {"login": TEST_BOT}})
+                              "Released claim 1", "created_at": "2026-10-01T00:02:00Z",
+                              "user": {"login": TEST_BOT}})
         self.args.handoff_comment = 4
         self.run_claim()
         self.assertEqual(self.emitted.call_args.args[0]["claim"]["refresh_pr"], self.args.refresh_pr)

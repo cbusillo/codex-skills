@@ -77,20 +77,22 @@ def legacy_release_worker(text: str) -> str | None:
     return match.group(1) if match else None
 
 
-def conditional_release_prose(text: str, *, suffix: str) -> bool:
+def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool = False) -> bool:
     """Check ownership conditions independently of directive placement."""
     # Conditions must govern release/reclaiming, not downstream CI or
     # worktree cleanup. A condition directly after the ID also qualifies
     # the directive even when it leaves that subject implicit.
     # Identity tokens and hidden transport/release receipts are not prose.
     condition = r"(?<![\w/.-])(?:if|after|once|when|unless|until|before|pending|provided|conditional|subject to|as soon as|on (?:merge|landing)|wait(?:ing)? for)(?![\w/-])"
+    if final_paragraph:
+        condition = rf"(?:{condition}|\bupon\b)"
     handoff = re.sub(r"(?s)<!--.*?-->", "", text)
     prose = ownership_text(handoff)
     statements = re.split(r"(?<=[.!?;])\s+|\n[ \t]*\n", prose)
     ownership = r"\b(?:releases?|claims?|claiming|reclaim(?:ing)?|ownership|takes? effect|effective)\b"
     effective = r"\b(?:takes? effect|effective)\b(?!\s+(?:now|immediately)\b)"
     if (re.match(r"(?:only\s+|not\s+)?" + condition, ownership_text(suffix), re.IGNORECASE)
-            or re.search(effective, ownership_text(suffix), re.IGNORECASE)
+            or re.search(effective, prose if final_paragraph else ownership_text(suffix), re.IGNORECASE)
             or any(re.search(condition, statement, re.IGNORECASE)
                    and (re.search(ownership, statement, re.IGNORECASE)
                         or (index + 1 < len(statements)
@@ -121,7 +123,7 @@ def released_claim_id(text: str) -> int | None:
     preceding = text.rsplit("\n\n", 1)[0].rstrip()
     paragraph = preceding.rsplit("\n\n", 1)[-1].strip()
     if (preceding.endswith(":") or re.match(r"(?i)(?:if|after|once|when|unless|until)\b", paragraph)
-            or conditional_release_prose(preceding, suffix=paragraph)):
+            or conditional_release_prose(preceding, suffix=paragraph, final_paragraph=True)):
         return None
     # A final line inside an unclosed code fence or raw HTML block is an example,
     # not a release. Quoted and indented directives never match the exact line.
