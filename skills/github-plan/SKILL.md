@@ -401,10 +401,11 @@ into its own issue, so it can be selected and claimed without clearing that wait
 For `plan:waiting` without a native issue blocker, say `Blocked by: No native
 issue blocker; waiting for ...`.
 
-If `next` reports `label_blocked_without_native_edge`, reconcile the dependency:
-verify and link an open prerequisite with `gh-plan.py link <issue> blocked-by
-<prerequisite>`. A prose reference does not create that edge. If the prerequisite
-has closed, reconcile the remaining work under these status labels. If a
+During an authorized planning update, reconcile `label_blocked_without_native_edge`:
+verify and link an open prerequisite with
+`gh-plan.py link <issue> blocked-by <prerequisite>`.
+A prose reference or milestone membership does not create that edge. If the
+prerequisite has closed, reconcile the remaining work under these status labels. If a
 maintainer must identify or create it, follow [Missing Cross-Repository
 Gates](#missing-cross-repository-gates). Choose the status from the actual next
 action or wait; a missing edge alone does not imply `plan:waiting`.
