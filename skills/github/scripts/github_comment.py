@@ -17,6 +17,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import urllib.parse
 from typing import Any, Callable, Optional
 
 import github_api as github_api_core
@@ -393,6 +394,7 @@ def list_comments(
     completed_steps: list[str],
     retry_context: Optional[github_api_core.ReconciliationContext] = None,
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
+    since: Optional[str] = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     comments: list[dict[str, Any]] = []
     steps = list(completed_steps)
@@ -400,7 +402,8 @@ def list_comments(
         step = f"list_comments_page_{page}"
         result = _call_api(
             "GET",
-            f"/repos/{repo}/issues/{number}/comments?per_page={PER_PAGE}&page={page}",
+            f"/repos/{repo}/issues/{number}/comments?per_page={PER_PAGE}&page={page}"
+            + ("&" + urllib.parse.urlencode({"since": since}) if since else ""),
             None,
             gh_cmd=gh_cmd,
             operation=operation,
@@ -527,27 +530,6 @@ def reconcile_created_comment(
     retry_context: github_api_core.ReconciliationContext,
     retry_summaries: list[github_api_core.RetrySummary],
 ) -> github_api_core.ReconciliationDecision:
-    try:
-        comments, _ = list_comments(
-            repo,
-            number,
-            gh_cmd=gh_cmd,
-            operation=operation,
-            actor=actor,
-            expected_actor=expected_actor,
-            completed_steps=completed_steps,
-            retry_context=retry_context,
-            retry_summaries=retry_summaries,
-        )
-    except CommentError as exc:
-        return github_api_core.ReconciliationDecision(
-            "failed",
-            details={
-                "request_fingerprint": fingerprint,
-                "actor": actor,
-                "failure": exc.api_result or {"cause": exc.failure.cause},
-            },
-        )
     threshold = _parse_timestamp(started_at)
     if threshold is None:
         return github_api_core.ReconciliationDecision(
@@ -559,6 +541,30 @@ def reconcile_created_comment(
             },
         )
     threshold -= dt.timedelta(seconds=RECONCILIATION_CLOCK_SKEW_SECONDS)
+    try:
+        comments, _ = list_comments(
+            repo,
+            number,
+            gh_cmd=gh_cmd,
+            operation=operation,
+            actor=actor,
+            expected_actor=expected_actor,
+            completed_steps=completed_steps,
+            retry_context=retry_context,
+            retry_summaries=retry_summaries,
+            # GitHub's since filter is exclusive; keep the inclusive creation
+            # threshold below in range even at whole-second precision.
+            since=_format_timestamp(threshold - dt.timedelta(seconds=1)),
+        )
+    except CommentError as exc:
+        return github_api_core.ReconciliationDecision(
+            "failed",
+            details={
+                "request_fingerprint": fingerprint,
+                "actor": actor,
+                "failure": exc.api_result or {"cause": exc.failure.cause},
+            },
+        )
     matches: list[dict[str, Any]] = []
     for item in comments:
         item_actor = (item.get("user") or {}).get("login") if isinstance(item.get("user"), dict) else None
@@ -901,6 +907,8 @@ def _comment_impl(
                 },
             )
 
+    started = _utc_now()
+    started_at = _format_timestamp(started)
     if existing_comments is None:
         existing_comments, _ = list_comments(
             resolved_repo,
@@ -911,6 +919,13 @@ def _comment_impl(
             expected_actor=expected_actor,
             completed_steps=steps,
             retry_summaries=collected_retry_summaries,
+            # Reconciliation excludes older creations. Ordinary appends need
+            # only this same window for pre-existing IDs; deduplication still
+            # searches the complete thread. GitHub filters by updated_at, so
+            # old comments edited recently remain included conservatively.
+            since=None if dedupe_body else _format_timestamp(
+                started - dt.timedelta(seconds=RECONCILIATION_CLOCK_SKEW_SECONDS + 1)
+            ),
         )
     if dedupe_body:
         selected = _matching_actor_comment(existing_comments, actor, body)
@@ -936,7 +951,6 @@ def _comment_impl(
         if isinstance((comment_id := item.get("id")), int)
     }
     create_step = failed_step or "create_comment"
-    started_at = _format_timestamp(_utc_now())
     fingerprint = _comment_fingerprint(resolved_repo, number, actor, body)
     operation_id = github_api_core.new_operation_id()
     provider_body = github_api_core.body_with_operation_marker(body, operation_id)
