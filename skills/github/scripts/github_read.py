@@ -104,7 +104,8 @@ class ConditionalResponseCache:
         # The expected actor is identity context, not a credential.  The digest
         # keeps private repository paths out of filenames and diagnostics.
         scope = hashlib.sha256(
-            f"{github_api_core.DEFAULT_HOST}\0{reader.expected_actor.casefold()}".encode()
+            (f"{github_api_core.DEFAULT_HOST}\0{reader.expected_actor.casefold()}"
+             + ("\0revalidate" if reader.cache_revalidate else "")).encode()
         ).hexdigest()
         return cls(root, scope=scope, coalesce_seconds=reader.cache_coalesce_seconds)
 
@@ -177,7 +178,7 @@ class ConditionalResponseCache:
                     body_path.unlink()
                 except OSError:
                     pass
-            if cached and now - float(cached.get("validated_at") or 0) <= max(self.coalesce_seconds, poll_interval(cached["headers"])):
+            if cached and not reader.cache_revalidate and now - float(cached.get("validated_at") or 0) <= max(self.coalesce_seconds, poll_interval(cached["headers"])):
                 result = github_api_core.ApiResult(
                     ok=True, status=200, body=cached["body"], headers=dict(cached["headers"]),
                     operation=reader.operation, actor=reader.expected_actor,
@@ -192,11 +193,16 @@ class ConditionalResponseCache:
                     validators["If-None-Match"] = cached["etag"]
                 elif isinstance(cached.get("last_modified"), str):
                     validators["If-Modified-Since"] = cached["last_modified"]
+            if reader.cache_revalidate:
+                # Revalidation never coalesces: another reader must be free to
+                # wait on the shared transport cooldown independently. Cache
+                # publication already uses an atomic replace.
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
             result = reader._transport_request(method, path, step=step, extra_headers={**headers, **validators})
             if result.status == 304:
                 if cached is None:
                     # A malformed/corrupt cache cannot manufacture success. Make
-                    # one unconditioned recovery request while holding the lock.
+                    # one unconditioned recovery request for a valid body.
                     result = reader._transport_request(method, path, step=step, extra_headers=headers)
                 else:
                     cached["validated_at"] = time.time()
@@ -238,6 +244,7 @@ class GitHubReader:
         strict_actor: bool = False,
         cache_enabled: bool = False,
         cache_coalesce_seconds: float = 5.0,
+        cache_revalidate: bool = False,
         deadline_at: Optional[float] = None,
     ) -> None:
         self.gh_cmd = gh_cmd
@@ -249,6 +256,7 @@ class GitHubReader:
         self.strict_actor = strict_actor
         self.cache_enabled = cache_enabled
         self.cache_coalesce_seconds = cache_coalesce_seconds
+        self.cache_revalidate = cache_revalidate
         self.deadline_at = deadline_at
         self.completed_steps: list[str] = []
         self.requests: list[dict[str, Any]] = []

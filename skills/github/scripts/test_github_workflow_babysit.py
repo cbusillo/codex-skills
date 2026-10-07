@@ -11,6 +11,7 @@ import io
 import json
 import os
 import pathlib
+import shlex
 import sys
 import tempfile
 import unittest
@@ -168,7 +169,7 @@ SYNTHETIC_INPUT_VALUE = "SYNTHETIC-WORKFLOW-INPUT-533"
 
 
 def run_main_with_json_inputs(
-    client: FakeWorkflowClient,
+    client: workflow_babysit.WorkflowClient,
 ) -> tuple[int, str, str]:
     with tempfile.TemporaryDirectory() as temp_dir:
         path = pathlib.Path(temp_dir) / "inputs.json"
@@ -636,6 +637,89 @@ class WorkflowBabysitterTests(unittest.TestCase):
 
 
 class GitHubWorkflowClientTests(unittest.TestCase):
+    def test_unconfirmed_dispatch_does_not_claim_success_or_offer_redispatch(self) -> None:
+        client = FakeWorkflowClient(runs=[run_snapshot("queued")])
+        with mock.patch.object(client, "dispatch", side_effect=workflow_babysit.WorkflowBabysitError(
+            "invalid_dispatch_response", "Dispatch response did not identify the run",
+        )):
+            exit_code, stdout, _stderr = run_main_with_json_inputs(client)
+        payload = json.loads(stdout)
+        self.assertEqual(exit_code, 1)
+        self.assertIsNone(payload["run"])
+        self.assertNotIn("dispatch", payload)
+        self.assertNotIn("recovery_command", payload)
+
+    def test_jobs_404_preserves_dispatch_and_exact_watch_recovery(self) -> None:
+        calls: list[tuple[str, str]] = []
+        run_path = "/repos/example/repo/actions/runs/123"
+        run_url = "https://github.com/example/repo/actions/runs/123"
+        jobs_path = run_path + "/jobs?filter=latest&per_page=100"
+
+        def fake_call(method: str, path: str, body: Any = None, **kwargs: Any) -> Any:
+            del body
+            calls.append((method, path))
+            if path == "/user":
+                response = {"login": "automation-bot" if kwargs.get("expected_actor") else "human-owner"}
+            elif method == "POST" and path.endswith("/dispatches"):
+                response = {
+                    "workflow_run_id": 123,
+                    "run_url": "https://api.github.com" + run_path,
+                    "html_url": run_url,
+                }
+            elif path == run_path:
+                response = {
+                    "id": 123, "html_url": run_url, "status": "queued",
+                    "repository": {"full_name": "example/repo"}, "run_attempt": 1,
+                }
+            elif path == jobs_path:
+                body = {"message": "Not Found"}
+                return github_api.ApiResult(
+                    ok=False, status=404, body=body,
+                    failure=github_api.classify_error(404, {}, body),
+                )
+            else:
+                raise AssertionError(f"unexpected request: {method} {path}")
+            return github_api.ApiResult(ok=True, status=200, body=response)
+
+        client = workflow_babysit.GitHubWorkflowClient(
+            "example/repo", expected_automation_login="automation-bot",
+        )
+        with (
+            tempfile.TemporaryDirectory() as cache_dir,
+            mock.patch.dict(os.environ, {"GITHUB_READ_CACHE_DIR": cache_dir}),
+            mock.patch.object(github_api, "call_gh_with_retry", side_effect=fake_call),
+        ):
+            exit_code, stdout, stderr = run_main_with_json_inputs(client)
+
+        payload = json.loads(stdout)
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["outcome"], "not_found")
+        self.assertEqual(payload["dispatch"], {"ok": True, "outcome": "confirmed_success"})
+        self.assertEqual(payload["run"], {"id": 123, "url": run_url})
+        self.assertEqual(payload["diagnostics"]["last_request"]["status"], 404)
+        self.assertEqual(payload["diagnostics"]["last_request"]["operation"], "github.workflow.jobs.read")
+        self.assertEqual(calls, [
+            ("GET", "/user"), ("GET", "/user"),
+            ("POST", "/repos/example/repo/actions/workflows/operator.yml/dispatches"),
+            ("GET", run_path), ("GET", jobs_path),
+        ])
+        self.assertNotIn(SYNTHETIC_INPUT_VALUE, stdout + stderr)
+        recovery = shlex.split(payload["recovery_command"])
+        self.assertEqual(recovery[:2], ["uv", "run"])
+        self.assertEqual(pathlib.Path(recovery[2]).resolve(), SCRIPT_DIR / "github_workflow_babysit.py")
+        recovery_args = workflow_babysit.parse_args(recovery[3:])
+        self.assertEqual((recovery_args.command, recovery_args.repo, recovery_args.run_id),
+                         ("watch", "example/repo", 123))
+        self.assertEqual(recovery_args.approve_environment, [])
+        recovered_client = FakeWorkflowClient(runs=[run_snapshot("completed", conclusion="success")])
+        with (
+            mock.patch("github_workflow_babysit.GitHubWorkflowClient", return_value=recovered_client),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(workflow_babysit.main(recovery[3:]), 0)
+        self.assertEqual(recovered_client.dispatch_calls, [])
+
     def assert_terminal_result_excludes_json_input_values(
         self,
         *,
