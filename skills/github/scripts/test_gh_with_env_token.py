@@ -13,6 +13,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Callable
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).with_name("gh-with-env-token")
@@ -447,6 +448,15 @@ def test_app_actor_probe_synthesizes_include_response_without_user_endpoint() ->
         assert result.returncode == 0, result.stderr
         assert "HTTP/2.0 200" in result.stdout
         assert '"login":"catalog-app[bot]"' in result.stdout
+        sys.path.insert(0, str(SCRIPT.parent))
+        import github_api
+        import github_request_usage
+        status, headers, _ = github_api.parse_gh_include_output(result.stdout)
+        with patch.dict(os.environ, {"GITHUB_RETRY_STATE_DIR": str(root / "retry")}):
+            github_request_usage.record_response(method="GET", path="/user", status=status,
+                                                headers=headers, operation="github.actor",
+                                                actor="catalog-app[bot]")
+            assert github_request_usage.report(since=0)["consumers"] == []
         direct = run_wrapper(
             env_file,
             unused,

@@ -23,6 +23,7 @@ from dataclasses import replace
 from typing import Any, NoReturn, Optional
 
 import github_api as github_api_core
+import github_read
 import github_comment as github_comment_core
 import github_issue as github_issue_core
 import github_milestone as github_milestone_core
@@ -855,6 +856,34 @@ def api_json(
         graphql_operation=resolved_graphql_operation,
     )
     resolved_bucket = bucket or ("graphql" if github_api_core.is_graphql_path(path) else "rest_core")
+    # Planning observations must contact GitHub even immediately after another
+    # process read them. Reuse a body only after its validator receives a 304.
+    # Mutation preflights/readbacks and explicitly selected active-auth routes
+    # retain their existing uncached transport.
+    if (
+        method.upper() == "GET" and payload is None and resolved_bucket == "rest_core"
+        and not resolved_is_write and not CURRENT_IS_WRITE
+        and CURRENT_OPERATION in {"github.plan.show", "github.plan.index", "github.plan.next"}
+        and BOT_GH.exists() and EXPECTED_ACTOR
+        and os.environ.get("GH_PLAN_SKIP_BOT") != "1"
+        and os.environ.get("GH_PLAN_ALLOW_ACTIVE_FIRST") != "1"
+        and not github_identity.active_auth_fallback_allowed()
+        and not github_identity.own_user_opted_in()
+    ):
+        reader = github_read.GitHubReader(
+            gh_cmd=str(BOT_GH), expected_actor=EXPECTED_ACTOR, actor=EXPECTED_ACTOR,
+            operation=operation or CURRENT_OPERATION, strict_actor=True,
+            cache_enabled=True, cache_revalidate=True,
+            deadline_at=time.time() + github_api_core.remaining_retry_timeout_seconds(),
+        )
+        reader.completed_steps = list(completed_steps or [])
+        try:
+            result = reader.request("GET", path, step=failed_step or "gh_invocation")
+        except github_read.GitHubReadError as exc:
+            record_retry_fields(exc.result)
+            raise PlanError(str(exc), failure=exc.result.failure, api_result=exc.result.as_dict()) from exc
+        record_retry_fields(result)
+        return "automation-gh", result.body
     args = [
         "api",
         *API_VERSION_ARGS,

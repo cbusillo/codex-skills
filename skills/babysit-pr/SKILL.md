@@ -48,11 +48,16 @@ workflow_defaults:
     value: "3"
     description: Stop for user help after three unrelated/flaky rerun cycles per head SHA.
   - name: poll_cadence
-    value: 1 minute active; 5 minutes for unchanged green PRs
-    description: Keep ownership until the PR closes or needs help; use conditional reads and automatically managed cooldowns between observations.
+    value: helper-managed adaptive polling
+    description: Follow next_poll_seconds from the watcher; the GitHub Request Use reference owns cadence and budget behavior.
 ---
 
 # PR Babysitter
+
+Follow the emitted `next_poll_seconds`; see
+[Request Use](../github/references/cli-reference.md#request-use) for cadence and
+budget behavior. Report snapshots as observations at their capture time when
+describing work during a polling wait.
 
 Apply [task scope and authorization](../references/execution-scope.md) when
 using this workflow; it defines how existing approval and task boundaries apply.
@@ -158,10 +163,9 @@ a slow review system or active fix train, and every push or rerun. Do not ask
 whether to keep polling, and do not end the turn while a watcher is running
 unless a stop condition has been reached.
 
-The watcher manages cadence: about one minute while anything is active or
-changing, five minutes once CI is green and the PR is unchanged, and provider
-cooldowns in between. A cooldown is a managed wait, not a request for
-permission.
+Follow the watcher's emitted interval and the
+[Request Use](../github/references/cli-reference.md#request-use) reference.
+Provider cooldowns are managed waits and need no permission.
 
 ## CI Failures
 
