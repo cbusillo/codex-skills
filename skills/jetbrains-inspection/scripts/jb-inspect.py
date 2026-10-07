@@ -596,7 +596,7 @@ def error_payload(error: InspectError, args: argparse.Namespace | None = None) -
     if client_run_id:
         payload.setdefault("client_run_id", client_run_id)
     if "hint" not in payload:
-        hint = hint_for_error_reason(str(payload.get("error_reason") or ""))
+        hint = hint_for_error_reason(str(payload.get("error_reason") or ""), payload.get("context"))
         if hint:
             payload["hint"] = hint
     return payload
@@ -695,7 +695,30 @@ def normalize_reason(value: Any) -> str:
     return reason or "inspection_helper_error"
 
 
-def hint_for_error_reason(reason: str) -> str | None:
+def lane_ide_selection_advice(reason: str, context: Any) -> str | None:
+    if not isinstance(context, dict) or reason not in IDE_ROUTE_CONFIGURATION_REASONS:
+        return None
+    if context.get("inspection_lane") or (context.get("inspection_lanes") and reason != "ide_selection_required"):
+        return (
+            "Check that the selected IDE matches the intended configured lane and installed IDE/version; launch that IDE once "
+            "to create its configuration before another assessment or open. "
+            "Preserve qualityGate.inspection.lanes in .github/github.json; ask before changing lane policy."
+        )
+    if context.get("inspection_lanes"):
+        return (
+            "Use agent-inspect to prepare and inspect the configured lanes. "
+            "To open one project without inspecting, use open-worktree --ide <lane IDE> "
+            "at the worktree root; for a nested lane project with project markers, "
+            "pass that directory as --repo. Assessments resolve lane projectPath automatically. "
+            "Preserve qualityGate.inspection.lanes in .github/github.json."
+        )
+    return None
+
+
+def hint_for_error_reason(reason: str, context: Any = None) -> str | None:
+    lane_advice = lane_ide_selection_advice(reason, context)
+    if lane_advice:
+        return lane_advice
     return {
         "inspection_api_unavailable": "Open the repo in the configured JetBrains IDE with the inspection plugin installed, or allow lifecycle open to start it.",
         "invalid_api_response": "Check the installed inspection plugin version and IDE logs; the helper could not parse the API response.",
@@ -6891,7 +6914,7 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
         diagnostic.get("execution_proof_block_reason") or diagnostic.get("execution_proof_skipped_reason")
     )
     if reason in IDE_ROUTE_CONFIGURATION_REASONS:
-        return IDE_ROUTE_CONFIGURATION_NEXT_ACTION
+        return lane_ide_selection_advice(reason, payload.get("context")) or IDE_ROUTE_CONFIGURATION_NEXT_ACTION
     if reason == "plugin_deployment_mismatch":
         return "Install a plugin with native broad-scope execution proof, restart the IDE, resolve the route again, and rerun inspection."
     if reason == "execution_not_proven":
@@ -10627,8 +10650,9 @@ def jetbrains_config_dirs(context: dict[str, Any]) -> list[Path]:
                 "ide_selection": selection.public() if selection else None,
                 "available_config_dirs": available,
                 "error_reason": "ide_config_missing",
-                "next_action": "Launch the selected JetBrains IDE once, or update .github/github.json to name an installed JetBrains IDE/version.",
-                "hint": "Use product-level metadata such as jetbrains.ide = WebStorm for latest stable. EAP requires explicit metadata such as jetbrains.ideChannel = eap and jetbrains.ideVersion = 2026.2.",
+                "context": public_context(context),
+                "next_action": lane_ide_selection_advice("ide_config_missing", context) or "Launch the selected JetBrains IDE once, or update .github/github.json to name an installed JetBrains IDE/version.",
+                "hint": lane_ide_selection_advice("ide_config_missing", context) or "Use product-level metadata such as jetbrains.ide = WebStorm for latest stable. EAP requires explicit metadata such as jetbrains.ideChannel = eap and jetbrains.ideVersion = 2026.2.",
                 "matched_product": product.display_name if product else None,
             },
         )
@@ -10640,8 +10664,9 @@ def jetbrains_config_dirs(context: dict[str, Any]) -> list[Path]:
         {
             "available_config_dirs": [candidate.name for candidate in sorted(candidates, key=lambda item: item.name)],
             "error_reason": "ide_selection_required",
-            "next_action": "Add preferred JetBrains IDE metadata to .github/github.json, for example jetbrains.ide = WebStorm, PyCharm, or IntelliJ IDEA. Use --ide only for a one-off run.",
-            "hint": "Set jetbrains.ide in repo metadata so the helper updates the intended JetBrains product instead of guessing across installed IDEs.",
+            "context": public_context(context),
+            "next_action": lane_ide_selection_advice("ide_selection_required", context) or "Add preferred JetBrains IDE metadata to .github/github.json, for example jetbrains.ide = WebStorm, PyCharm, or IntelliJ IDEA. Use --ide only for a one-off run.",
+            "hint": lane_ide_selection_advice("ide_selection_required", context) or "Set jetbrains.ide in repo metadata so the helper updates the intended JetBrains product instead of guessing across installed IDEs.",
         },
     )
 
