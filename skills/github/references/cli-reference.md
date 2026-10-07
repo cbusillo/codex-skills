@@ -560,7 +560,8 @@ An adjacent prerequisite after successor permission also refuses, such as
 `The next worker can take over. PR #99 must merge first.` or a standalone
 `Wait until PR #99 merges.` following that permission.
 Downstream routing and cleanup gates, such as `After PR #99 lands, close out
-the issue`, remain independent. Recover ambiguous conditional handoffs with a
+the issue`, remain independent. Recover ambiguous conditional handoffs (including
+destination/action wording such as `merges to deploy`) with a
 new, unconditional first-line exact-ID release from the source author after
 the source claim; the helper does not infer that a condition has become true.
 

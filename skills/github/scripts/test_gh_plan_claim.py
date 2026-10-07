@@ -1914,6 +1914,7 @@ class ClaimTests(unittest.TestCase):
             "Hold until PR #99 merges.", "Not until PR #99 merges.", "Only after PR #99 merges.",
             "Wait until PR #99 is merged.", "Wait until PR #99 merges into main.",
             "Wait until PR #99 merges first.", "Wait until PR #99 merges to main.", "Not until PR #99 lands on main.",
+            "PR #99 must merge first; CI is still running.", "Wait until PR #99 merges; it is queued.",
         ):
             prose = "The next worker can take over. " + prerequisite
             for release in ("Released claim 1\n\n" + prose, prose + "\n\nReleased claim 1"):
@@ -1938,6 +1939,23 @@ class ClaimTests(unittest.TestCase):
                         self.run_claim()
                         self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
+    def test_reversed_claim_permission_preserves_and_recovers_claims(self):
+        for prose in (
+            "The next worker may claim. PR #99 must merge first.",
+            "The next worker can reclaim it. Wait until PR #99 merges.",
+        ):
+            for release in ("Released claim 1\n\n" + prose, prose + "\n\nReleased claim 1"):
+                with self.subTest(release=release):
+                    self.setUp()
+                    self.released_status_fixture(release)
+                    with self.assertRaises(PLAN.ClassifiedPlanError):
+                        self.run_claim()
+                    self.assert_no_writes()
+                    self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
+                                          "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
     def test_reversed_successor_permission_keeps_downstream_actions_usable(self):
         for downstream in (
             "After PR #99 merges, close out the issue.",
@@ -1946,6 +1964,7 @@ class ClaimTests(unittest.TestCase):
             "Wait until PR #99 merges before closing out the issue.",
             "Wait until PR #99 merges to close out the issue.",
             "PR #99 must merge first. Then close out the issue.",
+            "Wait until PR #99 merges. Then close out the issue.",
             "PR #99 must merge first for deployment.",
             "Wait until CI passes before you merge.",
             "Hold until CI is green to merge.",
