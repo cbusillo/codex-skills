@@ -15,7 +15,7 @@ commands:
     source: skill
     resource_path: scripts/jb-inspect.py
     example_argv: ["uv", "run", "scripts/jb-inspect.py", "open-worktree", "--repo", "$PWD"]
-    purpose: Preferred public command for opening and claiming the exact worktree without running inspections.
+    purpose: Opens and claims one exact IDE project without inspecting; does not dispatch lanes.
   - name: jetbrains-inspection-agent-inspect
     source: skill
     resource_path: scripts/jb-inspect.py
@@ -133,7 +133,7 @@ This also handles repositories with `qualityGate.inspection.lanes` and no
 top-level IDE: shared preparation runs before the non-empty lanes, then each
 lane selects its configured IDE and project path. A separate `open-worktree`
 step is not required. Read [inspection configuration](references/inspection-config.md)
-for lane routing and optional preparation without inspection. Do not substitute
+for lane routing and opening one project without inspecting. Do not substitute
 a different setup command, even if it seems equivalent.
 
 Preparation may create ignored worktree-local `.venv/` or `.idea/` state.
@@ -443,8 +443,11 @@ scope, never source code or a mixed scope containing source code.
   recommend, in the same report, that it record its IDE under
   `qualityGate.inspection` in `.github/github.json`, naming the IDE that fits its
   main language, and ask before writing it because it is durable repository
-  policy. If the user names an IDE, rerun once with `--ide`. Do not keep
-  reporting that inspection is unavailable without making that recommendation.
+  policy. For a repository without lanes, if the user names an IDE, rerun once
+  with `--ide`. Lane assessments use the declared lane IDEs rather than that
+  flag; changing a lane's IDE requires approval of the durable policy change.
+  Do not keep reporting that inspection is unavailable without the applicable
+  recommendation.
 - `stale_results`, `capture_incomplete`, `inspection_inputs_changed`, timeout, indexing, session drift,
   ambiguous route, or unavailable IDE: not clean. Retry at most once, and only
   when `retry_policy.retry=true`; otherwise narrow scope, open the project in
