@@ -86,6 +86,7 @@ def conditional_release_prose(text: str, *, suffix: str) -> bool:
     condition = r"(?<![\w/.-])(?:if|after|once|when|unless|until|before|pending|provided|conditional|subject to|as soon as|on (?:merge|landing)|wait(?:ing)? for)(?![\w/-])"
     handoff = re.sub(r"(?s)<!--.*?-->", "", text)
     prose = ownership_text(handoff)
+    prose = re.sub(r"(?m)^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", "", prose)
     statements = re.split(r"(?<=[.!?;])\s+|\n[ \t]*\n", prose)
     ownership = r"\b(?:releases?|claims?|claiming|reclaim(?:ing)?|ownership|takes? effect|effective)\b"
     successor_action = r"(?:pick (?:this|it) up|pick up (?:this|the) issue|takes? (?:(?:it|this) )?over|taking over|resumes?)"
@@ -108,6 +109,7 @@ def conditional_release_prose(text: str, *, suffix: str) -> bool:
                             and re.search(ownership, statements[index + 1], re.IGNORECASE))
                         or (index + 1 < len(statements)
                             and (re.search(prerequisite, statement, re.IGNORECASE)
+                                 or re.match(r"(?:Hold|Wait)\b", statement.strip(), re.IGNORECASE)
                                  or (re.match(r"Then\b", statements[index + 1].strip(), re.IGNORECASE)
                                      and (re.match(r"(?:only\s+|not\s+)?" + condition, statement.strip(), re.IGNORECASE)
                                           or re.match(r"(?:Hold|Wait)\b", statement.strip(), re.IGNORECASE))))
