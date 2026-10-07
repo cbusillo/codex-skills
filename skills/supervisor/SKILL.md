@@ -206,7 +206,14 @@ records that run.
    each Director repository returned in `discovery_context.repositories` by
    `gh-plan.py --repo OWNER/direction next` under `github-plan`. Include report
    findings and repository-discovery or report coverage gaps in the takeover
-   comment. Review each reported wait
+   comment. Before capacity selection, review active post-merge records and their coverage
+   gaps against the full finish line. Omit records carrying `selection_exclusion`
+   from implementation briefs until reconciliation. Read post-merge comments as well as
+   Current Status; if they establish a new fix or acceptance step, update the status
+   and brief that verified remainder. For other flagged records, brief only a verified
+   remaining step; do not repeat the merged implementation. A merged PR alone
+   never completes a split remainder or releases a person/event hold.
+   Review each reported wait
    against the full issue and current evidence before correcting its status;
    this report-only mode leaves weekly audit markers untouched and grants no
    release of a real hold.

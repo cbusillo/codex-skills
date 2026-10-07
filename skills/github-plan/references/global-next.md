@@ -108,7 +108,11 @@ GitHub update time. Active issues with recorded partial holds appear in
 as their own status. Known agent-only or missing waits appear in `unowned`.
 None of these reports clears a label, hold, dependency or claim.
 
-Global next also reuses the direction audit's `stale_wait_report`, scoped to
+Local and global next reuse the direction audit's `stale_wait_report`. Active
+issues with obsolete landing instructions move to excluded with
+`landed_status_needs_reconciliation`; they need finish-line review rather than
+duplicate implementation. A merged PR does not prove an issue done; split
+remainders remain actionable. Global evidence is scoped to
 its evaluated issues, with explicit coverage and read bounds. Review its full
 threads before correcting status; a closed prerequisite can represent a split.
 Verified obsolete waits move to `stale_waits`, outside the current `waiting` list.
