@@ -1851,9 +1851,12 @@ def test_edited_supervisor_closeout_waits_find_their_own_landed_source() -> None
         report = module.stale_wait_report(selected, "owner/catalog", fetch=fetch)
         assert report["complete"] and not report["unavailable"]
         found = {row["number"]: row for row in report["items"]}
-        assert set(found) == {1211, 3073}
+        # The historical #3073 blocker prose is not a proven no-hold clause;
+        # active evidence carries that uncertainty, parked work stays held.
+        assert set(found) == ({1211, 3073} if label == "plan:active" else {1211})
         assert all(row["review_required"] and not row["completion_proven"] for row in found.values())
-        assert found[3073]["evidence"][0]["url"].endswith("/pull/3087")
+        if label == "plan:active":
+            assert found[3073]["evidence"][0]["url"].endswith("/pull/3087")
     assert json.dumps(rows, sort_keys=True) == before
     assert not any("issues/1211/comments" in path for path in calls)
 
@@ -1894,20 +1897,34 @@ def test_closeout_wait_preserves_real_holds_partial_stacks_and_unknown_history()
             return {**value, **change} if "/pulls/" in args[1] else value
         assert not module.stale_wait_report([row], "owner/catalog", fetch=incomplete)["items"]
     for second_slice in ("https://github.com/owner/catalog/pull/72", "PR #72", "#72"):
-        def partial_stack(args: list[str]) -> Any:
-            value = fetch(args)
-            if "/comments?" in args[1]:
-                return value + [{"body": "Second slice " + second_slice}]
-            return {**value, "merged_at": None} if args[1].endswith("/pulls/72") else value
-        assert not module.stale_wait_report([row], "owner/catalog", fetch=partial_stack)["items"]
+        for association in ("Refs #3", "- Refs #3", "Part of #3", "Stack 2/2 for #3", ""):
+            def partial_stack(args: list[str]) -> Any:
+                value = fetch(args)
+                if "/comments?" in args[1]:
+                    return value + [{"body": "Second slice " + second_slice}]
+                return {**value, "merged_at": None, "body": association} if args[1].endswith("/pulls/72") else value
+            assert not module.stale_wait_report([row], "owner/catalog", fetch=partial_stack)["items"]
     def repeated_reference(args: list[str]) -> Any:
         value = fetch(args)
         if "/comments?" in args[1]:
-            return value + [{"body": "Source PR #71 is handed off."}]
+            return value + [{"body": "Source Owner/Catalog#71 is handed off."}]
         # A later shorthand mention must not erase the earlier explicit pull link.
         assert not args[1].endswith("/issues/71")
         return value
     assert module.stale_wait_report([row], "owner/catalog", fetch=repeated_reference)["items"]
+    delegated = {**row, "body": row["body"].replace(
+        "Waiting for: Supervisor delivery closeout.",
+        "Waiting for: Supervisor delivery closeout; Justin's acceptance belongs to #72. No new Director decision is open.",
+    )}
+    assert not module.stale_wait_report([delegated], "owner/catalog", fetch=fetch)["items"]
+    def unavailable_delegate(args: list[str]) -> Any:
+        if args[1].endswith("/issues/72"):
+            raise module.AuditError("delegation unavailable")
+        return fetch(args)
+    report = module.stale_wait_report([delegated], "owner/catalog", fetch=unavailable_delegate)
+    assert not report["complete"] and not report["items"]
+    routed_issue = {**row, "body": row["body"].replace("closes this issue", "routes #3 and closes this issue")}
+    assert not module.stale_wait_report([routed_issue], "owner/catalog", fetch=fetch)["items"][0]["selection_exclusion"]
     for unavailable in (False, True):
         def unread(args: list[str]) -> Any:
             if "/comments?" in args[1]:
@@ -1928,6 +1945,14 @@ def test_closeout_wait_preserves_real_holds_partial_stacks_and_unknown_history()
         return [{"state": "open"}] if "/dependencies/" in args[1] else with_issue(args)
     result = module.stale_wait_report([blocked], "owner/catalog", fetch=native_blocker)["items"][0]
     assert result["recorded_hold_pending"] and not result["selection_exclusion"]
+    parked = {**blocked, "labels": [{"name": "plan:waiting"}]}
+    assert not module.stale_wait_report([parked], "owner/catalog", fetch=native_blocker)["items"]
+    def unread_parked(args: list[str]) -> Any:
+        if "/comments?" in args[1]:
+            raise module.AuditError("history unavailable")
+        return fetch(args)
+    report = module.stale_wait_report([{**row, "labels": parked["labels"]}], "owner/catalog", fetch=unread_parked)
+    assert not report["complete"] and not report["items"]
 
 
 def main() -> int:

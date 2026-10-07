@@ -665,21 +665,31 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
     def references(reference_text: str) -> dict[tuple[str, int], str | None]:
         found: dict[tuple[str, int], str | None] = {}
         for ref in WAIT_REFERENCE.finditer(reference_text):
-            key = (ref.group(1) or ref.group(4) or repo, int(ref.group(3) or ref.group(5)))
+            key = ((ref.group(1) or ref.group(4) or repo).casefold(), int(ref.group(3) or ref.group(5)))
             if found.get(key) != "pull":
                 found[key] = ref.group(2)
         return found
 
-    def implements_issue(source_pull: dict[str, Any], source_repo: str) -> bool:
-        return any(
-            (ref.group(1) or ref.group(4) or source_repo).casefold() == repo.casefold()
-            and int(ref.group(3) or ref.group(5)) == issue["number"] and ref.group(2) != "pull"
+    def issue_associations(source_pull: dict[str, Any], source_repo: str) -> set[tuple[str, int]]:
+        return {
+            ((ref.group(1) or ref.group(4) or source_repo).casefold(), int(ref.group(3) or ref.group(5)))
             for line in str(source_pull.get("body") or "").splitlines()
-            if re.match(r"\s*(?:Refs|Fixes|Closes|Resolves|Implements)\b", line, re.I)
+            if re.match(r"\s*(?:[-*]\s+)?(?:Refs|Fixes|Closes|Resolves|Implements)\b", line, re.I)
             for ref in WAIT_REFERENCE.finditer(line)
-        )
+            if ref.group(2) != "pull"
+        }
+
+    def implements_issue(source_pull: dict[str, Any], source_repo: str) -> bool:
+        return (repo.casefold(), issue["number"]) in issue_associations(source_pull, source_repo)
 
     agent_wait = agent_delivery_wait(status, repo, issue["number"])
+    if agent_wait and ";" in agent_wait:
+        for (target_repo, number) in references(agent_wait):
+            target = read(f"repos/{target_repo}/issues/{number}")
+            if not isinstance(target, dict) or target.get("state") not in {"open", "closed"}:
+                raise AuditError("unreadable delegated acceptance issue")
+            if "pull_request" in target:
+                return None
     # Delivery targets own the stack guard and implementation association;
     # historical PRs elsewhere in status cannot cancel or authorize selection.
     refs = references(next_action[1]) if next_action else {}
@@ -722,6 +732,8 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
                 raise AuditError("unreadable handoff pull")
             if implements_issue(pull, target_repo):
                 pulls[(target_repo, number)] = pull
+            elif not pull.get("merged_at") and not issue_associations(pull, target_repo):
+                raise AuditError("unproven handoff stack association")
     if not pulls:
         return None
     recorded = _parse_time(issue.get("updated_at"))
@@ -759,6 +771,7 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
     bookkeeping = (r"(?:verifies|confirms) (?:the )?(?:final )?landing(?: SHA)?|"
                    r"closes (?:this|the) issue|reconciles (?:the )?(?:runtime(?: checkout)?|closure)")
     delivery = bool(clauses and raw_clauses[-1].strip() and re.fullmatch(first, clauses[0], re.I)
+                    and set(references(next_action[1])).issubset(pulls)
                     and all(re.fullmatch(bookkeeping, clause, re.I) for clause in clauses[1:]))
     hold_pending = False
     for match in re.finditer(
@@ -843,10 +856,13 @@ def stale_wait_report(
             row = None
             try:
                 row = active_merged_status(issue, repo, status, read=read)
+                if row and parked_issue(issue) and row["recorded_hold_pending"]:
+                    row = None
                 if row:
                     rows.append(row)
             except AuditError:
                 errors.append({"number": number, "source": "active_linked_pr", "reason": "unavailable"})
+                continue
             if (active and not parked_issue(issue)) or row:
                 continue
         evidence: list[dict[str, Any]] = []
