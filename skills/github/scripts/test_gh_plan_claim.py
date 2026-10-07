@@ -1864,6 +1864,8 @@ class ClaimTests(unittest.TestCase):
             "The next session is taking over once PR #99 lands.",
             "Handoff is complete once PR #99 merges.",
             "Handoff completed when PR #99 merges.",
+            "Wait until PR #99 merges. Then take over.",
+            "Wait until PR #99 merges. The next worker can take over.",
         )
         for handoff in handoffs:
             for final in (False, True):
@@ -1934,6 +1936,10 @@ class ClaimTests(unittest.TestCase):
             "After PR #99 merges, close out the issue.",
             "Wait until PR #99 merges, then close out the issue.",
             "Keep the worktree until PR #99 merges.",
+            "Wait until PR #99 merges before closing out the issue.",
+            "Wait until PR #99 merges to close out the issue.",
+            "PR #99 must merge first. Then close out the issue.",
+            "PR #99 must merge first for deployment.",
         ):
             prose = "The next worker can take over. " + downstream
             for release in ("Released claim 1\n\n" + prose, prose + "\n\nReleased claim 1"):

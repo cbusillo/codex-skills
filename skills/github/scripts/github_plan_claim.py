@@ -108,19 +108,23 @@ def conditional_release_prose(text: str, *, suffix: str) -> bool:
                 or re.search(successor, statement, re.IGNORECASE)):
             return True
         prerequisite_step = re.search(prerequisite, statement, re.IGNORECASE)
-        standalone_wait = re.fullmatch(r"Wait\s+until\b[^,;]*", statement.strip(), re.IGNORECASE)
-        if (index > 0 and (prerequisite_step or standalone_wait)
+        standalone_prerequisite = re.fullmatch(rf"[^.!?;]*(?:{prerequisite})[.!?]?", statement.strip(), re.IGNORECASE)
+        standalone_wait = re.fullmatch(r"Wait\s+until\b[^,;.!?]*\b(?:merges|lands|passes|green)[.!?]?",
+                                       statement.strip(), re.IGNORECASE)
+        following = statements[index + 1].strip() if index + 1 < len(statements) else ""
+        downstream_next = (re.match(r"Then\b", following, re.IGNORECASE)
+                           and not re.search(rf"{ownership}|{successor}", following, re.IGNORECASE))
+        if (index > 0 and (standalone_prerequisite or standalone_wait) and not downstream_next
                 and re.search(successor, statements[index - 1], re.IGNORECASE)):
             return True
         if index + 1 == len(statements):
             continue
-        following = statements[index + 1].strip()
         starts_condition = re.match(r"(?:only\s+|not\s+)?" + condition, statement.strip(), re.IGNORECASE)
         if re.search(ownership, following, re.IGNORECASE) and (starts_condition or prerequisite_step):
             return True
         sequences_next = (re.match(r"Then\b", following, re.IGNORECASE)
                           and (starts_condition or re.search(required_step, statement, re.IGNORECASE)))
-        if ((prerequisite_step or sequences_next
+        if ((prerequisite_step or sequences_next or standalone_wait
              or re.match(r"Hold\s+" + condition, statement.strip(), re.IGNORECASE)
              or (starts_condition and "," not in statement))
                 and re.search(successor, following, re.IGNORECASE)):
