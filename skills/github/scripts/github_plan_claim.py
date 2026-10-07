@@ -91,6 +91,8 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     statements = re.split(r"(?<=[.!?;])\s+|\n[ \t]*\n", prose)
     ownership = r"\b(?:releases?|claims?|claiming|reclaim(?:ing)?|ownership|takes? effect|effective)\b"
     effective = r"\b(?:takes? effect|effective)\b(?!\s+(?:now|immediately)\b)"
+    if final_paragraph:
+        effective = r"(?<![\w/.-])" + effective + r"(?![\w/-])"
     if (re.match(r"(?:only\s+|not\s+)?" + condition, ownership_text(suffix), re.IGNORECASE)
             or re.search(effective, prose if final_paragraph else ownership_text(suffix), re.IGNORECASE)
             or any(re.search(condition, statement, re.IGNORECASE)

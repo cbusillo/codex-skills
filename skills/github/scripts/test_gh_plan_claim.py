@@ -1949,6 +1949,13 @@ class ClaimTests(unittest.TestCase):
         self.run_claim()
         self.assertEqual(self.emitted.call_args.args[0]["claim"]["refresh_pr"], self.args.refresh_pr)
 
+    def test_unconditional_final_release_with_effective_branch_name_recovers(self):
+        self.released_status_fixture(
+            "Source work is finished; branch work/cs-1400-effective-cache is retained.\n\nReleased claim 1"
+        )
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
     def test_embedded_release_preserves_ownership_and_artifact_guards(self):
         for change in ("foreign", "wrong_id", "earlier", "other_claim", "artifact", "live_peer"):
             with self.subTest(change=change):
