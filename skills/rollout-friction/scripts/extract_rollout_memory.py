@@ -19,8 +19,10 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlsplit
 
 
 DEFAULT_MAX_FILES = 500
@@ -44,9 +46,9 @@ LOCAL_PATH_ROOTS = r"(?:Users|home|workspace|workspaces|tmp|var|private|Volumes|
 PATH_RE = re.compile(
     # Public URLs may contain the same root names as local paths. Match them
     # first so those components remain useful evidence rather than local paths.
-    r"(?P<url>https?://[^\s<>\"'`]+)|"
+    r"(?P<url>(?i:https?)://[^\s<>\"'`]+)|"
     rf"(?P<quoted>[\"'`])/{LOCAL_PATH_ROOTS}/[^\n]*?(?P=quoted)|"
-    rf"(?<![\w/])/{LOCAL_PATH_ROOTS}/[^\s,;:\"'`<>)\]}}]+"
+    rf"/{LOCAL_PATH_ROOTS}/(?:\\ |[^\s,;:\"'`<>)\]}}])+"
 )
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 MENTION_RE = re.compile(
@@ -437,10 +439,29 @@ def context_window(events: list[Event], index: int, radius: int, args: argparse.
 def clean_text(text: str, args: argparse.Namespace) -> str:
     cleaned = SECRET_RE.sub("<secret-redacted>", text)
     if args.redact:
-        cleaned = PATH_RE.sub(lambda match: match.group() if match.group("url") else "<path-redacted>", cleaned)
+        cleaned = PATH_RE.sub(redact_path_match, cleaned)
         cleaned = redact_person_data(cleaned)
     cleaned = " ".join(cleaned.split())
     return cleaned.strip()
+
+
+def redact_path_match(match: re.Match[str]) -> str:
+    url = match.group("url")
+    if url is None:
+        return "<path-redacted>"
+    try:
+        host = urlsplit(url).hostname or ""
+        local = host == "localhost" or host.endswith((".localhost", ".local", ".internal"))
+        try:
+            local = local or ip_address(host).is_private
+        except ValueError:
+            pass  # A hostname is not an IP address.
+    except ValueError:
+        local = True  # Malformed URLs do not establish a public host.
+    if local:
+        scheme, separator, remainder = url.partition("://")
+        return scheme + separator + PATH_RE.sub(redact_path_match, remainder)
+    return url
 
 
 def redact_person_data(text: str) -> str:

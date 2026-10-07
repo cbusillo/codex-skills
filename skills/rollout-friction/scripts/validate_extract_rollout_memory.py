@@ -242,14 +242,21 @@ def test_redact_mounted_paths_in_text_context_and_prompts() -> None:
     redact_args, module = args(redact=True, trusted_originals=False, max_record_chars=2_000)
     trusted_args, _module = args(max_record_chars=2_000)
     paths = (
-        "/Volumes/EXAMPLE/worktrees/sample",
-        '"/Volumes/Example Disk/Task Evidence/sample"',
-        "`/Volumes/Example Disk/worktrees/sample`",
-        "'/mnt/example/task evidence/sample'",
-        "/media/example/worktrees/sample",
+        ("/Volumes/EXAMPLE/worktrees/sample", "EXAMPLE/worktrees/sample"),
+        ('"/Volumes/Example Disk/Task Evidence/sample"', "Task Evidence/sample"),
+        ("`/Volumes/Example Disk/worktrees/sample`", "Disk/worktrees/sample"),
+        ("'/mnt/example/task evidence/sample'", "task evidence/sample"),
+        ("/media/example/worktrees/sample", "example/worktrees/sample"),
+        (r"/Volumes/Example\ Disk/worktrees/sample", "Disk/worktrees/sample"),
+        ("file:///Volumes/EXAMPLE/worktrees/sample", "EXAMPLE/worktrees/sample"),
+        ("vscode://file/Users/example/sample.py:12", "example/sample.py"),
+        ("http://localhost:5173/@fs/Users/example/sample.py", "example/sample.py"),
+        ("http://127.0.0.1:5173/@fs/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
+        ("http://workstation.local/view?path=/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
+        ("http://192.168.1.2/view?path=/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
     )
     public_url = "https://example.test/Volumes/EXAMPLE/worktrees/sample"
-    for path in paths:
+    for path, private_tail in paths:
         messages = (
             f"Remember worktrees live under {path}; keep reusable workflows simple.",
             f"Read {public_url} for details; evidence is in {path}.",
@@ -262,14 +269,14 @@ def test_redact_mounted_paths_in_text_context_and_prompts() -> None:
             raise AssertionError("expected candidates in both modes")
         text = redacted[0].text
         context = redacted[0].context
-        if path in text or any(path in event["text"].replace(public_url, "") for event in context):
+        if private_tail in text or any(private_tail in event["text"].replace(public_url, "") for event in context):
             raise AssertionError(f"candidate text/context leaked {path}: {redacted}")
         if "keep reusable workflows simple." not in text:
             raise AssertionError(f"path redaction consumed neighboring prose: {text}")
         if not any(public_url in event["text"] for event in context):
             raise AssertionError(f"path redaction damaged public URL: {context}")
         prompts = json.dumps(list(module.prompt_batches(redacted, redact_args.batch_chars)))
-        if path in prompts.replace(public_url, ""):
+        if private_tail in prompts.replace(public_url, ""):
             raise AssertionError(f"prompt leaked mounted path: {path}")
         if path not in trusted[0].text or not any(path in event["text"] for event in trusted[0].context):
             raise AssertionError(f"trusted mode lost mounted path: {path}")
