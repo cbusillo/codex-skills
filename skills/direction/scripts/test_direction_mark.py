@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import datetime as dt
 import importlib.util
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import time
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -95,12 +97,87 @@ def test_turn_cli_requires_coverage_and_reports_written_repository() -> None:
             result = subprocess.run([sys.executable, str(SCRIPT), *args], env=env, capture_output=True, text=True)
             assert result.returncode == 2
             assert not path.exists()
-        result = subprocess.run([sys.executable, str(SCRIPT), "turn", "--repo", "owner/start"], env=env, capture_output=True, text=True, check=True)
+        mark = load(SCRIPT, "direction_mark_cli")
+        github = FakeGitHub(Path(tmp) / "github")
+        printed = io.StringIO()
+        with patch.dict(os.environ, {"DIRECTION_MARKER": str(path)}), patch.object(mark, "GITHUB_SCRIPTS", github.scripts), redirect_stdout(printed):
+            assert mark.main(["turn", "--repo", "owner/start"]) == 0
         written = json.loads(path.read_text())
-        output = json.loads(result.stdout)
+        output = json.loads(printed.getvalue())
         assert output["turn_repo"] == written["turn_repo"] == "owner/start"
         assert output["turn"] == written["turn"]
+        assert output["shared"]["repo"] == "owner/direction"
         assert written["audits"] == {}
+        github.fail = True
+        printed = io.StringIO()
+        with patch.dict(os.environ, {"DIRECTION_MARKER": str(path)}), patch.object(mark, "GITHUB_SCRIPTS", github.scripts), redirect_stdout(printed):
+            assert mark.main(["turn", "--repo", "owner/start"]) == 2, "a failed shared write must not look like success"
+        output = json.loads(printed.getvalue())
+        assert output["ok"] is False and output["shared"]["ok"] is False
+        assert json.loads(path.read_text())["turn"] == output["turn"], "the local turn is still recorded"
+
+
+class FakeGitHub:
+    """gh-with-env-token and gh-issue stand-ins backed by one issue list, as OWNER/direction would be."""
+
+    def __init__(self, root: Path) -> None:
+        self.scripts = root / "scripts"
+        self.scripts.mkdir(parents=True)
+        self.state = root / "issues.json"
+        self.state.write_text("[]")
+        self.failure = root / "fail"
+        shebang = f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\nstate = Path({str(self.state)!r})\n"
+        guard = f"if Path({str(self.failure)!r}).exists():\n    sys.exit('gh: HTTP 403 Resource not accessible by integration')\n"
+        (self.scripts / "gh-with-env-token").write_text(shebang + guard + "print(state.read_text())\n")
+        (self.scripts / "gh-issue").write_text(shebang + guard + (
+            "issues = json.loads(state.read_text())\n"
+            "body = sys.stdin.read()\n"
+            "if sys.argv[1] == 'create':\n"
+            "    issues.append({'number': len(issues) + 1, 'body': body + '\\n<!-- provenance -->\\n', 'author_association': 'NONE', 'user': {'type': 'Bot'}})\n"
+            "else:\n"
+            "    next(i for i in issues if i['number'] == int(sys.argv[2]))['body'] = body\n"
+            "state.write_text(json.dumps(issues))\n"
+        ))
+        for script in self.scripts.iterdir():
+            script.chmod(0o755)
+
+    @property
+    def fail(self) -> bool:
+        return self.failure.exists()
+
+    @fail.setter
+    def fail(self, value: bool) -> None:
+        self.failure.write_text("") if value else self.failure.unlink(missing_ok=True)
+
+    def issues(self) -> list[dict[str, Any]]:
+        return json.loads(self.state.read_text())
+
+
+def test_two_machines_one_turn() -> None:
+    """A turn marked on one machine clears the daily reminder on another the same day."""
+    mark = load(SCRIPT, "direction_mark_two_machines")
+    hook = load(HOOK, "direction_check_hook_two_machines")
+    with tempfile.TemporaryDirectory() as tmp:
+        github = FakeGitHub(Path(tmp) / "github")
+        first, second = Path(tmp) / "first.json", Path(tmp) / "second.json"
+        mark.mark_turn(second, "owner/start", NOW - dt.timedelta(days=3))
+        later = NOW - dt.timedelta(days=1)
+        for when in (later, NOW):
+            stamp = mark.mark_turn(first, "owner/start", when)["turn"]
+            with patch.object(mark, "GITHUB_SCRIPTS", github.scripts):
+                assert mark.share_turn(str(stamp), "owner/start")["ok"]
+        assert len(github.issues()) == 1, "later turns update the one record instead of adding issues"
+        with patch.object(hook, "GH_READER", github.scripts / "gh-with-env-token"):
+            seen = hook.with_shared_turn(hook.read_marker(second), NOW + dt.timedelta(hours=1), "owner/product")
+        assert seen["turn"] == NOW.replace(microsecond=0)
+        assert hook.reminder(seen, NOW + dt.timedelta(hours=1), None, second) == ""
+        assert "3 days ago" in hook.reminder(hook.read_marker(second), NOW + dt.timedelta(hours=1), None, second), "the second machine's own marker is unchanged"
+        github.fail = True
+        with patch.object(hook, "GH_READER", github.scripts / "gh-with-env-token"):
+            blind = hook.with_shared_turn(hook.read_marker(second), NOW + dt.timedelta(hours=1), "owner/product")
+        text = hook.reminder(blind, NOW + dt.timedelta(hours=1), None, second)
+        assert "Direction check overdue" not in text, text
+        assert "owner/direction could not be read" in text and "HTTP 403" in text, text
 
 
 def test_overlapping_audits_and_turn_preserve_updates() -> None:

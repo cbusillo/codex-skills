@@ -448,7 +448,9 @@ nothing extra.
 It reads a local marker that `direction_mark.py` writes at the end of a daily
 turn and that the audit script writes per repository when an audit completes,
 and it also prints a reminder line while the turn is more than a
-day old or the current repository's audit more than a week old. It never
+day old or the current repository's audit more than a week old. While this
+machine's own turn is stale it reads the shared turn record in `OWNER/direction`
+(see the `direction` skill), so a turn taken on another machine counts. It never
 reads stdin, always exits 0, runs only on `startup`, `resume`, and `clear`
 (not after a compaction), and is bounded to 15 seconds with Python downloads
 disabled. The marker is `~/.code/direction-last-check.json` on every host
