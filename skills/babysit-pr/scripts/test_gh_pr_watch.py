@@ -1227,6 +1227,132 @@ def test_25_unchanged_pending_watchers_fit_half_an_hourly_budget(monkeypatch):
                       "coverage": "local watcher HTTP calls only"}))
 
 
+@pytest.fixture
+def watcher_transport(monkeypatch):
+    """Use the real watcher reader and retry policy with offline HTTP replies."""
+    clock = [1000.0]
+    calls = []
+    replies = []
+    monkeypatch.setenv("CODEX_AUTOMATION_LOGIN", "fixture-bot")
+    monkeypatch.delenv("GITHUB_RETRY_DEADLINE_AT", raising=False)
+    monkeypatch.setenv("GITHUB_RETRY_DRAIN_SECONDS", "0")
+    monkeypatch.setattr(gh_pr_watch.github_api, "default_retry_runtime", lambda: gh_pr_watch.github_api.RetryRuntime(
+        now=lambda: clock[0],
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        jitter=lambda _seconds: 0,
+        progress=lambda _event: None,
+    ))
+
+    def transport(command, **_kwargs):
+        calls.append((clock[0], command))
+        status, headers, body, actor = replies.pop(0)
+        output = f"HTTP/2 {status}\ncontent-type: application/json\n"
+        output += "".join(f"{name}: {value}\n" for name, value in headers.items())
+        output += "\n" + json.dumps(body)
+        return subprocess.CompletedProcess(command, int(status >= 400), stdout=output.encode(),
+                                           stderr=f"using the active gh account '{actor}'".encode())
+
+    monkeypatch.setattr(gh_pr_watch.subprocess, "run", transport)
+    return SimpleNamespace(clock=clock, calls=calls, replies=replies)
+
+
+def test_watch_recovers_transient_read_and_continues_polling(monkeypatch, watcher_transport):
+    fixture = watcher_transport
+    fixture.replies.extend([
+        (503, {"retry-after": "2"}, {"message": "No server is currently available to service your request"}, "fixture-bot"),
+        (200, {}, {"state": "open"}, "fixture-bot"),
+        (200, {}, {"state": "closed"}, "fixture-bot"),
+    ])
+    events = []
+    readers = []
+
+    def snapshot(_args):
+        reader = gh_pr_watch.watcher_reader()
+        readers.append(reader)
+        # Distinct paths avoid cache coalescing on the second poll.
+        body = reader.get_json(f"/repos/example/app/issues/7/comments?page={len(readers)}", step="comments")
+        closed = body["state"] == "closed"
+        return {"pr": {**sample_pr(), "closed": closed},
+                "checks": sample_checks(all_terminal=False, pending_count=1),
+                "actions": ["stop_pr_closed" if closed else "idle"]}, Path("unused")
+
+    monkeypatch.setattr(gh_pr_watch, "collect_snapshot", snapshot)
+    monkeypatch.setattr(gh_pr_watch, "print_event", lambda event, payload: events.append((event, payload)))
+    monkeypatch.setattr(gh_pr_watch.github_read, "poll_delay", lambda seconds, *_a, **_kw: seconds)
+    monkeypatch.setattr(gh_pr_watch.time, "sleep", lambda seconds: fixture.clock.__setitem__(0, fixture.clock[0] + seconds))
+
+    assert gh_pr_watch.run_watch(argparse.Namespace(poll_seconds=30)) == 0
+    assert [event for event, _payload in events] == ["snapshot", "snapshot", "stop"]
+    assert [when for when, _command in fixture.calls] == [1000, 1002, 1032]
+    assert readers[0].last_result.ok
+    assert readers[0].last_result.as_dict()["attempts"] == 2
+    assert readers[0].last_result.as_dict()["elapsed_wait"] == 2
+    assert readers[0].last_result.actor == readers[0].expected_actor
+    assert not readers[0].degraded_reasons
+
+
+def test_watcher_deadline_returns_structured_failure_before_retry(monkeypatch, watcher_transport):
+    fixture = watcher_transport
+    fixture.replies.append((503, {"retry-after": "10"}, {"message": "Service Unavailable"}, "fixture-bot"))
+    reader = gh_pr_watch.watcher_reader()
+    monkeypatch.setenv("GITHUB_RETRY_DEADLINE_AT", str(fixture.clock[0] + 2))
+
+    with pytest.raises(gh_pr_watch.github_read.GitHubReadError) as raised:
+        reader.get_json("/repos/example/app/issues/7/comments", step="comments")
+
+    result = raised.value.result
+    assert len(fixture.calls) == 1
+    assert not result.ok
+    assert result.failure.cause == "deadline_exceeded"
+    assert result.as_dict()["retry_exhausted_reason"] == "deadline_exceeded"
+    assert result.as_dict()["effective_deadline"] == 1002
+    assert fixture.clock[0] <= result.as_dict()["effective_deadline"]
+    assert reader.failed_results == [result]
+
+
+def test_watcher_throttle_shares_cooldown_with_another_reader(watcher_transport):
+    fixture = watcher_transport
+    fixture.replies.extend([
+        (403, {"retry-after": "10"}, {"message": "You have exceeded a secondary rate limit"}, "fixture-bot"),
+        (200, {}, {"name": "app"}, "fixture-bot"),
+    ])
+    first = gh_pr_watch.watcher_reader()
+    first.deadline_at = fixture.clock[0] + 2
+    with pytest.raises(gh_pr_watch.github_read.GitHubReadError):
+        first.get_json("/repos/example/app/issues/7/comments", step="comments")
+
+    second = gh_pr_watch.github_read.GitHubReader(
+        gh_cmd=gh_pr_watch.GH_COMMAND, expected_actor="fixture-bot", operation="github.read.repository",
+    )
+    assert second.get_json("/repos/example/app", step="repository") == {"name": "app"}
+    assert [when for when, _command in fixture.calls] == [1000, 1010]
+    assert second.last_result.ok
+    assert second.last_result.as_dict()["elapsed_wait"] > 0
+    assert second.last_result.actor == first.expected_actor
+
+
+@pytest.mark.parametrize("status,body,actor,cause", [
+    (401, {"message": "Bad credentials"}, "fixture-bot", "invalid_credentials"),
+    (403, {"message": "Resource not accessible by integration"}, "fixture-bot", "permission_denied"),
+    (200, {"state": "open"}, "unexpected-user", "actor_mismatch"),
+])
+def test_watcher_read_fails_closed_without_retry_or_fallback(watcher_transport, status, body, actor, cause):
+    fixture = watcher_transport
+    fixture.replies.append((status, {}, body, actor))
+    reader = gh_pr_watch.watcher_reader()
+    with pytest.raises(gh_pr_watch.github_read.GitHubReadError) as raised:
+        reader.get_json("/repos/example/app/issues/7/comments", step="comments")
+
+    result = raised.value.result
+    assert not result.ok
+    assert result.failure.cause == cause
+    assert result.failure.retryable is False
+    assert len(fixture.calls) == 1
+    assert fixture.clock[0] == 1000
+    assert fixture.calls[0][1][0] == gh_pr_watch.GH_COMMAND
+    assert reader.expected_actor == "fixture-bot"
+
+
 @pytest.mark.parametrize("stop_action", ["stop_pr_closed", "stop_exhausted_retries"])
 @pytest.mark.parametrize("server_floor", [0, 90])
 def test_run_watch_reports_chosen_sleep_interval(monkeypatch, stop_action, server_floor):
