@@ -487,7 +487,11 @@ Quoted hard wraps preserve qualifiers, fields and paragraph boundaries. Claim
 markers, exact-ID release directives and recorded intent/history provenance
 continue to use their exact source forms. Legacy `Released by` keeps its exact
 prefix; its formatted holder token is normalized for legacy claims, including
-the reused-worker session check, without releasing structured records by alias.
+the reused-worker session check across structured and older hand-written claim
+records. Distinct sessions, or a missing/recognized placeholder identity beside
+another claim, require authored exact-comment-ID releases; repeated records of the same session
+retain the bare legacy release route. Formatted aliases do not release structured
+records by alias.
 Code-span contents remain literal, unresolved reference-link text remains
 visible, and a quoted legacy claim header in a comment does not claim the
 issue on behalf of the quoting author.
@@ -629,12 +633,14 @@ comments must contain only that exact directive, optionally followed by the
 helper's operation marker; trailing whitespace is allowed. Conditional suffixes,
 continuations and other paragraphs never release ownership through this legacy
 form. Use `Released claim <claim-comment-id>` followed by a blank line and the
-handoff prose for a release with context. Bare legacy releases are accepted only
-when the earlier structured claims for that token all belong to one session;
-reuse requires exact comment-ID releases.
+handoff prose for a release with context. The session-identity rules in
+[Planning: Claim](#planning-claim) govern bare legacy releases.
 To recover an older ambiguous legacy release, the source author posts a new
 `Released claim <claim-comment-id>` comment for each original claim. For a
-closed automation session, use the evidence-backed `release-claim` route above.
+closed automation session with a structured source claim, use the evidence-backed
+`release-claim` route above, including its verified related hand-written
+follow-ups. A hand-written source claim requires its author to post the exact-ID
+release.
 
 After a verified retained-work handoff, use `--resume-from <claim-comment-id>`.
 The source must be one structured claim explicitly released by its author.
