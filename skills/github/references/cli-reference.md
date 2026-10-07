@@ -479,7 +479,7 @@ markers, exact-ID release directives and recorded intent/history provenance
 continue to use their exact source forms. Legacy `Released by` keeps its exact
 prefix; its formatted holder token is normalized for legacy claims, including
 the reused-worker session check across structured and older hand-written claim
-records. Distinct sessions, or a missing/placeholder session identity beside
+records. Distinct sessions, or a missing/recognized placeholder identity beside
 another claim, require authored exact-comment-ID releases; repeated records of the same session
 retain the bare legacy release route. Formatted aliases do not release structured
 records by alias.
@@ -623,8 +623,9 @@ handoff prose for a release with context. The session-identity rules in
 To recover an older ambiguous legacy release, the source author posts a new
 `Released claim <claim-comment-id>` comment for each original claim. For a
 closed automation session with a structured source claim, use the evidence-backed
-`release-claim` route above. Hand-written claims require the source author
-to post the exact-ID release.
+`release-claim` route above, including its verified related hand-written
+follow-ups. A hand-written source claim requires its author to post the exact-ID
+release.
 
 After a verified retained-work handoff, use `--resume-from <claim-comment-id>`.
 The source must be one structured claim explicitly released by its author.
