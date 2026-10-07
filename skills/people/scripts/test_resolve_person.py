@@ -383,6 +383,29 @@ people:
         self.assertFalse(target.exists())
         self.assertEqual(json.loads(proc.stdout)["status"], "dry_run")
 
+    def test_writer_records_github_automation_accounts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "people.yaml"
+            target.write_text(
+                "people:\n  - id: client\n    display_name: Casey Client\n"
+                "    contacts:\n      github: casey-client\n",
+                encoding="utf-8",
+            )
+            command = [
+                sys.executable, str(INDEX_SCRIPT_PATH), "upsert", "--index", str(target),
+                "--id", "client", "--github-bot", "client-code-bot,Client-Code-Bot",
+            ]
+            first = subprocess.run(command, text=True, capture_output=True, check=False)
+            second = subprocess.run(command, text=True, capture_output=True, check=False)
+            _status, people = resolve_person.load_people(target)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(json.loads(second.stdout)["status"], "unchanged")
+        self.assertEqual(
+            people[0]["contacts"]["github"],
+            {"username": "casey-client", "bot_usernames": ["client-code-bot"]},
+        )
+        self.assertEqual(resolve_person.resolve("client-code-bot", people)["status"], "matched")
+
     def test_rejects_detail_path_escape(self) -> None:
         data = resolve_person.yaml.safe_load(SAMPLE)
         data["people"][0]["details_file"] = "../secret.md"

@@ -83,6 +83,7 @@ def args(**overrides: object) -> argparse.Namespace:
         "thread": [],
         "self_login": [],
         "bot_login": [],
+        "people_index": Path("/definitely/missing/people.yaml"),
         "window": None,
         "since": None,
         "until": None,
@@ -789,6 +790,355 @@ def test_resolve_settings_infers_owner_and_defaults_to_thirty_days(monkeypatch: 
     assert settings["bot_logins"] == ["fixture-automation"]
     assert settings["since"] == datetime(2026, 6, 26, 20, 0, tzinfo=timezone.utc)
     assert settings["until"] == now
+
+
+PEOPLE_YAML = """
+version: 1
+people:
+  - id: director
+    display_name: Pat Director
+    preferred_reference: Pat
+    contacts:
+      github:
+        username: cbusillo
+        bot_usernames: [director-code-bot]
+  - id: client
+    display_name: Casey Client
+    preferred_reference: Casey
+    contacts:
+      github:
+        username: casey-client
+        bot_usernames: [client-code-bot]
+"""
+
+
+def people_index(tmp_path: Path) -> Path:
+    path = tmp_path / "people.yaml"
+    path.write_text(PEOPLE_YAML, encoding="utf-8")
+    return path
+
+
+def opening(
+    *,
+    number: int = 880,
+    author: str = "outside-contributor",
+    body: str = "Fix quoting in the mux command.",
+    created_at: str = "2026-07-20T17:08:11Z",
+    pull_request: bool = True,
+    author_type: str = "User",
+) -> dict[str, object]:
+    kind = "pull" if pull_request else "issues"
+    item: dict[str, object] = {
+        "id": 5_000_000 + number,
+        "number": number,
+        "node_id": f"PR_{number}" if pull_request else f"I_{number}",
+        "title": "Fix quoting in mux_video_audio_subs",
+        "state": "open",
+        "user": {"login": author, "type": author_type},
+        "body": body,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "html_url": f"https://github.com/example/repo/{kind}/{number}",
+        "labels": [],
+    }
+    if pull_request:
+        item["pull_request"] = {"url": f"https://api.github.com/repos/example/repo/pulls/{number}"}
+    return item
+
+
+def opening_comment(item: dict[str, object]) -> github_unanswered_comments.Comment:
+    result = github_unanswered_comments.normalize_opening_post("example/repo", item)
+    assert result is not None
+    return result
+
+
+class FakeGitHub:
+    """Answers the radar's gh api calls from fixtures keyed by endpoint path."""
+
+    def __init__(self, routes: dict[str, object]) -> None:
+        self.routes = routes
+        self.calls: list[str] = []
+
+    def __call__(self, command: list[str]) -> object:
+        endpoint = command[2]
+        self.calls.append(endpoint)
+        if endpoint == "user":
+            return {"login": "fixture-automation"}
+        if endpoint == "graphql":
+            return {"data": {"node": {"lastEditedAt": None, "reactions": {
+                "nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None}}}}}
+        path = endpoint.split("?", 1)[0]
+        payload = self.routes.get(path, [])
+        if callable(payload):
+            payload = payload(endpoint)
+        return [payload] if "--slurp" in command else payload
+
+
+def portfolio_settings(**overrides: object) -> dict[str, object]:
+    return github_unanswered_comments.resolve_settings(
+        args(
+            repo=["example/repo"],
+            self_login=["cbusillo"],
+            bot_login=["fixture-automation"],
+            until="2026-07-26T20:00:00Z",
+            **overrides,
+        ),
+        {},
+        now=datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc),
+    )
+
+
+def test_outside_pull_request_opened_in_window_needs_attention(monkeypatch) -> None:
+    # Reproduces BD_to_AVP#880: an outside contributor opens a PR and nobody comments.
+    pull = opening()
+    fake = FakeGitHub({"repos/example/repo/issues": [pull], "repos/example/repo/issues/880": pull})
+    monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
+
+    payload = github_unanswered_comments.collect_payload(portfolio_settings())
+
+    assert payload["status"] == "attention"
+    [item] = payload["attention"]
+    assert (item["number"], item["comment_kind"], item["thread_kind"]) == (880, "issue_body", "pull_request")
+    assert item["attention_state"] == "needs_your_eyes"
+    assert item["author_class"] == "person"
+    assert "opened it" in github_unanswered_comments.render_markdown(payload)
+
+
+def test_owner_or_automation_opened_threads_are_not_external(monkeypatch) -> None:
+    own = opening(number=1, author="cbusillo", pull_request=False)
+    automation = opening(number=2, author="fixture-automation")
+    app = opening(number=3, author="some-app[bot]", author_type="Bot")
+    fake = FakeGitHub({"repos/example/repo/issues": [own, automation, app]})
+    monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
+
+    payload = github_unanswered_comments.collect_payload(portfolio_settings())
+
+    assert payload["status"] == "clear"
+    assert payload["coverage"]["candidate_thread_count"] == 0
+
+
+def test_opened_threads_stop_at_window_start_and_skip_after_until(monkeypatch) -> None:
+    pages = {
+        1: [opening(number=4, created_at="2026-07-27T00:00:00Z"), opening(number=3, created_at="2026-07-25T00:00:00Z")],
+        2: [opening(number=2, created_at="2026-07-10T00:00:00Z"), opening(number=1, created_at="2026-06-01T00:00:00Z")],
+        3: [opening(number=0, created_at="2026-07-12T00:00:00Z")],
+    }
+    requested: list[int] = []
+
+    def fake_run_json(command: list[str]) -> object:
+        page = int(command[2].rsplit("page=", 1)[1])
+        requested.append(page)
+        return pages[page]
+
+    monkeypatch.setattr(github_unanswered_comments, "run_json", fake_run_json)
+
+    items = github_unanswered_comments.opened_threads(
+        "example/repo",
+        datetime(2026, 7, 1, tzinfo=timezone.utc),
+        datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc),
+        per_page=2,
+    )
+
+    assert [item["number"] for item in items] == [3, 2]
+    assert requested == [1, 2]
+
+
+def test_full_history_thread_includes_outside_opening_post(monkeypatch) -> None:
+    pull = opening(created_at="2026-01-01T00:00:00Z")
+    fake = FakeGitHub({"repos/example/repo/issues/880": pull})
+    monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
+    settings = github_unanswered_comments.resolve_settings(
+        args(thread=["example/repo#880"], until="2026-07-26T20:00:00Z"),
+        {},
+        now=datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc),
+    )
+
+    payload = github_unanswered_comments.collect_payload(settings)
+
+    assert [item["comment_kind"] for item in payload["attention"]] == ["issue_body"]
+
+
+def test_empty_outside_description_still_counts_as_opened() -> None:
+    post = opening_comment(opening(body=""))
+
+    assert github_unanswered_comments.is_external_comment(post, {"cbusillo"}, {"fixture-automation"})
+
+
+def test_owner_reaction_and_bot_mention_handle_opening_post() -> None:
+    post = opening_comment(opening())
+    reply = comment(
+        comment_id=2,
+        author="fixture-automation",
+        body="@outside-contributor thanks, this is merged.",
+        created_at="2026-07-21T00:00:00Z",
+    )
+
+    [result] = github_unanswered_comments.comment_states_for_thread(
+        opening(),
+        [post, reply],
+        {post.key},
+        {"cbusillo"},
+        {"fixture-automation"},
+        {post.key: [reaction(created_at="2026-07-21T01:00:00Z")]},
+    )
+
+    assert result["attention_state"] == "handled"
+
+
+def test_owner_link_to_another_comment_does_not_answer_opening_post() -> None:
+    post = opening_comment(opening())
+    other = comment(comment_id=7, author="outside-contributor", body="Ping.", created_at="2026-07-21T00:00:00Z")
+    reply = comment(
+        comment_id=8,
+        author="cbusillo",
+        body=f"See {post.url}#issuecomment-7",
+        created_at="2026-07-22T00:00:00Z",
+    )
+    exact = comment(
+        comment_id=9,
+        author="cbusillo",
+        body=f"Answering {post.url}#issue-{post.comment_id}",
+        created_at="2026-07-23T00:00:00Z",
+    )
+
+    def state(responses: list[github_unanswered_comments.Comment]) -> object:
+        results = github_unanswered_comments.comment_states_for_thread(
+            opening(), [post, other, *responses], {post.key}, {"cbusillo"}, {"fixture-automation"}, {post.key: []},
+        )
+        return results[0]["attention_state"]
+
+    assert state([reply]) == "needs_your_eyes"
+    assert state([reply, exact]) == "handled"
+
+
+def test_opening_post_does_not_make_later_bot_mention_ambiguous() -> None:
+    post = opening_comment(opening(created_at="2026-07-20T00:00:00Z"))
+    followup = comment(comment_id=7, author="outside-contributor", body="Any update?", created_at="2026-07-21T00:00:00Z")
+    reply = comment(
+        comment_id=8,
+        author="fixture-automation",
+        body="@outside-contributor yes, it ships Friday.",
+        created_at="2026-07-22T00:00:00Z",
+    )
+
+    [result] = classify([post, followup, reply], [followup])
+
+    assert result["attention_state"] == "bot_answered_needs_your_eyes"
+
+
+def test_people_index_classifies_automation_accounts(tmp_path: Path) -> None:
+    identities = github_unanswered_comments.people_identities({"cbusillo"}, people_index(tmp_path))
+
+    assert identities["director_names"] == ["Pat Director", "Pat"]
+    assert identities["director_automation"] == ["director-code-bot"]
+    assert github_unanswered_comments.author_class("Client-Code-Bot", identities["other_automation"]) == ("automation", "Casey")
+    assert github_unanswered_comments.author_class("unknown-code-bot", identities["other_automation"]) == ("possible_automation", None)
+    assert github_unanswered_comments.author_class("casey-client", identities["other_automation"]) == ("person", None)
+
+
+def test_director_automation_from_people_index_is_not_external(monkeypatch, tmp_path: Path) -> None:
+    by_director_bot = opening(number=1, author="director-code-bot")
+    by_client_bot = opening(number=2, author="client-code-bot")
+    fake = FakeGitHub({
+        "repos/example/repo/issues": [by_director_bot, by_client_bot],
+        "repos/example/repo/issues/2": by_client_bot,
+    })
+    monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
+
+    payload = github_unanswered_comments.collect_payload(portfolio_settings(people_index=people_index(tmp_path)))
+
+    [item] = payload["attention"]
+    assert (item["number"], item["author_class"], item["automation_for"]) == (2, "automation", "Casey")
+    assert "director-code-bot" in payload["bot_logins"]
+    assert "(automation for Casey)" in github_unanswered_comments.render_markdown(payload)
+
+
+def test_invalid_people_index_degrades_coverage(monkeypatch, tmp_path: Path) -> None:
+    index = tmp_path / "people.yaml"
+    index.write_text("people: [{id: Not A Slug}]\n", encoding="utf-8")
+    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub({}))
+
+    payload = github_unanswered_comments.collect_payload(portfolio_settings(people_index=index))
+
+    assert payload["status"] == "degraded"
+    assert payload["coverage"]["errors"][0]["lane"] == "people_index"
+
+
+def waiting_issue(waiting_for: str, number: int = 141) -> dict[str, object]:
+    return {
+        "number": number,
+        "title": "Ready for testing",
+        "html_url": f"https://github.com/example/repo/issues/{number}",
+        "updated_at": "2026-07-25T00:00:00Z",
+        "labels": [{"name": "plan"}, {"name": "plan:waiting"}],
+        "body": f"## Goal\n\nTest it.\n\n## Current Status\n\nState: Waiting.\nNext action: Pat approves.\n"
+                f"Waiting for: {waiting_for}\nLast verified: 2026-07-25.\n",
+    }
+
+
+@pytest.mark.parametrize(
+    ("waiting_for", "named"),
+    [
+        ("Pat's approval of the testing plan.", True),
+        ("@cbusillo to confirm the cutover.", True),
+        ("Director decision on the plan.", True),
+        ("Casey to post the backup screenshot.", False),
+        ("None.", False),
+        ("Patience from the vendor.", False),
+        ("Casey's testing, then Pat's go-live approval.", False),
+        ("Pat's policy review, then Casey's release acceptance.", True),
+        ("Supervisor reconciliation. No Director decision is open.", False),
+        ("upstream support; nothing needed from Pat for this trial.", False),
+        ("Pat to resume the parked workstream.", False),
+        ("Pat selects it.", False),
+        ("Mediaforce to leave development (cbusillo/mediaforce).", False),
+        ("Pat/operator to supply the Search Console access.", True),
+    ],
+)
+def test_director_wait_reason_matches_only_waits_naming_the_director(waiting_for: str, named: bool) -> None:
+    terms = ["cbusillo", "Pat Director", "Pat", "Director"]
+
+    reason = github_unanswered_comments.director_wait_reason(
+        "example/repo", waiting_issue(waiting_for), terms, {"cbusillo"}
+    )
+
+    assert (reason is not None) == named
+
+
+def test_question_gap_distinguishes_missing_open_and_answered_questions() -> None:
+    question = comment(comment_id=10, author="fixture-automation",
+                       body="Owner question: may we start testing?", created_at="2026-07-24T00:00:00Z")
+    unlinked = comment(comment_id=11, author="cbusillo", body="Looks fine.", created_at="2026-07-24T01:00:00Z")
+    answer = comment(comment_id=12, author="cbusillo",
+                     body=f"Yes: {question.url}", created_at="2026-07-24T02:00:00Z")
+    gap = github_unanswered_comments.question_gap
+
+    assert gap([unlinked], {"cbusillo"}, {"fixture-automation"}) == "no_question"
+    assert gap([question, unlinked], {"cbusillo"}, {"fixture-automation"}) is None
+    assert gap([question, answer], {"cbusillo"}, {"fixture-automation"}) == "questions_answered"
+
+
+def test_unasked_wait_on_director_is_reported(monkeypatch, tmp_path: Path) -> None:
+    asked = waiting_issue("Pat, Q48.", number=2887)
+    unasked = waiting_issue("Pat's review of the release.", number=141)
+    question = {
+        "id": 99, "issue_url": "https://api.github.com/repos/example/repo/issues/2887",
+        "user": {"login": "fixture-automation", "type": "User"}, "body": "Owner question: Q48, delete the hooks?",
+        "created_at": "2026-07-24T00:00:00Z", "html_url": "https://github.com/example/repo/issues/2887#issuecomment-99",
+    }
+    fake = FakeGitHub({
+        "repos/example/repo/issues": lambda endpoint: [asked, unasked] if "plan%3Awaiting" in endpoint else [],
+        "repos/example/repo/issues/2887/comments": [question],
+    })
+    monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
+
+    payload = github_unanswered_comments.collect_payload(portfolio_settings(people_index=people_index(tmp_path)))
+
+    assert payload["status"] == "attention"
+    assert [(row["number"], row["question_gap"]) for row in payload["unasked_director_waits"]] == [(141, "no_question")]
+    rendered = github_unanswered_comments.render_markdown(payload)
+    assert "## Waiting On You — No Question Asked" in rendered
+    assert "No external comments need attention" not in rendered
 
 
 if __name__ == "__main__":
