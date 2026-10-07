@@ -2402,6 +2402,7 @@ class LaneIdeAdviceTest(unittest.TestCase):
                 patch.object(jb_inspect, "open_project_for_lifecycle") as open_project,
             ):
                 for command in ("open-worktree", "prepare-worktree", "prepare"):
+                    (root / "prepared").unlink(missing_ok=True)
                     output = io.StringIO()
                     with patch.object(sys, "argv", [str(SCRIPT_PATH), command, "--repo", str(root), "--json"]), redirect_stdout(output):
                         code = jb_inspect.main()
@@ -2414,7 +2415,7 @@ class LaneIdeAdviceTest(unittest.TestCase):
                     self.assertEqual(payload["hint"], advice)
                     self.assertEqual(payload["verdict_next_action"], advice)
                     self.assertEqual(payload["agent_result"]["next_action"], advice)
-                    for supported_command in ("agent-inspect", "inspect-closeout", "open-worktree --ide", "--repo"):
+                    for supported_command in ("agent-inspect", "open-worktree --ide", "--repo"):
                         self.assertIn(supported_command, advice)
                     self.assertNotIn("jetbrains.ide =", advice)
                     self.assertNotIn(str(home), advice)
@@ -2426,7 +2427,7 @@ class LaneIdeAdviceTest(unittest.TestCase):
                     with redirect_stdout(compact):
                         jb_inspect.emit_agent_result(dict(payload), helper_exit_code=code)
                     self.assertEqual(json.loads(compact.getvalue())["agent_result"]["next_action"],
-                                     jb_inspect.guidance_for_command(advice, "agent-inspect"))
+                                     advice)
                     self.assertFalse(payload["agent_result"]["retry_policy"]["retry"])
                 open_project.assert_not_called()
             self.assertEqual(json.loads((root / ".github" / "github.json").read_text()), metadata)
@@ -2445,7 +2446,9 @@ class LaneIdeAdviceTest(unittest.TestCase):
                             "cleanup": {"status": "closed"}}
 
                 with (
-                    patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root)}),
+                    patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root),
+                                           "JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(root / "absent.json")}),
+                    patch.object(jb_inspect.Path, "home", return_value=root.parent),
                     patch.object(jb_inspect, "run_prepared_inspection", side_effect=inspect_lane),
                     patch.object(sys, "argv", [str(SCRIPT_PATH), command, "--repo", str(root), "--scope", "files",
                                                "--file", "App.kt", "--file", "backend/app.py", "--json"]),
@@ -2461,7 +2464,7 @@ class LaneIdeAdviceTest(unittest.TestCase):
             home = Path(tmp).resolve()
             root = home / "repo"
             metadata = self.make_repo(root)
-            (root / "backend" / "settings.gradle").write_text("", encoding="utf-8")
+            (root / "backend" / "pyproject.toml").write_text("", encoding="utf-8")
             pycharm = make_config_dir(home, "PyCharm2026.1")
             make_config_dir(home, "IntelliJIdea2026.1")
             route = {"base_path": str(root / "backend"), "project_instance_id": "session:1",
@@ -2475,7 +2478,8 @@ class LaneIdeAdviceTest(unittest.TestCase):
                 return "fixture", [], False
 
             with (
-                patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "", "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root)}),
+                patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "", "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root),
+                                       "JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(home / "absent.json")}),
                 patch.object(jb_inspect.sys, "platform", "darwin"),
                 patch.object(jb_inspect.Path, "home", return_value=home),
                 patch.object(jb_inspect, "find_exact_route", return_value=None),
@@ -2500,7 +2504,8 @@ class LaneIdeAdviceTest(unittest.TestCase):
             make_config_dir(home, "IntelliJIdea2026.1")
             output = io.StringIO()
             with (
-                patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "", "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root)}),
+                patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "", "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root),
+                                       "JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(home / "absent.json")}),
                 patch.object(jb_inspect.sys, "platform", "darwin"),
                 patch.object(jb_inspect.Path, "home", return_value=home),
                 patch.object(jb_inspect, "discover_identities", return_value=[]),
@@ -2513,7 +2518,7 @@ class LaneIdeAdviceTest(unittest.TestCase):
             payload = json.loads(output.getvalue())
             self.assertEqual(payload["error_reason"], "ide_selection_required")
             self.assertEqual(payload["next_action"], payload["agent_result"]["next_action"])
-            self.assertIn("lanes", payload["hint"])
+            self.assertIn("open-worktree --ide", payload["hint"])
             self.assertNotIn("prepared", [entry.name for entry in root.iterdir()])
 
     def test_explicit_lane_open_with_missing_ide_recommends_configuration_repair(self):
@@ -2524,7 +2529,8 @@ class LaneIdeAdviceTest(unittest.TestCase):
             make_config_dir(home, "IntelliJIdea2026.1")
             output = io.StringIO()
             with (
-                patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "", "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root)}),
+                patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "", "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root),
+                                       "JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(home / "absent.json")}),
                 patch.object(jb_inspect.sys, "platform", "darwin"),
                 patch.object(jb_inspect.Path, "home", return_value=home),
                 patch.object(jb_inspect, "find_exact_route", return_value=None),
@@ -2540,6 +2546,35 @@ class LaneIdeAdviceTest(unittest.TestCase):
             self.assertEqual(payload["next_action"], advice)
             self.assertIn("launch", advice)
             self.assertNotIn("open-worktree --ide", advice)
+            self.assertEqual(json.loads((root / ".github" / "github.json").read_text()), metadata)
+
+    def test_assessment_missing_lane_ide_keeps_lane_repair_in_compact_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            root = home / "repo"
+            metadata = self.make_repo(root)
+            make_config_dir(home, "IntelliJIdea2026.1")
+            output = io.StringIO()
+            with (
+                patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "", "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root),
+                                       "JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(home / "absent.json")}),
+                patch.object(jb_inspect.sys, "platform", "darwin"),
+                patch.object(jb_inspect.Path, "home", return_value=home),
+                patch.object(jb_inspect, "find_exact_route", return_value=None),
+                patch.object(jb_inspect, "open_project_for_lifecycle") as opened,
+                patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect", "--repo", str(root),
+                                           "--scope", "files", "--file", "backend/app.py"]),
+                redirect_stdout(output),
+            ):
+                self.assertEqual(jb_inspect.main(), 0)
+                opened.assert_not_called()
+            payload = json.loads(output.getvalue())
+            lane = next(item for item in payload["lanes"] if item["id"] == "python")
+            self.assertEqual(payload["agent_result"]["verdict"], "UNKNOWN")
+            self.assertEqual(lane["diagnostic"]["error_reason"], "ide_config_missing")
+            self.assertIn("launch", lane["next_action"])
+            self.assertNotIn("open-worktree --ide", lane["next_action"])
+            self.assertFalse(lane["retry_policy"]["retry"])
             self.assertEqual(json.loads((root / ".github" / "github.json").read_text()), metadata)
 
     def test_selected_lane_configuration_failure_preserves_lane_policy(self):

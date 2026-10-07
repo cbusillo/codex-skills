@@ -700,13 +700,13 @@ def lane_ide_selection_advice(reason: str, context: Any) -> str | None:
         return None
     if context.get("inspection_lane") or (context.get("inspection_lanes") and reason != "ide_selection_required"):
         return (
-            "Check the selected lane's IDE and installed IDE/version; launch that IDE once "
+            "Check that the selected IDE matches the intended configured lane and installed IDE/version; launch that IDE once "
             "to create its configuration before another assessment or open. "
             "Preserve qualityGate.inspection.lanes in .github/github.json; ask before changing lane policy."
         )
     if context.get("inspection_lanes"):
         return (
-            "Use agent-inspect, inspect, or inspect-closeout to prepare and inspect the configured lanes. "
+            "Use agent-inspect to prepare and inspect the configured lanes. "
             "To open one project without inspecting, use open-worktree --ide <lane IDE> "
             "at the worktree root; for a nested lane project with project markers, "
             "pass that directory as --repo. Assessments resolve lane projectPath automatically. "
