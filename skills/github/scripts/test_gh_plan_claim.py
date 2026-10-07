@@ -1834,7 +1834,10 @@ class ClaimTests(unittest.TestCase):
     def test_contingent_release_and_handoff_preserve_and_recover_claims(self):
         for prose in (
             "Release is contingent on PR #99 merging.",
+            "Release is contingent upon PR #99 merging.",
             "Hands off to the next worker upon merge.",
+            "Hands off to the next worker at merge.",
+            "Hands off to the next worker post-merge.",
         ):
             for final in (False, True):
                 for retained in (False, True):
@@ -1861,7 +1864,10 @@ class ClaimTests(unittest.TestCase):
     def test_contingent_handoff_refresh_requires_new_authored_release(self):
         for prose in (
             "Release is contingent on PR #99 merging.",
+            "Release is contingent upon PR #99 merging.",
             "Hands off to the next worker upon merge.",
+            "Hands off to the next worker at merge.",
+            "Hands off to the next worker post-merge.",
         ):
             for final in (False, True):
                 with self.subTest(prose=prose, final=final):
@@ -1882,7 +1888,10 @@ class ClaimTests(unittest.TestCase):
     def test_contingent_downstream_routing_keeps_unconditional_release_usable(self):
         for prose in (
             "Source session finished. Deployment is contingent on PR #99 merging.",
+            "Source session finished. Deployment is contingent upon PR #99 merging.",
             "Source session finished. Supervisor hands off to the merge train upon CI completion.",
+            "Source session finished. Supervisor hands off to the merge train at merge.",
+            "Source session finished. Supervisor hands off to the merge train post-merge.",
             "Hands off to the next worker now. Supervisor routes PR #99 after CI passes.",
         ):
             for final in (False, True):
