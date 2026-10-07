@@ -85,8 +85,21 @@ snapshot["workdir"] = args.C
 record.with_suffix(".exec.json").write_text(json.dumps(snapshot))
 mode = options.get("mode", "success")
 if mode in {"timeout", "surviving_child", "interrupt"}:
-    child_source = "import os,signal,time;from pathlib import Path;time.sleep(" + repr(options.get("child_start_delay", 0)) + ");signal.signal(signal.SIGTERM,signal.SIG_IGN);Path(" + repr(str(record.with_suffix(".child"))) + ").write_text(str(os.getpid()));time.sleep(60)"
-    child = subprocess.Popen([sys.executable, "-c", child_source])
+    child_source = """
+import os, signal, sys, time
+from pathlib import Path
+time.sleep(float(sys.argv[2]))
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+ready_record = Path(sys.argv[1])
+temporary_record = ready_record.with_suffix(".child.tmp")
+temporary_record.write_text(str(os.getpid()))
+temporary_record.replace(ready_record)
+time.sleep(60)
+"""
+    child = subprocess.Popen([
+        sys.executable, "-c", child_source, str(record.with_suffix(".child")),
+        str(options.get("child_start_delay", 0)),
+    ])
     spawned_record = record.with_suffix(".spawned-child")
     temporary_record = record.with_suffix(".spawned-child.tmp")
     temporary_record.write_text(str(child.pid))
@@ -500,7 +513,9 @@ class LocalCodexAgentTests(unittest.TestCase):
                     )
                     # Measure enforcement from fixture readiness; Python/probe
                     # startup under host load is bounded by subprocess.run.
-                    started = float(self.record.with_suffix(".deadline-start").read_text())
+                    deadline_start = self.record.with_suffix(".deadline-start")
+                    self.assertTrue(deadline_start.is_file(), result.stderr)
+                    started = float(deadline_start.read_text())
                     self.assertLess(time.monotonic() - started, 6)
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn("timed out", result.stderr)
