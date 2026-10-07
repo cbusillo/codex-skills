@@ -248,9 +248,12 @@ If an exact worktree is not already open and is outside those roots,
 before opening the IDE. Do not use random temp directories for agent
 inspection worktrees.
 
-If multiple JetBrains products or stable/EAP installs are present, the repo must
-declare its preferred IDE in `.github/github.json` so lifecycle opens and
-Trusted Locations seeding target the same product/config. Product-level metadata
+If multiple JetBrains products or stable/EAP installs are present, declare the
+preferred IDE in `.github/github.json`, either per inspection lane or for the
+single-IDE repository, so lifecycle opens and Trusted Locations seeding target
+the same product/config. For a lane-configured repository, use the assessment
+flow in [inspection configuration](inspection-config.md); a separate
+`open-worktree` needs an explicit IDE and does not dispatch lanes. Product-level metadata
 such as `jetbrains.ide: "WebStorm"`, `"PyCharm"`, or `"IntelliJ IDEA"` means
 the latest installed stable/non-EAP app for that product. For a deliberate EAP
 or exact-version run, use explicit metadata or CLI fields such as
@@ -259,9 +262,9 @@ or exact-version run, use explicit metadata or CLI fields such as
 Never infer EAP from the presence of an EAP install. EAP requires an explicit
 repo, CLI, exact app/version, or user-task signal; it is not a fallback when no
 stable IDE is discovered.
-Treat `--ide`/`--ide-app` as a one-off unblocker; for recurring repo work,
-tell the user to add preferred IDE metadata rather than leaving the next agent to
-guess again.
+Treat `--ide`/`--ide-app` as a one-off selector. For recurring repo work without
+IDE or lane metadata, tell the user to add preferred IDE metadata rather than
+leaving the next agent to guess again.
 If a first-time open still stalls after trusted-location and project-opening
 policy seeding, treat it as a blocker: check for unsupported IDE config layout,
 settings sync overwriting the config, a missing inspection plugin, or a product

@@ -85,8 +85,25 @@ snapshot["workdir"] = args.C
 record.with_suffix(".exec.json").write_text(json.dumps(snapshot))
 mode = options.get("mode", "success")
 if mode in {"timeout", "surviving_child", "interrupt"}:
-    child_source = "import os,signal,time;from pathlib import Path;signal.signal(signal.SIGTERM,signal.SIG_IGN);Path(" + repr(str(record.with_suffix(".child"))) + ").write_text(str(os.getpid()));time.sleep(60)"
-    subprocess.Popen([sys.executable, "-c", child_source])
+    child_source = """
+import os, signal, sys, time
+from pathlib import Path
+time.sleep(float(sys.argv[2]))
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+ready_record = Path(sys.argv[1])
+temporary_record = ready_record.with_suffix(".child.tmp")
+temporary_record.write_text(str(os.getpid()))
+temporary_record.replace(ready_record)
+time.sleep(60)
+"""
+    child = subprocess.Popen([
+        sys.executable, "-c", child_source, str(record.with_suffix(".child")),
+        str(options.get("child_start_delay", 0)),
+    ])
+    spawned_record = record.with_suffix(".spawned-child")
+    temporary_record = record.with_suffix(".spawned-child.tmp")
+    temporary_record.write_text(str(child.pid))
+    temporary_record.replace(spawned_record)
     while not record.with_suffix(".child").exists():
         time.sleep(0.01)
     if mode != "surviving_child":
@@ -113,6 +130,39 @@ else:
     elif mode != "missing_completed":
         print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}}))
 raise SystemExit(7 if mode == "nonzero" else 0)
+'''
+
+
+TIMEOUT_BOUNDARY_DRIVER = r'''
+import sys
+import time
+from pathlib import Path
+
+options = OPTIONS
+sys.path.insert(0, options["script_dir"])
+import local_codex_agent as agent
+
+real_popen = agent.subprocess.Popen
+
+def spawn(*args, **kwargs):
+    process = real_popen(*args, **kwargs)
+    if "-C" in args[0]:
+        # Establish the fixture's startup boundary before run_process starts its
+        # unchanged deadline. Probes still run through the ordinary path.
+        deadline = time.monotonic() + 6
+        try:
+            while not Path(options["marker"]).exists():
+                if process.poll() is not None or time.monotonic() >= deadline:
+                    raise RuntimeError("synthetic host did not reach startup boundary")
+                time.sleep(0.01)
+        except BaseException:
+            agent.stop_process_group(process)
+            raise
+        Path(options["deadline_start"]).write_text(str(time.monotonic()))
+    return process
+
+agent.subprocess.Popen = spawn
+raise SystemExit(agent.main(sys.argv[1:]))
 '''
 
 
@@ -441,16 +491,59 @@ class LocalCodexAgentTests(unittest.TestCase):
         self.assertFalse(Path(current["env"]["CODEX_HOME"]).exists())
 
     def test_timeout_kills_term_resistant_descendants_and_preserves_previous_output(self) -> None:
-        self.write_host(mode="timeout")
-        output = self.root / "last.txt"
-        output.write_text("previous result")
-        started = time.monotonic()
-        result = self.invoke("--max-seconds", "0.4", "--output-last-message", str(output))
-        self.assertLess(time.monotonic() - started, 6)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("timed out", result.stderr)
-        self.assertEqual(output.read_text(), "previous result")
-        self.assert_cleaned_run()
+        for child_ready in (False, True):
+            with self.subTest(child_ready=child_ready):
+                self.record = self.root / f"record-{child_ready}"
+                # In the ready case startup exceeds the product's 0.4s budget;
+                # in the other case timeout must happen before readiness.
+                self.write_host(mode="timeout", child_start_delay=0.6 if child_ready else 60)
+                output = self.root / "last.txt"
+                output.write_text("previous result")
+                driver = self.root / "timeout-boundary-driver.py"
+                options = {
+                    "script_dir": str(SCRIPT.parent.resolve()),
+                    "marker": str(self.record.with_suffix(".child" if child_ready else ".spawned-child")),
+                    "deadline_start": str(self.record.with_suffix(".deadline-start")),
+                }
+                driver.write_text(textwrap.dedent(TIMEOUT_BOUNDARY_DRIVER).replace("OPTIONS", repr(options), 1))
+                try:
+                    result = subprocess.run(
+                        [sys.executable, str(driver), *self.command("--max-seconds", "0.4", "--output-last-message", str(output))[2:]],
+                        input="synthetic private prompt\n", text=True, capture_output=True, timeout=15,
+                    )
+                    # Measure enforcement from fixture readiness; Python/probe
+                    # startup under host load is bounded by subprocess.run.
+                    deadline_start = self.record.with_suffix(".deadline-start")
+                    self.assertTrue(deadline_start.is_file(), result.stderr)
+                    started = float(deadline_start.read_text())
+                    self.assertLess(time.monotonic() - started, 6)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("timed out", result.stderr)
+                    self.assertFalse(result.stdout)
+                    self.assertEqual(output.read_text(), "previous result")
+                    self.assertEqual(self.record.with_suffix(".child").exists(), child_ready)
+                    observed = self.observed()
+                    self.assert_stopped(observed["pid"])
+                    # The parent records the PID even when the child has not
+                    # installed its TERM handler or written its ready record.
+                    child_pid = int(self.record.with_suffix(".spawned-child").read_text())
+                    self.assert_stopped(child_pid)
+                    if child_ready:
+                        self.assertEqual(int(self.record.with_suffix(".child").read_text()), child_pid)
+                    self.assertFalse(Path(observed["env"]["CODEX_HOME"]).exists())
+                finally:
+                    if self.record.with_suffix(".exec.json").exists() and self.record.with_suffix(".spawned-child").exists():
+                        pgid = self.observed()["pid"]
+                        child_pid = int(self.record.with_suffix(".spawned-child").read_text())
+                        try:
+                            if os.getpgid(child_pid) == pgid:
+                                os.killpg(pgid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        except PermissionError:
+                            # macOS can deny signals to zombie-only groups.
+                            # Preserve a failure if the child is actually live.
+                            self.assert_stopped(child_pid)
 
     def test_success_cleans_up_a_descendant_that_outlived_the_host(self) -> None:
         self.write_host(mode="surviving_child")
