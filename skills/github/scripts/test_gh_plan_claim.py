@@ -1905,6 +1905,8 @@ class ClaimTests(unittest.TestCase):
             "Takes effect upon merge.\n\nSource work is finished.",
             "Effective post-merge.\n\nSource work is finished.",
             "Ownership transfers upon merge.\n\nSource work is finished.",
+            "The next worker may claim post-merge.",
+            "Ownership transfers at merge.",
             "The release takes effect once PR #99 merges.",
             "The next worker may claim only after CI passes.",
             "**Effective** post-merge.",
