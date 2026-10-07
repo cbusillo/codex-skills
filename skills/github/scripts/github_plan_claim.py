@@ -88,12 +88,13 @@ def conditional_release_prose(text: str, *, suffix: str) -> bool:
     prose = ownership_text(handoff)
     statements = re.split(r"(?<=[.!?;])\s+|\n[ \t]*\n", prose)
     ownership = r"\b(?:releases?|claims?|claiming|reclaim(?:ing)?|ownership|takes? effect|effective)\b"
-    successor = r"\b(?:pick (?:this|it) up|takes? over|resumes?|handoff completes?)\b"
+    successor_action = r"(?:pick (?:this|it) up|pick up (?:this|the) issue|takes? (?:(?:it|this) )?over|taking over|resumes?)"
+    successor = rf"\b(?:{successor_action}|handoff (?:is )?complete[ds]?)\b"
     # An instruction about what to do on resumption does not defer ownership.
-    statements = [re.sub(r"^(?:When|If) you (?:resume|pick (?:this|it) up),\s*", "", statement,
+    statements = [re.sub(rf"^(?:When|If) you {successor_action},\s*", "", statement,
                          flags=re.IGNORECASE) for statement in statements]
-    prerequisite = (r"\bmust\s+(?:be\s+)?(?:merge[ds]?|land(?:ed)?|pass(?:ed)?|finish(?:ed)?|complete[ds]?|green)\b[^.!?;]*\bfirst\b|"
-                    r"^First,?\s+[^.!?;]*\bmust\s+(?:be\s+)?(?:merge[ds]?|land(?:ed)?|pass(?:ed)?|finish(?:ed)?|complete[ds]?|green)\b")
+    required_step = r"\bmust\s+(?:be\s+)?(?:merge[ds]?|land(?:ed)?|pass(?:ed)?|finish(?:ed)?|complete[ds]?|green)\b"
+    prerequisite = rf"{required_step}[^.!?;]*\bfirst\b|^First,?\s+[^.!?;]*{required_step}"
     effective = r"\b(?:takes? effect|effective)\b(?!\s+(?:now|immediately)\b)"
     if (re.match(r"(?:only\s+|not\s+)?" + condition, ownership_text(suffix), re.IGNORECASE)
             or re.search(effective, ownership_text(suffix), re.IGNORECASE)
@@ -106,7 +107,10 @@ def conditional_release_prose(text: str, *, suffix: str) -> bool:
                                  or re.search(prerequisite, statement, re.IGNORECASE))
                             and re.search(ownership, statements[index + 1], re.IGNORECASE))
                         or (index + 1 < len(statements)
-                            and re.match(r"Then\b", statements[index + 1].strip(), re.IGNORECASE)
+                            and (re.search(prerequisite, statement, re.IGNORECASE)
+                                 or (re.match(r"Then\b", statements[index + 1].strip(), re.IGNORECASE)
+                                     and (re.match(r"(?:only\s+|not\s+)?" + condition, statement.strip(), re.IGNORECASE)
+                                          or re.match(r"(?:Hold|Wait)\b", statement.strip(), re.IGNORECASE))))
                             and re.search(successor, statements[index + 1], re.IGNORECASE)))
                    for index, statement in enumerate(statements))):
         return True

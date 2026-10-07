@@ -1848,6 +1848,12 @@ class ClaimTests(unittest.TestCase):
             "PR #99 must be merged first. Then the next worker may claim.",
             "CI must be green first. Then the next worker may claim.",
             "First, PR #99 must merge. Then the next worker may claim.",
+            "PR #99 must merge first. The next worker can take over.",
+            "The next worker can pick up this issue once CI is green.",
+            "The next session can take it over once PR #99 lands.",
+            "The next session is taking over once PR #99 lands.",
+            "Handoff is complete once PR #99 merges.",
+            "Handoff completed when PR #99 merges.",
         )
         for handoff in handoffs:
             for final in (False, True):
@@ -1899,6 +1905,8 @@ class ClaimTests(unittest.TestCase):
             "Source session finished. After PR #99 lands, close out the issue. The next session can take over now.",
             "Source session finished. After PR #99 lands, close out the issue. Handoff complete.",
             "Source session finished. When you resume, rebase onto main.",
+            "Source session finished. When you take over, start from the retained worktree.",
+            "I rebased after PR #98 merged. Then the next session can take over now.",
             "Source session finished. If you pick this up, start from the retained worktree.",
             "PR #99 must merge first. Then close out the issue.",
             "Source session finished. After PR #99 lands, close out the issue. When resuming, rebase onto main.",

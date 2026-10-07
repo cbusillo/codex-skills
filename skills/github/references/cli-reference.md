@@ -565,6 +565,7 @@ An exact release may also be a standalone final paragraph after the handoff
 prose, optionally followed by the helper's operation marker. It must be an
 unquoted, unindented `Released claim <id>` line (an ending period is allowed);
 fenced or raw HTML examples, inline mentions, and later prose do not count.
+The conditional-handoff checks above apply to all preceding prose.
 Conditional text on the release line, a preceding paragraph starting with
 `If`, `After`, `Once`, `When`, `Unless`, or `Until`, or an introduction ending
 with a colon also refuses. Use a separate first-line release when the embedded
