@@ -87,7 +87,10 @@ mode = options.get("mode", "success")
 if mode in {"timeout", "surviving_child", "interrupt"}:
     child_source = "import os,signal,time;from pathlib import Path;time.sleep(" + repr(options.get("child_start_delay", 0)) + ");signal.signal(signal.SIGTERM,signal.SIG_IGN);Path(" + repr(str(record.with_suffix(".child"))) + ").write_text(str(os.getpid()));time.sleep(60)"
     child = subprocess.Popen([sys.executable, "-c", child_source])
-    record.with_suffix(".spawned-child").write_text(str(child.pid))
+    spawned_record = record.with_suffix(".spawned-child")
+    temporary_record = record.with_suffix(".spawned-child.tmp")
+    temporary_record.write_text(str(child.pid))
+    temporary_record.replace(spawned_record)
     while not record.with_suffix(".child").exists():
         time.sleep(0.01)
     if mode != "surviving_child":
@@ -142,6 +145,7 @@ def spawn(*args, **kwargs):
         except BaseException:
             agent.stop_process_group(process)
             raise
+        Path(options["deadline_start"]).write_text(str(time.monotonic()))
     return process
 
 agent.subprocess.Popen = spawn
@@ -486,14 +490,17 @@ class LocalCodexAgentTests(unittest.TestCase):
                 options = {
                     "script_dir": str(SCRIPT.parent.resolve()),
                     "marker": str(self.record.with_suffix(".child" if child_ready else ".spawned-child")),
+                    "deadline_start": str(self.record.with_suffix(".deadline-start")),
                 }
                 driver.write_text(textwrap.dedent(TIMEOUT_BOUNDARY_DRIVER).replace("OPTIONS", repr(options), 1))
                 try:
-                    started = time.monotonic()
                     result = subprocess.run(
                         [sys.executable, str(driver), *self.command("--max-seconds", "0.4", "--output-last-message", str(output))[2:]],
                         input="synthetic private prompt\n", text=True, capture_output=True, timeout=15,
                     )
+                    # Measure enforcement from fixture readiness; Python/probe
+                    # startup under host load is bounded by subprocess.run.
+                    started = float(self.record.with_suffix(".deadline-start").read_text())
                     self.assertLess(time.monotonic() - started, 6)
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn("timed out", result.stderr)
@@ -518,6 +525,10 @@ class LocalCodexAgentTests(unittest.TestCase):
                                 os.killpg(pgid, signal.SIGKILL)
                         except ProcessLookupError:
                             pass
+                        except PermissionError:
+                            # macOS can deny signals to zombie-only groups.
+                            # Preserve a failure if the child is actually live.
+                            self.assert_stopped(child_pid)
 
     def test_success_cleans_up_a_descendant_that_outlived_the_host(self) -> None:
         self.write_host(mode="surviving_child")
