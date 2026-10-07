@@ -26,8 +26,11 @@ follow-up under launchplane#2374.
 
 If a reader exhausts its retry budget or deadline, or refuses authentication,
 the watcher emits a terminal `read_error` JSON event with the shared API result
-and exits with status 1. Inspect its failure cause and retry diagnostics before
-resuming; the watch loop adds no retries or identity fallback.
+and exits with status 1. This includes failure of the initial PR metadata helper.
+Inspect its failure cause and retry diagnostics before resuming; the watch loop
+adds no retries or identity fallback. Optional check and review-readiness reads
+may instead expose incomplete evidence in a snapshot; that evidence cannot
+permit reruns or establish merge readiness.
 
 ## Primary commands used
 

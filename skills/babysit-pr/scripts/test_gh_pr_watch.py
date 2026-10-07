@@ -1261,6 +1261,41 @@ def watcher_transport(monkeypatch):
     return SimpleNamespace(clock=clock, calls=calls, replies=replies)
 
 
+@pytest.mark.parametrize("cause", ["deadline_exceeded", "invalid_credentials", "permission_denied", "actor_mismatch"])
+def test_watch_main_preserves_pr_metadata_failure(monkeypatch, tmp_path, capsys, cause):
+    state_path = tmp_path / "watch-state.json"
+    saved_state = {"head_sha": "existing-head", "retries_by_sha": {"existing-head": 1}}
+    state_path.write_text(json.dumps(saved_state))
+    args = argparse.Namespace(pr="42", repo="example/repo", state_file=str(state_path),
+                              watch=True, retry_failed_now=False)
+    monkeypatch.setattr(gh_pr_watch, "parse_args", lambda: args)
+    monkeypatch.setattr(gh_pr_watch, "PR_HELPER", str(gh_pr_watch.DEFAULT_PR_HELPER))
+    payload = {"ok": False, "exit_code": 1, "operation": "github.pr.view", "attempts": 1,
+               "effective_deadline": 1002, "retry_exhausted_reason": cause,
+               "failure": {"cause": cause, "message": "Read failed token=fixture-private-value"}}
+    calls = []
+
+    def transport(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 1, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(gh_pr_watch.subprocess, "run", transport)
+    assert gh_pr_watch.main() == 1
+    captured = capsys.readouterr()
+    event = json.loads(captured.out)
+    assert event["event"] == "read_error"
+    assert event["payload"]["ok"] is False
+    assert event["payload"]["failure"]["cause"] == cause
+    assert event["payload"]["attempts"] == payload["attempts"]
+    assert event["payload"]["effective_deadline"] == payload["effective_deadline"]
+    assert event["payload"]["retry_exhausted_reason"] == payload["retry_exhausted_reason"]
+    assert "fixture-private-value" not in captured.out
+    assert captured.err == ""
+    assert len(calls) == 1
+    assert calls[0][-4:] == ["--repo", "example/repo", "view", "42"]
+    assert json.loads(state_path.read_text()) == saved_state
+
+
 def test_watch_recovers_transient_read_and_continues_polling(monkeypatch, watcher_transport):
     fixture = watcher_transport
     fixture.replies.extend([
@@ -1345,6 +1380,8 @@ def test_watcher_throttle_shares_cooldown_with_another_reader(monkeypatch, watch
      "unexpected-user", "actor_mismatch"),
 ])
 def test_watcher_read_failures_stop_without_outer_retry(watcher_transport, status, body, actor, cause):
+    # The terminal actor case tests propagation of an already classified refusal;
+    # default read authentication is exercised through the real wrapper below.
     fixture = watcher_transport
     fixture.replies.append((status, {}, body, actor))
     reader = gh_pr_watch.watcher_reader()
