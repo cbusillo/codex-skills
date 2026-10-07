@@ -16,6 +16,7 @@ from typing import Any
 
 
 MARKER = "github-plan:claim "
+EMPTY_HOLDERS = {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", "nobody", "no one", "no-one"}
 
 
 def no_wait_reason(reason: str, *, field: str) -> bool:
@@ -294,7 +295,7 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
         )
         if not uncertain:
             empty_holder = suffix.lstrip(": ").casefold()
-            if empty_holder in {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", "nobody", "no one", "no-one"}:
+            if empty_holder in EMPTY_HOLDERS:
                 continue
             if not match.group().rstrip().endswith(":"):
                 negated = (
@@ -366,7 +367,10 @@ def discussion_evidence(
                     prior_prose = ownership_text(prior_text, strip_quotes=False)
                     header = re.match(r"Claimed by:?\s+(\S+)", prior_prose, re.IGNORECASE)
                     if header and header.group(1) == legacy_worker and has_ownership_assertion(prior_text):
-                        sessions = re.findall(r"(?i)\bSession:[ \t]*(\S+)", prior_prose)
+                        sessions = [
+                            session for session in re.findall(r"(?i)\bSession:[ \t]*(not assigned|no one|\S+)", prior_prose)
+                            if session.casefold().rstrip(".,;") not in EMPTY_HOLDERS | {"unknown", "tbd", "<session>"}
+                        ]
                         # Missing identity cannot establish that two claims are
                         # the same session; exact comment IDs remain recoverable.
                         prior_sessions.update(sessions or [prior_index])

@@ -479,8 +479,8 @@ markers, exact-ID release directives and recorded intent/history provenance
 continue to use their exact source forms. Legacy `Released by` keeps its exact
 prefix; its formatted holder token is normalized for legacy claims, including
 the reused-worker session check across structured and older hand-written claim
-records. Distinct sessions or multiple records with missing session identity
-require authored exact-comment-ID releases; repeated records of the same session
+records. Distinct sessions, or a missing/placeholder session identity beside
+another claim, require authored exact-comment-ID releases; repeated records of the same session
 retain the bare legacy release route. Formatted aliases do not release structured
 records by alias.
 Code-span contents remain literal, unresolved reference-link text remains

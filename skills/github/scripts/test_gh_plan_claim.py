@@ -924,6 +924,8 @@ class ClaimTests(unittest.TestCase):
             "Claimed by old-worker\n- Session: {session}\n- Branch: work/old",
             "Claimed by old-worker; Session: {session}\nBranch: work/old",
             "Claimed by old-worker\nBranch: work/old",
+            *(f"Claimed by old-worker\nSession: {value}\nBranch: work/old"
+              for value in ("unknown", "n/a", "-", "TBD", "<session>", "none", "unassigned")),
         ):
             with self.subTest(template=template):
                 self.setUp()
