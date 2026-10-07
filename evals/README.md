@@ -105,12 +105,16 @@ Private-documentation cases also use `owner_before_read` with an owning skill an
 a read pattern. It requires a delivered matching read and the owning skill
 before its first delivery, including turns with no operational command. Loading
 the skill afterward fails even if it is loaded before a later reread. This
-checks observed delivery order; it does not prove every recursive search path
-or the timing of a failed read attempt. Inspect raw tool calls and results too.
+checks observed delivery order; it does not prove every recursive search path,
+the timing of a failed read attempt, or completion of a skill load before a
+read chosen in the same command or parallel tool batch. Inspect raw tool calls
+and results too.
 The nested source-planning fixture moves the synthetic route and operations
 file out of the repository root to qualify discovery cues separately from
 private-documentation authority. Its AGENTS override is offline plumbing,
-not evidence about real home configuration or production access.
+not evidence about real home configuration or production access. Its hidden
+directory also reduces discovery by searches that skip hidden paths by default;
+a passing nested run alone does not establish model restraint.
 
 The final_any check accepts a listed alternative pattern; final_none rejects
 listed contradictory answers. These are lexical checks, not a general semantic
