@@ -228,7 +228,7 @@ class UsageTests(unittest.TestCase):
 
     def test_claude_native_attribution_and_background_driver_inheritance(self):
         with patch.dict(os.environ, {"GITHUB_REQUEST_SESSION": "", "CODEX_THREAD_ID": "",
-                                   "CLAUDE_CODE_SESSION_ID": "claude-native"}):
+                                   "CODEX_SESSION_ID": "", "CLAUDE_CODE_SESSION_ID": "claude-native"}):
             usage.record_response(method="GET", path="/repos/example/app", status=200, headers={},
                                   operation="github.read", actor="fixture-bot", now=1000)
             with patch.dict(os.environ, {"GITHUB_REQUEST_CALLER": "launchplane-train-drive.py"}):
@@ -237,6 +237,52 @@ class UsageTests(unittest.TestCase):
         result = usage.report(since=0, now=1100)
         self.assertEqual(result["sessions"], [{"session": "claude-native", "http_requests": 2, "primary_requests": 2}])
         self.assertEqual(len(result["consumers"]), 2)
+
+    def test_unreadable_input_does_not_crash_or_hide_other_ledgers(self):
+        root = pathlib.Path(self.directory.name)
+        usage.record_response(method="GET", path="/repos/example/app", status=200, headers={},
+                              operation="github.read", actor="fixture-bot", now=1000)
+        restricted = root / "restricted"
+        restricted.mkdir()
+        original_resolve = pathlib.Path.resolve
+        original_is_dir = pathlib.Path.is_dir
+
+        def resolve(path, *args, **kwargs):
+            if path == restricted / "ledger":
+                raise PermissionError(str(path))
+            return original_resolve(path, *args, **kwargs)
+
+        def is_dir(path):
+            if path == restricted / "ledger/request-usage":
+                raise PermissionError(str(path))
+            return original_is_dir(path)
+
+        with patch.object(pathlib.Path, "resolve", resolve), patch.object(pathlib.Path, "is_dir", is_dir):
+            result = usage.report(since=0, now=1100, state_dirs=[restricted / "ledger", root])
+        self.assertEqual(result["ledger_coverage"][0]["status"], "unavailable")
+        self.assertGreater(result["ledger_coverage"][0]["unreadable_records"], 0)
+        self.assertEqual(sum(row["http_requests"] for row in result["consumers"]), 1)
+        self.assertNotIn(str(root), json.dumps(result))
+
+    def test_mixed_harness_markers_stay_unattributed_unless_explicitly_assigned(self):
+        with patch.dict(os.environ, {"GITHUB_REQUEST_SESSION": "", "CODEX_THREAD_ID": "codex-parent",
+                                   "CLAUDE_CODE_SESSION_ID": "claude-child"}):
+            usage.record_response(method="GET", path="/repos/example/app", status=200, headers={},
+                                  operation="github.read", actor="fixture-bot", now=1000)
+            with patch.dict(os.environ, {"GITHUB_REQUEST_SESSION": "explicit-child"}):
+                usage.record_response(method="GET", path="/repos/example/app", status=200, headers={},
+                                      operation="github.read", actor="fixture-bot", now=1001)
+        result = usage.report(since=0, now=1100)
+        self.assertEqual(result["unattributed_requests"], 1)
+        self.assertEqual(result["sessions"], [{"session": "explicit-child", "http_requests": 1, "primary_requests": 1}])
+
+    def test_secondary_codex_native_session_marker_is_supported(self):
+        with patch.dict(os.environ, {"GITHUB_REQUEST_SESSION": "", "CODEX_THREAD_ID": "",
+                                   "CODEX_SESSION_ID": "codex-native", "CLAUDE_CODE_SESSION_ID": "", "CLAUDECODE": ""}):
+            usage.record_response(method="GET", path="/repos/example/app", status=200, headers={},
+                                  operation="github.read", actor="fixture-bot", now=1000)
+        self.assertEqual(usage.report(since=0, now=1100)["sessions"],
+                         [{"session": "codex-native", "http_requests": 1, "primary_requests": 1}])
 
 
 if __name__ == "__main__":

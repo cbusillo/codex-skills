@@ -21,6 +21,7 @@ import urllib.parse
 from typing import Any
 
 import github_identity
+import github_agent
 
 
 def state_dir() -> pathlib.Path:
@@ -77,8 +78,13 @@ def record_response(
         bucket = resource if re.fullmatch(r"[a-z_]+", resource) else "unknown"
     quota = {name: _integer(headers.get(f"x-ratelimit-{name}")) for name in ("limit", "remaining", "reset", "used")}
     caller = pathlib.Path(os.environ.get("GITHUB_REQUEST_CALLER") or sys.argv[0]).name
-    session = (os.environ.get("GITHUB_REQUEST_SESSION") or os.environ.get("CODEX_THREAD_ID")
-               or os.environ.get("CLAUDE_CODE_SESSION_ID"))
+    session = os.environ.get("GITHUB_REQUEST_SESSION")
+    if not session:
+        family = github_agent.running_agent()
+        if family == "codex":
+            session = os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_SESSION_ID")
+        elif family == "claude":
+            session = os.environ.get("CLAUDE_CODE_SESSION_ID")
     if session and not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", session):
         session = None
     receipt = {
@@ -150,7 +156,15 @@ def report(
     tallies: dict[tuple[str, ...], collections.Counter] = collections.defaultdict(collections.Counter)
     windows: dict[tuple[str, str, str, str, int], dict[str, Any]] = {}
     sessions: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
-    roots = list(dict.fromkeys(path.expanduser().resolve() for path in (state_dirs or [state_dir()])))
+    roots = []
+    for path in state_dirs or [state_dir()]:
+        expanded = path.expanduser()
+        try:
+            root = expanded.resolve()
+        except OSError:
+            root = expanded.absolute()
+        if root not in roots:
+            roots.append(root)
     ledger_coverage = []
     seen: set[tuple[str, str, str]] = set()
     duplicates = unattributed = files_read = missing_files = unreadable = 0
@@ -158,7 +172,11 @@ def report(
         covered_files = files_read
         absent_files = missing_files
         covered_errors = unreadable
-        directory_present = (root / "request-usage").is_dir()
+        try:
+            directory_status = "available" if (root / "request-usage").is_dir() else "missing_or_unavailable"
+        except OSError:
+            directory_status = "unavailable"
+            unreadable += 1
         for hour in range(int(since // 3600), int(timestamp // 3600) + 1):
             path = root / "request-usage" / f"requests-{hour}.jsonl"
             try:
@@ -207,7 +225,7 @@ def report(
             except OSError:
                 unreadable += 1
         ledger_coverage.append({
-            "directory_index": index, "status": "available" if directory_present else "missing_or_unavailable",
+            "directory_index": index, "status": directory_status,
             "files_read": files_read - covered_files, "missing_files": missing_files - absent_files,
             "unreadable_records": unreadable - covered_errors,
         })

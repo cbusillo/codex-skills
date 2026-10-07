@@ -119,8 +119,9 @@ ledgers (or privately collected copies); explicit directories replace the defaul
 Copied receipts with the same host, actor and GitHub request ID count once.
 Records without IDs cannot be deduplicated. Missing files, unreadable records,
 and the number of files read are reported as coverage evidence.
-`ledger_coverage` separates each input directory by its index in the supplied
-list, without exposing private paths, and flags absent receipt directories.
+`ledger_coverage` separates each input directory by its index after resolving
+aliases and removing duplicates, without exposing private paths, and flags
+absent or unreadable receipt directories.
 
 `quota_windows` groups response-header observations by host, actor, repository
 owner, quota bucket and reset epoch. Its peak `max_used` includes spending by
@@ -134,8 +135,10 @@ response headers over a conflicting `/rate_limit` result, as
 [GitHub documents](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#checking-the-status-of-your-rate-limit).
 
 New receipts optionally carry a private session identifier from
-`GITHUB_REQUEST_SESSION`, then `CODEX_THREAD_ID` or `CLAUDE_CODE_SESSION_ID` when
-available. The report lists attributed counts and unattributed requests; a
+`GITHUB_REQUEST_SESSION`. Otherwise the shared agent-family detector selects
+`CODEX_THREAD_ID` / `CODEX_SESSION_ID` or `CLAUDE_CODE_SESSION_ID` when available;
+inherited markers from both families leave attribution unknown. The report
+lists attributed counts and unattributed requests; a
 distinct receipt session is not proof of a simultaneously working session.
 Background watchers and train drivers inherit their launching session's ID
 unless explicitly attributed with `GITHUB_REQUEST_SESSION`; their traffic is
