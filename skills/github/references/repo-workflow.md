@@ -115,6 +115,12 @@ the returned run ID and URL as authoritative. If GitHub does not return exact
 run details, the helper fails closed instead of rediscovering the run through a
 workflow list filtered by time, name, or unsupported CLI fields. Use the
 `watch --run-id <id>` subcommand to recover an already-known run.
+If a request fails after dispatch returns exact run details (including an early
+404 from the jobs endpoint), the error result keeps the failed request diagnostics
+and nonzero exit code, reports `dispatch.outcome=confirmed_success`, and includes
+a shell-quoted `recovery_command` for that exact run. Recovery watches without
+dispatching or authorizing environment approvals; pass an already authorized
+`--approve-environment` name explicitly when needed.
 
 PR and workflow watchers use 60-second active defaults and positive jitter.
 The workflow default clips to a shorter requested timeout, ending without an

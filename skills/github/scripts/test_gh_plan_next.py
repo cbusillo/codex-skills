@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import random
 import sys
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -947,9 +948,14 @@ def test_global_whole_parent_wait_does_not_select_its_children_or_dependencies()
         parent["labels"] = labels
         with global_fixture(roots, [parent, leaf], edges) as (module, result, reads):
             module.cmd_next(next_args())
-        assert result["candidates"] == []
-        assert reads == [("someone/product", 3)]
-        assert any(node.get("number") == 3 and node["exclusion"] == "waiting" for node in result["excluded"])
+        if body:
+            assert result["candidates"] == []
+            assert reads == [("someone/product", 3)]
+            assert any(node.get("number") == 3 and node["exclusion"] == "waiting" for node in result["excluded"])
+        else:
+            assert [item["number"] for item in result["candidates"]] == [4]
+            assert reads == [("someone/product", 3), ("someone/product", 4)]
+            assert any(finding["number"] == 3 for finding in result["findings"])
 
 
 def test_global_leaf_waiting_on_referenced_review_is_not_actionable() -> None:
@@ -1194,7 +1200,7 @@ def test_portfolio_capacity_admission_ranks_stops_then_age_and_keeps_own_project
 
 def test_portfolio_capacity_needs_current_person_waits_and_complete_graph() -> None:
     roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
-    leaf = global_issue("someone/business", 10, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Customer testing.")
+    leaf = global_issue("someone/business", 10, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Alex to test.\nWaiting since: 2026-08-20")
     tool = global_issue("someone/tools", 20)
     edges = {(roots[0]["repo"], 1): relationships(sub_issues=[leaf])}
     with global_fixture(roots, [leaf], edges, discovered=[tool]) as (module, result, _reads):
@@ -1204,10 +1210,11 @@ def test_portfolio_capacity_needs_current_person_waits_and_complete_graph() -> N
             "someone/business#10": reviewed(items[10], "waiting", waiting_on="person"),
             "someone/tools#20": reviewed(items[20], category="repeated_stop_tooling"),
         }}
-        # Empty Tracks have no milestone candidates; the nonempty frontier waits.
+        # An empty listed Track cannot establish a named person wait.
         with patch.multiple(module, next_selection_context=lambda _args: base):
             module.cmd_next(next_args())
-            assert result["tooling_capacity_context"]["admitted"] is True
+            assert result["tooling_capacity_context"]["admitted"] is False
+            assert result["tooling_capacity_context"]["reason"] == "milestone_names_no_person"
         module.load_direction = lambda *_: "# Direction\n\n## Milestones\n\n- `First`\n"
         for extra in ({"state": "available"}, {"state": "underway"}, {"waiting_on": "event"}, {"waiting_on": None}, {"discussion_digest": "stale"}, {"ownership_complete": False}):
             context = {"issues": {**base["issues"], "someone/business#10": {**base["issues"]["someone/business#10"], **extra}}}
@@ -1230,9 +1237,9 @@ def test_portfolio_capacity_needs_current_person_waits_and_complete_graph() -> N
 
 def test_portfolio_capacity_truncated_discovery_admits_tooling_but_not_incomplete_graph() -> None:
     roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
-    wait = global_issue("someone/business", 10, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Customer testing.")
+    wait = global_issue("someone/business", 10, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Alex to test.\nWaiting since: 2026-08-20")
     tools = [global_issue("someone/tools", number) for number in range(20, 25)]
-    edges = {(roots[0]["repo"], 1): relationships(sub_issues=[wait])}
+    edges = {(root["repo"], root["number"]): relationships(sub_issues=[wait]) for root in roots}
     with global_fixture(roots, [wait], edges, discovered=tools) as (module, result, _reads):
         module.cmd_next(next_args())
         items = {item["number"]: item for item in [*result["candidates"], *result["excluded"]]}
@@ -1265,7 +1272,7 @@ def test_portfolio_capacity_reports_reviews_before_unread_excluded_ancestry() ->
     unrelated = global_issue("someone/product", 439, milestone=milestone_data(14, "Encrypted Disc Relay", created_at="2026-08-31T00:00:00Z"))
     blocker = global_issue("someone/product", 711)
     edges = {
-        (roots[0]["repo"], 1): relationships(sub_issues=[wait]),
+        **{(root["repo"], root["number"]): relationships(sub_issues=[wait]) for root in roots},
         (unrelated["repo"], 439): relationships(blocked_by=[blocker]),
     }
     with global_fixture(roots, [wait], edges, discovered=[unrelated, tool]) as (module, result, _reads):
@@ -1297,10 +1304,10 @@ def test_portfolio_capacity_reports_reviews_before_unread_excluded_ancestry() ->
 
 def test_portfolio_capacity_unscanned_known_milestone_prevents_admission() -> None:
     roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
-    wait = global_issue("someone/business", 10, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Customer testing.")
+    wait = global_issue("someone/business", 10, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Alex to test.\nWaiting since: 2026-08-20")
     tools = [global_issue("someone/tools", number) for number in range(20, 23)]
-    unscanned = global_issue("someone/business", 30, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Customer testing.", milestone=milestone_data(7, "Second", created_at="2026-01-01"))
-    edges = {(roots[0]["repo"], 1): relationships(sub_issues=[wait])}
+    unscanned = global_issue("someone/business", 30, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Alex to test.", milestone=milestone_data(7, "Second", created_at="2026-01-01"))
+    edges = {(root["repo"], root["number"]): relationships(sub_issues=[wait]) for root in roots}
     with global_fixture(roots, [wait], edges, discovered=[*tools, unscanned]) as (module, result, _reads):
         module.discover_direction_work = lambda *_a, **_kw: ([*tools, unscanned], {
             "complete": True, "repositories": [
@@ -1341,9 +1348,9 @@ def test_portfolio_capacity_unscanned_known_milestone_prevents_admission() -> No
 
 def test_portfolio_capacity_partial_milestone_source_differs_from_unrelated_source() -> None:
     roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
-    wait = global_issue("someone/business", 10, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Customer testing.")
+    wait = global_issue("someone/business", 10, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Alex to test.\nWaiting since: 2026-08-20")
     tool = global_issue("someone/tools", 20)
-    edges = {(roots[0]["repo"], 1): relationships(sub_issues=[wait])}
+    edges = {(root["repo"], root["number"]): relationships(sub_issues=[wait]) for root in roots}
     with global_fixture(roots, [wait], edges, discovered=[tool]) as (module, result, _reads):
         module.cmd_next(next_args())
         items = {item["number"]: item for item in [*result["candidates"], *result["excluded"]]}
@@ -1368,9 +1375,9 @@ def test_portfolio_capacity_partial_milestone_source_differs_from_unrelated_sour
 
 def test_portfolio_capacity_waiting_discovery_milestone_blocks_admission() -> None:
     roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
-    wait = global_issue("someone/business", 10, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Customer testing.")
+    wait = global_issue("someone/business", 10, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Alex to test.\nWaiting since: 2026-08-20")
     tool = global_issue("someone/tools", 20)
-    unlinked = global_issue("someone/other", 30, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Customer testing.", milestone=milestone_data(7, "First", created_at="2026-01-01"))
+    unlinked = global_issue("someone/other", 30, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Alex to test.", milestone=milestone_data(7, "First", created_at="2026-01-01"))
     edges = {(roots[0]["repo"], 1): relationships(sub_issues=[wait]), (roots[1]["repo"], 2): relationships(sub_issues=[wait])}
     with global_fixture(roots, [wait], edges, discovered=[tool, unlinked]) as (module, result, _reads):
         module.discover_direction_work = lambda *_a, **_kw: ([tool, unlinked], {"complete": True, "repositories": [{"repo": "someone/other", "direction": DIRECTION}, {"repo": "someone/tools", "direction": None}]})
@@ -1487,9 +1494,9 @@ def test_portfolio_capacity_preserves_wait_reports_when_ancestry_is_unavailable(
 def test_portfolio_capacity_includes_discovered_milestone_dependencies() -> None:
     for relationship in ("blocked_by", "sub_issues"):
         roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
-        wait = global_issue("someone/business", 10, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Customer testing.")
+        wait = global_issue("someone/business", 10, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Alex to test.\nWaiting since: 2026-08-20")
         container = global_issue("someone/extra", 30, milestone=milestone_data(5, "First", created_at="2026-01-01"))
-        leaf = global_issue("someone/extra", 31, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Customer testing.")
+        leaf = global_issue("someone/extra", 31, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Alex to test.")
         tool = global_issue("someone/tools", 20)
         edges = {(root["repo"], root["number"]): relationships(sub_issues=[wait]) for root in roots}
         edges[(container["repo"], 30)] = relationships(**{relationship: [leaf]})
@@ -1978,7 +1985,7 @@ def test_milestone_candidate_coverage_is_scoped_to_graph() -> None:
 
 def test_discovered_blocker_explains_its_native_link_to_waiting_track_work() -> None:
     roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
-    waiting = global_issue("someone/direction", 7, labels=["plan", "plan:waiting"])
+    waiting = global_issue("someone/direction", 7, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Alex to decide.")
     blocker = global_issue("someone/product", 12)
     edges = {(roots[0]["repo"], 1): relationships(sub_issues=[waiting]), (waiting["repo"], 7): relationships(blocked_by=[blocker]), (blocker["repo"], 12): relationships(blocking=[waiting])}
     with global_fixture(roots, [waiting, blocker], edges, discovered=[blocker]) as (module, result, _reads):
@@ -2569,6 +2576,329 @@ TESTS = [
     test_global_active_parent_partial_wait_need_not_name_an_issue,
     test_global_shared_classifier_preserves_incomplete_relationship_evidence,
 ]
+
+
+def test_milestone_order_wait_is_a_finding_and_remains_available() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    for reason in ("starts after milestones 'First' and 'Second'", "", "nothing", "TBD", "TBD; since 2026-08-20", "unknown; since 2026-08-20"):
+        leaf = global_issue("someone/business", 120, labels=["plan", "plan:waiting"],
+                            body="## Current Status\nState: Waiting.\nWaiting for: " + reason)
+        edges = {(roots[1]["repo"], 2): relationships(sub_issues=[leaf])}
+        with global_fixture(roots, [leaf], edges) as (module, result, _reads):
+            module.cmd_next(next_args())
+            candidate = next(item for item in result["candidates"] if item["number"] == 120)
+            context = {"issues": {"someone/business#120": reviewed(candidate, category="milestone")}}
+            with patch.multiple(module, next_selection_context=lambda _args: context):
+                module.cmd_next(next_args())
+            assert [item["number"] for item in result["available_candidates"]] == [120]
+            assert any(item["number"] == 120 and item["kind"] == "milestone_wait_invalid" for item in result["findings"])
+            assert not any(item["number"] == 120 for item in result["waiting"])
+            assert result["tooling_capacity_context"]["admitted"] is False
+
+
+def test_capacity_names_each_milestone_and_wait_start_for_shared_person_gate() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    wait = global_issue("someone/business", 10, labels=["plan", "plan:waiting"],
+                        body="## Current Status\nWaiting for: Alex to test.\nWaiting since: 2026-08-20")
+    edges = {(root["repo"], root["number"]): relationships(blocked_by=[wait]) for root in roots}
+    with global_fixture(roots, [wait], edges) as (module, result, _reads):
+        module.cmd_next(next_args())
+        item = next(item for item in result["excluded"] if item["number"] == 10)
+        context = {"issues": {"someone/business#10": reviewed(item, "waiting", waiting_on="person")}}
+        with patch.multiple(module, next_selection_context=lambda _args: context):
+            module.cmd_next(next_args())
+        capacity = result["tooling_capacity_context"]
+        assert capacity["admitted"] is True
+        assert {row["milestone"] for row in capacity["milestone_waits"]} == {"First", "Second"}
+        for row in capacity["milestone_waits"]:
+            assert row["waits"][0]["waiting_for"] == "Alex to test."
+            assert row["waits"][0]["since"] == "2026-08-20"
+
+
+def test_capacity_wait_dates_belong_to_each_frontier_issue() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    waits = [global_issue("someone/business", number, labels=["plan", "plan:waiting"],
+                          body=f"## Current Status\nWaiting for: {person} to test.\nWaiting since: {since}")
+             for number, person, since in ((10, "Alex", "2026-08-20"), (11, "Sam", "2026-09-02"))]
+    edges = {(root["repo"], root["number"]): relationships(blocked_by=[wait])
+             for root, wait in zip(roots, waits)}
+    with global_fixture(roots, waits, edges) as (module, result, _reads):
+        module.cmd_next(next_args())
+        items = {item["number"]: item for item in result["excluded"]}
+        context = {"issues": {f"someone/business#{wait['number']}": reviewed(items[wait["number"]], "waiting", waiting_on="person")
+                              for wait in waits}}
+        with patch.multiple(module, next_selection_context=lambda _args: context):
+            module.cmd_next(next_args())
+        capacity = result["tooling_capacity_context"]
+        assert capacity["admitted"] is True
+        records = {row["milestone"]: row["waits"][0] for row in capacity["milestone_waits"]}
+        assert (records["First"]["waiting_for"], records["First"]["since"]) == ("Alex to test.", "2026-08-20")
+        assert (records["Second"]["waiting_for"], records["Second"]["since"]) == ("Sam to test.", "2026-09-02")
+
+
+def test_milestone_order_detection_preserves_additional_human_holds() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    for reason in ("First and Chris approves the testing date.", "starts after First and Chris to sign the contract.",
+                   "First\nParked until: Alex approves the copy.",
+                   "First\nBlocked by: Chris's contract signature.", "First\nState: Waiting on Alex."):
+        leaf = global_issue("someone/business", 120, labels=["plan", "plan:waiting"],
+                            body="## Current Status\nWaiting for: " + reason)
+        with global_fixture(roots, [leaf], {(roots[1]["repo"], 2): relationships(sub_issues=[leaf])}) as (module, result, _reads):
+            module.cmd_next(next_args())
+            assert not result["candidates"] and not result["findings"]
+            assert result["waiting"]
+    shared = load_module().github_direction_next
+    item = {"repo": "someone/business", "number": 120, "url": "https://github.com/someone/business/issues/120"}
+    for reason in ("First to ship", "Second is done", "earlier milestones to finish", "the previous milestone", "the next milestone", "First closes", "First is complete", "First wraps up", "First to be completed", "‘First’", "v2_beta"):
+        assert not shared.milestone_wait_evidence(item, "Waiting for: " + reason, ["First", "Second", "v2_beta"])["valid"]
+    assert shared.milestone_wait_evidence(item, "Waiting for: Alex to retest the build shipped since 2026-07-01", ["First"])["since"] is None
+    assert shared.milestone_wait_evidence(item, "Waiting for: Alex to test; since 2026-08-20", ["First"])["since"] == "2026-08-20"
+
+
+TESTS.extend([test_milestone_order_detection_preserves_additional_human_holds, test_capacity_wait_dates_belong_to_each_frontier_issue, test_milestone_order_wait_is_a_finding_and_remains_available,
+              test_capacity_names_each_milestone_and_wait_start_for_shared_person_gate])
+
+
+def test_discovered_milestone_wait_remains_available_and_cannot_admit_tooling() -> None:
+    leaf = global_issue("someone/business", 120, labels=["plan", "plan:waiting"],
+                        milestone=milestone_data(7, "First", created_at="2026-01-01"),
+                        body="## Current Status\nWaiting for: milestone Second.")
+    with global_fixture([], [], {}, discovered=[leaf]) as (module, result, _reads):
+        module.discover_direction_work = lambda *_a, **_kw: ([leaf], {"complete": True,
+            "repositories": [{"repo": leaf["repo"], "direction": DIRECTION}]})
+        module.cmd_next(next_args())
+        item = result["candidates"][0]
+        assert item["discussion"]["ancestry_complete"] is True
+        context = {"issues": {"someone/business#120": reviewed(item)}}
+        with patch.multiple(module, next_selection_context=lambda _args: context):
+            module.cmd_next(next_args())
+        assert [item["number"] for item in result["available_candidates"]] == [120]
+        assert result["findings"][0]["reason"] == "wait_names_another_milestone"
+        assert result["tooling_capacity_context"]["admitted"] is False
+
+
+def test_supported_wait_forms_and_person_work_do_not_become_ordering_findings() -> None:
+    roots = [track("someone/direction", 1, "First")]
+    for status in ("Parked until: 2026-12-01 holiday freeze.", "**Waiting for:** Alex to test.", "**Waiting for**: Alex to test.",
+                   "Blocked by: No native issue blocker; waiting for Alex to test.\nWaiting for:\nLast verified: 2026-10-01",
+                   "Blocked by: No native issue blocker; waiting for Alex to test.",
+                   "Waiting for: Alex to approve the beta copy."):
+        leaf = global_issue("someone/business", 120, labels=["plan:waiting"],
+                            body="## Current Status\nState: Parked.\n" + status)
+        with global_fixture(roots, [leaf], {(roots[0]["repo"], 1): relationships(sub_issues=[leaf])}) as (module, result, _reads):
+            module.load_direction = lambda *_: DIRECTION + "- `Beta`\n"
+            module.cmd_next(next_args())
+            assert not result["candidates"]
+            assert not result["findings"]
+        evidence = module.github_direction_next.milestone_wait_evidence(
+            {"repo": "someone/business", "number": 120, "url": leaf["html_url"], "milestone": {"title": "Dogfood week"}}, "Waiting for: Chris to start dogfood week.", ["Dogfood week"])
+        assert evidence["valid"] is True
+
+
+def test_unmatched_local_milestone_keeps_its_recorded_wait() -> None:
+    leaf = global_issue("someone/business", 120, labels=["plan:waiting"],
+                        milestone=milestone_data(7, "First", created_at="2026-01-01"),
+                        body="## Current Status\nWaiting for: TBD.")
+    with global_fixture([], [], {}, discovered=[leaf]) as (module, result, _reads):
+        module.discover_direction_work = lambda *_a, **_kw: ([leaf], {"complete": True,
+            "repositories": [{"repo": leaf["repo"], "direction": "# Direction\n## Milestones\n"}]})
+        module.cmd_next(next_args())
+        assert not result["candidates"] and not result["findings"]
+        assert next(item for item in result["excluded"] if item["number"] == 120)["exclusion"] == "waiting"
+
+
+def test_capacity_requires_own_wait_instead_of_inheriting_parent() -> None:
+    shared = load_module().github_direction_next
+    parent_raw = global_issue("someone/business", 10, body="## Current Status\nWaiting for: Alex to test.\nWaiting since: 2026-08-20")
+    parent = {**parent_raw, "url": parent_raw["html_url"], "discussion": shared.discussion_snapshot(parent_raw, [], complete=True)}
+    child_raw = global_issue("someone/business", 11)
+    child = {**child_raw, "url": child_raw["html_url"], "milestone": {"title": "First"}, "via": [parent],
+             "exclusion": "parent_waiting", "waiting_on_parent": parent["url"],
+             "discussion": {**shared.discussion_snapshot(child_raw, [], complete=True), "parents": [parent], "ancestry_complete": True}}
+    graph = {"candidates": [], "excluded": [child], "dependency_context": {"complete": True}}
+    context = {"issues": {"someone/business#11": reviewed(child, "waiting", waiting_on="person")}}
+    result = shared.tooling_capacity_context(graph, [], milestone_titles=["First"], context=context,
+                                             repository_waypoints={}, coverage_complete=True)
+    assert result["admitted"] is False
+    assert result["required"] == "current_own_issue_wait"
+
+
+TESTS.extend([test_discovered_milestone_wait_remains_available_and_cannot_admit_tooling,
+              test_supported_wait_forms_and_person_work_do_not_become_ordering_findings,
+              test_unmatched_local_milestone_keeps_its_recorded_wait,
+              test_capacity_requires_own_wait_instead_of_inheriting_parent])
+
+
+def test_invalid_discovered_parent_wait_delegates_to_its_child() -> None:
+    parent = global_issue("someone/business", 120, labels=["plan:waiting"],
+                          milestone=milestone_data(7, "First", created_at="2026-01-01"),
+                          body="## Current Status\nWaiting for: milestone Second.")
+    child = global_issue("someone/business", 121)
+    edges = {(parent["repo"], parent["number"]): relationships(sub_issues=[child])}
+    with global_fixture([], [parent], edges, discovered=[parent, child]) as (module, result, _reads):
+        module.discover_direction_work = lambda *_a, **_kw: ([parent, child], {"complete": True,
+            "repositories": [{"repo": parent["repo"], "direction": DIRECTION}]})
+        module.cmd_next(next_args())
+        assert [item["number"] for item in result["candidates"]] == [121]
+        assert next(item for item in result["excluded"] if item["number"] == 120)["exclusion"] == "delegated_to_open_sub_issues"
+        assert not result["waiting"]
+
+
+TESTS.append(test_invalid_discovered_parent_wait_delegates_to_its_child)
+
+
+def test_empty_track_discovery_still_reads_held_milestone_capacity_evidence() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    first = global_issue("someone/business", 10, labels=["plan:waiting"], body="## Current Status\nWaiting for: Alex to test.")
+    second = global_issue("someone/business", 11, labels=["plan:waiting"], milestone=milestone_data(7, "Second", created_at="2026-01-01"),
+                          body="## Current Status\nWaiting for: Alex to test.")
+    held = global_issue("someone/held", 12, labels=["plan:waiting"], milestone=milestone_data(8, "Second", created_at="2026-01-01"),
+                        body="## Current Status\nWaiting for: Alex to test.")
+    tool = global_issue("someone/tools", 20)
+    modes = []
+    with global_fixture(roots, [first], {(roots[0]["repo"], 1): relationships(sub_issues=[first])},
+                        discovered=[second, held, tool]) as (module, result, _reads):
+        def discover(_repo: str, _args: Any, **kwargs: Any) -> Any:
+            mode = kwargs["capacity_evidence"]
+            modes.append(mode)
+            return [second, tool, *([held] if mode else [])], {"complete": True, "repositories": [
+                {"repo": "someone/business", "direction": DIRECTION},
+                {"repo": "someone/tools", "direction": None},
+                {"repo": "someone/held", "direction": DIRECTION if mode else None}]}
+        module.discover_direction_work = discover
+        module.cmd_next(next_args())
+        items = {item["number"]: item for item in [*result["candidates"], *result["excluded"]]}
+        context = {"repository_holds": {"someone/held": {"reason": "Director hold", "evidence": ["recorded hold"]}},
+                   "issues": {**{f"someone/business#{number}": reviewed(items[number], "waiting", waiting_on="person") for number in (10, 11)},
+                              "someone/tools#20": reviewed(items[20], category="repeated_stop_tooling")}}
+        with patch.object(module, "next_selection_context", return_value=context):
+            module.cmd_next(next_args())
+        assert modes[-1] is True
+        assert result["tooling_capacity_context"]["admitted"] is False
+        assert result["tooling_capacity_context"]["issue"] == "someone/held#12"
+        assert not result["available_candidates"]
+
+
+def test_multiline_wait_and_literal_milestone_wait_have_opposite_results() -> None:
+    shared = load_module().github_direction_next
+    for reason in ("Waiting for:\n- Alex to approve the copy.", "Waiting for: milestone review call with Alex on 2026-10-10.",
+                   "Waiting for: once launch partners sign."):
+        assert shared.milestone_wait_evidence({"repo": "someone/business", "number": 10, "url": "https://github.com/someone/business/issues/10"}, reason, ["Launch", "Dogfood week", "Thin fork decision"])["valid"]
+    for reason in ("Waiting for: Dogfood week to finish.", "Waiting for: the Thin fork decision milestone."):
+        assert not shared.milestone_wait_evidence({"repo": "someone/business", "number": 10, "url": "https://github.com/someone/business/issues/10"}, reason, ["Launch", "Dogfood week", "Thin fork decision"])["valid"]
+    assert not shared.milestone_wait_evidence({"repo": "someone/business", "number": 10, "url": "https://github.com/someone/business/issues/10"}, "State: Waiting on Alex", ["Launch"])["valid"]
+
+
+TESTS.extend([test_empty_track_discovery_still_reads_held_milestone_capacity_evidence,
+              test_multiline_wait_and_literal_milestone_wait_have_opposite_results])
+
+
+def test_milestone_scope_still_recognizes_other_listed_milestone_waits() -> None:
+    roots = [track("someone/direction", 1, "First")]
+    leaf = global_issue("someone/business", 120, labels=["plan:waiting"],
+                        body="## Current Status\nWaiting for: Second to finish.")
+    with global_fixture(roots, [leaf], {(roots[0]["repo"], 1): relationships(sub_issues=[leaf])}) as (module, result, _reads):
+        with patch.object(module.github_milestone_core, "show_milestone", return_value={"milestone": roots[0]["milestone"]}):
+            module.cmd_next(next_args(milestone="First"))
+        assert [item["number"] for item in result["candidates"]] == [120]
+        assert result["findings"][0]["reason"] == "wait_names_another_milestone"
+
+
+TESTS.append(test_milestone_scope_still_recognizes_other_listed_milestone_waits)
+
+
+def test_discovery_preserves_valid_waits_above_invalid_child_or_parent_waits() -> None:
+    grand = global_issue("someone/business", 40, labels=["plan:waiting"],
+                         body="## Current Status\nWaiting for: Alex to sign the contract.")
+    parent = global_issue("someone/business", 41, labels=["plan:waiting"],
+                          body="## Current Status\nWaiting for: TBD.")
+    for chain in ([grand], [parent, grand], [parent]):
+        child = global_issue("someone/business", 50, labels=["plan:waiting"],
+                             milestone=milestone_data(7, "First", created_at="2026-01-01"),
+                             body="## Current Status\nWaiting for: TBD.")
+        edges = {(ancestor["repo"], ancestor["number"]): relationships(sub_issues=[descendant])
+                 for ancestor, descendant in zip(chain, [child, *chain[:-1]])}
+        with global_fixture([], list(chain), edges, discovered=[child]) as (module, result, _reads):
+            module.discover_direction_work = lambda *_a, **_kw: ([child], {"complete": True,
+                "repositories": [{"repo": child["repo"], "direction": DIRECTION}]})
+            module.cmd_next(next_args())
+            assert not any(row["number"] == 41 for row in result["waiting"])
+            if grand in chain:
+                assert not result["candidates"]
+                item = next(item for item in result["excluded"] if item["number"] == 50)
+                assert item["exclusion"] == "parent_waiting" and item["waiting_on_parent"] == grand["html_url"]
+            else:
+                assert [item["number"] for item in result["candidates"]] == [50]
+                assert any(finding["number"] == 41 for finding in result["findings"])
+
+
+def test_blocked_wait_and_unknown_start_do_not_become_available_or_dated() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    leaf = global_issue("someone/business", 120, labels=["plan:blocked"], body="## Current Status\nState: Waiting.")
+    edges = {(root["repo"], root["number"]): relationships(sub_issues=[leaf]) for root in roots}
+    with global_fixture(roots, [leaf], edges) as (module, result, _reads):
+        module.cmd_next(next_args())
+        assert not result["candidates"]
+        assert next(item for item in result["excluded"] if item["number"] == 120)["exclusion"] == "waiting"
+        assert result["dependency_context"]["complete"]
+        assert result["candidate_coverage"]["complete"]
+        for value in ("unknown", "TBD", "2026-99-99"):
+            evidence = module.github_direction_next.milestone_wait_evidence({"repo": "someone/business", "number": 10, "url": "https://github.com/someone/business/issues/10"}, "Waiting for: Alex to test.\nWaiting since: " + value, ["First"])
+            assert evidence["since"] is None
+        for status in ("Waiting for:\n- Alex: approve the copy.", "Waiting for: none\nParked until: 2026-12-01 holiday freeze."):
+            assert module.github_direction_next.milestone_wait_evidence({"repo": "someone/business", "number": 10, "url": "https://github.com/someone/business/issues/10"}, status, ["First"])["valid"]
+        evidence = module.github_direction_next.milestone_wait_evidence({"repo": "someone/business", "number": 10, "url": "https://github.com/someone/business/issues/10"}, "Waiting for: Alex to test.\nWaiting since: 2026-08-20 (Alex confirmed)", ["First"])
+        assert evidence["since"] == "2026-08-20"
+
+
+TESTS.extend([test_discovery_preserves_valid_waits_above_invalid_child_or_parent_waits,
+              test_blocked_wait_and_unknown_start_do_not_become_available_or_dated])
+
+
+def test_excluded_unrelated_wait_failure_preserves_ordinary_coverage() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    leaf = global_issue("someone/business", 10, labels=["plan:waiting"], body="## Current Status\nWaiting for: Alex to test.")
+    unrelated = global_issue("someone/other", 50, labels=["plan:waiting"], body="## Current Status\nWaiting for: TBD.")
+    edges = {(root["repo"], root["number"]): relationships(sub_issues=[leaf]) for root in roots}
+    for own_milestone in (None, milestone_data(7, "First", created_at="2026-01-01")):
+        discovery = {**unrelated, "milestone": own_milestone}
+        with global_fixture(roots, [leaf], edges, discovered=[discovery]) as (module, result, _reads):
+            def denied_parent(target: str, _number: int) -> None:
+                if target == unrelated["repo"]:
+                    raise module.PlanError("parent unavailable")
+                return None
+            module.read_next_parent = denied_parent
+            module.cmd_next(next_args())
+            assert result["candidate_coverage"]["complete"] == (own_milestone is None)
+            assert result["discovery_context"]["complete"] == (own_milestone is None)
+            assert not result["discovery_context"]["capacity_complete"]
+            assert next(item for item in result["excluded"] if item["number"] == 50)["exclusion"] == "unknown_ancestry"
+
+
+def test_unmatched_parent_wait_does_not_emit_internal_exclusion() -> None:
+    parent = global_issue("someone/other", 40, labels=["plan:waiting"], body="## Current Status\nWaiting for: Alex to test.")
+    child = global_issue("someone/other", 50)
+    edges = {(parent["repo"], parent["number"]): relationships(sub_issues=[child])}
+    with global_fixture([], [parent], edges, discovered=[child]) as (module, result, _reads):
+        module.cmd_next(next_args())
+        item = next(item for item in result["excluded"] if item["number"] == 50)
+        assert item["exclusion"] == "parent_waiting"
+        assert "_own_exclusion" not in item
+
+
+TESTS.extend([test_excluded_unrelated_wait_failure_preserves_ordinary_coverage,
+              test_unmatched_parent_wait_does_not_emit_internal_exclusion])
+
+
+def test_waiting_pr_does_not_become_an_invalid_issue_wait() -> None:
+    root = track("someone/direction", 1, "First")
+    pull = {**global_issue("someone/business", 120, labels=["plan:waiting"]), "pull_request": {}}
+    with global_fixture([root], [pull], {(root["repo"], 1): relationships(sub_issues=[pull])}) as (module, result, _reads):
+        module.cmd_next(next_args())
+        assert not result["findings"] and not result["candidates"]
+
+
+TESTS.append(test_waiting_pr_does_not_become_an_invalid_issue_wait)
 
 
 def main() -> None:

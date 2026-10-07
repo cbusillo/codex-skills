@@ -13,6 +13,7 @@ import math
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import sys
 import time
@@ -1424,6 +1425,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             "input_keys": input_keys,
             "diagnostics": client.diagnostics() if client is not None else None,
         }
+        if client is not None and run_reference is not None:
+            payload["dispatch"] = {"ok": True, "outcome": "confirmed_success"}
+            payload["recovery_command"] = shlex.join([
+                "uv", "run", str(SCRIPT_DIR / "github_workflow_babysit.py"),
+                "watch", "--repo", client.repo, "--run-id", str(run_reference.run_id),
+            ])
+            payload["message"] = (
+                "Workflow dispatch succeeded; subsequent observation or approval failed. "
+                "Watch the exact returned run with recovery_command; do not dispatch again."
+            )
         return emit_terminal(payload)
 
 
