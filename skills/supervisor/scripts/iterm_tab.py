@@ -72,7 +72,11 @@ def with_account(command_text, choice):
     """Prefix one agent invocation with the chosen account's environment."""
     if "\n" in command_text:
         raise ValueError("account selection needs a one-line launch command")
-    for key in choice["env"]:
+    default_claude = choice["provider"] == "anthropic" and "CLAUDE_CONFIG_DIR" not in choice["env"]
+    checked_keys = set(choice["env"])
+    if default_claude:
+        checked_keys.add("CLAUDE_CONFIG_DIR")
+    for key in checked_keys:
         if f"{key}=" in command_text:
             raise ValueError(f"launch file already sets {key}; remove it or omit --account-provider")
     settings = " ".join(
@@ -80,7 +84,10 @@ def with_account(command_text, choice):
         for key, value in choice["env"].items()
     )
     # export, not env: the account must also reach an agent after `cd dir &&`.
-    return f"export {settings} && {command_text}"
+    prefixes = ["unset CLAUDE_CONFIG_DIR"] if default_claude else []
+    if settings:
+        prefixes.append(f"export {settings}")
+    return " && ".join([*prefixes, command_text])
 
 
 async def operate(app, args):
