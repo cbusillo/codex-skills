@@ -565,7 +565,12 @@ fenced or raw HTML examples, inline mentions, and later prose do not count.
 Conditional text on the release line, a preceding paragraph starting with
 `If`, `After`, `Once`, `When`, `Unless`, or `Until`, or an introduction ending
 with a colon also refuses. Use a separate first-line release when the embedded
-format is ambiguous. The same author must post it after the source claim;
+format is ambiguous. Conditional release/reclaiming prose anywhere in the
+preceding handoff also refuses, including `Takes effect upon merge.` before
+the final release paragraph. Downstream CI, routing and cleanup conditions
+remain independent, as for first-line releases. Recover with a new unconditional
+authored release; the helper does not infer that the earlier condition resolved.
+The same author must post it after the source claim;
 release does not resolve a recorded wait or authorize the next task's actions.
 Use one exact-ID release per comment; a first-line release takes precedence
 over a final release paragraph.
