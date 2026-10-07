@@ -2615,7 +2615,28 @@ def test_capacity_names_each_milestone_and_wait_start_for_shared_person_gate() -
             assert row["waits"][0]["since"] == "2026-08-20"
 
 
-TESTS.extend([test_milestone_order_wait_is_a_finding_and_remains_available,
+def test_capacity_wait_dates_belong_to_each_frontier_issue() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    waits = [global_issue("someone/business", number, labels=["plan", "plan:waiting"],
+                          body=f"## Current Status\nWaiting for: {person} to test.\nWaiting since: {since}")
+             for number, person, since in ((10, "Alex", "2026-08-20"), (11, "Sam", "2026-09-02"))]
+    edges = {(root["repo"], root["number"]): relationships(blocked_by=[wait])
+             for root, wait in zip(roots, waits)}
+    with global_fixture(roots, waits, edges) as (module, result, _reads):
+        module.cmd_next(next_args())
+        items = {item["number"]: item for item in result["excluded"]}
+        context = {"issues": {f"someone/business#{wait['number']}": reviewed(items[wait["number"]], "waiting", waiting_on="person")
+                              for wait in waits}}
+        with patch.multiple(module, next_selection_context=lambda _args: context):
+            module.cmd_next(next_args())
+        capacity = result["tooling_capacity_context"]
+        assert capacity["admitted"] is True
+        records = {row["milestone"]: row["waits"][0] for row in capacity["milestone_waits"]}
+        assert (records["First"]["waiting_for"], records["First"]["since"]) == ("Alex to test.", "2026-08-20")
+        assert (records["Second"]["waiting_for"], records["Second"]["since"]) == ("Sam to test.", "2026-09-02")
+
+
+TESTS.extend([test_capacity_wait_dates_belong_to_each_frontier_issue, test_milestone_order_wait_is_a_finding_and_remains_available,
               test_capacity_names_each_milestone_and_wait_start_for_shared_person_gate])
 
 
