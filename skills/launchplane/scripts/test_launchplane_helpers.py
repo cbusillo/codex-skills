@@ -8099,5 +8099,209 @@ def test_merge_policy_unresolved_origin_uses_safe_code(tmp_path: Path) -> None:
     assert status == 2
     assert json.loads(output.getvalue())["warnings"][0]["code"] == "repository_unresolved"
 
+def _monitoring_arguments() -> list[str]:
+    return ["--product", "example-product", "--context", "example", "--instance", "testing",
+            "--check-name", "public-ingress", "--check-kind", "public_http",
+            "--monitoring-intent", "public", "--enabled", "--require-runtime-identity",
+            "--reason", "Require strict monitoring on the approved check."]
+
+
+def _monitoring_response(mode: str = "dry-run", **overrides: object) -> dict[str, object]:
+    plan = {
+        "status": "ok", "mode": mode, "product": "example-product", "context": "example",
+        "instance": "testing", "check_name": "public-ingress", "current_check_kind": "public_http",
+        "requested_check_kind": "public_http", "current_monitoring_intent": "prelaunch",
+        "requested_monitoring_intent": "public", "operation": "update", "current_enabled": False,
+        "requested_enabled": True, "current_require_runtime_identity": False,
+        "requested_require_runtime_identity": True, "private_endpoint_key": "",
+        "resolved_url": "https://testing.example.invalid/private-health-path",
+        "changed": True, "applied": mode == "apply", "reason": "Private audit reason.",
+        "source_label": "service:product-health-monitoring",
+        "profile_updated_at_before": "2026-10-07T12:00:00Z", "profile_updated_at_after": "",
+        "profile_sha256_before": write_action._canonical_sha256({"profile": "before"}),
+        "plan_sha256": write_action._canonical_sha256({"plan": "approved-monitoring"}),
+        **overrides,
+    }
+    return {"status": "accepted", "trace_id": "launchplane_req_monitoring", "records": {
+        "product_profile": "example-product", "context": "example", "instance": "testing",
+        "health_check": "public-ingress",
+    }, "result": plan}
+
+
+def _monitoring_profile(*, applied: bool = False, **check_changes: object) -> dict[str, object]:
+    profile = cast(dict[str, Any], _product_profile_response())
+    lane = profile["profile"]["lanes"][0]
+    lane["health_url"] = "https://testing.example.invalid/private-health-path"
+    lane["health_monitoring"] = {
+        "monitoring_intent": "public" if applied else "prelaunch", "checks": [{
+            "name": "public-ingress", "kind": "public_http", "url": "", "private_endpoint_key": "",
+            "enabled": applied, "require_runtime_identity": applied, **check_changes,
+        }],
+    }
+    return profile
+
+
+def _monitoring_review(tmp_path: Path, arguments: list[str] | None = None, **plan: object) -> tuple[list[str], dict[str, Any]]:
+    arguments = _monitoring_arguments() if arguments is None else arguments
+    status, evidence, _posts, _reads = _run_main(
+        ["health-monitoring-dry-run", *arguments], post=_monitoring_response(**plan),
+    )
+    assert status == 0, evidence
+    path = _write_json(str(tmp_path), "monitoring-review.json", evidence)
+    return ["health-monitoring-apply", *arguments,
+            *_reviewed_apply_argv(evidence["result"]["plan_sha256"], path)], evidence
+
+
+def test_health_monitoring_dry_run_and_verified_apply_preserve_endpoint(tmp_path: Path) -> None:
+    status, evidence, posts, reads = _run_main(
+        ["health-monitoring-dry-run", *_monitoring_arguments()], post=_monitoring_response(),
+    )
+    assert status == 0 and not reads
+    assert posts[0]["path"] == contract.helper_command_path("health-monitoring-dry-run")
+    assert posts[0]["body"]["mode"] == "dry-run"
+    assert not ({"url", "domain", "profile", "provider", "reviewed_plan_sha256"} & posts[0]["body"].keys())
+    argv, saved = _monitoring_review(tmp_path)
+    profiles = iter([_monitoring_profile(), _monitoring_profile(applied=True)])
+    status, receipt, posts, reads = _run_main(argv, post=_monitoring_response("apply"), read=lambda _: next(profiles))
+    assert status == 0, receipt
+    assert posts[0]["body"]["reviewed_plan_sha256"] == saved["result"]["plan_sha256"]
+    assert posts[0]["idempotency_key"] == "apply-1"
+    assert len(reads) == 2
+    assert all(call["path"] == contract.helper_command_path("product-profile-read").format(product="example-product") for call in reads)
+    assert receipt["result"]["read_back_matches"] is True
+    assert receipt["result"]["read_back"]["endpoint_preserved"] is True
+    for output in (evidence, receipt):
+        printed = json.dumps(output)
+        assert "testing.example.invalid" not in printed and "private-health-path" not in printed
+        assert "Private audit reason" not in printed and "Require strict monitoring" not in printed
+
+    # An idempotent replay with the already-applied profile verifies as well.
+    status, replay, posts, _reads = _run_main(argv, post=_monitoring_response("apply"), read=_monitoring_profile(applied=True))
+    assert status == 0 and posts[0]["idempotency_key"] == "apply-1", replay
+
+
+@pytest.mark.parametrize("field,value", [
+    ("--instance", "prod"), ("--product", "other-product"), ("--check-name", "other-check"),
+    ("--monitoring-intent", "prelaunch"), ("--reason", "Different reason."),
+    ("--dry-run-evidence-file", ""), ("--expected-plan-digest", "f" * 64), ("--idempotency-key", ""),
+])
+def test_health_monitoring_apply_refuses_unbound_arguments(tmp_path: Path, field: str, value: str) -> None:
+    argv, _evidence = _monitoring_review(tmp_path)
+    argv[argv.index(field) + 1] = value
+    status, _receipt, posts, reads = _run_main(argv)
+    assert status == 2 and not posts and not reads
+
+
+def test_health_monitoring_apply_requires_acknowledgement_and_saved_evidence(tmp_path: Path) -> None:
+    argv, evidence = _monitoring_review(tmp_path)
+    argv.remove("--reviewed-dry-run")
+    status, receipt, posts, reads = _run_main(argv)
+    assert status == 2 and not posts and not reads
+    assert receipt["warnings"][0]["code"] == "reviewed_dry_run_required"
+    for mutate in (
+        lambda data: data.update(operation="testing-hold-dry-run"),
+        lambda data: data.update(status="accepted_unverified"),
+        lambda data: data["result"].update(mode="apply"),
+        lambda data: data["result"].update(applied=True),
+        lambda data: data["request"].update(payload_digest="f" * 64),
+    ):
+        argv, _ = _monitoring_review(tmp_path)
+        forged = copy.deepcopy(evidence)
+        mutate(forged)
+        _write_json(str(tmp_path), "monitoring-review.json", forged)
+        status, _receipt, posts, reads = _run_main(argv)
+        assert status == 2 and not posts and not reads
+
+
+def test_health_monitoring_changed_endpoint_stops_before_apply(tmp_path: Path) -> None:
+    argv, _ = _monitoring_review(tmp_path)
+    status, receipt, posts, reads = _run_main(argv, read=_monitoring_profile(url="https://other.example.invalid/health"))
+    assert (status, receipt["status"]) == (1, "stale")
+    assert not posts and len(reads) == 1
+    assert "other.example.invalid" not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize("failure", ["endpoint", "policy", "lane", "digest", "unavailable"])
+def test_health_monitoring_read_back_or_apply_mismatch_is_unverified(tmp_path: Path, failure: str) -> None:
+    argv, _ = _monitoring_review(tmp_path)
+    observed: object = _monitoring_profile(applied=True)
+    post = _monitoring_response("apply")
+    if failure == "endpoint":
+        observed = _monitoring_profile(applied=True, url="https://testing.example.invalid/changed")
+    elif failure == "policy":
+        observed = _monitoring_profile(applied=True, require_runtime_identity=False)
+    elif failure == "lane":
+        cast(dict[str, Any], observed)["profile"]["lanes"][0]["instance"] = "other"
+    elif failure == "digest":
+        post = _monitoring_response("apply", plan_sha256="f" * 64)
+    else:
+        observed = TimeoutError("private endpoint details")
+    profiles = iter([_monitoring_profile(), observed])
+    status, receipt, posts, _reads = _run_main(argv, post=post, read=lambda _: next(profiles))
+    assert (status, receipt["status"]) == (1, "accepted_unverified") and len(posts) == 1
+    assert "private endpoint details" not in json.dumps(receipt)
+
+
+def test_health_monitoring_private_check_uses_registered_key_and_redacts_it(tmp_path: Path) -> None:
+    arguments = _monitoring_arguments()
+    arguments[arguments.index("--check-kind") + 1] = "private_http"
+    arguments[arguments.index("--monitoring-intent") + 1] = "private"
+    arguments += ["--private-endpoint-key", "example-private-runtime"]
+    plan = {"current_check_kind": "private_http", "requested_check_kind": "private_http",
+            "requested_monitoring_intent": "private", "private_endpoint_key": "example-private-runtime", "resolved_url": ""}
+    argv, evidence = _monitoring_review(tmp_path, arguments, **plan)
+    before = _monitoring_profile(kind="private_http", private_endpoint_key="example-private-runtime")
+    after = _monitoring_profile(applied=True, kind="private_http", private_endpoint_key="example-private-runtime")
+    cast(dict[str, Any], after)["profile"]["lanes"][0]["health_monitoring"]["monitoring_intent"] = "private"
+    profiles = iter([before, after])
+    status, receipt, posts, _reads = _run_main(argv, post=_monitoring_response("apply", **plan), read=lambda _: next(profiles))
+    assert status == 0, receipt
+    assert posts[0]["body"]["private_endpoint_key"] == "example-private-runtime"
+    assert "example-private-runtime" not in json.dumps(evidence) + json.dumps(receipt)
+    changed = list(argv)
+    changed[changed.index("--private-endpoint-key") + 1] = "another-key"
+    status, _receipt, posts, reads = _run_main(changed)
+    assert status == 2 and not posts and not reads
+
+
+def test_health_monitoring_disabled_and_unchanged_plans_are_supported(tmp_path: Path) -> None:
+    arguments = _monitoring_arguments()
+    arguments[arguments.index("--enabled")] = "--no-enabled"
+    arguments[arguments.index("--require-runtime-identity")] = "--no-require-runtime-identity"
+    arguments[arguments.index("--monitoring-intent") + 1] = "prelaunch"
+    plan = {"operation": "unchanged", "changed": False, "requested_enabled": False,
+            "requested_require_runtime_identity": False, "requested_monitoring_intent": "prelaunch"}
+    argv, _ = _monitoring_review(tmp_path, arguments, **plan)
+    status, receipt, posts, _reads = _run_main(argv, post=_monitoring_response("apply", **plan), read=_monitoring_profile())
+    assert status == 0, receipt
+    assert posts[0]["body"]["enabled"] is False
+
+
+@pytest.mark.parametrize("change", ["public_key", "disabled_identity", "private_missing_key"])
+def test_health_monitoring_invalid_request_sends_nothing(change: str) -> None:
+    arguments = _monitoring_arguments()
+    if change == "public_key":
+        arguments += ["--private-endpoint-key", "private-key"]
+    elif change == "disabled_identity":
+        arguments[arguments.index("--enabled")] = "--no-enabled"
+    else:
+        arguments[arguments.index("--check-kind") + 1] = "private_http"
+    status, _receipt, posts, reads = _run_main(["health-monitoring-dry-run", *arguments])
+    assert status == 2 and not posts and not reads
+
+
+@pytest.mark.parametrize("changes", [
+    {"instance": "other"}, {"requested_enabled": 1}, {"requested_require_runtime_identity": False},
+    {"mode": "apply"}, {"resolved_url": None}, {"provider": "unexpected-private-data"},
+])
+def test_health_monitoring_malformed_plan_is_rejected(changes: dict[str, object]) -> None:
+    status, receipt, _posts, _reads = _run_main(
+        ["health-monitoring-dry-run", *_monitoring_arguments()], post=_monitoring_response(**changes),
+    )
+    assert status != 0
+    assert receipt["status"] != "accepted"
+    assert "unexpected-private-data" not in json.dumps(receipt)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
