@@ -127,9 +127,9 @@ owner, quota bucket and reset epoch. Its peak `max_used` includes spending by
 other clients of that installation; local `primary_requests` remains the
 instrumented subset. The first/last observation times expose partial windows.
 These peaks are not interval-end totals and cannot attribute the unobserved
-spending to a controller. Unknown repository owners stay separate. Use these
-App-oriented owner groups only for installation quotas; a PAT or user token's
-quota can span owners, so its repeated peaks must not be added together. Prefer
+spending to a controller. Unknown repository owners stay separate. These groups
+describe App installation quotas; a PAT or user token can share a quota across
+repositories, so its repeated peaks must not be added together. Prefer
 response headers over a conflicting `/rate_limit` result, as
 [GitHub documents](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#checking-the-status-of-your-rate-limit).
 
