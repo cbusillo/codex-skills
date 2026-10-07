@@ -96,7 +96,8 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     # An instruction about what to do on resumption does not defer ownership.
     statements = [re.sub(rf"^(?:When|If) you {successor_action},(?![^.!?;]*\bdo so\b)\s*", "", statement,
                          flags=re.IGNORECASE) for statement in statements]
-    required_step = r"\bmust\s+(?:be\s+)?(?:merge[ds]?|land(?:ed)?|pass(?:ed)?|finish(?:ed)?|complete[ds]?|green)\b"
+    step = r"(?:merge[ds]?|land(?:s|ed)?|pass(?:es|ed)?|finish(?:ed)?|complete[ds]?|green)"
+    required_step = rf"\bmust\s+(?:be\s+)?{step}\b"
     prerequisite = rf"{required_step}[^.!?;]*\bfirst\b|^First,?\s+[^.!?;]*{required_step}"
     effective = r"\b(?:takes? effect|effective)\b(?!\s+(?:now|immediately)\b)"
     if final_paragraph:
@@ -111,17 +112,28 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
         if (re.search(ownership, statement, re.IGNORECASE)
                 or re.search(successor, statement, re.IGNORECASE)):
             return True
+        prerequisite_step = re.search(prerequisite, statement, re.IGNORECASE)
+        standalone_prerequisite = re.fullmatch(rf"[^.!?;]*(?:{prerequisite})[.!?;]?", statement.strip(), re.IGNORECASE)
+        standalone_condition = re.fullmatch(
+            rf"(?:(?:Hold|Wait)\s+)?(?:only\s+|not\s+)?{condition}[^,;.!?]*\b{step}(?:\s+(?:into|to|on)\s+[\w/-]+)?(?:\s+first)?[.!?;]?",
+            statement.strip(), re.IGNORECASE,
+        )
+        following = statements[index + 1].strip() if index + 1 < len(statements) else ""
+        downstream_next = (re.match(r"Then\b", following, re.IGNORECASE)
+                           and not re.search(rf"{ownership}|{successor}", following, re.IGNORECASE))
+        downstream_step = re.search(rf"\b{step}\b[^.!?;]*\b(?:before|to)\s+(?:you\s+)?{step}\b", statement, re.IGNORECASE)
+        if (index > 0 and (standalone_prerequisite or standalone_condition) and not (downstream_next or downstream_step)
+                and re.search(rf"{ownership}|{successor}", statements[index - 1], re.IGNORECASE)):
+            return True
         if index + 1 == len(statements):
             continue
-        following = statements[index + 1].strip()
         starts_condition = re.match(r"(?:only\s+|not\s+)?" + condition, statement.strip(), re.IGNORECASE)
-        prerequisite_step = re.search(prerequisite, statement, re.IGNORECASE)
         if re.search(ownership, following, re.IGNORECASE) and (starts_condition or prerequisite_step):
             return True
         sequences_next = (re.match(r"Then\b", following, re.IGNORECASE)
                           and (starts_condition or re.search(required_step, statement, re.IGNORECASE)))
         if ((prerequisite_step or sequences_next
-             or re.match(r"Hold\s+" + condition, statement.strip(), re.IGNORECASE)
+             or re.match(r"(?:Hold|Wait)\s+" + condition, statement.strip(), re.IGNORECASE)
              or (starts_condition and "," not in statement))
                 and re.search(successor, following, re.IGNORECASE)):
             return True
