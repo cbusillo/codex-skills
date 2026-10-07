@@ -3684,6 +3684,8 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         repository_milestones={source["repo"]: direction_milestone_titles(source["direction"]) if source.get("direction") else None for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
         repository_waypoints={source["repo"]: repository_direction_milestones(source) for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
     )
+    graph_waits = list(ranked["waiting"])
+    track_next_actions = ranked.pop("track_next_actions", {})
     ranked.update(portfolio)
     for entry in [*ranked["candidates"], *ranked["excluded"], *ranked["underway"]]:
         entry.pop("wait_evidence_complete", None)
@@ -3696,15 +3698,29 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         row["review_required"] = True
     ranked["client_context"] = {key: {field: value for field, value in record.items() if field != "login"} for key, record in client_records.items()}
     github_agent.filter_selection(ranked, github_agent.running_agent(getattr(args, "agent", None)))
+    ranked["milestone_summary"] = github_direction_next.milestone_summary(
+        titles, completed=ranked.get("completed_milestones", []), candidates=ranked["candidates"],
+        graph_waits=graph_waits, track_next_actions=track_next_actions,
+    )
     ranked["candidates"] = ranked["candidates"][:args.limit]
     ranked["available_candidates"] = ranked["available_candidates"][:args.limit]
     ranked["graph_context"] = graph_coverage
     ranked["discovery_context"] = discovery
+    milestone_ranking_complete = bool(graph_coverage["complete"] and not unevaluated_milestones and not incomplete_milestone_sources)
+    if candidate_coverage_complete:
+        coverage_warning = None
+    elif milestone_ranking_complete:
+        coverage_warning = ("Milestone ranking is complete; portfolio discovery is partial, so unseen work outside "
+                            "the listed milestones may outrank the non-milestone candidates, never milestone work. "
+                            "milestone_summary names each milestone's work or waits.")
+    else:
+        coverage_warning = ("Milestone ranking is partial: the milestone graph or a milestone repository was not "
+                            "fully read, so unseen work may outrank these candidates.")
     ranked["candidate_coverage"] = {
         "scope": "milestone" if scope is not None else "portfolio",
         "complete": candidate_coverage_complete,
-        "warning": None if candidate_coverage_complete else
-        "Partial ranked list within the requested scope: graph or portfolio coverage is incomplete; unseen work may outrank these candidates.",
+        "milestone_ranking_complete": milestone_ranking_complete,
+        "warning": coverage_warning,
         "unevaluated_discovery_count": discovery.get("unevaluated_count", 0),
         "unevaluated_repositories": discovery.get("unevaluated_repositories", []),
     }

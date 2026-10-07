@@ -1996,6 +1996,8 @@ def test_discovered_blocker_explains_its_native_link_to_waiting_track_work() -> 
         assert candidate["overall_milestone_context"]["state"] == "matched"
         assert candidate["overall_milestone_context"]["titles"] == ["First"]
         assert candidate["availability"] == "needs_review" and not candidate.get("via")
+        summary = {entry["milestone"]: entry for entry in result["milestone_summary"]}
+        assert [item["number"] for item in summary["First"]["work"]] == [12]
 
 
 def test_service_waypoint_evidence_cannot_be_inferred_from_ranking_map() -> None:
@@ -2414,13 +2416,18 @@ def test_global_adjacent_notes_preserve_absence_and_pending_clauses() -> None:
         with global_fixture([root], [raw], {(root["repo"], 1): relationships(sub_issues=[raw])}) as (module, result, _reads):
             module.cmd_next(next_args())
         assert bool(result["candidates"]) is selectable
-    for reason in ("Supervisor to route the PR.", "provider capacity"):
-        raw = global_issue("someone/product", 2, labels=[], body="## Current Status\nWaiting for: " + reason)
-        with global_fixture([], [], {}, discovered=[raw]) as (module, result, _reads):
-            module.cmd_next(next_args())
-        assert result["candidates"] == []
-        assert result["unowned"][0]["waiting_for"] == reason
-        assert result["excluded"][0]["exclusion"] == "waiting"
+    raw = global_issue("someone/product", 2, labels=[], body="## Current Status\nWaiting for: provider capacity")
+    with global_fixture([], [], {}, discovered=[raw]) as (module, result, _reads):
+        module.cmd_next(next_args())
+    assert result["candidates"] == []
+    assert result["unowned"][0]["waiting_for"] == "provider capacity"
+    assert result["excluded"][0]["exclusion"] == "waiting"
+    # The Supervisor acting next is agent work, offered with the step it names.
+    raw = global_issue("someone/product", 2, labels=[], body="## Current Status\nWaiting for: Supervisor to route the PR.")
+    with global_fixture([], [], {}, discovered=[raw]) as (module, result, _reads):
+        module.cmd_next(next_args())
+    assert result["candidates"][0]["agent_next_step"] == ["Supervisor to route the PR."]
+    assert result["unowned"] == []
 
 
 def test_global_partial_unowned_holds_and_caller_wait_evidence_remain_visible() -> None:
@@ -2981,6 +2988,86 @@ def test_waiting_pr_does_not_become_an_invalid_issue_wait() -> None:
 
 
 TESTS.append(test_waiting_pr_does_not_become_an_invalid_issue_wait)
+
+
+def active_track(repo: str, number: int, title: str, status: str) -> dict[str, Any]:
+    return global_issue(
+        repo, number, title=f"Track: {title}", labels=["plan", "plan:active"], body="## Current Status\n" + status,
+        milestone=milestone_data(number, title, created_at="2026-01-01T00:00:00Z"),
+    )
+
+
+def test_milestone_agent_work_behind_bookkeeping_blocker_ranks_first() -> None:
+    # 2026-10-07 shape (codex-skills#1378): milestone trackers say agent work is
+    # available, but every path reads as a wait and unrelated work ranks first.
+    first = active_track("someone/direction", 1, "First", "State: Active.\nNext action: another/platform#2682, then someone/site#99 and #91.\nWaiting for: Nothing for agent work.")
+    second = active_track("someone/direction", 2, "Second", "State: Active.\nNext action: An admitted agent scopes the first work issue.\nWaiting for: None for planning/scoping; physical completion remains Chris’s work.")
+    site = global_issue("someone/site", 91, labels=["plan", "plan:waiting"], body="## Current Status\nState: Waiting.\nWaiting for: Justin's release acceptance.")
+    release = global_issue("another/platform", 2682, labels=["plan", "plan:blocked"])
+    notice = global_issue("another/platform", 3073, body="## Current Status\nState: Active.\nWaiting for: Supervisor delivery closeout; Justin's acceptance belongs to #2682. No new Director decision is open.")
+    credentials = global_issue("someone/tenant", 124, body="## Current Status\nState: Active.\nWaiting for: None for bounded preparation; no live apply or grant is authorized by this audit.")
+    unrelated = global_issue("someone/tooling", 10)
+    edges = {
+        ("someone/direction", 1): relationships(sub_issues=[site, release, credentials]),
+        ("another/platform", 2682): relationships(blocked_by=[notice]),
+        ("another/platform", 3073): relationships(blocking=[release]),
+    }
+    with global_fixture([first, second], [site, release, notice, credentials], edges, discovered=[unrelated]) as (module, result, _reads):
+        module.cmd_next(next_args())
+    ranked = [(item["repo"], item["number"]) for item in result["candidates"]]
+    assert ranked[:3] == [("another/platform", 3073), ("someone/tenant", 124), ("someone/direction", 2)]
+    assert ranked[-1] == ("someone/tooling", 10)
+    assert result["candidates"][0]["agent_next_step"][0].startswith("Supervisor delivery closeout")
+    assert [step["number"] for step in result["candidates"][0]["via"]] == [1, 2682, 3073]
+    summary = {entry["milestone"]: entry for entry in result["milestone_summary"]}
+    assert summary["First"]["state"] == "work_listed"
+    assert [wait["number"] for wait in summary["First"]["waits"]] == [91]
+    assert [ref["number"] for ref in summary["First"]["next_action_outside_graph"]] == [99]
+    assert [item["number"] for item in summary["Second"]["work"]] == [2]
+    assert result["candidate_coverage"]["milestone_ranking_complete"] is True
+
+
+def test_milestone_summary_names_each_wait_when_no_milestone_work_is_listed() -> None:
+    first = active_track("someone/direction", 1, "First", "State: Active.\nNext action: someone/site#91.")
+    site = global_issue("someone/site", 91, labels=["plan", "plan:waiting"], body="## Current Status\nState: Waiting.\nWaiting for: Justin's release acceptance.")
+    unrelated = global_issue("someone/tooling", 10)
+    with global_fixture([first, track("someone/direction", 2, "Second")], [site], {("someone/direction", 1): relationships(sub_issues=[site])}, discovered=[unrelated]) as (module, result, _reads):
+        module.cmd_next(next_args())
+    assert [(item["repo"], item["number"]) for item in result["candidates"]] == [("someone/tooling", 10)]
+    summary = {entry["milestone"]: entry for entry in result["milestone_summary"]}
+    assert summary["First"]["state"] == "waiting"
+    assert summary["First"]["waits"][0]["waiting_for"] == "Justin's release acceptance."
+    assert summary["First"]["next_action_outside_graph"] == []
+    assert summary["Second"]["state"] == "no_linked_work"
+
+
+def test_track_whose_next_action_belongs_to_a_person_is_not_agent_work() -> None:
+    track_issue = active_track("someone/direction", 1, "First", "State: Active.\nNext action: Director selects the launch date.\nWaiting for: None; next actor is an agent.")
+    with global_fixture([track_issue], [], {}) as (module, result, _reads):
+        module.cmd_next(next_args())
+    assert result["candidates"] == []
+    assert result["excluded"][0]["exclusion"] == "tracking_without_open_work"
+
+
+def test_named_next_actor_or_absence_keeps_a_stated_precondition() -> None:
+    root = track("someone/direction", 1, "First")
+    for reason in ("Supervisor to route the PR; Director approval is required first.",
+                   "None; Chris must sign off before work starts.",
+                   "Supervisor routing.\nNote: only after Justin approves",
+                   "Supervisor to route the PR; Director authorization is a prerequisite.",
+                   "None for release; Client acceptance is a prerequisite.",
+                   "None; Chris’s sign-off is outstanding."):
+        raw = global_issue("someone/product", 2, body="## Current Status\nState: Active.\nWaiting for: " + reason)
+        with global_fixture([root], [raw], {(root["repo"], 1): relationships(sub_issues=[raw])}) as (module, result, _reads):
+            module.cmd_next(next_args())
+        assert result["candidates"] == [], reason
+        assert next(item for item in result["excluded"] if item["number"] == 2)["exclusion"] == "waiting"
+
+
+TESTS.extend([test_milestone_agent_work_behind_bookkeeping_blocker_ranks_first,
+              test_milestone_summary_names_each_wait_when_no_milestone_work_is_listed,
+              test_named_next_actor_or_absence_keeps_a_stated_precondition,
+              test_track_whose_next_action_belongs_to_a_person_is_not_agent_work])
 
 
 def main() -> None:
