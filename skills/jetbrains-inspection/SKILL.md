@@ -15,7 +15,7 @@ commands:
     source: skill
     resource_path: scripts/jb-inspect.py
     example_argv: ["uv", "run", "scripts/jb-inspect.py", "open-worktree", "--repo", "$PWD"]
-    purpose: Preferred public command for opening and claiming the exact worktree without running inspections.
+    purpose: Opens and claims one exact IDE project without inspecting; does not dispatch lanes.
   - name: jetbrains-inspection-agent-inspect
     source: skill
     resource_path: scripts/jb-inspect.py
@@ -121,18 +121,20 @@ Set `HELPER=<skill-dir>/scripts/jb-inspect.py`; `<skill-dir>` holds this `SKILL.
 
 ## Before The First Inspection
 
-If `.github/github.json` sets `qualityGate.inspection.prepare`, run that exact
-repository command in the exact linked worktree through the lifecycle helper,
-which performs preparation before opening it. The preferred public command for
-preparing and opening that worktree is:
+If `.github/github.json` sets `qualityGate.inspection.prepare`, the assessment
+commands run that exact repository command in the exact linked worktree before
+opening it. Start the assessment directly:
 
 ```bash
-uv run "$HELPER" open-worktree --repo "$PWD"
+uv run "$HELPER" agent-inspect --repo "$PWD" --scope changed_files
 ```
 
-`prepare-worktree` and `prepare` remain compatibility aliases, but they are
-not the preferred public command. Do not substitute a different setup command,
-even if it seems equivalent.
+This also handles repositories with `qualityGate.inspection.lanes` and no
+top-level IDE: shared preparation runs before the non-empty lanes, then each
+lane selects its configured IDE and project path. A separate `open-worktree`
+step is not required. Read [inspection configuration](references/inspection-config.md)
+for lane routing and opening one project without inspecting. Do not substitute
+a different setup command, even if it seems equivalent.
 
 Preparation may create ignored worktree-local `.venv/` or `.idea/` state.
 A nonzero exit or tracked-file mutation blocks the first inspection. Keep
@@ -202,8 +204,8 @@ Command model:
 - `list-projects` (no arguments): discover plugin-visible projects only.
 - `resolve-route --repo "$PWD"`: probe an already-open exact route without
   opening or inspecting.
-- `open-worktree`: preferred public command; run configured repository
-  preparation, then open and claim the exact worktree; it does not inspect.
+- `open-worktree`: run configured repository preparation, then open and claim
+  one exact IDE project; it does not inspect or dispatch configured lanes.
 - `prepare-worktree` and `prepare`: backward-compatible aliases for
   `open-worktree`.
 - `inspect --repo "$PWD" --scope changed_files`: open if needed, inspect, fetch
@@ -433,12 +435,21 @@ scope, never source code or a mixed scope containing source code.
   a route-pinned status that is not stale, inconclusive, unavailable, ambiguous,
   indexing, running, timed out, or session-drifted.
 - `ide_selection_required`, `ide_config_ambiguous`, or `ide_config_missing`: the
-  repository has no usable IDE route, so repeating the inspection cannot succeed.
-  Recommend, in the same report, that the repository record its IDE under
+  command has no usable IDE route, so repeating it unchanged cannot succeed.
+  If a lane-configured repository failed at a separate `open-worktree` step,
+  use the assessment command above to prepare and route its lanes; if only
+  opening was requested, use `open-worktree --ide <lane IDE>` as described in
+  [inspection configuration](references/inspection-config.md). Otherwise
+  check the configured lane's IDE when lanes are present; do not add a top-level
+  IDE to replace existing lane policy. For a repository without lanes,
+  recommend, in the same report, that it record its IDE under
   `qualityGate.inspection` in `.github/github.json`, naming the IDE that fits its
   main language, and ask before writing it because it is durable repository
-  policy. If the user names an IDE, rerun once with `--ide`. Do not keep
-  reporting that inspection is unavailable without making that recommendation.
+  policy. For a repository without lanes, if the user names an IDE, rerun once
+  with `--ide`. Lane assessments use the declared lane IDEs rather than that
+  flag; changing a lane's IDE requires approval of the durable policy change.
+  Do not keep reporting that inspection is unavailable without the applicable
+  recommendation.
 - `stale_results`, `capture_incomplete`, `inspection_inputs_changed`, timeout, indexing, session drift,
   ambiguous route, or unavailable IDE: not clean. Retry at most once, and only
   when `retry_policy.retry=true`; otherwise narrow scope, open the project in

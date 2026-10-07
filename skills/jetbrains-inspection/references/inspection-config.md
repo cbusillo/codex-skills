@@ -41,6 +41,32 @@ Optional-lane failures remain visible without changing the required-lane
 aggregate, including when only optional lanes run. When `lanes` is absent, the existing single-IDE path remains
 unchanged.
 
+For lane-configured repositories, start `agent-inspect`, `inspect`, or
+`inspect-closeout` directly with the desired scope. These commands perform
+shared repository preparation before opening any non-empty lane, then select
+each lane's IDE and optional `projectPath`. No separate `open-worktree` or
+top-level IDE is needed.
+
+`open-worktree` opens one project, not the lane set. When only opening a project
+at the worktree root without inspecting, select that lane's IDE explicitly:
+
+```bash
+uv run "$HELPER" open-worktree --repo "$PWD" --ide PyCharm
+```
+
+Use the IDE declared by the intended lane; PyCharm above is an example. To
+open a nested `projectPath` without inspecting, pass that directory as `--repo`
+when it contains project markers such as `settings.gradle` or `.idea`:
+
+```bash
+uv run "$HELPER" open-worktree --repo "$PWD/<projectPath>" --ide "IntelliJ IDEA"
+```
+
+Preparation still runs at the worktree root. The assessment flow resolves
+`projectPath` automatically, including directories without project markers.
+`prepare-worktree` and `prepare` are compatibility aliases for `open-worktree`
+and have the same single-project behavior.
+
 When `qualityGate.inspection.prepare` is configured, `open-worktree`,
 `agent-inspect`, `inspect`, and `inspect-closeout` run that exact repository
 command in the exact target worktree before IDE lifecycle open or claim.
