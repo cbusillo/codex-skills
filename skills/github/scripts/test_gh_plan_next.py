@@ -2498,6 +2498,7 @@ def test_local_and_global_next_exclude_stale_landing_but_keep_split_work() -> No
                 module.cmd_next(next_args(repo="someone/product"))
             assert [row["number"] for row in result["candidates"]] == [11]
             assert result["candidate_count"] == 1
+            assert result["candidates"][0]["post_merge_evidence"]["selection_exclusion"] is False
             assert {row["number"] for row in result["stale_wait_report"]["items"]} == {10, 11}
 
 
@@ -2538,7 +2539,8 @@ def test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output()
     with patch.multiple(module, api_json=Mock(side_effect=AssertionError("unlabeled record is unexamined")), load_config=lambda *_: config):
         report = module.next_wait_context([row], scan_limit=1, inventory_complete=True)
     module.exclude_landed_candidates(candidates, [], report)
-    assert report["checked_issues"] == [] and candidates[0]["post_merge_evidence_complete"] is False
+    assert report["checked_issues"] == [{"repo": row["repo"], "number": 10}]
+    assert "post_merge_evidence_complete" not in candidates[0]
 
 
 TESTS = [

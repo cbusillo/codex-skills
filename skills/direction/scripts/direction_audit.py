@@ -677,11 +677,20 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
                    r"closes (?:this|the) issue|reconciles (?:the )?(?:runtime(?: checkout)?|closure)")
     delivery = bool(clauses and raw_clauses[-1].strip() and re.fullmatch(first, clauses[0], re.I)
                     and all(re.fullmatch(bookkeeping, clause, re.I) for clause in clauses[1:]))
+    hold_pending = False
+    for match in re.finditer(
+        rf"(?ims)^\s*(?:[-*]\s+)?(Waiting for|Blocked by|Parked until):\s*(.*?)(?=^\s*(?:[-*]\s+)?{STATUS_FIELD}:|\Z)", status,
+    ):
+        reason = match[2].strip()
+        hold_pending |= not (github_plan_claim.no_wait_reason(reason, field="Waiting for")
+                             or github_direction_next.non_external_wait(reason))
+    timestamp_required = delivery and implements and not hold_pending
     return {"number": issue["number"], "title": issue.get("title"),
             "url": f"https://github.com/{repo}/issues/{issue['number']}", "evidence": evidence,
             "review_required": True, "completion_proven": False,
-            "selection_exclusion": delivery and implements and timestamp_proven,
-            "evidence_complete": timestamp_proven}
+            "selection_exclusion": timestamp_required and timestamp_proven,
+            "recorded_hold_pending": hold_pending,
+            "evidence_complete": timestamp_proven or not timestamp_required}
 
 
 def stale_wait_report(

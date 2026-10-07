@@ -305,16 +305,17 @@ missing coverage. Unknown prose, elapsed time, unrelated merged PRs, and
 acceptance or live-test waits do not establish completion. These are review
 prompts, separate from audit findings and exit status: read the full issue and
 current evidence before correcting a status through `github-plan`. Nothing is
-closed, relabeled, or released automatically. Active records with linked PRs
+closed, relabeled, or released automatically. Active records with PRs named in Current Status
 merged into the default branch after their GitHub `updated_at` carry
 `merged_active_pr` evidence and `completion_proven: false`. Newer comments or
-edits can prevent that timestamp proof; those records carry
+edits can prevent that timestamp proof; otherwise-excludable delivery records carry
 `status_revision_unproven` coverage and never establish completion. When the recorded next
 action consists only of routing or landing and bookkeeping, and that PR
 references this issue as implemented work, `selection_exclusion` keeps local
 and global `next` from assigning duplicate implementation. Split remainders,
 testing, deployment and acceptance steps remain work; read the full finish line
-before closing any issue. Active evidence uses `post_merge_evidence` in
+before closing any issue. Recorded person/event holds prevent selection
+exclusion and remain visible in the evidence. Active evidence uses `post_merge_evidence` in
 selection output; it never makes a real person wait obsolete. Per-issue
 `post_merge_evidence_complete: false` identifies unread or unscanned selection
 evidence; review it before assigning work. This does not change the claim guard.

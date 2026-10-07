@@ -1588,7 +1588,7 @@ def test_active_merged_status_preserves_split_remainders_and_unproven_delivery()
         row = {**rows[0], "updated_at": updated}
         def unproven(args: list[str]) -> Any:
             value = fetch(args)
-            return {"merged_at": merged, "base": {"ref": base}} if "/pulls/" in args[1] else value
+            return {**value, "merged_at": merged, "base": {"ref": base}} if "/pulls/" in args[1] else value
         report = module.stale_wait_report([row], "owner/catalog", fetch=unproven)
         if base == "main" and merged is not None:
             assert not report["complete"] and not report["items"][0]["selection_exclusion"]
@@ -1670,6 +1670,34 @@ def test_active_landing_ignores_history_and_uses_the_named_prs_own_association()
     report = module.stale_wait_report([row], "owner/catalog", fetch=fetch, active_label="custom-active")
     assert report["checked_issues"] == [1] and report["items"][0]["selection_exclusion"]
     assert not module.stale_wait_report([row], "owner/catalog", fetch=fetch)["checked_issues"]
+
+
+def test_healthy_remainders_and_person_holds_do_not_create_false_coverage_gaps() -> None:
+    module = load()
+    actions = (
+        "Implement slice two.",
+        "Supervisor lands PR #71 and closes this issue.",
+    )
+    for action in actions:
+        for waiting in ("Chris to test the phone.", "None."):
+            row = {**issue(1, "Real remainder", labels=("plan:active",),
+                           body=f"## Current Status\nState: First slice PR #71 landed.\nNext action: {action}\nWaiting for: {waiting}\n"),
+                   "updated_at": "2026-10-06T12:00:00Z"}
+            def fetch(args: list[str]) -> Any:
+                if args[1] == "repos/owner/catalog":
+                    return {"default_branch": "main"}
+                return ({"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #1"}
+                        if "/pulls/" in args[1] else {"state": "closed", "pull_request": {}})
+            report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
+            found = report["items"][0]
+            assert not found["selection_exclusion"] and not found["completion_proven"]
+            needs_proof = action.startswith("Supervisor") and waiting == "None."
+            assert report["complete"] is not needs_proof
+            assert found["recorded_hold_pending"] is (waiting != "None.")
+            row["updated_at"] = "2026-10-04T12:00:00Z"
+            report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
+            assert report["complete"]
+            assert report["items"][0]["selection_exclusion"] is needs_proof
 
 
 def main() -> int:

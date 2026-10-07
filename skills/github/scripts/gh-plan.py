@@ -3262,14 +3262,19 @@ def exclude_landed_candidates(candidates: list[dict[str, Any]], excluded: list[d
                               report: dict[str, Any]) -> None:
     checked = {(row["repo"].casefold(), row["number"]) for row in report["checked_issues"]}
     unread = {(row["repo"].casefold(), row["number"]) for row in report["unavailable"]}
-    stale = {(row["repo"].casefold(), row["number"]): row for row in report["items"]
-             if row.get("selection_exclusion")}
+    active = {(row["repo"].casefold(), row["number"]): row for row in report["items"]
+              if "completion_proven" in row}
     for entry in list(candidates):
         key = (entry["repo"].casefold(), entry["number"])
-        if key not in checked or key in unread:
+        entry.pop("post_merge_evidence_complete", None)
+        labels = set(normalize_labels(entry.get("labels")))
+        scope_labels = report.get("scope_labels", {}).get(entry["repo"].casefold(), ["plan:active", "plan:waiting", "plan:blocked"])
+        if key in unread or (key not in checked and labels.intersection(scope_labels)):
             entry["post_merge_evidence_complete"] = False
-        evidence = stale.get(key)
+        evidence = active.get(key)
         if evidence:
+            entry["post_merge_evidence"] = evidence
+        if evidence and evidence.get("selection_exclusion"):
             candidates.remove(entry)
             excluded.append({**entry, "exclusion": "landed_status_needs_reconciliation",
                              "post_merge_evidence": evidence})
@@ -3313,7 +3318,7 @@ def next_wait_context(
     complete = inventory_complete and len(unique) <= scan_limit
     references: dict[str, dict[str, Any]] = {}
     checked = 0
-    checked_issues = []
+    scope_labels = {}
     for repo, items in groups.items():
         config = load_config(repo)
         report = direction_audit.stale_wait_report(items, repo, fetch=fetch, inventory_complete=complete,
@@ -3321,7 +3326,7 @@ def next_wait_context(
         reports.extend({**row, "repo": repo} for row in report["items"])
         unavailable.extend({**row, "repo": repo} for row in report["unavailable"])
         checked += report["checked"]
-        checked_issues.extend({"repo": repo, "number": number} for number in report["checked_issues"])
+        scope_labels[repo.casefold()] = [config["labels"][key] for key in ("active", "waiting", "blocked")]
         complete &= report["complete"]
         for item in items:
             if str(item.get("state", "")).casefold() != "open":
@@ -3348,7 +3353,8 @@ def next_wait_context(
             "unavailable": unavailable, "references": references,
             "inventory_complete": inventory_complete, "scope": "evaluated_global_next_issues",
             "read_limit": budget, "read_count": len(cache),
-            "checked_issues": checked_issues}
+            "checked_issues": [{"repo": item["repo"], "number": item["number"]} for item in selected],
+            "scope_labels": scope_labels}
 
 
 def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
@@ -3608,8 +3614,10 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     ]
     discovery["incomplete_milestone_repositories"] = incomplete_milestone_sources
     candidate_coverage_complete = bool(graph_coverage["complete"] and (scope is not None or discovery.get("complete")))
+    priority_keys = [(entry["repo"].casefold(), entry["number"]) for entry in [*ranked["candidates"], *discoveries]]
+    evidence_keys = dict.fromkeys([*priority_keys, *nodes])
     wait_context = next_wait_context(
-        [seeds[key] for key in nodes if key in seeds],
+        [seeds[key] for key in evidence_keys if key in seeds],
         scan_limit=args.scan_limit * 2,
         inventory_complete=candidate_coverage_complete,
     )

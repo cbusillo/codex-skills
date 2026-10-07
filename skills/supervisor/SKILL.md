@@ -206,10 +206,12 @@ records that run.
    each Director repository returned in `discovery_context.repositories` by
    `gh-plan.py --repo OWNER/direction next` under `github-plan`. Include report
    findings and repository-discovery or report coverage gaps in the takeover
-   comment. Before capacity selection, omit active records carrying
-   `selection_exclusion` from implementation briefs and reconcile their landed
-   status against the finish line. A merged PR alone never completes a split
-   remainder. Review each reported wait
+   comment. Before capacity selection, review active post-merge records and their coverage
+   gaps against the full finish line. Omit records carrying `selection_exclusion`
+   from implementation briefs. For other flagged records, brief only a verified
+   remaining step; do not repeat the merged implementation. A merged PR alone
+   never completes a split remainder or releases a person/event hold.
+   Review each reported wait
    against the full issue and current evidence before correcting its status;
    this report-only mode leaves weekly audit markers untouched and grants no
    release of a real hold.
