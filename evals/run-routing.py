@@ -85,9 +85,41 @@ def reads_content(command: str) -> bool:
     return any(re.match(r"\s*(?:cat|head|tail|sed -n|rg(?!.*--files))\b", part) for part in re.split(r"&&|\|\||;|\||\n", command))
 
 
+def shell_without_comments(command: str) -> str:
+    """Remove unquoted word-start comments without consuming line separators."""
+    output: list[str] = []
+    quote = None
+    escaped, comment, word_start = False, False, True
+    for character in command:
+        if comment:
+            if character == "\n":
+                output.append(character)
+                comment, word_start = False, True
+        elif escaped:
+            output.append(character)
+            escaped, word_start = False, False
+        elif character == "\\" and quote != "'":
+            output.append(character)
+            escaped, word_start = True, False
+        elif quote:
+            output.append(character)
+            if character == quote:
+                quote = None
+        elif character in {"'", '"'}:
+            output.append(character)
+            quote, word_start = character, False
+        elif character == "#" and word_start:
+            comment = True
+        else:
+            output.append(character)
+            word_start = character.isspace() or character in ";&|()<>"
+    return "".join(output)
+
+
 def shell_read_paths(command: str) -> list[str]:
     """Extract literal reader arguments without executing the recorded shell."""
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|\n")
+    lexer = shlex.shlex(shell_without_comments(command), posix=True, punctuation_chars=";&|\n")
+    lexer.commenters = ""
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     paths, segment = [], []

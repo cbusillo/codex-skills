@@ -302,6 +302,38 @@ class RoutingScoreTests(unittest.TestCase):
         self.assertEqual(runner.shell_read_paths(command), ["first file.md", "second.md", "."])
         self.assertEqual(runner.shell_read_paths("cat 'file\nname.md'\ncat last.md"), ["file\nname.md", "last.md"])
         self.assertTrue(runner.reads_content("pwd\ncat second.md"))
+        self.assertEqual(runner.shell_read_paths("pwd # orient\ncat private-context.md"), ["private-context.md"])
+        self.assertEqual(runner.shell_read_paths("cat first.md # context\ncat second.md"), ["first.md", "second.md"])
+        self.assertEqual(runner.shell_read_paths("cat 'file#name.md' foo\\ #bar.md # comment\ncat last.md"),
+                         ["file#name.md", "foo #bar.md", "last.md"])
+
+    def test_claude_repeat_skill_invocation_needs_prior_catalog_confirmation(self) -> None:
+        expect = {"owner": "docs-lookup", "owner_before_read": {"owner": "docs-lookup", "read": r"private-context\.md"}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for confirmed, parallel, passed in ((True, False, True), (False, False, False), (True, True, False)):
+                first = call("Read", {"file_path": str(runner.ROOT / "skills/docs-lookup/SKILL.md")})
+                first["message"]["content"][0]["id"] = "source"
+                def result(identity, text):
+                    return {"type": "user", "message": {"content": [{
+                        "type": "tool_result", "tool_use_id": identity, "content": text}]}}
+                messages = [{"type": "turn_marker", "turn": 1}]
+                if confirmed:
+                    messages.extend([first, result("source", "source")])
+                messages.append({"type": "turn_marker", "turn": 2})
+                load = call("Skill", {"skill": "shared:docs-lookup"})
+                load["message"]["content"][0]["id"] = "reload"
+                read = call("Read", {"file_path": "private-context.md"})
+                read["message"]["content"][0]["id"] = "private"
+                if parallel:
+                    load["message"]["content"].extend(read["message"]["content"])
+                messages.extend([load, result("reload", "Launching skill: shared:docs-lookup")])
+                if not parallel:
+                    messages.append(read)
+                messages.append(result("private", "private source"))
+                (root / "trace.jsonl").write_text("\n".join(map(json.dumps, messages)))
+                score = runner.score_turns("claude", [{"expect": {"owner": []}}, {"expect": expect}], root)
+                self.assertEqual(score["checks"]["turn2_owner_before_read"], passed, (confirmed, parallel))
 
     def test_completed_loads_need_catalog_provenance_and_delivered_reads(self) -> None:
         expect = {"owner_before_read": {"owner": "docs-lookup", "read": r"private-context\.md"}}

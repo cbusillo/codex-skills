@@ -116,8 +116,10 @@ zero-based offsets within each turn's message slice, excluding its turn marker.
 A combined shell command or Claude parallel Skill/Read batch fails unless an
 earlier completed load already covers it. An uncovered read that started before
 the load fails even if a later covered reread finishes first. Missing read
-invocation/start evidence is unproven and fails; completion records or shell
-hook order alone cannot establish the stronger grade. Proven complete source
+start evidence for a matching Codex read is unproven and fails. Claude read
+delivery requires a matching tool-use record; orphan results receive no credit.
+Completion records or shell hook order alone cannot establish the stronger
+grade. Proven complete source
 delivery before a trailing nonzero search still counts as a load.
 
 Version 3 checked delivery order alone. Historical receipts and native scores
@@ -125,10 +127,15 @@ remain unchanged; any new grading is separate evidence. The stronger check
 still cannot prove choices or outer batches omitted from the host trace (Codex
 records command starts), every recursive search path, or the timing of failed
 read attempts. Inspect raw tool calls and results too. Literal shell path
-extraction separates newline commands while preserving quoted filenames; it
+extraction separates newline commands, including after inline comments, while
+preserving quoted and escaped filenames; it
 does not evaluate shell expansions. Newline-separated reads now contribute to
 all read-based checks, including `read_before_operation` and `forbid_read`,
 not only `owner_before_read`; version comparisons must account for that change.
+The completion-order check now matches extracted file operands rather than a
+whole Codex command, so a filename mentioned only in a search pattern receives
+no matching-read credit. The older `read_before_operation` check still uses
+Codex command text; neither check establishes recursive search coverage.
 The nested source-planning fixture moves the synthetic route and operations
 file out of the repository root to qualify discovery cues separately from
 private-documentation authority. Its AGENTS override is offline plumbing,
