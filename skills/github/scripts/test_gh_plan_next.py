@@ -10,7 +10,6 @@ from __future__ import annotations
 import importlib.util
 import random
 import sys
-from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -34,6 +33,8 @@ def load_module() -> Any:
         raise RuntimeError(f"Unable to load {SCRIPT}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # Every test starts offline; fixtures opt into the API evidence they own.
+    module.api_json = Mock(side_effect=module.PlanError("offline fixture record unavailable"))
     module.real_next_dependabot_work = module.next_dependabot_work
     module.next_dependabot_work = lambda *_args, **_kwargs: {"dependabot_candidates": [], "dependabot_candidate_count": 0}
     module.real_read_next_train_enrollment = module.read_next_train_enrollment
@@ -2477,7 +2478,88 @@ def test_global_unread_frontier_wait_prevents_capacity_without_unrelated_veto() 
     assert ranked['tooling_capacity_context']['admitted'] is True  # Other report coverage does not replace this own-issue proof.
 
 
+def test_local_and_global_next_exclude_stale_landing_but_keep_split_work() -> None:
+    status = "## Current Status\nState: Source complete.\nNext action: Supervisor lands PR https://github.com/someone/product/pull/71 and reconciles closure.\nWaiting for: None.\n"
+    stale = global_issue("someone/product", 10, body=status)
+    split = global_issue("someone/product", 11, body=status.replace("Supervisor lands PR", "Test split remainder after PR"))
+    person = global_issue("someone/product", 12, body=split["body"].replace("Waiting for: None.", "Waiting for: Chris to test on the phone."))
+    root = track("someone/direction", 1, "First")
+    edges = {(root["repo"], 1): relationships(sub_issues=[stale, split, person])}
+    with global_fixture([root], [stale, split, person], edges) as (module, result, _reads):
+        real_api = module.api_json
+        def merged(method: str, path: str, **kwargs: Any) -> Any:
+            if path == "/repos/someone/product/pulls/71":
+                return "automation-gh", {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #10\nRefs #11\nRefs #12"}
+            return real_api(method, path, **kwargs)
+        with patch.multiple(module, api_json=merged):
+            module.cmd_next(next_args())
+            assert [row["number"] for row in result["candidates"]] == [11]
+            assert any(row["number"] == 12 and "Chris" in row["waiting_for"] for row in result["recorded_waits"])
+            assert not any(row["number"] == 12 for row in result["stale_waits"])
+            excluded = next(row for row in result["excluded"] if row["number"] == 10)
+            assert excluded["exclusion"] == "landed_status_needs_reconciliation"
+            assert not excluded["post_merge_evidence"]["completion_proven"]
+            result.clear()
+            with patch.multiple(module, collect_paged_rest_items=lambda *_a, **_kw: ("automation-gh", [stale, split])):
+                module.cmd_next(next_args(repo="someone/product"))
+            assert [row["number"] for row in result["candidates"]] == [11]
+            assert result["candidate_count"] == 1
+            assert result["candidates"][0]["post_merge_evidence"]["selection_exclusion"] is False
+            assert {row["number"] for row in result["stale_wait_report"]["items"]} == {10, 11}
+
+
+def test_active_post_merge_read_gaps_remain_visible_on_selection_candidates() -> None:
+    module = load_module()
+    row = global_issue("someone/product", 10, body="## Current Status\nNext action: Supervisor lands PR https://github.com/someone/product/pull/71 and closes this issue.\n")
+    with patch.multiple(module, load_config=lambda *_: module.DEFAULT_CONFIG,
+                        api_json=Mock(side_effect=module.PlanError("not accessible"))):
+        report = module.next_wait_context([row], scan_limit=1, inventory_complete=True)
+    candidates = [module.compact_list_issue(row["repo"], row)]
+    excluded = []
+    module.exclude_landed_candidates(candidates, excluded, report)
+    assert not report["complete"] and report["unavailable"]
+    assert candidates[0]["post_merge_evidence_complete"] is False and not excluded
+    unchecked = global_issue("someone/product", 11)
+    candidates = [module.compact_list_issue(unchecked["repo"], unchecked)]
+    module.exclude_landed_candidates(candidates, excluded, report)
+    assert candidates[0]["post_merge_evidence_complete"] is False
+
+
+def test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output() -> None:
+    module = load_module()
+    row = global_issue("someone/product", 10, labels=["plan", "custom-active"],
+                       updated_at="2026-10-06T12:00:00Z",
+                       body="## Current Status\nNext action: Supervisor lands PR https://github.com/someone/product/pull/71 and closes this issue.\n")
+    def fetch(_method: str, path: str, **_kwargs: Any) -> Any:
+        return "automation-gh", ({"default_branch": "main"} if path == "/repos/someone/product" else
+                                 {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #10"})
+    config = {**module.DEFAULT_CONFIG, "labels": {**module.DEFAULT_CONFIG["labels"], "active": "custom-active"}}
+    with patch.multiple(module, api_json=fetch, load_config=lambda *_: config):
+        report = module.next_wait_context([row], scan_limit=1, inventory_complete=True)
+    candidates = [module.compact_list_issue(row["repo"], row)]
+    excluded = []
+    module.exclude_landed_candidates(candidates, excluded, report)
+    assert report["checked_issues"] == [{"repo": row["repo"], "number": 10}]
+    assert not report["complete"] and report["items"][0]["selection_exclusion"]
+    assert not candidates and excluded[0]["post_merge_evidence_complete"] is False
+    row["labels"] = [{"name": "plan"}]
+    with patch.multiple(module, api_json=Mock(side_effect=AssertionError("unlabeled record is unexamined")), load_config=lambda *_: config):
+        report = module.next_wait_context([row], scan_limit=1, inventory_complete=True)
+    candidates = [module.compact_list_issue(row["repo"], row)]
+    module.exclude_landed_candidates(candidates, [], report)
+    assert not report["checked_issues"]
+    assert "post_merge_evidence_complete" not in candidates[0]
+    active = {**row, "number": 11, "labels": ["plan", "custom-active"],
+              "body": "## Current Status\nNext action: Implement the remaining phone fix.\n"}
+    with patch.multiple(module, api_json=Mock(side_effect=AssertionError("no PR read needed")), load_config=lambda *_: config):
+        report = module.next_wait_context([row, active], scan_limit=1, inventory_complete=True)
+    assert report["complete"] and report["checked_issues"] == [{"repo": row["repo"], "number": 11}]
+
+
 TESTS = [
+    test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output,
+    test_active_post_merge_read_gaps_remain_visible_on_selection_candidates,
+    test_local_and_global_next_exclude_stale_landing_but_keep_split_work,
     test_global_adjacent_notes_preserve_absence_and_pending_clauses,
     test_global_partial_unowned_holds_and_caller_wait_evidence_remain_visible,
     test_global_wait_comments_named_actors_and_wrapped_urls_use_own_evidence,
