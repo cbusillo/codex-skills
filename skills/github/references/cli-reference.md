@@ -552,7 +552,10 @@ The first release line is exactly `Released claim <id>`, or ends its exact ID
 with a period followed by optional handoff prose. A condition directly after
 the ID or conditional release/reclaiming prose later in that handoff refuses
 rather than release ownership early. For example, `Takes effect once PR #99
-merges` or `If CI passes, the next worker may claim` does not release the claim.
+merges`, `The next worker can pick this up once CI is green`, or
+`PR #99 must merge first. Then the next worker may claim` does not release the
+claim. Conditional successor actions (pick this up, resume, take over) and
+handoff completion are checked for both release placements.
 Downstream routing and cleanup gates, such as `After PR #99 lands, close out
 the issue`, remain independent. Recover ambiguous conditional handoffs with a
 new, unconditional first-line exact-ID release from the source author after
