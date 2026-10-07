@@ -204,6 +204,21 @@ class RoutingScoreTests(unittest.TestCase):
             seen["final"] = f"In local.py, MAX_RETRIES is set to {updated_value}."
             self.assertTrue(runner.decision_checks(seen, expect)["fixture_answer"])
 
+    def test_owner_must_precede_required_read_on_read_only_turns(self) -> None:
+        expect = {"owner_before_read": {"owner": "docs-lookup", "read": r"private-context\.md"}}
+        for sequence, passed in [
+            ([("skill", "docs-lookup"), ("read", "private-context.md")], True),
+            ([("read", "private-context.md"), ("skill", "docs-lookup")], False),
+            ([("skill", "github-plan"), ("read", "private-context.md")], False),
+            ([("skill", "docs-lookup")], False),
+            ([("skill", "docs-lookup"), ("read", "local-context.toml"),
+              ("read", "private-context.md")], True),
+            ([("read", "private-context.md"), ("skill", "docs-lookup"),
+              ("read", "private-context.md")], False),
+        ]:
+            seen = {"operations": [], "sequence": sequence}
+            self.assertEqual(runner.decision_checks(seen, expect)["owner_before_read"], passed)
+
     def test_missing_context_accepts_variants_and_rejects_an_authority_guess(self) -> None:
         expect = runner.yaml.safe_load((runner.ROOT / "evals/multi-turn/docs-concision-missing-context/turns.yaml").read_text())["turns"][0]["expect"]
         with tempfile.TemporaryDirectory() as directory:
