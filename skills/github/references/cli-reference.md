@@ -552,9 +552,16 @@ The first release line is exactly `Released claim <id>`, or ends its exact ID
 with a period followed by optional handoff prose. A condition directly after
 the ID or conditional release/reclaiming prose later in that handoff refuses
 rather than release ownership early. For example, `Takes effect once PR #99
-merges` or `If CI passes, the next worker may claim` does not release the claim.
+merges`, `The next worker can pick this up once CI is green`, or
+`PR #99 must merge first. Then the next worker may claim` does not release the
+claim. Conditional successor actions (pick this up, resume, take over) and
+handoff completion are checked across the handoff for both release placements.
+An adjacent prerequisite after successor permission also refuses, such as
+`The next worker can take over. PR #99 must merge first.` or a standalone
+`Wait until PR #99 merges.` following that permission.
 Downstream routing and cleanup gates, such as `After PR #99 lands, close out
-the issue`, remain independent. Recover ambiguous conditional handoffs with a
+the issue`, remain independent. Recover ambiguous conditional handoffs (including
+destination/action wording such as `merges to deploy`) with a
 new, unconditional first-line exact-ID release from the source author after
 the source claim; the helper does not infer that a condition has become true.
 
@@ -562,6 +569,7 @@ An exact release may also be a standalone final paragraph after the handoff
 prose, optionally followed by the helper's operation marker. It must be an
 unquoted, unindented `Released claim <id>` line (an ending period is allowed);
 fenced or raw HTML examples, inline mentions, and later prose do not count.
+The conditional-handoff checks above apply to all preceding prose.
 Conditional text on the release line, a preceding paragraph starting with
 `If`, `After`, `Once`, `When`, `Unless`, or `Until`, or an introduction ending
 with a colon also refuses. Use a separate first-line release when the embedded

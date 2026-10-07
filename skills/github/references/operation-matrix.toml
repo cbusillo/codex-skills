@@ -946,6 +946,26 @@ source_refs = ["direction/scripts/direction_audit.py:enrich_milestone_waits", "d
 test_refs = ["direction/scripts/test_direction_audit.py:test_active_pending_and_bold_person_holds_preserve_remaining_work", "direction/scripts/test_direction_audit.py:test_overall_audit_follows_track_to_invalid_cross_repository_wait", "direction/scripts/test_direction_audit.py:test_stale_wait_report_landing_requires_default_branch_but_merge_means_merge", "direction/scripts/test_direction_audit.py:test_stale_wait_report_preserves_contradictory_status_and_split_prerequisites", "direction/scripts/test_direction_audit.py:test_stale_wait_report_checks_realistic_parked_records_without_writes", "direction/scripts/test_direction_audit.py:test_stale_wait_report_requires_all_holds_and_all_references_to_be_met", "direction/scripts/test_direction_audit.py:test_stale_wait_report_only_cli_never_reads_or_advances_audit_marker", "direction/scripts/test_direction_audit.py:test_stale_wait_report_exposes_unread_coverage_and_caches_wait_targets", "direction/scripts/test_direction_audit.py:test_stale_wait_report_bounds_reads_and_skips_native_zero_summary", "direction/scripts/test_direction_audit.py:test_waiting_unmilestoned_cross_repository_blocker_is_a_named_finding", "direction/scripts/test_direction_audit.py:test_waiting_inbound_fetch_coverage_includes_caps_errors_and_ambiguous_targets", "direction/scripts/test_direction_audit.py:test_closed_audit_fetch_is_independent_of_milestones_and_deduplicates", "direction/scripts/test_direction_audit.py:test_main_preserves_closed_audit_cutoff_and_stamps_scan_start", "direction/scripts/test_direction_audit.py:test_open_audit_questions_beyond_the_general_issue_cap_are_still_reported", "direction/scripts/test_direction_audit.py:test_healthy_remainders_and_person_holds_do_not_create_false_coverage_gaps", "direction/scripts/test_direction_audit.py:test_active_landing_ignores_history_and_uses_the_named_prs_own_association", "direction/scripts/test_direction_audit.py:test_active_delivery_grammar_preserves_wrapped_and_inflected_remaining_steps", "direction/scripts/test_direction_audit.py:test_active_merged_status_preserves_split_remainders_and_unproven_delivery"]
 
 [[operations]]
+id = "github.direction.turn_record"
+capabilities = ["issues_read", "issues_write"]
+permission_mode = "fixed"
+permission_note = "Uses the existing Issues read and write grants through gh-with-env-token and gh-issue; no profile expansion. The local marker is written first; a failed list or write is reported as shared.ok false with exit 2 and leaves other machines reminding, never a silent success."
+entrypoint = "direction/scripts/direction_mark.py turn --repo OWNER/REPO (shared turn record)"
+intent = "Keep one open issue in OWNER/direction holding the last daily turn, so the session-start reminder on every machine sees it."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{owner}/direction/issues?state=open&sort=created&direction=asc&per_page=100; then gh-issue edit on the lowest-numbered tagged record, or gh-issue create when none exists"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "update"
+idempotency = "idempotent"
+retry_eligibility = "conditional"
+reconciliation_strategy = "read_after_write"
+retained_graphql_rationale = "No GraphQL transport; the record is one repository-scoped issue body."
+source_refs = ["direction/scripts/direction_mark.py:share_turn"]
+test_refs = ["direction/scripts/test_direction_mark.py:test_two_machines_one_turn", "direction/scripts/test_direction_mark.py:test_turn_cli_requires_coverage_and_reports_written_repository"]
+
+[[operations]]
 id = "github.direction.audit_rulesets"
 capabilities = ["metadata_read"]
 permission_mode = "fixed"
@@ -2181,6 +2201,7 @@ degraded_behavior = "Only the owner creates/installs the App in their browser. C
 documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest"
 
 [api_surface_fingerprints]
+"direction/scripts/direction_mark.py" = "c4263dc36bf8f69fda588da59f605b5b354cbfdccbebc673b4bd3c8d326cac50"
 "github/scripts/github_client.py" = "1a1910b5e5ae3cfd421fedce585344bd56b416312bfe0a9cda7222881d543fc6"
 "github/scripts/github_app_setup.py" = "752a8c6d16f8117271700a616a506dabc80528544f5315a1d15d67ab141ec4c4"
 "github/scripts/gh-comment" = "21ecb30d4d60b61c760f1df630fd6b56347873709bba2d05b7f32f9222fa4656"
