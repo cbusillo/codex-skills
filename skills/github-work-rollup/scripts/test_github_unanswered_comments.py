@@ -1037,26 +1037,27 @@ def test_people_index_classifies_automation_accounts(tmp_path: Path) -> None:
     identities = github_unanswered_comments.people_identities({"cbusillo"}, people_index(tmp_path))
 
     assert identities["director_names"] == ["Pat Director", "Pat"]
-    assert identities["director_automation"] == ["director-code-bot"]
-    assert github_unanswered_comments.author_class("Client-Code-Bot", identities["other_automation"]) == ("automation", "Casey")
-    assert github_unanswered_comments.author_class("unknown-code-bot", identities["other_automation"]) == ("possible_automation", None)
-    assert github_unanswered_comments.author_class("casey-client", identities["other_automation"]) == ("person", None)
+    automation = identities["automation"]
+    assert github_unanswered_comments.author_class("Client-Code-Bot", automation) == ("automation", "Casey")
+    assert github_unanswered_comments.author_class("director-code-bot", automation) == ("automation", "Pat")
+    assert github_unanswered_comments.author_class("unknown-code-bot", automation) == ("possible_automation", None)
+    assert github_unanswered_comments.author_class("casey-client", automation) == ("person", None)
 
 
-def test_director_automation_from_people_index_is_not_external(monkeypatch, tmp_path: Path) -> None:
+def test_people_index_automation_is_labeled_never_excluded(monkeypatch, tmp_path: Path) -> None:
     by_director_bot = opening(number=1, author="director-code-bot")
     by_client_bot = opening(number=2, author="client-code-bot")
     fake = FakeGitHub({
         "repos/example/repo/issues": [by_director_bot, by_client_bot],
+        "repos/example/repo/issues/1": by_director_bot,
         "repos/example/repo/issues/2": by_client_bot,
     })
     monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
 
     payload = github_unanswered_comments.collect_payload(portfolio_settings(people_index=people_index(tmp_path)))
 
-    [item] = payload["attention"]
-    assert (item["number"], item["author_class"], item["automation_for"]) == (2, "automation", "Casey")
-    assert "director-code-bot" in payload["bot_logins"]
+    labels = {item["number"]: (item["author_class"], item["automation_for"]) for item in payload["attention"]}
+    assert labels == {1: ("automation", "Pat"), 2: ("automation", "Casey")}
     assert "(automation for Casey)" in github_unanswered_comments.render_markdown(payload)
 
 
@@ -1159,7 +1160,7 @@ def test_director_hold_is_listed_without_raising_attention(monkeypatch, tmp_path
 
     assert payload["status"] == "clear"
     assert [(row["number"], row["wait_kind"]) for row in payload["unasked_director_waits"]] == [(31, "director_hold")]
-    assert "## Held For You" in github_unanswered_comments.render_markdown(payload)
+    assert "Worded As A Hold" in github_unanswered_comments.render_markdown(payload)
 
 
 def test_named_people_index_that_is_missing_degrades_coverage(monkeypatch, tmp_path: Path) -> None:
@@ -1180,10 +1181,12 @@ def test_missing_default_people_index_is_normal_but_reported(monkeypatch) -> Non
     assert "does not name the Director" in github_unanswered_comments.render_markdown(payload)
 
 
-def test_scanning_a_client_repository_never_borrows_client_automation(monkeypatch, tmp_path: Path) -> None:
+def test_scanning_a_client_repository_uses_no_director_names(monkeypatch, tmp_path: Path) -> None:
     # Every scanned repository owner counts as the Director, so the Client's
-    # repository makes two people match; their bots must not be silenced.
-    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub({}))
+    # repository makes two people match; neither one's names may be used.
+    unasked = waiting_issue("Casey's review of the release.", number=7)
+    fake = FakeGitHub({"repos/example/repo/issues": lambda endpoint: [unasked] if "plan%3Awaiting" in endpoint else []})
+    monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
     settings = github_unanswered_comments.resolve_settings(
         args(repo=["example/repo", "casey-client/project"], self_login=["cbusillo"], people_index=people_index(tmp_path)),
         {},
@@ -1192,8 +1195,18 @@ def test_scanning_a_client_repository_never_borrows_client_automation(monkeypatc
 
     payload = github_unanswered_comments.collect_payload(settings)
 
-    assert payload["status"] == "degraded"
-    assert "client-code-bot" not in payload["bot_logins"]
+    assert payload["status"] == "clear"
+    assert payload["unasked_director_waits"] == []
+    assert "several people in the people index match" in github_unanswered_comments.render_markdown(payload)
+
+
+def test_named_empty_people_index_is_valid(tmp_path: Path) -> None:
+    index = tmp_path / "people.yaml"
+    index.write_text("people: []\n", encoding="utf-8")
+
+    identities = github_unanswered_comments.people_identities({"cbusillo"}, index)
+
+    assert identities["status"] != "error"
 
 
 if __name__ == "__main__":

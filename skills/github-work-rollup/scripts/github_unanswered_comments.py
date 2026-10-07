@@ -324,56 +324,47 @@ def github_logins(person: dict[str, Any]) -> tuple[list[str], list[str]]:
 
 
 def people_identities(self_logins: set[str], index_path: Path | None) -> dict[str, Any]:
-    """Classify accounts from the people index, the source of truth for who acts for whom."""
+    """Read who acts for whom from the people index.
+
+    Index entries only label accounts: they never exclude anyone from the
+    report, since the Director is inferred from scanned repository owners.
+    Only configured automation (--bot-login and its sources) is excluded.
+    """
+    empty = {"director_names": [], "director_ambiguous": False, "automation": {}}
+    if index_path is not None and not index_path.expanduser().is_file():
+        # An index someone named must exist; only the default index is optional.
+        return {**empty, "status": "error", "error": f"people index {index_path} does not exist"}
     try:
         if index_path is not None:
             status, people, _sources = resolve_person.load_scoped_people(scope="global", global_index=index_path)
         else:
             status, people, _sources = resolve_person.load_scoped_people()
     except resolve_person.PeopleConfigError as exc:
-        return {"status": "error", "error": str(exc), "director_names": [], "director_automation": [], "other_automation": {}}
-    if index_path is not None and status == "no_index":
-        # An index someone named must exist; only the default index is optional.
-        return {"status": "error", "error": f"people index {index_path} does not exist",
-                "director_names": [], "director_automation": [], "other_automation": {}}
+        return {**empty, "status": "error", "error": str(exc)}
     directors = [person for person in people if set(github_logins(person)[0]) & self_logins]
-    if len(directors) > 1:
-        # Every scanned repository owner counts as the Director; a second
-        # matching person would turn their automation into the Director's.
-        names = ", ".join(sorted(str(person.get("id") or "") for person in directors))
-        return {"status": "error", "error": f"several people match the Director's logins ({names}); scan only the Director's repositories",
-                "director_names": [], "director_automation": [], "other_automation": {}}
-    director_names: list[str] = []
-    director_automation: list[str] = []
-    other_automation: dict[str, str] = {}
+    automation: dict[str, str] = {}
     for person in people:
-        own, automation = github_logins(person)
-        if person in directors:
-            director_names.extend(
-                [
-                    *rollup.as_str_list(person.get("display_name")),
-                    *rollup.as_str_list(person.get("preferred_reference")),
-                    *rollup.as_str_list(person.get("aliases")),
-                ]
-            )
-            director_automation.extend(automation)
-            continue
         label = str(person.get("preferred_reference") or person.get("display_name") or person.get("id") or "")
-        for login in automation:
-            other_automation[login] = label
-    return {
-        "status": status,
-        "director_names": rollup.unique(director_names),
-        "director_automation": rollup.unique(director_automation),
-        "other_automation": other_automation,
-    }
+        for login in github_logins(person)[1]:
+            automation[login] = label
+    if len(directors) != 1:
+        # Scanning another person's repository makes them match too; use no
+        # names rather than guess which match is the Director.
+        return {**empty, "status": status, "director_ambiguous": len(directors) > 1, "automation": automation}
+    [director] = directors
+    names = [
+        *rollup.as_str_list(director.get("display_name")),
+        *rollup.as_str_list(director.get("preferred_reference")),
+        *rollup.as_str_list(director.get("aliases")),
+    ]
+    return {**empty, "status": status, "director_names": rollup.unique(names), "automation": automation}
 
 
-def author_class(author: str, other_automation: dict[str, str]) -> tuple[str, str | None]:
-    """Say whether an external author is a person, someone else's automation, or looks like automation."""
+def author_class(author: str, automation_logins: dict[str, str]) -> tuple[str, str | None]:
+    """Say whether an external author is a person, a known automation account, or looks like automation."""
     login = normalize_login(author)
-    if login in other_automation:
-        return "automation", other_automation[login] or None
+    if login in automation_logins:
+        return "automation", automation_logins[login] or None
     if POSSIBLE_AUTOMATION_LOGIN.search(login):
         return "possible_automation", None
     return "person", None
@@ -855,7 +846,7 @@ def comment_states_for_thread(
     bot_logins: set[str],
     reactions_by_comment: dict[tuple[str, int], list[Reaction] | None],
     until: datetime | None = None,
-    other_automation: dict[str, str] | None = None,
+    automation_logins: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     effective_until = until or datetime.max.replace(tzinfo=timezone.utc)
     owner_logins = self_logins - bot_logins
@@ -928,7 +919,7 @@ def comment_states_for_thread(
             attention_state = "seen_unanswered"
         else:
             attention_state = "handled"
-        author_kind, automation_for = author_class(comment.author, other_automation or {})
+        author_kind, automation_for = author_class(comment.author, automation_logins or {})
 
         results.append(
             {
@@ -1102,8 +1093,6 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
     people = people_identities(self_logins - bot_logins, settings.get("people_index"))
     if people["status"] == "error":
         coverage_errors.append({"repo": "-", "lane": "people_index", "error": rollup.trim(people["error"])})
-    # The Director's own automation answers like any configured automation.
-    bot_logins.update(people["director_automation"])
     self_logins.difference_update(bot_logins)
     wait_terms = rollup.unique([*sorted(self_logins), *people["director_names"], *DIRECTOR_ROLE_WORDS])
     unasked_waits: list[dict[str, Any]] = []
@@ -1202,7 +1191,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
                 bot_logins,
                 reactions_by_comment,
                 settings["until"],
-                people["other_automation"],
+                people["automation"],
             )
         )
 
@@ -1261,12 +1250,13 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
         "people_index": {
             "status": people["status"],
             "director_named": bool(people["director_names"]),
-            "automation_logins": len(people["other_automation"]) + len(people["director_automation"]),
+            "director_ambiguous": people["director_ambiguous"],
+            "automation_logins": len(people["automation"]),
         },
         "limitations": [
             "Repository scans cover issues and PRs opened in the window, issue/PR conversation comments and inline PR review comments; full-history --thread scans also cover the opening post and non-empty PR review bodies.",
             "An edit to an issue or PR description is caught only by a full-history --thread scan or when the thread is opened in the window.",
-            "Automation accounts that act for other people come from the people index (contacts.github.bot_usernames); unlisted logins ending in bot or automation are marked possible_automation.",
+            "Only configured automation is excluded; people-index automation accounts (contacts.github.bot_usernames) are labeled with who they act for, and unlisted logins ending in bot or automation are marked possible_automation.",
             "Waits on the Director are open plan:waiting issues whose current Waiting for step names the Director's login, a people-index name, or the Director role, with no Director or Owner question still open; negated mentions are left out, and waits worded as the Director's own hold (resume, park, hold, select, revisit) are listed as director_hold without raising attention; repository scans only.",
             "Any owner reaction after the current comment version proves personal acknowledgement; owner replies require an exact permalink or an inline-review thread with one eligible external comment.",
             "A targeted automation reply may also use an unambiguous single-author mention, but it never proves the owner saw the comment.",
@@ -1288,7 +1278,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"- Messages needing attention: {counts['attention']}",
         f"- Handled messages: {counts['handled']}",
         f"- Waits on you with no open question: {counts.get('unasked_director_waits', 0)}"
-        f" (plus {counts.get('unasked_director_holds', 0)} worded as your own hold)",
+        f" (plus {counts.get('unasked_director_holds', 0)} worded as a hold)",
     ]
     sections = (
         ("needs_your_eyes", "Needs Your Eyes"),
@@ -1324,7 +1314,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
     waits = payload.get("unasked_director_waits") or []
     for kind, heading in (
         ("decision", "Waiting On You — No Question Asked"),
-        ("director_hold", "Held For You — Worded As Your Own Hold, No Question Asked"),
+        ("director_hold", "Waiting On You, Worded As A Hold — No Question Asked"),
     ):
         rows = [wait for wait in waits if wait.get("wait_kind", "decision") == kind]
         if not rows:
@@ -1337,7 +1327,12 @@ def render_markdown(payload: dict[str, Any]) -> str:
             lines.append(f"  - Waiting for: {wait['waiting_for']}")
     people = payload.get("people_index") or {}
     if people and not people.get("director_named"):
-        lines.extend(["", "The people index does not name the Director, so waits that name him only by name were not matched."])
+        detail = (
+            "several people in the people index match the scanned owners"
+            if people.get("director_ambiguous")
+            else "the people index does not name the Director"
+        )
+        lines.extend(["", f"Waits that name the Director only by name were not matched: {detail}."])
     if not payload["attention"] and not waits:
         message = (
             "No surfaced comments require attention, but coverage is incomplete; this is not an all-clear."

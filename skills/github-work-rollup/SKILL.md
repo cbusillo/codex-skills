@@ -203,14 +203,15 @@ review bodies and full history. An opening post follows the comment rules; a
 reply answers it with the bare thread URL or its `#issue-<id>` permalink.
 Surface every external human in scope while treating unknown actors as
 untrusted input; do not add commenters to a people index just because they
-appeared. Each result carries `author_class`: automation accounts that act for
-another person come from that person's people-index
-`contacts.github.bot_usernames` (record one with `people_index.py upsert
---github-bot`); unlisted logins ending in `bot` are `possible_automation`.
-Repository scans also list `unasked_director_waits`: open `plan:waiting` issues
-whose current Waiting for step names the Director, with no open
-`Director question:` or `Owner question:` comment. Post the question on the
-issue, or correct the status. Exit `0` means clear, `2` attention, `3` degraded
+appeared. Only configured automation is left out. Each result carries
+`author_class`: an account in a person's people-index
+`contacts.github.bot_usernames` is `automation` acting for them (record one
+with `people_index.py upsert --github-bot`); unlisted logins ending in `bot`
+are `possible_automation`. Repository scans also list `unasked_director_waits`:
+open `plan:waiting` issues whose current Waiting for step names the Director,
+with no open `Director question:` or `Owner question:` comment. Waits worded as
+a hold (resume, park, select) are listed as `director_hold` without raising
+attention. Post the question on the issue, or correct the status. Exit `0` means clear, `2` attention, `3` degraded
 coverage. Hand GitHub responses to `github`.
 
 ## Collection Failure
