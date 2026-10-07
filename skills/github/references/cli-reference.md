@@ -622,7 +622,9 @@ handoff prose for a release with context. The session-identity rules in
 [Planning: Claim](#planning-claim) govern bare legacy releases.
 To recover an older ambiguous legacy release, the source author posts a new
 `Released claim <claim-comment-id>` comment for each original claim. For a
-closed automation session, use the evidence-backed `release-claim` route above.
+closed automation session with a structured source claim, use the evidence-backed
+`release-claim` route above. Hand-written claims require the source author
+to post the exact-ID release.
 
 After a verified retained-work handoff, use `--resume-from <claim-comment-id>`.
 The source must be one structured claim explicitly released by its author.

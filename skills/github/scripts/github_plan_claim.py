@@ -368,8 +368,10 @@ def discussion_evidence(
                     header = re.match(r"Claimed by:?\s+(\S+)", prior_prose, re.IGNORECASE)
                     if header and header.group(1) == legacy_worker and has_ownership_assertion(prior_text):
                         sessions = [
-                            session for session in re.findall(r"(?i)\bSession:[ \t]*(not assigned|no one|\S+)", prior_prose)
-                            if session.casefold().rstrip(".,;") not in EMPTY_HOLDERS | {"unknown", "tbd", "<session>"}
+                            session.strip() for session in re.findall(r"(?im)\bSession:[ \t]*([^\n]+)", prior_prose)
+                            if session.strip() and session.strip().casefold().strip("().,;<> \t")
+                            not in EMPTY_HOLDERS | {"unknown", "tbd", "session", "session-id", "not recorded",
+                                                   "unavailable", "pending", "?", "—", "–"}
                         ]
                         # Missing identity cannot establish that two claims are
                         # the same session; exact comment IDs remain recoverable.

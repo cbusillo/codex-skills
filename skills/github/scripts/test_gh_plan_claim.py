@@ -922,10 +922,12 @@ class ClaimTests(unittest.TestCase):
     def test_legacy_alias_preserves_list_inline_and_missing_session_identity(self):
         for template in (
             "Claimed by old-worker\n- Session: {session}\n- Branch: work/old",
-            "Claimed by old-worker; Session: {session}\nBranch: work/old",
+            "Claimed by old-worker Session: {session}\nBranch: work/old",
+            "Claimed by old-worker\nSession: Codex desktop {session}\nBranch: work/old",
             "Claimed by old-worker\nBranch: work/old",
             *(f"Claimed by old-worker\nSession: {value}\nBranch: work/old"
-              for value in ("unknown", "n/a", "-", "TBD", "<session>", "none", "unassigned")),
+              for value in ("unknown", "n/a", "-", "TBD", "<session>", "none", "unassigned",
+                            "not recorded", "unavailable", "pending", "?", "(none)", "—", "<session-id>")),
         ):
             with self.subTest(template=template):
                 self.setUp()
