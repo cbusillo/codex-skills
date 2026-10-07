@@ -25,14 +25,16 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Patterns match the start of a normalized shell segment ("program args...").
+# Patterns match the start of a shell segment, either as written or with its helper path
+# reduced to the program name ("uv run /x/gh-pr.py merge 3" also as "gh-pr.py merge 3").
 STEPS = {
     "github": r"gh pr (create|merge|ready|edit|comment)|git push|gh-pr(\.py)? (--repo \S+ )?(create|merge|ready|edit|comment)"
-    r"|git-(commit|push)-as-bot|reconcile-runtime-checkout|gh api|gh-api",
+    r"|git-(commit|push)-as-bot|reconcile-runtime-checkout|gh api|gh-with-env-token (api|pr|issue)|github_api(\.py)?"
+    r"|gh issue (create|edit|close|comment|view)|gh-issue|gh-comment",
     "babysit-pr": r"gh pr checks|gh run watch|gh_pr_watch|github_workflow_babysit|gh-pr(\.py)? (--repo \S+ )?checks|github-ci-diagnose",
-    "github-plan": r"gh issue (create|edit|close|list|view)|gh-plan(\.py)?",
+    "github-plan": r"gh issue list|gh search issues|gh-plan(\.py)?",
     "python-uv-workflow": r"uv (sync|add|lock|remove)|pytest|pip3? install|python3? -m (pytest|pip|venv)"
-    r"|uv run (?!--with)(?!--no-project)(?!python3? -c)(?!\S*skills/)(?!\$)\S+",
+    r"|uv run (--quiet )?(?!--quiet)(?!--with)(?!--no-project)(?!python3? -c)(?!\S*skills/)(?!\$)\S+",
     "infra-ops": r"ssh |systemctl |docker (-H|--context|compose|exec) |pct |qm |zfs |tailscale |npmplus-ops|private-context-check",
     "docs-lookup": r"op (read|item)|security find-(generic|internet)-password|bw get",
     "launchplane": r"launchplane(-context|-ordinary-agent|-owner-review|-write-action|-train-drive)?(\.py)?( |$)|check-agent-operator-contract",
@@ -51,7 +53,8 @@ BLOCK = re.compile(r"Blocked by the `([a-z0-9-]+)` skill")
 SLASH = re.compile(r"<command-name>/?(?:[a-z-]+:)?([a-z0-9-]+)</command-name>")
 HEREDOC = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?.*?\n.*?\n\1\b", re.S)
 EXEC_CMD = re.compile(r"\bcmd\s*:\s*(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)")
-READ_ONLY = ("echo", "cat", "grep", "sed", "head", "tail", "rg", "ls", "#", "printf", "wc", "jq", "find")
+FILE_READERS = ("cat", "sed", "head", "tail", "less", "bat", "nl", "awk")
+READ_ONLY = (*FILE_READERS, "echo", "grep", "rg", "ls", "#", "printf", "wc", "jq", "find")
 ALIASES = {"claude-in-chrome": "browser-ui-review"}
 COMPACT_SUMMARY = "This session is being continued from a previous conversation"
 # User-role records the harness writes itself: background-task results and command echoes.
@@ -69,16 +72,19 @@ class Session:
 
 
 def segments(command: str) -> Iterator[str]:
-    """Split a shell command into normalized program segments, skipping file readers."""
+    """Split a shell command into program segments, in order, without heredoc bodies."""
     command = HEREDOC.sub(" ", command)
     for segment in re.split(r"\s*(?:\|\|?|&&|;|\n|\$\(|`|\bthen\b|\bdo\b)\s*", command):
         segment = segment.strip().lstrip("({ ")
         segment = re.sub(r"^((\w+=\S*|export|env|time|timeout \d+\w?|cd \S+)\s+)+", "", segment)
-        if not segment or segment.startswith(READ_ONLY):
-            continue
-        segment = re.sub(r"^uv run (--quiet )?(\S*/)?(\S+\.py)\b", r"\3", segment)
-        segment = re.sub(r"^\S*/(\S+)", r"\1", segment)
-        yield segment
+        if segment:
+            yield segment
+
+
+def program(segment: str) -> str:
+    """The segment with its helper path reduced to the program name."""
+    segment = re.sub(r"^uv run (--quiet )?(\S*/)?(\S+\.py)\b", r"\3", segment)
+    return re.sub(r"^\S*/(\S+)", r"\1", segment)
 
 
 def skill_name(raw: str) -> str:
@@ -87,12 +93,18 @@ def skill_name(raw: str) -> str:
 
 
 def command_events(command: str, edited_code: bool) -> list[tuple]:
-    """Loads (SKILL.md reads) and steps found in one shell command, in order."""
-    events: list[tuple] = [("load", skill_name(m.group(1))) for m in SKILL_FILE.finditer(command)]
+    """Loads (reads of a SKILL.md) and steps found in one shell command, in order."""
+    events: list[tuple] = []
     for segment in segments(command):
-        events.extend(("step", skill, segment) for skill, rx in STEP_PATTERNS.items() if rx.match(segment))
-        if edited_code and COMMIT.match(segment):
-            events.append(("step", "jetbrains-inspection", "commit after code edits: " + segment))
+        if segment.startswith(FILE_READERS):
+            events.extend(("load", skill_name(m.group(1))) for m in SKILL_FILE.finditer(segment))
+        if segment.startswith(READ_ONLY):
+            continue
+        forms = (segment, program(segment))
+        events.extend(("step", skill, forms[1]) for skill, rx in STEP_PATTERNS.items()
+                      if any(rx.match(form) for form in forms))
+        if edited_code and COMMIT.match(forms[1]):
+            events.append(("step", "jetbrains-inspection", "commit after code edits: " + forms[1]))
     return events
 
 
@@ -189,7 +201,8 @@ def codex_commands(payload: dict) -> list[str]:
 
 def codex_edits(payload: dict) -> bool:
     text = payload.get("input") or payload.get("arguments") or ""
-    return bool(re.search(r"^\*\*\* (Add|Update) File: \S+\.(py|ts|tsx|js|jsx|mjs|rs|go|kt|java|swift|vue|css|scss)$", text, re.M))
+    # A patch inside the JavaScript exec form keeps its newlines as "\n" escapes.
+    return bool(re.search(r"\*\*\* (Add|Update) File: \S+?\.(py|ts|tsx|js|jsx|mjs|rs|go|kt|java|swift|vue|css|scss)(?!\w)", text))
 
 
 def parse_codex(path: Path, since: dt.datetime, until: dt.datetime) -> Session | None:
@@ -265,7 +278,7 @@ def measure(session: Session, report: dict, misses: dict) -> None:
             skill = event[1]
             counts[skill]["loads"] += 1
             counts[skill]["rereads"] += skill in loaded
-            if skill in blocked and skill not in first_step:
+            if skill in blocked:
                 forced.add(skill)
             loaded.add(skill)
             turn_loads.add(skill)
@@ -276,8 +289,8 @@ def measure(session: Session, report: dict, misses: dict) -> None:
             if skill not in first_step:
                 first_step.add(skill)
                 row["sessions"] += 1
-                if skill in loaded:
-                    row["after_block" if skill in forced else "before"] += 1
+                if skill in loaded and skill not in forced:
+                    row["before"] += 1
                 else:
                     misses[(session.harness, skill)].append(f"{session.session_id} {session.project}: {detail[:110]}")
             elif skill in loaded_before_turn and skill not in turn_checked:
@@ -288,6 +301,8 @@ def measure(session: Session, report: dict, misses: dict) -> None:
                 compact_pending.discard(skill)
                 row["after_compact"] += 1
                 row["after_compact_reloaded"] += skill in compact_loads
+    for skill in first_step:
+        counts[skill]["after_block"] += skill in forced
 
 
 def ratio(part: int, whole: int) -> str:
