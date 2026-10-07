@@ -879,7 +879,8 @@ def word_pattern(*words: str) -> str:
 # clause may say "None before <step>"; a bare "None" note also keeps approvals.
 PRECONDITION_WORDS = ("but", "except", "unless", "until", "if", "once", "after", "however", "pending",
                       "still", "then", "must", r"wait\w*", r"await\w*", "blocked", "parked",
-                      r"requir\w*", r"need\w*", r"approv\w*", r"sign\w*\s+off")
+                      r"requir\w*", r"need\w*", r"approv\w*", r"prerequisite\w*",
+                      "outstanding", r"sign\w*[\s-]+off")
 LEAD_HOLD_WORDS = word_pattern(*PRECONDITION_WORDS)
 LATER_HOLD_WORDS = word_pattern(*PRECONDITION_WORDS, "before", "first")
 HOLD_WORDS = word_pattern(*PRECONDITION_WORDS, "before", "first", r"authoriz\w*", "decision", r"accept\w*")
@@ -1184,12 +1185,13 @@ def rank_direction_work(
         elif tracking and not (
             item.get("plan_status") == "active" and not reports
             and re.search(r"(?im)^\s*State:\s*active\b", status_text or "")
-            and re.search(r"(?im)^\s*Next action:\s*\S", status_text or "")
+            and re.search(r"(?im)^\s*Next action:.*\b(?:agent|supervisor)\b", status_text or "")
         ):
             excluded.append({**item, "exclusion": "tracking_without_open_work"})
         elif tracking:
             # An active Track with no linked work issue and no recorded wait
-            # is itself the agent's next step, such as scoping its first issue.
+            # is itself the next step when that step names an agent, such as scoping
+            # its first issue.
             item.pop("exclusion", None)
             item["reasons"] = [
                 f"direction_milestone_{order[milestone['title']] + 1}",

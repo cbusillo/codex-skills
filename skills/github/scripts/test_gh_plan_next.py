@@ -3041,11 +3041,22 @@ def test_milestone_summary_names_each_wait_when_no_milestone_work_is_listed() ->
     assert summary["Second"]["state"] == "no_linked_work"
 
 
+def test_track_whose_next_action_belongs_to_a_person_is_not_agent_work() -> None:
+    track_issue = active_track("someone/direction", 1, "First", "State: Active.\nNext action: Director selects the launch date.\nWaiting for: None; next actor is an agent.")
+    with global_fixture([track_issue], [], {}) as (module, result, _reads):
+        module.cmd_next(next_args())
+    assert result["candidates"] == []
+    assert result["excluded"][0]["exclusion"] == "tracking_without_open_work"
+
+
 def test_named_next_actor_or_absence_keeps_a_stated_precondition() -> None:
     root = track("someone/direction", 1, "First")
     for reason in ("Supervisor to route the PR; Director approval is required first.",
                    "None; Chris must sign off before work starts.",
-                   "Supervisor routing.\nNote: only after Justin approves"):
+                   "Supervisor routing.\nNote: only after Justin approves",
+                   "Supervisor to route the PR; Director authorization is a prerequisite.",
+                   "None for release; Client acceptance is a prerequisite.",
+                   "None; Chris’s sign-off is outstanding."):
         raw = global_issue("someone/product", 2, body="## Current Status\nState: Active.\nWaiting for: " + reason)
         with global_fixture([root], [raw], {(root["repo"], 1): relationships(sub_issues=[raw])}) as (module, result, _reads):
             module.cmd_next(next_args())
@@ -3055,7 +3066,8 @@ def test_named_next_actor_or_absence_keeps_a_stated_precondition() -> None:
 
 TESTS.extend([test_milestone_agent_work_behind_bookkeeping_blocker_ranks_first,
               test_milestone_summary_names_each_wait_when_no_milestone_work_is_listed,
-              test_named_next_actor_or_absence_keeps_a_stated_precondition])
+              test_named_next_actor_or_absence_keeps_a_stated_precondition,
+              test_track_whose_next_action_belongs_to_a_person_is_not_agent_work])
 
 
 def main() -> None:
