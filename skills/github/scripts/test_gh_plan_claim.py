@@ -892,6 +892,72 @@ class ClaimTests(unittest.TestCase):
                 with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
                 self.assert_no_writes()
 
+    def test_legacy_alias_preserves_distinct_sessions_and_exact_id_recovery(self):
+        for holder in ("old-worker", "`old-worker`", "**old-worker**"):
+            for structured_first in (False, True):
+                with self.subTest(holder=holder, structured_first=structured_first):
+                    self.setUp()
+                    first = f"Claimed by {holder}\n\nSession: old-session-a\nBranch: work/old-a"
+                    if structured_first:
+                        first += "\n" + CLAIM.marker({**OTHER, "worker": "old-worker", "session": "old-session-a"})
+                    self.comments = [
+                        {"id": 1, "body": first, "user": {"login": TEST_BOT}},
+                        {"id": 2, "body": f"Claimed by {holder}\n\nSession: old-session-b\nBranch: work/old-b",
+                         "user": {"login": TEST_BOT}},
+                        {"id": 3, "body": f"Released by {holder}", "user": {"login": TEST_BOT}},
+                    ]
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                        self.run_claim()
+                    self.assertEqual({1, 2}, {e.get("id") for e in caught.exception.payload["competing_evidence"]})
+                    self.assert_no_writes()
+                    self.comments.append({"id": 4, "body": "Released claim 1", "user": {"login": TEST_BOT}})
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                        self.run_claim()
+                    self.assertEqual({2}, {e.get("id") for e in caught.exception.payload["competing_evidence"]})
+                    self.assert_no_writes()
+                    self.comments.append({"id": 5, "body": "Released claim 2", "user": {"login": TEST_BOT}})
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_legacy_alias_still_releases_repeated_same_session(self):
+        self.comments = [
+            {"id": 1, "body": "Claimed by old-worker\nSession: old-session\nBranch: work/old", "user": {"login": TEST_BOT}},
+            {"id": 2, "body": "Claimed by **old-worker**\n**Session:** `old-session`\nBranch: work/old",
+             "user": {"login": TEST_BOT}},
+            {"id": 3, "body": "Released by old-worker", "user": {"login": TEST_BOT}},
+        ]
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_legacy_alias_keeps_author_chronology_and_unknown_identity_guards(self):
+        for extra, succeeds in (
+            ({"id": 2, "body": "Claimed by old-worker\nSession: other-session", "user": {"login": "another-author"}}, False),
+            ({"id": 2, "body": "Claimed by old-worker", "user": {"login": TEST_BOT}}, False),
+            ({"id": 2, "body": "> Claimed by old-worker\n> Session: quoted-session", "user": {"login": TEST_BOT}}, True),
+        ):
+            with self.subTest(extra=extra):
+                self.setUp()
+                self.comments = [
+                    {"id": 1, "body": "Claimed by old-worker\nSession: old-session", "user": {"login": TEST_BOT}},
+                    extra,
+                    {"id": 3, "body": "Released by old-worker", "user": {"login": TEST_BOT}},
+                ]
+                if succeeds:
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                else:
+                    with self.assertRaises(PLAN.ClassifiedPlanError):
+                        self.run_claim()
+                    self.assert_no_writes()
+        self.setUp()
+        self.comments = [
+            {"id": 1, "body": "Released by old-worker", "user": {"login": TEST_BOT}},
+            {"id": 2, "body": "Claimed by old-worker\nSession: old-session", "user": {"login": TEST_BOT}},
+        ]
+        with self.assertRaises(PLAN.ClassifiedPlanError):
+            self.run_claim()
+        self.assert_no_writes()
+
     def test_literal_blocks_never_hide_visible_ownership(self):
         for opener, closer in (("~~~", "~~~"), ("```", ""), ("<pre>", "</pre>")):
             for holder in ("[Owned by another-worker]: work/repair",
