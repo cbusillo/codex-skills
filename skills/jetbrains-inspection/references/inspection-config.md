@@ -54,10 +54,18 @@ at the worktree root without inspecting, select that lane's IDE explicitly:
 uv run "$HELPER" open-worktree --repo "$PWD" --ide PyCharm
 ```
 
-Use the IDE declared by the intended lane; PyCharm above is an example. For
-lanes with nested `projectPath`, prefer the assessment flow, which resolves
-that path automatically. `prepare-worktree` and `prepare` are compatibility
-aliases for `open-worktree` and have the same single-project behavior.
+Use the IDE declared by the intended lane; PyCharm above is an example. To
+open a nested `projectPath` without inspecting, pass that directory as `--repo`
+when it contains project markers such as `settings.gradle` or `.idea`:
+
+```bash
+uv run "$HELPER" open-worktree --repo "$PWD/<projectPath>" --ide "IntelliJ IDEA"
+```
+
+Preparation still runs at the worktree root. The assessment flow resolves
+`projectPath` automatically, including directories without project markers.
+`prepare-worktree` and `prepare` are compatibility aliases for `open-worktree`
+and have the same single-project behavior.
 
 When `qualityGate.inspection.prepare` is configured, `open-worktree`,
 `agent-inspect`, `inspect`, and `inspect-closeout` run that exact repository

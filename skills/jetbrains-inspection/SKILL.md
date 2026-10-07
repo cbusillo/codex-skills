@@ -437,7 +437,9 @@ scope, never source code or a mixed scope containing source code.
 - `ide_selection_required`, `ide_config_ambiguous`, or `ide_config_missing`: the
   command has no usable IDE route, so repeating it unchanged cannot succeed.
   If a lane-configured repository failed at a separate `open-worktree` step,
-  use the assessment command above to prepare and route its lanes. Otherwise
+  use the assessment command above to prepare and route its lanes; if only
+  opening was requested, use `open-worktree --ide <lane IDE>` as described in
+  [inspection configuration](references/inspection-config.md). Otherwise
   check the configured lane's IDE when lanes are present; do not add a top-level
   IDE to replace existing lane policy. For a repository without lanes,
   recommend, in the same report, that it record its IDE under
