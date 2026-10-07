@@ -105,6 +105,18 @@ class UsageTests(unittest.TestCase):
         ):
             self.assertTrue(github_api.call_gh("GET", "/repos/example/app", expected_actor="fixture-bot").ok)
 
+    def test_synthetic_actor_response_succeeds_without_spending_http_or_quota(self):
+        response = subprocess.CompletedProcess([], 0, stdout=(
+            b'HTTP/2 200\ncontent-type: application/json\n'
+            b'x-codex-synthetic-response: app-actor\n\n{"login":"fixture-bot"}'
+        ), stderr=b"GitHub automation actor: fixture-bot (source: github_app)")
+        with patch("subprocess.run", return_value=response):
+            result = github_api.call_gh("GET", "/user", expected_actor="fixture-bot")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.body, {"login": "fixture-bot"})
+        self.assertEqual(usage.report(since=0)["consumers"], [])
+        self.assertEqual(usage.quota_snapshot(actor="fixture-bot"), {})
+
     def test_simultaneous_helpers_append_complete_records(self):
         source = (
             "import github_request_usage as u; "

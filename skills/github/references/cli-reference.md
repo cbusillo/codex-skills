@@ -116,11 +116,20 @@ no request/response bodies, endpoint queries or credentials. Delegating watchers
 pass their caller name to the PR helper, so its reads count toward that watcher.
 
 HTTP attempts and primary requests are separate: authenticated 304 responses
-and `/rate_limit` probes use no primary requests. GraphQL point costs remain
+and `/rate_limit` probes use no primary requests. Local App actor replies
+are marked synthetic and excluded from HTTP and quota accounting. Existing
+receipts predating this marker can overcount actor probes; preserve that
+limitation when comparing historical samples. GraphQL point costs remain
 unknown rather than being counted as REST requests. Raw CLI calls without HTTP
 headers and Launchplane's server-side GitHub calls are outside this ledger;
 the result is a lower bound, not an installation-wide audit. Offline tests must
 set a temporary `GITHUB_RETRY_STATE_DIR`, which also isolates these receipts.
+
+Read-only planning `show`, `index` and `next` REST observations use conditional
+validators but always contact GitHub, including immediately repeated reads.
+Their cache namespace is separate from observers that coalesce recent replies.
+Write preflights/readbacks and explicit active-auth routes retain uncached reads.
+Permission and actor failures never reuse a cached success.
 
 PR watchers back off unchanged pending snapshots to their quiet interval,
 returning to the active interval when evidence changes. Shared core-budget
@@ -478,7 +487,11 @@ Quoted hard wraps preserve qualifiers, fields and paragraph boundaries. Claim
 markers, exact-ID release directives and recorded intent/history provenance
 continue to use their exact source forms. Legacy `Released by` keeps its exact
 prefix; its formatted holder token is normalized for legacy claims, including
-the reused-worker session check, without releasing structured records by alias.
+the reused-worker session check across structured and older hand-written claim
+records. Distinct sessions, or a missing/recognized placeholder identity beside
+another claim, require authored exact-comment-ID releases; repeated records of the same session
+retain the bare legacy release route. Formatted aliases do not release structured
+records by alias.
 Code-span contents remain literal, unresolved reference-link text remains
 visible, and a quoted legacy claim header in a comment does not claim the
 issue on behalf of the quoting author.
@@ -536,8 +549,14 @@ identity. Release affects that exact comment, not another worker's
 record or retained branch/worktree evidence; those still need ordinary
 ownership and preservation review.
 The first release line is exactly `Released claim <id>`, or ends its exact ID
-with a period followed by optional handoff prose. Conditional prose after a
-bare ID does not release ownership.
+with a period followed by optional handoff prose. A condition directly after
+the ID or conditional release/reclaiming prose later in that handoff refuses
+rather than release ownership early. For example, `Takes effect once PR #99
+merges` or `If CI passes, the next worker may claim` does not release the claim.
+Downstream routing and cleanup gates, such as `After PR #99 lands, close out
+the issue`, remain independent. Recover ambiguous conditional handoffs with a
+new, unconditional first-line exact-ID release from the source author after
+the source claim; the helper does not infer that a condition has become true.
 
 An exact release may also be a standalone final paragraph after the handoff
 prose, optionally followed by the helper's operation marker. It must be an
@@ -614,12 +633,14 @@ comments must contain only that exact directive, optionally followed by the
 helper's operation marker; trailing whitespace is allowed. Conditional suffixes,
 continuations and other paragraphs never release ownership through this legacy
 form. Use `Released claim <claim-comment-id>` followed by a blank line and the
-handoff prose for a release with context. Bare legacy releases are accepted only
-when the earlier structured claims for that token all belong to one session;
-reuse requires exact comment-ID releases.
+handoff prose for a release with context. The session-identity rules in
+[Planning: Claim](#planning-claim) govern bare legacy releases.
 To recover an older ambiguous legacy release, the source author posts a new
 `Released claim <claim-comment-id>` comment for each original claim. For a
-closed automation session, use the evidence-backed `release-claim` route above.
+closed automation session with a structured source claim, use the evidence-backed
+`release-claim` route above, including its verified related hand-written
+follow-ups. A hand-written source claim requires its author to post the exact-ID
+release.
 
 After a verified retained-work handoff, use `--resume-from <claim-comment-id>`.
 The source must be one structured claim explicitly released by its author.
@@ -879,8 +900,10 @@ no flag is needed. The target repository's merged `DIRECTION.md` is required,
 including when the command runs elsewhere with `--repo`. In milestone order,
 it walks the open `Track:` plans through native blockers and sub-issues, across
 repository owners as well as repositories. Waiting summary labels on these tracking
-containers do not hide their linked work. Ordinary waiting, stale, completed,
-and inconsistently blocked plans remain excluded. Tracking issues
+containers do not hide their linked work. Valid person/event waits, stale, completed,
+and inconsistently blocked plans remain excluded. On listed milestone paths,
+`findings` reports a wait naming another milestone or no person/event; such a
+wait does not exclude the issue, while native blockers still apply. Tracking issues
 without open work are reported, never selected as implementation tasks.
 
 Global candidates have `repo`, `number`, overall `milestone`, `issue_milestone`,

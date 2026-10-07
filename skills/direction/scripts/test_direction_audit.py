@@ -49,6 +49,8 @@ def load() -> Any:
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.planning_config = lambda _: {"labels": {"waiting": "plan:waiting", "blocked": "plan:blocked",
+                                                   "stale": "plan:stale", "done": "plan:done"}}
     return module
 
 
@@ -1616,16 +1618,16 @@ def test_active_delivery_grammar_preserves_wrapped_and_inflected_remaining_steps
         "Supervisor lands PR #71, then",
         "Supervisor lands PR #71,",
     )
+    row = {**issue(1, "Remaining consumer work", labels=("plan:active",)),
+           "updated_at": "2026-10-04T12:00:00Z"}
+    def fetch(args: list[str]) -> Any:
+        if args[1] == "repos/owner/catalog":
+            return {"default_branch": "main"}
+        if "/pulls/" in args[1]:
+            return {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #1"}
+        return {"state": "closed", "pull_request": {}}
     for action in actions:
-        row = {**issue(1, "Remaining consumer work", labels=("plan:active",),
-                       body=f"## Current Status\nNext action: {action}\nWaiting for: Chris to test the phone.\n"),
-               "updated_at": "2026-10-04T12:00:00Z"}
-        def fetch(args: list[str]) -> Any:
-            if args[1] == "repos/owner/catalog":
-                return {"default_branch": "main"}
-            if "/pulls/" in args[1]:
-                return {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #1"}
-            return {"state": "closed", "pull_request": {}}
+        row["body"] = f"## Current Status\nNext action: {action}\nWaiting for: None.\n"
         # The prerequisite uses its own repository and does not implement this issue.
         report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
         assert not any(item["selection_exclusion"] for item in report["items"]), action
@@ -1698,6 +1700,86 @@ def test_healthy_remainders_and_person_holds_do_not_create_false_coverage_gaps()
             report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
             assert report["complete"]
             assert report["items"][0]["selection_exclusion"] is needs_proof
+
+
+def test_invalid_milestone_wait_is_reported_but_named_event_is_valid() -> None:
+    module = load()
+    base = {**issue(120, "Inventory", labels=("plan:waiting",)),
+            "milestone": {"title": "Dogfood week"}}
+    for reason in ("starts after milestone Thin fork decision", "", "nothing"):
+        waiting = {**base, "body": "## Current Status\nState: Waiting.\nWaiting for: " + reason}
+        assert "milestone_wait_invalid" in kinds(run(module, issues=[waiting]))
+    event = {**base, "body": "## Current Status\nWaiting for: beta release on October 1."}
+    assert "milestone_wait_invalid" not in kinds(run(module, issues=[event]))
+
+
+def test_overall_audit_follows_track_to_invalid_cross_repository_wait() -> None:
+    module = load()
+    root = {**issue(1, "Track: Dogfood week"), "state": "open",
+            "milestone": {"title": "Dogfood week", "state": "open"},
+            "html_url": "https://github.com/owner/direction/issues/1"}
+    child = {**issue(120, "Inventory", labels=("plan:waiting",),
+                    body="## Current Status\nWaiting for: milestone Thin fork decision."),
+             "state": "open", "html_url": "https://github.com/owner/business/issues/120"}
+    def fetch(args: list[str]) -> Any:
+        path = args[1].split("?")[0]
+        if path == "repos/owner/direction/issues/1/sub_issues":
+            return [child]
+        if path == "repos/owner/business/issues/120":
+            return child
+        return []
+    pull = {**issue(2, "Direction proposal"), "pull_request": {"url": "https://github.com/owner/direction/pull/2"}}
+    other = {**issue(3, "Track: Thin fork decision"), "state": "open",
+             "milestone": {"title": "Thin fork decision", "state": "open"},
+             "html_url": "https://github.com/owner/direction/issues/3"}
+    assert not module.enrich_milestone_waits([pull, root, other], "owner/direction", ["Dogfood week", "Thin fork decision"], fetch=fetch)
+    result = run(module, issues=[pull, root, other])
+    finding = next(item for item in result["findings"] if item["kind"] == "milestone_wait_invalid")
+    assert (finding["repo"], finding["number"]) == ("owner/business", 120)
+    assert sum(item["kind"] == "milestone_wait_invalid" for item in result["findings"]) == 1
+    assert module.enrich_milestone_waits([root], "owner/direction", ["Dogfood week"],
+                                       fetch=lambda _: (_ for _ in ()).throw(module.AuditError("unavailable")))
+
+
+def test_local_wait_findings_need_no_dependency_reads() -> None:
+    module = load()
+    base = {**issue(120, "Inventory", labels=("plan:waiting",),
+                    body="## Current Status\nWaiting for: milestone Thin fork decision."),
+            "milestone": {"title": "Dogfood week"}}
+    zero = {**base, "issue_dependencies_summary": {"blocked_by": 0}}
+    def denied(_args: list[str]) -> Any:
+        raise module.AuditError("unavailable")
+    assert not module.enrich_milestone_waits([zero], "owner/product", ["Thin fork decision", "Dogfood week"], fetch=denied)
+    assert "milestone_wait_invalid" in kinds(run(module, issues=[zero]))
+    unknown = {**base}
+    assert not module.enrich_milestone_waits([unknown], "owner/product", ["Thin fork decision", "Dogfood week"], fetch=denied)
+    assert "milestone_wait_invalid" in kinds(run(module, issues=[unknown]))
+    blocked = {**base, "body": "## Current Status\nState: Waiting.\nWaiting for: TBD.",
+               "labels": [{"name": "plan:blocked"}]}
+    assert not module.enrich_milestone_waits([blocked], "owner/product", ["Dogfood week"], fetch=denied)
+    assert "milestone_wait_invalid" not in kinds(run(module, issues=[blocked]))
+    module.planning_config = lambda _: {"labels": {"waiting": "paused"}}
+    custom = {**base, "body": "## Current Status\nWaiting for: nothing.", "labels": [{"name": "paused"}]}
+    assert not module.enrich_milestone_waits([custom], "owner/product", ["Dogfood week"], fetch=denied)
+    assert "milestone_wait_invalid" in kinds(run(module, issues=[custom]))
+
+
+def test_stale_reference_waits_preserve_start_metadata_and_real_holds() -> None:
+    module = load()
+    bodies = ("Waiting for: PR #71 to merge; since 2026-08-20", "Waiting for: PR #71 to merge\nWaiting since: 2026-08-20")
+    def fetch(args: list[str]) -> Any:
+        if "/issues/71" in args[1]:
+            return {"state": "closed", "pull_request": {}}
+        if "/pulls/71" in args[1]:
+            return {"merged_at": stamp(NOW), "base": {"ref": "main"}}
+        raise AssertionError(args[1])
+    for body in bodies:
+        row = {**issue(41, "Parked on a merged PR", labels=("plan:waiting",), body="## Current Status\n" + body),
+               "issue_dependencies_summary": {"total_blocked_by": 0}}
+        report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
+        assert report["complete"] and [entry["number"] for entry in report["items"]] == [41]
+        held = {**row, "body": row["body"] + "\nBlocked by: Chris's contract signature."}
+        assert not module.stale_wait_report([held], "owner/catalog", fetch=fetch)["items"]
 
 
 def main() -> int:

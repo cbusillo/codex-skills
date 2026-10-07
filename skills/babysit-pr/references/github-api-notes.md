@@ -18,9 +18,10 @@ watcher's state location, and short coalescing prevents duplicate concurrent
 observers from immediately repeating a just-completed read.
 
 The watcher uses the shared GitHub retry/cooldown transport for comment,
-workflow, and check reads. Respect Retry-After/reset advice. A quiet green PR
-uses a five-minute cadence; active or changed work uses one minute. This is
-still polling, not a webhook service; Launchplane owns the event-driven
+workflow, and check reads. Respect Retry-After/reset advice and the emitted
+`next_poll_seconds`; [Request Use](../../github/references/cli-reference.md#request-use)
+owns adaptive cadence and budget behavior. This is still polling;
+Launchplane owns the event-driven
 follow-up under launchplane#2374.
 
 ## Primary commands used

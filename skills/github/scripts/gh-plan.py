@@ -23,6 +23,7 @@ from dataclasses import replace
 from typing import Any, NoReturn, Optional
 
 import github_api as github_api_core
+import github_read
 import github_comment as github_comment_core
 import github_issue as github_issue_core
 import github_milestone as github_milestone_core
@@ -855,6 +856,34 @@ def api_json(
         graphql_operation=resolved_graphql_operation,
     )
     resolved_bucket = bucket or ("graphql" if github_api_core.is_graphql_path(path) else "rest_core")
+    # Planning observations must contact GitHub even immediately after another
+    # process read them. Reuse a body only after its validator receives a 304.
+    # Mutation preflights/readbacks and explicitly selected active-auth routes
+    # retain their existing uncached transport.
+    if (
+        method.upper() == "GET" and payload is None and resolved_bucket == "rest_core"
+        and not resolved_is_write and not CURRENT_IS_WRITE
+        and CURRENT_OPERATION in {"github.plan.show", "github.plan.index", "github.plan.next"}
+        and BOT_GH.exists() and EXPECTED_ACTOR
+        and os.environ.get("GH_PLAN_SKIP_BOT") != "1"
+        and os.environ.get("GH_PLAN_ALLOW_ACTIVE_FIRST") != "1"
+        and not github_identity.active_auth_fallback_allowed()
+        and not github_identity.own_user_opted_in()
+    ):
+        reader = github_read.GitHubReader(
+            gh_cmd=str(BOT_GH), expected_actor=EXPECTED_ACTOR, actor=EXPECTED_ACTOR,
+            operation=operation or CURRENT_OPERATION, strict_actor=True,
+            cache_enabled=True, cache_revalidate=True,
+            deadline_at=time.time() + github_api_core.remaining_retry_timeout_seconds(),
+        )
+        reader.completed_steps = list(completed_steps or [])
+        try:
+            result = reader.request("GET", path, step=failed_step or "gh_invocation")
+        except github_read.GitHubReadError as exc:
+            record_retry_fields(exc.result)
+            raise PlanError(str(exc), failure=exc.result.failure, api_result=exc.result.as_dict()) from exc
+        record_retry_fields(result)
+        return "automation-gh", result.body
     args = [
         "api",
         *API_VERSION_ARGS,
@@ -3267,9 +3296,9 @@ def exclude_landed_candidates(candidates: list[dict[str, Any]], excluded: list[d
     for entry in list(candidates):
         key = (entry["repo"].casefold(), entry["number"])
         entry.pop("post_merge_evidence_complete", None)
-        labels = set(normalize_labels(entry.get("labels")))
+        candidate_labels = set(normalize_labels(entry.get("labels")))
         scope_labels = report.get("scope_labels", {}).get(entry["repo"].casefold(), ["plan:active", "plan:waiting", "plan:blocked"])
-        if key in unread or (key not in checked and labels.intersection(scope_labels)):
+        if key in unread or (key not in checked and candidate_labels.intersection(scope_labels)):
             entry["post_merge_evidence_complete"] = False
         evidence = active.get(key)
         if evidence:
@@ -3376,6 +3405,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         if milestone.get("state") == "closed"
     ]
     scope = None
+    wait_titles = list(titles)
     if args.milestone:
         result = github_milestone_core.show_milestone(
             repo, args.milestone, operation=CURRENT_OPERATION,
@@ -3501,6 +3531,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         roots, milestone_titles=titles, read_node=read_node,
         scan_limit=args.scan_limit, completed_milestone_titles=completed_titles,
         agent=github_agent.running_agent(getattr(args, "agent", None)),
+        wait_milestone_titles=wait_titles,
     )
     ranked["dependency_context"]["relationship_limit"] = NEXT_RELATIONSHIP_LIMIT
     if inventory_truncated or milestones_truncated:
@@ -3515,7 +3546,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         ranked, [], milestone_titles=titles, context=selection_context,
         repository_waypoints={}, coverage_complete=graph_coverage["complete"],
     )
-    capacity_evidence = bool(preflight["admitted"] or (preflight["reason"] == "no_milestone_waits" and any(
+    capacity_evidence = bool(preflight["admitted"] or (preflight["reason"] in {"no_milestone_waits", "milestone_names_no_person"} and any(
         review.get("state") == "waiting" and review.get("waiting_on") == "person"
         for review in selection_context.get("issues", {}).values()
     )))
@@ -3577,10 +3608,17 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
             original_exclusion = item.get("exclusion")
             ordinary_discussion_complete = bool((item.get("discussion") or {}).get("complete"))
             held = github_direction_next.repository_hold(selection_context, item["repo"])
-            if (not original_exclusion or capacity_evidence) and item.get("exclusion") not in {"completed", "pull_request", "unknown_dependencies"}:
+            status_text = node.get("status_text") or ""
+            wait_evidence = github_direction_next.milestone_wait_evidence(item, status_text, titles)
+            listed_wait = original_exclusion == "waiting" and ((item.get("milestone") or {}).get("title") in titles or not wait_evidence["valid"])
+            if (not original_exclusion or capacity_evidence or listed_wait) and item.get("exclusion") not in {"completed", "pull_request", "unknown_dependencies"}:
                 exclusion = item.get("exclusion")
                 item = with_ancestry(item)
-                if exclusion:
+                preserve_ancestry = exclusion == "waiting" and (
+                    item.get("exclusion") == "parent_waiting"
+                    or (item.get("exclusion") == "unknown_ancestry" and not wait_evidence["valid"])
+                )
+                if exclusion and not preserve_ancestry:
                     item["exclusion"] = exclusion
                     if exclusion != "parent_waiting":
                         item.pop("waiting_on_parent", None)
@@ -3603,7 +3641,8 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                     })
                 if item["exclusion"] in {"unknown_dependencies", "unknown_ancestry"}:
                     discovery["capacity_complete"] = False
-                    if not held:
+                    if not held and (original_exclusion != "waiting" or not ordinary_discussion_complete
+                                     or (item.get("milestone") or {}).get("title") in titles):
                         discovery["complete"] = False
             else:
                 discoveries.append(item)

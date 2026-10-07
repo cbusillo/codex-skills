@@ -146,10 +146,12 @@ alone establishes no operational authority; use the scope its instructions or
 docs assign.
 If a declared route answers the task, use it without opening the local docs
 fallback.
-When the task needs this environment's infrastructure, access paths, or private
-operational ownership and those routes do not provide the needed context,
-load `docs-lookup` before reading configured private documentation or searching
-for more repositories. Missing metadata alone
+When the task needs private infrastructure facts, access paths, or operational
+ownership and the declared routes do not answer it, make loading `docs-lookup`
+your next step. Complete that load before following a local-context pointer
+from repository instructions or opening its private document. Then use the
+loaded skill to select and read the task-relevant source. Loading it after the
+read does not cover that read. Missing metadata alone
 does not require private lookup for ordinary source work; do not read private
 operational docs unless the task needs those operational facts. The local
 docs source supplies task-specific context, not a repository inventory. Keep
@@ -368,7 +370,7 @@ the canonical links, the return thread, and who verifies and connects the native
 blockers afterward. Explicitly request that return within existing posting
 authority; otherwise prepare the draft and name the remaining action. Read the
 [missing-gate template](../github/references/issue-templates.md#waiting-on-an-external-gate)
-for the waiting record. Once the gate is known, verify and link it without
+for the return request. Once the gate is known, verify and link it without
 adding another handoff.
 
 ## Milestones And Status
@@ -389,7 +391,8 @@ Use status labels narrowly:
   `Waiting for: None` only when no person, decision or external-event wait
   remains. Ordinary delivery awaiting agent or automated QA, review,
   merge-train routing, or deployment stays active too.
-- `plan:blocked`: a current dependency, preferably an open native blocker.
+- `plan:blocked`: a current dependency on an open issue linked by native
+  `blocked-by`.
 - `plan:waiting`: a durable plan parked on a named person, decision, or external
   event. Name who acts and on what in `Waiting for:` or `Parked until:`.
 - `plan:stale`: needs review before guiding work.
@@ -399,6 +402,17 @@ Separate independent actionable work from an unresolved person or event wait
 into its own issue, so it can be selected and claimed without clearing that wait.
 For `plan:waiting` without a native issue blocker, say `Blocked by: No native
 issue blocker; waiting for ...`.
+
+During an authorized planning update, reconcile `label_blocked_without_native_edge`:
+verify and link an open prerequisite with
+`gh-plan.py link <issue> blocked-by <prerequisite>`.
+A prose reference or milestone membership does not create that edge. If the
+prerequisite has closed, reconcile the remaining work under these status labels. If a
+maintainer must identify or create it, follow [Missing Cross-Repository
+Gates](#missing-cross-repository-gates). Choose the status from the actual next
+action or wait; a missing edge alone does not imply `plan:waiting`.
+A parent delegated only to open sub-issues stays `plan:active`; native sub-issue
+links express that delegation without a `blocked-by` edge.
 
 When Projects are configured or requested, use them as automatic views of the
 issue graph. Do not maintain Focus, Manager, Finish Line, or roadmap dates in

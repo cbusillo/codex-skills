@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -941,8 +942,48 @@ def test_cache_write_failure_does_not_repeat_completed_get() -> None:
             assert remote.call_count == 1
 
 
+def test_revalidation_readers_do_not_hold_cache_lock_during_transport_wait() -> None:
+    with tempfile.TemporaryDirectory() as cache_dir, patch.dict(os.environ, {"GITHUB_READ_CACHE_DIR": cache_dir}):
+        entered, release = threading.Event(), threading.Event()
+        first = github_read.GitHubReader(expected_actor="fixture-automation", cache_enabled=True,
+                                        cache_revalidate=True, deadline_at=time.time() + 5)
+        second = github_read.GitHubReader(expected_actor="fixture-automation", cache_enabled=True,
+                                         cache_revalidate=True, deadline_at=time.time() + 1)
+        def delayed(*_args: Any, **_kwargs: Any) -> github_read.github_api_core.ApiResult:
+            entered.set()
+            assert release.wait(3), "second revalidator queued behind the first transport"
+            return github_read.github_api_core.ApiResult(ok=True, status=200, body={"value": 1}, headers={"etag": '"v1"'})
+        response = github_read.github_api_core.ApiResult(ok=True, status=200, body={"value": 2}, headers={"etag": '"v2"'})
+        def immediate(*_args: Any, **_kwargs: Any) -> github_read.github_api_core.ApiResult:
+            assert time.time() < second.deadline_at, "cache lock consumed the second reader's transport deadline"
+            return response
+        results: list[Any] = []
+        with patch.object(first, "_transport_request", side_effect=delayed), patch.object(
+            second, "_transport_request", side_effect=immediate
+        ) as remote:
+            worker = threading.Thread(target=lambda: results.append(first.get_json("/repos/o/r/issues/1", step="one")))
+            worker.start()
+            try:
+                assert entered.wait(1)
+                assert second.get_json("/repos/o/r/issues/1", step="two") == {"value": 2}
+                assert remote.call_args.kwargs["extra_headers"]["Accept"] == "application/vnd.github+json"
+            finally:
+                release.set()
+                worker.join(timeout=3)
+            assert not worker.is_alive() and results == [{"value": 1}]
+        # Forced reads can complete out of order, so they must not seed a
+        # watcher entry that may serve a recent body without revalidation.
+        watcher = github_read.GitHubReader(expected_actor="fixture-automation", cache_enabled=True)
+        latest = github_read.github_api_core.ApiResult(ok=True, status=200, body={"value": 3}, headers={"etag": '"v3"'})
+        with patch.object(watcher, "_transport_request", return_value=latest) as remote:
+            assert watcher.get_json("/repos/o/r/issues/1", step="watch") == {"value": 3}
+            assert remote.call_count == 1
+            assert "If-None-Match" not in remote.call_args.kwargs["extra_headers"]
+
+
 def main() -> None:
     tests: list[Callable[[], None]] = [
+        test_revalidation_readers_do_not_hold_cache_lock_during_transport_wait,
         test_cache_write_failure_does_not_repeat_completed_get,
         test_cache_lock_wait_expires_without_remote_call,
         test_cache_storage_failure_falls_back_to_same_deadline_and_actor,
