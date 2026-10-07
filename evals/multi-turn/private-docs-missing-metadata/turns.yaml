@@ -27,6 +27,9 @@ turns:
     expect:
       owner: docs-lookup
       read: 'private-context\.md'
+      owner_before_read:
+        owner: docs-lookup
+        read: 'private-context\.md'
       forbid: 'gh-plan\.py|gh-with-env-token|curl|wget'
       forbid_read: '/(?:\.code|\.codex|\.codex-accounts)/|(?:^|/)\.env(?:$|\.)|history|auth\.json'
       final: 'read.only.*DNS|DNS.*read.only'

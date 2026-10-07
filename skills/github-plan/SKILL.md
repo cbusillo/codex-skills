@@ -146,10 +146,12 @@ alone establishes no operational authority; use the scope its instructions or
 docs assign.
 If a declared route answers the task, use it without opening the local docs
 fallback.
-When the task needs this environment's infrastructure, access paths, or private
-operational ownership and those routes do not provide the needed context,
-load `docs-lookup` before reading configured private documentation or searching
-for more repositories. Missing metadata alone
+When the task needs private infrastructure facts, access paths, or operational
+ownership and the declared routes do not answer it, make loading `docs-lookup`
+your next step. Complete that load before following a local-context pointer
+from repository instructions or opening its private document. Then use the
+loaded skill to select and read the task-relevant source. Loading it after the
+read does not cover that read. Missing metadata alone
 does not require private lookup for ordinary source work; do not read private
 operational docs unless the task needs those operational facts. The local
 docs source supplies task-specific context, not a repository inventory. Keep
