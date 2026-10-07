@@ -170,6 +170,7 @@ MERGE_TRAIN_RESULT_FIELDS = {
     "base_branch",
     "batch_id",
     "blocking_reason",
+    "block_result",
     "branch_update_result",
     "candidate",
     "candidate_record_id",
@@ -1400,6 +1401,28 @@ def _project_merge_train_structural_provenance(value: object) -> dict[str, objec
     return projected
 
 
+def _project_merge_train_block_result(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    allowed = {"status", "repository", "base_branch", "pull_request_number", "blocked_label", "train_should_continue", "detail"}
+    if any(str(key) not in allowed for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    if (not isinstance(source.get("train_should_continue"), bool)
+        or not isinstance(source.get("pull_request_number"), int)
+        or isinstance(source.get("pull_request_number"), bool)):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "status": public_code(source.get("status")),
+        "pull_request_number": _merge_train_pr_number(source.get("pull_request_number")),
+        "train_should_continue": source["train_should_continue"],
+    }
+    for key in ("repository", "base_branch", "blocked_label"):
+        if key in source:
+            projected[key] = public_identifier(source[key])
+    if "detail" in source:
+        projected["detail"] = public_summary_string(source["detail"])
+    return projected
+
+
 def _project_merge_train_result(result: object) -> dict[str, object]:
     source = _require_dict(result)
     if any(str(key) not in MERGE_TRAIN_RESULT_FIELDS for key in source):
@@ -1446,6 +1469,8 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
         projected["structural_provenance"] = _project_merge_train_structural_provenance(
             source["structural_provenance"]
         )
+    if "block_result" in source:
+        projected["block_result"] = _project_merge_train_block_result(source["block_result"])
     if "dry_run_result" in source:
         projected["dry_run_result"] = _project_merge_train_dry_run(source["dry_run_result"])
     if "conflict_probe" in source:
