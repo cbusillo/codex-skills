@@ -238,6 +238,94 @@ def test_redact_mode_records_person_data_privacy_summary() -> None:
         raise AssertionError(f"trusted originals should not report person-data redaction: {trusted_privacy}")
 
 
+def test_redact_mounted_paths_in_text_context_and_prompts() -> None:
+    redact_args, module = args(redact=True, trusted_originals=False, max_record_chars=2_000)
+    trusted_args, _module = args(max_record_chars=2_000)
+    paths = (
+        ("/Volumes/EXAMPLE/worktrees/sample", "EXAMPLE/worktrees/sample"),
+        ('"/Volumes/Example Disk/Task Evidence/sample"', "Task Evidence/sample"),
+        ("`/Volumes/Example Disk/worktrees/sample`", "Disk/worktrees/sample"),
+        ("'/mnt/example/task evidence/sample'", "task evidence/sample"),
+        ("/media/example/worktrees/sample", "example/worktrees/sample"),
+        (r"/Volumes/Example\ Disk/worktrees/sample", "Disk/worktrees/sample"),
+        ("file:///Volumes/EXAMPLE/worktrees/sample", "EXAMPLE/worktrees/sample"),
+        ("vscode://file/Users/example/sample.py:12", "example/sample.py"),
+        ("http://localhost:5173/@fs/Users/example/sample.py", "example/sample.py"),
+        ("http://127.0.0.1:5173/@fs/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
+        ("http://workstation.local/view?path=/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
+        ("http://192.168.1.2/view?path=/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
+        ("http://workstation:5173/@fs/Users/example/sample.py", "example/sample.py"),
+        ("http://100.101.102.103:5173/@fs/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
+        ("http://workstation.tail1234.ts.net/view?path=/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
+        ("http://workstation.home.arpa/view?path=/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
+        ("http://workstation.test/view?path=/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
+        ("/Volumes/EXAMPLE/Photos(2024)/sample.png", "Photos(2024)/sample.png"),
+        ("/Users/example/[draft]/notes.md", "[draft]/notes.md"),
+        ('"/Volumes/Example Disk/worktrees/sample', "Disk/worktrees/sample"),
+        ("/Volumes/Example Disk/worktrees/sample", "Disk/worktrees/sample"),
+        ("https://example.com/view?path=/Users/example/sample.py", "example/sample.py"),
+        ("https://example.com/view#worktree=/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
+        ("https://example.com/@fs/Users/example/sample.py", "example/sample.py"),
+        ("http://workstation.localdomain/Volumes/EXAMPLE/sample.py", "EXAMPLE/sample.py"),
+        ("https://vscode.dev/tunnel/workstation/Users/example/sample.py", "example/sample.py"),
+    )
+    public_url = "https://example.com/Volumes/EXAMPLE/worktrees/sample"
+    for path, private_tail in paths:
+        messages = (
+            f"Remember worktrees live under {path}; keep reusable workflows simple.",
+            f"Read {public_url} for details; evidence is in {path}.",
+        )
+        data = "\n".join(json.dumps(response_item("user", text)) for text in messages).encode()
+        with patch.object(Path, "read_bytes", return_value=data):
+            redacted = module.extract([Path("/Volumes/EXAMPLE/rollout.jsonl")], redact_args)
+            trusted = module.extract([Path("/Volumes/EXAMPLE/rollout.jsonl")], trusted_args)
+        if not redacted or not trusted:
+            raise AssertionError("expected candidates in both modes")
+        text = redacted[0].text
+        context = redacted[0].context
+        if private_tail in text or any(private_tail in event["text"].replace(public_url, "") for event in context):
+            raise AssertionError(f"candidate text/context leaked {path}: {redacted}")
+        unterminated_quote = path[0] in ('"', "'", "`") and not path.endswith(path[0])
+        if not unterminated_quote and "keep reusable workflows simple." not in text:
+            raise AssertionError(f"path redaction consumed neighboring prose: {text}")
+        if not any(public_url in event["text"] for event in context):
+            raise AssertionError(f"path redaction damaged public URL: {context}")
+        prompts = json.dumps(list(module.prompt_batches(redacted, redact_args.batch_chars)))
+        if private_tail in prompts.replace(public_url, ""):
+            raise AssertionError(f"prompt leaked mounted path: {path}")
+        if path not in trusted[0].text or not any(path in event["text"] for event in trusted[0].context):
+            raise AssertionError(f"trusted mode lost mounted path: {path}")
+
+
+def test_redacted_bundle_artifact_references_are_portable() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        trace = write_trace(root, [response_item("user", "Remember worktrees live under /Volumes/EXAMPLE/worktrees/sample.")])
+        for redact in (True, False):
+            namespace, module = args(redact=redact, trusted_originals=not redact)
+            out_dir = root / "private bundle" / str(redact)
+            candidates = module.extract([trace], namespace)
+            diagnostics = module.write_artifacts(out_dir, [trace], candidates, namespace)
+            stored = json.loads((out_dir / "diagnostics.json").read_text(encoding="utf-8"))
+            if diagnostics != stored or stored["candidate_count"] != len(candidates):
+                raise AssertionError("diagnostics must read back with useful counts")
+            for reference in stored["artifacts"].values():
+                target = Path(reference)
+                if redact:
+                    if target.is_absolute() or str(root) in reference:
+                        raise AssertionError(f"redacted diagnostics leaked output location: {reference}")
+                    target = out_dir / target
+                if not target.is_file():
+                    raise AssertionError(f"artifact reference no longer resolves: {reference}")
+            if redact:
+                for artifact in out_dir.iterdir():
+                    payload = artifact.read_text(encoding="utf-8")
+                    if str(root) in payload or "/Volumes/EXAMPLE" in payload:
+                        raise AssertionError(f"redacted bundle leaked local path in {artifact.name}")
+            elif str(out_dir) not in json.dumps(stored["artifacts"]):
+                raise AssertionError("trusted mode should preserve original artifact references")
+
+
 def test_redact_mode_does_not_overmatch_public_names_or_plain_prose() -> None:
     redact_args, module = args(redact=True, trusted_originals=False)
     text = (
@@ -440,6 +528,8 @@ def main() -> int:
     test_linked_status_reference_lowers_confidence_but_cited_preference_stays()
     test_redact_mode_removes_paths_and_person_data_but_keeps_trusted_originals()
     test_redact_source_metadata_is_independent_of_path_root()
+    test_redact_mounted_paths_in_text_context_and_prompts()
+    test_redacted_bundle_artifact_references_are_portable()
     test_redact_mode_records_person_data_privacy_summary()
     test_redact_mode_does_not_overmatch_public_names_or_plain_prose()
     test_prompt_batches_emit_destination_aware_task()
