@@ -135,7 +135,9 @@ not only `owner_before_read`; version comparisons must account for that change.
 The completion-order check now matches extracted file operands rather than a
 whole Codex command, so a filename mentioned only in a search pattern receives
 no matching-read credit. The older `read_before_operation` check still uses
-Codex command text; neither check establishes recursive search coverage.
+whole shell command text on both hosts; neither check establishes recursive
+search coverage. Backslash continuations outside single quotes join lines
+before path extraction, preserving filenames on continued command lines.
 The nested source-planning fixture moves the synthetic route and operations
 file out of the repository root to qualify discovery cues separately from
 private-documentation authority. Its AGENTS override is offline plumbing,

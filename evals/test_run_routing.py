@@ -306,6 +306,14 @@ class RoutingScoreTests(unittest.TestCase):
         self.assertEqual(runner.shell_read_paths("cat first.md # context\ncat second.md"), ["first.md", "second.md"])
         self.assertEqual(runner.shell_read_paths("cat 'file#name.md' foo\\ #bar.md # comment\ncat last.md"),
                          ["file#name.md", "foo #bar.md", "last.md"])
+        for command, paths in [
+            ("cat a.md \\\n  b.md", ["a.md", "b.md"]),
+            ("rg -n owner \\\n  private-context.md", ["private-context.md"]),
+            ("sed -n '1,200p' \\\n  docs/private-context.md", ["docs/private-context.md"]),
+            ("cat 'file\\\nname.md'", ["file\\\nname.md"]),
+            ('cat "file\\\nname.md"', ["filename.md"]),
+        ]:
+            self.assertEqual(runner.shell_read_paths(command), paths, command)
 
     def test_claude_repeat_skill_invocation_needs_prior_catalog_confirmation(self) -> None:
         expect = {"owner": "docs-lookup", "owner_before_read": {"owner": "docs-lookup", "read": r"private-context\.md"}}

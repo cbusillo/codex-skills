@@ -96,11 +96,15 @@ def shell_without_comments(command: str) -> str:
                 output.append(character)
                 comment, word_start = False, True
         elif escaped:
-            output.append(character)
-            escaped, word_start = False, False
+            escaped = False
+            if character == "\n":
+                output.pop()  # The shell removes continuations outside single quotes.
+            else:
+                output.append(character)
+                word_start = False
         elif character == "\\" and quote != "'":
             output.append(character)
-            escaped, word_start = True, False
+            escaped = True
         elif quote:
             output.append(character)
             if character == quote:
