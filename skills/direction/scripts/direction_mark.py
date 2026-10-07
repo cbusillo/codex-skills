@@ -144,7 +144,7 @@ def share_turn(stamp: str, repo: str) -> dict[str, object]:
     record_repo = f"{repo.split('/', 1)[0]}/direction"
     try:
         listed = run_helper([str(GITHUB_SCRIPTS / "gh-with-env-token"), "api",
-                             f"repos/{record_repo}/issues?state=open&per_page=100", "--method", "GET"])
+                             f"repos/{record_repo}/issues?state=open&sort=created&direction=asc&per_page=100", "--method", "GET"])
         if listed.returncode != 0:
             return {"ok": False, "repo": record_repo, "error": f"could not list issues: {failure(listed)}"}
         issues = json.loads(listed.stdout)

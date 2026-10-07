@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -358,6 +359,16 @@ class SharedTurnTests(unittest.TestCase):
         older = self.record("2026-09-19T11:00:00Z", number=2)
         seen = self.seen(marker(ago(days=2)), self.reader([forged, older]))
         self.assertEqual(seen["turn"], ago(days=2))
+
+    def test_a_stalled_credential_helper_cannot_hold_session_start(self) -> None:
+        reader = self.tmp / "stalled"
+        reader.write_text("#!/bin/sh\nsleep 30 &\nsleep 30\n")
+        reader.chmod(0o755)
+        started = time.monotonic()
+        with mock.patch.object(hook, "OVERALL_READ_TIMEOUT", 0.5):
+            seen = self.seen(marker(ago(days=2)), reader)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(seen["shared_error"], "GitHub did not answer in time")
 
     def test_unreadable_record_is_reported_without_claiming_overdue(self) -> None:
         seen = self.seen(marker(None, owner__repo=ago(days=9)), self.reader(error="gh: Not Found (HTTP 404)"))

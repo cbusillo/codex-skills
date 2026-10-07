@@ -30,6 +30,7 @@ import json
 import os
 import re
 import runpy
+import signal
 import subprocess
 import sys
 import time
@@ -193,13 +194,34 @@ def section(text: str, heading: str) -> str | None:
     return "\n".join(lines).strip() or None
 
 
+def run_reader(*args: str) -> subprocess.CompletedProcess[str]:
+    """The GitHub reader, bounded across its whole process tree.
+
+    The reader is a shell wrapper that starts credential helpers. A plain timeout
+    kills only the wrapper and then waits on pipes a surviving helper still holds.
+    """
+    process = subprocess.Popen(
+        [str(GH_READER), *args], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL, start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=OVERALL_READ_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        process.stdout.close()  # type: ignore[union-attr]
+        process.stderr.close()  # type: ignore[union-attr]
+        process.wait()
+        raise
+    return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
+
+
 def read_merged_overall(owner: str) -> tuple[str | None, str]:
     """The merged overall DIRECTION.md from GitHub, or None and why it could not be read."""
     try:
-        result = subprocess.run(
-            [str(GH_READER), "api", f"repos/{owner}/{OVERALL_REPO}/contents/DIRECTION.md", "--method", "GET", "-H", "Accept: application/vnd.github.raw"],
-            text=True, capture_output=True, timeout=OVERALL_READ_TIMEOUT, stdin=subprocess.DEVNULL,
-        )
+        result = run_reader("api", f"repos/{owner}/{OVERALL_REPO}/contents/DIRECTION.md", "--method", "GET", "-H", "Accept: application/vnd.github.raw")
     except subprocess.TimeoutExpired:
         return None, "GitHub did not answer in time"
     except OSError as exc:
@@ -283,10 +305,8 @@ def read_shared_turn(owner: str) -> tuple[tuple[dt.datetime, str] | None, str | 
     No record yet is (None, None): nobody has taken a turn that wrote one.
     """
     try:
-        result = subprocess.run(
-            [str(GH_READER), "api", f"repos/{owner}/{OVERALL_REPO}/issues?state=open&per_page=100", "--method", "GET"],
-            text=True, capture_output=True, timeout=OVERALL_READ_TIMEOUT, stdin=subprocess.DEVNULL,
-        )
+        # Oldest first: the record is created at the first shared turn, so it stays on this page.
+        result = run_reader("api", f"repos/{owner}/{OVERALL_REPO}/issues?state=open&sort=created&direction=asc&per_page=100", "--method", "GET")
     except subprocess.TimeoutExpired:
         return None, "GitHub did not answer in time"
     except OSError as exc:
