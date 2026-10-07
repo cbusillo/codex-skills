@@ -926,7 +926,7 @@ class ClaimTests(unittest.TestCase):
             "Claimed by old-worker\nSession: Codex desktop {session}\nBranch: work/old",
             "Claimed by old-worker\nBranch: work/old",
             *(f"Claimed by old-worker\nSession: {value}\nBranch: work/old"
-              for value in ("unknown", "n/a", "-", "TBD", "<session>", "none", "unassigned",
+              for value in ("", "\t", "unknown", "n/a", "-", "TBD", "<session>", "none", "unassigned",
                             "not recorded", "unavailable", "pending", "?", "(none)", "—", "<session-id>")),
         ):
             with self.subTest(template=template):
@@ -948,14 +948,18 @@ class ClaimTests(unittest.TestCase):
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_legacy_alias_still_releases_repeated_same_session(self):
-        self.comments = [
-            {"id": 1, "body": "Claimed by old-worker\nSession: old-session\nBranch: work/old", "user": {"login": TEST_BOT}},
-            {"id": 2, "body": "Claimed by **old-worker**\n**Session:** `old-session`\nBranch: work/old",
-             "user": {"login": TEST_BOT}},
-            {"id": 3, "body": "Released by old-worker", "user": {"login": TEST_BOT}},
-        ]
-        self.run_claim()
-        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        for session in ("old-session", "Codex desktop A"):
+            with self.subTest(session=session):
+                self.setUp()
+                self.comments = [
+                    {"id": 1, "body": f"Claimed by old-worker Session: {session}\nBranch: work/old",
+                     "user": {"login": TEST_BOT}},
+                    {"id": 2, "body": f"Claimed by **old-worker**\n**Session:** `{session}`\nBranch: work/old",
+                     "user": {"login": TEST_BOT}},
+                    {"id": 3, "body": "Released by old-worker", "user": {"login": TEST_BOT}},
+                ]
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_legacy_alias_keeps_author_chronology_and_unknown_identity_guards(self):
         for extra, succeeds in (
