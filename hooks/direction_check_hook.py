@@ -6,7 +6,11 @@
 """Session-start executing loop and overdue direction reminder.
 
 The `direction` skill records the end of every daily turn in a small local
-marker, and the audit script records each weekly audit there per repository.
+marker and in a shared turn record in OWNER/direction, and the audit script
+records each weekly audit in the marker per repository. When this machine's
+own turn is older than a day, the hook reads the shared record, so a turn
+taken on another machine counts; when that read fails it says so instead of
+calling the turn overdue.
 At session start this hook prints the skills protocol on Claude Code and the executing loop for repositories with a
 root DIRECTION.md. In a repository without one, whose origin owner keeps an overall direction in OWNER/direction
 that has been audited on this machine or is checked out beside it, it prints that file's stop boundaries, where the file lives, and the loop.
@@ -26,6 +30,7 @@ import json
 import os
 import re
 import runpy
+import signal
 import subprocess
 import sys
 import time
@@ -42,6 +47,10 @@ GH_READER = Path(__file__).resolve().parents[1] / "skills" / "github" / "scripts
 OVERALL_REPO = "direction"
 OVERALL_READ_TIMEOUT = 6
 RUNTIME_CATCHUP_TIMEOUT = 5
+# The shared turn record: one issue in OWNER/direction that direction_mark.py keeps current.
+TURN_RECORD_TAG = "<!-- direction-turn-record -->"
+TURN_RECORD_LINE = re.compile(r"^Last daily turn: (\S+) covering (\S+)$", re.MULTILINE)
+TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 RUNTIME_HELPER = Path("skills/github/scripts/reconcile-runtime-checkout.py")
 
 
@@ -185,13 +194,34 @@ def section(text: str, heading: str) -> str | None:
     return "\n".join(lines).strip() or None
 
 
+def run_reader(*args: str) -> subprocess.CompletedProcess[str]:
+    """The GitHub reader, bounded across its whole process tree.
+
+    The reader is a shell wrapper that starts credential helpers. A plain timeout
+    kills only the wrapper and then waits on pipes a surviving helper still holds.
+    """
+    process = subprocess.Popen(
+        [str(GH_READER), *args], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL, start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=OVERALL_READ_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        process.stdout.close()  # type: ignore[union-attr]
+        process.stderr.close()  # type: ignore[union-attr]
+        process.wait()
+        raise
+    return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
+
+
 def read_merged_overall(owner: str) -> tuple[str | None, str]:
     """The merged overall DIRECTION.md from GitHub, or None and why it could not be read."""
     try:
-        result = subprocess.run(
-            [str(GH_READER), "api", f"repos/{owner}/{OVERALL_REPO}/contents/DIRECTION.md", "--method", "GET", "-H", "Accept: application/vnd.github.raw"],
-            text=True, capture_output=True, timeout=OVERALL_READ_TIMEOUT, stdin=subprocess.DEVNULL,
-        )
+        result = run_reader("api", f"repos/{owner}/{OVERALL_REPO}/contents/DIRECTION.md", "--method", "GET", "-H", "Accept: application/vnd.github.raw")
     except subprocess.TimeoutExpired:
         return None, "GitHub did not answer in time"
     except OSError as exc:
@@ -260,15 +290,96 @@ def overall_direction(repo: str | None, root: Path | None, marker: dict[str, obj
     )
 
 
+def parse_turn_record(body: object) -> tuple[dt.datetime, str] | None:
+    """The turn time and covered repository from a shared turn record body, if it is one."""
+    if not isinstance(body, str) or TURN_RECORD_TAG not in body:
+        return None
+    match = TURN_RECORD_LINE.search(body)
+    stamp = parse_stamp(match.group(1)) if match else None
+    return (stamp, match.group(2)) if match and stamp else None
+
+
+def read_shared_turn(owner: str) -> tuple[tuple[dt.datetime, str] | None, str | None]:
+    """The newest turn in OWNER/direction's shared record, and why it could not be read.
+
+    No record yet is (None, None): nobody has taken a turn that wrote one.
+    """
+    try:
+        # Oldest first: the record is created at the first shared turn, so it stays on this page.
+        result = run_reader("api", f"repos/{owner}/{OVERALL_REPO}/issues?state=open&sort=created&direction=asc&per_page=100", "--method", "GET")
+    except subprocess.TimeoutExpired:
+        return None, "GitHub did not answer in time"
+    except OSError as exc:
+        return None, f"the GitHub reader could not run ({exc.strerror or exc})"
+    if result.returncode != 0:
+        detail = (result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}").splitlines()[-1]
+        return None, f"GitHub read failed: {detail[:160]}"
+    try:
+        issues = json.loads(result.stdout)
+    except ValueError:
+        return None, "GitHub returned something other than an issue list"
+    if not isinstance(issues, list):
+        return None, "GitHub returned something other than an issue list"
+    turns = []
+    for issue in issues:
+        if not isinstance(issue, dict) or "pull_request" in issue:
+            continue
+        user = issue.get("user")
+        # Only the automation identity or a repository member writes the record.
+        if issue.get("author_association") not in TRUSTED_ASSOCIATIONS and not (isinstance(user, dict) and user.get("type") == "Bot"):
+            continue
+        turn = parse_turn_record(issue.get("body"))
+        if turn:
+            turns.append(turn)
+    return (max(turns, key=lambda turn: turn[0]) if turns else None), None
+
+
+def with_shared_turn(marker: dict[str, object], now: dt.datetime, repo: str | None) -> dict[str, object]:
+    """The marker with a newer turn from the shared record, read only when this machine's turn is stale.
+
+    The record lives in the overall direction repository of the owner whose turn this
+    machine last recorded, or, on a machine that never recorded one, of the repository
+    the session opened in.
+    """
+    turn = marker.get("turn")
+    if isinstance(turn, dt.datetime) and now - turn <= TURN_STALE:
+        return marker
+    coverage = marker.get("turn_repo")
+    source = coverage if isinstance(coverage, str) and "/" in coverage else repo
+    if not source:
+        return marker
+    owner = source.split("/", 1)[0]
+    shared, error = read_shared_turn(owner)
+    result = dict(marker)
+    result["shared_record"] = f"{owner}/{OVERALL_REPO}"
+    if error:
+        result["shared_error"] = error
+    elif shared and (not isinstance(turn, dt.datetime) or shared[0] > turn):
+        result["turn"], result["turn_repo"] = shared
+    return result
+
+
 def reminder(marker: dict[str, object], now: dt.datetime, repo: str | None, path: Path) -> str:
     """One line when something is overdue, empty when the checks are current."""
     overdue: list[str] = []
     turn = marker.get("turn")
     audits = marker.get("audits")
     audits = audits if isinstance(audits, dict) else {}
-    if not isinstance(turn, dt.datetime):
+    unconfirmed = ""
+    shared_error = marker.get("shared_error")
+    turn_stale = not isinstance(turn, dt.datetime) or now - turn > TURN_STALE
+    if turn_stale and isinstance(shared_error, str):
+        local = ("has recorded no direction turn" if not isinstance(turn, dt.datetime)
+                 else f"last recorded a direction turn {(now - turn).days} days ago")
+        unconfirmed = (
+            f"Direction turn unconfirmed: this machine {local}, and the shared turn record in "
+            f"{marker.get('shared_record')} could not be read ({shared_error}), so a turn taken on another machine "
+            "would not show here. Tell the owner once at the start of the session that the shared record could not be "
+            "read, and to run the `direction` skill only if no machine has taken today's turn. "
+        )
+    elif not isinstance(turn, dt.datetime):
         overdue.append("no direction turn has been recorded on this machine")
-    elif now - turn > TURN_STALE:
+    elif turn_stale:
         overdue.append(f"the last direction turn was {(now - turn).days} days ago")
     if repo:
         audit = audits.get(repo)
@@ -276,13 +387,15 @@ def reminder(marker: dict[str, object], now: dt.datetime, repo: str | None, path
             overdue.append(f"{repo} has a DIRECTION.md but no recorded weekly audit")
         elif now - audit > AUDIT_STALE:
             overdue.append(f"the last weekly audit of {repo} was {(now - audit).days} days ago")
-    if not overdue:
+    if not overdue and not unconfirmed:
         return ""
+    if not overdue:
+        return unconfirmed + f"Do not run the marking helpers yourself; the marker is {path}."
     coverage_note = ""
     coverage = marker.get("turn_repo")
     if isinstance(turn, dt.datetime) and isinstance(coverage, str) and coverage:
         coverage_note = f" The last daily turn covered {coverage}."
-    return (
+    return unconfirmed + (
         "Direction check overdue: " + "; ".join(overdue) + "." + coverage_note + " "
         "Tell the owner once at the start of the session to open Claude Code and run the `direction` skill "
         "(a daily turn, or the weekly audit of this repository when that is what is overdue), then continue with the task. "
@@ -324,7 +437,9 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
             overall = overall_direction(origin_repo(checkout), checkout, marker, loop)
             if overall:
                 print(overall, flush=True)
-        reminder_text = reminder(marker, dt.datetime.now(dt.timezone.utc), origin_repo(root), path)
+        now = dt.datetime.now(dt.timezone.utc)
+        marker = with_shared_turn(marker, now, origin_repo(root or checkout_root(Path.cwd())))
+        reminder_text = reminder(marker, now, origin_repo(root), path)
         if reminder_text:
             print(reminder_text, flush=True)
         if runtime_catchup:
