@@ -94,10 +94,11 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     successor_action = r"(?:pick (?:this|it) up|pick up (?:this|the) issue|takes? (?:(?:it|this) )?over|taking over|resumes?|resuming)"
     successor = rf"\b(?:{successor_action}|handoff (?:is )?complete[ds]?)\b"
     # An instruction about what to do on resumption does not defer ownership.
-    statements = [re.sub(rf"^(?:When|If) (?:you {successor_action}|resuming),(?![^.!?;]*\bdo so\b)\s*", "", statement,
+    statements = [re.sub(rf"^(?:(?:When|If) you {successor_action}|(?:When|If|After|Once) resuming),(?![^.!?;]*\bdo so\b)\s*", "", statement,
                          flags=re.IGNORECASE) for statement in statements]
     step = r"(?:merge[ds]?|land(?:s|ed)?|pass(?:es|ed)?|finish(?:es|ed)?|complete[ds]?|green)"
-    wait_prefix = r"(?:(?:Please\s+)?Wait|Hold(?:\s+off)?)\s+"
+    wait_prefix = r"(?:Wait|Hold(?:\s+off)?)\s+"
+    wait_condition = rf"(?:Please\s+)?(?:{wait_prefix})?(?:only\s+|not\s+)?{condition}"
     required_step = rf"\bmust\s+(?:be\s+)?{step}\b"
     prerequisite = rf"{required_step}[^.!?;]*\bfirst\b|^First,?\s+[^.!?;]*{required_step}"
     effective = r"\b(?:takes? effect|effective)\b(?!\s+(?:now|immediately)\b)"
@@ -116,7 +117,7 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
         prerequisite_step = re.search(prerequisite, statement, re.IGNORECASE)
         standalone_prerequisite = re.fullmatch(rf"[^.!?;]*(?:{prerequisite})[.!?;]?", statement.strip(), re.IGNORECASE)
         standalone_condition = re.fullmatch(
-            rf"(?:{wait_prefix})?(?:only\s+|not\s+)?{condition}[^,;.!?]*\b{step}(?:\s+(?:into|to|on)\s+[\w/-]+)?(?:\s+first)?[.!?;]?",
+            rf"{wait_condition}[^,;.!?]*\b{step}(?:\s+(?:into|to|on)\s+[\w/-]+)?(?:\s+first)?[.!?;]?",
             statement.strip(), re.IGNORECASE,
         )
         following = statements[index + 1].strip() if index + 1 < len(statements) else ""
@@ -137,7 +138,7 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
         sequences_next = (re.match(r"Then\b", following, re.IGNORECASE)
                           and (starts_condition or re.search(required_step, statement, re.IGNORECASE)))
         if ((prerequisite_step or sequences_next
-             or re.match(wait_prefix + condition, statement.strip(), re.IGNORECASE)
+             or re.match(rf"(?:Please\s+)?(?:{wait_prefix}{condition}|wait(?:ing)? for\b)", statement.strip(), re.IGNORECASE)
              or (starts_condition and "," not in statement))
                 and re.search(successor, following, re.IGNORECASE)):
             return True

@@ -1951,6 +1951,8 @@ class ClaimTests(unittest.TestCase):
             "The next worker can take over. Please wait until PR #99 merges.\n\nReleased claim 1",
             "Released claim 1\n\nThe next worker can take over. Hold off until PR #99 merges.",
             "The next worker can take over. Hold off until PR #99 merges.\n\nReleased claim 1",
+            "Released claim 1. Please wait for PR #99 to merge.",
+            "The next worker can take over. Please hold off until PR #99 merges.\n\nReleased claim 1",
         )
         for release in releases:
             for retained in (False, True):
@@ -1982,6 +1984,9 @@ class ClaimTests(unittest.TestCase):
             "The next worker can take over. Hold off until PR #99 merges before closing out the issue.",
             "The next session is resuming now. After PR #99 lands, close out the issue.",
             "Source session finished. When resuming, rebase onto main.",
+            "Source session finished. After resuming, run the full test suite.",
+            "Source session finished. Once resuming, rebase onto main.",
+            "The next worker can take over. Please hold off until PR #99 merges to close out the issue.",
         ):
             for release in ("Released claim 1. " + handoff, handoff + "\n\nReleased claim 1"):
                 with self.subTest(release=release):
