@@ -2363,6 +2363,9 @@ class InspectionLaneConfigTest(unittest.TestCase):
 
 
 class LaneIdeAdviceTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch.object(jb_inspect, "discover_ide_app_candidates", return_value=[]))
+
     def make_repo(self, root: Path) -> dict[str, Any]:
         subprocess.run(["git", "init", "-q", str(root)], check=True)
         (root / ".github").mkdir()
