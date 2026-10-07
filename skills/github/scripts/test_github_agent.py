@@ -143,8 +143,8 @@ class AgentTests(unittest.TestCase):
         for family, other in (("codex", "claude"), ("claude", "codex")):
             roots = [next_tests.track("someone/direction", 1, "First"),
                      next_tests.track("someone/direction", 2, "Second")]
-            leaves = [next_tests.global_issue("someone/business", 10, labels=[f"agent:{other}"]),
-                      next_tests.global_issue("someone/business", 11, labels=[f"agent:{family}"])]
+            leaves = [next_tests.global_issue("someone/business", n, labels=[f"agent:{assigned}", "plan:waiting"], body="## Current Status\nWaiting for: Customer testing.")
+                      for n, assigned in ((10, other), (11, family))]
             tool = next_tests.global_issue("someone/tools", 20, labels=[f"agent:{family}"])
             edges = {(root["repo"], root["number"]): next_tests.relationships(sub_issues=[leaf])
                      for root, leaf in zip(roots, leaves)}
