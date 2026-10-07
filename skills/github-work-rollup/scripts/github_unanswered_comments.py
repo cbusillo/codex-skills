@@ -332,12 +332,23 @@ def people_identities(self_logins: set[str], index_path: Path | None) -> dict[st
             status, people, _sources = resolve_person.load_scoped_people()
     except resolve_person.PeopleConfigError as exc:
         return {"status": "error", "error": str(exc), "director_names": [], "director_automation": [], "other_automation": {}}
+    if index_path is not None and status == "no_index":
+        # An index someone named must exist; only the default index is optional.
+        return {"status": "error", "error": f"people index {index_path} does not exist",
+                "director_names": [], "director_automation": [], "other_automation": {}}
+    directors = [person for person in people if set(github_logins(person)[0]) & self_logins]
+    if len(directors) > 1:
+        # Every scanned repository owner counts as the Director; a second
+        # matching person would turn their automation into the Director's.
+        names = ", ".join(sorted(str(person.get("id") or "") for person in directors))
+        return {"status": "error", "error": f"several people match the Director's logins ({names}); scan only the Director's repositories",
+                "director_names": [], "director_automation": [], "other_automation": {}}
     director_names: list[str] = []
     director_automation: list[str] = []
     other_automation: dict[str, str] = {}
     for person in people:
         own, automation = github_logins(person)
-        if set(own) & self_logins:
+        if person in directors:
             director_names.extend(
                 [
                     *rollup.as_str_list(person.get("display_name")),
@@ -958,35 +969,45 @@ def names_director(text: str, terms: list[str], logins: set[str] | frozenset[str
     return any(re.search(pattern(term), text, flags=re.IGNORECASE) for term in terms if term.strip())
 
 
-def current_director_wait(reason: str, terms: list[str], logins: set[str] | frozenset[str] = frozenset()) -> bool:
-    """Say whether a recorded wait is on the Director now and needs a question.
+def current_director_wait(
+    reason: str, terms: list[str], logins: set[str] | frozenset[str] = frozenset()
+) -> str | None:
+    """Classify a recorded wait that is on the Director now.
 
     Only the first step of a sequence is current ("Mike's testing, then Chris"),
-    negated clauses ("no Director decision") name nobody, and holds the
-    Director imposed ("Chris to resume ...", "Chris selects it") are known to
-    him already.
+    and negated clauses ("no Director decision") name nobody. Wording of a hold
+    the Director imposed ("Chris to resume ...", "Chris selects it") makes it a
+    ``director_hold``: still listed, since that wording can also describe a real
+    pending decision, but not attention on its own. Anything else is a
+    ``decision``.
     """
     current = re.split(
         r"(?:[,;]\s*|\s+)(?:then|thereafter|followed by|after which)\b", reason, maxsplit=1, flags=re.IGNORECASE
     )[0]
     asserted = re.sub(r"\b(?:no|not|nothing|without|never)\b[^.;]*", "", current, flags=re.IGNORECASE)
     if not names_director(asserted, terms, logins):
-        return False
-    return not re.search(r"\b(?:resum\w*|park\w*|holds?|select\w*|reprioriti\w*|revisit\w*)\b", asserted, re.IGNORECASE)
+        return None
+    if re.search(r"\b(?:resum\w*|park\w*|holds?|select\w*|reprioriti\w*|revisit\w*)\b", asserted, re.IGNORECASE):
+        return "director_hold"
+    return "decision"
 
 
 def director_wait_reason(
     repo: str, issue: dict[str, Any], terms: list[str], logins: set[str] | frozenset[str] = frozenset()
-) -> str | None:
-    """Return the recorded wait that is on the Director now, if any."""
+) -> tuple[str, str] | None:
+    """Return the recorded wait on the Director now and its kind, preferring a decision."""
     body = str(issue.get("body") or "")
     sections = github_direction_next.section_map(body)
     status = next((text for title, text in sections.items() if title.casefold() == "current status"), body)
     record = {"repo": repo, "number": issue.get("number"), "url": str(issue.get("html_url") or "")}
+    found: tuple[str, str] | None = None
     for wait in github_direction_next.waiting_records(record, status):
-        if not wait["non_external"] and current_director_wait(wait["waiting_for"], terms, logins):
-            return str(wait["waiting_for"])
-    return None
+        kind = None if wait["non_external"] else current_director_wait(wait["waiting_for"], terms, logins)
+        if kind == "decision":
+            return str(wait["waiting_for"]), kind
+        if kind and found is None:
+            found = str(wait["waiting_for"]), kind
+    return found
 
 
 def question_gap(comments: list[Comment], director_logins: set[str], decision_authors: set[str]) -> str | None:
@@ -1026,9 +1047,10 @@ def unasked_director_waits(
     for issue in issues:
         if "pull_request" in issue or not isinstance(issue.get("number"), int):
             continue
-        waiting_for = director_wait_reason(repo, issue, terms, director_logins)
-        if waiting_for is None:
+        wait = director_wait_reason(repo, issue, terms, director_logins)
+        if wait is None:
             continue
+        waiting_for, wait_kind = wait
         number = issue["number"]
         try:
             items = api_list(f"repos/{repo}/issues/{number}/comments?per_page=100")
@@ -1046,6 +1068,7 @@ def unasked_director_waits(
                 "title": str(issue.get("title") or ""),
                 "url": str(issue.get("html_url") or ""),
                 "waiting_for": compact_body(waiting_for),
+                "wait_kind": wait_kind,
                 "question_gap": gap,
                 "updated_at": str(issue.get("updated_at") or ""),
             }
@@ -1199,7 +1222,8 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
         )
     }
     coverage_errors.sort(key=lambda item: (item.get("repo") or "", item.get("lane") or "", item.get("error") or ""))
-    status = "degraded" if coverage_errors else "attention" if attention or unasked_waits else "clear"
+    decisions = [row for row in unasked_waits if row["wait_kind"] == "decision"]
+    status = "degraded" if coverage_errors else "attention" if attention or decisions else "clear"
     return {
         "ok": not coverage_errors,
         "schema_version": 3,
@@ -1225,7 +1249,8 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             "external_comments": len(comment_states),
             "attention": len(attention),
             **state_counts,
-            "unasked_director_waits": len(unasked_waits),
+            "unasked_director_waits": len(decisions),
+            "unasked_director_holds": len(unasked_waits) - len(decisions),
             **{
                 f"author_{kind}": sum(1 for item in attention if item["author_class"] == kind)
                 for kind in ("person", "automation", "possible_automation")
@@ -1242,7 +1267,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             "Repository scans cover issues and PRs opened in the window, issue/PR conversation comments and inline PR review comments; full-history --thread scans also cover the opening post and non-empty PR review bodies.",
             "An edit to an issue or PR description is caught only by a full-history --thread scan or when the thread is opened in the window.",
             "Automation accounts that act for other people come from the people index (contacts.github.bot_usernames); unlisted logins ending in bot or automation are marked possible_automation.",
-            "Waits on the Director are open plan:waiting issues whose current Waiting for step names the Director's login, a people-index name, or the Director role, with no Director or Owner question still open; negated mentions and holds the Director imposed (resume, park, hold, select, revisit) are left out; repository scans only.",
+            "Waits on the Director are open plan:waiting issues whose current Waiting for step names the Director's login, a people-index name, or the Director role, with no Director or Owner question still open; negated mentions are left out, and waits worded as the Director's own hold (resume, park, hold, select, revisit) are listed as director_hold without raising attention; repository scans only.",
             "Any owner reaction after the current comment version proves personal acknowledgement; owner replies require an exact permalink or an inline-review thread with one eligible external comment.",
             "A targeted automation reply may also use an unambiguous single-author mention, but it never proves the owner saw the comment.",
             "External comments outside the configured lookback window are not included.",
@@ -1262,7 +1287,8 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"- Repositories scanned: {payload['coverage']['repository_count']}",
         f"- Messages needing attention: {counts['attention']}",
         f"- Handled messages: {counts['handled']}",
-        f"- Waits on you with no open question: {counts.get('unasked_director_waits', 0)}",
+        f"- Waits on you with no open question: {counts.get('unasked_director_waits', 0)}"
+        f" (plus {counts.get('unasked_director_holds', 0)} worded as your own hold)",
     ]
     sections = (
         ("needs_your_eyes", "Needs Your Eyes"),
@@ -1296,13 +1322,22 @@ def render_markdown(payload: dict[str, Any]) -> str:
             if item["body_excerpt"]:
                 lines.append(f"  - {item['body_excerpt']}")
     waits = payload.get("unasked_director_waits") or []
-    if waits:
-        lines.extend(["", "## Waiting On You — No Question Asked"])
-        for wait in waits:
+    for kind, heading in (
+        ("decision", "Waiting On You — No Question Asked"),
+        ("director_hold", "Held For You — Worded As Your Own Hold, No Question Asked"),
+    ):
+        rows = [wait for wait in waits if wait.get("wait_kind", "decision") == kind]
+        if not rows:
+            continue
+        lines.extend(["", f"## {heading}"])
+        for wait in rows:
             reason = "no question was posted" if wait["question_gap"] == "no_question" else "every question is answered"
             lines.append("")
             lines.append(f"- [{wait['repo']}#{wait['number']}: {wait['title']}]({wait['url']}) — {reason}")
             lines.append(f"  - Waiting for: {wait['waiting_for']}")
+    people = payload.get("people_index") or {}
+    if people and not people.get("director_named"):
+        lines.extend(["", "The people index does not name the Director, so waits that name him only by name were not matched."])
     if not payload["attention"] and not waits:
         message = (
             "No surfaced comments require attention, but coverage is incomplete; this is not an all-clear."

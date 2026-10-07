@@ -30,6 +30,13 @@ sys.modules[MODULE_SPEC.name] = github_unanswered_comments
 MODULE_SPEC.loader.exec_module(github_unanswered_comments)
 
 
+@pytest.fixture(autouse=True)
+def no_host_people_index(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep the default people index lookup off the host's private files."""
+    monkeypatch.setenv("CODE_HOME", str(tmp_path / "missing-code-home"))
+    monkeypatch.chdir(tmp_path)
+
+
 def comment(
     *,
     comment_id: int,
@@ -83,7 +90,7 @@ def args(**overrides: object) -> argparse.Namespace:
         "thread": [],
         "self_login": [],
         "bot_login": [],
-        "people_index": Path("/definitely/missing/people.yaml"),
+        "people_index": None,
         "window": None,
         "since": None,
         "until": None,
@@ -1077,32 +1084,34 @@ def waiting_issue(waiting_for: str, number: int = 141) -> dict[str, object]:
 
 
 @pytest.mark.parametrize(
-    ("waiting_for", "named"),
+    ("waiting_for", "kind"),
     [
-        ("Pat's approval of the testing plan.", True),
-        ("@cbusillo to confirm the cutover.", True),
-        ("Director decision on the plan.", True),
-        ("Casey to post the backup screenshot.", False),
-        ("None.", False),
-        ("Patience from the vendor.", False),
-        ("Casey's testing, then Pat's go-live approval.", False),
-        ("Pat's policy review, then Casey's release acceptance.", True),
-        ("Supervisor reconciliation. No Director decision is open.", False),
-        ("upstream support; nothing needed from Pat for this trial.", False),
-        ("Pat to resume the parked workstream.", False),
-        ("Pat selects it.", False),
-        ("Mediaforce to leave development (cbusillo/mediaforce).", False),
-        ("Pat/operator to supply the Search Console access.", True),
+        ("Pat's approval of the testing plan.", "decision"),
+        ("@cbusillo to confirm the cutover.", "decision"),
+        ("Director decision on the plan.", "decision"),
+        ("Casey to post the backup screenshot.", None),
+        ("None.", None),
+        ("Patience from the vendor.", None),
+        ("Casey's testing, then Pat's go-live approval.", None),
+        ("Pat's policy review, then Casey's release acceptance.", "decision"),
+        ("Supervisor reconciliation. No Director decision is open.", None),
+        ("upstream support; nothing needed from Pat for this trial.", None),
+        ("Mediaforce to leave development (cbusillo/mediaforce).", None),
+        ("Pat/operator to supply the Search Console access.", "decision"),
+        # Hold wording stays listed, because it can also describe a real decision.
+        ("Pat to resume the parked workstream.", "director_hold"),
+        ("Pat selects it.", "director_hold"),
+        ("Pat approval to resume deployment.", "director_hold"),
     ],
 )
-def test_director_wait_reason_matches_only_waits_naming_the_director(waiting_for: str, named: bool) -> None:
+def test_director_wait_reason_classifies_waits_naming_the_director(waiting_for: str, kind: str | None) -> None:
     terms = ["cbusillo", "Pat Director", "Pat", "Director"]
 
-    reason = github_unanswered_comments.director_wait_reason(
+    result = github_unanswered_comments.director_wait_reason(
         "example/repo", waiting_issue(waiting_for), terms, {"cbusillo"}
     )
 
-    assert (reason is not None) == named
+    assert (result[1] if result else None) == kind
 
 
 def test_question_gap_distinguishes_missing_open_and_answered_questions() -> None:
@@ -1139,6 +1148,52 @@ def test_unasked_wait_on_director_is_reported(monkeypatch, tmp_path: Path) -> No
     rendered = github_unanswered_comments.render_markdown(payload)
     assert "## Waiting On You — No Question Asked" in rendered
     assert "No external comments need attention" not in rendered
+
+
+def test_director_hold_is_listed_without_raising_attention(monkeypatch, tmp_path: Path) -> None:
+    held = waiting_issue("Pat to resume the parked workstream.", number=31)
+    fake = FakeGitHub({"repos/example/repo/issues": lambda endpoint: [held] if "plan%3Awaiting" in endpoint else []})
+    monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
+
+    payload = github_unanswered_comments.collect_payload(portfolio_settings(people_index=people_index(tmp_path)))
+
+    assert payload["status"] == "clear"
+    assert [(row["number"], row["wait_kind"]) for row in payload["unasked_director_waits"]] == [(31, "director_hold")]
+    assert "## Held For You" in github_unanswered_comments.render_markdown(payload)
+
+
+def test_named_people_index_that_is_missing_degrades_coverage(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub({}))
+
+    payload = github_unanswered_comments.collect_payload(portfolio_settings(people_index=tmp_path / "typo.yaml"))
+
+    assert payload["status"] == "degraded"
+    assert payload["coverage"]["errors"][0]["lane"] == "people_index"
+
+
+def test_missing_default_people_index_is_normal_but_reported(monkeypatch) -> None:
+    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub({}))
+
+    payload = github_unanswered_comments.collect_payload(portfolio_settings())
+
+    assert payload["status"] == "clear"
+    assert "does not name the Director" in github_unanswered_comments.render_markdown(payload)
+
+
+def test_scanning_a_client_repository_never_borrows_client_automation(monkeypatch, tmp_path: Path) -> None:
+    # Every scanned repository owner counts as the Director, so the Client's
+    # repository makes two people match; their bots must not be silenced.
+    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub({}))
+    settings = github_unanswered_comments.resolve_settings(
+        args(repo=["example/repo", "casey-client/project"], self_login=["cbusillo"], people_index=people_index(tmp_path)),
+        {},
+        now=datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc),
+    )
+
+    payload = github_unanswered_comments.collect_payload(settings)
+
+    assert payload["status"] == "degraded"
+    assert "client-code-bot" not in payload["bot_logins"]
 
 
 if __name__ == "__main__":
