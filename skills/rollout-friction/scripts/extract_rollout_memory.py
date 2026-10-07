@@ -459,7 +459,7 @@ def redact_path_match(match: re.Match[str]) -> str:
                 (".localhost", ".local", ".internal", ".lan", ".home.arpa", ".test", ".ts.net",
                  ".localdomain", ".home", ".corp", ".intranet")
             )
-        local = local or parsed.path.startswith("/@fs/")
+        local = local or parsed.path.startswith("/@fs/") or bool(re.match(r"/tunnel/[^/]+/", parsed.path))
     except ValueError:
         local = True  # Malformed URLs do not establish a public host.
     if local:
