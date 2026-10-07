@@ -7,6 +7,8 @@
 
 import os
 import pathlib
+import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -145,6 +147,71 @@ class UsageTests(unittest.TestCase):
         consumers = usage.report(since=0, now=1100, actor="fixture-bot")["consumers"]
         self.assertEqual(len(consumers), 1)
         self.assertEqual((consumers[0]["http_requests"], consumers[0]["primary_requests"]), (1, 0))
+
+    def test_fleet_report_combines_ledgers_without_counting_copied_receipts_twice(self):
+        first = pathlib.Path(self.directory.name)
+        with tempfile.TemporaryDirectory() as other:
+            second = pathlib.Path(other)
+            with patch.dict(os.environ, {"GITHUB_REQUEST_SESSION": "session-a"}):
+                usage.record_response(method="GET", path="/repos/example/app", status=200,
+                                      headers={"x-github-request-id": "request-a"},
+                                      operation="github.pr.watch", actor="fixture-bot", now=1000)
+            shutil.copytree(first / "request-usage", second / "request-usage")
+            with patch.dict(os.environ, {"GITHUB_RETRY_STATE_DIR": other, "GITHUB_REQUEST_CALLER": "launchplane-train-drive.py",
+                                       "GITHUB_REQUEST_SESSION": "driver-a"}):
+                usage.record_response(method="GET", path="/repos/example/app/pulls/7", status=304,
+                                      headers={"x-github-request-id": "request-b"},
+                                      operation="github.train.drive", actor="fixture-bot", now=1001)
+            result = usage.report(since=900, now=1100, actor="fixture-bot", state_dirs=[first, second, first])
+        self.assertEqual(result["duplicate_records"], 1)
+        self.assertEqual(sum(row["http_requests"] for row in result["consumers"]), 2)
+        self.assertEqual(sum(row["primary_requests"] for row in result["consumers"]), 1)
+        self.assertEqual({row["session"] for row in result["sessions"]}, {"session-a", "driver-a"})
+        self.assertIn("launchplane-train-drive.py", {row["helper"] for row in result["consumers"]})
+        self.assertIsNone(result["session_ceiling"])
+
+    def test_quota_windows_keep_peak_headers_separate_from_local_cost_and_scope(self):
+        for request, (path, host, actor, resource, reset, used, status) in enumerate([
+            ("/repos/example/app", "github.com", "fixture-bot", "core", 3600, 4100, 200),
+            ("/repos/example/other", "github.com", "fixture-bot", "core", 3600, 4000, 304),
+            ("/repos/example/app", "github.com", "fixture-bot", "core", 7200, 4, 200),
+            ("/repos/elsewhere/app", "github.com", "fixture-bot", "core", 3600, 50, 200),
+            ("/repos/example/app", "elsewhere.invalid", "fixture-bot", "core", 3600, 20, 200),
+            ("/repos/example/app", "github.com", "other-bot", "core", 3600, 30, 200),
+            ("/graphql", "github.com", "fixture-bot", "graphql", 3600, 80, 200),
+        ]):
+            usage.record_response(method="GET", path=path, status=status, host=host, actor=actor, now=1000 + request,
+                                  headers={"x-ratelimit-limit": "5000", "x-ratelimit-remaining": str(5000-used),
+                                           "x-ratelimit-reset": str(reset), "x-ratelimit-resource": resource,
+                                           "x-github-request-id": f"request-{request}"}, operation="github.read")
+        windows = usage.report(since=0, now=8000)["quota_windows"]
+        self.assertEqual(len(windows), 6)
+        peak = next(row for row in windows if (row["host"], row["actor"], row["owner"], row["bucket"], row["reset"]) ==
+                    ("github.com", "fixture-bot", "example", "rest_core", 3600))
+        self.assertEqual((peak["max_used"], peak["http_requests"], peak["primary_requests"]), (4100, 2, 1))
+        self.assertEqual((peak["first_observed_at"], peak["last_observed_at"]), (1000, 1001))
+
+    def test_legacy_and_unreadable_receipts_do_not_invent_session_coverage(self):
+        usage.record_response(method="GET", path="/repos/example/app", status=200, headers={},
+                              operation="github.read", actor="fixture-bot", now=1000)
+        ledger = next(pathlib.Path(self.directory.name).rglob("*.jsonl"))
+        record = json.loads(ledger.read_text())
+        record.pop("session")
+        ledger.write_text(json.dumps(record) + '\n{"timestamp":\n')
+        result = usage.report(since=0, now=1100)
+        self.assertEqual((result["unreadable_records"], result["unattributed_requests"]), (1, 1))
+        self.assertEqual(result["sessions"], [])
+        self.assertIsNone(result["session_ceiling"])
+
+    def test_fleet_cli_reads_only_explicit_state_directories(self):
+        usage.record_response(method="GET", path="/repos/example/app", status=200, headers={},
+                              operation="github.read", actor="fixture-bot")
+        script = pathlib.Path(__file__).with_name("github_request_usage.py")
+        output = subprocess.run([sys.executable, str(script), "--state-dir", self.directory.name,
+                                 "--state-dir", self.directory.name], capture_output=True, text=True, check=True)
+        result = json.loads(output.stdout)
+        self.assertEqual((result["state_directory_count"], result["files_read"]), (1, 1))
+        self.assertEqual(sum(row["http_requests"] for row in result["consumers"]), 1)
 
 
 if __name__ == "__main__":

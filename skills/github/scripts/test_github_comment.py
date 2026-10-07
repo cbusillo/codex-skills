@@ -12,6 +12,9 @@ import pathlib
 import subprocess
 import tempfile
 import sys
+import datetime as dt
+import math
+import urllib.parse
 from typing import Any, Callable
 from unittest.mock import patch
 
@@ -1111,7 +1114,78 @@ def test_exact_edit_supports_enterprise_api_thread_urls() -> None:
         github_api.DEFAULT_HOST = original_host
 
 
+def test_append_filters_old_pages_but_dedupe_and_edit_last_keep_full_history() -> None:
+    old = [comment_body(1000 + index, created_at="2026-07-15T12:00:00Z", body=f"old-{index}")
+           for index in range(github_comment.PER_PAGE * 3 + 10)]
+    for options, expected_action in [({}, "created"), ({"dedupe_body": True}, "existing"),
+                                      ({"edit_last": True}, "updated")]:
+        def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            if path == "/user":
+                return success({"login": "fixture-automation"})
+            if method == "GET":
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+                page = int(query["page"][0])
+                if "since" in query:
+                    floor = dt.datetime(2026, 7, 16, 12, tzinfo=dt.timezone.utc) - dt.timedelta(
+                        seconds=github_comment.RECONCILIATION_CLOCK_SKEW_SECONDS + 1)
+                    assert query["since"] == [github_comment._format_timestamp(floor)], query
+                    return success([])
+                offset = (page - 1) * github_comment.PER_PAGE
+                batch = old[offset:offset + github_comment.PER_PAGE]
+                headers = {"link": '<https://api.github.com/next>; rel="next"'} if offset + len(batch) < len(old) else {}
+                return success(batch, headers=headers)
+            return success(comment_body(2000, body=body["body"]))
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            with patch("github_comment._utc_now", return_value=dt.datetime(2026, 7, 16, 12, tzinfo=dt.timezone.utc)):
+                result = github_comment.comment("issue", 42, "old-0", repo="owner/repo", gh_cmd="fake-gh", **options)
+            assert result["comment_action"] == expected_action, result
+            pages = [call for call in calls if call["method"] == "GET" and call["path"] != "/user"]
+            assert len(pages) == (math.ceil(len(old) / github_comment.PER_PAGE) if options else 1), pages
+
+        with_call_stub(callback, run)
+
+
+def test_recent_reconciliation_includes_clock_skew_boundary_and_paginates() -> None:
+    clock = dt.datetime(2026, 7, 16, 12, tzinfo=dt.timezone.utc)
+    boundary = clock - dt.timedelta(seconds=github_comment.RECONCILIATION_CLOCK_SKEW_SECONDS)
+    posted = ""
+    pages = []
+
+    def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        nonlocal posted
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        if method == "POST":
+            posted = body["body"]
+            return failure(503, "Unicorn!", is_write=True)
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+        since = github_comment._parse_timestamp(query["since"][0])
+        # GitHub's updated-since comparison is exclusive. The created_at
+        # boundary remains inclusive in the reconciliation contract.
+        assert since < boundary, query
+        page = int(query["page"][0])
+        if not posted:
+            return success([])
+        pages.append(page)
+        if page == 1:
+            return success([comment_body(55, "foreign", body=posted)],
+                           headers={"link": '<https://api.github.com/next>; rel="next"'})
+        return success([comment_body(56, created_at=github_comment._format_timestamp(boundary), body=posted)])
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        with patch("github_comment._utc_now", return_value=clock):
+            result = github_comment.comment("issue", 42, "new", repo="owner/repo", gh_cmd="fake-gh")
+        assert result["comment"]["id"] == 56, result
+        assert pages == [1, 2], pages
+        assert sum(call["method"] == "POST" for call in calls) == 1, calls
+
+    with_call_stub(callback, run, allow_retry=True)
+
+
 TESTS: list[Callable[[], None]] = [
+    test_recent_reconciliation_includes_clock_skew_boundary_and_paginates,
+    test_append_filters_old_pages_but_dedupe_and_edit_last_keep_full_history,
     test_own_user_actor_is_resolved_before_edit_selection_and_dedupe,
     test_resolved_own_user_rejects_foreign_exact_comment_before_write,
     test_resolved_own_user_failure_keeps_fingerprint_and_reconciliation_actor,

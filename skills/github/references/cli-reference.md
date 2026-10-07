@@ -114,6 +114,27 @@ local HTTP attempts by helper, operation, repository and quota bucket. Use
 live under the shared retry-state directory's `request-usage` folder and contain
 no request/response bodies, endpoint queries or credentials. Delegating watchers
 pass their caller name to the PR helper, so its reads count toward that watcher.
+Repeat `--state-dir <retry-state-directory>` to combine existing host/account
+ledgers (or privately collected copies); explicit directories replace the default.
+Copied receipts with the same host, actor and GitHub request ID count once.
+Records without IDs cannot be deduplicated. Missing files, unreadable records,
+and the number of files read are reported as coverage evidence.
+
+`quota_windows` groups response-header observations by host, actor, repository
+owner, quota bucket and reset epoch. Its peak `max_used` includes spending by
+other clients of that installation; local `primary_requests` remains the
+instrumented subset. The first/last observation times expose partial windows.
+These peaks are not interval-end totals and cannot attribute the unobserved
+spending to a controller. Unknown repository owners stay separate. Prefer these
+headers over a conflicting `/rate_limit` result, as
+[GitHub documents](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#checking-the-status-of-your-rate-limit).
+
+New receipts optionally carry a private session identifier from
+`GITHUB_REQUEST_SESSION`, then `CODEX_THREAD_ID` or `CLAUDE_SESSION_ID` when
+available. The report lists attributed counts and unattributed requests; a
+distinct receipt session is not proof of a simultaneously working session.
+`session_ceiling` remains null: declaring fleet capacity requires a timed load
+with verified concurrency, controller traffic and quota-window coverage.
 
 HTTP attempts and primary requests are separate: authenticated 304 responses
 and `/rate_limit` probes use no primary requests. Local App actor replies
@@ -144,6 +165,15 @@ permission checks, write reconciliation or the existing bounded reset waits.
 Receipts are retained for retrospective measurement; the pilot's closeout must
 decide retention after preserving its acceptance evidence.
 See [GitHub's conditional-request guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests).
+
+Ordinary comment appends limit their pre-existing-ID scan and unknown-write
+reconciliation to the existing creation/clock-skew window, using GitHub's
+`since` filter on update time. One extra second in the query includes the exact
+creation boundary despite the exclusive filter. Recently edited old comments
+remain subject to the original creation-time check. Body deduplication and
+edit-last still read the full thread; actor, operation-marker, existing-ID and
+ambiguous-write checks are unchanged. Append reads still paginate within that
+window, and a failed reconciliation read never authorizes a repeated POST.
 
 ### Shared Retry Policy
 
