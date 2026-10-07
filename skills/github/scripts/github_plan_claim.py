@@ -94,7 +94,7 @@ def conditional_release_prose(text: str, *, suffix: str) -> bool:
     # An instruction about what to do on resumption does not defer ownership.
     statements = [re.sub(rf"^(?:When|If) you {successor_action},(?![^.!?;]*\bdo so\b)\s*", "", statement,
                          flags=re.IGNORECASE) for statement in statements]
-    step = r"(?:merge[ds]?|land(?:ed)?|pass(?:ed)?|finish(?:ed)?|complete[ds]?|green)"
+    step = r"(?:merge[ds]?|land(?:s|ed)?|pass(?:es|ed)?|finish(?:ed)?|complete[ds]?|green)"
     required_step = rf"\bmust\s+(?:be\s+)?{step}\b"
     prerequisite = rf"{required_step}[^.!?;]*\bfirst\b|^First,?\s+[^.!?;]*{required_step}"
     effective = r"\b(?:takes? effect|effective)\b(?!\s+(?:now|immediately)\b)"
