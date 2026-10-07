@@ -1698,6 +1698,9 @@ class ClaimTests(unittest.TestCase):
             "Released claim 1\n\n**If** CI passes, the next worker may claim.",
             "Released claim 1\n\nOnly after PR #99 merges may the next worker claim.",
             "Released claim 1\n\nProvided CI passes, the next worker may claim.",
+            "Released claim 1. Effective on merge of PR #99.",
+            "Released claim 1. Wait for PR #99 to merge, then claim.",
+            "Released claim 1\n\nThe next worker may claim as soon as CI is green.",
         )
         for release in releases:
             for retained in (False, True):

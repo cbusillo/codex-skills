@@ -85,8 +85,10 @@ def released_claim_id(text: str) -> int | None:
         # worktree cleanup. A condition directly after the ID also qualifies
         # the directive even when it leaves that subject implicit.
         suffix = first[0][match.end(1):].lstrip(". \t")
-        condition = r"\b(?:if|after|once|when|unless|until|before|pending|provided|conditional|subject to)\b"
-        prose = ownership_text(suffix + "\n" + "\n".join(text.splitlines()[1:]))
+        # Identity tokens and hidden transport/release receipts are not prose.
+        condition = r"(?<![\w/.-])(?:if|after|once|when|unless|until|before|pending|provided|conditional|subject to|as soon as|on (?:merge|landing)|wait(?:ing)? for)(?![\w/-])"
+        handoff = re.sub(r"(?s)<!--.*?-->", "", suffix + "\n" + "\n".join(text.splitlines()[1:]))
+        prose = ownership_text(handoff)
         statements = re.split(r"(?<=[.!?;])\s+|\n[ \t]*\n", prose)
         if (re.match(condition, ownership_text(suffix), re.IGNORECASE)
                 or any(re.search(condition, statement, re.IGNORECASE)
