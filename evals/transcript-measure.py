@@ -19,6 +19,7 @@ import datetime as dt
 import json
 import os
 import re
+import shlex
 import sys
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
@@ -28,11 +29,12 @@ from pathlib import Path
 # Patterns match the start of a shell segment, either as written or with its helper path
 # reduced to the program name ("uv run /x/gh-pr.py merge 3" also as "gh-pr.py merge 3").
 STEPS = {
-    "github": r"gh pr (create|merge|ready|edit|comment)|git push|gh-pr(\.py)? (--repo \S+ )?(create|merge|ready|edit|comment)"
+    "github": r"gh pr (create|merge|ready|edit|comment|view|update-branch)|git push"
+    r"|gh-pr(\.py)? (--repo \S+ )?(create|merge|ready|edit|comment|view|update-branch|supersede)"
     r"|git-(commit|push)-as-bot|reconcile-runtime-checkout|gh api|gh-with-env-token (api|pr|issue)|github_api(\.py)?"
     r"|gh issue (create|edit|close|comment|view)|gh-issue|gh-comment",
     "babysit-pr": r"gh pr checks|gh run watch|gh_pr_watch|github_workflow_babysit|gh-pr(\.py)? (--repo \S+ )?checks|github-ci-diagnose",
-    "github-plan": r"gh issue list|gh search issues|gh-plan(\.py)?",
+    "github-plan": r"gh issue list|gh search issues|gh project|gh-plan(\.py)?",
     "python-uv-workflow": r"uv (sync|add|lock|remove)|pytest|pip3? install|python3? -m (pytest|pip|venv)"
     r"|uv run (--quiet )?(?!--quiet)(?!--with)(?!--no-project)(?!python3? -c)(?!\S*skills/)(?!\$)\S+",
     "infra-ops": r"ssh |systemctl |docker (-H|--context|compose|exec) |pct |qm |zfs |tailscale |npmplus-ops|private-context-check",
@@ -48,11 +50,12 @@ STEPS = {
 STEP_PATTERNS = {skill: re.compile(pattern) for skill, pattern in STEPS.items()}
 COMMIT = re.compile(r"git commit|git-commit-as-bot|gh pr create|gh-pr(\.py)? (--repo \S+ )?create")
 CODE_FILE = re.compile(r"\.(py|ts|tsx|js|jsx|mjs|rs|go|kt|java|swift|vue|css|scss)$")
-SKILL_FILE = re.compile(r"(?:^|[/\s\"'`])([a-z0-9-]+)/SKILL\.md")
+SKILL_FILE = re.compile(r"(?:^|/)([a-z0-9-]+)/SKILL\.md$")
 BLOCK = re.compile(r"Blocked by the `([a-z0-9-]+)` skill")
 SLASH = re.compile(r"<command-name>/?(?:[a-z-]+:)?([a-z0-9-]+)</command-name>")
 HEREDOC = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?.*?\n.*?\n\1\b", re.S)
 EXEC_CMD = re.compile(r"\bcmd\s*:\s*(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)")
+OPERATORS = ("||", "&&", "|", ";", "\n", "$(", "`", ")")
 FILE_READERS = ("cat", "sed", "head", "tail", "less", "bat", "nl", "awk")
 READ_ONLY = (*FILE_READERS, "echo", "grep", "rg", "ls", "#", "printf", "wc", "jq", "find")
 ALIASES = {"claude-in-chrome": "browser-ui-review"}
@@ -71,14 +74,47 @@ class Session:
     events: list[tuple] = field(default_factory=list)
 
 
+def split_unquoted(command: str) -> list[str]:
+    """Split at shell operators outside quotes, so quoted search patterns stay whole."""
+    parts, current, quote, index = [], [], None, 0
+    while index < len(command):
+        char = command[index]
+        if char == "\\" and quote != "'" and index + 1 < len(command):
+            current.append(command[index:index + 2])
+            index += 2
+            continue
+        if quote:
+            quote = None if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        elif operator := next((op for op in OPERATORS if command.startswith(op, index)), None):
+            parts.append("".join(current))
+            current = []
+            index += len(operator)
+            continue
+        current.append(char)
+        index += 1
+    parts.append("".join(current))
+    return parts
+
+
 def segments(command: str) -> Iterator[str]:
     """Split a shell command into program segments, in order, without heredoc bodies."""
-    command = HEREDOC.sub(" ", command)
-    for segment in re.split(r"\s*(?:\|\|?|&&|;|\n|\$\(|`|\bthen\b|\bdo\b)\s*", command):
-        segment = segment.strip().lstrip("({ ")
+    for segment in split_unquoted(HEREDOC.sub(" ", command)):
+        segment = re.sub(r"^((then|do|else|if|while|until|!|[({])\s*)+", "", segment.strip())
         segment = re.sub(r"^((\w+=\S*|export|env|time|timeout \d+\w?|cd \S+)\s+)+", "", segment)
         if segment:
             yield segment
+
+
+def skill_reads(segment: str) -> list[str]:
+    """Skills whose SKILL.md a file-reading segment names as a file operand."""
+    try:
+        words = shlex.split(segment)
+    except ValueError:
+        words = segment.split()
+    return [skill_name(m.group(1)) for word in words[1:]
+            if not word.startswith("-") and (m := SKILL_FILE.search(word))]
 
 
 def program(segment: str) -> str:
@@ -97,7 +133,7 @@ def command_events(command: str, edited_code: bool) -> list[tuple]:
     events: list[tuple] = []
     for segment in segments(command):
         if segment.startswith(FILE_READERS):
-            events.extend(("load", skill_name(m.group(1))) for m in SKILL_FILE.finditer(segment))
+            events.extend(("load", skill) for skill in skill_reads(segment))
         if segment.startswith(READ_ONLY):
             continue
         forms = (segment, program(segment))
@@ -178,19 +214,23 @@ def parse_claude(path: Path, since: dt.datetime, until: dt.datetime) -> Session 
     return session
 
 
+def js_string(literal: str) -> str:
+    """The value of a JavaScript string literal in Codex's exec source."""
+    body = literal[1:-1]
+    try:
+        if literal[0] == '"':
+            return json.loads(literal)
+        if literal[0] == "'":
+            return json.loads('"' + re.sub(r'(?<!\\)"', '\\"', body.replace("\\'", "'")) + '"')
+    except ValueError:
+        pass
+    return body.replace("\\n", "\n")
+
+
 def codex_commands(payload: dict) -> list[str]:
     """Shell commands in a Codex tool call, from either the exec_command or the JavaScript exec form."""
     if payload.get("type") == "custom_tool_call":
-        commands = []
-        for literal in EXEC_CMD.findall(payload.get("input", "")):
-            if literal[0] == "`":
-                commands.append(literal[1:-1])
-                continue
-            try:
-                commands.append(json.loads('"' + literal[1:-1].replace('"', '\\"').replace("\\'", "'") + '"'))
-            except ValueError:
-                commands.append(literal[1:-1])
-        return commands
+        return [js_string(literal) for literal in EXEC_CMD.findall(payload.get("input", ""))]
     try:
         arguments = json.loads(payload.get("arguments") or "{}")
     except ValueError:
@@ -278,8 +318,8 @@ def measure(session: Session, report: dict, misses: dict) -> None:
             skill = event[1]
             counts[skill]["loads"] += 1
             counts[skill]["rereads"] += skill in loaded
-            if skill in blocked:
-                forced.add(skill)
+            if skill in blocked and skill not in loaded:
+                forced.add(skill)  # its first load came only after a block
             loaded.add(skill)
             turn_loads.add(skill)
             compact_loads.add(skill)

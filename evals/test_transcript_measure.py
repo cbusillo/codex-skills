@@ -129,6 +129,29 @@ class TranscriptMeasureTests(unittest.TestCase):
         self.assertEqual(skills["github"]["loads"], 1)
         self.assertEqual(skills["python-uv-workflow"]["loads"], 0)
 
+    def test_quoted_search_text_is_neither_a_step_nor_a_load(self) -> None:
+        self.write(self.claude / "proj" / "s7.jsonl", [
+            claude_prompt("find the helpers"),
+            claude_call("Bash", command="rg 'gh pr merge|gh issue list' README.md; sed -n '/github/SKILL.md/p' README.md"),
+            claude_call("Bash", command="uv run skills/github/scripts/gh-pr.py update-branch 4 && gh project list"),
+        ])
+        report, _ = self.run_measure()
+        skills = report["skills"]["claude"]
+        self.assertEqual((skills["github"]["sessions"], skills["github"]["loads"]), (1, 0))
+        self.assertEqual(skills["github-plan"]["sessions"], 1)
+
+    def test_a_proactive_load_is_not_a_recovery_when_a_later_block_hits(self) -> None:
+        self.write(self.claude / "proj" / "s8.jsonl", [
+            claude_prompt("merge PR 3"),
+            claude_call("Skill", skill="github"),
+            claude_call("Bash", command="gh pr merge 3"),
+            claude_result("Blocked by the `github` skill's command policy `x`."),
+            claude_call("Skill", skill="github"),
+        ])
+        report, _ = self.run_measure()
+        github = report["skills"]["claude"]["github"]
+        self.assertEqual((github["before"], github["after_block"]), (1, 0))
+
     def test_a_blocked_first_attempt_is_a_miss_and_its_recovery_is_counted(self) -> None:
         self.write(self.claude / "proj" / "s6.jsonl", [
             claude_prompt("merge PR 3"),
@@ -158,7 +181,7 @@ class TranscriptMeasureTests(unittest.TestCase):
         self.write(self.codex / "2026" / "rollout-a.jsonl", [
             codex_meta(),
             codex_turn("t1"),
-            codex_exec("sed -n '1,200p' skills/github/SKILL.md", "gh pr merge 3"),
+            codex_exec("sed -n '1,200p' \"skills/github/SKILL.md\"\ngh pr merge 3 --body \"done\""),
             {"type": "compacted", "payload": {}},
             codex_turn("t1"),
             codex_shell("gh pr merge 4"),
@@ -175,6 +198,13 @@ class TranscriptMeasureTests(unittest.TestCase):
         self.assertEqual((github["later_turn"], github["later_turn_reloaded"]), (1, 1))
         self.assertEqual(report["skills"]["codex"]["jetbrains-inspection"]["sessions"], 1)
         self.assertEqual(report["totals"]["codex"], {"sessions": 1, "compactions": 1})
+
+    def test_codex_exec_commands_decode_to_what_ran(self) -> None:
+        command = 'cat "skills/github/SKILL.md"\ngh pr merge 3 --body "done"'
+        single_quoted = """tools.exec_command({cmd:'cat "skills/github/SKILL.md"\\ngh pr merge 3 --body "done"'})"""
+        for source in (codex_exec(command)["payload"]["input"], single_quoted):
+            with self.subTest(source=source):
+                self.assertEqual(measure.codex_commands({"type": "custom_tool_call", "input": source}), [command])
 
     def test_sessions_outside_the_window_or_excluded_are_skipped(self) -> None:
         early = dict(claude_prompt("merge"), timestamp="2026-09-01T00:00:00Z")
