@@ -932,8 +932,9 @@ class ClaimTests(unittest.TestCase):
                     {"id": 2, "body": template.format(session="old-session-b"), "user": {"login": TEST_BOT}},
                     {"id": 3, "body": "Released by old-worker", "user": {"login": TEST_BOT}},
                 ]
-                with self.assertRaises(PLAN.ClassifiedPlanError):
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
+                self.assertEqual({1, 2}, {e.get("id") for e in caught.exception.payload["competing_evidence"]})
                 self.assert_no_writes()
                 self.comments.extend([
                     {"id": 4, "body": "Released claim 1", "user": {"login": TEST_BOT}},
@@ -969,8 +970,10 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
                 else:
-                    with self.assertRaises(PLAN.ClassifiedPlanError):
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                         self.run_claim()
+                    expected = {2} if extra["user"]["login"] != TEST_BOT else {1, 2}
+                    self.assertEqual(expected, {e.get("id") for e in caught.exception.payload["competing_evidence"]})
                     self.assert_no_writes()
         self.setUp()
         self.comments = [

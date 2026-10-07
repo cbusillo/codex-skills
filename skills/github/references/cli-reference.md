@@ -618,9 +618,8 @@ comments must contain only that exact directive, optionally followed by the
 helper's operation marker; trailing whitespace is allowed. Conditional suffixes,
 continuations and other paragraphs never release ownership through this legacy
 form. Use `Released claim <claim-comment-id>` followed by a blank line and the
-handoff prose for a release with context. Bare legacy releases are accepted only
-when the earlier structured claims for that token all belong to one session;
-reuse requires exact comment-ID releases.
+handoff prose for a release with context. The session-identity rules in
+[Planning: Claim](#planning-claim) govern bare legacy releases.
 To recover an older ambiguous legacy release, the source author posts a new
 `Released claim <claim-comment-id>` comment for each original claim. For a
 closed automation session, use the evidence-backed `release-claim` route above.
