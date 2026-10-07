@@ -1947,6 +1947,13 @@ def test_closeout_wait_preserves_real_holds_partial_stacks_and_unknown_history()
     assert result["recorded_hold_pending"] and not result["selection_exclusion"]
     parked = {**blocked, "labels": [{"name": "plan:waiting"}]}
     assert not module.stale_wait_report([parked], "owner/catalog", fetch=native_blocker)["items"]
+    person_next = {**row, "body": row["body"].replace(
+        "closes this issue", "closes this issue once Justin accepts the staging build",
+    )}
+    result = module.stale_wait_report([person_next], "owner/catalog", fetch=fetch)["items"][0]
+    assert result["recorded_hold_pending"] and not result["selection_exclusion"]
+    assert not module.stale_wait_report([{**person_next, "labels": parked["labels"]}],
+                                        "owner/catalog", fetch=fetch)["items"]
     def unread_parked(args: list[str]) -> Any:
         if "/comments?" in args[1]:
             raise module.AuditError("history unavailable")

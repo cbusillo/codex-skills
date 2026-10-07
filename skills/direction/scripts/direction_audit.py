@@ -774,6 +774,8 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
                     and set(references(next_action[1])).issubset(pulls)
                     and all(re.fullmatch(bookkeeping, clause, re.I) for clause in clauses[1:]))
     hold_pending = False
+    if agent_wait and next_action:
+        hold_pending |= bool(re.search(r"\b(?:after|until|once|when|accept\w*|approv\w*|decision)\b", next_action[1], re.I))
     for match in re.finditer(
         rf"(?ims)^\s*(?:[-*]\s+)?(Waiting for|Blocked by|Parked until):\s*(.*?)(?=^\s*(?:[-*]\s+)?{STATUS_FIELD}:|\Z)", status,
     ):
