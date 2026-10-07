@@ -871,25 +871,61 @@ def rank_portfolio_work(
     }
 
 
+PENDING_WORDS = (r"\b(?:but|except|unless|until|if|once|after|however|pending|still|then|"
+                 r"wait\w*|await\w*|blocked|parked)\b")
+
+
+HOLD_WORDS = (r"\b(?:if|wait\w*|await\w*|pending|parked|blocked|until|unless|except|but|after|"
+              r"requir\w*|need\w*|approv\w*|authoriz\w*|decision|accept\w*)\b")
+
+
+def lead_clause(reason: str) -> tuple[str, str]:
+    """Split a status line's first clause from the context recorded after it."""
+    text = re.sub(r"\[([^]]+)]\([^)]+\)", r"\1", reason).strip()
+    match = re.match(r"(.+?)(?:;|\.(?=\s|$)|\n)\s*(.*)", text, re.S)
+    return (match[1].strip(), match[2].strip()) if match else (text.rstrip(" ."), "")
+
+
+def lead_names(pattern: str, reason: str) -> bool:
+    """The first clause states who acts next; later clauses describe later steps.
+
+    A pending word in the first clause, or one opening the next, keeps the wait.
+    """
+    lead, rest = lead_clause(reason)
+    return (re.fullmatch(pattern, lead, re.I) is not None
+            and not re.search(PENDING_WORDS, lead, re.I)
+            and not re.match(PENDING_WORDS, rest, re.I))
+
+
 def no_current_wait(reason: str) -> bool:
     """Explicit absence may carry a completion note, never a pending clause."""
     if github_plan_claim.no_wait_reason(reason, field="Waiting for"):
         return True
     if re.fullmatch(r"nothing[;.]\s*(?:this is |only )?agent work", reason.strip().rstrip(" ."), re.I):
         return True
+    # "None for the bounded step; later live actions keep their boundaries."
+    # scopes the absence to the next action.
+    if lead_names(r"(?:none|nothing|n/a)\s+(?:for|before)\s+.+", reason):
+        return True
+    # A bare "None; next actor is an agent." keeps any hold its note records.
+    lead, rest = lead_clause(reason)
+    if re.fullmatch(r"none|nothing|n/a", lead, re.I) and rest:
+        return not re.search(HOLD_WORDS, rest, re.I)
     lines = reason.splitlines()
     if len(lines) > 1 and github_plan_claim.no_wait_reason(lines[0], field="Waiting for"):
-        return not re.search(
-            r"\b(?:if|wait\w*|await\w*|pending|parked|blocked|until|unless|except|but|after|"
-            r"requir\w*|need\w*|approv\w*|authoriz\w*|decision|accept\w*)\b",
-            "\n".join(lines[1:]), re.I,
-        )
+        return not re.search(HOLD_WORDS, "\n".join(lines[1:]), re.I)
     return False
+
+
+def agent_next_wait(reason: str) -> bool:
+    """An agent or the Supervisor acts next, e.g. "Supervisor delivery closeout;
+    the Client's acceptance belongs to #2682." That step is agent work."""
+    return lead_names(r"(?:the |an? )?(?:next )?(?:agent|supervisor)(?:'s|’s)?(?:\s+[\w/-]+){0,4}", reason)
 
 
 def non_external_wait(reason: str) -> bool:
     """Recognize agent work and explicit absence; never clear an actual hold."""
-    if github_plan_claim.no_wait_reason(reason, field="Waiting for"):
+    if github_plan_claim.no_wait_reason(reason, field="Waiting for") or agent_next_wait(reason):
         return True
     return bool(re.fullmatch(
         r"(?:the |an |a )?(?:next )?agent(?: selection| assignment)?|"
@@ -940,12 +976,34 @@ def waiting_records(issue: dict[str, Any], status_text: str) -> list[dict[str, A
             "last_verified": verified[1].strip() if verified else None,
             "references": list(references.values()),
             "no_current_wait": no_current_wait(reason),
+            "agent_next": no_current_wait(reason) or agent_next_wait(reason),
             "non_external": no_current_wait(reason) or non_external_wait(reason),
             "unowned": no_current_wait(reason) or non_external_wait(reason) or bool(re.fullmatch(
                 r"separately authorized (?:production |live )?(?:activation|work)|live acceptance|approval|authorization", reason.strip().rstrip(" ."), re.I,
             )),
         })
     return records
+
+
+def next_action_references(issue: dict[str, Any], status_text: str) -> list[dict[str, Any]]:
+    """Issues a Current Status Next action names, in the issue's repository by default."""
+    match = re.search(r"(?im)^\s*(?:[-*]\s+)?Next action:\s*(.+)$", status_text)
+    if not match:
+        return []
+    plain = re.sub(r"\[([^]]+)]\(([^)]+)\)", r"\2", match[1])
+    references: dict[tuple[str, int], dict[str, Any]] = {}
+    for ref in re.finditer(
+        r"https://github\.com/([^/\s)]+/[^/\s)]+)/issues/(\d+)"
+        r"|(?<![\w/])([\w.-]+/[\w.-]+)?#(\d+)\b", plain,
+    ):
+        repo = ref.group(1) or ref.group(3) or issue["repo"]
+        if "/" not in repo:
+            continue
+        number = int(ref.group(2) or ref.group(4))
+        references[(repo.casefold(), number)] = {
+            "repo": repo, "number": number, "url": f"https://github.com/{repo}/issues/{number}",
+        }
+    return list(references.values())
 
 
 def evaluate_direction_node(
@@ -972,7 +1030,12 @@ def evaluate_direction_node(
         return {"item": {**item, "exclusion": "pull_request"}}
     status_text = section_map(issue.get("body") or "").get("Current Status", "")
     status_text = re.sub(r"<!--.*?-->", "", status_text, flags=re.S).strip()
-    reports = [row for row in waiting_records(item, status_text) if not row["no_current_wait"]]
+    # An agent's own next step, such as Supervisor closeout, is work to offer.
+    rows = waiting_records(item, status_text)
+    reports = [row for row in rows if not row["agent_next"]]
+    agent_steps = [row["waiting_for"] for row in rows if row["agent_next"] and not row["no_current_wait"]]
+    if agent_steps:
+        item["agent_next_step"] = agent_steps
     summary = next_relationship_summary(relationships or {})
     if summary["open_sub_issues"]:
         item["open_sub_issues"] = summary["open_sub_issues"]
@@ -1033,6 +1096,7 @@ def rank_direction_work(
     truncated = False
     ordinary_evaluated = 0
     other_family_evaluated = 0
+    track_next_actions: dict[str, dict[str, Any]] = {}
     # A stack keeps even a deep dependency chain within the explicit scan bound.
     pending: list[tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], bool]] = [
         (root, root["milestone"], [], True) for root in reversed(tracks)
@@ -1090,6 +1154,11 @@ def rank_direction_work(
                 "reported_by": item["url"],
                 "reported_at": item.get("updated_at"),
             })
+        if tracking:
+            track_next_actions[milestone["title"]] = {
+                "track": item["url"],
+                "references": next_action_references(item, status_text or ""),
+            }
         if reason in {"waiting", "label_blocked_without_native_edge"} and not tracking:
             excluded.append(item)
             degraded += reason == "label_blocked_without_native_edge"
@@ -1102,8 +1171,22 @@ def rank_direction_work(
             edges += [(edge, "sub_issue") for edge in children]
             for edge, relationship in reversed(edges):
                 pending.append(({**edge, "relationship": relationship}, milestone, via, False))
-        elif tracking:
+        elif tracking and not (
+            item.get("plan_status") == "active" and not reports
+            and re.search(r"(?im)^\s*State:\s*active\b", status_text or "")
+            and re.search(r"(?im)^\s*Next action:\s*\S", status_text or "")
+        ):
             excluded.append({**item, "exclusion": "tracking_without_open_work"})
+        elif tracking:
+            # An active Track with no linked work issue and no recorded wait
+            # is itself the agent's next step, such as scoping its first issue.
+            item.pop("exclusion", None)
+            item["reasons"] = [
+                f"direction_milestone_{order[milestone['title']] + 1}",
+                "tracking_issue_next_action_without_work_issue",
+                *(item.get("reasons") or []),
+            ]
+            candidates.append(item)
         elif reason:
             excluded.append(item)
         else:
@@ -1126,9 +1209,49 @@ def rank_direction_work(
         "tracking_milestones": [{"repo": root["repo"], "number": root["number"], "milestone": root["milestone"]} for root in tracks],
         "evaluated": len(seen),
         "truncated": truncated,
+        "track_next_actions": {
+            title: {**entry, "references": [ref for ref in entry["references"]
+                                            if (ref["repo"].casefold(), ref["number"]) not in seen]}
+            for title, entry in track_next_actions.items()
+        },
         "dependency_context": {
             "complete": not (degraded or truncated or missing),
             "degraded_count": degraded,
             "missing_tracking_milestones": missing,
         },
     }
+
+
+def milestone_summary(
+    milestone_titles: list[str], *, completed: list[str], candidates: list[dict[str, Any]],
+    graph_waits: list[dict[str, Any]], track_next_actions: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Say, for each open listed milestone, what work it offers or who it waits on.
+
+    A run without milestone candidates must still name each milestone's waits,
+    so unrelated work never reads as the top item by default.
+    """
+    summary: list[dict[str, Any]] = []
+    for title in milestone_titles:
+        if title in completed:
+            continue
+        work = [{"repo": item["repo"], "number": item["number"], "url": item["url"],
+                 "availability": item.get("availability")}
+                for item in candidates if item.get("via") and (item.get("milestone") or {}).get("title") == title]
+        waits: list[dict[str, Any]] = []
+        for row in graph_waits:
+            record = {"repo": row["repo"], "number": row["number"], "url": row["url"],
+                      "waiting_for": row.get("waiting_for")}
+            if (row.get("milestone") or {}).get("title") == title and record not in waits:
+                waits.append(record)
+        track = track_next_actions.get(title) or {}
+        summary.append({
+            "milestone": title,
+            "track": track.get("track"),
+            "state": "work_listed" if work else "waiting" if waits else "no_linked_work",
+            "work": work,
+            "waits": waits,
+            # Named by the Track's Next action but not reached over native edges.
+            "next_action_outside_graph": track.get("references", []),
+        })
+    return summary
