@@ -15,7 +15,8 @@ work changes.
 
 | Step | Owning skill |
 | --- | --- |
-| Create, push, update, or merge a PR | `github` |
+| Read GitHub through its API, or create, push, update, or merge a PR | `github` |
+| Find, read, claim, or update issues and plans | `github-plan` |
 | Follow CI, reviews, and mergeability until they settle | `babysit-pr` |
 | Run Python scripts, set up Python, or manage its dependencies and tests | `python-uv-workflow` |
 | Inspect changed code and resolve IDE findings | `jetbrains-inspection` |

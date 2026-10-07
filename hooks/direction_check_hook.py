@@ -11,6 +11,7 @@ records each weekly audit in the marker per repository. When this machine's
 own turn is older than a day, the hook reads the shared record, so a turn
 taken on another machine counts; when that read fails it says so instead of
 calling the turn overdue.
+With --turn, run for each Claude Code prompt, it prints only the protocol's step table.
 At session start this hook prints the skills protocol on Claude Code and the executing loop for repositories with a
 root DIRECTION.md. In a repository without one, whose origin owner keeps an overall direction in OWNER/direction
 that has been audited on this machine or is checked out beside it, it prints that file's stop boundaries, where the file lives, and the loop.
@@ -403,7 +404,25 @@ def reminder(marker: dict[str, object], now: dt.datetime, repo: str | None, path
     )
 
 
-def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime_catchup: bool = False) -> int:
+def step_table(protocol: str) -> str:
+    """The protocol's step table with the paragraph that introduces it."""
+    blocks = protocol.split("\n\n")
+    for index, block in enumerate(blocks):
+        if block.startswith("| ") and index:
+            return f"{blocks[index - 1]}\n\n{block}".strip()
+    return ""
+
+
+def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime_catchup: bool = False,
+         turn: bool = False) -> int:
+    if turn:
+        # Claude Code shows the session-start text once; Codex re-sends its catalog on its own.
+        if os.environ.get("CLAUDECODE") == "1":
+            try:
+                print(step_table(SKILLS_PROTOCOL_PATH.read_text()), flush=True)
+            except OSError:
+                pass
+        return 0
     try:
         if os.environ.get("CLAUDECODE") == "1":
             try:
@@ -455,7 +474,9 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skills-only", action="store_true")
+    parser.add_argument("--turn", action="store_true", help="print only the skills step table, for each prompt")
     parser.add_argument("--runtime-catchup", action="store_true", help="Enable catch-up with the updated native hook timeout")
     parser.add_argument("--catalog-root", type=Path, help="Catalog checkout for status diagnostics")
     args = parser.parse_args()
-    sys.exit(main(skills_only=args.skills_only, catalog_root=args.catalog_root, runtime_catchup=args.runtime_catchup))
+    sys.exit(main(skills_only=args.skills_only, catalog_root=args.catalog_root, runtime_catchup=args.runtime_catchup,
+                  turn=args.turn))
