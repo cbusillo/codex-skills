@@ -113,6 +113,40 @@ These routes are local extensions until the vendored artifact is refreshed.
 - The service refuses allowances on a production lane, `pre_live` outside testing
   and dev, and a target record changed since the review.
 
+## Health monitoring
+
+`health-monitoring-dry-run` and `health-monitoring-apply` use the bounded local
+extension `POST /v1/product-profiles/health-monitoring/apply`. The service's
+[request contract](https://github.com/cbusillo/launchplane/blob/main/docs/records.md)
+owns the exact-instance planning/apply behavior and authorization.
+
+Both commands take `--product`, `--context`, `--instance`, `--check-name`,
+`--check-kind public_http|private_http`, `--monitoring-intent public|private|prelaunch`,
+`--enabled` or `--no-enabled`, `--require-runtime-identity` or
+`--no-require-runtime-identity`, and `--reason`. A private check may also name a
+registered `--private-endpoint-key`; enabling a private check requires it.
+For a disabled private check an omitted key preserves the existing key.
+No argument accepts an endpoint URL, domain, provider target or full profile.
+
+Save the dry-run JSON outside the repository. Apply requires that evidence via
+`--dry-run-evidence-file`, its `plan_sha256` via `--expected-plan-digest`,
+`--reviewed-dry-run`, and a stable `--idempotency-key`. A request digest binds
+the exact arguments, including the reason and private endpoint key, while the
+service binds the reviewed plan to the current profile. The helper reads the
+profile before apply and stops if the resolved endpoint differs from review.
+After apply it reads the selected lane/check back, compares the intended policy,
+and verifies preservation of the stored public URL and lane fallback URLs
+privately. Private keys must match the requested or preserved registered key.
+
+Receipts contain the lane/check, intent and flags, digests, trace/record ids and
+read-back verification. URLs, endpoint keys and free-text reasons are omitted.
+`accepted_unverified` with a nonzero exit means apply was accepted but the
+response or read-back did not verify; inspect the record before any retry.
+An uncertain transport outcome retains the existing helper's reconciliation
+rules and stable idempotency key. A verified policy is not proof that a monitor
+has persisted observations or maintained a cadence. Source delivery does not
+authorize live apply or grant the service's plan/apply permissions.
+
 ## Testing hold
 
 `testing-hold-read`, `testing-hold-dry-run` and `testing-hold-apply` call

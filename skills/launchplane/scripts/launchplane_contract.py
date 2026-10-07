@@ -218,6 +218,16 @@ PROJECTED_HELPER_COMMANDS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    "health-monitoring-dry-run": {
+        "method": "POST",
+        "path": "/v1/product-profiles/health-monitoring/apply",
+        "mode": "dry-run",
+    },
+    "health-monitoring-apply": {
+        "method": "POST",
+        "path": "/v1/product-profiles/health-monitoring/apply",
+        "mode": "apply",
+    },
     "privileged-policy-propose": {
         "method": "POST", "path": "/v1/agent/privileged-operations/plans", "mode": "propose",
     },

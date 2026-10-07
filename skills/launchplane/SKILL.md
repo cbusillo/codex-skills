@@ -706,7 +706,7 @@ target-replacement-operation-read, target-replacement-plan-read, `product-owner-
 `product-image-repository-*`, `dokploy-target-create-compose-*`,
 `dokploy-target-complete-compose-source-*`, `dokploy-target-reconcile-compose-domain-*`,
 `dokploy-target-prune-compose-domain-*`, `production-backup-authority-*`,
-`private-health-endpoint-*`, product-promotion-status-read and
+`private-health-endpoint-*`, `health-monitoring-*`, product-promotion-status-read and
 product-promotion-dry-run commands are explicit bounded local
 extensions because the vendored public
 operation projection does not contain their routes. Do not describe them as contract-backed. If a later artifact adds those
@@ -1185,6 +1185,20 @@ verification.
   (`production-backup-authority-read` / `-dry-run` / `-apply`). The private
   payload carries the Proxmox coordinates; output shows only record ids,
   revisions, kinds and the `authority_digest` apply is bound to.
+- `POST /v1/product-profiles/health-monitoring/apply`: Bounded local-extension
+  path for one exact lane's health check (`health-monitoring-dry-run` / `-apply`).
+  Supply `--product`, `--context`, `--instance`, `--check-name`, `--check-kind`
+  (`public_http` or `private_http`), `--monitoring-intent` (`public`, `private`,
+  or `prelaunch`), `--enabled` / `--no-enabled`, `--require-runtime-identity` /
+  `--no-require-runtime-identity`, and `--reason`. A private check may name an
+  existing `--private-endpoint-key`; endpoint URLs and topology fields are never
+  accepted. Apply requires saved dry-run evidence, `--expected-plan-digest`,
+  `--reviewed-dry-run` and an idempotency key. It checks the endpoint before
+  sending, then reads back the exact check and lane intent with private endpoint
+  comparison. Receipts omit URLs and free-text reasons. Policy verification
+  does not prove monitor observations or sustained cadence. Read the
+  [helper contract](references/write-action-helper-contract.md#health-monitoring)
+  before using it.
 - `GET /v1/private-health-endpoints/records` and
   `POST /v1/private-health-endpoints/apply`: Bounded local-extension paths for
   the private health endpoint record a lane's `private_http` health check names
