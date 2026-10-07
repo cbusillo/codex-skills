@@ -871,12 +871,18 @@ def rank_portfolio_work(
     }
 
 
-PENDING_WORDS = (r"\b(?:but|except|unless|until|if|once|after|however|pending|still|then|"
-                 r"wait\w*|await\w*|blocked|parked)\b")
+def word_pattern(*words: str) -> str:
+    return r"\b(?:" + "|".join(words) + r")\b"
 
 
-HOLD_WORDS = (r"\b(?:if|wait\w*|await\w*|pending|parked|blocked|until|unless|except|but|after|"
-              r"requir\w*|need\w*|approv\w*|authoriz\w*|decision|accept\w*)\b")
+# Words that make a clause a precondition, not a later step or a note. A lead
+# clause may say "None before <step>"; a bare "None" note also keeps approvals.
+PRECONDITION_WORDS = ("but", "except", "unless", "until", "if", "once", "after", "however", "pending",
+                      "still", "then", "must", r"wait\w*", r"await\w*", "blocked", "parked",
+                      r"requir\w*", r"need\w*", r"approv\w*", r"sign\w*\s+off")
+LEAD_HOLD_WORDS = word_pattern(*PRECONDITION_WORDS)
+LATER_HOLD_WORDS = word_pattern(*PRECONDITION_WORDS, "before", "first")
+HOLD_WORDS = word_pattern(*PRECONDITION_WORDS, "before", "first", r"authoriz\w*", "decision", r"accept\w*")
 
 
 def lead_clause(reason: str) -> tuple[str, str]:
@@ -889,12 +895,13 @@ def lead_clause(reason: str) -> tuple[str, str]:
 def lead_names(pattern: str, reason: str) -> bool:
     """The first clause states who acts next; later clauses describe later steps.
 
-    A pending word in the first clause, or one opening the next, keeps the wait.
+    A precondition anywhere, such as "Note: only after Justin approves" or
+    "Director approval is required first", keeps the wait.
     """
     lead, rest = lead_clause(reason)
     return (re.fullmatch(pattern, lead, re.I) is not None
-            and not re.search(PENDING_WORDS, lead, re.I)
-            and not re.match(PENDING_WORDS, rest, re.I))
+            and not re.search(LEAD_HOLD_WORDS, lead, re.I)
+            and not re.search(LATER_HOLD_WORDS, rest, re.I))
 
 
 def no_current_wait(reason: str) -> bool:
@@ -985,8 +992,11 @@ def waiting_records(issue: dict[str, Any], status_text: str) -> list[dict[str, A
     return records
 
 
-def next_action_references(issue: dict[str, Any], status_text: str) -> list[dict[str, Any]]:
-    """Issues a Current Status Next action names, in the issue's repository by default."""
+def next_action_references(status_text: str) -> list[dict[str, Any]]:
+    """Issues a Track's Next action names with their repository.
+
+    A Track names work across repositories, so a bare #N is ambiguous and skipped.
+    """
     match = re.search(r"(?im)^\s*(?:[-*]\s+)?Next action:\s*(.+)$", status_text)
     if not match:
         return []
@@ -996,8 +1006,8 @@ def next_action_references(issue: dict[str, Any], status_text: str) -> list[dict
         r"https://github\.com/([^/\s)]+/[^/\s)]+)/issues/(\d+)"
         r"|(?<![\w/])([\w.-]+/[\w.-]+)?#(\d+)\b", plain,
     ):
-        repo = ref.group(1) or ref.group(3) or issue["repo"]
-        if "/" not in repo:
+        repo = ref.group(1) or ref.group(3)
+        if not repo:
             continue
         number = int(ref.group(2) or ref.group(4))
         references[(repo.casefold(), number)] = {
@@ -1157,7 +1167,7 @@ def rank_direction_work(
         if tracking:
             track_next_actions[milestone["title"]] = {
                 "track": item["url"],
-                "references": next_action_references(item, status_text or ""),
+                "references": next_action_references(status_text or ""),
             }
         if reason in {"waiting", "label_blocked_without_native_edge"} and not tracking:
             excluded.append(item)
@@ -1237,7 +1247,9 @@ def milestone_summary(
             continue
         work = [{"repo": item["repo"], "number": item["number"], "url": item["url"],
                  "availability": item.get("availability")}
-                for item in candidates if item.get("via") and (item.get("milestone") or {}).get("title") == title]
+                for item in candidates
+                if (item.get("via") and (item.get("milestone") or {}).get("title") == title)
+                or title in (item.get("overall_milestone_context") or {}).get("titles", [])]
         waits: list[dict[str, Any]] = []
         for row in graph_waits:
             record = {"repo": row["repo"], "number": row["number"], "url": row["url"],
