@@ -111,13 +111,14 @@ def conditional_release_prose(text: str, *, suffix: str) -> bool:
         prerequisite_step = re.search(prerequisite, statement, re.IGNORECASE)
         standalone_prerequisite = re.fullmatch(rf"[^.!?;]*(?:{prerequisite})[.!?]?", statement.strip(), re.IGNORECASE)
         standalone_condition = re.fullmatch(
-            rf"(?:(?:Hold|Wait)\s+)?(?:only\s+|not\s+)?{condition}[^,;.!?]*\b{step}(?:\s+into\s+[\w/-]+)?[.!?]?",
+            rf"(?:(?:Hold|Wait)\s+)?(?:only\s+|not\s+)?{condition}[^,;.!?]*\b{step}(?:\s+(?:into|to|on)\s+[\w/-]+)?(?:\s+first)?[.!?]?",
             statement.strip(), re.IGNORECASE,
         )
         following = statements[index + 1].strip() if index + 1 < len(statements) else ""
         downstream_next = (re.match(r"Then\b", following, re.IGNORECASE)
                            and not re.search(rf"{ownership}|{successor}", following, re.IGNORECASE))
-        if (index > 0 and (standalone_prerequisite or standalone_condition) and not downstream_next
+        downstream_step = re.search(rf"\b{step}\b[^.!?;]*\b(?:before|to)\s+(?:you\s+)?{step}\b", statement, re.IGNORECASE)
+        if (index > 0 and (standalone_prerequisite or standalone_condition) and not (downstream_next or downstream_step)
                 and re.search(successor, statements[index - 1], re.IGNORECASE)):
             return True
         if index + 1 == len(statements):

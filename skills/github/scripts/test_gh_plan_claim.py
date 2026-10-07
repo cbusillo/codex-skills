@@ -1913,6 +1913,7 @@ class ClaimTests(unittest.TestCase):
             "PR #99 must merge first.", "Wait until PR #99 merges.",
             "Hold until PR #99 merges.", "Not until PR #99 merges.", "Only after PR #99 merges.",
             "Wait until PR #99 is merged.", "Wait until PR #99 merges into main.",
+            "Wait until PR #99 merges first.", "Wait until PR #99 merges to main.", "Not until PR #99 lands on main.",
         ):
             prose = "The next worker can take over. " + prerequisite
             for release in ("Released claim 1\n\n" + prose, prose + "\n\nReleased claim 1"):
@@ -1946,6 +1947,8 @@ class ClaimTests(unittest.TestCase):
             "Wait until PR #99 merges to close out the issue.",
             "PR #99 must merge first. Then close out the issue.",
             "PR #99 must merge first for deployment.",
+            "Wait until CI passes before you merge.",
+            "Hold until CI is green to merge.",
         ):
             prose = "The next worker can take over. " + downstream
             for release in ("Released claim 1\n\n" + prose, prose + "\n\nReleased claim 1"):
