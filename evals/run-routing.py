@@ -408,12 +408,13 @@ def decision_checks(seen: dict[str, Any], expect: dict[str, Any]) -> dict[str, b
     if "owner_before_read" in expect:
         requirement = expect["owner_before_read"]
         observations = seen["load_order"]
-        first_read = next((read for read in observations["reads"]
-                           if re.search(requirement["read"], read["value"])), None)
-        checks["owner_before_read"] = bool(first_read is not None and first_read["chosen_at"] is not None
+        matching_reads = [read for read in observations["reads"]
+                          if re.search(requirement["read"], read["value"])]
+        checks["owner_before_read"] = bool(matching_reads) and all(read["chosen_at"] is not None
             and any(skill["value"] == requirement["owner"]
-                    and skill["completed_at"] < first_read["chosen_at"]
-                    and skill.get("batch") != first_read["batch"] for skill in observations["skills"]))
+                    and skill["completed_at"] < read["chosen_at"]
+                    and skill["batch"] != read["batch"] for skill in observations["skills"])
+            for read in matching_reads)
     if "final" in expect:
         checks["final_matches"] = re.search(expect["final"], seen["final"], re.IGNORECASE) is not None
     if "final_any" in expect:

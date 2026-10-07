@@ -239,6 +239,8 @@ class RoutingScoreTests(unittest.TestCase):
         cases = [
             ([event("started", "a", load), event("completed", "a", load),
               event("started", "b", read), event("completed", "b", read)], True),
+            ([event("started", "a", load), event("completed", "a", load),
+              event("started", "b", f"{load}; {read}"), event("completed", "b", f"{load}; {read}")], True),
             ([event("started", "a", load), event("started", "b", read),
               event("completed", "a", load), event("completed", "b", read)], False),
             ([event("started", "a", f"{load} private-context.md"),
@@ -253,6 +255,9 @@ class RoutingScoreTests(unittest.TestCase):
               event("started", "c", read), event("completed", "c", read)], False),
             ([event("started", "a", load), event("completed", "a", load, 1),
               event("started", "b", read), event("completed", "b", read)], False),
+            ([event("started", "a", read), event("started", "b", load),
+              event("completed", "b", load), event("started", "c", read),
+              event("completed", "c", read), event("completed", "a", read)], False),
         ]
         with tempfile.TemporaryDirectory() as directory:
             for messages, passed in cases:
@@ -261,6 +266,36 @@ class RoutingScoreTests(unittest.TestCase):
                          for message in messages if message["type"] == "item.completed"]
                 seen = runner.observe("codex", messages, hooks, Path(directory), runner.ROOT)
                 self.assertEqual(runner.decision_checks(seen, expect)["owner_before_read"], passed, messages)
+
+    def test_completion_grade_is_turn_local_and_records_invocation_evidence(self) -> None:
+        expect = {"owner": "docs-lookup", "owner_before_read": {
+            "owner": "docs-lookup", "read": r"private-context\.md"}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for host in ("codex", "claude"):
+                messages, hooks = [], []
+                for turn, load in ((1, True), (2, False)):
+                    messages.append({"type": "turn_marker", "turn": turn, "events": len(hooks)})
+                    paths = ([str(runner.ROOT / "skills/docs-lookup/SKILL.md")] if load else []) + ["private-context.md"]
+                    for number, path in enumerate(paths):
+                        identity = f"{turn}-{number}"
+                        if host == "codex":
+                            item = {"id": identity, "type": "command_execution", "command": f"cat {path}", "exit_code": 0}
+                            messages.extend([{"type": "item.started", "item": item}, {"type": "item.completed", "item": item}])
+                            hooks.append({"command": item["command"], "allowed": True})
+                        else:
+                            use = call("Read", {"file_path": path})
+                            use["message"]["content"][0]["id"] = identity
+                            messages.extend([use, {"type": "user", "message": {"content": [{
+                                "type": "tool_result", "tool_use_id": identity, "content": "source"}]}}])
+                (root / "trace.jsonl").write_text("\n".join(map(json.dumps, messages)))
+                (root / "shell-events.jsonl").write_text("\n".join(map(json.dumps, hooks)))
+                score = runner.score_turns(host, [{"expect": expect}] * 2, root)
+                self.assertTrue(score["checks"]["turn1_owner_before_read"], host)
+                self.assertFalse(score["checks"]["turn2_owner_before_read"], host)
+                first = score["turns"][0]["load_order"]
+                self.assertEqual(first["skills"][0]["invocation"], "1-0")
+                self.assertLess(first["skills"][0]["completed_at"], first["reads"][-1]["chosen_at"])
 
     def test_newline_read_operands_preserve_quoted_filenames(self) -> None:
         command = "cat 'first file.md'\ncat second.md\nrg -n needle ."
