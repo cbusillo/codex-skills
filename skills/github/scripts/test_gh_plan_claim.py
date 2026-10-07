@@ -1899,6 +1899,50 @@ class ClaimTests(unittest.TestCase):
         self.run_claim()
         self.assertEqual(CLAIM.records(self.issue["body"]), [self.emitted.call_args.args[0]["claim"]])
 
+    def test_conditional_final_paragraph_releases_preserve_and_recover_claims(self):
+        for condition in (
+            "Takes effect upon merge.",
+            "The release takes effect once PR #99 merges.",
+            "The next worker may claim only after CI passes.",
+            "**Effective** post-merge.",
+            "Wait for PR #99 to merge. Then the next worker may claim.",
+            "If CI passes, the next worker may claim.\n\nSource work is finished.",
+        ):
+            for retained in (False, True):
+                with self.subTest(condition=condition, retained=retained):
+                    self.setUp()
+                    handoff = condition + "\n\nReleased claim 1.\n\n<!-- github-skill-operation:abc123 -->"
+                    self.released_status_fixture(handoff)
+                    if not retained:
+                        self.issue["body"] = PLAN.template_body("Repair")
+                        self.args.resume_from = None
+                        self.inventory["local_branches"] = []
+                        self.inventory["worktrees"] = []
+                    with self.assertRaises(PLAN.PlanError):
+                        self.run_claim()
+                    self.assert_no_writes()
+                    # A new unconditional authored release recovers ownership;
+                    # the helper never guesses that the old condition resolved.
+                    self.comments.append({"id": 3, "body": "Source session finished.\n\nReleased claim 1",
+                                          "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_final_paragraph_release_keeps_downstream_gates_and_refresh_identity(self):
+        self.refresh_fixture()
+        prefix = ("Handoff from trial-b\nSource claim 1; Session: session-b; PR #99 and #100.\n\n")
+        self.comments[2]["body"] = prefix + "Takes effect upon merge.\n\nReleased claim 1"
+        with self.assertRaises(PLAN.PlanError):
+            self.run_claim()
+        self.assert_no_writes()
+        self.comments.append({"id": 4, "body": prefix +
+                              "Source session finished. Effective immediately. "
+                              "Supervisor routes PR #99 after CI passes; keep the worktree until landing.\n\n"
+                              "Released claim 1", "user": {"login": TEST_BOT}})
+        self.args.handoff_comment = 4
+        self.run_claim()
+        self.assertEqual(self.emitted.call_args.args[0]["claim"]["refresh_pr"], self.args.refresh_pr)
+
     def test_embedded_release_preserves_ownership_and_artifact_guards(self):
         for change in ("foreign", "wrong_id", "earlier", "other_claim", "artifact", "live_peer"):
             with self.subTest(change=change):
