@@ -3027,6 +3027,9 @@ def cmd_next(args: argparse.Namespace) -> None:
                 evaluated["truncated_relationships"] = truncated_relationships
         (candidates if disposition == "candidate" else excluded).append(evaluated)
 
+    wait_context = next_wait_context(issues, scan_limit=args.scan_limit,
+                                     inventory_complete=not inventory_truncated and not scan_truncated)
+    exclude_landed_candidates(candidates, excluded, wait_context)
     rank_next_candidates(candidates, direction_milestones=direction_milestones)
     if direction_milestones is not None:
         listed = set(direction_milestones)
@@ -3091,6 +3094,7 @@ def cmd_next(args: argparse.Namespace) -> None:
         "inventory_limit": NEXT_PLAN_INVENTORY_LIMIT,
         "candidates": candidates[: args.limit],
         "candidate_count": len(candidates),
+        "stale_wait_report": {key: value for key, value in wait_context.items() if key != "references"},
         "running_agent": agent,
         "excluded": excluded,
         "notes": notes,
@@ -3252,6 +3256,18 @@ def repository_direction_milestones(source: dict[str, Any]) -> list[str] | None:
     if not titles and section_map(text).get("Milestones", "").strip():
         return None
     return titles
+
+
+def exclude_landed_candidates(candidates: list[dict[str, Any]], excluded: list[dict[str, Any]],
+                              report: dict[str, Any]) -> None:
+    stale = {(row["repo"].casefold(), row["number"]): row for row in report["items"]
+             if row.get("selection_exclusion")}
+    for entry in list(candidates):
+        evidence = stale.get((entry["repo"].casefold(), entry["number"]))
+        if evidence:
+            candidates.remove(entry)
+            excluded.append({**entry, "exclusion": "landed_status_needs_reconciliation",
+                             "stale_wait_evidence": evidence})
 
 
 def next_wait_context(
@@ -3600,6 +3616,8 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         evidence = stale.get(wait_key)
         if evidence:
             entry["stale_wait_evidence"] = evidence
+    exclude_landed_candidates(ranked["candidates"], ranked["excluded"], wait_context)
+    exclude_landed_candidates(discoveries, ranked["excluded"], wait_context)
     portfolio = github_direction_next.rank_portfolio_work(
         ranked, discoveries, milestone_titles=titles, selection_context=selection_context,
         coverage_complete=scope is None and graph_coverage["complete"] and not unevaluated_milestones and not incomplete_milestone_sources,

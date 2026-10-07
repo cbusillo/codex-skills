@@ -295,8 +295,8 @@ listed milestone since the prior audit, with who added each. It is not a
 finding and does not affect `ok`. Read each issue and keep it in the milestone
 or move it out.
 
-The audit also returns `stale_wait_report` for open `plan:waiting` and
-`plan:blocked` issues in the audited repository, including unmilestoned work.
+The audit also returns `stale_wait_report` for open `plan:active`,
+`plan:waiting` and `plan:blocked` issues in the audited repository, including unmilestoned work.
 It reports closed native blockers, merged PRs or completed issues that the
 Current Status waits on, and explicit waits on agents or capacity instead of
 people or events, only when no recorded hold or open native blocker remains.
@@ -305,8 +305,14 @@ missing coverage. Unknown prose, elapsed time, unrelated merged PRs, and
 acceptance or live-test waits do not establish completion. These are review
 prompts, separate from audit findings and exit status: read the full issue and
 current evidence before correcting a status through `github-plan`. Nothing is
-selected, relabeled, or released automatically. This does not change global
-`next` wait classification or the claim guard. For a Supervisor check, use
+closed, relabeled, or released automatically. Active records with linked PRs
+merged into the default branch after their GitHub `updated_at` carry
+`merged_active_pr` evidence and `completion_proven: false`. Newer comments or
+edits conservatively prevent that timestamp proof. When the recorded next
+action still requests routing or landing, `selection_exclusion` keeps local
+and global `next` from assigning duplicate implementation. Split remainders,
+testing, deployment and acceptance steps remain work; read the full finish line
+before closing any issue. This does not change the claim guard. For a Supervisor check, use
 `--stale-waits-only` with the existing audit command: it reads only open issues
 and their prerequisites, leaving weekly audit markers and windows untouched.
 Unrecognized status formats and prerequisites closed as abandoned or duplicate

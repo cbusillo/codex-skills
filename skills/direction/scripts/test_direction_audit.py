@@ -1237,7 +1237,7 @@ def test_stale_wait_report_checks_realistic_parked_records_without_writes() -> N
     report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
     assert json.dumps(rows, sort_keys=True) == before
     assert report["read_only"] and report["complete"]
-    assert report["checked"] == 7
+    assert report["checked"] == 8
     by_number = {item["number"]: item for item in report["items"]}
     assert set(by_number) == {41, 42, 43, 44}, report
     assert by_number[42]["evidence"][0]["url"] == "https://github.com/owner/tools/pull/71"
@@ -1547,6 +1547,51 @@ def test_stale_wait_report_reports_explicit_absence_of_all_waits() -> None:
            "issue_dependencies_summary": {"total_blocked_by": 0}}
     report = module.stale_wait_report([row], "owner/catalog", fetch=lambda _: [])
     assert report["complete"] and report["items"][0]["number"] == 41, report
+
+
+def test_active_merged_status_preserves_split_remainders_and_unproven_delivery() -> None:
+    module = load()
+    status = "## Current Status\nState: Source complete; green PR handed to Supervisor.\nNext action: Supervisor routes PR #71 through the merge train, verifies landing, closes this issue.\nWaiting for: None.\n"
+    old = "2026-10-05T03:49:00Z"
+    rows = [{**issue(n, title, labels=("plan", "plan:active"), body=body), "updated_at": updated}
+            for n, title, body, updated in (
+                (1, "Runner recovery already delivered", status, old),
+                (2, "Split remainder still needs runtime proof", status.replace("Supervisor routes PR #71 through the merge train, verifies landing, closes this issue.", "Test the split remainder after PR #71; source delivery alone does not meet the finish line."), old),
+                (3, "Status refreshed after landing", status, "2026-10-06T05:00:00Z"),
+                (4, "Missing timestamp is unproven", status, None),
+                (5, "Partial stack", status.replace("PR #71", "PR #71 and PR #72"), old),
+                (6, "Unrelated merged PR only in historical context", "## Evidence\nPR #71 merged.\n## Current Status\nNext action: Implement the consumer.\n", old),
+            )]
+    calls = []
+    def fetch(args: list[str]) -> Any:
+        assert args[-2:] == ["--method", "GET"]
+        path = args[1]
+        calls.append(path)
+        if path == "repos/owner/catalog":
+            return {"default_branch": "main"}
+        if "/issues/" in path:
+            return {"state": "closed", "pull_request": {}}
+        if "/pulls/" in path:
+            return {"merged_at": None if path.endswith("72") else "2026-10-06T04:36:00Z", "base": {"ref": "main"}}
+        raise AssertionError(path)
+    before = json.dumps(rows, sort_keys=True)
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
+    assert report["complete"] and json.dumps(rows, sort_keys=True) == before
+    found = {row["number"]: row for row in report["items"]}
+    assert set(found) == {1, 2}
+    assert found[1]["selection_exclusion"] and not found[2]["selection_exclusion"]
+    assert all(row["review_required"] and not row["completion_proven"] for row in found.values())
+    assert calls.count("repos/owner/catalog/pulls/71") == 1
+    for base, merged, updated in (("work/root", "2026-10-06T04:36:00Z", old), ("main", None, old), ("main", "2026-10-06T04:36:00Z", "2026-10-06T04:36:00Z")):
+        row = {**rows[0], "updated_at": updated}
+        def unproven(args: list[str]) -> Any:
+            value = fetch(args)
+            return {"merged_at": merged, "base": {"ref": base}} if "/pulls/" in args[1] else value
+        assert not module.stale_wait_report([row], "owner/catalog", fetch=unproven)["items"]
+    def unavailable(_args: list[str]) -> Any:
+        raise module.AuditError("missing record")
+    partial = module.stale_wait_report([rows[0]], "owner/catalog", fetch=unavailable)
+    assert not partial["complete"] and not partial["items"] and partial["unavailable"]
 
 
 def main() -> int:

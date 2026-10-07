@@ -609,6 +609,56 @@ def closed_wait_prerequisite(target: dict[str, Any]) -> bool:
     return not re.search(r"(?im)^\s*(?:[-*]\s+)?State:\s*Split\b", str(target.get("body") or ""))
 
 
+def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
+                         read: Callable[[str], Any]) -> dict[str, Any] | None:
+    """A merge makes an old status suspect, never proves the finish line."""
+    refs = {(ref.group(1) or ref.group(4) or repo, int(ref.group(3) or ref.group(5))): ref.group(2)
+            for ref in WAIT_REFERENCE.finditer(status)}
+    if not refs:
+        return None
+    # updated_at includes comments and edits: newer activity conservatively
+    # prevents a stale claim when the exact status revision is unavailable.
+    recorded = _parse_time(issue.get("updated_at"))
+    if recorded is None or recorded.tzinfo is None:
+        return None
+    evidence = []
+    for (target_repo, number), kind in refs.items():
+        if kind != "pull":
+            target = read(f"repos/{target_repo}/issues/{number}")
+            if not isinstance(target, dict):
+                raise AuditError("unreadable linked issue")
+            if "pull_request" not in target:
+                continue
+        pull = read(f"repos/{target_repo}/pulls/{number}")
+        if not isinstance(pull, dict) or "merged_at" not in pull:
+            raise AuditError("unreadable linked pull")
+        merged = _parse_time(pull.get("merged_at"))
+        if merged is None:
+            return None  # A partially landed stack still needs engineering.
+        if merged.tzinfo is None or recorded >= merged:
+            return None
+        repository = read(f"repos/{target_repo}")
+        default = repository.get("default_branch") if isinstance(repository, dict) else None
+        if not default or not (pull.get("base") or {}).get("ref"):
+            raise AuditError("unreadable landing destination")
+        if (pull.get("base") or {}).get("ref") != default:
+            return None
+        evidence.append({"kind": "merged_active_pr", "url": f"https://github.com/{target_repo}/pull/{number}",
+                         "merged_at": pull["merged_at"], "status_predates_merge": issue["updated_at"]})
+    if not evidence:
+        return None
+    next_action = re.search(r"(?im)^\s*(?:[-*]\s+)?Next action:\s*(.*)", status)
+    # Only obsolete delivery instructions suppress implementation selection.
+    # A split, test, deploy or other remaining finish-line step stays actionable.
+    remainder = bool(re.search(r"\b(?:split|remainder|remaining|test|deploy|acceptance|release|device|observe)\b",
+                               next_action[1] if next_action else status, re.I))
+    delivery = bool(next_action and re.search(r"\b(?:land(?:s|ing)?|route(?:s)?|merge(?:s)?)\b", next_action[1], re.I))
+    return {"number": issue["number"], "title": issue.get("title"),
+            "url": f"https://github.com/{repo}/issues/{issue['number']}", "evidence": evidence,
+            "review_required": True, "completion_proven": False,
+            "selection_exclusion": delivery and not remainder}
+
+
 def stale_wait_report(
     issues: list[dict[str, Any]], repo: str, *, fetch: Callable[[list[str]], Any],
     inventory_complete: bool = True, max_issues: int = MAX_PAGES * 100,
@@ -634,7 +684,10 @@ def stale_wait_report(
 
     checked = 0
     for issue in issues:
-        if not parked_issue(issue):
+        labels = {label.casefold() for label in github_direction_next.normalize_labels(issue.get("labels"))}
+        active = ("plan:active" in labels and "pull_request" not in issue
+                  and issue.get("state", "open") == "open")
+        if not parked_issue(issue) and not active:
             continue
         number = issue["number"]
         if checked >= max_issues:
@@ -643,6 +696,14 @@ def stale_wait_report(
         checked += 1
         sections = github_direction_next.section_map(str(issue.get("body") or ""))
         status = next((text for title, text in sections.items() if title.casefold() == "current status"), "")
+        if active and not parked_issue(issue):
+            try:
+                row = active_merged_status(issue, repo, status, read=read)
+                if row:
+                    rows.append(row)
+            except AuditError:
+                errors.append({"number": number, "source": "active_linked_pr", "reason": "unavailable"})
+            continue
         evidence: list[dict[str, Any]] = []
         unread = False
         fields: list[tuple[str, str]] = []

@@ -2470,7 +2470,34 @@ def test_global_unread_frontier_wait_prevents_capacity_without_unrelated_veto() 
     assert ranked['tooling_capacity_context']['admitted'] is True  # Other report coverage does not replace this own-issue proof.
 
 
+def test_local_and_global_next_exclude_stale_landing_but_keep_split_work() -> None:
+    status = "## Current Status\nState: Source complete.\nNext action: Supervisor lands PR https://github.com/someone/product/pull/71 and reconciles closure.\nWaiting for: None.\n"
+    stale = global_issue("someone/product", 10, body=status)
+    split = global_issue("someone/product", 11, body=status.replace("Supervisor lands PR", "Test split remainder after PR"))
+    root = track("someone/direction", 1, "First")
+    edges = {(root["repo"], 1): relationships(sub_issues=[stale, split])}
+    with global_fixture([root], [stale, split], edges) as (module, result, _reads):
+        real_api = module.api_json
+        def merged(method: str, path: str, **kwargs: Any) -> Any:
+            if path == "/repos/someone/product/pulls/71":
+                return "automation-gh", {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}}
+            return real_api(method, path, **kwargs)
+        with patch.multiple(module, api_json=merged):
+            module.cmd_next(next_args())
+            assert [row["number"] for row in result["candidates"]] == [11]
+            excluded = next(row for row in result["excluded"] if row["number"] == 10)
+            assert excluded["exclusion"] == "landed_status_needs_reconciliation"
+            assert not excluded["stale_wait_evidence"]["completion_proven"]
+            result.clear()
+            with patch.multiple(module, collect_paged_rest_items=lambda *_a, **_kw: ("automation-gh", [stale, split])):
+                module.cmd_next(next_args(repo="someone/product"))
+            assert [row["number"] for row in result["candidates"]] == [11]
+            assert result["candidate_count"] == 1
+            assert {row["number"] for row in result["stale_wait_report"]["items"]} == {10, 11}
+
+
 TESTS = [
+    test_local_and_global_next_exclude_stale_landing_but_keep_split_work,
     test_global_adjacent_notes_preserve_absence_and_pending_clauses,
     test_global_partial_unowned_holds_and_caller_wait_evidence_remain_visible,
     test_global_wait_comments_named_actors_and_wrapped_urls_use_own_evidence,
