@@ -733,13 +733,57 @@ class AccountChoiceTests(unittest.TestCase):
             path.write_text(ACCOUNTS_TOML.replace('context_panel_label = "Main"', ""))
             with self.assertRaisesRegex(ValueError, "exactly one"):
                 account_choice.load_config(env={"CODE_HOME": folder}, home=Path("/nowhere"))
-            # A copied entry that sets another harness's variable would launch on the default login.
-            path.write_text(ACCOUNTS_TOML.replace("CLAUDE_CONFIG_DIR = \"~/claude-main\"", "CODEX_HOME = \"~/x\""))
-            with self.assertRaisesRegex(ValueError, "must set CLAUDE_CONFIG_DIR"):
+            # Codex still requires an explicit account home.
+            path.write_text(ACCOUNTS_TOML.replace('provider = "anthropic"', 'provider = "openai"'))
+            with self.assertRaisesRegex(ValueError, "must set CODEX_HOME"):
                 account_choice.load_config(env={"CODE_HOME": folder}, home=Path("/nowhere"))
+
+    def test_default_claude_profile_can_be_selected_by_use_next_or_name(self):
+        config = accounts_config(ACCOUNTS_TOML.replace(
+            'env = { CLAUDE_CONFIG_DIR = "~/claude-main" }', 'env = {}'
+        ))
+        rows = [account_row("Main", 0.6, []), account_row("spare", 0.5, [], cfg="cfg-spare")]
+        snapshot = {"accounts": rows, "answers": {"useNext": [
+            {"provider": "anthropic", "accountID": "row-cfg"}
+        ]}}
+        for name in (None, "main"):
+            with self.subTest(name=name):
+                choice = account_choice.choose("anthropic", config, snapshot, None, now=NOW, name=name)
+                self.assertEqual(choice["name"], "main")
+                self.assertEqual(choice["env"], {})
+                self.assertEqual(account_choice.public(choice)["env_keys"], [])
+
+    def test_default_profile_does_not_allow_invalid_env_values(self):
+        for env in ('{ CLAUDE_CONFIG_DIR = "" }', '{ CLAUDE_CONFIG_DIR = false }', '[]'):
+            with self.subTest(env=env), self.assertRaisesRegex(ValueError, "env must map"):
+                accounts_config(ACCOUNTS_TOML.replace(
+                    'env = { CLAUDE_CONFIG_DIR = "~/claude-main" }', f'env = {env}'
+                ))
 
 
 class TerminalTests(unittest.TestCase):
+    def test_default_claude_launch_clears_inherited_profile_after_cd(self):
+        config = accounts_config(ACCOUNTS_TOML.replace(
+            'env = { CLAUDE_CONFIG_DIR = "~/claude-main" }', 'env = {}'
+        ))
+        choice = account_choice.choose("anthropic", config, None, None, name="main")
+        with tempfile.TemporaryDirectory() as folder:
+            fake_claude = Path(folder) / "claude"
+            fake_claude.write_text('#!/bin/sh\nprintf "%s\\n" "${CLAUDE_CONFIG_DIR+set}" "$1"\n')
+            fake_claude.chmod(0o700)
+            for launch_env in ({}, {"EXTRA_FLAG": "some value"}):
+                with self.subTest(env=launch_env):
+                    command = iterm_tab.with_account(
+                        f'cd / && {shlex.quote(str(fake_claude))} brief', {**choice, "env": launch_env}
+                    )
+                    launched = subprocess.run(
+                        ["/bin/sh", "-c", command], capture_output=True, text=True, check=True,
+                        env={**os.environ, "CLAUDE_CONFIG_DIR": "/inherited/alternate"},
+                    )
+                    self.assertEqual(launched.stdout.splitlines(), ["", "brief"])
+        with self.assertRaisesRegex(ValueError, "already sets CLAUDE_CONFIG_DIR"):
+            iterm_tab.with_account("env CLAUDE_CONFIG_DIR=/other claude", choice)
+
     def test_exact_session_and_ambiguity(self):
         one = SimpleNamespace(session_id="id1")
         two = SimpleNamespace(session_id="id2")

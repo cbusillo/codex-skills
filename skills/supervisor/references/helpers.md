@@ -155,11 +155,19 @@ provider = "anthropic"
 context_panel_configuration_id = "<configurationID from the snapshot>"  # or context_panel_label
 env = { CLAUDE_CONFIG_DIR = "<account config dir>" }
 reserve = 0.2  # optional per-account reserve
+
+[[accounts.account]]
+name = "<default-profile nickname>"
+provider = "anthropic"
+context_panel_label = "<default profile label in the snapshot>"
+env = {}
 ```
 
-Codex accounts must set `CODEX_HOME` to the account's home and Claude Code
-accounts `CLAUDE_CONFIG_DIR`; config without its provider's variable is
-refused. The helper never reads credentials and never changes a
+Codex accounts must set `CODEX_HOME` to the account's home. Claude Code
+accounts set `CLAUDE_CONFIG_DIR` for an alternate profile or omit it for the
+default profile (`env = {}`). The launcher unsets an inherited
+`CLAUDE_CONFIG_DIR` for the default profile; setting it to `~/.claude` selects
+an alternate profile, not the default. The helper never reads credentials and never changes a
 login, including the desktop app's.
 
 ## Finished-session shutdown stages

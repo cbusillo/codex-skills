@@ -101,7 +101,7 @@ def validate_config(section):
         launch_env = account.get("env")
         if (
             not isinstance(launch_env, dict)
-            or not launch_env
+            or (not launch_env and account["provider"] != "anthropic")
             or not all(
                 isinstance(k, str) and k.isidentifier() and isinstance(v, str) and v
                 for k, v in launch_env.items()
@@ -109,7 +109,7 @@ def validate_config(section):
         ):
             raise ValueError(f"account {name}: env must map variable names to nonempty strings")
         required = ACCOUNT_VARIABLES.get(account["provider"])
-        if required and required not in launch_env:
+        if required and account["provider"] != "anthropic" and required not in launch_env:
             raise ValueError(f"account {name}: {account['provider']} accounts must set {required} in env")
         result.append(
             {
