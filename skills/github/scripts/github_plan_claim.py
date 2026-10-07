@@ -16,6 +16,7 @@ from typing import Any
 
 
 MARKER = "github-plan:claim "
+EMPTY_HOLDERS = {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", "nobody", "no one", "no-one"}
 
 
 def no_wait_reason(reason: str, *, field: str) -> bool:
@@ -314,7 +315,7 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
         )
         if not uncertain:
             empty_holder = suffix.lstrip(": ").casefold()
-            if empty_holder in {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", "nobody", "no one", "no-one"}:
+            if empty_holder in EMPTY_HOLDERS:
                 continue
             if not match.group().rstrip().endswith(":"):
                 negated = (
@@ -372,12 +373,29 @@ def discussion_evidence(
         if worker is not None:
             author = (comment.get("user") or {}).get("login", "")
             legacy_worker = ownership_text(worker, strip_quotes=False)
-            prior_sessions = {
-                record["session"] for prior in comments[:index]
-                if (prior.get("user") or {}).get("login", "") == author
-                for record in records(prior.get("body") or "")
-                if record["worker"] == worker or ownership_text(record["worker"], strip_quotes=False) == legacy_worker
-            }
+            prior_sessions: set[str | int] = set()
+            for prior_index, prior in enumerate(comments[:index]):
+                if (prior.get("user") or {}).get("login", "") != author:
+                    continue
+                prior_text = prior.get("body") or ""
+                parsed_prior = records(prior_text)
+                prior_sessions.update(
+                    record["session"] for record in parsed_prior
+                    if ownership_text(record["worker"], strip_quotes=False) == legacy_worker
+                )
+                if not parsed_prior:
+                    prior_prose = ownership_text(prior_text, strip_quotes=False)
+                    header = re.match(r"Claimed by:?\s+(\S+)", prior_prose, re.IGNORECASE)
+                    if header and header.group(1) == legacy_worker and has_ownership_assertion(prior_text):
+                        sessions = [
+                            session.strip() for session in re.findall(r"(?im)\bSession:[ \t]*([^\n]+)", prior_prose)
+                            if session.strip() and session.strip().casefold().strip("().,;<> \t")
+                            not in EMPTY_HOLDERS | {"unknown", "tbd", "session", "session-id", "not recorded",
+                                                   "unavailable", "pending", "?", "—", "–"}
+                        ]
+                        # Missing identity cannot establish that two claims are
+                        # the same session; exact comment IDs remain recoverable.
+                        prior_sessions.update(sessions or [prior_index])
             # A reused token cannot release a different native session.
             if len(prior_sessions) <= 1:
                 released[worker, author] = index
