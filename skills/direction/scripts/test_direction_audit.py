@@ -1572,7 +1572,7 @@ def test_active_merged_status_preserves_split_remainders_and_unproven_delivery()
         if "/issues/" in path:
             return {"state": "closed", "pull_request": {}}
         if "/pulls/" in path:
-            return {"merged_at": None if path.endswith("72") else "2026-10-06T04:36:00Z", "base": {"ref": "main"}}
+            return {"merged_at": None if path.endswith("72") else "2026-10-06T04:36:00Z", "base": {"ref": "main"}, "body": "Refs " + " ".join(f"#{n}" for n in range(1, 7))}
         raise AssertionError(path)
     before = json.dumps(rows, sort_keys=True)
     report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
@@ -1592,6 +1592,43 @@ def test_active_merged_status_preserves_split_remainders_and_unproven_delivery()
         raise module.AuditError("missing record")
     partial = module.stale_wait_report([rows[0]], "owner/catalog", fetch=unavailable)
     assert not partial["complete"] and not partial["items"] and partial["unavailable"]
+
+
+def test_active_delivery_grammar_preserves_wrapped_and_inflected_remaining_steps() -> None:
+    module = load()
+    actions = (
+        "Supervisor lands PR #71, then runs the staging deployment and reads it back.",
+        "Supervisor routes PR #71 through the merge train,\n  then runs the device test.",
+        "Supervisor lands PR #71 then performs testing.",
+        "After owner/library#40 merges, open the consumer PR and route it through the merge train.",
+        "Implement the merge queue consumer after PR #71.",
+        "Supervisor lands PR #71 then switches it on and reads it back.",
+        "Supervisor routes PR #71 through the merge train, then observes it in production.",
+    )
+    for action in actions:
+        row = {**issue(1, "Remaining consumer work", labels=("plan:active",),
+                       body=f"## Current Status\nNext action: {action}\nWaiting for: Chris to test the phone.\n"),
+               "updated_at": "2026-10-04T12:00:00Z"}
+        def fetch(args: list[str]) -> Any:
+            if args[1] == "repos/owner/catalog":
+                return {"default_branch": "main"}
+            if "/pulls/" in args[1]:
+                return {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #1"}
+            return {"state": "closed", "pull_request": {}}
+        # The prerequisite uses its own repository and does not implement this issue.
+        report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
+        assert not any(item["selection_exclusion"] for item in report["items"]), action
+    row["body"] = "## Current Status\nNext action: Supervisor lands PR #71 and closes this issue.\nWaiting for: None.\n"
+    def prerequisite(args: list[str]) -> Any:
+        value = fetch(args)
+        if "/pulls/" in args[1]:
+            value["body"] = "Refs #2"
+        return value
+    assert not module.stale_wait_report([row], "owner/catalog", fetch=prerequisite)["items"][0]["selection_exclusion"]
+    row["body"] = "## Current Status\nNext action: Supervisor routes PR #71 through the merge train,\n  verifies final landing SHA and closes this issue.\nWaiting for: None.\n"
+    assert module.stale_wait_report([row], "owner/catalog", fetch=fetch)["items"][0]["selection_exclusion"]
+    row["body"] = "## Current Status\nNext action: Implement after #3.\n"
+    assert not module.stale_wait_report([row], "owner/catalog", fetch=lambda _: {"state": "closed"})["items"]
 
 
 def main() -> int:

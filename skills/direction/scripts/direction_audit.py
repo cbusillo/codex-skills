@@ -622,6 +622,7 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
     if recorded is None or recorded.tzinfo is None:
         return None
     evidence = []
+    implements = False
     for (target_repo, number), kind in refs.items():
         if kind != "pull":
             target = read(f"repos/{target_repo}/issues/{number}")
@@ -643,20 +644,33 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
             raise AuditError("unreadable landing destination")
         if (pull.get("base") or {}).get("ref") != default:
             return None
+        for line in str(pull.get("body") or "").splitlines():
+            if not re.match(r"\s*(?:Refs|Fixes|Closes|Resolves|Implements)\b", line, re.I):
+                continue
+            implements |= any((ref.group(1) or ref.group(4) or target_repo).casefold() == repo.casefold()
+                              and int(ref.group(3) or ref.group(5)) == issue["number"]
+                              and ref.group(2) != "pull" for ref in WAIT_REFERENCE.finditer(line))
         evidence.append({"kind": "merged_active_pr", "url": f"https://github.com/{target_repo}/pull/{number}",
                          "merged_at": pull["merged_at"], "status_predates_merge": issue["updated_at"]})
     if not evidence:
         return None
-    next_action = re.search(r"(?im)^\s*(?:[-*]\s+)?Next action:\s*(.*)", status)
-    # Only obsolete delivery instructions suppress implementation selection.
-    # A split, test, deploy or other remaining finish-line step stays actionable.
-    remainder = bool(re.search(r"\b(?:split|remainder|remaining|test|deploy|acceptance|release|device|observe)\b",
-                               next_action[1] if next_action else status, re.I))
-    delivery = bool(next_action and re.search(r"\b(?:land(?:s|ing)?|route(?:s)?|merge(?:s)?)\b", next_action[1], re.I))
+    next_action = re.search(
+        r"(?ims)^\s*(?:[-*]\s+)?Next action:\s*(.*?)(?=^\s*(?:[-*]\s+)?[\w ]+:|\Z)", status,
+    )
+    # Recognize only complete delivery/bookkeeping clauses. Anything outside
+    # this grammar is remaining work, including wrapped and inflected actions.
+    action = " ".join(WAIT_REFERENCE.sub("REF", next_action[1]).split()) if next_action else ""
+    action = re.sub(r"\[([^]]+)]\(REF\)", "REF", action).rstrip(" .")
+    clauses = [part.strip() for part in re.split(r",|;|\band\b|\bthen\b", action, flags=re.I) if part.strip()]
+    first = r"(?:the )?Supervisor (?:routes|lands|merges) (?:PR )?REF(?: through (?:Launchplane(?:'s)? )?(?:the )?(?:merge train|train))?"
+    bookkeeping = (r"(?:verifies|confirms) (?:the )?(?:final )?landing(?: SHA)?|"
+                   r"closes (?:this|the) issue|reconciles (?:the )?(?:runtime(?: checkout)?|closure)")
+    delivery = bool(clauses and re.fullmatch(first, clauses[0], re.I)
+                    and all(re.fullmatch(bookkeeping, clause, re.I) for clause in clauses[1:]))
     return {"number": issue["number"], "title": issue.get("title"),
             "url": f"https://github.com/{repo}/issues/{issue['number']}", "evidence": evidence,
             "review_required": True, "completion_proven": False,
-            "selection_exclusion": delivery and not remainder}
+            "selection_exclusion": delivery and implements}
 
 
 def stale_wait_report(

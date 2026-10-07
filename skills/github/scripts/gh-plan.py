@@ -3260,14 +3260,19 @@ def repository_direction_milestones(source: dict[str, Any]) -> list[str] | None:
 
 def exclude_landed_candidates(candidates: list[dict[str, Any]], excluded: list[dict[str, Any]],
                               report: dict[str, Any]) -> None:
+    checked = {(row["repo"].casefold(), row["number"]) for row in report["checked_issues"]}
+    unread = {(row["repo"].casefold(), row["number"]) for row in report["unavailable"]}
     stale = {(row["repo"].casefold(), row["number"]): row for row in report["items"]
              if row.get("selection_exclusion")}
     for entry in list(candidates):
-        evidence = stale.get((entry["repo"].casefold(), entry["number"]))
+        key = (entry["repo"].casefold(), entry["number"])
+        if key not in checked or key in unread:
+            entry["post_merge_evidence_complete"] = False
+        evidence = stale.get(key)
         if evidence:
             candidates.remove(entry)
             excluded.append({**entry, "exclusion": "landed_status_needs_reconciliation",
-                             "stale_wait_evidence": evidence})
+                             "post_merge_evidence": evidence})
 
 
 def next_wait_context(
@@ -3615,7 +3620,8 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         entry["wait_evidence_complete"] = wait_key in checked_waits and wait_key not in unread_waits
         evidence = stale.get(wait_key)
         if evidence:
-            entry["stale_wait_evidence"] = evidence
+            key = "post_merge_evidence" if "completion_proven" in evidence else "stale_wait_evidence"
+            entry[key] = evidence
     exclude_landed_candidates(ranked["candidates"], ranked["excluded"], wait_context)
     exclude_landed_candidates(discoveries, ranked["excluded"], wait_context)
     portfolio = github_direction_next.rank_portfolio_work(
@@ -3632,7 +3638,8 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     for row in [*ranked["waiting"], *ranked["recorded_waits"], *ranked["stale_waits"]]:
         row["references"] = [wait_context["references"].get(ref["url"], {**ref, "state": "unknown"}) for ref in row["references"]]
         row["closed_references"] = [ref for ref in row["references"] if ref["state"] == "closed"]
-        row["stale_wait_evidence"] = stale.get((row["repo"].casefold(), row["number"]))
+        evidence = stale.get((row["repo"].casefold(), row["number"]))
+        row["stale_wait_evidence"] = evidence if evidence and "completion_proven" not in evidence else None
         row["review_required"] = True
     ranked["client_context"] = {key: {field: value for field, value in record.items() if field != "login"} for key, record in client_records.items()}
     github_agent.filter_selection(ranked, github_agent.running_agent(getattr(args, "agent", None)))

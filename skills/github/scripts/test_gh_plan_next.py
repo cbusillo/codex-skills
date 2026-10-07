@@ -2474,20 +2474,23 @@ def test_local_and_global_next_exclude_stale_landing_but_keep_split_work() -> No
     status = "## Current Status\nState: Source complete.\nNext action: Supervisor lands PR https://github.com/someone/product/pull/71 and reconciles closure.\nWaiting for: None.\n"
     stale = global_issue("someone/product", 10, body=status)
     split = global_issue("someone/product", 11, body=status.replace("Supervisor lands PR", "Test split remainder after PR"))
+    person = global_issue("someone/product", 12, body=split["body"].replace("Waiting for: None.", "Waiting for: Chris to test on the phone."))
     root = track("someone/direction", 1, "First")
-    edges = {(root["repo"], 1): relationships(sub_issues=[stale, split])}
-    with global_fixture([root], [stale, split], edges) as (module, result, _reads):
+    edges = {(root["repo"], 1): relationships(sub_issues=[stale, split, person])}
+    with global_fixture([root], [stale, split, person], edges) as (module, result, _reads):
         real_api = module.api_json
         def merged(method: str, path: str, **kwargs: Any) -> Any:
             if path == "/repos/someone/product/pulls/71":
-                return "automation-gh", {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}}
+                return "automation-gh", {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #10\nRefs #11\nRefs #12"}
             return real_api(method, path, **kwargs)
         with patch.multiple(module, api_json=merged):
             module.cmd_next(next_args())
             assert [row["number"] for row in result["candidates"]] == [11]
+            assert any(row["number"] == 12 and "Chris" in row["waiting_for"] for row in result["recorded_waits"])
+            assert not any(row["number"] == 12 for row in result["stale_waits"])
             excluded = next(row for row in result["excluded"] if row["number"] == 10)
             assert excluded["exclusion"] == "landed_status_needs_reconciliation"
-            assert not excluded["stale_wait_evidence"]["completion_proven"]
+            assert not excluded["post_merge_evidence"]["completion_proven"]
             result.clear()
             with patch.multiple(module, collect_paged_rest_items=lambda *_a, **_kw: ("automation-gh", [stale, split])):
                 module.cmd_next(next_args(repo="someone/product"))
@@ -2496,7 +2499,25 @@ def test_local_and_global_next_exclude_stale_landing_but_keep_split_work() -> No
             assert {row["number"] for row in result["stale_wait_report"]["items"]} == {10, 11}
 
 
+def test_active_post_merge_read_gaps_remain_visible_on_selection_candidates() -> None:
+    module = load_module()
+    row = global_issue("someone/product", 10, body="## Current Status\nNext action: Supervisor lands PR https://github.com/someone/product/pull/71 and closes this issue.\n")
+    with patch.multiple(module, load_config=lambda *_: module.DEFAULT_CONFIG,
+                        api_json=Mock(side_effect=module.PlanError("not accessible"))):
+        report = module.next_wait_context([row], scan_limit=1, inventory_complete=True)
+    candidates = [module.compact_list_issue(row["repo"], row)]
+    excluded = []
+    module.exclude_landed_candidates(candidates, excluded, report)
+    assert not report["complete"] and report["unavailable"]
+    assert candidates[0]["post_merge_evidence_complete"] is False and not excluded
+    unchecked = global_issue("someone/product", 11)
+    candidates = [module.compact_list_issue(unchecked["repo"], unchecked)]
+    module.exclude_landed_candidates(candidates, excluded, report)
+    assert candidates[0]["post_merge_evidence_complete"] is False
+
+
 TESTS = [
+    test_active_post_merge_read_gaps_remain_visible_on_selection_candidates,
     test_local_and_global_next_exclude_stale_landing_but_keep_split_work,
     test_global_adjacent_notes_preserve_absence_and_pending_clauses,
     test_global_partial_unowned_holds_and_caller_wait_evidence_remain_visible,

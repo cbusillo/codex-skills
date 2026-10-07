@@ -309,10 +309,15 @@ closed, relabeled, or released automatically. Active records with linked PRs
 merged into the default branch after their GitHub `updated_at` carry
 `merged_active_pr` evidence and `completion_proven: false`. Newer comments or
 edits conservatively prevent that timestamp proof. When the recorded next
-action still requests routing or landing, `selection_exclusion` keeps local
+action consists only of routing or landing and bookkeeping, and that PR
+references this issue as implemented work, `selection_exclusion` keeps local
 and global `next` from assigning duplicate implementation. Split remainders,
 testing, deployment and acceptance steps remain work; read the full finish line
-before closing any issue. This does not change the claim guard. For a Supervisor check, use
+before closing any issue. Active evidence uses `post_merge_evidence` in
+selection output; it never makes a real person wait obsolete. Per-issue
+`post_merge_evidence_complete: false` identifies unread or unscanned selection
+evidence; review it before assigning work. This does not change the claim guard.
+For a Supervisor check, use
 `--stale-waits-only` with the existing audit command: it reads only open issues
 and their prerequisites, leaving weekly audit markers and windows untouched.
 Unrecognized status formats and prerequisites closed as abandoned or duplicate
