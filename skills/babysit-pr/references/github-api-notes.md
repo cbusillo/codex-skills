@@ -24,6 +24,11 @@ owns adaptive cadence and budget behavior. This is still polling;
 Launchplane owns the event-driven
 follow-up under launchplane#2374.
 
+If a reader exhausts its retry budget or deadline, or refuses authentication,
+the watcher emits a terminal `read_error` JSON event with the shared API result
+and exits with status 1. Inspect its failure cause and retry diagnostics before
+resuming; the watch loop adds no retries or identity fallback.
+
 ## Primary commands used
 
 ### PR metadata

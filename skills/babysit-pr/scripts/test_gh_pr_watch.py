@@ -1235,7 +1235,10 @@ def watcher_transport(monkeypatch):
     replies = []
     monkeypatch.setenv("CODEX_AUTOMATION_LOGIN", "fixture-bot")
     monkeypatch.delenv("GITHUB_RETRY_DEADLINE_AT", raising=False)
-    monkeypatch.setenv("GITHUB_RETRY_DRAIN_SECONDS", "0")
+    for name, value in {"GITHUB_RETRY_DRAIN_SECONDS": "0", "GITHUB_RETRY_MAX_ATTEMPTS": "4",
+                        "GITHUB_RETRY_MAX_WAIT_SECONDS": "30", "GITHUB_RETRY_BASE_BACKOFF_SECONDS": "1",
+                        "GITHUB_RETRY_WAIT_SLICE_SECONDS": "1"}.items():
+        monkeypatch.setenv(name, value)
     monkeypatch.setattr(gh_pr_watch.github_api, "default_retry_runtime", lambda: gh_pr_watch.github_api.RetryRuntime(
         now=lambda: clock[0],
         sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
@@ -1245,12 +1248,14 @@ def watcher_transport(monkeypatch):
 
     def transport(command, **_kwargs):
         calls.append((clock[0], command))
-        status, headers, body, actor = replies.pop(0)
+        status, headers, body, _actor = replies.pop(0)
+        if status == 0:
+            return subprocess.CompletedProcess(command, 1, stdout=json.dumps(body).encode(), stderr=b"")
         output = f"HTTP/2 {status}\ncontent-type: application/json\n"
         output += "".join(f"{name}: {value}\n" for name, value in headers.items())
         output += "\n" + json.dumps(body)
         return subprocess.CompletedProcess(command, int(status >= 400), stdout=output.encode(),
-                                           stderr=f"using the active gh account '{actor}'".encode())
+                                           stderr=b"")
 
     monkeypatch.setattr(gh_pr_watch.subprocess, "run", transport)
     return SimpleNamespace(clock=clock, calls=calls, replies=replies)
@@ -1287,7 +1292,6 @@ def test_watch_recovers_transient_read_and_continues_polling(monkeypatch, watche
     assert readers[0].last_result.ok
     assert readers[0].last_result.as_dict()["attempts"] == 2
     assert readers[0].last_result.as_dict()["elapsed_wait"] == 2
-    assert readers[0].last_result.actor == readers[0].expected_actor
     assert not readers[0].degraded_reasons
 
 
@@ -1310,33 +1314,37 @@ def test_watcher_deadline_returns_structured_failure_before_retry(monkeypatch, w
     assert reader.failed_results == [result]
 
 
-def test_watcher_throttle_shares_cooldown_with_another_reader(watcher_transport):
+@pytest.mark.parametrize("watcher_first", [True, False])
+def test_watcher_throttle_shares_cooldown_with_another_reader(monkeypatch, watcher_transport, watcher_first):
     fixture = watcher_transport
     fixture.replies.extend([
         (403, {"retry-after": "10"}, {"message": "You have exceeded a secondary rate limit"}, "fixture-bot"),
         (200, {}, {"name": "app"}, "fixture-bot"),
     ])
-    first = gh_pr_watch.watcher_reader()
-    first.deadline_at = fixture.clock[0] + 2
+    watcher = gh_pr_watch.watcher_reader()
+    other = gh_pr_watch.github_read.GitHubReader(
+        gh_cmd=gh_pr_watch.GH_COMMAND, expected_actor="fixture-bot", operation="github.read.repository",
+    )
+    first, second = (watcher, other) if watcher_first else (other, watcher)
+    monkeypatch.setenv("GITHUB_RETRY_DEADLINE_AT", str(fixture.clock[0] + 2))
     with pytest.raises(gh_pr_watch.github_read.GitHubReadError):
         first.get_json("/repos/example/app/issues/7/comments", step="comments")
 
-    second = gh_pr_watch.github_read.GitHubReader(
-        gh_cmd=gh_pr_watch.GH_COMMAND, expected_actor="fixture-bot", operation="github.read.repository",
-    )
+    monkeypatch.delenv("GITHUB_RETRY_DEADLINE_AT")
     assert second.get_json("/repos/example/app", step="repository") == {"name": "app"}
     assert [when for when, _command in fixture.calls] == [1000, 1010]
     assert second.last_result.ok
     assert second.last_result.as_dict()["elapsed_wait"] > 0
-    assert second.last_result.actor == first.expected_actor
 
 
 @pytest.mark.parametrize("status,body,actor,cause", [
     (401, {"message": "Bad credentials"}, "fixture-bot", "invalid_credentials"),
     (403, {"message": "Resource not accessible by integration"}, "fixture-bot", "permission_denied"),
-    (200, {"state": "open"}, "unexpected-user", "actor_mismatch"),
+    (0, {"ok": False, "failure": {"cause": "actor_mismatch", "message": "Unexpected authenticated actor",
+                                  "retryable": False, "fallback_eligible": False, "disposition": "stop"}},
+     "unexpected-user", "actor_mismatch"),
 ])
-def test_watcher_read_fails_closed_without_retry_or_fallback(watcher_transport, status, body, actor, cause):
+def test_watcher_read_failures_stop_without_outer_retry(watcher_transport, status, body, actor, cause):
     fixture = watcher_transport
     fixture.replies.append((status, {}, body, actor))
     reader = gh_pr_watch.watcher_reader()
@@ -1350,6 +1358,73 @@ def test_watcher_read_fails_closed_without_retry_or_fallback(watcher_transport, 
     assert len(fixture.calls) == 1
     assert fixture.clock[0] == 1000
     assert fixture.calls[0][1][0] == gh_pr_watch.GH_COMMAND
+    assert reader.expected_actor == "fixture-bot"
+
+
+@pytest.mark.parametrize("status,headers,body,cause", [
+    (503, {"retry-after": "10"}, {"message": "Service Unavailable"}, "deadline_exceeded"),
+    (401, {}, {"message": "Bad credentials"}, "invalid_credentials"),
+    (403, {}, {"message": "Resource not accessible by integration"}, "permission_denied"),
+])
+def test_watch_main_emits_structured_read_error(monkeypatch, watcher_transport, capsys, status, headers, body, cause):
+    watcher_transport.replies.append((status, headers, body, "fixture-bot"))
+    monkeypatch.setenv("GITHUB_RETRY_DEADLINE_AT", "1002")
+    monkeypatch.setattr(gh_pr_watch, "parse_args", lambda: argparse.Namespace(watch=True, retry_failed_now=False))
+
+    def snapshot(_args):
+        reader = gh_pr_watch.watcher_reader()
+        reader.get_json("/repos/example/app/issues/7/comments", step="comments")
+        pytest.fail("failed read must not become a successful snapshot")
+
+    monkeypatch.setattr(gh_pr_watch, "collect_snapshot", snapshot)
+    assert gh_pr_watch.main() == 1
+    captured = capsys.readouterr()
+    event = json.loads(captured.out)
+    assert event["event"] == "read_error"
+    assert event["payload"]["ok"] is False
+    assert event["payload"]["failure"]["cause"] == cause
+    assert event["payload"]["effective_deadline"] == 1002
+    assert len(watcher_transport.calls) == 1
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("status,message,cause", [
+    (401, "Bad credentials", "invalid_credentials"),
+    (403, "Resource not accessible by integration", "permission_denied"),
+])
+def test_watcher_auth_failure_does_not_fall_back_inside_wrapper(monkeypatch, tmp_path, status, message, cause):
+    """Run the real credential wrapper with a fake gh, never real credentials."""
+    for name in ("GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
+                 "GH_TOKEN", "GITHUB_TOKEN", "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK",
+                 "GH_WITH_ENV_TOKEN_OWN_USER", "GH_WITH_ENV_TOKEN_CLASSIFIER",
+                 "GH_WITH_ENV_TOKEN_IDENTITY_HELPER", "GITHUB_RETRY_DEADLINE_AT"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CODEX_AUTOMATION_LOGIN", "fixture-bot")
+    monkeypatch.setenv("CODEX_GITHUB_TOKEN", "offline-fixture-token")
+    monkeypatch.setenv("GH_WITH_ENV_TOKEN_PYTHON", sys.executable)
+    monkeypatch.setenv("GITHUB_RETRY_MAX_ATTEMPTS", "4")
+    call_log = tmp_path / "gh-calls"
+    monkeypatch.setenv("WATCHER_FIXTURE_CALL_LOG", str(call_log))
+    fake_gh = tmp_path / "gh"
+    fake_gh.write_text(
+        "#!/bin/sh\n"
+        'if [ -z "${GH_TOKEN:-}" ]; then\n'
+        '  printf "active\\n" >> "$WATCHER_FIXTURE_CALL_LOG"\n'
+        '  printf \'HTTP/2 200\\ncontent-type: application/json\\n\\n{"login":"unexpected-user"}\\n\'\n'
+        "  exit 0\nfi\n"
+        'printf "automation\\n" >> "$WATCHER_FIXTURE_CALL_LOG"\n'
+        f"printf 'HTTP/2 {status}\\ncontent-type: application/json\\n\\n%s\\n' '{json.dumps({'message': message})}'\n"
+        f"printf 'gh: HTTP {status}\\n' >&2\nexit 1\n",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o700)
+    monkeypatch.setenv("GH_WITH_ENV_TOKEN_GH", str(fake_gh))
+    reader = gh_pr_watch.watcher_reader()
+    with pytest.raises(gh_pr_watch.github_read.GitHubReadError) as raised:
+        reader.get_json("/repos/example/app/issues/7/comments", step="comments")
+
+    assert raised.value.result.failure.cause == cause
+    assert call_log.read_text().splitlines() == ["automation"]
     assert reader.expected_actor == "fixture-bot"
 
 

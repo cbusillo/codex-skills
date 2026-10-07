@@ -1832,6 +1832,9 @@ def main():
         snapshot["state_file"] = str(state_path)
         print_json(snapshot)
         return 0
+    except github_read.GitHubReadError as err:
+        print_event("read_error", err.result.as_dict())
+        return 1
     except (GhCommandError, RuntimeError, ValueError) as err:
         sys.stderr.write(f"gh_pr_watch.py error: {err}\n")
         return 1
