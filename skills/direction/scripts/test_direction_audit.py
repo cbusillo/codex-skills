@@ -1777,7 +1777,7 @@ def test_stale_reference_waits_preserve_start_metadata_and_real_holds() -> None:
             return {"merged_at": stamp(NOW), "base": {"ref": "main"}}
         raise AssertionError(args[1])
     for body in bodies:
-        row = {**issue(41, "Parked on a merged PR", labels=("plan:waiting",), body="## Current Status\n" + body),
+        row: dict[str, Any] = {**issue(41, "Parked on a merged PR", labels=("plan:waiting",), body="## Current Status\n" + body),
                "issue_dependencies_summary": {"total_blocked_by": 0}}
         report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
         assert report["complete"] and [entry["number"] for entry in report["items"]] == [41]
@@ -1789,6 +1789,8 @@ def test_active_pending_and_bold_person_holds_preserve_remaining_work() -> None:
     module = load()
     for before in ("State: Source complete; staging readback still pending after landing.\n",
                    "**Waiting for:** Chris to confirm on the phone.\n",
+                   "**Waiting for**: Chris to confirm on the phone.\n",
+                   "State: Source complete; phone test still required after landing.\n",
                    "__Blocked by:__ Client acceptance.\n"):
         row = {**issue(1, "Unfinished acceptance", labels=("plan:active",),
                        body="## Current Status\n" + before + "Next action: Supervisor lands PR #71 and closes this issue.\n"),

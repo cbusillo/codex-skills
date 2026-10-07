@@ -208,7 +208,9 @@ records that run.
    findings and repository-discovery or report coverage gaps in the takeover
    comment. Before capacity selection, review active post-merge records and their coverage
    gaps against the full finish line. Omit records carrying `selection_exclusion`
-   from implementation briefs. For other flagged records, brief only a verified
+   from implementation briefs until reconciliation. Read post-merge comments as well as
+   Current Status; if they establish a new fix or acceptance step, update the status
+   and brief that verified remainder. For other flagged records, brief only a verified
    remaining step; do not repeat the merged implementation. A merged PR alone
    never completes a split remainder or releases a person/event hold.
    Review each reported wait

@@ -3338,7 +3338,10 @@ def next_wait_context(
             raise cache[path]
         return cache[path]
 
-    unique = {(item["repo"].casefold(), item["number"]): item for item in issues}
+    configs = {item["repo"]: load_config(item["repo"]) for item in issues}
+    unique = {(item["repo"].casefold(), item["number"]): item for item in issues
+              if set(normalize_labels(item.get("labels"))).intersection(
+                  configs[item["repo"]]["labels"][key] for key in ("active", "waiting", "blocked"))}
     groups: dict[str, list[dict[str, Any]]] = {}
     selected = list(unique.values())[:scan_limit]
     for item in selected:
@@ -3349,7 +3352,7 @@ def next_wait_context(
     checked = 0
     scope_labels = {}
     for repo, items in groups.items():
-        config = load_config(repo)
+        config = configs[repo]
         report = direction_audit.stale_wait_report(items, repo, fetch=fetch, inventory_complete=complete,
                                                  active_label=config["labels"]["active"])
         reports.extend({**row, "repo": repo} for row in report["items"])

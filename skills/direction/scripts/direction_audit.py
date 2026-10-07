@@ -632,13 +632,13 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
                          read: Callable[[str], Any]) -> dict[str, Any] | None:
     """A merge makes an old status suspect, never proves the finish line."""
     # Normalize field emphasis without rewriting reference URLs or body text.
-    status = re.sub(rf"(?m)^(\s*(?:[-*]\s+)?)(?:\*\*|__)({STATUS_FIELD}:)(?:\*\*|__)", r"\1\2", status)
+    status = re.sub(rf"(?m)^(\s*(?:[-*]\s+)?)(?:\*\*|__)({STATUS_FIELD})(?::(?:\*\*|__)|(?:\*\*|__):)", r"\1\2:", status)
     next_action = re.search(
         rf"(?ims)^\s*(?:[-*]\s+)?Next action:\s*(.*?)(?=^\s*(?:[-*]\s+)?{STATUS_FIELD}:|\Z)", status,
     )
-    def references(text: str) -> dict[tuple[str, int], str | None]:
+    def references(reference_text: str) -> dict[tuple[str, int], str | None]:
         return {(ref.group(1) or ref.group(4) or repo, int(ref.group(3) or ref.group(5))): ref.group(2)
-                for ref in WAIT_REFERENCE.finditer(text)}
+                for ref in WAIT_REFERENCE.finditer(reference_text)}
     # Delivery targets own the stack guard and implementation association;
     # historical PRs elsewhere in status cannot cancel or authorize selection.
     refs = references(next_action[1]) if next_action else {}
@@ -707,7 +707,7 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
         rf"(?ims)^\s*(?:[-*]\s+)?(?:State|Validation):\s*(.*?)(?=^\s*(?:[-*]\s+)?{STATUS_FIELD}:|\Z)", status,
     ):
         text = re.sub(r"\bno (?:failed|pending)(?:[ /]+(?:failed|pending))* (?:checks|workflows)\b", "", match[1], flags=re.I)
-        hold_pending |= bool(re.search(r"\b(?:pending|awaiting|remaining|remainder|split|not yet)\b", text, re.I))
+        hold_pending |= bool(re.search(r"\b(?:pending|awaiting|remaining|remainder|split|not yet|still required)\b", text, re.I))
     timestamp_required = delivery and implements and not hold_pending
     # The implementation is already merged even when later activity prevents
     # proving the body age. Withhold only delivery-only instructions for review;

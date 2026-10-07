@@ -10,7 +10,6 @@ from __future__ import annotations
 import importlib.util
 import random
 import sys
-from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -2548,8 +2547,13 @@ def test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output()
         report = module.next_wait_context([row], scan_limit=1, inventory_complete=True)
     candidates = [module.compact_list_issue(row["repo"], row)]
     module.exclude_landed_candidates(candidates, [], report)
-    assert report["checked_issues"] == [{"repo": row["repo"], "number": 10}]
+    assert not report["checked_issues"]
     assert "post_merge_evidence_complete" not in candidates[0]
+    active = {**row, "number": 11, "labels": ["plan", "custom-active"],
+              "body": "## Current Status\nNext action: Implement the remaining phone fix.\n"}
+    with patch.multiple(module, api_json=Mock(side_effect=AssertionError("no PR read needed")), load_config=lambda *_: config):
+        report = module.next_wait_context([row, active], scan_limit=1, inventory_complete=True)
+    assert report["complete"] and report["checked_issues"] == [{"repo": row["repo"], "number": 11}]
 
 
 TESTS = [
