@@ -89,7 +89,7 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     # These phrases qualify ownership statements or sequenced permission, not a routing
     # note or an implicit condition on the directive itself.
     pr_reference = r"(?:PR )?(?:[\w.-]+/[\w.-]+)?#\d+"
-    ownership_effect = (rf"(?<![\w/.-])(?:tomorrow|later today|this afternoon|on merging {pr_reference}|"
+    ownership_effect = (rf"(?<![\w/.-])(?:tomorrow|later today|on merging {pr_reference}|"
                         rf"(?:on|with|at) {pr_reference}(?:['’]s)? merg(?:e|ing)|"
                         r"at merge-train landing)(?![\w/-])")
     handoff = re.sub(r"(?s)<!--.*?-->", "", text)
@@ -141,7 +141,8 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
         return True
     for index, statement in enumerate(statements):
         following = statements[index + 1].strip() if index + 1 < len(statements) else ""
-        if re.search(ownership_effect, statement, re.IGNORECASE):
+        if (re.search(ownership_effect, statement, re.IGNORECASE)
+                or re.search(r"\b(?:merges|lands) this afternoon\b", statement, re.IGNORECASE)):
             # Receipts or other intervening notes do not make deferred
             # successor permission unconditional.
             if any(re.fullmatch(sequenced_permission, later, re.IGNORECASE)

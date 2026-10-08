@@ -417,6 +417,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_separate_unconditional_handoff_keeps_downstream_gates_usable(self):
         for prose in (
+            "PR #99 merged this afternoon. Then the next worker may claim.",
             "Ownership transfers immediately.",
             "Supervisor routes PR #99 after PR #100 merges. Keep the worktree until landing.",
             "After PR #99 lands, close out the issue. When resuming, rebase onto main.",
@@ -2491,6 +2492,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_alternate_future_sequences_keep_downstream_releases_usable(self):
         for handoff in (
+            "PR #99 merged this afternoon. Then the next worker may claim.",
             "PR #99 merges later today. The Supervisor routes deployment afterwards.",
             "PR #99 merges later today. At that point the next session can resume deployment.",
             "PR #99 lands tomorrow. The next worker may claim follow-up #1440 then.",
@@ -2510,6 +2512,23 @@ class ClaimTests(unittest.TestCase):
                     self.released_status_fixture(release)
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_ambiguous_distant_future_sequence_has_unconditional_recovery(self):
+        handoff = ("PR #99 lands tomorrow; the Supervisor routes deployment. "
+                   "Source work is complete and CI is green. Then the next worker may claim.")
+        for final in (False, True):
+            with self.subTest(final=final):
+                self.setUp()
+                self.released_status_fixture(handoff + "\n\nReleased claim 1" if final
+                                             else "Released claim 1\n\n" + handoff)
+                with self.assertRaises(PLAN.ClassifiedPlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+                self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
+                                      "created_at": "2026-10-01T00:02:00Z",
+                                      "user": {"login": TEST_BOT}})
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_future_time_sequence_refresh_requires_unconditional_handoff(self):
         for final in (False, True):
