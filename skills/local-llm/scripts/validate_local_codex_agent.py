@@ -726,7 +726,10 @@ class LocalCodexAgentTests(unittest.TestCase):
                         captured.truncate(agent.MAX_CAPTURE_BYTES // 4 + excess)
 
                 process.poll.side_effect = poll
-                with patch.object(agent.subprocess, "Popen", side_effect=spawn), patch.object(agent, "stop_process_group", side_effect=stop):
+                with (
+                    patch.dict(vars(agent.subprocess), {"Popen": spawn}),
+                    patch.dict(vars(agent), {"stop_process_group": stop}),
+                ):
                     if excess:
                         with self.assertRaisesRegex(agent.LocalCodexAgentError, "output limit"):
                             agent.run_process(["synthetic-host"], {}, self.root, seconds=1, extra_output=final)
