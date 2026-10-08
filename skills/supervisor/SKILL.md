@@ -133,6 +133,29 @@ step; do not hand them off at a context percentage. Codex as
 the Supervisor is expected to work; claim it only after a run has verified it and the pilot issue
 records that run.
 
+## Accounts, Pace, And Launch Effort
+
+- Context Panel's Use next / launch order is the only source for account
+  choice. Follow it; do not keep a separate order or choose accounts by name.
+  See the [direction#25 decision](https://github.com/cbusillo/direction/issues/25#issuecomment-5998554421)
+  and [codex-skills#1270 clarification](https://github.com/cbusillo/codex-skills/issues/1270#issuecomment-6046982893).
+- Agents never apply a banked reset. Ask the Director to apply one only when
+  Context Panel shows every account of that provider, including its use-last
+  account, has no capacity left (0% remaining). Still relay Context Panel's
+  safety notice when a reset expires within 24 hours; that notice does not
+  permit applying it before the provider is empty. This covers Claude too,
+  under the
+  [context-panel#791 reset decision](https://github.com/cbusillo/context-panel/issues/791#issuecomment-6050912240)
+  and [Claude confirmation](https://github.com/cbusillo/context-panel/issues/791#issuecomment-6050965276).
+- Run enough productive work that banked resets get used before they expire,
+  soonest expiry first. The [newer pacing decision](https://github.com/cbusillo/context-panel/issues/791#issuecomment-6050912240)
+  supersedes the older "pace to last the week" line on
+  [direction#28](https://github.com/cbusillo/direction/issues/28#issuecomment-5999464811).
+- Medium is the default reasoning effort for Supervisor launches. Use high
+  for authorization, credentials, security, policy or guidance changes, and
+  hard debugging, as recorded in the
+  [direction#28 effort decision](https://github.com/cbusillo/direction/issues/28#issuecomment-5999464811).
+
 ## The Pattern
 
 1. **One brief per session and repository.** The brief says what the session
