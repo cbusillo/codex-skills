@@ -470,7 +470,16 @@ class ClaimTests(unittest.TestCase):
             with self.subTest(condition=condition):
                 self.setUp()
                 self.cleanup_handoff_fixture()
-                self.comments[2]["body"] = CLAIM.without_operation_marker(self.comments[2]["body"]) + "\n\n" + condition
+                release = CLAIM.without_operation_marker(self.comments[2]["body"])
+                if condition.startswith("Use its host retire command"):
+                    # Change the real instruction instead of adding a second
+                    # ownership-check sentence that could mask the guard.
+                    release = release.replace(
+                        "use its host retire command after landing/closure and ownership/content checks.", condition,
+                    )
+                else:
+                    release += "\n\n" + condition
+                self.comments[2]["body"] = release
                 self.assertIsNone(CLAIM.released_claim_id(self.comments[2]["body"]))
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
