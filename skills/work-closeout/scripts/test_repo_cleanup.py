@@ -400,12 +400,12 @@ class CleanupContracts(unittest.TestCase):
         original_signature = cleanup_probe.signature
 
         def stable_file_signature(info: os.stat_result) -> dict[str, int]:
-            result = original_signature(info)
+            file_signature = original_signature(info)
             if (info.st_dev, info.st_ino) == (original.st_dev, original.st_ino):
                 # ctime cannot be restored through utime. Normalize it before
                 # scanning so metadata cannot substitute for byte verification.
-                result["ctime_ns"] = original.st_ctime_ns
-            return result
+                file_signature["ctime_ns"] = original.st_ctime_ns
+            return file_signature
 
         # Installed runtime bindings are not inputs to this content fixture.
         with (
