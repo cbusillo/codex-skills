@@ -618,15 +618,6 @@ def test_rejected_create_retries_without_reconciliation() -> None:
 
 
 def test_create_unknown_outcome_returns_reconciled_comment_without_retry() -> None:
-    original_now = github_comment._utc_now
-    github_comment._utc_now = lambda: github_comment.dt.datetime(
-        2026,
-        7,
-        17,
-        18,
-        30,
-        tzinfo=github_comment.dt.timezone.utc,
-    )
     post_calls = 0
     get_calls = 0
     submitted_body = ""
@@ -651,7 +642,10 @@ def test_create_unknown_outcome_returns_reconciled_comment_without_retry() -> No
         ])
 
     def run(calls: list[dict[str, Any]]) -> None:
-        try:
+        with patch.object(
+            github_comment, "_utc_now",
+            return_value=github_comment.dt.datetime(2026, 7, 17, 18, 30, tzinfo=github_comment.dt.timezone.utc),
+        ):
             payload = github_comment.comment(
                 "pr",
                 42,
@@ -660,8 +654,6 @@ def test_create_unknown_outcome_returns_reconciled_comment_without_retry() -> No
                 gh_cmd="fake-gh",
                 operation="github.pr.comment",
             )
-        finally:
-            github_comment._utc_now = original_now
         assert post_calls == 1, post_calls
         assert payload["attempts"] == 4, payload
         assert payload["outcome_certainty"] == "reconciled_applied", payload
@@ -673,17 +665,6 @@ def test_create_unknown_outcome_returns_reconciled_comment_without_retry() -> No
 
 
 def test_create_reconciliation_uses_explicit_fallback_actor_context() -> None:
-    original_now = github_comment._utc_now
-    original_fallback = os.environ.get("GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK")
-    github_comment._utc_now = lambda: github_comment.dt.datetime(
-        2026,
-        7,
-        17,
-        18,
-        45,
-        tzinfo=github_comment.dt.timezone.utc,
-    )
-    os.environ["GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK"] = "1"
     post_calls = 0
     get_calls = 0
     submitted_body = ""
@@ -712,7 +693,13 @@ def test_create_reconciliation_uses_explicit_fallback_actor_context() -> None:
         ])
 
     def run(_calls: list[dict[str, Any]]) -> None:
-        try:
+        with (
+            patch.object(
+                github_comment, "_utc_now",
+                return_value=github_comment.dt.datetime(2026, 7, 17, 18, 45, tzinfo=github_comment.dt.timezone.utc),
+            ),
+            patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1"}),
+        ):
             payload = github_comment.comment(
                 "issue",
                 42,
@@ -720,12 +707,6 @@ def test_create_reconciliation_uses_explicit_fallback_actor_context() -> None:
                 repo="owner/repo",
                 gh_cmd="fake-gh",
             )
-        finally:
-            github_comment._utc_now = original_now
-            if original_fallback is None:
-                os.environ.pop("GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK", None)
-            else:
-                os.environ["GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK"] = original_fallback
         assert post_calls == 1, post_calls
         assert payload["actor"] == "cbusillo", payload
         assert payload["expected_actor"] is None, payload
@@ -735,15 +716,6 @@ def test_create_reconciliation_uses_explicit_fallback_actor_context() -> None:
 
 
 def test_create_reconciliation_rejects_concurrent_identical_comment() -> None:
-    original_now = github_comment._utc_now
-    github_comment._utc_now = lambda: github_comment.dt.datetime(
-        2026,
-        7,
-        17,
-        3,
-        20,
-        tzinfo=github_comment.dt.timezone.utc,
-    )
     get_calls = 0
 
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
@@ -763,7 +735,10 @@ def test_create_reconciliation_rejects_concurrent_identical_comment() -> None:
         ])
 
     def run(_calls: list[dict[str, Any]]) -> None:
-        try:
+        with patch.object(
+            github_comment, "_utc_now",
+            return_value=github_comment.dt.datetime(2026, 7, 17, 3, 20, tzinfo=github_comment.dt.timezone.utc),
+        ):
             try:
                 github_comment.comment(
                     "issue",
@@ -776,22 +751,11 @@ def test_create_reconciliation_rejects_concurrent_identical_comment() -> None:
                 assert exc.payload["reconciliation"]["result"] == "no_match", exc.payload
             else:
                 raise AssertionError("a concurrent invocation's marker must not satisfy reconciliation")
-        finally:
-            github_comment._utc_now = original_now
 
     with_call_stub(callback, run, allow_retry=True)
 
 
 def test_create_reconciliation_excludes_preexisting_same_second_comment() -> None:
-    original_now = github_comment._utc_now
-    github_comment._utc_now = lambda: github_comment.dt.datetime(
-        2026,
-        7,
-        17,
-        19,
-        0,
-        tzinfo=github_comment.dt.timezone.utc,
-    )
     existing = comment_body(
         1013,
         created_at="2026-07-17T19:00:00Z",
@@ -813,7 +777,10 @@ def test_create_reconciliation_excludes_preexisting_same_second_comment() -> Non
         return success([existing])
 
     def run(_calls: list[dict[str, Any]]) -> None:
-        try:
+        with patch.object(
+            github_comment, "_utc_now",
+            return_value=github_comment.dt.datetime(2026, 7, 17, 19, 0, tzinfo=github_comment.dt.timezone.utc),
+        ):
             try:
                 github_comment.comment(
                     "issue",
@@ -828,8 +795,6 @@ def test_create_reconciliation_excludes_preexisting_same_second_comment() -> Non
                 assert reconciliation["preexisting_comment_ids"] == [1013], reconciliation
             else:
                 raise AssertionError("pre-existing same-second comment must not satisfy reconciliation")
-        finally:
-            github_comment._utc_now = original_now
         assert post_calls == 1, post_calls
 
     with_call_stub(callback, run, allow_retry=True)
