@@ -430,6 +430,23 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
+    def test_ambiguous_repeated_release_identity_recovers_with_separate_handoff(self):
+        for refresh in (False, True):
+            with self.subTest(refresh=refresh):
+                self.setUp()
+                self.separate_handoff_fixture("", refresh=refresh)
+                self.comments[3]["body"] = "Released claim 1\nSource claim 1, session session-b: PR #99 and #100 pending review"
+                self.assertEqual(CLAIM.released_claim_id(self.comments[2]["body"]), 1)
+                self.assertIsNone(CLAIM.released_claim_id(self.comments[3]["body"]))
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+                self.comments.append({"id": 5, "body": "Handoff from trial-b\nSource claim 1, session session-b: PR #99 and #100 pending review",
+                                      "user": {"login": TEST_BOT}})
+                self.args.handoff_comment = 5
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
     def test_cross_repository_uses_canonical_planning_label_configuration(self):
         self.cross_repository_fixture()
         self.configs["other/plans"] = copy.deepcopy(PLAN.DEFAULT_CONFIG)
