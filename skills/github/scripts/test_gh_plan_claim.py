@@ -1841,6 +1841,10 @@ class ClaimTests(unittest.TestCase):
             "The next worker may claim post-merge.",
             "**Takes effect** upon merge.",
             "Ownership transfers upon landing.",
+            "Takes effect on merging PR #99.",
+            "Takes effect with PR #99's merge.",
+            "Takes effect on PR #99 merging.",
+            "Takes effect later today.",
         ):
             for retained in (False, True):
                 with self.subTest(prose=prose, retained=retained):
@@ -1885,6 +1889,10 @@ class ClaimTests(unittest.TestCase):
             "Deployment starts at merge.",
             "Source work is finished.\n\nFix is effective across repos.",
             "Source work is finished.\n\nOwnership transfers immediately.",
+            "Source work is finished.\n\nTakes effect now.",
+            "Source work is finished.\n\nTakes effect immediately.",
+            "The next worker can resume on work/issue-42-post-merge-cleanup.",
+            "PR #99 is parked at merge-train batch abc, so the next worker can pick this up now.",
         ):
             with self.subTest(prose=prose):
                 self.setUp()

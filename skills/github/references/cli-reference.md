@@ -598,7 +598,9 @@ claim. Conditional successor actions (pick this up, resume, take over) and
 handoff completion are checked across the handoff for both release placements.
 Deferred effects such as `Takes effect upon merge.` and `Ownership transfers
 upon merge of PR #99.` refuse even in a later paragraph after a first-line
-release. The same ownership conditions apply to both placements.
+release. `Takes effect` prose also refuses without a condition word unless it
+says `now` or `immediately`; ordinary descriptions such as `Fix is effective
+across repos.` still work after a first-line release.
 An adjacent prerequisite after successor permission also refuses, such as
 `The next worker can take over. PR #99 must merge first.` or a standalone
 `Wait until PR #99 merges.` following that permission.
