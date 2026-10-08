@@ -423,6 +423,7 @@ class ClaimTests(unittest.TestCase):
     def test_separate_unconditional_handoff_keeps_downstream_gates_usable(self):
         for prose in (
             "PR #99 merged this afternoon. Then the next worker may claim.",
+            "Source work landed. Then the next worker may claim. Follow-up PR #100 merges tomorrow.",
             "Ownership transfers immediately.",
             "Supervisor routes PR #99 after PR #100 merges. Keep the worktree until landing.",
             "After PR #99 lands, close out the issue. When resuming, rebase onto main.",
@@ -2498,6 +2499,7 @@ class ClaimTests(unittest.TestCase):
     def test_alternate_future_sequences_keep_downstream_releases_usable(self):
         for handoff in (
             "PR #99 merged this afternoon. Then the next worker may claim.",
+            "Source work landed. Then the next worker may claim. Follow-up PR #100 merges tomorrow.",
             "PR #99 merged this afternoon. At that point, the next session can resume.",
             "PR #99 merged this afternoon. The next worker may claim afterward.",
             "PR #99 merged this afternoon. The next worker can then claim.",

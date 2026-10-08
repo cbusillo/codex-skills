@@ -111,8 +111,9 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     permission = rf"(?:{actor}\s+(?:(?:can|may|should)\s+)?)?(?:{successor_action}|(?:re)?claims?){task_object}"
     ownership_permission = rf"(?:ownership passes to {actor}|the issue can be claimed)"
     task_permission = rf"(?:{permission}|{ownership_permission})"
+    trailing_sequence = rf"{task_permission}\s+(?:afterwards?|then)"
     sequenced_permission = (rf"(?:(?:Then,?|At that point,?)\s+{task_permission}|"
-                            rf"{task_permission}\s+(?:afterwards?|then)|"
+                            rf"{trailing_sequence}|"
                             rf"{actor}\s+(?:can|may|should)\s+then\s+"
                             rf"(?:{successor_action}|(?:re)?claims?){task_object})[.!?;]?")
     # Artifact checks belong to retirement unless later ownership/successor
@@ -150,7 +151,9 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
             if any(re.fullmatch(sequenced_permission, later, re.IGNORECASE)
                    for later in statements[index + 1:]):
                 return True
-            if index > 0 and re.fullmatch(sequenced_permission, statements[index - 1], re.IGNORECASE):
+            # A leading Then can refer back to completed source work rather
+            # than forward to this schedule.
+            if index > 0 and re.fullmatch(rf"{trailing_sequence}[.!?;]?", statements[index - 1], re.IGNORECASE):
                 return True
         if re.search(rf"{handoff_effect}[^.!?;]*\b(?:upon|post-(?:merge|landing)|at (?:merge|landing))\b", statement, re.IGNORECASE):
             return True
