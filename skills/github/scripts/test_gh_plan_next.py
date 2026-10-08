@@ -12,7 +12,7 @@ import random
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator
 from unittest.mock import Mock, patch
 
 
@@ -123,6 +123,28 @@ def save_next_helpers(module: Any) -> dict[str, Any]:
 def restore_next_helpers(module: Any, originals: dict[str, Any]) -> None:
     for name, value in originals.items():
         setattr(module, name, value)
+
+
+@contextmanager
+def dependency_next_fixture(
+    module: Any,
+    plans: list[dict[str, Any]],
+    *,
+    read_relationships: Callable[..., Any],
+) -> Iterator[dict[str, Any]]:
+    """Run a local next command with explicit dependency evidence and no project."""
+    captured: dict[str, Any] = {}
+    with patch.multiple(
+        module,
+        collect_paged_rest_items=lambda *_args, **_kwargs: ("automation-gh", plans),
+        next_focus_context=lambda _repo, _config: (
+            "automation-gh", {}, {"available": False, "reason": "project_not_configured"},
+        ),
+        read_next_issue_relationships=read_relationships,
+        load_direction=lambda _repo: DIRECTION,
+        emit=captured.update,
+    ):
+        yield captured
 
 
 def test_next_beta_rc_stable_chain_respects_native_blockers() -> None:
@@ -453,26 +475,14 @@ def test_cmd_next_degrades_when_direction_is_unavailable_or_unparsed() -> None:
 
 def test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions() -> None:
     module = load_module()
-    captured: dict[str, Any] = {}
     plans = [issue(1), issue(2, labels=["plan", "plan:stale"])]
     relationship_calls: list[int] = []
-
-    originals = save_next_helpers(module)
-    module.collect_paged_rest_items = lambda *_args, **_kwargs: ("automation-gh", plans)
-    module.next_focus_context = lambda _repo, _config: (
-        "automation-gh",
-        {},
-        {"available": False, "reason": "project_not_configured"},
-    )
 
     def fake_relationships(_repo: str, number: int, _issue: dict[str, Any] | None = None) -> Any:
         relationship_calls.append(number)
         raise module.PlanError("dependency endpoint unavailable")
 
-    module.read_next_issue_relationships = fake_relationships
-    module.load_direction = lambda _repo: DIRECTION
-    module.emit = captured.update
-    try:
+    with dependency_next_fixture(module, plans, read_relationships=fake_relationships) as captured:
         module.cmd_next(
             type(
                 "Args",
@@ -480,8 +490,6 @@ def test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions() -
                 {"repo": "owner/repo", "milestone": None, "limit": 5, "scan_limit": 5},
             )()
         )
-    finally:
-        restore_next_helpers(module, originals)
 
     assert relationship_calls == [1]
     assert [item["exclusion"] for item in captured["excluded"]] == [
@@ -495,29 +503,18 @@ def test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions() -
 
 def test_cmd_next_excludes_truncated_dependencies_with_only_closed_visible_blockers() -> None:
     module = load_module()
-    captured: dict[str, Any] = {}
     visible_blockers = [
         related(number, state="closed")
         for number in range(2, module.NEXT_RELATIONSHIP_LIMIT + 2)
     ]
 
-    originals = save_next_helpers(module)
-    module.collect_paged_rest_items = lambda *_args, **_kwargs: (
-        "automation-gh", [issue(1)],
-    )
-    module.next_focus_context = lambda _repo, _config: (
-        "automation-gh",
-        {},
-        {"available": False, "reason": "project_not_configured"},
-    )
-    module.read_next_issue_relationships = lambda *_args, **_kwargs: (
-        "automation-gh",
-        relationships(blocked_by=visible_blockers),
-        ["blocked_by"],
-    )
-    module.load_direction = lambda _repo: DIRECTION
-    module.emit = captured.update
-    try:
+    with dependency_next_fixture(
+        module,
+        [issue(1)],
+        read_relationships=lambda *_args, **_kwargs: (
+            "automation-gh", relationships(blocked_by=visible_blockers), ["blocked_by"],
+        ),
+    ) as captured:
         module.cmd_next(
             type(
                 "Args",
@@ -525,8 +522,6 @@ def test_cmd_next_excludes_truncated_dependencies_with_only_closed_visible_block
                 {"repo": "owner/repo", "milestone": None, "limit": 5, "scan_limit": 5},
             )()
         )
-    finally:
-        restore_next_helpers(module, originals)
 
     assert captured["candidate_count"] == 0
     assert captured["candidates"] == []
@@ -541,16 +536,6 @@ def test_cmd_next_excludes_truncated_dependencies_with_only_closed_visible_block
 
 def test_cmd_next_reraises_dependency_api_failures() -> None:
     module = load_module()
-    originals = save_next_helpers(module)
-    module.collect_paged_rest_items = lambda *_args, **_kwargs: (
-        "automation-gh",
-        [issue(1)],
-    )
-    module.next_focus_context = lambda _repo, _config: (
-        "automation-gh",
-        {},
-        {"available": False, "reason": "project_not_configured"},
-    )
     failure = module.github_api_core.FailureDetail(
         cause="rate_limited",
         message="retry later",
@@ -558,11 +543,10 @@ def test_cmd_next_reraises_dependency_api_failures() -> None:
         fallback_eligible=False,
         disposition="retry",
     )
-    module.read_next_issue_relationships = lambda *_args, **_kwargs: (_ for _ in ()).throw(
-        module.PlanError("retry later", failure=failure)
-    )
-    module.load_direction = lambda _repo: DIRECTION
-    try:
+    def failed_relationships(*_args: Any, **_kwargs: Any) -> Any:
+        raise module.PlanError("retry later", failure=failure)
+
+    with dependency_next_fixture(module, [issue(1)], read_relationships=failed_relationships):
         try:
             module.cmd_next(
                 type(
@@ -576,8 +560,6 @@ def test_cmd_next_reraises_dependency_api_failures() -> None:
             assert exc.failure.cause == "rate_limited"
         else:
             raise AssertionError("expected classified dependency failure")
-    finally:
-        restore_next_helpers(module, originals)
 
 
 def test_next_relationship_reads_are_bounded_and_report_truncation() -> None:
