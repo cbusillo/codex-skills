@@ -88,7 +88,11 @@ inspection. If creation returns no tab identity, run `list` and inspect first;
 the tab may still exist. Do not create another tab or replay the launch without
 checking it. `window` still restores the previous tab after creation.
 Launch files contain the exact brief and model settings already authorized,
-without the Discord channels flag. Every `new` launch requires
+without the Discord channels flag.
+After the catalog's [pinned Chrome server](https://github.com/cbusillo/codex-skills/blob/main/README.md#chrome-across-claude-account-homes)
+is installed for the selected Claude home, omit `--chrome` from launch files:
+the user MCP entry already supplies those tools regardless of the session account.
+Every `new` launch requires
 `--account-provider` as below; keep account variables out of launch files.
 Use `--account` for an explicit override through the same mapping and receipt
 path. Run one agent invocation, without restart loops or commands that continue
