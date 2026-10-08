@@ -123,6 +123,9 @@ Default state lives in `$XDG_STATE_HOME/pr-babysit` when configured, otherwise
 still selects an explicit location; use a persistent filesystem for restart
 recovery. State has no age-based expiry. Each new head has separate retry,
 pending and rejected-attempt records; old-head evidence remains in the file.
+Watch and retry processes must select the same file. If their `HOME` or
+`XDG_STATE_HOME` settings differ, pass the same persistent `--state-file` to
+each; environment-specific defaults otherwise have independent locks and budgets.
 
 When the new default file is absent, the watcher copies the previous matching
 `/tmp/pr-babysit-OWNER-REPO-prNUMBER.json` under both state locks before collecting
@@ -149,7 +152,7 @@ keep that evidence while repairing the filesystem, rather than treating the
 error as permission to rerun.
 
 CLI rerun commands have a 60-second ceiling (shorter under an inherited GitHub
-deadline); timeout kills the command group, keeps the pre-write intent and
+deadline or a reduced `GITHUB_RETRY_MAX_WAIT_SECONDS`); timeout kills the command group, keeps the pre-write intent and
 budget, and returns `rerun_outcome_unknown`. Lock acquisition has a 60-second
 ceiling too; one-shot contention fails without changing evidence, so resume with
 the same file after its holder exits. Watch mode emits `state_busy` and tries
@@ -161,6 +164,10 @@ deadline so managed preflight reads can report a definite refusal before the
 parent ceiling. Its explicit actor-verification refusal releases only the unsent
 intent and charge. A genuine timeout without that receipt remains unknown,
 including a hung preflight; an unchanged attempt cannot prove no write was sent.
+That process-group ceiling requires the parent to remain alive. Abrupt parent
+termination can leave a child command running; its saved unknown intent still
+blocks replay. Investigate the outstanding command as well as GitHub readback
+before recovery.
 No outer transport retry loop,
 identity fallback, expiry or replay is introduced.
 

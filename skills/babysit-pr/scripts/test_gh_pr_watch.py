@@ -2617,7 +2617,8 @@ def test_confirmation_save_failure_reports_completed_write(monkeypatch, tmp_path
     assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "submitting"
 
 
-def test_real_wrapper_deadline_refuses_before_rerun_send(monkeypatch, tmp_path):
+@pytest.mark.parametrize("failed_stage", ["preflight", "write"])
+def test_real_wrapper_distinguishes_preflight_refusal_from_unknown_write(monkeypatch, tmp_path, failed_stage):
     _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
     for name in ("GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
                  "GH_TOKEN", "GITHUB_TOKEN", "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK",
@@ -2632,6 +2633,9 @@ def test_real_wrapper_deadline_refuses_before_rerun_send(monkeypatch, tmp_path):
     command = tmp_path / "fake-gh"
     command.write_text(f"#!{sys.executable}\nimport sys\n"
                        f"open({str(calls)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n"
+                       f"if {failed_stage!r} == 'write' and '/user' in sys.argv:\n"
+                       "    print('HTTP/2 200\\ncontent-type: application/json\\n\\n{\"login\":\"fixture-bot\"}')\n"
+                       "    sys.exit(0)\n"
                        "print('HTTP/2 503\\nRetry-After: 70\\ncontent-type: application/json\\n\\n{\"message\":\"Service unavailable\"}')\n"
                        "sys.exit(1)\n")
     command.chmod(0o700)
@@ -2639,14 +2643,21 @@ def test_real_wrapper_deadline_refuses_before_rerun_send(monkeypatch, tmp_path):
     monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(gh_pr_watch.DEFAULT_GH))
     monkeypatch.setattr(gh_pr_watch, "COMMAND_TIMEOUT_SECONDS", 5.0)
     result = gh_pr_watch.retry_failed_now(argparse.Namespace())
-    assert result["reason"] == "rerun_rejected"
-    assert "refusing write" in result["error"]
-    assert result["retries_used"] == 0
     actual_calls = calls.read_text().splitlines()
-    assert len(actual_calls) == 1
     assert "/user" in actual_calls[0]
-    assert "rerun" not in actual_calls[0]
-    assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"] == {}
+    pending = gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"]
+    if failed_stage == "preflight":
+        assert result["reason"] == "rerun_rejected"
+        assert "refusing write" in result["error"]
+        assert result["retries_used"] == 0
+        assert len(actual_calls) == 1
+        assert pending == {}
+    else:
+        assert result["reason"] == "rerun_outcome_unknown"
+        assert result["retries_used"] == 1
+        assert len(actual_calls) == 2
+        assert "rerun" in actual_calls[1]
+        assert pending["1"]["outcome"] == "submitting"
 
 
 if __name__ == "__main__":
