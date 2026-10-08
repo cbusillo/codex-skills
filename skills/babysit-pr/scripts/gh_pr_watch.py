@@ -686,7 +686,7 @@ def apply_unfinished_workflow_runs(checks_summary, runs, head_sha):
     # A queued run has no check runs yet, so the check counts alone cannot see it.
     unfinished = sum(
         1
-        for run in runs
+        for run in github_read.current_workflow_runs(runs, head_sha)["current"]
         if isinstance(run, dict)
         and str(run.get("head_sha") or "") == head_sha
         and str(run.get("status") or "") != "completed"
@@ -833,7 +833,7 @@ def get_workflow_runs_for_sha(repo, head_sha, reader=None):
 
 def failed_runs_from_workflow_runs(runs, head_sha):
     failed_runs = []
-    for run in runs:
+    for run in github_read.current_workflow_runs(runs, head_sha)["current"]:
         if not isinstance(run, dict):
             continue
         if str(run.get("head_sha") or "") != head_sha:
@@ -873,7 +873,7 @@ def get_jobs_for_run(repo, run_id, reader=None):
 
 def failed_jobs_from_workflow_runs(repo, runs, head_sha, reader=None):
     failed_jobs = []
-    for run in runs:
+    for run in github_read.current_workflow_runs(runs, head_sha)["current"]:
         if not isinstance(run, dict):
             continue
         if str(run.get("head_sha") or "") != head_sha:
@@ -1493,12 +1493,12 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
     # actions are also available.
     # After resolving `--pr auto`, give the REST-first checks helper the
     # concrete PR number so both reads stay pinned to one target.
+    workflow_runs = get_workflow_runs_for_sha(pr["repo"], pr["head_sha"], reader=reader)
     checks = github_read.pull_request_checks(
-        reader, pr["repo"], pr["number"], head_sha=pr["head_sha"]
+        reader, pr["repo"], pr["number"], head_sha=pr["head_sha"], workflow_runs=workflow_runs,
     )
     checks_diagnostic = reader.diagnostics()
     checks_summary = summarize_checks(checks, expected_head_sha=pr["head_sha"])
-    workflow_runs = get_workflow_runs_for_sha(pr["repo"], pr["head_sha"], reader=reader)
     checks_summary = apply_unfinished_workflow_runs(checks_summary, workflow_runs, pr["head_sha"])
     failed_runs = failed_runs_from_workflow_runs(workflow_runs, pr["head_sha"])
     failed_jobs = failed_jobs_from_workflow_runs(pr["repo"], workflow_runs, pr["head_sha"], reader=reader)
@@ -1562,6 +1562,8 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
         "checks": checks_summary,
         "failed_runs": failed_runs,
         "failed_jobs": failed_jobs,
+        "superseded_workflow_runs": github_read.current_workflow_runs(workflow_runs, pr["head_sha"])["superseded"],
+        "superseded_check_runs": checks.get("supersededCheckRuns", []),
         "new_review_items": new_review_items,
         "owner_review_items": state.get("owner_review_items", []),
         "owner_review_errors": state.get("owner_review_errors", []),
@@ -1807,16 +1809,15 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
     if pending:
         result["reason"] = "rerun_outcome_pending"
         return result
-    recovery_runs = [run for run in eligible_runs if run.get("retry_mode") == "runner_acquisition"]
     submission_reader = watcher_reader()
-    if recovery_runs:
-        # Pre-write acquisition evidence must reach GitHub, even inside the
-        # polling cache's short coalescing window.
+    if eligible_runs:
+        # A same-head replacement can appear after the snapshot. Pre-write
+        # selection must reach GitHub, including for ordinary failed-job retries.
         submission_reader.cache_enabled = False
-    current_runs = {
-        run.get("id"): run for run in get_workflow_runs_for_sha(pr["repo"], pr["head_sha"], reader=submission_reader)
-    } if eligible_runs else {}
-    rejected_runs = reconcile_rejected_reruns(state, pr["head_sha"], list(current_runs.values()))
+    inventory = get_workflow_runs_for_sha(pr["repo"], pr["head_sha"], reader=submission_reader) if eligible_runs else []
+    current_runs = {run.get("id"): run for run in
+                    github_read.current_workflow_runs(inventory, pr["head_sha"])["current"]}
+    rejected_runs = reconcile_rejected_reruns(state, pr["head_sha"], inventory)
     cycle_charged = False
     for run in eligible_runs:
         run_id = run.get("run_id")

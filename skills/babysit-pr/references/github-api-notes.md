@@ -72,8 +72,25 @@ snapshot does not repeat PR metadata merely to rediscover that SHA.
 - `github/scripts/gh-with-env-token api repos/{owner}/{repo}/actions/runs --method GET -f head_sha=<sha> -f per_page=100`
 
 Used to discover failed workflow runs and rerunnable run IDs.
-Job detail is fetched only for completed failed runs that need diagnosis, never
-as routine detail polling for queued/running or successful runs.
+The shared check reader selects the current execution by head SHA, workflow ID,
+event, source branch and source repository. Run number orders executions and
+run attempt orders retries; workflow/job names and update times cannot prove
+supersession. Actions checks must match the run, head and check suite. A queued
+or running replacement remains unfinished even before it has checks.
+
+Superseded executions remain in `superseded_workflow_runs` and
+`superseded_check_runs`, separate from counts, diagnosis and retry candidates.
+Missing execution/check identity or unavailable selection reads preserve the
+checks and make evidence incomplete. External Apps' checks remain independent.
+For an execution with multiple attempts, GitHub's latest job inventory selects
+current checks, including successful jobs reused by a partial rerun. Job detail
+is otherwise fetched only for completed current failed runs needing diagnosis.
+
+The watcher shares its head-pinned run inventory with the check reader. Saved
+rerun intents reconcile against the full inventory, including superseded runs:
+supersession alone never releases an unknown write. Before any retry write,
+an uncached run read rechecks current execution and attempt; a replacement that
+appeared since the snapshot skips the obsolete retry without spending budget.
 
 ### Failed log inspection
 

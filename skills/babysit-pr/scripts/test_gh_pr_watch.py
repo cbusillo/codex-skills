@@ -2931,5 +2931,225 @@ def test_default_wrapper_requires_matching_receipt(monkeypatch, tmp_path, receip
     assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "submitting"
 
 
+
+def execution(run_id, conclusion="success", **overrides):
+    return {
+        "id": run_id, "workflow_id": 71, "name": "CI", "run_number": run_id,
+        "run_attempt": 1, "check_suite_id": run_id + 1000, "head_sha": "abc123",
+        "head_branch": "feature", "head_repository": {"id": 81}, "event": "pull_request",
+        "status": "completed", "conclusion": conclusion, **overrides,
+    }
+
+
+def execution_check(run, job_id, conclusion="success", **overrides):
+    return {
+        "id": job_id, "name": "validate", "head_sha": run["head_sha"],
+        "app": {"slug": "github-actions", "id": 99},
+        "check_suite": {"id": run["check_suite_id"]}, "status": "completed",
+        "conclusion": conclusion,
+        "details_url": f'https://github.com/openai/codex/actions/runs/{run["id"]}/job/{job_id}',
+        **overrides,
+    }
+
+
+class ExecutionReader:
+    def __init__(self, runs, checks, jobs=None, unavailable=None):
+        self.runs = runs
+        self.checks = checks
+        self.jobs = jobs or {}
+        self.unavailable = unavailable
+        self.calls = []
+        self.results = []
+        self.cache_enabled = True
+
+    def paged_json(self, path, **kwargs):
+        self.calls.append((path, kwargs))
+        if path == self.unavailable:
+            raise gh_pr_watch.github_read.GitHubReadShapeError("fixture incomplete inventory")
+        if path.endswith("/check-runs"):
+            return self.checks
+        if path.endswith("/statuses"):
+            return []
+        if path.endswith("/actions/runs"):
+            return self.runs
+        if path.endswith("/jobs"):
+            return self.jobs.get(int(path.split("/")[-2]), [])
+        raise AssertionError(path)
+
+    def get_json(self, path, **_kwargs):
+        assert path.endswith("/status")
+        return {"state": "success"}
+
+    def diagnostics(self):
+        return {}
+
+
+def execution_snapshot(monkeypatch, tmp_path, runs, checks, **reader_kwargs):
+    reader = ExecutionReader(runs, checks, **reader_kwargs)
+    monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *a, **kw: sample_pr())
+    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_: "octocat")
+    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *a, **kw: [])
+    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
+    args = argparse.Namespace(pr="123", repo=None, state_file=str(tmp_path / "state.json"), max_flaky_retries=3)
+    snapshot, _ = gh_pr_watch.collect_snapshot(args)
+    return snapshot, reader
+
+
+@pytest.mark.parametrize("status,conclusion", [("completed", "success"), ("queued", None), ("in_progress", None)])
+def test_same_head_replacement_excludes_cancelled_run_from_counts_and_retries(monkeypatch, tmp_path, status, conclusion):
+    old = execution(1, "cancelled", updated_at="2099-01-01T00:00:00Z")
+    new = execution(2, conclusion, status=status)
+    checks = [execution_check(old, 11, "cancelled"), execution_check(old, 12, "failure")]
+    if status != "queued":
+        checks.append(execution_check(new, 21, conclusion, status=status))
+    snapshot, reader = execution_snapshot(monkeypatch, tmp_path, [new, old], checks)
+    assert snapshot["checks"]["failed_count"] == 0
+    assert snapshot["checks"]["all_terminal"] is (status == "completed")
+    assert snapshot["failed_runs"] == snapshot["failed_jobs"] == []
+    assert snapshot["superseded_workflow_runs"] == [old]
+    assert {check["id"] for check in snapshot["superseded_check_runs"]} == {11, 12}
+    assert "diagnose_ci_failure" not in snapshot["actions"]
+    assert "retry_failed_checks" not in snapshot["actions"]
+    assert ("ready_to_merge" in snapshot["actions"]) is (status == "completed")
+    assert not any(path.endswith("/jobs") for path, _ in reader.calls)
+
+
+@pytest.mark.parametrize("difference", [
+    {"workflow_id": 72}, {"event": "push"}, {"head_branch": "other"},
+    {"head_repository": {"id": 82}},
+])
+def test_unrelated_execution_with_same_job_and_workflow_names_remains_failure(monkeypatch, tmp_path, difference):
+    old = execution(1, "failure")
+    new = execution(2, **difference)
+    job = {"id": 11, "run_id": 1, "run_attempt": 1, "name": "validate", "status": "completed", "conclusion": "failure"}
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [new, old],
+        [execution_check(new, 21), execution_check(old, 11, "failure")], jobs={1: [job]})
+    assert snapshot["checks"]["failed_count"] == 1
+    assert [run["run_id"] for run in snapshot["failed_runs"]] == [1]
+    assert [job["job_id"] for job in snapshot["failed_jobs"]] == [11]
+    assert "retry_failed_checks" in snapshot["actions"]
+    assert "ready_to_merge" not in snapshot["actions"]
+
+
+@pytest.mark.parametrize("missing", ["workflow_id", "run_number", "run_attempt", "check_suite_id", "event", "head_repository"])
+def test_missing_execution_identity_preserves_failure_and_blocks_retry(monkeypatch, tmp_path, missing):
+    old, new = execution(1, "cancelled"), execution(2)
+    checks = [execution_check(old, 11, "failure"), execution_check(new, 21)]
+    del old[missing]
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [new, old], checks, jobs={1: []})
+    assert snapshot["checks"]["failed_count"] == 1
+    assert snapshot["checks"]["evidence_complete"] is False
+    assert "check_evidence_incomplete" in snapshot["actions"]
+    assert "retry_failed_checks" not in snapshot["actions"]
+    assert "ready_to_merge" not in snapshot["actions"]
+
+
+def test_non_actions_checks_are_never_hidden_by_actions_run_urls(monkeypatch, tmp_path):
+    old, new = execution(1, "cancelled"), execution(2)
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [new, old], [
+        execution_check(old, 11, "failure", app={"slug": "external-ci", "id": 100}),
+        execution_check(new, 21),
+    ])
+    assert snapshot["checks"]["failed_count"] == 1
+    assert "ready_to_merge" not in snapshot["actions"]
+
+
+def test_latest_attempt_uses_latest_jobs_including_reused_success(monkeypatch, tmp_path):
+    run = execution(1, run_attempt=2)
+    checks = [execution_check(run, 11, "failure"), execution_check(run, 12), execution_check(run, 21)]
+    jobs = [{"id": job_id, "run_id": 1, "run_attempt": attempt} for job_id, attempt in [(12, 1), (21, 2)]]
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [run], checks, jobs={1: jobs})
+    assert snapshot["checks"]["passed_count"] == 2
+    assert snapshot["checks"]["failed_count"] == 0
+    assert [check["id"] for check in snapshot["superseded_check_runs"]] == [11]
+    assert "ready_to_merge" in snapshot["actions"]
+
+
+@pytest.mark.parametrize("unavailable,jobs", [(True, []), (False, []), (False, [{"id": 21, "run_id": 2, "run_attempt": 2}])])
+def test_incomplete_latest_attempt_inventory_cannot_hide_old_failure(monkeypatch, tmp_path, unavailable, jobs):
+    run = execution(1, run_attempt=2)
+    path = f'/repos/{sample_pr()["repo"]}/actions/runs/1/jobs'
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [run],
+        [execution_check(run, 11, "failure"), execution_check(run, 21)],
+        jobs={1: jobs}, unavailable=path if unavailable else None)
+    assert snapshot["checks"]["failed_count"] == 1
+    assert snapshot["checks"]["evidence_complete"] is False
+    assert "ready_to_merge" not in snapshot["actions"]
+    assert "retry_failed_checks" not in snapshot["actions"]
+
+
+def test_standalone_checks_select_superseded_runs_and_fail_closed_on_unavailable_runs():
+    old, new = execution(1, "cancelled"), execution(2)
+    checks = [execution_check(old, 11, "failure"), execution_check(new, 21)]
+    reader = ExecutionReader([new, old], checks)
+    payload = gh_pr_watch.github_read.pull_request_checks(reader, "openai/codex", 123, head_sha="abc123")
+    assert payload["summary"]["failingCount"] == 0
+    assert [item["id"] for item in payload["supersededCheckRuns"]] == [11]
+    reader.unavailable = "/repos/openai/codex/actions/runs"
+    payload = gh_pr_watch.github_read.pull_request_checks(reader, "openai/codex", 123, head_sha="abc123")
+    assert payload["summary"]["failingCount"] == 1
+    assert payload["summary"]["countsComplete"] is False
+
+
+def test_same_head_replacement_race_prevents_obsolete_retry_without_charging(monkeypatch, tmp_path):
+    retry_snapshot(monkeypatch, tmp_path, [failed_run(1, "cancelled")], [failed_job(1)])
+    reader = ExecutionReader([], [])
+    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
+    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *a, **kw: [execution(1, "cancelled"), execution(2)])
+    monkeypatch.setattr(gh_pr_watch, "gh_text", lambda *a, **kw: pytest.fail("obsolete retry write"))
+    result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+    assert result["skipped_run_ids"] == [1]
+    assert result["retries_used"] == 0
+    assert reader.cache_enabled is False
+
+
+def test_same_head_supersession_does_not_release_saved_unknown_rerun(monkeypatch, tmp_path):
+    state = {"pending_reruns_by_sha": {"abc123": {"1": {"run_attempt": 1, "outcome": "submitting"}}}}
+    gh_pr_watch.save_state(tmp_path / "state.json", state)
+    old, new = execution(1, "cancelled"), execution(2)
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [old, new],
+        [execution_check(old, 11, "failure"), execution_check(new, 21)])
+    assert snapshot["checks"]["failed_count"] == 0
+    assert snapshot["retry_state"]["pending_run_ids"] == ["1"]
+    assert "stop_unknown_rerun" in snapshot["actions"]
+    assert "ready_to_merge" not in snapshot["actions"]
+
+
+def test_failing_replacement_retries_only_current_run(monkeypatch, tmp_path):
+    old, new = execution(1, "cancelled"), execution(2, "failure")
+    job = {"id": 21, "run_id": 2, "run_attempt": 1, "name": "validate", "status": "completed", "conclusion": "failure"}
+    snapshot, reader = execution_snapshot(monkeypatch, tmp_path, [old, new],
+        [execution_check(old, 11, "failure"), execution_check(new, 21, "failure")], jobs={2: [job]})
+    assert snapshot["checks"]["failed_count"] == 1
+    assert [run["run_id"] for run in snapshot["failed_runs"]] == [2]
+    assert [job["job_id"] for job in snapshot["failed_jobs"]] == [21]
+    assert "retry_failed_checks" in snapshot["actions"]
+    assert not any(path.endswith("/1/jobs") for path, _ in reader.calls)
+
+
+@pytest.mark.parametrize("overrides", [
+    {"head_sha": "other"}, {"check_suite": {"id": 999}},
+    {"details_url": "https://example.invalid/check"},
+])
+def test_check_identity_mismatch_preserves_failure(monkeypatch, tmp_path, overrides):
+    old, new = execution(1, "cancelled"), execution(2)
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [old, new],
+        [execution_check(old, 11, "failure", **overrides), execution_check(new, 21)])
+    assert snapshot["checks"]["failed_count"] == 1
+    assert snapshot["checks"]["evidence_complete"] is False
+    assert "ready_to_merge" not in snapshot["actions"]
+
+
+def test_prior_attempt_in_run_history_does_not_hide_current_checks(monkeypatch, tmp_path):
+    old, new = execution(1, "failure"), execution(1, run_attempt=2)
+    jobs = [{"id": 21, "run_id": 1, "run_attempt": 2}]
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [old, new],
+        [execution_check(old, 11, "failure"), execution_check(new, 21)], jobs={1: jobs})
+    assert snapshot["checks"]["passed_count"] == 1
+    assert snapshot["checks"]["failed_count"] == 0
+    assert [check["id"] for check in snapshot["superseded_check_runs"]] == [11]
+    assert "ready_to_merge" in snapshot["actions"]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

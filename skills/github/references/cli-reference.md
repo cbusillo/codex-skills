@@ -308,7 +308,8 @@ also include the shared `api_result` diagnostics envelope.
   Use `--edit-comment ID` for a known comment; optional `--expected-body-file`
   and `--expected-updated-at` check its prior state as described below.
 - `scripts/gh-pr.py checks <pr>`: Show check runs and commit statuses
-  for the PR head.
+  for the PR head, with Actions execution history selected under the
+  [current execution contract](../../babysit-pr/references/github-api-notes.md#workflow-runs-for-head-sha).
 - `scripts/gh-pr.py update-branch <pr> [--wait-seconds 0..60]`: Merge the base
   into the PR branch after the ownership and authorization checks in
   [Merge Readiness](repo-workflow.md#merge-readiness), through the automation
