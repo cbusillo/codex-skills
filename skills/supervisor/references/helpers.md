@@ -128,8 +128,9 @@ submitted, after its tab has a session. A failed or uncertain submit retains its
 receipt; inspect the tab before retrying. Receipts use the snapshot command's
 `--storage-root`, or the reader's documented App Group default. The launcher
 prunes only its own day-old files (identified by the `supervisor-` filename
-suffix). A batch failure can leave earlier launches running: list and read the
-created tabs before retrying, rather than replaying the whole batch.
+suffix). A batch failure reports the completed launch identities and the failed tab,
+including whether its receipt was written and whether submission was attempted.
+List and read these tabs before retrying, rather than replaying the whole batch.
 
 ```sh
 # Read-only previews; these do not write receipts.
@@ -171,8 +172,10 @@ context_panel_label = "<default profile label in the snapshot>"
 env = {}
 ```
 
-Private-config migration: remove the fallback-order block and `[accounts]`
-and per-account `reserve` settings, including the old codex-info 20% reserve.
+Private-config migration: delete the `reserve =` lines under `[accounts]`
+and in each `[[accounts.account]]`, including the old codex-info 20% reserve.
+Keep the `[accounts]` table, snapshot command and account environment mappings;
+remove obsolete comments that prescribe a fallback order.
 They are ignored by the launcher for compatibility with existing files; account
 order now only helps people read the mapping. Configure Use last and other
 capacity choices in Context Panel. Document this change for the Director;

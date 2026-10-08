@@ -1014,6 +1014,32 @@ class TerminalTests(unittest.TestCase):
             for receipt in receipts:
                 self.assertEqual(set(receipt), {"schemaVersion", "provider", "accountID", "launchedAt"})
 
+    def test_partial_batch_failure_preserves_started_and_failed_launch_identities(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            files = [root / "first.txt", root / "second.txt"]
+            for path in files:
+                path.write_text("claude brief")
+            choices = account_choice.choose_batch("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None, count=2)
+            terminals = [SimpleNamespace(session_id=f"session-{i}", async_send_text=AsyncMock()) for i in range(2)]
+            tabs = [SimpleNamespace(tab_id=f"tab-{i}", current_session=t) for i, t in enumerate(terminals)]
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(side_effect=tabs))
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=files,
+                                      account_provider="anthropic", account=None, account_config=None)
+            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select_batch", return_value=choices), patch.object(account_choice, "record_launch", side_effect=[root / "receipt.json", PermissionError("private-root")]):
+                try:
+                    asyncio.run(iterm_tab.operate(app, args))
+                    self.fail("second launch must fail")
+                except (ValueError, OSError) as error:
+                    detail = getattr(error, "detail", {})
+            self.assertEqual(detail["launched"][0]["session_id"], "session-0")
+            self.assertEqual(detail["failed_launch"]["tab_id"], "tab-1")
+            self.assertFalse(detail["failed_launch"]["receipt_written"])
+            self.assertEqual(detail["failed_launch"]["submission"], "not_attempted")
+            self.assertNotIn("private-root", json.dumps(detail))
+            terminals[1].async_send_text.assert_not_awaited()
+
     def test_receipt_failure_prevents_command_submission(self):
         terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
         window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(return_value=SimpleNamespace(tab_id="tab", current_session=terminal)))
@@ -1024,9 +1050,30 @@ class TerminalTests(unittest.TestCase):
             path.write_text("claude brief")
             args = argparse.Namespace(command="new", window_id="chosen", command_file=path,
                                       account_provider="anthropic", account=None, account_config=None)
-            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select", return_value=choice), patch.object(account_choice, "record_launch", side_effect=OSError("disk full")), self.assertRaises(OSError):
+            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select", return_value=choice), patch.object(account_choice, "record_launch", side_effect=OSError("disk full")), self.assertRaises(iterm_tab.LaunchFailure):
                 asyncio.run(iterm_tab.operate(app, args))
             terminal.async_send_text.assert_not_awaited()
+
+    def test_uncertain_submit_retains_receipt_and_reports_exact_tab(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            path = root / "launch.txt"
+            path.write_text("claude brief")
+            choice = account_choice.choose("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None)
+            choice["storage_root"] = root
+            terminal = SimpleNamespace(session_id="session", async_send_text=AsyncMock(side_effect=OSError("lost connection")))
+            tab = SimpleNamespace(tab_id="tab", current_session=terminal)
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(return_value=tab))
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=path,
+                                      account_provider="anthropic", account=None, account_config=None)
+            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select", return_value=choice):
+                with self.assertRaises(iterm_tab.LaunchFailure) as failed:
+                    asyncio.run(iterm_tab.operate(app, args))
+            self.assertEqual(len(list((root / "Launch Receipts").glob("*.json"))), 1)
+            self.assertEqual(failed.exception.detail["failed_launch"]["submission"], "unknown")
+            self.assertTrue(failed.exception.detail["failed_launch"]["receipt_written"])
+            self.assertEqual(failed.exception.detail["failed_launch"]["tab_id"], "tab")
 
     def test_batch_refusal_and_bad_second_command_create_no_tabs_or_receipts(self):
         window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())

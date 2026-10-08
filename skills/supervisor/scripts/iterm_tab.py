@@ -15,6 +15,17 @@ from pathlib import Path
 import account_choice
 
 
+class LaunchFailure(ValueError):
+    """Preserve launch identities so a partial batch is never mistaken for refusal."""
+
+    def __init__(self, launched, failed, error):
+        reason = type(error).__name__ if isinstance(error, OSError) else str(error)
+        self.detail = {"status": "launch_failed", "reason": reason,
+                       "launched": launched, "failed_launch": failed,
+                       "next_action": "List and read these tabs before retrying; earlier launches may be running."}
+        super().__init__(reason)
+
+
 def sessions(app):
     return [
         session
@@ -166,11 +177,23 @@ async def operate(app, args):
             raise ValueError("--account needs --account-provider")
         results = []
         for command_text, choice in zip(command_texts, choices):
-            tab = await windows[0].async_create_tab(select=False)
-            session = await wait_for_session(app, tab)
+            progress = {"window_id": windows[0].window_id, "tab_id": None,
+                        "session_id": None, "receipt_written": False,
+                        "submission": "not_attempted", "phase": "create_tab"}
             if choice:
-                account_choice.record_launch(choice)
-            await send(session, command_text)
+                progress["account"] = account_choice.public(choice)
+            try:
+                tab = await windows[0].async_create_tab(select=False)
+                progress.update(tab_id=tab.tab_id if tab else None, phase="wait_for_session")
+                session = await wait_for_session(app, tab)
+                progress.update(session_id=session.session_id, phase="write_receipt")
+                if choice:
+                    account_choice.record_launch(choice)
+                    progress["receipt_written"] = True
+                progress.update(submission="unknown", phase="submit_command")
+                await send(session, command_text)
+            except (ValueError, OSError) as error:
+                raise LaunchFailure(results, progress, error) from error
             result = {"window_id": windows[0].window_id,
                       "tab_id": tab.tab_id, "session_id": session.session_id}
             if choice:
@@ -215,6 +238,9 @@ def main():
         app = await iterm2.async_get_app(connection)
         try:
             print(json.dumps(await operate(app, args), indent=2))
+        except LaunchFailure as error:
+            print(json.dumps(error.detail, indent=2))
+            parser.exit(1, "launch failed; inspect the reported tabs before retrying\n")
         except (ValueError, OSError) as error:
             parser.exit(1, f"refused: {error}\n")
 
