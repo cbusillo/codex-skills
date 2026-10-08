@@ -339,6 +339,7 @@ class ClaimTests(unittest.TestCase):
                     with self.assertRaises(PLAN.PlanError):
                         self.run_claim()
                     self.assert_no_writes()
+                    self.comments.pop()  # Recovery needs the new handoff alone.
                     self.comments.append({"id": 6, "body": self.comments[3]["body"].replace(prose, "Ownership transfers now."),
                                           "user": {"login": TEST_BOT}})
                     self.args.handoff_comment = 6
@@ -352,7 +353,8 @@ class ClaimTests(unittest.TestCase):
                     self.assertEqual(artifacts, (self.pulls, self.inventory))
 
     def test_separate_handoff_identity_paragraph_layouts_preserve_conditions(self):
-        for layout in ("header_paragraph", "crlf", "spaced_blank", "single_newline", "session_footer", "pr_field"):
+        for layout in ("header_paragraph", "crlf", "spaced_blank", "single_newline", "session_footer", "pr_field",
+                       "release_header", "inline_release"):
             for refresh in (False, True):
                 with self.subTest(layout=layout, refresh=refresh):
                     self.setUp()
@@ -368,8 +370,12 @@ class ClaimTests(unittest.TestCase):
                         body = body.replace("\n\n", ".\n")
                     elif layout == "session_footer":
                         body = "Handoff from trial-b\nSource claim 1; PRs #99 and #100.\n\nPR #99 must merge first.\n\nSession: session-b"
-                    else:
+                    elif layout == "pr_field":
                         body = "Handoff from trial-b\nSource claim 1; Session: session-b.\nOpen PRs: #99 and #100.\nPR #99 must merge first."
+                    elif layout == "release_header":
+                        body = "Released claim 1\nHandoff: PR #99 and #100.\nPR #99 must merge first."
+                    else:
+                        body = "Released claim 1. Handoff: PR #99 and #100. PR #99 must merge first."
                     self.comments[3]["body"] = body
                     with self.assertRaises(PLAN.PlanError):
                         self.run_claim()

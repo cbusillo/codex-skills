@@ -620,7 +620,9 @@ def retained_handoff(
     if not (first_line_release == source_id or standalone):
         raise ValueError("Refresh handoff must identify the exact released source claim")
     if first_line_release == source_id:
-        deferred = released_claim_id(handoff_text) != source_id
+        handoff_prose = handoff_text[len(f"Released claim {source_id}"):].lstrip(". \t")
+        deferred = (released_claim_id(handoff_text) != source_id
+                    or conditional_release_prose(handoff_prose, suffix="", handoff_permission=True))
     else:
         assert source_claim_match is not None
         # Source identity is not an ownership statement. The verified handoff
