@@ -15224,6 +15224,97 @@ class FindingsPreservationTests(unittest.TestCase):
         with redirect_stdout(output):
             jb_inspect.print_human({"lane_results": [lane], "verdict": "RED"}, assess=False)
         self.assertIn(receipt["path"], output.getvalue())
+        for finding in lane["findings"]:
+            self.assertIn(f"{finding['file']}:{finding['line']} {finding['description']}\n", output.getvalue())
+        self.assertEqual(output.getvalue().count("- ["), len(lane["findings"]))
+        omitted = self.problems[len(lane["findings"])]
+        self.assertNotIn(f"{omitted['file']}:{omitted['line']} {omitted['description']}\n", output.getvalue())
+
+    def test_nine_lane_findings_remain_readable_after_cleanup(self):
+        self.problems = [problem | {"severity": "warning"} for problem in self.problems[:9]]
+        for mutated in (False, True):
+            with self.subTest(mutated=mutated):
+                result = self.result()
+                closed = []
+
+                def close(*_):
+                    closed.append(True)
+                    return {"status": "closed"}
+
+                snapshot = {"status": "ok", "entries": {}}
+                after = snapshot | {"entries": {".idea/vcs.xml": " M"}} if mutated else snapshot
+                with (
+                    patch.object(jb_inspect, "prepare_lifecycle_details", return_value=({"route": self.route}, {"opened_by_helper": True}, "close-proof")),
+                    patch.object(jb_inspect, "run_inspection_with_internal_retry", return_value=result),
+                    patch.object(jb_inspect, "call_endpoint") as endpoint,
+                    patch.object(jb_inspect, "git_worktree_status_snapshot", return_value=snapshot),
+                    patch.object(jb_inspect, "post_cleanup_worktree_status_snapshot", return_value=after),
+                    patch.object(jb_inspect, "cleanup_lifecycle", side_effect=close),
+                ):
+                    payload = jb_inspect.run_prepared_inspection(self.args, self.context)
+                self.assertTrue(closed)
+                endpoint.assert_not_called()
+                self.assertNotIn("findings_artifact", payload)
+                lane = jb_inspect.compact_inspection_lane_result(
+                    jb_inspect.InspectionLane("python", "PyCharm", True, ("**/*.py",), (), None),
+                    0, self.context, [{"file": "app.py", "absolute_path": "/fixture/app.py"}], payload,
+                )
+                self.assertEqual(lane["inspection_outcome"]["verdict"], "RED")
+                self.assertEqual(lane["verdict"], "UNKNOWN" if mutated else "RED")
+                self.assertEqual(lane["evidence_ids"]["inspection_run_id"], 7)
+                self.assertEqual(lane["route"]["project_instance_id"], self.route["project_instance_id"])
+                lanes = {"lane_results": [lane]}
+                json_output = io.StringIO()
+                with redirect_stdout(json_output):
+                    jb_inspect.emit(lanes, json_only=True, exit_code=1)
+                saved = json.loads(json_output.getvalue())
+                self.assertEqual(saved["lane_results"][0]["findings"], lane["findings"])
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    jb_inspect.emit(lanes, json_only=False, exit_code=1)
+                text = output.getvalue()
+                for problem in self.problems:
+                    self.assertIn(f"[warning] {problem['file']}:{problem['line']} {problem['description']}\n", text)
+                self.assertEqual(text.count("- [warning]"), len(self.problems))
+
+    def test_human_findings_stay_with_each_lane_beyond_aggregate_limit(self):
+        lanes = []
+        for lane_id, required in (("python", True), ("optional", False)):
+            self.problems = [problem | {"description": f"{lane_id} finding {i}"} for i, problem in enumerate(self.problems[:13])]
+            result = self.result() | {"cleanup": {"status": "closed"}}
+            lanes.append(jb_inspect.compact_inspection_lane_result(
+                jb_inspect.InspectionLane(lane_id, "PyCharm", required, ("**/*.py",), (), None),
+                len(lanes), self.context, [{"file": "app.py", "absolute_path": "/fixture/app.py"}], result,
+            ))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            jb_inspect.emit({"lane_results": lanes}, json_only=False, exit_code=1)
+        text = output.getvalue()
+        sections = text.split("LANE: ")[1:]
+        self.assertEqual(len(sections), len(lanes))
+        for lane, section in zip(lanes, sections):
+            self.assertTrue(section.startswith(lane["id"]))
+            for finding in lane["findings"]:
+                self.assertIn(f"{finding['file']}:{finding['line']} {finding['description']}\n", section)
+        self.assertEqual(text.count("- ["), sum(len(lane["findings"]) for lane in lanes))
+
+    def test_unknown_truncated_lane_reports_counts_and_missing_finding_fields(self):
+        self.problems[0].pop("description")
+        result = jb_inspect.summarize_problems(self.context, self.route, self.page(0) | {"capture_incomplete": True})
+        self.assertEqual(result["verdict"], "UNKNOWN")
+        self.assertIsNone(jb_inspect.preserve_inspection_findings(self.args, self.context, result))
+        lane = jb_inspect.compact_inspection_lane_result(
+            jb_inspect.InspectionLane("python", "PyCharm", True, ("**/*.py",), (), None),
+            0, self.context, [{"file": "app.py", "absolute_path": "/fixture/app.py"}], result,
+        )
+        output = io.StringIO()
+        with redirect_stdout(output):
+            jb_inspect.emit({"lane_results": [lane]}, json_only=False, exit_code=1)
+        text = output.getvalue()
+        self.assertIn(f"findings={len(lane['findings'])}/{lane['finding_count']} truncated=true", text)
+        self.assertIn(f"- [unknown] {self.problems[0]['file']}:{self.problems[0]['line']} \n", text)
+        self.assertEqual(text.count("- [unknown]"), len(lane["findings"]))
+        self.assertEqual(lane["verdict"], "UNKNOWN")
 
     def test_nonzero_display_offset_still_preserves_the_complete_run(self):
         self.args.offset = 25
