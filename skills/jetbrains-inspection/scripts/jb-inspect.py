@@ -6201,13 +6201,16 @@ def should_defer_lifecycle_cleanup(result: dict[str, Any], lease: dict[str, Any]
         return False
     if result.get("verdict") in {"GREEN", "RED"}:
         return False
-    cancellation = result.get("cancellation") if isinstance(result.get("cancellation"), dict) else {}
+    cancellation_value = result.get("cancellation")
+    cancellation = cancellation_value if isinstance(cancellation_value, dict) else {}
     if cancellation.get("settled") is True:
-        last_status = cancellation.get("last_status") if isinstance(cancellation.get("last_status"), dict) else {}
+        last_status_value = cancellation.get("last_status")
+        last_status = last_status_value if isinstance(last_status_value, dict) else {}
         return ide_churn_present(last_status)
     if result.get("transport_state_unknown") is True:
         return True
-    wait = result.get("wait") if isinstance(result.get("wait"), dict) else {}
+    wait_value = result.get("wait")
+    wait = wait_value if isinstance(wait_value, dict) else {}
     return active_ide_churn(result) or active_ide_churn(wait)
 
 
@@ -6611,8 +6614,10 @@ def broad_scope_deployment_verdict(payload: dict[str, Any]) -> dict[str, str] | 
 
 
 def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
-    wait = payload.get("wait") if isinstance(payload.get("wait"), dict) else {}
-    cleanup = payload.get("cleanup") if isinstance(payload.get("cleanup"), dict) else {}
+    wait_value = payload.get("wait")
+    wait = wait_value if isinstance(wait_value, dict) else {}
+    cleanup_value = payload.get("cleanup")
+    cleanup = cleanup_value if isinstance(cleanup_value, dict) else {}
     plugin_verdict = payload.get("inspection_verdict")
     blocker_reason = blocking_unknown_reason(payload, wait)
     if blocker_reason is not None:
