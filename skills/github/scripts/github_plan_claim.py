@@ -84,8 +84,7 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     # the directive even when it leaves that subject implicit.
     # Identity tokens and hidden transport/release receipts are not prose.
     condition = r"(?<![\w/.-])(?:if|after|once|when|unless|until|before|pending|provided|conditional|contingent (?:on|upon)|subject to|as soon as|on (?:merge|landing)|wait(?:ing)? for)(?![\w/-])"
-    if final_paragraph:
-        condition = rf"(?:{condition}|\b(?:upon|post-(?:merge|landing)|at (?:merge|landing))\b)"
+    condition = rf"(?:{condition}|(?<![\w/.-])(?:upon|post-(?:merge|landing)|at (?:merge|landing))(?![\w/-]))"
     handoff = re.sub(r"(?s)<!--.*?-->", "", text)
     prose = ownership_text(handoff)
     prose = re.sub(r"(?m)^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", "", prose)
@@ -95,7 +94,7 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     handoff_effect = r"\bhands? off to (?:the )?next (?:worker|session)\b"
     successor = rf"(?:\b(?:{successor_action}|handoff (?:is )?complete[ds]?)\b|{handoff_effect})"
     # An instruction about what to do on resumption does not defer ownership.
-    resumption_instruction = rf"^(?:(?:When|If) you {successor_action}|(?:When|If|After|Once) resuming),(?![^.!?;]*\bdo so\b)\s*"
+    resumption_instruction = rf"^(?:(?:When|If) you {successor_action}|(?:When|If|After|Once|Upon) resuming),(?![^.!?;]*\bdo so\b)\s*"
     instruction_indexes = {index for index, statement in enumerate(statements)
                            if re.match(resumption_instruction, statement, re.IGNORECASE)}
     statements = [re.sub(resumption_instruction, "", statement,
@@ -106,10 +105,12 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     required_step = rf"\bmust\s+(?:be\s+)?{step}\b"
     prerequisite = rf"{required_step}[^.!?;]*\bfirst\b|^First,?\s+[^.!?;]*{required_step}"
     effective = r"\b(?:takes? effect|effective)\b(?!\s+(?:now|immediately)\b)"
+    deferred_effect = r"(?<![\w/.-])\btakes? effect\b(?![\w/-])(?!\s+(?:now|immediately)\b)"
     if final_paragraph:
         effective = r"(?<![\w/.-])" + effective + r"(?![\w/-])"
     if (re.match(r"(?:only\s+|not\s+)?" + condition, ownership_text(suffix), re.IGNORECASE)
-            or re.search(effective, prose if final_paragraph else ownership_text(suffix), re.IGNORECASE)):
+            or re.search(effective, prose if final_paragraph else ownership_text(suffix), re.IGNORECASE)
+            or re.search(deferred_effect, prose, re.IGNORECASE)):
         return True
     for index, statement in enumerate(statements):
         if re.search(rf"{handoff_effect}[^.!?;]*\b(?:upon|post-(?:merge|landing)|at (?:merge|landing))\b", statement, re.IGNORECASE):

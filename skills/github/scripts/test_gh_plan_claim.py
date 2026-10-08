@@ -1831,6 +1831,79 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
+    def test_nonadjacent_first_line_effects_preserve_and_recover_claims(self):
+        for prose in (
+            "Takes effect upon merge.",
+            "Ownership transfers upon merge of PR #99.",
+            "Source work is finished.\n\nTakes effect upon merge.",
+            "Effective post-merge.",
+            "Ownership transfers at merge.",
+            "The next worker may claim post-merge.",
+            "**Takes effect** upon merge.",
+            "Ownership transfers upon landing.",
+            "Takes effect on merging PR #99.",
+            "Takes effect with PR #99's merge.",
+            "Takes effect on PR #99 merging.",
+            "Takes effect later today.",
+            "Fix is effective upon deploy.",
+            "> Config takes effect on restart.",
+        ):
+            for retained in (False, True):
+                with self.subTest(prose=prose, retained=retained):
+                    self.setUp()
+                    self.released_status_fixture("Released claim 1\n\n" + prose)
+                    if not retained:
+                        self.issue["body"] = PLAN.template_body("Repair")
+                        self.args.resume_from = None
+                        self.inventory["local_branches"] = []
+                        self.inventory["worktrees"] = []
+                    with self.assertRaises(PLAN.ClassifiedPlanError):
+                        self.run_claim()
+                    self.assert_no_writes()
+                    self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
+                                          "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
+                    self.run_claim()
+                    output = self.emitted.call_args.args[0]
+                    self.assertTrue(output["ok"])
+                    self.assertEqual(CLAIM.records(self.issue["body"]), [output["claim"]])
+
+    def test_nonadjacent_first_line_effect_refresh_needs_unconditional_handoff(self):
+        for prose in ("Takes effect upon merge.", "Ownership transfers upon merge of PR #99."):
+            with self.subTest(prose=prose):
+                self.setUp()
+                self.refresh_fixture()
+                self.comments[2]["body"] = (
+                    "Released claim 1\n\nHandoff: PR #99 and #100.\n\n" + prose
+                )
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+                self.comments.append({"id": 4, "body": "Released claim 1\nHandoff: PR #99 and #100.",
+                                      "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
+                self.args.handoff_comment = 4
+                self.run_claim()
+                self.assertEqual(self.emitted.call_args.args[0]["claim"]["refresh_pr"], self.args.refresh_pr)
+
+    def test_first_line_effect_terms_keep_downstream_routing_usable(self):
+        for prose in (
+            "Supervisor routes PR #99 upon merge of PR #100.",
+            "Worktree cleanup runs post-merge.",
+            "Deployment starts at merge.",
+            "Source work is finished.\n\nFix is effective across repos.",
+            "Source work is finished.\n\nOwnership transfers immediately.",
+            "Source work is finished.\n\nTakes effect now.",
+            "Source work is finished.\n\nTakes effect immediately.",
+            "The next worker can resume on work/issue-42-post-merge-cleanup.",
+            "PR #99 is parked at merge-train batch abc, so the next worker can pick this up now.",
+            "Upon resuming, rebase onto main.",
+        ):
+            with self.subTest(prose=prose):
+                self.setUp()
+                self.refresh_fixture()
+                self.comments[2]["body"] = "Released claim 1\n\nHandoff: PR #99 and #100.\n\n" + prose
+                self.run_claim()
+                self.assertEqual(self.emitted.call_args.args[0]["claim"]["refresh_pr"], self.args.refresh_pr)
+
     def test_contingent_release_and_handoff_preserve_and_recover_claims(self):
         for prose in (
             "Release is contingent on PR #99 merging.",
