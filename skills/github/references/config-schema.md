@@ -71,24 +71,6 @@ Repo-local values override workspace defaults.
       "enabled": true,
       "helper": "launchplane/scripts/launchplane-write-action.py",
       "requiresPrivateConfig": true
-    },
-    "mergeTrain": {
-      "enabled": true,
-      "controller": true,
-      "readyLabel": "ready-to-merge",
-      "baseBranch": "main",
-      "githubActionsRunner": {
-        "repo": "OWNER/launchplane",
-        "workflow": "merge-train-runner.yml",
-        "ref": "main",
-        "runnerMode": "controller",
-        "mutateDefault": false,
-        "revisionEvidenceFields": {
-          "runnerWorkflow": "workflow_run.head_sha",
-          "candidate": "result.candidate.candidate_sha",
-          "landing": "result.landing_plan.entries[].merge_commit_sha"
-        }
-      }
     }
   },
   "githubSettings": {
@@ -263,14 +245,12 @@ Common top-level keys:
   with `baseBranch` and `readyLabel`, and policy revision evidence.
   Missing configuration, denial, failed reads and malformed responses mean
   `unknown`; they never authorize a different merge path. Raw `config.data`
-  remains routing metadata. The legacy `mergeTrain.enabled` field is deprecated
-  and ignored; it remains in the example until readers have landed, after which
-  repository metadata is removed in separate PRs. Other `mergeTrain` fields
-  below are routing hints, not enrollment evidence.
-  `mergeTrain.githubActionsRunner.revisionEvidenceFields` names the per-run
-  GitHub/Launchplane response fields that carry workflow, candidate, and landing
-  revisions; it is a field-path contract, not a place to persist one run's SHA
-  values.
+  remains routing metadata. Do not store a `launchplane.mergeTrain` block in
+  repository config: enrollment, base branches and enqueue labels belong to
+  the service policy. The snapshot ignores legacy copies. The
+  [merge-train reference](../../launchplane/references/merge-train.md) owns
+  controller/runner invocation and revision evidence; repository `docs` may
+  point there without copying its workflow defaults or response-field paths.
 - `jetbrains`: preferred IDE inspection target when it is not obvious. Use
   `ide` for the macOS app name, `mainWorktreePath` for the canonical checkout
   path when linked worktrees exist, `openProjectPath` for the repo-relative path
