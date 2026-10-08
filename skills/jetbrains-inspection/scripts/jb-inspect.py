@@ -10125,11 +10125,17 @@ def redact_repository_preparation_command(command: str) -> str:
 
 def repository_preparation_for_payload(payload: dict[str, Any]) -> dict[str, Any]:
     candidates: list[dict[str, Any]] = [payload]
-    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    context = payload.get("context")
+    if not isinstance(context, dict):
+        context = {}
     candidates.append(context)
-    prepared = payload.get("prepared") if isinstance(payload.get("prepared"), dict) else {}
+    prepared = payload.get("prepared")
+    if not isinstance(prepared, dict):
+        prepared = {}
     candidates.append(prepared)
-    failure = payload.get("inspection_failure") if isinstance(payload.get("inspection_failure"), dict) else {}
+    failure = payload.get("inspection_failure")
+    if not isinstance(failure, dict):
+        failure = {}
     candidates.append(failure)
     for candidate in candidates:
         state = candidate.get("repository_preparation")
@@ -10395,16 +10401,24 @@ def parse_git_porcelain_z(output: bytes) -> dict[str, str]:
 
 
 def summarize_worktree_mutations(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
-    before_entries = before.get("entries") if isinstance(before.get("entries"), dict) else {}
-    after_entries = after.get("entries") if isinstance(after.get("entries"), dict) else {}
+    before_entries = before.get("entries")
+    if not isinstance(before_entries, dict):
+        before_entries = {}
+    after_entries = after.get("entries")
+    if not isinstance(after_entries, dict):
+        after_entries = {}
     status_changed_paths = {
         path
         for path, status in after_entries.items()
         if before_entries.get(path) != status
     }
     removed_paths = {path for path in before_entries if path not in after_entries}
-    before_content = before.get("tracked_content_sha256") if isinstance(before.get("tracked_content_sha256"), dict) else {}
-    after_content = after.get("tracked_content_sha256") if isinstance(after.get("tracked_content_sha256"), dict) else {}
+    before_content = before.get("tracked_content_sha256")
+    if not isinstance(before_content, dict):
+        before_content = {}
+    after_content = after.get("tracked_content_sha256")
+    if not isinstance(after_content, dict):
+        after_content = {}
     tracked_content_changed_paths = {
         path
         for path in set(before_content) | set(after_content)
