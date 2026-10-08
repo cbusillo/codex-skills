@@ -2547,8 +2547,9 @@ def test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output()
     excluded = []
     module.exclude_landed_candidates(candidates, excluded, report)
     assert report["checked_issues"] == [{"repo": row["repo"], "number": 10}]
-    assert not report["complete"] and report["items"][0]["selection_exclusion"]
-    assert not candidates and excluded[0]["post_merge_evidence_complete"] is False
+    assert report["complete"] and report["items"][0]["selection_exclusion"]
+    assert not candidates and excluded[0]["post_merge_evidence"]["evidence_complete"]
+    assert "post_merge_evidence_complete" not in excluded[0]
     row["labels"] = [{"name": "plan"}]
     with patch.multiple(module, api_json=Mock(side_effect=AssertionError("unlabeled record is unexamined")), load_config=lambda *_: config):
         report = module.next_wait_context([row], scan_limit=1, inventory_complete=True)
