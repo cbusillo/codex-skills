@@ -25,32 +25,15 @@ os.environ["GH_WITH_ENV_TOKEN_EXPECTED_LOGIN"] = "fixture-automation"
 
 import github_api
 import github_comment
-from github_fixture_support import with_call_stub
+from github_fixture_support import api_failure, api_success, with_call_stub
 
 
 def success(body: Any, *, headers: dict[str, str] | None = None) -> github_api.ApiResult:
-    return github_api.ApiResult(
-        ok=True,
-        status=200,
-        body=body,
-        headers=headers or {},
-        operation="github.comment.test",
-        transport="rest_api",
-        bucket="rest_core",
-    )
+    return api_success(body, operation="github.comment.test", headers=headers)
 
 
 def failure(status: int, body: Any, *, is_write: bool) -> github_api.ApiResult:
-    detail = github_api.classify_error(status, {}, body, is_write=is_write)
-    return github_api.ApiResult(
-        ok=False,
-        status=status,
-        body=body,
-        failure=detail,
-        operation="github.comment.test",
-        transport="rest_api",
-        bucket="rest_core",
-    )
+    return api_failure(status, body, operation="github.comment.test", is_write=is_write)
 
 
 def comment_body(
