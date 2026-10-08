@@ -11,6 +11,7 @@ import json
 import importlib.util
 import os
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -87,7 +88,7 @@ def read_request(path):
     return data
 
 
-def write_json(path, data):
+def write_json(path, data, *, expected=None):
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as output:
@@ -95,6 +96,10 @@ def write_json(path, data):
             json.dump(data, output)
             output.flush()
             os.fsync(output.fileno())
+        if path.exists():
+            os.chmod(temporary, stat.S_IMODE(path.stat().st_mode))
+        if expected is not None and (not path.exists() or path.read_bytes() != expected):
+            raise ValueError("settings changed during enrollment; preview again")
         os.replace(temporary, path)
     finally:
         if temporary is not None:
@@ -130,7 +135,7 @@ def hook(payload, env):
                 return
             data = read_request(path)
             if (data.get("target_home") == str(home)
-                    and payload.get("cwd") == data.get("cwd")
+                    and Path(payload.get("cwd", "")).resolve() == Path(data["cwd"]).resolve()
                     and Path(payload.get("transcript_path", "")).resolve() == Path(data["transcript_path"]).resolve()):
                 write_json(root / (identifier + ".resumed.json"),
                            {"session_id": identifier, "account": data["account"], "state": "resumed"})
@@ -181,7 +186,9 @@ def move_environment(argv, env):
         data = read_request(path)
         try:
             if any(env.get(key) for key in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN",
-                                                  "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
+                                                  "ANTHROPIC_BASE_URL", "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+                                                  "CLAUDE_CODE_HOST_AUTH_ENV_VAR", "CLAUDE_CODE_HOST_CREDS_FILE",
+                                                  "CLAUDE_CODE_USE_BEDROCK",
                                                   "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")):
                 raise ValueError("authentication override is present; account move cannot select a home login")
             settings = config_home(env) / "settings.json"
@@ -190,7 +197,7 @@ def move_environment(argv, env):
             user_settings = json.loads(settings.read_text())
             if not isinstance(user_settings, dict) or user_settings.get("apiKeyHelper"):
                 raise ValueError("move requires shared user settings without apiKeyHelper")
-            if data["cwd"] != str(Path.cwd()) or not history_matches(data, config_home(env)):
+            if Path(data["cwd"]).resolve() != Path.cwd() or not history_matches(data, config_home(env)):
                 raise ValueError("current working directory or source history differs")
             if not data.get("target_home"):
                 account_choice = reader()
@@ -205,7 +212,10 @@ def move_environment(argv, env):
                 if (not target.is_dir() or not history_matches(data, target)
                         or (target / "projects").resolve() != (config_home(env) / "projects").resolve()):
                     raise ValueError("next account must already share this session history")
-                data.update(target_home=str(target), account=choice["name"])
+                if set(choice["env"]) - {"CLAUDE_CONFIG_DIR"}:
+                    raise ValueError("account move supports only the account home environment")
+                data.update(target_home=str(target), account=choice["name"],
+                            target_default="CLAUDE_CONFIG_DIR" not in choice["env"])
             target = Path(data["target_home"])
             if not (target / "settings.json").is_file() or (target / "settings.json").resolve() != settings.resolve():
                 raise ValueError("selected account must share the enrolled settings file")
@@ -215,7 +225,12 @@ def move_environment(argv, env):
             data["state"] = "restarting"
             write_json(path, data)
             # Keep the request until SessionStart confirms resume on the selected home.
-            return {**env, "CLAUDE_CONFIG_DIR": str(target)}
+            moved = dict(env)
+            if data.get("target_default"):
+                moved.pop("CLAUDE_CONFIG_DIR", None)
+            else:
+                moved["CLAUDE_CONFIG_DIR"] = str(target)
+            return moved
         except (ValueError, OSError, KeyError, TypeError, ImportError) as error:
             data["problem"] = str(error) if isinstance(error, ValueError) else type(error).__name__
             data["state"] = "pending"
@@ -229,7 +244,7 @@ def wrapper(argv):
     env = dict(os.environ)
     try:
         env = move_environment(argv, env)
-    except (ValueError, OSError, KeyError, TypeError, ImportError):
+    except Exception:
         pass  # Preserve the request and Claude's ordinary fallback; no terminal output.
     try:
         os.execvpe(argv[0], argv, env)
@@ -237,12 +252,23 @@ def wrapper(argv):
         return 127  # The pending request survives a failed exec.
 
 
-def install(settings, directory, write=False):
+def own_wrapper(value, script, action):
+    if not isinstance(value, str):
+        return False
+    try:
+        parts = json.loads(value) if action == "wrap" else shlex.split(value)
+    except (ValueError, TypeError):
+        return False
+    return (isinstance(parts, list) and len(parts) == 4 and parts[1:] == ["-I", script, action])
+
+
+def install(settings, directory, write=False, refresh=False):
     if not settings.is_absolute() or settings.is_symlink():
         raise ValueError("pass the canonical absolute user settings path, not a symlink")
     if not directory.is_absolute():
         raise ValueError("pass an absolute shared move directory")
-    data = json.loads(settings.read_text()) if settings.exists() else {}
+    previous = settings.read_bytes() if settings.exists() else None
+    data = json.loads(previous) if previous is not None else {}
     if not isinstance(data, dict) or not isinstance(data.get("env", {}), dict):
         raise ValueError("user settings and env must be objects")
     wrapper_path = str(runtime_script())
@@ -254,7 +280,9 @@ def install(settings, directory, write=False):
     env = data.setdefault("env", {})
     expected = {"CLAUDE_CODE_PROCESS_WRAPPER": json.dumps([python, "-I", wrapper_path, "wrap"]), MOVE_DIR: str(directory)}
     for key, value in expected.items():
-        if key in env and env[key] != value:
+        if (key in env and env[key] != value
+                and not (refresh and key == "CLAUDE_CODE_PROCESS_WRAPPER"
+                         and own_wrapper(env[key], wrapper_path, "wrap"))):
             raise ValueError("existing account-move or process wrapper setting preserved; reconcile explicitly")
     env.update(expected)
     groups = data.setdefault("hooks", {})
@@ -266,12 +294,49 @@ def install(settings, directory, write=False):
         if not isinstance(entries, list):
             raise ValueError("hook entries must be lists")
         entry = {"matcher": matcher, "hooks": [{"type": "command", "command": command, "timeout": 3}]}
+        if refresh:
+            managed_groups = []
+            for existing in entries:
+                if isinstance(existing, dict) and isinstance(existing.get("hooks"), list):
+                    before = len(existing["hooks"])
+                    existing["hooks"] = [handler for handler in existing["hooks"] if not (
+                        isinstance(handler, dict) and own_wrapper(handler.get("command"), wrapper_path, "hook"))]
+                    if before and not existing["hooks"]:
+                        managed_groups.append(existing)
+            entries[:] = [existing for existing in entries if existing not in managed_groups]
         if entry not in entries:
             entries.append(entry)
     if write:
         state_root({MOVE_DIR: str(directory)}, create=True)
         settings.parent.mkdir(parents=True, exist_ok=True)
-        write_json(settings, data)
+        write_json(settings, data, expected=previous)
+    return data
+
+
+def uninstall(settings, write=False):
+    if not settings.is_absolute() or settings.is_symlink():
+        raise ValueError("pass the canonical absolute user settings path")
+    previous = settings.read_bytes()
+    data = json.loads(previous)
+    if not isinstance(data, dict) or not isinstance(data.get("env"), dict) or not isinstance(data.get("hooks"), dict):
+        raise ValueError("invalid enrollment settings; preserved")
+    script = str(runtime_script())
+    env = data.get("env", {})
+    if not own_wrapper(env.get("CLAUDE_CODE_PROCESS_WRAPPER"), script, "wrap"):
+        raise ValueError("existing wrapper is not this helper's enrollment; preserved")
+    env.pop("CLAUDE_CODE_PROCESS_WRAPPER")
+    env.pop(MOVE_DIR, None)
+    for event in ("StopFailure", "SessionStart"):
+        entries = data.get("hooks", {}).get(event, [])
+        retained = []
+        for entry in entries:
+            handlers = entry.get("hooks", [])
+            remaining = [h for h in handlers if not own_wrapper(h.get("command"), script, "hook")]
+            if remaining or not handlers:
+                retained.append({**entry, "hooks": remaining})
+        data["hooks"][event] = retained
+    if write:
+        write_json(settings, data, expected=previous)
     return data
 
 
@@ -288,15 +353,22 @@ def main():
     setup.add_argument("--settings", type=Path, required=True)
     setup.add_argument("--move-dir", type=Path, required=True)
     setup.add_argument("--write", action="store_true")
+    setup.add_argument("--refresh", action="store_true", help="reconcile only this helper's own wrapper and hook interpreter")
+    remove = sub.add_parser("uninstall")
+    remove.add_argument("--settings", type=Path, required=True)
+    remove.add_argument("--write", action="store_true")
     args = parser.parse_args()
     try:
         if args.command == "hook":
             hook(json.load(sys.stdin), os.environ)
         elif args.command == "install":
-            data = install(args.settings, args.move_dir, args.write)
+            data = install(args.settings, args.move_dir, args.write, args.refresh)
             print(json.dumps({"written": args.write, "env": {key: data["env"][key] for key in
                              ("CLAUDE_CODE_PROCESS_WRAPPER", MOVE_DIR)},
                              "hook_events": ["StopFailure", "SessionStart"]}, indent=2))
+        elif args.command == "uninstall":
+            uninstall(args.settings, args.write)
+            print(json.dumps({"written": args.write, "removed": ["CLAUDE_CODE_PROCESS_WRAPPER", MOVE_DIR]}))
         elif args.command == "cancel":
             identifier = session_id(args.session_id)
             if not identifier or not os.environ.get(MOVE_DIR):

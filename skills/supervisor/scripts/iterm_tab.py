@@ -185,7 +185,7 @@ def with_account(command_text, choice):
     if settings:
         prefixes.append(f"export {settings}")
     if choice["provider"] == "anthropic":
-        prefixes.append("export CLAUDE_ACCOUNT_MOVE_ENABLED=1")
+        command_text = "( export CLAUDE_ACCOUNT_MOVE_ENABLED=1; " + command_text + " )"
     return " && ".join([*prefixes, command_text])
 
 

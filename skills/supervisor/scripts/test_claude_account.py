@@ -256,6 +256,62 @@ class MoveTests(unittest.TestCase):
             account.install(self.root / "settings.json", directory, write=True)
         self.assertFalse((self.root / "settings.json").exists())
 
+    def test_default_account_unsets_config_variable_and_confirms_resume(self):
+        self.record()
+        default = self.root / ".claude"
+        default.mkdir()
+        (default / "projects").symlink_to(self.projects)
+        (default / "settings.json").symlink_to(self.old / "settings.json")
+        with patch.object(account.Path, "home", return_value=self.root):
+            moved = self.move({**self.choice, "env": {}})
+            self.assertNotIn("CLAUDE_CONFIG_DIR", moved)
+            self.assertEqual({**moved, "CLAUDE_CONFIG_DIR": self.env["CLAUDE_CONFIG_DIR"]}, self.env)
+            account.hook({**self.payload, "hook_event_name": "SessionStart", "source": "resume"}, moved)
+        self.assertFalse(self.request.exists())
+
+    def test_refresh_and_uninstall_preserve_unrelated_hook_and_settings(self):
+        settings = self.root / "settings.json"
+        settings.write_text('{"env":{"OTHER":"keep"},"hooks":{"StopFailure":[{"matcher":"overloaded","hooks":[{"type":"command","command":"other"}]}]}}')
+        account.install(settings, self.root / "moves", write=True)
+        data = json.loads(settings.read_text())
+        args = json.loads(data["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])
+        args[0] = "/old/python"
+        data["env"]["CLAUDE_CODE_PROCESS_WRAPPER"] = json.dumps(args)
+        settings.write_text(json.dumps(data))
+        with self.assertRaises(ValueError):
+            account.install(settings, self.root / "moves", write=True)
+        account.install(settings, self.root / "moves", write=True, refresh=True)
+        data = json.loads(settings.read_text())
+        self.assertNotEqual(json.loads(data["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])[0], "/old/python")
+        account.uninstall(settings, write=True)
+        result = json.loads(settings.read_text())
+        self.assertEqual(result["env"], {"OTHER": "keep"})
+        self.assertEqual(result["hooks"]["StopFailure"], [{"matcher":"overloaded","hooks":[{"type":"command","command":"other"}]}])
+        self.assertTrue((self.root / "moves").is_dir())
+
+    def test_settings_mode_and_concurrent_edit_are_preserved(self):
+        settings = self.root / "settings.json"
+        settings.write_text('{}')
+        settings.chmod(0o640)
+        account.install(settings, self.root / "moves", write=True)
+        self.assertEqual(settings.stat().st_mode & 0o777, 0o640)
+        def changed_runtime():
+            settings.write_text('{"concurrent":"keep"}')
+            return Path(account.__file__).resolve()
+        with patch.object(account, "runtime_script", side_effect=changed_runtime):
+            with self.assertRaises(ValueError):
+                account.install(settings, self.root / "moves", write=True)
+        self.assertEqual(json.loads(settings.read_text()), {"concurrent": "keep"})
+
+    def test_working_directory_alias_preserves_same_directory(self):
+        alias = self.root / "cwd"
+        alias.symlink_to(Path.cwd())
+        account.hook({**self.payload, "cwd": str(alias)}, self.env)
+        moved = self.move()
+        self.assertEqual(moved["CLAUDE_CONFIG_DIR"], str(self.new))
+        account.hook({**self.payload, "hook_event_name": "SessionStart", "source": "resume"}, moved)
+        self.assertFalse(self.request.exists())
+
     def test_installer_preview_preserves_settings_and_repeat_is_idempotent(self):
         settings = self.root / "settings.json"
         existing = {"permissions": {"defaultMode": "default"}, "env": {"OTHER": "yes"},

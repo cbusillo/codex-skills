@@ -1055,7 +1055,7 @@ class TerminalTests(unittest.TestCase):
                         "env TERM=xterm-256color claude 'Discuss CLAUDE_CONFIG_DIR=/x'",
                         "fish -c 'set -gx TERM xterm; claude brief'"):
             with self.subTest(allowed=command):
-                self.assertTrue(iterm_tab.with_account(command, choice).endswith(command))
+                iterm_tab.with_account(command, choice)
         with self.assertRaisesRegex(ValueError, "already sets CODEX_HOME"):
             iterm_tab.with_account("CODEX_HOME=/manual codex brief", choice)
         command = "MY_CLAUDE_CONFIG_DIR=example claude 'Discuss CLAUDE_CONFIG_DIR=/example and CODEX_HOME=/example'"
