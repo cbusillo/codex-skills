@@ -617,6 +617,8 @@ def retained_handoff(
     first_line_release = released_claim_id(handoff_text.splitlines()[0] if handoff_text else "")
     if not (first_line_release == source_id or standalone):
         raise ValueError("Refresh handoff must identify the exact released source claim")
+    if conditional_release_prose(handoff_text, suffix=""):
+        raise ValueError("Retained handoff must be unconditional; use a fresh source-authored handoff")
     permitted = {source_branch}
     target_found = False
     attested = False

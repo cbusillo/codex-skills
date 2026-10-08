@@ -301,6 +301,66 @@ class ClaimTests(unittest.TestCase):
         self.args.handoff_comment = 4
         self.run_claim()
 
+    def separate_handoff_fixture(self, prose, *, refresh=True):
+        self.refresh_fixture()
+        if not refresh:
+            self.args.refresh_pr = None
+        self.comments.append({
+            "id": 4, "body": "Handoff from trial-b\nSource claim 1; Session: session-b; PR #99 and #100\n\n" + prose,
+            "user": {"login": TEST_BOT},
+        })
+        self.args.handoff_comment = 4
+
+    def test_separate_deferred_handoff_requires_fresh_unconditional_recovery(self):
+        for prose in (
+            "Ownership transfers with PR #99's merge.",
+            "Ownership transfers upon merge of PR #99.",
+            "The next worker may claim on merging PR #99.",
+            "If CI passes, the next worker may claim.",
+        ):
+            for refresh in (False, True):
+                with self.subTest(prose=prose, refresh=refresh):
+                    self.setUp()
+                    self.separate_handoff_fixture(prose, refresh=refresh)
+                    before = copy.deepcopy((self.issue, self.comments, self.pulls, self.inventory))
+                    # The earlier exact release is genuine; only the later
+                    # retained-artifact authorization is deferred.
+                    self.assertEqual(CLAIM.released_claim_id(self.comments[2]["body"]), 1)
+                    with self.assertRaises(PLAN.PlanError):
+                        self.run_claim()
+                    self.assert_no_writes()
+                    self.assertEqual(before, (self.issue, self.comments, self.pulls, self.inventory))
+                    # A new release alone cannot rewrite the selected handoff.
+                    self.comments.append({"id": 5, "body": "Released claim 1", "user": {"login": TEST_BOT}})
+                    with self.assertRaises(PLAN.PlanError):
+                        self.run_claim()
+                    self.assert_no_writes()
+                    self.comments.append({"id": 6, "body": self.comments[3]["body"].replace(prose, "Ownership transfers now."),
+                                          "user": {"login": TEST_BOT}})
+                    self.args.handoff_comment = 6
+                    artifacts = copy.deepcopy((self.pulls, self.inventory))
+                    self.run_claim()
+                    output = self.emitted.call_args.args[0]
+                    self.assertTrue(output["ok"])
+                    self.assertEqual(output["claim"].get("refresh_pr"), self.args.refresh_pr)
+                    self.assertEqual(artifacts, (self.pulls, self.inventory))
+
+    def test_separate_unconditional_handoff_keeps_downstream_gates_usable(self):
+        for prose in (
+            "Ownership transfers immediately.",
+            "Supervisor routes PR #99 after PR #100 merges. Keep the worktree until landing.",
+            "After PR #99 lands, close out the issue. When resuming, rebase onto main.",
+            "Fix is effective across repos.",
+        ):
+            for refresh in (False, True):
+                with self.subTest(prose=prose, refresh=refresh):
+                    self.setUp()
+                    self.separate_handoff_fixture(prose, refresh=refresh)
+                    before = copy.deepcopy((self.pulls, self.inventory))
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                    self.assertEqual(before, (self.pulls, self.inventory))
+
     def test_cross_repository_uses_canonical_planning_label_configuration(self):
         self.cross_repository_fixture()
         self.configs["other/plans"] = copy.deepcopy(PLAN.DEFAULT_CONFIG)
