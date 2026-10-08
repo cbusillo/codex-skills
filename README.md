@@ -548,7 +548,11 @@ unless `DIRECTION_MARKER` names another file. For Codex, the installer or
 `hooks.json`; review it through `/hooks` once. Keep user-layer event definitions
 in JSON so later setup does not recreate inline TOML declarations.
 Claude's separate `compact` handler uses `--skills-only` to restore the protocol
-without repeating the executing loop or overdue-audit reminder.
+without repeating the executing loop or overdue-audit reminder. Claude's
+`UserPromptSubmit` handler uses `--turn` to print only the protocol's step table
+with each prompt, about 230 tokens, because Claude Code otherwise shows the
+protocol once while Codex re-sends its skill catalog; `evals/transcript-measure.py`
+reports how real sessions on both harnesses load the owning skill.
 
 ### Session alerts
 
