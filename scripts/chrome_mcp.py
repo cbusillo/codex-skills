@@ -22,7 +22,7 @@ def home_path(value: str, home: Path) -> Path:
     path = home / value[2:] if value.startswith("~/") else home if value == "~" else Path(value)
     if not path.is_absolute():
         raise ValueError("Chrome homes must be absolute or start with ~/")
-    if not path.is_dir() or path.is_symlink():
+    if not path.is_dir() or (path.is_symlink() and path != home / ".claude"):
         raise ValueError(f"Chrome home must be an existing regular directory: {path}")
     return path
 
@@ -44,7 +44,7 @@ def run_mcp(command: str, directory: Path, args: list[str]):
     if directory == Path.home() / ".claude":
         env.pop("CLAUDE_CONFIG_DIR", None)
     return subprocess.run([command, "mcp", *args], env=env, capture_output=True,
-                          text=True, timeout=30)
+                          text=True, timeout=45)
 
 
 def matches_details(text: str, entry: dict) -> bool:
@@ -83,6 +83,10 @@ def prepare(root: Path, home: Path, claude: Path) -> dict | None:
     if set(config) != {"pinned_home", "homes"} or not isinstance(config["homes"], list) or not config["homes"]:
         raise ValueError("chrome.toml requires pinned_home and a nonempty homes list")
     pinned = home_path(config["pinned_home"], home)
+    # The outer installer resolves destinations for its bindings. Restore the
+    # native default spelling, whose user config lives outside that directory.
+    if claude == (home / ".claude").resolve():
+        claude = home / ".claude"
     directories = list(dict.fromkeys([home_path(str(claude), home), pinned,
                                      *(home_path(value, home) for value in config["homes"])]))
     command = "claude"

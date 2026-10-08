@@ -179,6 +179,20 @@ class InstallTests(unittest.TestCase):
         installer.install(self.home, self.codex, self.claude, write=True, updater=False,
                           refresh_instructions=True)
 
+    def test_chrome_failure_does_not_record_an_unactivated_updater(self):
+        import chrome_mcp
+        with mock.patch.object(chrome_mcp, 'prepare', return_value={'entries': []}), \
+                mock.patch.object(chrome_mcp, 'apply', side_effect=ValueError('fixture apply failed')), \
+                mock.patch.object(sys, 'platform', 'darwin'), \
+                mock.patch.object(shutil, 'which', return_value='/fixture/uv'), \
+                mock.patch.object(runtime, 'checkout_state', return_value={'state': 'current'}), \
+                mock.patch.object(subprocess, 'run') as launchctl:
+            launchctl.return_value.returncode = 1
+            with self.assertRaisesRegex(ValueError, 'fixture apply failed'):
+                installer.install(self.home, self.codex, self.claude, write=True, updater=True)
+        self.assertFalse((self.catalog / '.local' / 'catalog-install.json').exists())
+        self.assertFalse((self.home / 'Library' / 'LaunchAgents' / f'{installer.LABEL}.plist').exists())
+
     def test_generated_tail_with_no_private_source_is_never_guessed(self):
         path = self.codex / "AGENTS.md"
         text = self.sync.render(self.catalog / "instructions" / "global.md", self.catalog / "missing") + "\nRemoved shared paragraph.\n"

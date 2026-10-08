@@ -1057,9 +1057,15 @@ List every Claude account home here; the installer also includes its selected
 Claude destination and the pinned home. All homes must already exist and be
 signed in by the Director. The pinned home must match the Chrome extension's
 account. This config chooses the browser child process's home, not the session's
-provider account; Context Panel continues to choose session accounts.
+provider account; Context Panel continues to choose session accounts. A symlink
+at the native `~/.claude` default home keeps native default login semantics;
+other home symlinks are reported before installation.
 
-Preview and apply through `scripts/install-catalog.py` as above. It uses Claude's
+Preview and apply through `scripts/install-catalog.py` as above. Chrome previews
+invoke native `mcp get` health checks: existing entries start their child process
+and may update Claude's own cache/state, even without `--write`. They do not add
+or remove MCP entries. Avoid this preview on homes you must keep entirely
+unchanged; use isolated fixture homes instead. The installer uses Claude's
 [native MCP management commands](https://code.claude.com/docs/en/mcp#add-mcp-servers-from-json-configuration)
 to install one user-scoped `catalog-chrome` server per home, invoking
 `claude --claude-in-chrome-mcp` with the pinned `CLAUDE_CONFIG_DIR`. It never
@@ -1067,8 +1073,7 @@ uses the caller's authentication overrides: the native `env -u` launcher removes
 those variable names without reading their values. For a pinned `~/.claude`
 default account, it also unsets `CLAUDE_CONFIG_DIR`, preserving Claude's native
 default login/config location rather than creating an alternate config there.
-It never
-opens login files or a credential store. Unrelated configuration stays under
+It never opens login files or a credential store. Unrelated configuration stays under
 Claude's own management. An identical entry is kept; conflicting entries are
 preserved and reported. The ignored `.local/chrome-install.json` records owned
 entries, so changing only `pinned_home` updates those entries on the next explicit

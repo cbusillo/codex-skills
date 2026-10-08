@@ -308,6 +308,8 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             path.symlink_to(target, target_is_directory=True)
         outputs = sync.synchronize(content, destinations, write=True)
         sync.synchronize(base, [ROOT / ".local" / "catalog-global-source.md"], write=True)
+        if chrome_plan:
+            chrome_outputs = chrome_mcp.apply(chrome_plan)
         scheduled = updater or (previous_installation.get("scheduled_updater", False) and launch_path.is_file())
         scheduled_at = previous_installation.get("scheduled_at") if previous_installation.get("scheduled_updater") and launch_path.is_file() else None
         if scheduled and not scheduled_at:
@@ -328,8 +330,6 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                     outputs.append({"path": str(hook_path), "state": "skipped", "reason": str(error)})
             else:
                 outputs += hook_preview
-        if chrome_plan:
-            chrome_outputs = chrome_mcp.apply(chrome_plan)
         if launch_content is not None:
             sync.synchronize(launch_content, [launch_path], write=True)
             (ROOT / ".local").mkdir(exist_ok=True)

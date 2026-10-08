@@ -111,6 +111,36 @@ class ChromeTests(unittest.TestCase):
         self.assertEqual(self.servers[self.default][chrome.SERVER], chrome.server_entry(self.pinned, 'claude'))
         self.assertEqual((self.catalog / '.local' / 'chrome-install.json').read_bytes(), receipt)
 
+    def test_readback_timeout_recovers_by_inspecting_existing_entry(self):
+        plan = self.prepare()
+        native = self.native
+
+        def time_out_readback(command, directory, args):
+            if args[0] == 'get' and chrome.SERVER in self.servers[directory]:
+                raise subprocess.TimeoutExpired('fixture-cli', 45)
+            return native(command, directory, args)
+
+        with mock.patch.object(chrome, 'run_mcp', side_effect=time_out_readback):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                chrome.apply(plan)
+        self.assertIn(chrome.SERVER, self.servers[self.default])
+        self.calls.clear()
+        chrome.apply(self.prepare())
+        self.assertNotIn((self.default, 'add-json'), self.calls)
+
+    def test_resolved_default_home_keeps_native_spelling_and_config_guard(self):
+        self.default.rmdir()
+        self.default.symlink_to(self.other, target_is_directory=True)
+        self.configure(self.default)
+        plan = chrome.prepare(self.catalog, self.home, self.default.resolve())
+        assert plan is not None
+        self.assertEqual(plan['entries'][0]['path'], self.default)
+        self.assertIn('CLAUDE_CONFIG_DIR', plan['desired']['args'])
+        identity = self.home / '.claude.json'
+        identity.symlink_to(self.root / 'opaque-identity')
+        with self.assertRaisesRegex(ValueError, 'regular file'):
+            chrome.prepare(self.catalog, self.home, self.default.resolve())
+
     def test_hand_edit_and_local_scope_shadow_refuse_before_writes(self):
         chrome.apply(self.prepare())
         self.servers[self.other][chrome.SERVER]['env']['EXTRA'] = 'personal-setting'
