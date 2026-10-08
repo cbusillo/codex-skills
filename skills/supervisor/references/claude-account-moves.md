@@ -26,12 +26,15 @@ After an interpreter upgrade, preview the same install command with `--refresh`;
 add `--write` to replace only this helper's existing wrapper and hook interpreter.
 To remove enrollment, preview `claude_account.py uninstall --settings
 /absolute/shared/settings.json`, then add `--write` within settings-write
-authority. Removal preserves other hooks/settings, transcripts and move state.
+authority. Removal preserves other hooks/settings, transcripts and move state. It replaces
+the entrypoint with an inert pass-through so sessions retaining its old path can
+still relaunch; keep that file until all such sessions have ended.
 Run these commands with `uv run` and a currently installed Python; they do not
 invoke the old pinned interpreter. Uninstall preserves the private move directory
-and requests while removing this helper's entrypoint and settings.
+and requests while disabling this helper's entrypoint and removing its settings.
 The installed `env` has `CLAUDE_CODE_PROCESS_WRAPPER` and
-`CLAUDE_ACCOUNT_MOVE_DIR`; the wrapper is one absolute executable path. It
+`CLAUDE_ACCOUNT_MOVE_DIR`; the wrapper is one absolute executable path encoded as a JSON argument array
+to preserve spaces and punctuation. It
 registers `StopFailure` for `rate_limit` and
 `SessionStart` for `resume`. No plugin hook or shell export is needed. Restart
 only the sessions covered by the enrollment authority so they read the settings.

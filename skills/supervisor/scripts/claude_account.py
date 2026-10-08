@@ -222,6 +222,8 @@ def move_environment(argv, env):
                 if set(choice["env"]) - {"CLAUDE_CONFIG_DIR"}:
                     raise ValueError("account move supports only the account home environment")
                 data.update(target_home=str(target), account=choice["name"],
+                            target_config_dir=str(Path(choice["env"]["CLAUDE_CONFIG_DIR"]).expanduser())
+                            if "CLAUDE_CONFIG_DIR" in choice["env"] else None,
                             account_id=choice["account_id"],
                             storage_root=str(account_choice.storage_root(config["snapshot_command"])),
                             target_default="CLAUDE_CONFIG_DIR" not in choice["env"])
@@ -242,7 +244,7 @@ def move_environment(argv, env):
             if data.get("target_default"):
                 moved.pop("CLAUDE_CONFIG_DIR", None)
             else:
-                moved["CLAUDE_CONFIG_DIR"] = str(target)
+                moved["CLAUDE_CONFIG_DIR"] = data.get("target_config_dir") or str(target)
             return moved
         except (ValueError, OSError, KeyError, TypeError, ImportError) as error:
             data["problem"] = str(error) if isinstance(error, ValueError) else type(error).__name__
@@ -301,12 +303,29 @@ exit 127;
 '''
 
 
+def owned_hook(handler, script):
+    command = handler.get("command") if isinstance(handler, dict) else None
+    if not isinstance(command, str):
+        return False
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return False
+    return (len(parts) == 4 and parts[1] == "-I" and parts[3] == "hook"
+            and Path(parts[2]).name == Path(script).name)
+
+
 def managed_shim(env):
     value = env.get(MOVE_DIR)
     if not isinstance(value, str):
         return None
     shim = Path(value) / "process-wrapper"
-    if (env.get("CLAUDE_CODE_PROCESS_WRAPPER") == str(shim) and not shim.is_symlink()
+    wrapper = env.get("CLAUDE_CODE_PROCESS_WRAPPER")
+    try:
+        matches = wrapper == str(shim) or json.loads(wrapper) == [str(shim)]
+    except (ValueError, TypeError):
+        matches = False
+    if (matches and not shim.is_symlink()
             and (not shim.exists() or (shim.is_file() and shim.read_text().startswith(SHIM_HEADER)))):
         return shim
     return None
@@ -335,7 +354,7 @@ def install(settings, directory, write=False, refresh=False):
         raise ValueError("existing wrapper file preserved; use --refresh for this helper's enrollment")
     if not Path("/usr/bin/perl").is_file():
         raise ValueError("enrollment requires the operating system /usr/bin/perl launcher")
-    expected = {"CLAUDE_CODE_PROCESS_WRAPPER": str(shim), MOVE_DIR: str(directory)}
+    expected = {"CLAUDE_CODE_PROCESS_WRAPPER": json.dumps([str(shim)]), MOVE_DIR: str(directory)}
     for key, value in expected.items():
         if key in env and env[key] != value:
             raise ValueError("existing account-move or process wrapper setting preserved; reconcile explicitly")
@@ -344,11 +363,6 @@ def install(settings, directory, write=False, refresh=False):
     if not isinstance(groups, dict):
         raise ValueError("hooks must be an object")
     command = shlex.join([python, "-I", wrapper_path, "hook"])
-    def own_hook(handler):
-        if not isinstance(handler, dict) or not isinstance(handler.get("command"), str):
-            return False
-        parts = shlex.split(handler["command"])
-        return len(parts) == 4 and parts[1:] == ["-I", wrapper_path, "hook"]
     for event, matcher in (("StopFailure", "rate_limit"), ("SessionStart", "resume")):
         entries = groups.setdefault(event, [])
         if not isinstance(entries, list):
@@ -360,7 +374,7 @@ def install(settings, directory, write=False, refresh=False):
                 if isinstance(existing, dict) and isinstance(existing.get("hooks"), list):
                     before = len(existing["hooks"])
                     existing["hooks"] = [handler for handler in existing["hooks"] if not (
-                        own_hook(handler))]
+                        owned_hook(handler, wrapper_path))]
                     if before and not existing["hooks"]:
                         managed_groups.append(existing)
             entries[:] = [existing for existing in entries if existing not in managed_groups]
@@ -380,36 +394,37 @@ def uninstall(settings, write=False):
         raise ValueError("pass the canonical absolute user settings path")
     previous = settings.read_bytes()
     data = json.loads(previous)
-    if not isinstance(data, dict) or not isinstance(data.get("env"), dict) or not isinstance(data.get("hooks"), dict):
+    if not isinstance(data, dict) or not isinstance(data.get("env", {}), dict) or not isinstance(data.get("hooks", {}), dict):
         raise ValueError("invalid enrollment settings; preserved")
     script = str(Path(__file__).resolve())
     env = data.get("env", {})
     shim = managed_shim(env)
-    if shim is None:
+    if shim is None and env.get("CLAUDE_CODE_PROCESS_WRAPPER") is not None:
         raise ValueError("existing wrapper is not this helper's enrollment; preserved")
-    env.pop("CLAUDE_CODE_PROCESS_WRAPPER")
+    env.pop("CLAUDE_CODE_PROCESS_WRAPPER", None)
     env.pop(MOVE_DIR, None)
     for event in ("StopFailure", "SessionStart"):
-        entries = data.get("hooks", {}).get(event, [])
+        if event not in data.get("hooks", {}):
+            continue
+        entries = data["hooks"][event]
+        if not isinstance(entries, list):
+            continue
         retained = []
         for entry in entries:
             if not isinstance(entry, dict) or not isinstance(entry.get("hooks", []), list):
                 retained.append(entry)
                 continue
             handlers = entry.get("hooks", [])
-            remaining = []
-            for handler in handlers:
-                command = handler.get("command") if isinstance(handler, dict) else None
-                parts = shlex.split(command) if isinstance(command, str) else []
-                if (len(parts) != 4 or parts[1] != "-I" or parts[3] != "hook"
-                        or Path(parts[2]).name != Path(script).name):
-                    remaining.append(handler)
-            if remaining or not handlers:
+            remaining = [handler for handler in handlers if not owned_hook(handler, script)]
+            if len(remaining) == len(handlers):
+                retained.append(entry)
+            elif remaining:
                 retained.append({**entry, "hooks": remaining})
         data["hooks"][event] = retained
     if write:
         write_json(settings, data, expected=previous)
-        shim.unlink(missing_ok=True)
+        if shim is not None and shim.exists():
+            write_bytes(shim, (SHIM_HEADER + "exec {$ARGV[0]} @ARGV;\nexit 127;\n").encode())
     return data
 
 

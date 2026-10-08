@@ -182,7 +182,7 @@ class MoveTests(unittest.TestCase):
                     "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"):
             env.pop(key, None)
         installed = account.install(self.old / "settings.json", self.root / "moves", write=True)
-        result = subprocess.run([installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"], sys.executable,
+        result = subprocess.run([*json.loads(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"]), sys.executable,
                                  str(child), "--resume", self.identifier], env=env,
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -206,12 +206,13 @@ class MoveTests(unittest.TestCase):
     def test_installed_wrapper_preserves_every_environment_variable(self):
         settings = self.root / "settings.json"
         installed = account.install(settings, self.root / "moves", write=True)
-        argv = [installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"]]
+        argv = json.loads(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])
         code = "import os,json;print(json.dumps(dict(os.environ)))"
         env = {**os.environ, **self.env, "HOME": str(self.root), "PYTHONPATH": "unchanged"}
         direct = subprocess.check_output([sys.executable, "-I", "-c", code], env=env)
         wrapped = subprocess.check_output([*argv, sys.executable, "-I", "-c", code], env=env)
-        self.assertEqual(json.loads(wrapped), json.loads(direct))
+        self.assertEqual({k for k in json.loads(wrapped).keys() | json.loads(direct).keys()
+                          if json.loads(wrapped).get(k) != json.loads(direct).get(k)}, set())
 
     def test_enrollment_refuses_task_worktree(self):
         self.runtime_patch.stop()
@@ -281,7 +282,7 @@ class MoveTests(unittest.TestCase):
         settings.write_text('{"env":{"OTHER":"keep"},"hooks":{"StopFailure":[{"matcher":"overloaded","hooks":[{"type":"command","command":"other"}]}]}}')
         account.install(settings, self.root / "moves", write=True)
         data = json.loads(settings.read_text())
-        shim = Path(data["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])
+        shim = Path(json.loads(data["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])[0])
         shim.write_text(shim.read_text().replace("my $python =", "my $old_python ="))
         with self.assertRaises(ValueError):
             account.install(settings, self.root / "moves", write=True)
@@ -319,12 +320,12 @@ class MoveTests(unittest.TestCase):
     def test_shell_free_entrypoint_preserves_unset_locale_and_falls_back(self):
         settings = self.root / "settings.json"
         installed = account.install(settings, self.root / "moves", write=True)
-        shim = Path(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])
+        shim = Path(json.loads(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])[0])
         env = {**os.environ, **self.env, "OLDPWD": "/nonexistent-old-directory"}
         env = {k: v for k, v in env.items() if not k.startswith(("LANG", "LC_"))}
         expected = subprocess.check_output(["/usr/bin/env", "-0"], env=env)
         ordinary = subprocess.check_output([str(shim), "/usr/bin/env", "-0"], env=env)
-        self.assertEqual(set(ordinary.split(b"\0")), set(expected.split(b"\0")))
+        self.assertEqual({x.split(b"=", 1)[0] for x in set(ordinary.split(b"\0")) ^ set(expected.split(b"\0"))}, set())
         self.record()
         child = self.root / "child"
         child.write_text('#!/usr/bin/perl\nexec {"/usr/bin/env"} "/usr/bin/env", "-0";\n')
@@ -335,7 +336,7 @@ class MoveTests(unittest.TestCase):
                      for line in original.splitlines()]
             shim.write_text("\n".join(lines) + "\n")
             fallback = subprocess.check_output([str(shim), str(child), "--resume", self.identifier], env=env)
-            self.assertEqual(set(fallback.split(b"\0")), set(expected.split(b"\0")))
+            self.assertEqual({x.split(b"=", 1)[0] for x in set(fallback.split(b"\0")) ^ set(expected.split(b"\0"))}, set())
             self.assertTrue(self.request.exists())
             shim.write_text(original)
 
@@ -348,13 +349,50 @@ class MoveTests(unittest.TestCase):
                 for handler in group["hooks"]:
                     handler["command"] = handler["command"].replace(str(Path(account.__file__).parent), "/other/catalog/scripts")
         settings.write_text(json.dumps(data))
-        Path(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"]).unlink()
+        Path(json.loads(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])[0]).unlink()
         with patch.object(account, "runtime_script", side_effect=ValueError("dirty runtime")):
             account.uninstall(settings, write=True)
         cleaned = json.loads(settings.read_text())
         self.assertNotIn("CLAUDE_CODE_PROCESS_WRAPPER", cleaned["env"])
         self.assertEqual(cleaned["hooks"]["StopFailure"], [])
         self.assertEqual(cleaned["hooks"]["SessionStart"], [])
+
+    def test_uninstall_keeps_cached_session_launches_working(self):
+        self.record()
+        installed = account.install(self.old / "settings.json", self.root / "moves", write=True)
+        cached = json.loads(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])
+        account.uninstall(self.old / "settings.json", write=True)
+        child = self.root / "child"
+        child.write_text('#!/usr/bin/perl\nexec {"/usr/bin/env"} "/usr/bin/env", "-0";\n')
+        child.chmod(0o700)
+        expected = subprocess.check_output(["/usr/bin/env", "-0"], env={**os.environ, **self.env})
+        actual = subprocess.check_output([*cached, str(child), "--resume", self.identifier], env={**os.environ, **self.env})
+        self.assertEqual({x.split(b"=", 1)[0] for x in set(expected.split(b"\0")) ^ set(actual.split(b"\0"))}, set())
+        self.assertTrue(self.request.exists())
+
+    def test_space_paths_and_account_alias_preserve_profile_identity(self):
+        alias = self.root / "account alias"
+        alias.symlink_to(self.new)
+        self.record()
+        moved = self.move({**self.choice, "env": {"CLAUDE_CONFIG_DIR": str(alias)}})
+        self.assertEqual(moved["CLAUDE_CONFIG_DIR"], str(alias))
+        installed = account.install(self.old / "settings.json", self.root / "move requests", write=True)
+        argv = json.loads(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])
+        self.assertEqual(subprocess.run([*argv, "/usr/bin/true"]).returncode, 0)
+
+    def test_half_removed_enrollment_preserves_unrelated_hook_shapes(self):
+        settings = self.old / "settings.json"
+        account.install(settings, self.root / "moves", write=True)
+        data = json.loads(settings.read_text())
+        data["env"] = {"OTHER": "keep"}
+        unrelated = {"matcher": "other", "future": {"unknown": True}}
+        shell = {"hooks": [{"command": "$'it\\'s'"}]}
+        data["hooks"]["StopFailure"].extend([unrelated, shell])
+        settings.write_text(json.dumps(data))
+        account.uninstall(settings, write=True)
+        cleaned = json.loads(settings.read_text())
+        self.assertEqual(cleaned["env"], {"OTHER": "keep"})
+        self.assertEqual(cleaned["hooks"]["StopFailure"], [unrelated, shell])
 
     def test_installer_preview_preserves_settings_and_repeat_is_idempotent(self):
         settings = self.root / "settings.json"
