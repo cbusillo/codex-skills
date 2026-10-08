@@ -73,7 +73,7 @@ one.
    They use its private `skill-data/supervisor.toml` mappings and snapshot command;
    see [account configuration](../supervisor/references/helpers.md). The chosen
    `CODEX_HOME` or `CLAUDE_CONFIG_DIR` applies only to the reviewer child. A default
-   Anthropic choice removes an inherited home override. Inherited provider token/key
+   Anthropic choice removes an inherited home override. Inherited provider token/key and cloud-routing
    overrides are removed by name so they cannot bypass the selected home's login;
    no credentials or logins are read or changed by the helper. Missing config,
    unavailable choices or receipt-storage failures stop the review before launch.

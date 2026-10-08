@@ -396,7 +396,11 @@ def reviewer_environment(choice: dict[str, Any]) -> dict[str, str]:
     provider = choice["provider"]
     variable = account_choice.ACCOUNT_VARIABLES[provider]
     overrides = {
-        "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
+        "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+                      "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
+                      "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+                      "CLAUDE_CODE_USE_MANTLE", "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+                      "ANTHROPIC_CUSTOM_HEADERS"),
         "openai": ("OPENAI_API_KEY", "CODEX_API_KEY"),
     }
     for key in (variable, *overrides[provider]):

@@ -481,7 +481,7 @@ uv run skills/model-review/scripts/review_with_model.py check --repo .
 OpenAI and Anthropic reviews use Context Panel's account choice through the
 [shared Supervisor reader](skills/supervisor/scripts/account_choice.py), with the
 same private [account mappings](skills/supervisor/references/helpers.md). Each
-review sets only its child's home, removes inherited provider auth overrides,
+review sets only its child's home, removes inherited provider auth/routing overrides,
 and writes a count-only launch receipt before starting. Its JSON names the
 chosen account and receipt. If the choice or receipt storage is unavailable,
 the review fails before starting; it does not fall back to the caller's account.

@@ -155,6 +155,10 @@ class ReviewWithModelTests(unittest.TestCase):
                     OPENAI_API_KEY="fake-openai-key", CODEX_API_KEY="fake-codex-key",
                     ANTHROPIC_API_KEY="fake-anthropic-key", ANTHROPIC_AUTH_TOKEN="fake-auth",
                     CLAUDE_CODE_OAUTH_TOKEN="fake-oauth", CLAUDECODE="caller", KEEP_ME="inherited",
+                    ANTHROPIC_BASE_URL="https://example.invalid", CLAUDE_CODE_USE_BEDROCK="1",
+                    CLAUDE_CODE_USE_VERTEX="1", CLAUDE_CODE_USE_FOUNDRY="1",
+                    CLAUDE_CODE_USE_MANTLE="1", CLAUDE_CODE_USE_ANTHROPIC_AWS="1",
+                    ANTHROPIC_CUSTOM_HEADERS="Authorization: fake-header",
                     FAKE_REVIEW_ENV_FILE=str(capture), FAKE_ANSWER="none",
                     FAKE_CLAUDE_JSON=json.dumps({"result": "none"}),
                 )
@@ -164,7 +168,11 @@ class ReviewWithModelTests(unittest.TestCase):
                 self.assertEqual(child["KEEP_ME"], "inherited")
                 self.assertNotIn("CLAUDECODE", child)
                 for key in (("OPENAI_API_KEY", "CODEX_API_KEY") if provider == "openai" else
-                            ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")):
+                            ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+                             "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
+                             "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+                             "CLAUDE_CODE_USE_MANTLE", "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+                             "ANTHROPIC_CUSTOM_HEADERS")):
                     self.assertNotIn(key, child)
                 receipt = json.loads(Path(result["launch_receipt"]).read_text())
                 self.assertEqual(receipt["accountID"], result["account"]["account_id"])
