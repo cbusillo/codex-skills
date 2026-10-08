@@ -2932,7 +2932,7 @@ def test_default_wrapper_requires_matching_receipt(monkeypatch, tmp_path, receip
 
 
 
-def execution(run_id, conclusion="success", **overrides):
+def execution(run_id: int, conclusion: str | None = "success", **overrides) -> dict[str, Any]:
     return {
         "id": run_id, "workflow_id": 71, "name": "CI", "run_number": run_id,
         "run_attempt": 1, "check_suite_id": run_id + 1000, "head_sha": "abc123",
@@ -2941,7 +2941,7 @@ def execution(run_id, conclusion="success", **overrides):
     }
 
 
-def execution_check(run, job_id, conclusion="success", **overrides):
+def execution_check(run: dict[str, Any], job_id: int, conclusion: str | None = "success", **overrides) -> dict[str, Any]:
     return {
         "id": job_id, "name": "validate", "head_sha": run["head_sha"],
         "app": {"slug": "github-actions", "id": 99},
@@ -2976,11 +2976,13 @@ class ExecutionReader:
             return self.jobs.get(int(path.split("/")[-2]), [])
         raise AssertionError(path)
 
-    def get_json(self, path, **_kwargs):
+    @staticmethod
+    def get_json(path, **_kwargs):
         assert path.endswith("/status")
         return {"state": "success"}
 
-    def diagnostics(self):
+    @staticmethod
+    def diagnostics():
         return {}
 
 
@@ -3129,7 +3131,6 @@ def test_failing_replacement_retries_only_current_run(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("overrides", [
     {"head_sha": "other"}, {"check_suite": {"id": 999}},
-    {"details_url": "https://example.invalid/check"},
 ])
 def test_check_identity_mismatch_preserves_failure(monkeypatch, tmp_path, overrides):
     old, new = execution(1, "cancelled"), execution(2)
@@ -3149,6 +3150,44 @@ def test_prior_attempt_in_run_history_does_not_hide_current_checks(monkeypatch, 
     assert snapshot["checks"]["failed_count"] == 0
     assert [check["id"] for check in snapshot["superseded_check_runs"]] == [11]
     assert "ready_to_merge" in snapshot["actions"]
+
+
+
+
+
+@pytest.mark.parametrize("details_url", [None, "https://example.invalid/test-report"])
+def test_actions_reporter_without_job_link_remains_independent_current_check(monkeypatch, tmp_path, details_url):
+    run = execution(1)
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [run], [
+        execution_check(run, 11, details_url=details_url, html_url="https://github.com/openai/codex/runs/11"),
+    ])
+    assert snapshot["checks"]["passed_count"] == 1
+    assert snapshot["checks"]["evidence_complete"] is True
+    assert "ready_to_merge" in snapshot["actions"]
+
+
+@pytest.mark.parametrize("event", ["workflow_dispatch", "repository_dispatch", "workflow_run"])
+def test_independent_dispatches_do_not_supersede_one_another(monkeypatch, tmp_path, event):
+    old, new = execution(1, "failure", event=event), execution(2, event=event)
+    job = {"id": 11, "run_id": 1, "run_attempt": 1, "status": "completed", "conclusion": "failure"}
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [old, new],
+        [execution_check(old, 11, "failure"), execution_check(new, 21)], jobs={1: [job]})
+    assert snapshot["checks"]["failed_count"] == 1
+    assert snapshot["superseded_workflow_runs"] == []
+    assert "ready_to_merge" not in snapshot["actions"]
+
+
+@pytest.mark.parametrize("replacement_check", [None, "skipped", "neutral"])
+def test_terminal_replacement_must_cover_the_old_failed_gate(monkeypatch, tmp_path, replacement_check):
+    old, new = execution(1, "cancelled"), execution(2)
+    checks = [execution_check(old, 11, "failure")]
+    if replacement_check:
+        checks.append(execution_check(new, 21, replacement_check))
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [old, new], checks)
+    assert snapshot["checks"]["failed_count"] == 1
+    assert snapshot["checks"]["evidence_complete"] is False
+    assert "ready_to_merge" not in snapshot["actions"]
+    assert "retry_failed_checks" not in snapshot["actions"]
 
 
 if __name__ == "__main__":

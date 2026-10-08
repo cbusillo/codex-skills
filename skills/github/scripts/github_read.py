@@ -820,11 +820,15 @@ def list_pull_requests(
 def workflow_execution_identity(run: dict[str, Any]) -> Optional[tuple[Any, ...]]:
     numbers = [run.get(field) for field in ("id", "workflow_id", "run_number", "run_attempt", "check_suite_id")]
     repository_id = (run.get("head_repository") or {}).get("id")
-    if (not all(isinstance(value, int) and not isinstance(value, bool) and value > 0
-                for value in [*numbers, repository_id])
-            or not run.get("head_sha") or not run.get("event") or not run.get("head_branch")):
+    valid_numbers = all(isinstance(value, int) and not isinstance(value, bool) and value > 0
+                        for value in [*numbers, repository_id])
+    if not valid_numbers or not run.get("head_sha") or not run.get("event") or not run.get("head_branch"):
         return None
-    return (run["head_sha"], run["workflow_id"], run["event"], run["head_branch"], repository_id)
+    identity = (run["head_sha"], run["workflow_id"], run["event"], run["head_branch"], repository_id)
+    # Dispatches can use different inputs on the very same head.
+    if run["event"] not in {"push", "pull_request", "pull_request_target"}:
+        identity += (run["id"],)
+    return identity
 
 
 def current_workflow_runs(runs: list[dict[str, Any]], head_sha: str) -> dict[str, Any]:
@@ -846,9 +850,9 @@ def current_workflow_runs(runs: list[dict[str, Any]], head_sha: str) -> dict[str
         groups.setdefault(key, []).append(run)
     superseded = []
     for group in groups.values():
-        winner = max(group, key=lambda run: (run["run_number"], run["id"], run["run_attempt"]))
+        winner = max(group, key=lambda candidate: (candidate["run_number"], candidate["id"], candidate["run_attempt"]))
         current.append(winner)
-        superseded.extend(run for run in group if run is not winner)
+        superseded.extend(candidate for candidate in group if candidate is not winner)
     return {"current": current, "superseded": superseded}
 
 
@@ -861,20 +865,43 @@ def current_check_runs(
     old_by_id = {run.get("id"): run for run in selection["superseded"] if run.get("id") not in by_id}
     current, superseded = [], []
     latest_jobs: dict[int, Optional[set[int]]] = {}
+    current_by_identity = {workflow_execution_identity(run): run for run in selection["current"]
+                           if workflow_execution_identity(run) is not None}
     complete = True
-    for check in checks:
-        if check.get("appSlug") != "github-actions":
+    # Resolve current attempts before checking which old gates they replace.
+    for check in sorted(checks, key=lambda item: item.get("runId") in old_by_id):
+        if (check.get("appSlug") != "github-actions"
+                or check.get("runId") is None or check.get("jobId") is None):
+            # GITHUB_TOKEN can publish independent reporter checks with custom
+            # links. The App slug alone does not make a check an Actions job.
             current.append(check)
             continue
-        run_id = check.get("runId")
+        run_id: int = check["runId"]
         run = by_id.get(run_id) or old_by_id.get(run_id)
-        if (run is None or check.get("headSha") != head_sha
+        if run is None:
+            current.append(check)
+            complete = False
+            continue
+        if (check.get("headSha") != head_sha
                 or workflow_execution_identity(run) is None
                 or check.get("checkSuiteId") != run.get("check_suite_id")):
             current.append(check)
             complete = False
             continue
         if run_id in old_by_id:
+            replacement = current_by_identity[workflow_execution_identity(run)]
+            if replacement.get("status") == "completed":
+                matching = [candidate for candidate in current
+                            if candidate.get("runId") == replacement["id"]
+                            and candidate.get("checkSuiteId") == replacement["check_suite_id"]
+                            and candidate.get("headSha") == head_sha
+                            and candidate.get("appSlug") == check.get("appSlug")
+                            and candidate.get("name") == check.get("name")]
+                if not matching or (check.get("conclusion") in {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
+                                    and all(candidate.get("conclusion") in {"skipped", "neutral"} for candidate in matching)):
+                    current.append(check)
+                    complete = False
+                    continue
             superseded.append(check)
             continue
         attempt = run["run_attempt"]
@@ -902,9 +929,10 @@ def current_check_runs(
                 except (GitHubReadError, GitHubReadShapeError):
                     latest_jobs[run_id] = None
             job_ids = latest_jobs[run_id]
-            if job_ids is None or check.get("jobId") is None:
+            job_id = check.get("jobId")
+            if job_ids is None:
                 complete = False
-            elif check["jobId"] not in job_ids:
+            elif job_id not in job_ids:
                 superseded.append(check)
                 continue
         current.append(check)

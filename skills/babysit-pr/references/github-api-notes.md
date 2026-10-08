@@ -75,8 +75,12 @@ Used to discover failed workflow runs and rerunnable run IDs.
 The shared check reader selects the current execution by head SHA, workflow ID,
 event, source branch and source repository. Run number orders executions and
 run attempt orders retries; workflow/job names and update times cannot prove
-supersession. Actions checks must match the run, head and check suite. A queued
-or running replacement remains unfinished even before it has checks.
+supersession. Separate dispatches retain their own run IDs because inputs can
+differ. Actions job checks must match the run, head and check suite; reporter
+checks with custom links remain independent. A queued or running replacement
+remains unfinished even before it has checks. A completed replacement must
+produce the old gate; a missing gate or a skipped/neutral replacement for a
+failed gate preserves the failure and incomplete evidence.
 
 Superseded executions remain in `superseded_workflow_runs` and
 `superseded_check_runs`, separate from counts, diagnosis and retry candidates.
