@@ -133,8 +133,11 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
             # claim/ownership prose or successor permission defers the handoff.
             if re.search(r"\b(?:claims?|claiming|reclaim(?:ing)?|ownership)\b", following, re.IGNORECASE):
                 return True
-            if (re.match(rf"Then,?\s+(?:(?:the\s+)?next\s+(?:worker|session)\b|{successor_action}\b)",
-                         following, re.IGNORECASE)
+            successor_subject = re.match(rf"Then,?\s+(?:(?:the\s+)?next\s+(?:worker|session)\b|{successor_action}\b)",
+                                         following, re.IGNORECASE)
+            bare_permission = re.fullmatch(rf"Then,?\s+[^.!?;]*\b(?:can|may)\s+{successor_action}[.!?;]?",
+                                           following, re.IGNORECASE)
+            if ((successor_subject or bare_permission)
                     and re.search(successor, following, re.IGNORECASE)):
                 return True
         if re.search(rf"{handoff_effect}[^.!?;]*\b(?:upon|post-(?:merge|landing)|at (?:merge|landing))\b", statement, re.IGNORECASE):

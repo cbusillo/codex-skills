@@ -2232,6 +2232,8 @@ class ClaimTests(unittest.TestCase):
             "PR #99 merges later today. Then the next worker may claim.",
             "PR #99 merges later today. Then, the next worker may claim.",
             "PR #99 merges later today. Then you may claim.",
+            "PR #99 merges later today. Then you can take over.",
+            "PR #99 lands tomorrow. Then the next agent can resume.",
             "PR #99 lands tomorrow. Then the next session can resume.",
             "CI finishes later today. Then take over.",
         ):

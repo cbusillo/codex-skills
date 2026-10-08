@@ -599,8 +599,8 @@ merges`, `The next worker can pick this up once CI is green`, or
 claim. Conditional successor actions (pick this up, resume, take over) and
 handoff completion are checked across the handoff for both release placements.
 Future-time sequencing such as `PR #99 merges later today. Then the next worker
-may claim.` also preserves ownership; a downstream routing or retirement action
-after the same schedule note does not defer release.
+may claim.` also preserves ownership. Following that schedule note with
+`Then retire the worktree.` or `Then the Supervisor routes deployment.` remains usable.
 Deferred effects such as `Takes effect upon merge.` and `Ownership transfers
 upon merge of PR #99.` refuse even in a later paragraph after a first-line
 release. Future-time and merge effects such as `Effective tomorrow.`,
