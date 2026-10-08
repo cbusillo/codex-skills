@@ -53,6 +53,7 @@ stderr_file=$(mktemp)
 classification_file=$(mktemp)
 stdin_file=$(mktemp)
 stdin_captured=0
+command_started=0
 
 trap 'rm -f "$stdout_file" "$stderr_file" "$classification_file" "$stdin_file"' EXIT INT HUP TERM
 
@@ -127,10 +128,13 @@ readonly require_automation_auth
 expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-${CODEX_AUTOMATION_LOGIN:-}}
 
 run_with_input() {
+	# Only this route launches the requested CLI command. Actor/authentication
+	# probes use their own read-only route and cannot make a write sent.
+	command_started=1
 	if [ "$stdin_captured" -eq 1 ]; then
-		"$@" <"$stdin_file"
+		env -u GH_WITH_ENV_TOKEN_RECEIPT_NONCE "$@" <"$stdin_file"
 	else
-		"$@"
+		env -u GH_WITH_ENV_TOKEN_RECEIPT_NONCE "$@"
 	fi
 }
 
@@ -285,6 +289,24 @@ is_write_command() {
 	esac
 	return 1
 }
+
+finish_wrapper() {
+	wrapper_status=$1
+	shift
+	receipt_nonce=${GH_WITH_ENV_TOKEN_RECEIPT_NONCE:-}
+	case "$receipt_nonce" in
+	'' | *[!0-9a-f]*) receipt_nonce= ;;
+	esac
+	if [ "$wrapper_status" -ne 0 ] && [ "$command_started" -eq 0 ] &&
+		[ "${#receipt_nonce}" -eq 32 ] && is_write_command "$@"; then
+		printf '\n{"schema_version":1,"nonce":"%s","write_outcome":"not_started"}\n' "$receipt_nonce" >&2
+	fi
+	rm -f "$stdout_file" "$stderr_file" "$classification_file" "$stdin_file"
+}
+
+# An opt-in receipt describes this invocation's preflight, never a CLI/API
+# failure after launch. It carries no identity, credential or request body.
+trap 'finish_wrapper "$?" "$@"' EXIT
 
 validate_sensitive_read_policy() {
 	run_python - "$require_automation_auth" "$@" <<'PY'

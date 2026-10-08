@@ -1021,6 +1021,48 @@ def test_pr_create_validation_refusal_preserves_unknown_write_controls() -> None
             assert len(calls.read_text(encoding="utf-8").splitlines()) == 1
 
 
+def test_prewrite_receipt_requires_nonce_and_stops_at_launch() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        env_file, identity, unused = app_fixture(root)
+        write(identity, fake_app_identity("other-fixture"))
+        fake_gh = root / "gh"
+        write(fake_gh, f"#!{sys.executable}\nimport json,os,sys\n"
+              "print(json.dumps({'nonce_inherited': 'GH_WITH_ENV_TOKEN_RECEIPT_NONCE' in os.environ}))\n"
+              "sys.exit(1)\n")
+        nonce = os.urandom(16).hex()
+        def receipts(completed: subprocess.CompletedProcess[str]) -> list[dict]:
+            found = []
+            for line in completed.stderr.splitlines():
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(item, dict) and item.get("write_outcome") == "not_started":
+                    found.append(item)
+            return found
+        refused = run_wrapper(env_file, unused, identity, "run", "rerun", "1",
+                              gh_command=fake_gh, extra_env={"GH_WITH_ENV_TOKEN_RECEIPT_NONCE": nonce})
+        assert refused.returncode != 0
+        assert refused.stdout == ""
+        assert [item["nonce"] for item in receipts(refused)] == [nonce]
+        for invalid in ("", "short", "g" * len(nonce)):
+            result = run_wrapper(env_file, unused, identity, "run", "rerun", "1",
+                                 gh_command=fake_gh, extra_env={"GH_WITH_ENV_TOKEN_RECEIPT_NONCE": invalid})
+            assert result.returncode != 0
+            assert receipts(result) == []
+        read = run_wrapper(env_file, unused, identity, "run", "view", "1",
+                           gh_command=fake_gh, extra_env={"GH_WITH_ENV_TOKEN_RECEIPT_NONCE": nonce})
+        assert receipts(read) == []
+        assert json.loads(read.stdout)["nonce_inherited"] is False
+        write(identity, fake_app_identity())
+        launched = run_wrapper(env_file, unused, identity, "run", "rerun", "1",
+                               gh_command=fake_gh, extra_env={"GH_WITH_ENV_TOKEN_RECEIPT_NONCE": nonce})
+        assert launched.returncode != 0
+        assert receipts(launched) == []
+        assert json.loads(launched.stdout)["nonce_inherited"] is False
+
+
 def main() -> None:
     tests: list[Callable[[], None]] = [
         test_check_reports_app_identity_and_source,
@@ -1049,6 +1091,7 @@ def main() -> None:
         test_print_auth_account_reports_verified_app_without_gh_auth_status,
         test_app_actor_probe_does_not_fabricate_other_paths_or_writes,
         test_pr_create_validation_refusal_preserves_unknown_write_controls,
+        test_prewrite_receipt_requires_nonce_and_stops_at_launch,
     ]
     for test in tests:
         test()
