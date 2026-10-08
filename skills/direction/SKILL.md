@@ -325,12 +325,15 @@ prompts, separate from audit findings and exit status: read the full issue and
 current evidence before correcting a status through `github-plan`. Nothing is
 closed, relabeled, or released automatically. Active records with PRs named in Current Status
 merged into the default branch after their GitHub `updated_at` carry
-`merged_active_pr` evidence and `completion_proven: false`. Newer comments or
-edits can prevent that timestamp proof; otherwise-excludable delivery records carry
-`status_revision_unproven` coverage and never establish completion. These
-delivery-only records are withheld from implementation selection for finish-line
-review even when body age is unproven; the PR itself is confirmed merged.
-Healthy remainders updated after their source merge produce no active warning. When the recorded next
+`merged_active_pr` evidence and `completion_proven: false`. Agent routing,
+landing and closeout waits are also reported after the named implementation PR
+merged, irrespective of later status edits. A closeout handoff naming its PR only
+in comments uses a bounded complete discussion read and the PR's own issue
+association; an unavailable or truncated read remains incomplete evidence.
+Delivery-only records need no status-age proof: routing a merged PR is obsolete,
+but its merge never establishes the issue's finish line. Healthy remainders
+updated after their source merge produce no active warning unless they still
+record that obsolete agent delivery step. When the recorded next
 action consists only of routing or landing and bookkeeping, and that PR
 references this issue as implemented work, `selection_exclusion` keeps local
 and global `next` from assigning duplicate implementation. Split remainders,
