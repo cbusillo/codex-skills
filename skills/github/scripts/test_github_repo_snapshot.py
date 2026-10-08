@@ -14,8 +14,18 @@ import unittest
 SCRIPT = Path(__file__).with_name("github-repo-snapshot.sh")
 
 
+def helper_metadata():
+    return {"launchplane": {
+        "enabled": True,
+        "service": {"contextUrlEnv": "CONTEXT_URL", "operatorUrlEnv": "OPERATOR_URL"},
+        "context": {"enabled": True, "helper": "tools/context.py"},
+        "operator": {"enabled": True, "helper": "tools/operator.py", "requiresPrivateConfig": True},
+    }}
+
+
 class SnapshotTests(unittest.TestCase):
-    def snapshot(self, metadata, *, text=False, policy=None, policy_exit=0):
+    @staticmethod
+    def snapshot(metadata, *, text=False, policy=None, policy_exit=0):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             subprocess.run(["git", "init", "--quiet", str(root)], check=True)
@@ -33,7 +43,7 @@ class SnapshotTests(unittest.TestCase):
                 cwd=root,
                 env={**os.environ, "GITHUB_REPO_SNAPSHOT_GH": str(root / "missing-gh"),
                      "GITHUB_REPO_SNAPSHOT_POLICY_HELPER": str(policy_helper)},
-                capture_output=True, text=True, check=False,
+                capture_output=True, text=True,
             )
 
     def test_product_routing_context(self):
@@ -74,34 +84,55 @@ class SnapshotTests(unittest.TestCase):
 
     def test_policy_overrides_stale_metadata_and_absent_routing(self):
         for enrolled in (True, False):
+            targets = [{"baseBranch": "release", "readyLabel": "ship"}] if enrolled else []
             policy = {
                 "status": "available", "operation": "merge-train-policy-read",
                 "result": {
                     "source": "launchplane", "enabled": enrolled,
                     "status": "enrolled" if enrolled else "not_enrolled",
-                    "targets": [{"baseBranch": "release", "readyLabel": "ship"}] if enrolled else [],
+                    "targets": targets,
                     "policy": {"record_id": "fixture-policy"},
                 },
             }
-            for metadata in ({}, {"launchplane": {"mergeTrain": {"enabled": not enrolled}}}):
+            for metadata in ({}, helper_metadata(),
+                             {"launchplane": {"mergeTrain": {"enabled": not enrolled,
+                                                            "baseBranch": "stale", "readyLabel": "stale"}}}):
                 result = self.snapshot(metadata, policy=policy)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(json.loads(result.stdout)["launchplane"]["mergeTrain"], policy["result"])
+                if metadata == helper_metadata():
+                    summary = json.loads(result.stdout)["launchplane"]
+                    self.assertEqual(summary["service"], {
+                        **metadata["launchplane"]["service"], "localConfigExample": None,
+                    })
+                    self.assertEqual(summary["context"], metadata["launchplane"]["context"])
+                    self.assertEqual(summary["operator"], metadata["launchplane"]["operator"])
+                    self.assertEqual(summary["warnings"], [])
                 result = self.snapshot(metadata, text=True, policy=policy)
                 self.assertIn(f'mergeTrainStatus: {policy["result"]["status"]}', result.stdout)
                 self.assertIn(f'mergeTrainEnabled: {str(enrolled).lower()}', result.stdout)
+                if enrolled:
+                    for target in targets:
+                        self.assertIn(f'mergeTrainTarget: {target["baseBranch"]} ({target["readyLabel"]})',
+                                      result.stdout)
 
     def test_unavailable_or_invalid_policy_never_means_not_enrolled(self):
         for response, exit_code in ((None, 0), ({}, 0), ({"status": "unauthorized"}, 1)):
-            for enabled in (True, False):
-                metadata = {"launchplane": {"mergeTrain": {"enabled": enabled}}}
+            for metadata in ({}, helper_metadata(),
+                             *({"launchplane": {"mergeTrain": {"enabled": enabled,
+                                                             "baseBranch": "stale", "readyLabel": "stale"}}}
+                               for enabled in (True, False))):
                 result = self.snapshot(metadata, policy=response, policy_exit=exit_code)
                 summary = json.loads(result.stdout)["launchplane"]["mergeTrain"]
                 self.assertEqual(summary["status"], "unknown")
                 self.assertIsNone(summary["enabled"])
-                self.assertIn("mergeTrainEnabled: unknown", self.snapshot(
+                self.assertEqual(summary["targets"], [])
+                self.assertIsNone(summary["policy"])
+                text_result = self.snapshot(
                     metadata, text=True, policy=response, policy_exit=exit_code,
-                ).stdout)
+                )
+                self.assertIn("mergeTrainEnabled: unknown", text_result.stdout)
+                self.assertNotIn("mergeTrainTarget:", text_result.stdout)
 
 
     def test_unknown_reason_drops_provider_prose(self):
@@ -128,7 +159,7 @@ class SnapshotTests(unittest.TestCase):
                 ["/bin/bash", str(SCRIPT)], cwd=root,
                 env={**os.environ, "PATH": str(bins), "GITHUB_REPO_SNAPSHOT_PYTHON": sys.executable,
                      "GITHUB_REPO_SNAPSHOT_GH": str(root / "missing-gh")},
-                capture_output=True, text=True, check=False,
+                capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("== Repository ==", result.stdout)
