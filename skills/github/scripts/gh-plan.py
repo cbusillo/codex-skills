@@ -1993,11 +1993,10 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             if not match or match.group(1).casefold() != issue["repo"].casefold():
                 raise PlanError("Retained PR must be an exact same-repository PR URL")
             _, pull = api_json("GET", f"/repos/{issue['repo']}/pulls/{match.group(2)}", bucket="rest_core", failed_step="release_retained_pr")
-            empty = {"local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}
             if ((pull.get("user") or {}).get("login") != expected_actor
                     or pull.get("state") != "open" and not pull.get("merged_at")
                     or any(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != issue["repo"].casefold() for side in ("head", "base"))
-                    or not github_plan_claim.artifact_evidence(empty, [{**pull, "head": {"ref": ""}, "state": "open"}], issue["number"], {}, own_record=False, repo=issue["repo"])):
+                    or not github_plan_claim.pr_issue_reference(pull, issue["number"], repo=issue["repo"], attestation=True)):
                 raise PlanError("Retained PR must independently link the canonical issue and belong to the source automation identity")
             retained_branches.add(pull["head"]["ref"])
             ended = re.findall(r"(?m)^Ended at: (\S+)$", evidence.get("body") or "")
@@ -2141,7 +2140,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         if handoff_id and not refresh_pr and (observed_holds != expected or wait_labels != previous_wait_labels):
             raise PlanError("Issue holds changed during retained-handoff readback; verify the new evidence before recovery")
 
-    def handoff_preflight(source_comments: list[dict[str, Any]]) -> set[str]:
+    def handoff_preflight(source_comments: list[dict[str, Any]], source_status: str) -> set[str]:
         nonlocal retained_waits
         if not handoff_id:
             return set()
@@ -2210,6 +2209,8 @@ def cmd_claim(args: argparse.Namespace) -> None:
                 target_inventory, target_pulls, checked_number, claim, own_record=bool(own_comments),
                 retained_branches=permitted, retained_repo=target_repo, repo=checked_repo,
                 inventory_repo=target_repo,
+                recorded_branches=github_plan_claim.recorded_claim_branches(source_status, source_comments)
+                if checked_repo.casefold() == issue_repo.casefold() and checked_number == number else None,
             )
             if competing:
                 refuse(competing)
@@ -2226,6 +2227,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
             )
             competing = github_plan_claim.artifact_evidence(
                 planning_inventory, planning_pulls, number, claim, own_record=bool(own_comments), repo=issue_repo,
+                recorded_branches=github_plan_claim.recorded_claim_branches(source_status, source_comments),
             )
             if competing:
                 refuse(competing)
@@ -2278,7 +2280,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
             claim = {key: owned[0][key] for key in claim}
         retained = github_plan_claim.retained_branch(comments, args.resume_from) if args.resume_from else None
         check_native_blockers()
-        retained_branches = handoff_preflight(comments)
+        retained_branches = handoff_preflight(comments, status)
         inventory = github_plan_claim.local_inventory(target_repo, number)
         _, pulls = collect_paged_rest_items(
             f"/repos/{target_repo}/pulls", query={"state": "open"},
@@ -2288,7 +2290,8 @@ def cmd_claim(args: argparse.Namespace) -> None:
                                                        own_record=bool(owned), retained=retained, repo=issue_repo,
                                                        retained_branches=retained_branches,
                                                        retained_repo=target_repo if handoff_id else None,
-                                                       inventory_repo=target_repo)
+                                                       inventory_repo=target_repo,
+                                                       recorded_branches=github_plan_claim.recorded_claim_branches(status, comments))
         if conflicts:
             refuse(conflicts)
         completed.append("ownership_preflight")
@@ -2325,7 +2328,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         check_wait(issue, status)
         check_issue_holds(issue, status)
         check_native_blockers()
-        handoff_preflight(comments)
+        handoff_preflight(comments, status)
         if not any(github_plan_claim.same_owner(record, claim) for record in observed):
             raise PlanError("Claim was not visible on readback; do not create a worktree")
         completed.append("claim_readback")
@@ -2364,7 +2367,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
             refuse(conflicts)
         check_issue_holds(final, final_status)
         check_native_blockers()
-        handoff_preflight(final_comments)
+        handoff_preflight(final_comments, final_status)
         if not observed or label_map["active"] not in normalize_labels(final.get("labels")):
             raise PlanError("Claim metadata was not visible on final readback")
         if can_update and not any(github_plan_claim.same_owner(record, claim)

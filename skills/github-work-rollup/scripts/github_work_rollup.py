@@ -510,9 +510,10 @@ def collect_rollup(settings: dict[str, Any]) -> dict[str, Any]:
     repos = resolve_repositories(settings)
     if not repos and not settings["subjects"]:
         raise RollupError("No repositories or subjects configured. Pass --repo, --repo-owner, or --subject.")
-    settings = {**settings, "resolved_repositories": repos}
+    settings = settings.copy()
+    settings["resolved_repositories"] = repos
     settings.setdefault("collection_warnings", [])
-    recipient_profile = resolve_recipient_profile(settings)
+    resolved_profile = resolve_recipient_profile(settings)
     items, buckets, releases, workflows = collect_activity(settings, repos)
     derived_context = collect_derived_context(settings, repos, items)
 
@@ -528,7 +529,7 @@ def collect_rollup(settings: dict[str, Any]) -> dict[str, Any]:
         "window": window_json(settings["window"]),
         "timezone": settings["timezone"],
         "report_recipient": settings["report_recipient"],
-        "recipient_profile": recipient_profile,
+        "recipient_profile": resolved_profile,
         "repositories": repos,
         "subjects": settings["subjects"],
         "summary_level": settings["summary_level"],
@@ -1719,7 +1720,7 @@ def item_group_counts(items: list[dict[str, Any]], limit: int = 4) -> str:
         repo = str(item.get("repo") or "")
         if repo:
             counts[repo_short_name(repo)] = counts.get(repo_short_name(repo), 0) + 1
-    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ranked = sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
     pieces = [f"`{repo}` {count}" for repo, count in ranked[:limit]]
     if len(ranked) > limit:
         pieces.append(f"{len(ranked) - limit} more repos")
@@ -1851,7 +1852,7 @@ def failed_workflow_lines(workflows: list[dict[str, Any]], limit: int = 5) -> li
         entry["count"] += 1
 
     lines: list[str] = []
-    ranked = sorted(grouped.values(), key=lambda entry: (-int(entry["count"]), workflow_item_ref(entry["workflow"])))
+    ranked = sorted(grouped.values(), key=lambda group: (-int(group["count"]), workflow_item_ref(group["workflow"])))
     for entry in ranked[:limit]:
         count = int(entry["count"])
         ref = workflow_item_ref(entry["workflow"])
@@ -2254,7 +2255,6 @@ def executive_story_lines(
     else:
         lead = "No clear product story was collected in this window."
 
-    outcome = ""
     if completed and open_items:
         outcome = f"Finished work landed; the next choices are concentrated around {executive_theme_titles(open_items, 2)}."
     elif completed:
@@ -2407,7 +2407,7 @@ def focus_area_heading(payload: dict[str, Any]) -> str:
         if category and category not in category_labels:
             category_labels.append(category)
     if category_labels:
-        ordered_categories = sorted(category_labels, key=lambda category: (category != "Skills", category.casefold()))
+        ordered_categories = sorted(category_labels, key=lambda name: (name != "Skills", name.casefold()))
         return f"{prose_join(ordered_categories[:3])} Impact"
     label = focus_area_label(payload)
     return f"{label} Impact"
@@ -2521,7 +2521,6 @@ def render_manager_brief_markdown(payload: dict[str, Any]) -> str:
 
 def render_executive_brief_markdown(payload: dict[str, Any]) -> str:
     repo_data = get_repo_data(payload)
-    profile = recipient_profile(payload)
     period = brief_period(payload)
     active_repos = active_repo_names(repo_data)
     product_repos = product_signal_repo_names(repo_data)

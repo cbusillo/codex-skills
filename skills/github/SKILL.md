@@ -869,9 +869,6 @@ Use PRs for all non-trivial changes.
   paths or GitHub links and no self-references. Follow
   [talking with the Director](../references/talking-with-the-director.md) for durable
   PR, issue, review, and closeout text.
-  For context-only follow-up issues whose implementation has not started, use
-  one unwrapped body line starting `Code follow-ups recorded without starting
-  implementation:` followed by their links. Keep implemented work elsewhere.
 - **Labels**: Planning labels are only for durable planning issues. PR labels
   follow the [label taxonomy](references/repo-workflow.md#label-taxonomy):
   `preview-ready`, the optional `awaiting-qa` handoff, and the merge-train

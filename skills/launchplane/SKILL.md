@@ -657,7 +657,10 @@ When a repo has `.github/github.json`, inspect its `launchplane` block before
 looking in sibling repos, archived workstation files, or workflow variables. The
 repo block is public-safe routing metadata only: it may name helper paths,
 environment variable names for service URLs, local config examples,
-merge-train labels, and GitHub Actions workflow entrypoints. It must not
+and GitHub Actions workflow entrypoints. Merge-train enrollment, base branches
+and enqueue labels come only from the active service policy read; point `docs`
+at the [train procedure](references/merge-train.md) rather than storing a
+`launchplane.mergeTrain` block. It must not
 contain tokens, secret values, cookies, concrete Launchplane service URLs,
 private credential paths, provider payloads, product/runtime endpoints, or
 plaintext runtime configuration. Treat Launchplane-managed product, app,

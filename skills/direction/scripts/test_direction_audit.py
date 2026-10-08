@@ -994,10 +994,13 @@ def test_waiting_inbound_fetch_coverage_includes_caps_errors_and_ambiguous_targe
     assert not module.enrich_waiting_inbound_blockers([zero], "o/r", fetch=denied)
 
 SINCE = NOW - dt.timedelta(days=7)
-RANKS = """[repositories]
-"o/live" = "milestone"
-"o/tools" = "tooling"
-"o/fun" = "own"
+OWN_DIRECTION = DIRECTION + """
+## Order
+1. Live breakage first.
+4. Own projects get their share below: fun, Toy-App and edge_codec,
+   Companion and its modules and libraries (`companion*`, `node-remote`),
+   and the lab and the house (`house-tools`; the work room,
+   including the workbench). This list is what the check counts.
 """
 
 
@@ -1012,7 +1015,8 @@ def merged_pull(number: int, merged: dt.datetime | None, *, title: str = "Change
 
 def summary(module: Any, **overrides: Any) -> dict[str, Any]:
     params: dict[str, Any] = {
-        "rank_map": module.parse_rank_map(RANKS), "rank_map_source": "o/direction:ranks.toml",
+        "own_projects": module.own_project_patterns(OWN_DIRECTION), "tracked_issues": {("o/live", 10)},
+        "direction_source": "o/direction:DIRECTION.md@default-branch",
         "pulls": {}, "milestones": {}, "events": {}, "since": SINCE, "until": NOW,
     }
     params.update(overrides)
@@ -1023,52 +1027,47 @@ def test_capacity_counts_merges_inside_the_window_by_rank() -> None:
     module = load()
     second = dt.timedelta(seconds=1)
     result = summary(module, pulls={
-        "o/live": [merged_pull(1, SINCE), merged_pull(2, SINCE - second), merged_pull(3, None)],
+        "o/live": [merged_pull(1, SINCE, body="Fixes #10"), merged_pull(2, SINCE - second), merged_pull(3, None)],
         "o/fun": [merged_pull(4, NOW), merged_pull(5, NOW + second), merged_pull(4, NOW)],
         "o/tools": [merged_pull(6, NOW - second)],
     })
-    assert result["merged_by_rank"] == {"milestone": 1, "tooling": 1, "own": 1, "unranked": 0}
+    assert result["merged_by_rank"] == {"milestone": 1, "tooling": 1, "own": 1}
     assert result["merged_total"] == 3
-    assert result["by_repository"]["o/live"] == {"rank": "milestone", "merged": 1}
-    assert result["unranked"] == []
+    assert result["by_repository"]["o/live"] == {"merged": 1, "merged_by_rank": {"milestone": 1, "tooling": 0, "own": 0}}
 
 
-def test_capacity_reports_unranked_repositories_instead_of_guessing() -> None:
+def test_capacity_uses_per_pull_links_before_own_and_tooling_fallback() -> None:
     module = load()
-    pulls = {"o/fun": [merged_pull(1, NOW)], "o/stranger": [merged_pull(2, NOW), merged_pull(3, NOW)], "o/quiet": [merged_pull(4, SINCE - dt.timedelta(days=1))]}
+    pulls = {"o/fun": [
+        merged_pull(1, NOW, body="Refs o/live#10"),
+        merged_pull(2, NOW, body="Closes https://github.com/o/live/issues/10"),
+        {**merged_pull(3, NOW), "_native_issue_refs": {("o/live", 10)}},
+        merged_pull(4, NOW, body="Background discussion o/live#10"),
+        merged_pull(5, NOW, body="Refs o/live#999"),
+    ], "o/stranger": [merged_pull(6, NOW)], "o/live": [merged_pull(7, NOW)]}
     result = summary(module, pulls=pulls)
-    assert result["unranked"] == [{"repo": "o/stranger", "merged": 2}]
-    assert result["merged_by_rank"]["unranked"] == 2
-    found = run(module, capacity=result)
-    assert [item for item in found["findings"] if item["kind"] == "repository_unranked"] == [
-        {"kind": "repository_unranked", "title": "o/stranger", "merged": 2},
-    ]
-    assert found["capacity"] is result
-    missing = summary(module, rank_map=None, rank_map_source=None, pulls=pulls)
-    assert missing["merged_by_rank"]["unranked"] == 3
-    assert {"rank_map_missing", "repository_unranked"} <= set(kinds(run(module, capacity=missing)))
+    assert result["merged_by_rank"] == {"milestone": 3, "tooling": 2, "own": 2}
+    assert result["by_repository"]["o/fun"]["merged_by_rank"] == {"milestone": 3, "tooling": 0, "own": 2}
+    assert run(module, capacity=result)["capacity"] is result
 
 
-def test_own_share_floor_is_unknown_while_unranked_merges_could_lift_it() -> None:
+def test_own_share_floor_and_incomplete_reads() -> None:
     module = load()
     floor = round(module.OWN_SHARE_FLOOR * 100)
 
-    def share(own: int, unranked: int) -> dict[str, Any]:
-        pulls = {
+    def share(own: int) -> dict[str, Any]:
+        return summary(module, pulls={
             "o/fun": [merged_pull(n, NOW) for n in range(own)],
-            "o/stranger": [merged_pull(n, NOW) for n in range(unranked)],
-            "o/live": [merged_pull(n, NOW) for n in range(100 - own - unranked)],
-        }
-        return summary(module, pulls=pulls)
+            "o/stranger": [merged_pull(n, NOW) for n in range(100 - own)],
+        })
 
-    assert share(floor, 0)["own_share_floor"] == "met"
-    below = share(floor - 1, 0)
+    assert share(floor)["own_share_floor"] == "met"
+    below = share(floor - 1)
     assert below["own_share_floor"] == "below"
     assert "own_share_below_floor" in kinds(run(module, capacity=below))
-    assert share(floor - 1, 1)["own_share_floor"] == "unknown"
     assert summary(module)["own_share_floor"] == "no_merges"
     assert summary(module, pulls={"o/fun": [merged_pull(1, NOW)]}, incomplete=True)["own_share_floor"] == "unknown"
-    assert "own_share_below_floor" not in kinds(run(module, capacity=share(floor, 0)))
+    assert "own_share_below_floor" not in kinds(run(module, capacity=share(floor)))
 
 
 def test_capacity_lists_reverts_reopened_issues_and_closed_milestones_in_window() -> None:
@@ -1097,15 +1096,125 @@ def test_capacity_lists_reverts_reopened_issues_and_closed_milestones_in_window(
     assert [item["number"] for item in result["milestones_closed"]] == [1]
 
 
-def test_rank_map_rejects_unknown_ranks_and_names() -> None:
+def test_own_project_list_reads_identifiers_patterns_and_edits() -> None:
     module = load()
-    for text in ('[repositories]\n"o/r" = "hobby"\n', '[repositories]\nr = "own"\n', 'x = 1\n', '[repositories\n'):
+    names = module.own_project_patterns(OWN_DIRECTION)
+    assert module.own_project_patterns(OWN_DIRECTION.replace("4. Own", "5. Own")) == names
+    assert names == ["companion", "companion*", "edge_codec", "fun", "house-tools", "node-remote", "toy-app"]
+    result = summary(module, pulls={name: [merged_pull(1, NOW)] for name in
+                                   ("o/Companion-Module", "o/node-remote", "o/house-tools", "o/workbench")})
+    assert result["merged_by_rank"]["own"] == 3
+    changed = module.own_project_patterns(OWN_DIRECTION.replace("fun,", "new-project,"))
+    assert summary(module, own_projects=changed, pulls={"o/fun": [merged_pull(1, NOW)],
+                                                      "o/new-project": [merged_pull(2, NOW)]})["merged_by_rank"] == {
+        "milestone": 0, "tooling": 1, "own": 1,
+    }
+    for text in (DIRECTION, OWN_DIRECTION.replace("4. Own", "4. Other"),
+                 OWN_DIRECTION.replace("below:", "below")):
         try:
-            module.parse_rank_map(text)
+            module.own_project_patterns(text)
         except module.AuditError:
             continue
-        raise AssertionError(text)
-    assert module.parse_rank_map('[repositories]\n"O/Fun" = "own"\n') == {"o/fun": "own"}
+        raise AssertionError("missing list was accepted")
+
+
+def test_capacity_graph_includes_closed_waiting_children_blockers_and_cycles() -> None:
+    module = load()
+    calls = []
+    edges = {
+        "repos/o/direction/issues/1/sub_issues": [{"html_url": "https://github.com/x/product/issues/9", "state": "closed"}],
+        "repos/x/product/issues/9/dependencies/blocked_by": [{"html_url": "https://github.com/o/tools/issues/3", "state": "open"}],
+        "repos/o/tools/issues/3/sub_issues": [{"html_url": "https://github.com/x/product/issues/9", "state": "closed"}],
+    }
+    def fetch(args: list[str]) -> Any:
+        path = args[1].split("?")[0]
+        calls.append(path)
+        if path == "repos/o/direction/milestones":
+            return [{"number": 1, "title": "Dogfood week", "state": "closed", "closed_at": stamp(NOW)}]
+        if path == "repos/o/direction/issues":
+            return [
+                {"number": 1, "title": "Track: shipped", "state": "closed", "milestone": {"title": "Dogfood week"}},
+                {"number": 4, "title": "Ordinary", "milestone": {"title": "Dogfood week"}},
+            ]
+        return edges.get(path, [])
+    tracked, incomplete = module.tracked_capacity_issues("o/direction", OWN_DIRECTION, SINCE, fetch=fetch)
+    assert tracked == {("o/direction", 1), ("x/product", 9), ("o/tools", 3)} and not incomplete
+    assert len(calls) == len(set(calls))
+    limited, incomplete = module.tracked_capacity_issues("o/direction", OWN_DIRECTION, SINCE, fetch=fetch, max_nodes=1)
+    assert limited == {("o/direction", 1)} and incomplete == ["capacity_graph_limit"]
+    def denied(args: list[str]) -> Any:
+        if "/blocked_by" in args[1]:
+            raise module.AuditError("HTTP 403")
+        return fetch(args)
+    assert module.tracked_capacity_issues("o/direction", OWN_DIRECTION, SINCE, fetch=denied)[1]
+
+
+def test_capacity_fetch_attribution_and_retired_milestone_window() -> None:
+    import base64
+    module = load()
+    native_calls = []
+    paths = []
+    def fetch(args: list[str]) -> Any:
+        path = args[1]
+        paths.append(path)
+        if "/contents/" in path:
+            return {"content": base64.b64encode(OWN_DIRECTION.encode()).decode()}
+        if path.startswith("repos/o/direction/milestones"):
+            return [
+                {"number": 7, "title": "Shipped and removed", "state": "closed", "closed_at": stamp(SINCE)},
+                {"number": 8, "title": "Old removed milestone", "state": "closed", "closed_at": stamp(SINCE-dt.timedelta(seconds=1))},
+            ]
+        if path.startswith("repos/o/direction/issues?state=all&milestone=7"):
+            return [{"number": 1, "title": "Track: shipped", "state": "closed"}]
+        if path.startswith("repos/o/direction/issues/1/sub_issues"):
+            return [{"html_url": "https://github.com/o/live/issues/10", "state": "closed"}]
+        if path.startswith("installation/repositories"):
+            return {"repositories": [{"full_name": "o/fun", "owner": {"login": "o"}, "pushed_at": stamp(NOW)}]}
+        if path.startswith("repos/o/fun/pulls"):
+            return [merged_pull(1, NOW), merged_pull(2, NOW),
+                    merged_pull(3, NOW, body="Refs: \n- [tracked](https://github.com/o/live/issues/10)\n- #99"),
+                    merged_pull(4, NOW, body="Doesn't fix o/live#10")]
+        if path == "graphql":
+            number = int(next(arg.split("=",1)[1] for arg in args if arg.startswith("number=")))
+            native_calls.append(number)
+            return {"data": {"repository": {"pullRequest": {"closingIssuesReferences": {
+                "nodes": [{"number": 10, "repository": {"nameWithOwner": "o/live"}}] if number == 1 else [],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }}}}}
+        return []
+    result, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=fetch)
+    assert not errors
+    assert result["merged_by_rank"] == {"milestone": 2, "tooling": 0, "own": 2}
+    assert native_calls == [1, 2, 4]  # Explicit proven links do not need another read.
+    assert not any("milestone=8" in path for path in paths)
+    assert result["own_projects"] == module.own_project_patterns(OWN_DIRECTION)
+    def missing_order(args: list[str]) -> Any:
+        if "/contents/" in args[1]:
+            return {"content": base64.b64encode(DIRECTION.encode()).decode()}
+        return fetch(args)
+    partial, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=missing_order)
+    assert "capacity_own_projects" in errors and partial["own_share_floor"] == "unknown"
+    assert partial["merged_by_rank"]["milestone"] == 2
+
+
+def test_native_pull_links_are_paged_and_partial_errors_refuse() -> None:
+    module = load()
+    calls = []
+    def fetch(args: list[str]) -> Any:
+        calls.append(args)
+        more = "cursor=next" not in args
+        return {"data": {"repository": {"pullRequest": {"closingIssuesReferences": {
+            "nodes": [{"number": 10 if more else 11, "repository": {"nameWithOwner": "O/Live"}}],
+            "pageInfo": {"hasNextPage": more, "endCursor": "next" if more else None},
+        }}}}}
+    assert module.native_pull_issue_refs("o/fun", 1, fetch=fetch) == {("o/live", 10), ("o/live", 11)}
+    assert len(calls) == 2
+    for response in ({"data": {"repository": None}}, {**fetch([]), "errors": [{"message": "denied"}]}):
+        try:
+            module.native_pull_issue_refs("o/fun", 1, fetch=lambda _: response)
+        except module.AuditError:
+            continue
+        raise AssertionError("unavailable links were accepted")
 
 
 def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
@@ -1126,29 +1235,34 @@ def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
         path = args[1]
         calls.append(path)
         if path.startswith("repos/o/direction/contents/"):
-            return {"content": base64.b64encode(RANKS.encode()).decode()}
+            return {"content": base64.b64encode(OWN_DIRECTION.encode()).decode()}
         if path.startswith("installation/repositories"):
             raise module.AuditError("installation/repositories failed: HTTP 403")
         if path.startswith("user/repos"):
             return listing
-        if path == "repos/o/tools":
-            return {"full_name": "o/tools", "owner": {"login": "o"}, "pushed_at": stamp(NOW)}
-        if path == "repos/o/fun":
-            raise module.AuditError("HTTP 404")
         if path.startswith("repos/o/live/pulls"):
             # A full page that reaches past the window ends the read.
             return [merged_pull(n, NOW) for n in range(99)] + [{**merged_pull(99, None), "updated_at": old}]
+        if path == "graphql":
+            return {"data": {"repository": {"pullRequest": {"closingIssuesReferences": {
+                "nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }}}}}
         return []
 
     result, truncated = module.fetch_capacity("o/direction", SINCE, NOW, fetch=fetch)
-    assert result["merged_by_rank"]["milestone"] == 99
-    assert truncated == ["capacity_repository:o/fun"]
+    assert result["merged_by_rank"]["tooling"] == 99
+    assert truncated == []
     assert not any("page=2" in path for path in calls if "/pulls" in path)
     assert not any(path.startswith(("repos/o/quiet/pulls", "repos/o/attic/", "repos/x/")) for path in calls)
     assert any(path.startswith("repos/o/quiet/issues/events") for path in calls)
     assert any(path.startswith("repos/o/shut/milestones") for path in calls)
-    assert result["own_share_floor"] == "unknown"
-    assert any(path.startswith("repos/o/tools/pulls") for path in calls)
+    assert result["own_share_floor"] == "below"
+    def missing_links(args: list[str]) -> Any:
+        if args[1] == "graphql":
+            raise module.AuditError("HTTP 403")
+        return fetch(args)
+    partial, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=missing_links)
+    assert partial["own_share_floor"] == "unknown" and "capacity_pull_links:o/live#0" in errors
 
     def nothing_lists(args: list[str]) -> Any:
         if "/contents/" in args[1]:

@@ -138,7 +138,7 @@ class ClaimTests(unittest.TestCase):
         return {"ok": True}
 
     def run_claim(self):
-        with patch.multiple(PLAN, default_repo=lambda _: "owner/repo", get_issue=self.get_issue,
+        with patch.multiple(PLAN, default_repo=lambda repo: repo or "owner/repo", get_issue=self.get_issue,
                             EXPECTED_ACTOR=TEST_BOT,
                             collect_paged_rest_items=self.read_pages, rest_edit_issue=self.edit,
                             comment_route=lambda: ("bot", "bot-gh", TEST_BOT),
@@ -323,7 +323,7 @@ class ClaimTests(unittest.TestCase):
             with self.assertRaises(ValueError): CLAIM.local_inventory("other/plans", 42, cwd=planning_path)
 
     def test_mixed_case_issue_url_remains_competing_ownership(self):
-        self.pulls = [{"number": 101, "body": "https://github.com/Owner/Repo/issues/42", "head": {"ref": "work/unrelated"}}]
+        self.pulls = [{"number": 101, "body": "Fixes https://github.com/Owner/Repo/issues/42", "head": {"ref": "work/unrelated"}}]
         with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
         self.assert_no_writes()
 
@@ -433,6 +433,58 @@ class ClaimTests(unittest.TestCase):
         self.assertNotIn("Conflict-only refresh:", self.comments[-1]["body"])
         self.assertEqual(before, (self.inventory, self.pulls, self.closed_pulls))
         self.assertEqual(output["session_coverage"]["codex"]["status"], "unavailable")
+
+    def cleanup_handoff_fixture(self):
+        self.ordinary_handoff_fixture()
+        # Historical full release from launchplane#3109 comment 6025762772.
+        # Remap only record/PR identities to the offline claim fixture.
+        release = Path(__file__).with_name("fixtures").joinpath("launchplane-3109-d3-release.md").read_text()
+        source_id = int(release.splitlines()[0].removeprefix("Released claim "))
+        self.assertEqual(CLAIM.released_claim_id(release), source_id)
+        release = release.replace("6025344226", "1").replace("#3111", "#99").replace("/pull/3111", "/pull/99")
+        release = release.replace("#3110", "#100")
+        self.assertEqual(CLAIM.released_claim_id(release), self.args.resume_from)
+        self.comments[2]["body"] = release
+
+    def test_cleanup_handoff_accepts_ordinary_successor_without_retiring_artifacts(self):
+        self.cleanup_handoff_fixture()
+        before = copy.deepcopy((self.inventory, self.pulls, self.closed_pulls))
+        self.run_claim()
+        output = self.emitted.call_args.args[0]
+        self.assertTrue(output["ok"])
+        self.assertIn("metadata_readback", output["completed_steps"])
+        self.assertEqual(before, (self.inventory, self.pulls, self.closed_pulls))
+
+    def test_cleanup_handoff_does_not_release_a_conditional_successor(self):
+        for condition in (
+            "The next worker may claim after landing/closure and ownership/content checks.",
+            "Ownership transfers after landing/closure and ownership/content checks.",
+            "The next session may continue once ownership/content checks pass.",
+            "Use its host retire command after landing/closure and ownership/content checks, then the next worker may claim.",
+            "Use its host retire command after landing/closure and ownership/content checks. Then the next worker may pick it up.",
+            "Use its host retire command after landing/closure and ownership/content checks; the next worker may pick it up then.",
+            "Use its host retire command after landing/closure and ownership/content checks. The next worker may claim afterward.",
+            "Use its host retire command after landing/closure and ownership/content checks. Receipts stay on Developer-Artifacts. Then the next worker may claim.",
+            "Use its host retire command after landing/closure and ownership/content checks. Then the next worker may start.",
+        ):
+            with self.subTest(condition=condition):
+                self.setUp()
+                self.cleanup_handoff_fixture()
+                release = CLAIM.without_operation_marker(self.comments[2]["body"])
+                if condition.startswith("Use its host retire command"):
+                    # Change the real instruction instead of adding a second
+                    # ownership-check sentence that could mask the guard.
+                    release = release.replace(
+                        "use its host retire command after landing/closure and ownership/content checks.", condition,
+                    )
+                else:
+                    release += "\n\n" + condition
+                self.comments[2]["body"] = release
+                self.assertIsNone(CLAIM.released_claim_id(self.comments[2]["body"]))
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assert_no_writes()
 
     def test_ordinary_handoff_preserves_issue_and_every_retained_pr_wait(self):
         for place in ("issue", "99", "100"):
@@ -1404,6 +1456,105 @@ class ClaimTests(unittest.TestCase):
             self.run_claim()
         self.assert_no_writes()
 
+    def test_codex_982_claim_ignores_1398_review_context(self):
+        self.args.repo = "cbusillo/codex-skills"
+        self.args.issue = "982"
+        self.issue["number"] = 982
+        self.pulls = [{"number": 1398, "title": "fix: preserve repo-relative rollout memory paths",
+                       "body": "Refs #1351\n\nAn unrelated intermittent local-model output-limit failure "
+                               "recurred, then passed standalone and in the full catalog rerun; "
+                               "[#982](https://github.com/cbusillo/codex-skills/issues/982#issuecomment-6051054495) owns it.",
+                       "head": {"ref": "work/cs-1351-d1"}}]
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.assertEqual(self.post_route, ("issue", 982, self.args.repo))
+
+    def test_launchplane_3109_successor_ignores_3132_direction_context(self):
+        self.ordinary_handoff_fixture()
+        self.args.repo = "cbusillo/launchplane"
+        self.args.issue = "3109"
+        self.issue["number"] = 3109
+        for name in ("comments", "pulls", "targets", "target_comments", "closed_pulls"):
+            value = json.loads(json.dumps(getattr(self, name)).replace("owner/repo", self.args.repo).replace("#42", "#3109"))
+            if name == "closed_pulls": value = {int(key): item for key, item in value.items()}
+            setattr(self, name, value)
+        self.pulls.append({"number": 3132, "title": "Direction: product-scoped grants and live production lanes",
+                           "body": "Only `DIRECTION.md` changes.\n\nRuntime/docs qualification stays on "
+                                   "[launchplane#3109](https://github.com/cbusillo/launchplane/issues/3109) scoped reads/plans "
+                                   "and [launchplane#2467](https://github.com/cbusillo/launchplane/issues/2467) ordinary operation.\n\n"
+                                   "Refs https://github.com/cbusillo/direction/issues/43",
+                           "head": {"ref": "work/dir-43-d1"}})
+        retained = copy.deepcopy((self.pulls, self.closed_pulls, self.inventory))
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.assertEqual(self.post_route, ("issue", 3109, self.args.repo))
+        self.assertEqual((self.pulls, self.closed_pulls, self.inventory), retained)
+
+    def test_contextual_pr_keeps_genuine_competing_pr_refusal(self):
+        self.pulls = [{"number": 99, "body": "Review notes: https://github.com/owner/repo/issues/42 owns it.",
+                       "head": {"ref": "work/docs"}},
+                      {"number": 100, "body": "Fixes #42", "head": {"ref": "work/repair"}}]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        self.assertEqual(caught.exception.payload["competing_evidence"],
+                         [{"source": "open_pr", "number": 100, "branch": "work/repair"}])
+        self.assert_no_writes()
+
+    def test_implementation_reference_list_keeps_each_competing_issue(self):
+        for body in (
+            "Refs https://github.com/owner/repo/issues/10, https://github.com/owner/repo/issues/42",
+            "Fixes #10 and https://github.com/owner/repo/issues/42",
+            "Closes [first](https://github.com/other/repo/issues/10), and [repair](https://github.com/owner/repo/issues/42)",
+            "Refs #10, #42",
+        ):
+            with self.subTest(body=body):
+                self.setUp()
+                self.pulls = [{"number": 99, "body": body, "head": {"ref": "work/repair"}}]
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.payload["competing_evidence"],
+                                 [{"source": "open_pr", "number": 99, "branch": "work/repair"}])
+                self.assert_no_writes()
+
+    def test_unrelated_implementation_list_does_not_claim_context_link(self):
+        self.pulls = [{"number": 99,
+                       "body": "Refs #10, #11 and other/repo#42\n\nRuntime/docs qualification stays on https://github.com/owner/repo/issues/42",
+                       "head": {"ref": "work/docs"}}]
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_retained_handoff_keeps_contextual_issue_links_and_waits(self):
+        self.ordinary_handoff_fixture()
+        self.pulls[0]["body"] = "Planning issue: https://github.com/owner/repo/issues/42"
+        self.targets["99"]["body"] = self.pulls[0]["body"] + "\n\n## Current Status\n\nWaiting for: Owner acceptance."
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_wait_unresolved")
+        self.assert_no_writes()
+        self.args.wait_resolved = "Existing source authorization preserves the acceptance hold."
+        self.run_claim()
+        self.assertIn("Owner acceptance", self.comments[-1]["body"])
+
+    def test_cross_repository_planning_claim_branch_remains_competing(self):
+        self.cross_repository_fixture()
+        source = CLAIM.records(self.comments[0]["body"])[0]
+        source["branch"] = "work/runtime-authorization"
+        self.comments[0]["body"] = CLAIM.marker(source)
+        self.pulls = [pull for pull in self.pulls if pull["head"]["ref"] != source["branch"]]
+        original_reader = self.read_pages
+        def pages(path, **kwargs):
+            if path == "/repos/other/plans/pulls":
+                return "bot", [{"number": 200, "body": "Planning issue: https://github.com/other/plans/issues/42",
+                                "head": {"ref": source["branch"]}}]
+            return original_reader(path, **kwargs)
+        self.read_pages = pages
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertIn({"source": "open_pr", "number": 200, "branch": source["branch"]},
+                      caught.exception.payload["competing_evidence"])
+        self.assert_no_writes()
+
     def test_explicitly_unstarted_docs_followups_allow_both_claims(self):
         self.pulls = [{"number": 48, "title": "docs: align API guidance",
                        "body": "Code follow-ups recorded without starting implementation: "
@@ -1428,7 +1579,6 @@ class ClaimTests(unittest.TestCase):
             {"head": {"ref": "work/issue-42"}},
             {"body": context + "\n\nRefs #42"},
             {"body": context + "\nFixes https://github.com/owner/repo/issues/42"},
-            {"body": context + "\n\nhttps://github.com/owner/repo/issues/42"},
             {"body": context + "; Fixes #42"},
             {"body": context + "; Fixes https://github.com/owner/repo/issues/42"},
             {"body": context + "; Closes [repo#42](https://github.com/owner/repo/issues/42)"},
@@ -1442,10 +1592,6 @@ class ClaimTests(unittest.TestCase):
             {"body": context + "; __Closes:__ https://github.com/owner/repo/issues/42"},
             {"body": context + "; Closes [repo#42](https://github.com/owner/repo/issues/42#issuecomment-1)"},
             {"body": context + '; Closes [repo#42](https://github.com/owner/repo/issues/42 "repair")'},
-            {"body": "- " + context},
-            {"body": "> " + context},
-            {"body": context.lower()},
-            {"body": "Follow-ups: https://github.com/owner/repo/issues/42"},
         ):
             with self.subTest(extra=extra):
                 self.pulls = [{"number": 99, "title": "docs", "body": context,
@@ -1453,6 +1599,28 @@ class ClaimTests(unittest.TestCase):
                 with self.assertRaises(PLAN.ClassifiedPlanError):
                     self.run_claim()
                 self.assert_no_writes()
+
+    def test_contextual_body_links_allow_claim_without_special_line(self):
+        url = "https://github.com/Owner/Repo/issues/42"
+        for body in (url, f"Follow-ups: {url}", f"- Follow-ups: {url}",
+                     f"> Runtime/docs qualification stays on {url}"):
+            with self.subTest(body=body):
+                self.setUp()
+                self.pulls = [{"number": 99, "body": body, "head": {"ref": "work/docs"}}]
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_released_claim_branch_still_identifies_competing_pr(self):
+        source = {**OTHER, "branch": "work/runtime-authorization"}
+        self.comments = [{"id": 1, "body": CLAIM.marker(source), "user": {"login": TEST_BOT}},
+                         {"id": 2, "body": "Released claim 1", "user": {"login": TEST_BOT}}]
+        self.pulls = [{"number": 99, "body": "Runtime qualification stays on https://github.com/owner/repo/issues/42",
+                       "head": {"ref": source["branch"]}}]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.payload["competing_evidence"],
+                         [{"source": "open_pr", "number": 99, "branch": source["branch"]}])
+        self.assert_no_writes()
 
     def test_context_link_does_not_override_branch_or_claim_owner(self):
         self.pulls = [{"number": 99, "body": "Code follow-ups recorded without starting implementation: "
