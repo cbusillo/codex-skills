@@ -15,8 +15,6 @@ link related artifacts when useful:
   strategy, cross-repo coordination, blockers, and Project state.
 - Issue: durable repo work not tied to the current branch, including bugs,
   security/quality findings, and cleanup tasks someone may pick up later.
-- Saved local plan: only explicit offline/private context not ready or
-  appropriate for GitHub.
 
 For conditional safe-to-exit, at least one durable place must hold the next
 step. Avoid duplicating every detail everywhere; link PRs, issues, and plans
@@ -50,6 +48,14 @@ Before calling it parked, verify the pushed SHA at the remote and verify the
 durable issue link that owns the recovery state; link any related PR from that
 issue.
 
+Keep the owning issue's Current Status, labels, and native relationships current
+under github-plan's [Status Labels](../../github-plan/SKILL.md#status-labels)
+when parking or handing off work. Projects remain automatic views; do not maintain manual
+Focus, Manager, Finish Line, or roadmap fields. For completed planning issues,
+use the `github-plan` close flow so done labels and Project Status are updated.
+
+### Local-only preservation checks
+
 A local-only route is valid when it uses a known, already approved durable
 location outside the removal target and verification shows the Git state, dirty
 patches, and needed local files are reconstructable. Trash, a reflog, or a
@@ -57,18 +63,14 @@ temporary cleanup manifest alone is not durable parking. If no authorized route
 exists, retain the original work, name the missing choice, and continue any
 independent authorized cleanup.
 
-Keep the owning issue's Current Status, labels, and native relationships current
-under github-plan's [Status Labels](../../github-plan/SKILL.md#status-labels)
-when parking or handing off work. Projects remain automatic views; do not maintain manual
-Focus, Manager, Finish Line, or roadmap fields. For completed planning issues,
-use the `github-plan` close flow so done labels and Project Status are updated.
-
 ## Handoff Surfaces
 
 For GitHub-backed repos, recovery-critical handoff content belongs in the
 owning GitHub issue or PR comment. Use local handoff files only as temporary
 scratch while drafting or when the user explicitly asks for an offline/private
-handoff.
+handoff. For an explicit private/offline handoff, name its authorized durable
+location in the closeout and verify reconstructable recovery state using the
+local-only preservation checks above.
 
 If a cross-repository prerequisite issue must still be created or identified,
 use `github-plan`'s [missing-gate handoff rule](../../github-plan/SKILL.md#missing-cross-repository-gates)

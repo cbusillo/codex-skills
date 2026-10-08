@@ -759,7 +759,7 @@ how existing approval and task boundaries apply.
 
 `github-plan` owns durable planning: plan issues, parent and sub-issue graphs,
 blockers, milestones, Projects, roadmap and focus state, stale or duplicate
-plan cleanup, replacing local plan files, and the raw commands behind them
+plan cleanup, and the raw commands behind them
 (`gh issue list`, `gh search issues`, `gh project`, and planning GraphQL
 relationship and Project operations). This skill owns transactional execution:
 PR create, edit, comment, and merge; issue create, edit, and close bodies; CI

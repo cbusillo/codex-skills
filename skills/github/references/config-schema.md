@@ -1,8 +1,9 @@
 # GitHub Plan Config Schema
 
 Planning config lives in `.github/github.json` under the `planning` key for
-repo-local policy, and in `github-planning.json` under the runtime home (`$CODE_HOME`, then `$CODEX_HOME`, then `~/.code`, then `~/.codex`) for workspace
-defaults.
+repo-local policy, and in `github-planning.json` under the runtime home for
+workspace defaults: `$CODE_HOME`, then `$CODEX_HOME`, then `~/.code` when it
+contains a `skills/` directory, otherwise `~/.codex`.
 Repo-local values override workspace defaults.
 
 ```json

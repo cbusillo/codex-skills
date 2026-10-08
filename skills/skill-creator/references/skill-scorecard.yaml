@@ -1057,39 +1057,6 @@ skills:
           last_validated_ref: main
           notes: Person resolver and private path behavior covered by tests.
     known_gaps: []
-  plan:
-    status: manual_only
-    risk_classes:
-      - manual_only
-      - planning
-    checks:
-      - check_id: manual-only-metadata
-        kind: static_validator
-        mode: ci
-        dimension: metadata
-        gate: required
-        baseline:
-          outcome: pass
-          score: 1000
-          last_validated_ref: main
-          notes: Manual-only metadata covered by repo validation.
-      - check_id: manual-skill-hidden-scenario
-        kind: exec_harness
-        mode: fake_responses_api
-        dimension: routing
-        gate: conditional
-        scenario: >-
-          skill-creator/evaluations/exec-harness/manual-skill-not-implicit.json
-        baseline:
-          outcome: pass
-          score: 1000
-          last_validated_ref: main
-          notes: >-
-            Fake Responses API scenario verifies manual-only skills stay out of
-            implicit availability lists.
-    known_gaps:
-      - No scenario yet proving github-plan supersedes local plan files by
-        default.
   plugin-creator:
     status: active
     risk_classes:
