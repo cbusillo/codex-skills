@@ -394,6 +394,14 @@ class MoveTests(unittest.TestCase):
         self.assertEqual(cleaned["env"], {"OTHER": "keep"})
         self.assertEqual(cleaned["hooks"]["StopFailure"], [unrelated, shell])
 
+    def test_existing_named_wrapper_is_preserved(self):
+        settings = self.root / "settings.json"
+        original = {"processWrapper": "/existing/launcher"}
+        settings.write_text(json.dumps(original))
+        with self.assertRaises(ValueError):
+            account.install(settings, self.root / "moves", write=True)
+        self.assertEqual(json.loads(settings.read_text()), original)
+
     def test_installer_preview_preserves_settings_and_repeat_is_idempotent(self):
         settings = self.root / "settings.json"
         existing = {"permissions": {"defaultMode": "default"}, "env": {"OTHER": "yes"},

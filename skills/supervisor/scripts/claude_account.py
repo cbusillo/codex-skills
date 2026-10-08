@@ -304,7 +304,7 @@ exit 127;
 
 
 def owned_hook(handler, script):
-    command = handler.get("command") if isinstance(handler, dict) else None
+    command = handler.get("command") if isinstance(handler, dict) and handler.get("type") == "command" else None
     if not isinstance(command, str):
         return False
     try:
@@ -339,6 +339,8 @@ def install(settings, directory, write=False, refresh=False):
     data = json.loads(previous) if previous is not None else {}
     if not isinstance(data, dict) or not isinstance(data.get("env", {}), dict):
         raise ValueError("user settings and env must be objects")
+    if data.get("processWrapper"):
+        raise ValueError("existing named processWrapper setting preserved; reconcile explicitly")
     wrapper_path = str(runtime_script())
     python = str(Path(sys.executable).resolve())
     if not os.access(python, os.X_OK):
