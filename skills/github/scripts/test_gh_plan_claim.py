@@ -30,6 +30,19 @@ SPEC.loader.exec_module(PLAN)
 
 OWNER = {"worker": "trial-a", "session": "session-a", "branch": "work/issue-42", "claimed_at": "2026-10-01T00:00:00Z"}
 OTHER = {**OWNER, "worker": "trial-b", "session": "session-b", "branch": "work/other-42"}
+FUTURE_OWNERSHIP_EFFECTS = (
+    "Effective tomorrow.",
+    "Ownership transfers later today.",
+    "Ownership transfers with PR #99's merge.",
+    "The next worker may claim on merging PR #99.",
+    "Ownership transfers on merging PR #99.",
+    "Effective on PR #99 merging.",
+    "Ownership transfers at merge-train landing.",
+    "Ownership transfers on PR #99's merge.",
+    "Ownership transfers with #99's merge.",
+    "Effective on owner/repo#99 merging.",
+    "Effective at PR #99's merge.",
+)
 RESPONSIBILITY_STATUS = (
     "After these proposals, 61 OPW and 57 CM provider-only entries would remain, "
     "owned by Launchplane engineering for evidence and Chris for production disposition approval."
@@ -1998,6 +2011,76 @@ class ClaimTests(unittest.TestCase):
                                           "user": {"login": TEST_BOT}})
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_future_ownership_effects_preserve_and_recover_claims(self):
+        for prose in FUTURE_OWNERSHIP_EFFECTS:
+            for final in (False, True):
+                for retained in (False, True):
+                    with self.subTest(prose=prose, final=final, retained=retained):
+                        self.setUp()
+                        release = (prose + "\n\nReleased claim 1" if final
+                                   else "Released claim 1\n\n" + prose)
+                        self.released_status_fixture(release)
+                        if not retained:
+                            self.issue["body"] = PLAN.template_body("Repair")
+                            self.args.resume_from = None
+                            self.inventory["local_branches"] = []
+                            self.inventory["worktrees"] = []
+                        with self.assertRaises(PLAN.ClassifiedPlanError):
+                            self.run_claim()
+                        self.assert_no_writes()
+                        self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
+                                              "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
+                        self.run_claim()
+                        output = self.emitted.call_args.args[0]
+                        self.assertTrue(output["ok"])
+                        self.assertEqual(CLAIM.records(self.issue["body"]), [output["claim"]])
+
+    def test_future_ownership_effect_refresh_requires_unconditional_handoff(self):
+        for prose in FUTURE_OWNERSHIP_EFFECTS:
+            with self.subTest(prose=prose):
+                self.setUp()
+                self.refresh_fixture()
+                self.comments[2]["body"] = "Released claim 1\n\nHandoff: PR #99 and #100.\n\n" + prose
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+                self.comments.append({"id": 4, "body": "Released claim 1\nHandoff: PR #99 and #100.",
+                                      "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
+                self.args.handoff_comment = 4
+                self.run_claim()
+                self.assertEqual(self.emitted.call_args.args[0]["claim"]["refresh_pr"], self.args.refresh_pr)
+
+    def test_future_downstream_effects_keep_unconditional_handoff_usable(self):
+        for prose in (
+            "Deployment starts tomorrow.",
+            "Supervisor routes PR #99 later today.",
+            "Deployment starts with PR #99's merge.",
+            "Supervisor routes PR #99 on merging PR #100.",
+            "Deployment starts on PR #99 merging.",
+            "Worktree cleanup runs at merge-train landing.",
+            "Ownership transfers immediately. Supervisor routes PR #99 later today.",
+            "The next worker can resume on work/tomorrow.",
+            "The next worker can resume on work/later-today.",
+        ):
+            with self.subTest(prose=prose):
+                self.setUp()
+                self.refresh_fixture()
+                self.comments[2]["body"] = "Released claim 1\n\nHandoff: PR #99 and #100.\n\n" + prose
+                self.run_claim()
+                self.assertEqual(self.emitted.call_args.args[0]["claim"]["refresh_pr"], self.args.refresh_pr)
+
+    def test_schedule_notes_and_merging_work_keep_genuine_release_usable(self):
+        for release in (
+            "Released claim 1. Tomorrow I start #1402.",
+            "Released claim 1\n\nLater today the deploy completes.",
+            "Released claim 1\n\nThe next worker can take over the remaining work on merging the stacked PRs.",
+        ):
+            with self.subTest(release=release):
+                self.setUp()
+                self.released_status_fixture(release)
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_nonadjacent_first_line_effects_preserve_and_recover_claims(self):
         for prose in (
