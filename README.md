@@ -1074,8 +1074,11 @@ those variable names without reading their values. For a pinned `~/.claude`
 default account, it also unsets `CLAUDE_CONFIG_DIR`, preserving Claude's native
 default login/config location rather than creating an alternate config there.
 It never opens login files or a credential store. Unrelated configuration stays under
-Claude's own management. An identical entry is kept; conflicting entries are
-preserved and reported. The ignored `.local/chrome-install.json` records owned
+Claude's own management. An identical entry is kept; a conflicting or unreadable
+home stops the explicit catalog install before its writes. To install bindings
+and instructions while leaving Chrome enrollment unchanged, move aside
+`.local/chrome.toml` and rerun; instruction-only refresh also skips Chrome.
+The ignored `.local/chrome-install.json` records owned
 entries, so changing only `pinned_home` updates those entries on the next explicit
 install. A failed update attempts to restore the previous managed entry; a
 failed restoration names the receipt to recover from. Inspect a reported

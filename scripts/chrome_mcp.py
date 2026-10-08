@@ -16,22 +16,25 @@ SERVER = "catalog-chrome"  # Claude reserves its built-in server name.
 AUTH_OVERRIDES = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 
 
+def native_default(directory: Path) -> bool:
+    return directory.name == ".claude" and directory.parent.resolve() == Path.home().resolve()
+
+
 def home_path(value: str, home: Path) -> Path:
     if not isinstance(value, str) or not value or "\n" in value or "\r" in value:
         raise ValueError("Chrome homes must be nonempty single-line paths")
     path = home / value[2:] if value.startswith("~/") else home if value == "~" else Path(value)
     if not path.is_absolute():
         raise ValueError("Chrome homes must be absolute or start with ~/")
-    if not path.is_dir() or (path.is_symlink() and path != home / ".claude"):
+    if not path.is_dir() or (path.is_symlink() and not native_default(path)):
         raise ValueError(f"Chrome home must be an existing regular directory: {path}")
     return path
 
 
-def server_entry(pinned: Path, command: str, home: Path | None = None) -> dict:
-    home = home or Path.home()
+def server_entry(pinned: Path, command: str) -> dict:
     # An explicit CLAUDE_CONFIG_DIR=~/.claude uses a different login/config
     # file than the native default home. Unset it for the default account.
-    default = pinned == home / ".claude"
+    default = native_default(pinned)
     # Clear caller authentication overrides by name, without reading their values.
     unset = (*AUTH_OVERRIDES, "CLAUDE_CONFIG_DIR") if default else AUTH_OVERRIDES
     return {"type": "stdio", "command": "env",
@@ -41,7 +44,7 @@ def server_entry(pinned: Path, command: str, home: Path | None = None) -> dict:
 
 def run_mcp(command: str, directory: Path, args: list[str]):
     env = dict(os.environ, CLAUDE_CONFIG_DIR=str(directory))
-    if directory == Path.home() / ".claude":
+    if native_default(directory):
         env.pop("CLAUDE_CONFIG_DIR", None)
     return subprocess.run([command, "mcp", *args], env=env, capture_output=True,
                           text=True, timeout=45)
@@ -83,14 +86,10 @@ def prepare(root: Path, home: Path, claude: Path) -> dict | None:
     if set(config) != {"pinned_home", "homes"} or not isinstance(config["homes"], list) or not config["homes"]:
         raise ValueError("chrome.toml requires pinned_home and a nonempty homes list")
     pinned = home_path(config["pinned_home"], home)
-    # The outer installer resolves destinations for its bindings. Restore the
-    # native default spelling, whose user config lives outside that directory.
-    if claude == (home / ".claude").resolve():
-        claude = home / ".claude"
     directories = list(dict.fromkeys([home_path(str(claude), home), pinned,
                                      *(home_path(value, home) for value in config["homes"])]))
     command = "claude"
-    desired = server_entry(pinned, command, home)
+    desired = server_entry(pinned, command)
     receipt_path = root / ".local" / "chrome-install.json"
     if receipt_path.is_symlink() or (receipt_path.exists() and not receipt_path.is_file()):
         raise ValueError("Chrome installation receipt must be a regular file")
@@ -102,14 +101,14 @@ def prepare(root: Path, home: Path, claude: Path) -> dict | None:
         if directory.resolve().is_relative_to(root.resolve()):
             raise ValueError("Chrome configuration overlaps the catalog checkout")
         # lstat only: never open the file containing account identity.
-        config_file = home / ".claude.json" if directory == home / ".claude" else directory / ".claude.json"
+        config_file = Path.home().resolve() / ".claude.json" if native_default(directory) else directory / ".claude.json"
         if config_file.is_symlink() or (config_file.exists() and not config_file.is_file()):
             raise ValueError(f"Chrome user config must be a regular file: {config_file}")
         old = previous.get(str(directory))
         if old is not None:
             old_env = old.get("env") if isinstance(old, dict) else None
             old_pin = old_env.get("CLAUDE_CONFIG_DIR") if isinstance(old_env, dict) else None
-            if not isinstance(old_pin, str) or not Path(old_pin).is_absolute() or old != server_entry(Path(old_pin), command, home):
+            if not isinstance(old_pin, str) or not Path(old_pin).is_absolute() or old != server_entry(Path(old_pin), command):
                 raise ValueError("Invalid managed Chrome MCP entry in receipt")
         entries.append({"path": directory, "state": inspect_entry(command, directory, desired, old), "previous": old})
     return {"command": command, "desired": desired, "entries": entries, "receipt_path": receipt_path,

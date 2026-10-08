@@ -128,18 +128,20 @@ class ChromeTests(unittest.TestCase):
         chrome.apply(self.prepare())
         self.assertNotIn((self.default, 'add-json'), self.calls)
 
-    def test_resolved_default_home_keeps_native_spelling_and_config_guard(self):
+    def test_native_and_explicit_alias_homes_are_enrolled_separately(self):
         self.default.rmdir()
         self.default.symlink_to(self.other, target_is_directory=True)
         self.configure(self.default)
-        plan = chrome.prepare(self.catalog, self.home, self.default.resolve())
-        assert plan is not None
-        self.assertEqual(plan['entries'][0]['path'], self.default)
-        self.assertIn('CLAUDE_CONFIG_DIR', plan['desired']['args'])
-        identity = self.home / '.claude.json'
-        identity.symlink_to(self.root / 'opaque-identity')
-        with self.assertRaisesRegex(ValueError, 'regular file'):
-            chrome.prepare(self.catalog, self.home, self.default.resolve())
+        with mock.patch.object(Path, 'home', return_value=self.home):
+            plan = chrome.prepare(self.catalog, self.home, self.other)
+            assert plan is not None
+            self.assertEqual(plan['entries'][0]['path'], self.other)
+            self.assertIn(self.default, [entry['path'] for entry in plan['entries']])
+            self.assertIn('CLAUDE_CONFIG_DIR', plan['desired']['args'])
+            identity = self.home / '.claude.json'
+            identity.symlink_to(self.root / 'opaque-identity')
+            with self.assertRaisesRegex(ValueError, 'regular file'):
+                chrome.prepare(self.catalog, self.home, self.other)
 
     def test_hand_edit_and_local_scope_shadow_refuse_before_writes(self):
         chrome.apply(self.prepare())
@@ -192,11 +194,12 @@ class ChromeTests(unittest.TestCase):
         parent = dict(os.environ, CLAUDE_CONFIG_DIR=str(self.other),
                       CLAUDE_CODE_OAUTH_TOKEN='fixture-only', ANTHROPIC_API_KEY='fixture-only',
                       ANTHROPIC_AUTH_TOKEN='fixture-only')
-        for pinned, expected in ((self.pinned, str(self.pinned)), (self.default, 'unset')):
-            entry = chrome.server_entry(pinned, str(command), self.home)
-            child = subprocess.run([entry['command'], *entry['args']],
-                                   env={**parent, **entry['env']}, capture_output=True, text=True, check=True)
-            self.assertEqual(child.stdout, f'{expected}|unset|unset|unset')
+        with mock.patch.object(Path, 'home', return_value=self.home):
+            for pinned, expected in ((self.pinned, str(self.pinned)), (self.default, 'unset')):
+                entry = chrome.server_entry(pinned, str(command))
+                child = subprocess.run([entry['command'], *entry['args']],
+                                       env={**parent, **entry['env']}, capture_output=True, text=True, check=True)
+                self.assertEqual(child.stdout, f'{expected}|unset|unset|unset')
 
     def test_native_default_management_unsets_inherited_account_directory(self):
         self.patch.stop()
@@ -207,6 +210,25 @@ class ChromeTests(unittest.TestCase):
                 os.environ, {'CLAUDE_CONFIG_DIR': str(self.other)}):
             result = chrome.run_mcp(str(command), self.default, ['get', chrome.SERVER])
             self.assertEqual(result.stdout, 'unset')
+
+    def test_symlink_component_in_host_home_preserves_default_cli_semantics(self):
+        alias = self.root / 'alias-home'
+        alias.symlink_to(self.home, target_is_directory=True)
+        self.patch.stop()
+        command = self.root / 'fake-claude'
+        command.write_text('#!/bin/sh\nprintf "%s" "${CLAUDE_CONFIG_DIR-unset}"\n')
+        command.chmod(0o700)
+        with mock.patch.object(Path, 'home', return_value=alias):
+            self.assertTrue(chrome.native_default(self.default))
+            result = chrome.run_mcp(str(command), self.default, ['get', chrome.SERVER])
+            self.assertEqual(result.stdout, 'unset')
+
+    def test_fixture_default_does_not_use_the_host_default_login(self):
+        entry = chrome.server_entry(self.default, 'claude')
+        self.assertFalse(chrome.native_default(self.default))
+        # The fixture path remains explicit rather than falling back to the host login.
+        self.assertNotIn('CLAUDE_CONFIG_DIR', entry['args'])
+        self.assertEqual(entry['env']['CLAUDE_CONFIG_DIR'], str(self.default))
 
 
 if __name__ == '__main__':

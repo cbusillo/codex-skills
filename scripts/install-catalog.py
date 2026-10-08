@@ -300,6 +300,8 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             if not loaded.returncode and not old:
                 raise ValueError("Existing loaded launchd job preserved; inspect it with launchctl print and unload your old job before enabling this checkout's updater")
     if write:
+        if chrome_plan:
+            chrome_outputs = chrome_mcp.apply(chrome_plan)
         if not local.exists() or personal != safe_file(local):
             local.parent.mkdir(parents=True, exist_ok=True)
             sync.synchronize(personal, [local], write=True)
@@ -308,8 +310,6 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             path.symlink_to(target, target_is_directory=True)
         outputs = sync.synchronize(content, destinations, write=True)
         sync.synchronize(base, [ROOT / ".local" / "catalog-global-source.md"], write=True)
-        if chrome_plan:
-            chrome_outputs = chrome_mcp.apply(chrome_plan)
         scheduled = updater or (previous_installation.get("scheduled_updater", False) and launch_path.is_file())
         scheduled_at = previous_installation.get("scheduled_at") if previous_installation.get("scheduled_updater") and launch_path.is_file() else None
         if scheduled and not scheduled_at:
@@ -372,7 +372,9 @@ def main() -> int:
     codex = home / ".codex" if args.home_dir else Path(os.environ.get("CODEX_HOME") or home / ".codex")
     claude = home / ".claude" if args.home_dir else Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude")
     codex = (args.codex_dir or codex).resolve()
-    claude = (args.claude_dir or claude).resolve()
+    # Keep the selected spelling: ~/.claude and an explicit config-dir alias
+    # can share a directory while having different native user config files.
+    claude = (args.claude_dir or claude).absolute()
     try:
         print(json.dumps(install(home, codex, claude, write=args.write, updater=args.updater, show_diff=args.show_diff, refresh_instructions=args.refresh_instructions, skip_codex_hooks=args.skip_codex_hooks), indent=2))
         return 0

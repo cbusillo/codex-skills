@@ -192,6 +192,8 @@ class InstallTests(unittest.TestCase):
                 installer.install(self.home, self.codex, self.claude, write=True, updater=True)
         self.assertFalse((self.catalog / '.local' / 'catalog-install.json').exists())
         self.assertFalse((self.home / 'Library' / 'LaunchAgents' / f'{installer.LABEL}.plist').exists())
+        self.assertFalse((self.claude / 'CLAUDE.md').exists())
+        self.assertFalse((self.codex / 'AGENTS.md').exists())
 
     def test_generated_tail_with_no_private_source_is_never_guessed(self):
         path = self.codex / "AGENTS.md"
