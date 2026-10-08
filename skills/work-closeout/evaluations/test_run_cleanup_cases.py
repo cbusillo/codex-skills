@@ -382,6 +382,109 @@ class CleanupRunnerTests(unittest.TestCase):
         self.assertTrue(any(self.private.rglob("auth.json")))
         self.assertFalse(outcome.exists())
 
+    @unittest.skipUnless(os.name == "posix", "process-group cleanup requires POSIX")
+    def test_invoke_capture_boundary_and_overflow_process_cleanup(self) -> None:
+        spec = importlib.util.spec_from_file_location("cleanup_runner_capture", SCRIPT)
+        assert spec is not None and spec.loader is not None
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        real_popen = subprocess.Popen
+        for stream in ("stdout", "stderr", "combined"):
+            for excess in (0, 1):
+                with self.subTest(stream=stream, excess=excess):
+                    total = runner.CAPTURE_LIMIT + excess
+                    stdout_size = {"stdout": total, "stderr": 0, "combined": total // 2}[stream]
+                    stderr_size = total - stdout_size
+                    ready = self.workspace / f"capture-{stream}-{excess}.ready"
+                    child_ready = ready.with_suffix(".child")
+                    child_command = textwrap.dedent(f"""\
+                        import json, os, pathlib, time, signal
+                        signal.signal(signal.SIGTERM, lambda signum, frame: (time.sleep(0.2), os._exit(0)))
+                        ready = pathlib.Path({str(child_ready)!r})
+                        pending = ready.with_suffix('.pending-child')
+                        pending.write_text(json.dumps({{"pid": os.getpid(), "group": os.getpgrp()}}), encoding='utf-8')
+                        pending.replace(ready)
+                        time.sleep(20)
+                        """)
+                    command = [sys.executable, "-c", textwrap.dedent(f"""\
+                        import os, pathlib, subprocess, sys, time
+                        if {excess} and os.getpgrp() == os.getpid():
+                            subprocess.Popen([sys.executable, '-c', {child_command!r}])
+                            while not pathlib.Path({str(child_ready)!r}).exists():
+                                time.sleep(0.005)
+                        prefix, suffix = b'{{"padding":"', b'"}}\\n'
+                        if {stdout_size}:
+                            sys.stdout.buffer.write(prefix + b'x' * ({stdout_size} - len(prefix) - len(suffix)) + suffix)
+                            sys.stdout.buffer.flush()
+                        sys.stderr.buffer.write(b'x' * {stderr_size})
+                        sys.stderr.buffer.flush()
+                        ready = pathlib.Path({str(ready)!r})
+                        pending = ready.with_suffix('.pending')
+                        pending.write_text(str(os.getpid()), encoding='utf-8')
+                        pending.replace(ready)
+                        time.sleep(20 if {excess} else 0.2)
+                        """)]
+                    processes: list[subprocess.Popen[bytes]] = []
+                    descendants: dict[int, int] = {}
+                    output_ready_at = 0.0
+
+                    def witnessed_popen(*args, **kwargs):
+                        nonlocal output_ready_at
+                        spawned_process = real_popen(*args, **kwargs)
+                        processes.append(spawned_process)
+                        readiness_deadline = time.monotonic() + 5
+                        while not ready.exists() and spawned_process.poll() is None and time.monotonic() < readiness_deadline:
+                            time.sleep(0.005)
+                        self.assertTrue(ready.exists(), "output producer never reached readiness")
+                        self.assertEqual(str(spawned_process.pid), ready.read_text(encoding="utf-8"))
+                        if excess:
+                            self.assertEqual(spawned_process.pid, os.getpgid(spawned_process.pid))
+                            child = json.loads(child_ready.read_text(encoding="utf-8"))
+                            descendants[child["pid"]] = child["group"]
+                            self.assertEqual(spawned_process.pid, child["group"])
+                            self.assertEqual(spawned_process.pid, os.getpgid(child["pid"]))
+                        output_ready_at = time.monotonic()
+                        return spawned_process
+
+                    try:
+                        with mock.patch.object(subprocess, "Popen", side_effect=witnessed_popen):
+                            if excess:
+                                with self.assertRaises(runner.RunnerError) as rejection:
+                                    runner.invoke(command, "capture proof", os.environ.copy(), self.workspace, 30,
+                                                  self.base / f"capture-{stream}-{excess}")
+                                self.assertIs(type(rejection.exception), runner.RunnerError)
+                                self.assertLess(time.monotonic() - output_ready_at, 10,
+                                                "overflow waited for producer exit or invocation timeout")
+                            else:
+                                returncode, stdout, stderr, _ = runner.invoke(
+                                    command, "capture proof", os.environ.copy(), self.workspace, 30,
+                                    self.base / f"capture-{stream}-{excess}",
+                                )
+                                self.assertEqual(0, returncode)
+                                self.assertEqual(total, len(stdout.encode()) + len(stderr.encode()))
+                                if stdout:
+                                    self.assertEqual(1, len(runner.json_events(stdout)))
+                        self.assertEqual(1, len(processes))
+                        with self.assertRaises(ProcessLookupError):
+                            os.killpg(processes[0].pid, 0)
+                    finally:
+                        for child_pid, witnessed_group in descendants.items():
+                            try:
+                                if os.getpgid(child_pid) == witnessed_group:
+                                    os.kill(child_pid, runner.signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                        for owned_process in processes:
+                            try:
+                                if owned_process.poll() is None:
+                                    if os.getpgid(owned_process.pid) == owned_process.pid:
+                                        os.killpg(owned_process.pid, runner.signal.SIGKILL)
+                                    else:
+                                        owned_process.kill()
+                            except ProcessLookupError:
+                                pass
+                            owned_process.wait(timeout=2)
+
     def test_oversized_and_malformed_output_leave_no_raw_capture(self) -> None:
         for mode in ("oversized", "oversized-native", "malformed"):
             with self.subTest(mode=mode):
