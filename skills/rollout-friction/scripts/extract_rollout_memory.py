@@ -44,8 +44,6 @@ SECRET_RE = re.compile(
 )
 LOCAL_PATH_ROOTS = r"(?:Users|home|workspace|workspaces|tmp|var|private|Volumes|mnt|media)"
 RELATIVE_PATH_ROOTS = {"media", "mnt", "tmp", "var"}
-TOKEN_BOUNDARY_RE = re.compile(r"[\s\"'`]")
-ABSOLUTE_TOKEN_RE = re.compile(r"[^\w.@+/-]/")
 PATH_RE = re.compile(
     # Public URLs may contain the same root names as local paths. Match them
     # first so those components remain useful evidence rather than local paths.
@@ -466,26 +464,47 @@ def is_local_dev_path(path: str) -> bool:
 def redact_paths(text: str, *, embedded_path: bool = False) -> str:
     previous_path_end: int | None = None
     checked_to = 0
-    token_start = token_end = token_checked_to = 0
-    absolute_token = False
+    token_start = scanned_to = 0
+    quote_context: str | None = None
+    escaped = absolute_token = False
 
     def replace(match: re.Match[str]) -> str:
-        nonlocal previous_path_end, checked_to, token_start, token_end, token_checked_to, absolute_token
+        nonlocal previous_path_end, checked_to, token_start, scanned_to, quote_context, escaped, absolute_token
         if previous_path_end is not None and text.find("\n", checked_to, match.start()) != -1:
             previous_path_end = None
         checked_to = match.end()
-        if not embedded_path and match.group("url") is None and match.group("quoted") is None:
-            if match.start() >= token_end:
-                token_start = match.start()
-                while token_start and not text[token_start - 1].isspace() and text[token_start - 1] not in "\"'`":
-                    token_start -= 1
-                boundary = TOKEN_BOUNDARY_RE.search(text, match.start())
-                token_end = boundary.start() if boundary else len(text)
-                token_checked_to = token_start
-                absolute_token = text[token_start:token_start + 1] == "/"
-            if ABSOLUTE_TOKEN_RE.search(text, max(token_start, token_checked_to - 1), match.start()):
+        # Scan each prefix once. Escaped spaces and spaces inside quoted
+        # arguments do not establish a new relative-path token.
+        while scanned_to < match.start():
+            index = scanned_to
+            char = text[index]
+            scanned_to += 1
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char == "\n" or (char.isspace() and quote_context is None):
+                token_start = scanned_to
+                absolute_token = False
+                if char == "\n":
+                    quote_context = None
+            elif char in "\"'`":
+                interior_apostrophe = (char == "'" and index > 0 and index + 1 < len(text)
+                                       and text[index - 1].isalnum() and text[index + 1].isalnum())
+                if not interior_apostrophe:
+                    if quote_context is None:
+                        quote_context = char
+                        token_start = scanned_to
+                        absolute_token = False
+                    elif char == quote_context and char != "'":
+                        quote_context = None
+                        token_start = scanned_to
+                        absolute_token = False
+            elif char == "/" and (index == token_start or
+                                   not (text[index - 1].isalnum() or text[index - 1] in "_.@+/-")):
                 absolute_token = True
-            token_checked_to = match.start()
         result = redact_path_match(match, embedded_path=embedded_path, previous_path_end=previous_path_end,
                                    absolute_token=absolute_token)
         if result != match.group(0):
@@ -519,8 +538,9 @@ def redact_path_match(
             prefix = match.string[start:match.start()]
             first_named = next((item for item in prefix.split("/") if item not in {".", ".."}), "")
             private_prefix = re.fullmatch(LOCAL_PATH_ROOTS, first_named) and first_named not in RELATIVE_PATH_ROOTS
-            ambiguous_word = ("/" not in prefix and prefix not in {".", ".."}
-                              and (not prefix.isascii() or prefix.endswith(".")))
+            first_segment = prefix.split("/")[0]
+            ambiguous_word = (first_segment not in {".", ".."}
+                              and (not first_segment.isascii() or first_segment.endswith(".")))
             dev_prefix = (not prefix.startswith(("./", "../"))
                           and (prefix == "@fs" or is_local_dev_path("/" + prefix.partition("/")[2] + "/")))
             if (prefix and re.fullmatch(r"(?:\.{1,2}/)*(?:[\w.@+][\w.@+-]*/)*[\w.@+][\w.@+-]*", prefix)
