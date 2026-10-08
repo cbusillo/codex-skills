@@ -640,6 +640,7 @@ def artifact_evidence(
     claim: dict[str, str], *, own_record: bool, retained: str | None = None, repo: str = "",
     retained_branches: set[str] | None = None, retained_repo: str | None = None,
     inventory_repo: str | None = None,
+    recorded_branches: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     conflicts = []
     local_references = inventory_repo is None or inventory_repo.casefold() == repo.casefold()
@@ -669,8 +670,8 @@ def artifact_evidence(
         title = pull.get("title") or ""
         body = pull.get("body") or ""
         issue_url = rf"https://github\.com/{re.escape(repo)}/issues/{number}"
-        # Only the explicitly unstarted follow-up line is contextual.
-        # Other URLs, titles, branches and implementation references still hold.
+        # A body URL alone is context, not an implementation claim.
+        # Explicit implementation references, titles and recorded branches hold.
         issue_reference = rf"(?:{re.escape(repo)}#{number}|{issue_url})(?!\d)"
         if local_references:
             issue_reference = rf"(?:#{number}|{issue_reference})(?!\d)"
@@ -679,15 +680,11 @@ def artifact_evidence(
             rf"(?:\*\*|__)?\s*:?(?:\*\*|__)?\s+(?:{issue_reference}|<{issue_url}(?!\d)[^>]*>|"
             rf"\[[^\]\n]+\]\({issue_url}(?!\d)[^\n)]*\))"
         )
-        ownership_body = "\n".join(
-            line for line in body.splitlines()
-            if not (line.startswith("Code follow-ups recorded without starting implementation:")
-                    and not re.search(ownership_reference, line))
-        )
-        explicit_url = bool(repo and re.search(issue_url + r"(?!\d)", title + "\n" + ownership_body, re.IGNORECASE))
+        explicit_url = bool(repo and re.search(issue_url + r"(?!\d)", title, re.IGNORECASE))
         linked = bool(re.search(ownership_reference, body))
         titled = local_references and bool(re.search(rf"(?<![\w/])#{number}(?!\d)", title))
-        if explicit_url or linked or titled or (local_references and references_issue(branch, number)):
+        if (explicit_url or linked or titled or branch in (recorded_branches or set())
+                or (local_references and references_issue(branch, number))):
             if pull.get("state") == "closed":
                 # Closed PRs are not open ownership evidence. Preserve any
                 # unaccounted local/remote artifacts even for nonnumeric names.

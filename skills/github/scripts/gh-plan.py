@@ -2210,6 +2210,9 @@ def cmd_claim(args: argparse.Namespace) -> None:
                 target_inventory, target_pulls, checked_number, claim, own_record=bool(own_comments),
                 retained_branches=permitted, retained_repo=target_repo, repo=checked_repo,
                 inventory_repo=target_repo,
+                recorded_branches={record["branch"] for comment in source_comments
+                                   for record in github_plan_claim.records(comment.get("body") or "")}
+                if checked_repo.casefold() == issue_repo.casefold() and checked_number == number else None,
             )
             if competing:
                 refuse(competing)
@@ -2288,7 +2291,10 @@ def cmd_claim(args: argparse.Namespace) -> None:
                                                        own_record=bool(owned), retained=retained, repo=issue_repo,
                                                        retained_branches=retained_branches,
                                                        retained_repo=target_repo if handoff_id else None,
-                                                       inventory_repo=target_repo)
+                                                       inventory_repo=target_repo,
+                                                       recorded_branches={record["branch"]
+                                                                          for text in [status, *(c.get("body") or "" for c in comments)]
+                                                                          for record in github_plan_claim.records(text)})
         if conflicts:
             refuse(conflicts)
         completed.append("ownership_preflight")
