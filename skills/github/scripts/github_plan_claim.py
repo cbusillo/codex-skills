@@ -85,7 +85,7 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     # Identity tokens and hidden transport/release receipts are not prose.
     condition = r"(?<![\w/.-])(?:if|after|once|when|unless|until|before|pending|provided|conditional|contingent (?:on|upon)|subject to|as soon as|on (?:merge|landing)|wait(?:ing)? for)(?![\w/-])"
     condition = rf"(?:{condition}|(?<![\w/.-])(?:upon|post-(?:merge|landing)|at (?:merge|landing))(?![\w/-]))"
-    # These phrases qualify an ownership statement, not an adjacent routing
+    # These phrases qualify ownership statements or sequenced permission, not a routing
     # note or an implicit condition on the directive itself.
     pr_reference = r"(?:PR )?(?:[\w.-]+/[\w.-]+)?#\d+"
     ownership_effect = (rf"(?<![\w/.-])(?:tomorrow|later today|on merging {pr_reference}|"
@@ -126,6 +126,16 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
             or re.search(deferred_effect, prose, re.IGNORECASE)):
         return True
     for index, statement in enumerate(statements):
+        following = statements[index + 1].strip() if index + 1 < len(statements) else ""
+        if re.search(ownership_effect, statement, re.IGNORECASE) and re.match(r"Then\b", following, re.IGNORECASE):
+            # Release notes and deployment takeover are downstream work;
+            # permission to claim/resume this work defers ownership.
+            actor = (r"(?:you|anyone|someone(?:\s+else)?|(?:(?:the|a|any|another)\s+)?"
+                     r"(?:next\s+|new\s+|fresh\s+)?(?:[\w-]+\s+)?(?:worker|session|agent|owner|successor))")
+            task_object = r"(?:\s+(?:work(?: on this issue)?|this issue|the issue|the PR|it))?"
+            permission = rf"Then,?\s+(?:{actor}\s+(?:(?:can|may)\s+)?)?(?:{successor_action}|(?:re)?claims?){task_object}[.!?;]?"
+            if re.fullmatch(permission, following, re.IGNORECASE):
+                return True
         if re.search(rf"{handoff_effect}[^.!?;]*\b(?:upon|post-(?:merge|landing)|at (?:merge|landing))\b", statement, re.IGNORECASE):
             return True
         if not (re.search(condition, statement, re.IGNORECASE)
@@ -141,7 +151,6 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
             rf"{wait_condition}[^,;.!?]*\b{step}(?:\s+(?:into|to|on)\s+[\w/-]+)?(?:\s+first)?[.!?;]?",
             statement.strip(), re.IGNORECASE,
         )
-        following = statements[index + 1].strip() if index + 1 < len(statements) else ""
         downstream_next = (re.match(r"Then\b", following, re.IGNORECASE)
                            and not re.search(rf"{ownership}|{successor}", following, re.IGNORECASE))
         downstream_step = re.search(rf"\b{step}\b[^.!?;]*\b(?:before|to)\s+(?:you\s+)?{step}\b", statement, re.IGNORECASE)
