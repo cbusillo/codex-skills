@@ -84,8 +84,7 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     # the directive even when it leaves that subject implicit.
     # Identity tokens and hidden transport/release receipts are not prose.
     condition = r"(?<![\w/.-])(?:if|after|once|when|unless|until|before|pending|provided|conditional|contingent (?:on|upon)|subject to|as soon as|on (?:merge|landing)|wait(?:ing)? for)(?![\w/-])"
-    if final_paragraph:
-        condition = rf"(?:{condition}|\b(?:upon|post-(?:merge|landing)|at (?:merge|landing))\b)"
+    condition = rf"(?:{condition}|\b(?:upon|post-(?:merge|landing)|at (?:merge|landing))\b)"
     handoff = re.sub(r"(?s)<!--.*?-->", "", text)
     prose = ownership_text(handoff)
     prose = re.sub(r"(?m)^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", "", prose)
