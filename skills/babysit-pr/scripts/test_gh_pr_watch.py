@@ -2592,6 +2592,12 @@ def test_directory_sync_failure_stops_before_api_and_reports_error(monkeypatch, 
     assert result["unsent_state_restored"] is True
     assert state["pending_reruns_by_sha"]["abc123"] == {}
     assert state["retries_by_sha"]["abc123"] == 0
+    writes = []
+    monkeypatch.setattr(gh_pr_watch, "gh_text", lambda args, **_kw: writes.append(args[2]))
+    recovered = gh_pr_watch.retry_failed_now(argparse.Namespace())
+    assert recovered["reason"] == "rerun_triggered"
+    assert recovered["rerun_run_ids"] == [1]
+    assert writes == ["1"]
 
 
 def test_unsent_storage_recovery_keeps_earlier_confirmed_write(monkeypatch, tmp_path):
@@ -2824,10 +2830,12 @@ def test_real_wrapper_prewrite_receipts_release_only_unsent_intent(monkeypatch, 
     assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"] == {}
 
 
-def test_refusal_text_without_matching_wrapper_receipt_stays_unknown(monkeypatch, tmp_path):
+def test_custom_command_receipt_is_not_trusted(monkeypatch, tmp_path):
     _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
     command = tmp_path / "custom-gh"
-    command.write_text("#!/bin/sh\nprintf 'error: unable to verify the automation GitHub actor; refusing write\\n' >&2\nexit 1\n")
+    command.write_text("#!/bin/sh\n"
+                       "printf '{\"schema_version\":1,\"nonce\":\"%s\",\"write_outcome\":\"not_started\"}\\n' \"$GH_WITH_ENV_TOKEN_RECEIPT_NONCE\" >&2\n"
+                       "exit 1\n")
     command.chmod(0o700)
     monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(command))
     result = gh_pr_watch.retry_failed_now(argparse.Namespace())
