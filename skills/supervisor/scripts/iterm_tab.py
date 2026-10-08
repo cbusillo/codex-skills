@@ -79,6 +79,48 @@ async def wait_for_session(app, tab, timeout=10.0):
         ) from error
 
 
+def account_settings(command_text, keys):
+    """Find shell setters, rather than matching text inside a brief argument."""
+    lexer = shlex.shlex(command_text, posix=True, punctuation_chars=";&|()")
+    lexer.whitespace_split = True
+    segments = [[]]
+    for token in lexer:
+        if token and all(c in ";&|()" for c in token):
+            segments.append([])
+        else:
+            segments[-1].append(token)
+    found = set()
+    for words in segments:
+        index = 0
+        while index < len(words) and "=" in words[index]:
+            found.add(words[index].split("=", 1)[0])
+            index += 1
+        if index == len(words):
+            continue
+        command = Path(words[index]).name
+        args = words[index + 1:]
+        if command in {"export", "declare", "typeset", "local", "unset"}:
+            found.update(arg.split("=", 1)[0] for arg in args if not arg.startswith("-"))
+        elif command == "env":
+            index = 0
+            while index < len(args):
+                arg = args[index]
+                if arg in {"-u", "--unset"}:
+                    index += 1
+                    if index < len(args):
+                        found.add(args[index])
+                elif arg.startswith("--unset="):
+                    found.add(arg.split("=", 1)[1])
+                elif arg.startswith("-u"):
+                    found.add(arg[2:])
+                elif "=" in arg and not arg.startswith("-"):
+                    found.add(arg.split("=", 1)[0])
+                elif not arg.startswith("-"):
+                    break
+                index += 1
+    return found.intersection(keys)
+
+
 def with_account(command_text, choice):
     """Prefix one agent invocation with the chosen account's environment."""
     if "\n" in command_text:
@@ -87,9 +129,10 @@ def with_account(command_text, choice):
     checked_keys = set(choice["env"])
     if default_claude:
         checked_keys.add("CLAUDE_CONFIG_DIR")
-    for key in checked_keys:
-        if f"{key}=" in command_text:
-            raise ValueError(f"launch file already sets {key}; remove it or omit --account-provider")
+    conflicts = account_settings(command_text, checked_keys)
+    if conflicts:
+        raise ValueError(f"launch file already sets {', '.join(sorted(conflicts))}; "
+                         "remove those settings and use --account for an explicit override")
     settings = " ".join(
         f"{key}={shlex.quote(os.path.expanduser(value))}"
         for key, value in choice["env"].items()
@@ -175,7 +218,7 @@ async def operate(app, args):
             command_texts = [with_account(text, choice) for text, choice in zip(command_texts, choices)]
         elif getattr(args, "account", None):
             raise ValueError("--account needs --account-provider")
-        elif any(f"{key}=" in text for key in account_choice.ACCOUNT_VARIABLES.values()
+        elif any(account_settings(text, account_choice.ACCOUNT_VARIABLES.values())
                  for text in command_texts):
             raise ValueError("account settings need --account-provider; remove them from the launch file "
                              "and use --account for an explicit override")
@@ -222,6 +265,7 @@ def main():
                      help="repeat for a batch, in launch order")
     new.add_argument(
         "--account-provider",
+        required=True,
         choices=account_choice.PROVIDERS,
         help="launch on Context Panel's use-next account or ranked batch order",
     )

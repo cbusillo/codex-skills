@@ -74,7 +74,7 @@ already granted for this run.
 
 ```sh
 uv run skills/supervisor/scripts/iterm_tab.py window
-uv run skills/supervisor/scripts/iterm_tab.py new --window-id <dedicated-window-id> --command-file <private-launch-file>
+uv run skills/supervisor/scripts/iterm_tab.py new --window-id <dedicated-window-id> --command-file <private-launch-file> --account-provider openai
 uv run skills/supervisor/scripts/iterm_tab.py list
 uv run skills/supervisor/scripts/iterm_tab.py read --session-id <iterm-session-id>
 uv run skills/supervisor/scripts/iterm_tab.py send --session-id <iterm-session-id> --text-file <private-message-file> --verified-target
@@ -88,7 +88,7 @@ inspection. If creation returns no tab identity, run `list` and inspect first;
 the tab may still exist. Do not create another tab or replay the launch without
 checking it. `window` still restores the previous tab after creation.
 Launch files contain the exact brief and model settings already authorized,
-without the Discord channels flag. For provider launches, supply
+without the Discord channels flag. Every `new` launch requires
 `--account-provider` as below; keep account variables out of launch files.
 Use `--account` for an explicit override through the same mapping and receipt
 path. Run one agent invocation, without restart loops or commands that continue
