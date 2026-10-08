@@ -297,6 +297,156 @@ def test_redact_mounted_paths_in_text_context_and_prompts() -> None:
             raise AssertionError(f"trusted mode lost mounted path: {path}")
 
 
+def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
+    redact_args, module = args(redact=True, trusted_originals=False, max_record_chars=2_000)
+    trusted_args, _module = args(max_record_chars=2_000)
+    relative_paths = (
+        "backend/media/uploads/avatar.png",
+        "backend/mnt/fixtures/sample.json",
+        "backend/tmp/cache/output.json",
+        "backend/var/data/index.json",
+        "./media/uploads/avatar.png",
+        "../mnt/fixtures/sample.json",
+        "../../media/uploads/avatar.png",
+        "./../tmp/fixtures/sample.json",
+        "packages/web-ui/media/uploads/avatar.png",
+        "packages/café/media/uploads/avatar.png",
+        "./目录/media/uploads/avatar.png",
+        "./café/media/uploads/avatar.png",
+        "./backend/tunnel/workstation/media/uploads/avatar.png",
+        "./packages/@fs/pkg/mnt/data.json",
+        "packages/@org/pkg/mnt/data.json",
+        "src/routes/+page/media/upload.png",
+    )
+    local_paths = (
+        "/media/example/uploads/avatar.png",
+        "/mnt/example/fixtures/sample.json",
+        "file:///media/example/uploads/avatar.png",
+        "file:///Volumes/example disk/example/uploads/avatar.png",
+        r"vscode://file/Volumes/example\ disk/example/uploads/avatar.png",
+        "file://media/example/uploads/avatar.png",
+        r"ok\n/mnt/example/fixtures/sample.json",
+        "vscode://file/mnt/example/fixtures/sample.json:12",
+        "vscode-insiders://file/media/example/uploads/avatar.png:12",
+        "vscodium://file/mnt/example/fixtures/sample.json:12",
+        "/@fs/media/example/uploads/avatar.png",
+        "~/mnt/example/fixtures/sample.json",
+        "/run/media/example/uploads/avatar.png",
+        "/System/Volumes/Data/Users/example/fixtures/sample.json",
+        "/c/Users/example/fixtures/sample.json",
+        "-I/Users/example/fixtures/sample.json",
+        "-L/home/example/fixtures/sample.json",
+        "localhost:5173/@fs/media/example/uploads/avatar.png",
+        "127.0.0.1:8000/home/example/fixtures/sample.json",
+        "localhost/media/example/uploads/avatar.png",
+        "devbox.local/mnt/example/fixtures/sample.json",
+        "127.0.0.1/media/example/uploads/avatar.png",
+        "src/Users/example/fixtures/sample.json",
+        "src/home/example/fixtures/sample.json",
+        "+/mnt/example/fixtures/sample.json",
+        "_/mnt/example/fixtures/sample.json",
+        ".../mnt/example/fixtures/sample.json",
+        "LOCALHOST/media/example/uploads/avatar.png",
+        "Devbox.Local/mnt/example/fixtures/sample.json",
+        "/Users/example/google drive/media/example/uploads/avatar.png",
+        "/Users/example/client's/mnt/example/fixtures/sample.json",
+        "'/Users/example/client's/mnt/example/fixtures/sample.json'",
+        "'/Users/example/kids' photos/media/example/uploads/avatar.png'",
+        r'"/Users/example/kids\" photos/media/example/uploads/avatar.png"',
+        "/Users/example/smith,john/var/example/fixtures/sample.json",
+        "backup/mnt/Users/example/fixtures/sample.json",
+        "coverage/tmp/home/example/fixtures/sample.json",
+        "rootfs/mnt/var/home/example/fixtures/sample.json",
+        "home/example/media/example/uploads/avatar.png",
+        "Users/example/mnt/example/fixtures/sample.json",
+        "../home/example/media/example/uploads/avatar.png",
+        "请查看/mnt/example/fixtures/sample.json",
+        "ファイルは/tmp/example/fixtures/sample.json",
+        "e.g./tmp/example/fixtures/sample.json",
+        "done./var/example/fixtures/sample.json",
+        "vscode.dev/tunnel/workstation/mnt/example/fixtures/sample.json",
+        "myapp.ngrok-free.app/@fs/media/example/uploads/avatar.png",
+        "https://example.com/app/@fs/media/example/uploads/avatar.png",
+        "myhost.app/app/@fs/media/example/uploads/avatar.png",
+        '"/srv/client files/media/example/uploads/avatar.png"',
+        "f'/srv/client files/media/example/uploads/avatar.png'",
+        "Path(r'/opt/acme exports/tmp/example/fixtures/sample.json')",
+        'Mounted the 3.5" drive; copied "/srv/client files/media/example/uploads/avatar.png"',
+        'Unclosed ` output; copied `/srv/client files/media/example/uploads/avatar.png`',
+        r"/srv/client\ files/media/example/uploads/avatar.png",
+        "/opt/exports/o'brien/var/example/fixtures/sample.json",
+        "请查看/srv/media/example/uploads/avatar.png",
+        "ファイルは/data/mnt/example/fixtures/sample.json",
+        "/srv/warehouse/dt=2024-01-01/tmp/example/fixtures/sample.json",
+        "/opt/exports/smith,john/var/example/fixtures/sample.json",
+        "/data/lake/region=us/dt=2024-01-01/tmp/example/fixtures/sample.json",
+        "/opt/exports/smith,john,jr/var/example/fixtures/sample.json",
+        "backend/tmp/cache//mnt/example/fixtures/sample.json",
+        "/Users/example/my big project/media/example/uploads/avatar.png",
+        "http://localhost:5173/@fs/media/example/uploads/avatar.png",
+        "https://vscode.dev/tunnel/workstation/mnt/example/fixtures/sample.json",
+        "https://example.com/view?path=/media/example/uploads/avatar.png",
+        "https://example.com/view#path=/mnt/example/fixtures/sample.json",
+    )
+    public_url = "https://example.com/media/uploads/avatar.png"
+    for relative in relative_paths:
+        for local in local_paths:
+            text = f"Remember evidence in {relative}; private evidence in {local}; see {public_url}."
+            data = json.dumps(response_item("user", text)).encode()
+            with patch.object(Path, "read_bytes", return_value=data):
+                redacted = module.extract([Path("/mnt/example/rollout.jsonl")], redact_args)
+                trusted = module.extract([Path("/mnt/example/rollout.jsonl")], trusted_args)
+            if len(redacted) != 1 or len(trusted) != 1:
+                raise AssertionError("expected one candidate in each mode")
+            candidate = redacted[0]
+            surfaces = (candidate.text, *(event["text"] for event in candidate.context),
+                        json.dumps(list(module.prompt_batches(redacted, redact_args.batch_chars)), ensure_ascii=False))
+            for surface in surfaces:
+                if relative not in surface or public_url not in surface:
+                    raise AssertionError(f"redaction lost repository or public URL evidence: {surface}")
+                if "example/uploads/avatar.png" in surface or "example/fixtures/sample.json" in surface:
+                    raise AssertionError(f"redaction exposed a local path: {surface}")
+            if trusted[0].text != text:
+                raise AssertionError("trusted originals changed the path evidence")
+
+    for separator in (":", ";", "](", "->", "=", "|", ">"):
+        text = f"Remember backend/tmp/lib{separator}/Users/example/fixtures/sample.json."
+        data = json.dumps(response_item("user", text)).encode()
+        with patch.object(Path, "read_bytes", return_value=data):
+            candidate = module.extract([Path("/mnt/example/rollout.jsonl")], redact_args)[0]
+        surfaces = (candidate.text, *(event["text"] for event in candidate.context),
+                    json.dumps(list(module.prompt_batches([candidate], redact_args.batch_chars))))
+        for surface in surfaces:
+            if "backend/tmp/lib" not in surface or "example/fixtures/sample.json" in surface:
+                raise AssertionError(f"joined path lost relative evidence or exposed an absolute path: {surface}")
+
+    text = 'Remember "/Users/example/private.txt" and backend/media/uploads/avatar.png.'
+    if "backend/media/uploads/avatar.png" not in module.clean_text(text, redact_args):
+        raise AssertionError("a quoted private path must not hide separate relative evidence")
+    text = "The workers' API is at /api/v1; uploads land in backend/media/uploads/avatar.png"
+    if "backend/media/uploads/avatar.png" not in module.clean_text(text, redact_args):
+        raise AssertionError("a possessive apostrophe must not hide repository-relative evidence")
+    for text in (
+        "cp /tmp/avatar.png backend/media/uploads/avatar.png",
+        "changed /Users/example/private.txt, backend/media/uploads/avatar.png",
+    ):
+        if "media/uploads/avatar.png" in module.clean_text(text, redact_args):
+            raise AssertionError("an unquoted private path must keep ambiguous later fragments masked")
+    text = 'cp "/tmp/avatar.png" backend/media/uploads/avatar.png'
+    if "backend/media/uploads/avatar.png" not in module.clean_text(text, redact_args):
+        raise AssertionError("quoting an absolute argument must preserve the relative destination")
+    text = "moved from `/tmp/avatar.png` to `backend/media/uploads/avatar.png`"
+    if "backend/media/uploads/avatar.png" not in module.clean_text(text, redact_args):
+        raise AssertionError("closed Markdown code spans must preserve the relative destination")
+    for quote in ('"', '`'):
+        text = f"copied {quote}/tmp/avatar.png{quote}. then edited backend/media/uploads/avatar.png"
+        if "backend/media/uploads/avatar.png" not in module.clean_text(text, redact_args):
+            raise AssertionError("sentence punctuation after a closed path must preserve relative evidence")
+    text = "Remember /Users/example/private.txt\nRemember backend/media/uploads/avatar.png"
+    if "backend/media/uploads/avatar.png" not in module.clean_text(text, redact_args):
+        raise AssertionError("a private path on an earlier line must not hide relative evidence")
+
+
 def test_redacted_bundle_artifact_references_are_portable() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -529,6 +679,7 @@ def main() -> int:
     test_redact_mode_removes_paths_and_person_data_but_keeps_trusted_originals()
     test_redact_source_metadata_is_independent_of_path_root()
     test_redact_mounted_paths_in_text_context_and_prompts()
+    test_redact_preserves_relative_paths_without_exposing_local_urls()
     test_redacted_bundle_artifact_references_are_portable()
     test_redact_mode_records_person_data_privacy_summary()
     test_redact_mode_does_not_overmatch_public_names_or_plain_prose()

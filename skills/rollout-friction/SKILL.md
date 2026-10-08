@@ -329,9 +329,23 @@ memory/profile/local-config candidates.
    Source-file metadata is masked in full regardless of its path root;
    `--trusted-originals` preserves the original source path.
    Mounted-volume paths in text and context are redacted, including quoted paths
-   with spaces. Path redaction preserves public HTTP(S) URL paths except local
+   with spaces. Repository-relative `media`, `mnt`, `tmp` and `var` paths such as
+   `backend/media/uploads/avatar.png` remain readable.
+   Use an explicit `./` prefix when the first directory has non-ASCII characters
+   or a trailing period, or when the path sits under a
+   prefix resembling a dev-server link. An ASCII word glued directly to an
+   absolute path can look repository-relative; quote absolute paths in prose.
+   Later path fragments on a line with an ambiguous absolute path or redacted URL
+   remain masked conservatively; double-quote the absolute filesystem argument
+   or use a closed backtick code span to preserve a separate relative one at an
+   argument boundary. Single-quote ambiguity remains conservative.
+   Prefixes resembling known private roots stay conservative; approved trusted-local
+   extraction can use `--trusted-originals` to retain the original signal.
+   Path redaction preserves public HTTP(S) URL paths except local file/editor and
    dev-server/tunnel file links; literal query/fragment paths and person data are
-   still redacted. Unquoted whitespace is ambiguous with neighboring prose and
+   still redacted. Known local path roots are masked conservatively inside other
+   URI schemes and query/fragment values; arbitrary URI paths can remain readable.
+   Unquoted whitespace is ambiguous with neighboring prose and
    can leave path fragments or consume prose; percent-encoded paths are not
    decoded by this redactor. Under `--redact`, diagnostic
    artifact references are filenames relative to the output bundle, so its local
