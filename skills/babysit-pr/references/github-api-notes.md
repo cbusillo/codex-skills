@@ -133,14 +133,20 @@ To continue an existing watcher during a transition, keep passing its exact
 `--state-file`. If the old temporary file has already disappeared, its evidence
 cannot be reconstructed from an unchanged terminal attempt: do not treat a fresh
 file as permission to repeat an uncertain write.
+An invalid legacy JSON file also stops migration. Preserve it; recover a valid
+backup into a persistent location and use `--state-file <recovered-file>` to
+continue. Without a valid backup, reconcile the writes from authoritative
+evidence first rather than selecting an empty file to bypass lost evidence.
 
 Writes flush and fsync the private temporary file before atomic replacement,
 then fsync its directory. These are filesystem durability requests, with
 process-restart coverage; no kernel crash, reboot or power-loss experiment was
 performed and storage hardware guarantees are not claimed.
-If sync fails, the helper stops before sending the write and reports the storage
-error. Replacement may already have saved the intent; keep that evidence while
-repairing the filesystem, rather than treating the error as permission to rerun.
+Pre-write sync failure stops before sending a command. A sync failure after a
+confirmed command returns `state_save_error` with its already confirmed run IDs
+and available saved budget. Replacement may already have saved the intent;
+keep that evidence while repairing the filesystem, rather than treating the
+error as permission to rerun.
 
 CLI rerun commands have a 60-second ceiling (shorter under an inherited GitHub
 deadline); timeout kills the command group, keeps the pre-write intent and
@@ -150,16 +156,24 @@ the same file after its holder exits. Watch mode emits `state_busy` and tries
 the next poll. Reads retain the existing transport's managed cooldown and
 deadline policy; lock holders can therefore wait on a legitimate GitHub cooldown.
 An already-expired inherited command deadline refuses launch and returns the
-unspent budget, since no write was sent. No outer transport retry loop,
+unspent budget, since no write was sent. The child wrapper receives a shorter
+deadline so managed preflight reads can report a definite refusal before the
+parent ceiling. Its explicit actor-verification refusal releases only the unsent
+intent and charge. A genuine timeout without that receipt remains unknown,
+including a hung preflight; an unchanged attempt cannot prove no write was sent.
+No outer transport retry loop,
 identity fallback, expiry or replay is introduced.
 
 To resume after a missing-run stop, read the run directly through the configured
-automation wrapper (`api repos/OWNER/REPO/actions/runs/RUN_ID`). If GitHub reports
-a higher attempt, run `--watch --state-file <same-file>` again; ordinary readback
-reconciles it. If the run is gone or GitHub says its attempt cannot be retried,
+automation wrapper (`api repos/OWNER/REPO/actions/runs/RUN_ID`). Resume
+`--watch --state-file <same-file>` when a complete head inventory includes its
+higher attempt; ordinary readback reconciles it. A direct read alone does not
+change the saved state. If the run is gone or GitHub says its attempt cannot be retried,
 the next reviewed task fix commit starts fresh checks on a distinct head, using
 that same state file and retaining the old evidence. Never clear unknown intent
 or treat unchanged terminal evidence as a rejection to force a replay.
+After partial progress, a later invocation is a new retry cycle using the
+remaining per-head budget.
 
 ### Required scans cancelled before runner acquisition
 

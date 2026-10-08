@@ -606,11 +606,12 @@ def test_gh_text_uses_wrapper_by_default(monkeypatch):
     calls = []
     monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(gh_pr_watch.DEFAULT_GH))
 
-    def fake_popen(cmd, stdout, stderr, text, start_new_session):
+    def fake_popen(cmd, stdout, stderr, text, start_new_session, env):
         assert stdout == subprocess.PIPE
         assert stderr == subprocess.PIPE
         assert text is True
         assert start_new_session is True
+        assert float(env["GITHUB_RETRY_DEADLINE_AT"]) <= gh_pr_watch.time.time() + gh_pr_watch.COMMAND_TIMEOUT_SECONDS
         calls.append(cmd)
         return SimpleNamespace(returncode=0, communicate=lambda timeout: ("ok\n", ""))
 
@@ -2475,8 +2476,10 @@ def test_sync_failure_prevents_write_and_keeps_saved_intent(monkeypatch, tmp_pat
         raise OSError("disk unavailable")
     monkeypatch.setattr(gh_pr_watch.os, "fsync", fail_sync)
     monkeypatch.setattr(gh_pr_watch, "gh_text", lambda *_a, **_kw: pytest.fail("write before durable intent"))
-    with pytest.raises(OSError, match="disk unavailable"):
-        gh_pr_watch.retry_failed_now(argparse.Namespace())
+    result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+    assert result["reason"] == "state_save_error"
+    assert result["error"] == "disk unavailable"
+    assert result["rerun_run_ids"] == []
     assert gh_pr_watch.load_state(path)[0] == saved
     assert not list(tmp_path.glob("*.tmp"))
 
@@ -2579,8 +2582,11 @@ def test_directory_sync_failure_stops_before_api_and_reports_error(monkeypatch, 
     monkeypatch.setattr(gh_pr_watch, "parse_args", lambda: argparse.Namespace(retry_failed_now=True))
     assert gh_pr_watch.main() == 1
     captured = capsys.readouterr()
-    assert "directory sync unsupported" in captured.err
-    assert "Traceback" not in captured.err
+    result = json.loads(captured.out)
+    assert result["reason"] == "state_save_error"
+    assert result["error"] == "directory sync unsupported"
+    assert result["rerun_run_ids"] == []
+    assert not captured.err
     state = gh_pr_watch.load_state(path)[0]
     assert state["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "submitting"
     assert state["retries_by_sha"]["abc123"] == 1
@@ -2590,6 +2596,57 @@ def test_relative_xdg_location_uses_home_state(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_STATE_HOME", "relative-state")
     monkeypatch.setattr(gh_pr_watch.Path, "home", lambda: tmp_path)
     assert gh_pr_watch.default_state_file_for(sample_pr()).is_relative_to(tmp_path / ".local" / "state")
+
+
+def test_confirmation_save_failure_reports_completed_write(monkeypatch, tmp_path, capsys):
+    _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
+    writes = []
+    def submit(args, **_kw):
+        writes.append(args)
+        def fail_sync(_fd):
+            raise OSError("disk unavailable after confirmation")
+        monkeypatch.setattr(gh_pr_watch.os, "fsync", fail_sync)
+    monkeypatch.setattr(gh_pr_watch, "gh_text", submit)
+    monkeypatch.setattr(gh_pr_watch, "parse_args", lambda: argparse.Namespace(retry_failed_now=True))
+    assert gh_pr_watch.main() == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["reason"] == "state_save_error"
+    assert result["rerun_run_ids"] == [1]
+    assert result["rerun_count"] == result["retries_used"] == 1
+    assert len(writes) == 1
+    assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "submitting"
+
+
+def test_real_wrapper_deadline_refuses_before_rerun_send(monkeypatch, tmp_path):
+    _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
+    for name in ("GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
+                 "GH_TOKEN", "GITHUB_TOKEN", "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK",
+                 "GH_WITH_ENV_TOKEN_OWN_USER", "GH_WITH_ENV_TOKEN_CLASSIFIER",
+                 "GH_WITH_ENV_TOKEN_IDENTITY_HELPER", "GITHUB_RETRY_DEADLINE_AT"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CODEX_AUTOMATION_LOGIN", "fixture-bot")
+    monkeypatch.setenv("CODEX_GITHUB_TOKEN", "offline-fixture-token")
+    monkeypatch.setenv("GH_WITH_ENV_TOKEN_PYTHON", sys.executable)
+    monkeypatch.setenv("GITHUB_RETRY_MAX_WAIT_SECONDS", "120")
+    calls = tmp_path / "calls"
+    command = tmp_path / "fake-gh"
+    command.write_text(f"#!{sys.executable}\nimport sys\n"
+                       f"open({str(calls)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n"
+                       "print('HTTP/2 503\\nRetry-After: 70\\ncontent-type: application/json\\n\\n{\"message\":\"Service unavailable\"}')\n"
+                       "sys.exit(1)\n")
+    command.chmod(0o700)
+    monkeypatch.setenv("GH_WITH_ENV_TOKEN_GH", str(command))
+    monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(gh_pr_watch.DEFAULT_GH))
+    monkeypatch.setattr(gh_pr_watch, "COMMAND_TIMEOUT_SECONDS", 5.0)
+    result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+    assert result["reason"] == "rerun_rejected"
+    assert "refusing write" in result["error"]
+    assert result["retries_used"] == 0
+    actual_calls = calls.read_text().splitlines()
+    assert len(actual_calls) == 1
+    assert "/user" in actual_calls[0]
+    assert "rerun" not in actual_calls[0]
+    assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"] == {}
 
 
 if __name__ == "__main__":

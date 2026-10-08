@@ -284,9 +284,13 @@ def gh_text(args, repo=None):
     timeout = min(COMMAND_TIMEOUT_SECONDS, github_api.remaining_retry_timeout_seconds())
     if timeout <= 0:
         raise GhCommandNotSent("GitHub command deadline expired before launch; no write sent")
+    env = os.environ.copy()
+    # Let managed preflight reads refuse before our process-group ceiling.
+    # Reserve a short interval for the wrapper to report that refusal.
+    env["GITHUB_RETRY_DEADLINE_AT"] = str(time.time() + timeout - min(2.0, timeout / 2))
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, start_new_session=True)
+                                text=True, start_new_session=True, env=env)
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
         except (subprocess.TimeoutExpired, KeyboardInterrupt):
@@ -299,6 +303,10 @@ def gh_text(args, repo=None):
             proc.communicate()
             raise
         if proc.returncode:
+            if (GH_COMMAND == str(DEFAULT_GH) and stderr.strip().splitlines()[-1:] == [
+                "error: unable to verify the automation GitHub actor; refusing write",
+            ]):
+                raise GhCommandNotSent("GitHub wrapper refused before sending the write: " + stderr.strip())
             raise subprocess.CalledProcessError(proc.returncode, cmd, stdout, stderr)
     except subprocess.TimeoutExpired as err:
         raise GhCommandError("GitHub CLI command timed out; rerun outcome is unknown") from err
@@ -1728,8 +1736,17 @@ def retry_failed_now(args):
     result["skipped_run_ids"] = [
         run.get("run_id") for run in failed_runs if run not in eligible_runs
     ]
-    with state_lock(state_path):
-        return submit_locked_reruns(snapshot, state_path, result, eligible_runs)
+    try:
+        with state_lock(state_path):
+            return submit_locked_reruns(snapshot, state_path, result, eligible_runs)
+    except OSError as err:
+        result["reason"] = "state_save_error"
+        result["error"] = github_api.redact_string(str(err))
+        try:
+            result["retries_used"] = current_retry_count(load_state(state_path)[0], pr["head_sha"])
+        except (OSError, RuntimeError):
+            result["retry_budget_unavailable"] = True
+        return result
 
 
 def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
