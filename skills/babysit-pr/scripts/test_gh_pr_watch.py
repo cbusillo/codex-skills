@@ -3244,5 +3244,40 @@ def test_duplicate_pagination_run_does_not_appear_in_its_own_history(monkeypatch
     assert "ready_to_merge" in snapshot["actions"]
 
 
+
+
+
+@pytest.mark.parametrize("status,conclusion", [("queued", None), ("in_progress", None), ("completed", "failure"), ("completed", "success")])
+def test_later_attempt_of_older_execution_is_current(monkeypatch, tmp_path, status, conclusion):
+    old = execution(1, conclusion, status=status, run_attempt=2, run_started_at="2026-10-08T00:03:00Z")
+    new = execution(2, run_started_at="2026-10-08T00:02:00Z")
+    job = {"id": 11, "run_id": 1, "run_attempt": 2, "status": status, "conclusion": conclusion}
+    checks = [execution_check(new, 21)]
+    if status != "queued":
+        checks.append(execution_check(old, 11, conclusion, status=status))
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [old, new], checks, jobs={1: [job]})
+    assert snapshot["superseded_workflow_runs"] == [new]
+    assert ("ready_to_merge" in snapshot["actions"]) is (conclusion == "success")
+    assert ("retry_failed_checks" in snapshot["actions"]) is (conclusion == "failure")
+    assert snapshot["checks"]["all_terminal"] is (status == "completed")
+
+
+def test_unfinished_older_original_run_still_blocks_readiness(monkeypatch, tmp_path):
+    old, new = execution(1, None, status="queued"), execution(2)
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [old, new], [execution_check(new, 21)])
+    assert snapshot["checks"]["pending_count"] == 1
+    assert "ready_to_merge" not in snapshot["actions"]
+
+
+def test_older_attempt_without_start_ordering_remains_current(monkeypatch, tmp_path):
+    old, new = execution(1, "failure", run_attempt=2), execution(2)
+    job = {"id": 11, "run_id": 1, "run_attempt": 2, "status": "completed", "conclusion": "failure"}
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [old, new],
+        [execution_check(old, 11, "failure"), execution_check(new, 21)], jobs={1: [job]})
+    assert snapshot["checks"]["failed_count"] == 1
+    assert snapshot["superseded_workflow_runs"] == []
+    assert "ready_to_merge" not in snapshot["actions"]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

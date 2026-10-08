@@ -858,8 +858,23 @@ def current_workflow_runs(runs: list[dict[str, Any]], head_sha: str) -> dict[str
     for group in groups.values():
         group = [candidate for index, candidate in enumerate(group) if candidate not in group[:index]]
         winner = max(group, key=lambda candidate: (candidate["run_number"], candidate["id"], candidate["run_attempt"]))
+        winner_started = str(winner.get("run_started_at") or "")
+        later_attempts = [candidate for candidate in group
+                          if candidate["run_attempt"] > 1 and winner_started
+                          and str(candidate.get("run_started_at") or "") > winner_started]
+        if later_attempts:
+            winner = max(later_attempts, key=lambda candidate: candidate["run_started_at"])
         current.append(winner)
-        superseded.extend(candidate for candidate in group if candidate is not winner)
+        for candidate in group:
+            if candidate is winner:
+                continue
+            uncertain_attempt = candidate["run_attempt"] > 1 and (
+                not candidate.get("run_started_at") or not winner.get("run_started_at")
+            )
+            if candidate["id"] != winner["id"] and (candidate.get("status") != "completed" or uncertain_attempt):
+                current.append(candidate)
+            else:
+                superseded.append(candidate)
     return {"current": current, "superseded": superseded}
 
 

@@ -82,6 +82,8 @@ def main() -> int:
     checks_available = bool(availability.get("checkRuns", True) or availability.get("commitStatuses", True))
     failing_count = sum(1 for item in analyzed if item["classification"] == "failing") if checks_available else None
     pending_count = sum(1 for item in analyzed if item["classification"] == "pending") if checks_available else None
+    if pending_count is not None:
+        pending_count += summary.get("pendingWorkflowRunCount", 0)
     external_count = sum(1 for item in analyzed if item["classification"] == "external") if checks_available else None
 
     payload = {
