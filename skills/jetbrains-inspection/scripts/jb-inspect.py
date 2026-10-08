@@ -2863,7 +2863,9 @@ def preserve_inspection_findings(
     problems: list[dict[str, Any]] = []
     pages: list[dict[str, Any]] = []
     deadline = time.monotonic() + 30.0
-    first = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+    first = result.get("raw")
+    if not isinstance(first, dict):
+        first = {}
     try:
         while True:
             remaining = deadline - time.monotonic()
@@ -2873,9 +2875,13 @@ def preserve_inspection_findings(
             page = first if offset == 0 and getattr(args, "offset", 0) == 0 else call_endpoint(
                 route, "problems", request | {"offset": offset}, timeout=min(DEFAULT_TIMEOUT_SECONDS, remaining),
             )
-            page_route = page.get("route") if isinstance(page.get("route"), dict) else {}
+            page_route = page.get("route")
+            if not isinstance(page_route, dict):
+                page_route = {}
             page_problems = page.get("problems")
-            pagination = page.get("pagination") if isinstance(page.get("pagination"), dict) else {}
+            pagination = page.get("pagination")
+            if not isinstance(pagination, dict):
+                pagination = {}
             page_summary = summarize_problems(
                 context, page_route, page,
                 allow_text_only_coverage=getattr(args, "allow_text_only_coverage", False),
@@ -5986,19 +5992,19 @@ def check_ide_memory(
 
 def ide_memory_failure(identity: dict[str, Any], timeout_seconds: float = 2.0) -> InspectError | None:
     if identity.get("ide_memory_diagnostic_version") != 1:
-        return
+        return None
     expected_session = identity.get("session_id")
     if not expected_session:
-        return
+        return None
     try:
         response = http_get(route_port(identity), "memory", {}, timeout=timeout_seconds).body
     except (InspectError, OSError, http.client.HTTPException):
-        return
+        return None
     if response.get("session_id") != expected_session:
-        return
+        return None
     memory = response.get("ide_memory")
     if not isinstance(memory, dict) or memory.get("status") not in {"exhausted", "low_memory"}:
-        return
+        return None
     exhausted = memory["status"] == "exhausted"
     reason = "ide_memory_exhausted" if exhausted else "ide_memory_pressure"
     payload: dict[str, Any] = {
