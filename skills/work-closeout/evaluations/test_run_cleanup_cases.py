@@ -395,17 +395,17 @@ class CleanupRunnerTests(unittest.TestCase):
                 self.assertTrue(observed.is_file(), result.stderr)
                 self.assertEqual(mode, observed.read_text(encoding="utf-8"))
                 self.assertFalse(outcome.exists())
-                artifact = self.outcomes / f"cleanup-{mode}.artifacts"
                 self.assertFalse(
                     FIXTURE_AUTH_CANARY in result.stdout + result.stderr,
                     "fixture auth echoed by runner",
                 )
-                for path in artifact.rglob("*"):
-                    if path.is_file():
-                        self.assertFalse(
-                            FIXTURE_AUTH_CANARY.encode() in path.read_bytes(),
-                            f"fixture auth retained in {path.relative_to(artifact)}",
-                        )
+                for root in (self.outcomes, self.workspace):
+                    for path in root.rglob("*"):
+                        if path.is_file():
+                            self.assertFalse(
+                                FIXTURE_AUTH_CANARY.encode() in path.read_bytes(),
+                                f"fixture auth retained in {path.relative_to(self.base)}",
+                            )
                 self.assertFalse(any(self.private.iterdir()))
 
     def test_rejects_unmarked_workspace_secret_environment_and_external_output(self) -> None:
