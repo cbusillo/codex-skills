@@ -43,6 +43,7 @@ SECRET_RE = re.compile(
     r"(?:api[_-]?key|token|secret|password|credential)\s*[:=]\s*[^\s,'\"]+)"
 )
 LOCAL_PATH_ROOTS = r"(?:Users|home|workspace|workspaces|tmp|var|private|Volumes|mnt|media)"
+RELATIVE_PATH_ROOTS = {"media", "mnt", "tmp", "var"}
 PATH_RE = re.compile(
     # Public URLs may contain the same root names as local paths. Match them
     # first so those components remain useful evidence rather than local paths.
@@ -439,36 +440,141 @@ def context_window(events: list[Event], index: int, radius: int, args: argparse.
 def clean_text(text: str, args: argparse.Namespace) -> str:
     cleaned = SECRET_RE.sub("<secret-redacted>", text)
     if args.redact:
-        cleaned = PATH_RE.sub(redact_path_match, cleaned)
+        cleaned = redact_paths(cleaned)
         cleaned = redact_person_data(cleaned)
     cleaned = " ".join(cleaned.split())
     return cleaned.strip()
 
 
-def redact_path_match(match: re.Match[str]) -> str:
+def is_local_host(host: str, *, bare_is_local: bool = True) -> bool:
+    host = host.lower()
+    try:
+        return not ip_address(host).is_global
+    except ValueError:
+        return (bare_is_local and "." not in host) or host == "localhost" or host.endswith(
+            (".localhost", ".local", ".internal", ".lan", ".home.arpa", ".test", ".ts.net",
+             ".localdomain", ".home", ".corp", ".intranet")
+        )
+
+
+def is_local_dev_path(path: str) -> bool:
+    return bool(re.search(r"(?:^|/)@fs/", path) or re.match(r"/tunnel/[^/]+/", path))
+
+
+def redact_paths(text: str, *, embedded_path: bool = False) -> str:
+    previous_path_end: int | None = None
+    checked_to = 0
+    token_start = scanned_to = 0
+    quote_context: str | None = None
+    escaped = absolute_token = False
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal previous_path_end, checked_to, token_start, scanned_to, quote_context, escaped, absolute_token
+        if previous_path_end is not None and text.find("\n", checked_to, match.start()) != -1:
+            previous_path_end = None
+        checked_to = match.end()
+        # Scan each prefix once. Escaped spaces and spaces inside quoted
+        # arguments do not establish a new relative-path token.
+        while scanned_to < match.start():
+            index = scanned_to
+            char = text[index]
+            scanned_to += 1
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char == "\n" or (char.isspace() and quote_context is None):
+                token_start = scanned_to
+                absolute_token = False
+                if char == "\n":
+                    quote_context = None
+            elif char in "\"'`":
+                interior_apostrophe = char == "'" and index > 0 and text[index - 1].isalnum()
+                if not interior_apostrophe or text[index + 1:index + 2] == "/":
+                    if quote_context is None or text[index + 1:index + 2] == "/":
+                        quote_context = char
+                        token_start = scanned_to
+                        absolute_token = False
+                    elif char == quote_context and char != "'":
+                        quote_context = None
+                        token_start = scanned_to
+                        absolute_token = False
+            elif char == "/" and (index == token_start or
+                                   not (text[index - 1].isalnum() or text[index - 1] in "_.@+/-")):
+                absolute_token = True
+        result = redact_path_match(match, embedded_path=embedded_path, previous_path_end=previous_path_end,
+                                   absolute_token=absolute_token)
+        if result != match.group(0):
+            quote = match.group("quoted")
+            following = text[match.end():match.end() + 2]
+            quote_boundary = (not following or following[0] in " \t\r\n,;)]}"
+                              or (following[0] in ".:!?" and (len(following) == 1 or following[1].isspace())))
+            quoted_argument = (quote in {'"', '`'} and match.group(0).endswith(quote) and not match.group(0).endswith("\\" + quote)
+                               and quote_boundary)
+            previous_path_end = None if quoted_argument else match.end()
+        return result
+
+    return PATH_RE.sub(replace, text)
+
+
+def redact_path_match(
+    match: re.Match[str], *, embedded_path: bool = False, previous_path_end: int | None = None,
+    absolute_token: bool = False,
+) -> str:
     url = match.group("url")
     if url is None:
+        # A root inside a repository-relative token is useful evidence. URL
+        # paths are handled separately: editor and dev-server prefixes can
+        # precede an absolute root without a plain-text boundary.
+        if (not embedded_path and match.group("quoted") is None
+                and match.group(0).split("/", 2)[1] in RELATIVE_PATH_ROOTS):
+            start = match.start()
+            while (start and not match.string[start - 1].isspace()
+                   and match.string[start - 1] not in ",;\"'`<>=()[]{}"):
+                start -= 1
+            prefix = match.string[start:match.start()]
+            first_named = next((item for item in prefix.split("/") if item not in {".", ".."}), "")
+            private_prefix = re.fullmatch(LOCAL_PATH_ROOTS, first_named) and first_named not in RELATIVE_PATH_ROOTS
+            first_segment = prefix.split("/")[0]
+            ambiguous_word = (first_segment not in {".", ".."}
+                              and (not first_segment.isascii() or first_segment.endswith(".")))
+            dev_prefix = (not prefix.startswith(("./", "../"))
+                          and (prefix == "@fs" or is_local_dev_path("/" + prefix.partition("/")[2] + "/")))
+            if (prefix and re.fullmatch(r"(?:\.{1,2}/)*(?:[\w.@+][\w.@+-]*/)*[\w.@+][\w.@+-]*", prefix)
+                    and (all(item in {".", ".."} for item in prefix.split("/")) or re.search(r"[^\W_]", prefix))
+                    and not private_prefix
+                    and not ambiguous_word and not dev_prefix
+                    and not absolute_token
+                    and previous_path_end is None
+                    and not is_local_host(prefix.split("/")[0], bare_is_local=False)):
+                path = match.group(0)
+                boundary = re.search(rf"[^\w.@+/-]|/(?=/{LOCAL_PATH_ROOTS}/)", path)
+                end = boundary.start() if boundary else len(path)
+                for nested in re.finditer(rf"/{LOCAL_PATH_ROOTS}(?=/)", path[1:]):
+                    if nested.group(0).split("/")[1] not in RELATIVE_PATH_ROOTS:
+                        end = min(end, nested.start() + 1)
+                        break
+                if end < len(path):
+                    return path[:end] + redact_paths(path[end:], embedded_path=True)
+                return path
         return "<path-redacted>"
     try:
         parsed = urlsplit(url)
         host = parsed.hostname or ""
-        try:
-            local = not ip_address(host).is_global
-        except ValueError:
-            local = "." not in host or host.endswith(
-                (".localhost", ".local", ".internal", ".lan", ".home.arpa", ".test", ".ts.net",
-                 ".localdomain", ".home", ".corp", ".intranet")
-            )
-        local = local or parsed.path.startswith("/@fs/") or bool(re.match(r"/tunnel/[^/]+/", parsed.path))
+        local = is_local_host(host)
+        local = local or is_local_dev_path(parsed.path)
     except ValueError:
         local = True  # Malformed URLs do not establish a public host.
     if local:
         scheme, separator, remainder = url.partition("://")
-        return scheme + separator + PATH_RE.sub(redact_path_match, remainder)
+        redacted = redact_paths(remainder, embedded_path=True)
+        return scheme + separator + redacted
     query_or_fragment = re.search(r"[?#]", url)
     if query_or_fragment:
         index = query_or_fragment.start()
-        return url[:index] + PATH_RE.sub(redact_path_match, url[index:])
+        return url[:index] + redact_paths(url[index:], embedded_path=True)
     return url
 
 
