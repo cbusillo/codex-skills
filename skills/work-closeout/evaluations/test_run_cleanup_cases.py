@@ -429,21 +429,21 @@ class CleanupRunnerTests(unittest.TestCase):
 
                     def witnessed_popen(*args, **kwargs):
                         nonlocal output_ready_at
-                        owned_process = real_popen(*args, **kwargs)
-                        processes.append(owned_process)
+                        spawned_process = real_popen(*args, **kwargs)
+                        processes.append(spawned_process)
                         readiness_deadline = time.monotonic() + 5
-                        while not ready.exists() and owned_process.poll() is None and time.monotonic() < readiness_deadline:
+                        while not ready.exists() and spawned_process.poll() is None and time.monotonic() < readiness_deadline:
                             time.sleep(0.005)
                         self.assertTrue(ready.exists(), "output producer never reached readiness")
-                        self.assertEqual(str(owned_process.pid), ready.read_text(encoding="utf-8"))
+                        self.assertEqual(str(spawned_process.pid), ready.read_text(encoding="utf-8"))
                         if excess:
-                            self.assertEqual(owned_process.pid, os.getpgid(owned_process.pid))
+                            self.assertEqual(spawned_process.pid, os.getpgid(spawned_process.pid))
                             child = json.loads(child_ready.read_text(encoding="utf-8"))
                             descendants[child["pid"]] = child["group"]
-                            self.assertEqual(owned_process.pid, child["group"])
-                            self.assertEqual(owned_process.pid, os.getpgid(child["pid"]))
+                            self.assertEqual(spawned_process.pid, child["group"])
+                            self.assertEqual(spawned_process.pid, os.getpgid(child["pid"]))
                         output_ready_at = time.monotonic()
-                        return owned_process
+                        return spawned_process
 
                     try:
                         with mock.patch.object(subprocess, "Popen", side_effect=witnessed_popen):
