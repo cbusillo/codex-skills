@@ -67,6 +67,20 @@ one.
    the reviewed repository's own tool settings, which could start hooks. The
    `openai` reviewer also ignores `~/.codex/config.toml`, so settings there,
    such as its default model, do not apply.
+
+   OpenAI and Anthropic reviews select their provider's Context Panel use-next
+   account at launch through the [Supervisor account reader](../supervisor/scripts/account_choice.py).
+   They use its private `skill-data/supervisor.toml` mappings and snapshot command;
+   see [account configuration](../supervisor/references/helpers.md). The chosen
+   `CODEX_HOME` or `CLAUDE_CONFIG_DIR` applies only to the reviewer child. A default
+   Anthropic choice removes an inherited home override. Inherited provider token/key and cloud-routing
+   overrides are removed by name so they cannot bypass the selected home's login;
+   no credentials or logins are read or changed by the helper. Missing config,
+   unavailable choices or receipt-storage failures stop the review before launch.
+   JSON reports the account name and opaque ID plus the count-only launch receipt;
+   receipts use Context Panel's existing Launch Receipts store. No fixed review-home
+   export is needed in a Supervisor launch file. Google retains its existing setup.
+
 3. Read `model` in the JSON result and report reviewers by provider and that
    model. When `model_source` says the CLI did not report it, say so instead of
    stating it as fact. A provider's default may be the author's own model; pass
