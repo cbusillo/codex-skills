@@ -297,6 +297,7 @@ PRODUCT_CONFIG_APPLY_RESULT_FIELDS = {
     "provider_key_adoption",
     "summary",
     "next_actions",
+    "public_hosts",
 }
 PROVIDER_KEY_ADOPTION_DISPOSITIONS = {
     "adopted",
@@ -1163,6 +1164,40 @@ def _project_next_actions(value: object) -> list[dict[str, object]]:
     return projected
 
 
+def _project_product_config_public_hosts(value: object) -> dict[str, object]:
+    lists = {"before", "after", "added", "updated", "removed", "unchanged", "read_back_hosts"}
+    source = _require_exact_fields(value, lists | {
+        "plan_digest", "runtime_port", "https", "service_name", "certificate_type", "verified"
+    })
+    projected: dict[str, object] = {}
+    for key in lists:
+        hosts = source[key]
+        if not isinstance(hosts, list) or len(hosts) > 64:
+            raise LaunchplaneSafetyError("invalid_response")
+        normalized = _public_string_list(hosts)
+        if any(
+            len(host) > 253 or len(host.split(".")) < 2 or host != host.lower()
+            or any(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) is None
+                   for label in host.split(".")) or host.split(".")[-1].isdigit()
+            for host in normalized
+        ) or len(set(normalized)) != len(normalized):
+            raise LaunchplaneSafetyError("invalid_response")
+        projected[key] = normalized
+    port = source["runtime_port"]
+    if type(port) is not int or not 1 <= port <= 65535 or (
+        source["https"] is not True or source["service_name"] != "web"
+        or source["certificate_type"] != "none" or type(source["verified"]) is not bool
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    if source["read_back_hosts"] != (source["after"] if source["verified"] else []):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected.update(
+        plan_digest=_project_sha256(source["plan_digest"]), runtime_port=port,
+        https=True, service_name="web", certificate_type="none", verified=source["verified"],
+    )
+    return projected
+
+
 def _project_product_config_apply_result(result: object) -> dict[str, object]:
     source = _require_dict(result)
     if any(str(key) not in PRODUCT_CONFIG_APPLY_RESULT_FIELDS for key in source):
@@ -1205,9 +1240,14 @@ def _project_product_config_apply_result(result: object) -> dict[str, object]:
         ("provider_key_adoption", _project_provider_key_adoption),
         ("summary", _project_apply_summary),
         ("next_actions", _project_next_actions),
+        ("public_hosts", _project_product_config_public_hosts),
     ):
         if key in source:
             projected[key] = projector(source[key])
+    if "public_hosts" in source and (
+        instance != "prod" or source["public_hosts"]["verified"] != (source["mode"] == "apply")
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
     assert_public_safe_shape(projected)
     return projected
 

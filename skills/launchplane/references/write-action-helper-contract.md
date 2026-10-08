@@ -751,6 +751,26 @@ lane. Launchplane refuses a class the lane does not allow. The redacted secret
 results echo the stored `secret_class` alongside `action`, `integration`, and
 `binding_key`.
 
+### Public hostnames
+
+The private payload may set `public_hosts` for an exact owned prod compose lane.
+Use the same product-config dry-run/apply commands above. Launchplane's
+[product-config reference](https://github.com/cbusillo/launchplane/blob/main/docs/service-boundary.md#public-hostnames-on-the-prod-compose-target)
+owns hostname semantics, the current-target/provider dry-run requirement,
+additive reconciliation, and explicit managed-name removals. Omission preserves
+the configuration; `[]` clears only the managed public names.
+
+The optional result `public_hosts` projects hostname lists `before`, `after`,
+`added`, `updated`, `removed`, `unchanged`, `read_back_hosts`, plus `plan_digest`,
+`runtime_port`, `https`, `service_name`, `certificate_type`, and `verified`.
+Unknown fields, non-hostname values, malformed digests/ports, and inconsistent
+verification are refused. Existing responses without this result remain valid.
+Apply's verified read-back proves provider route configuration, not public HTTP
+reachability. No target-setup grant, DNS/TLS change, Client release or separate
+target-inspection permission is needed to consume this result. On a stale plan
+or partial provider outcome, save a new dry-run and review it before retrying;
+never infer success from the previous request's transport outcome.
+
 ### Copying a managed runtime secret
 
 A product-config secret entry may carry `copy_from` instead of `value` to copy
