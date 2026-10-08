@@ -897,7 +897,7 @@ def current_check_runs(
             current.append(check)
             continue
         run_id: int = check["runId"]
-        run = by_id.get(run_id) or old_by_id.get(run_id)
+        run: Optional[dict[str, Any]] = by_id.get(run_id) or old_by_id.get(run_id)
         if run is None:
             current.append(check)
             complete = False
