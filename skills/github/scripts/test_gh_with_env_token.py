@@ -36,6 +36,22 @@ def fake_app_identity(login: str = "catalog-app[bot]") -> str:
     )
 
 
+def app_fixture(root: Path) -> tuple[Path, Path, Path]:
+    env_file = root / "local.env"
+    env_file.write_text(
+        "GITHUB_APP_ID=12345\n"
+        "GITHUB_APP_INSTALLATION_ID=67890\n"
+        "GITHUB_APP_PRIVATE_KEY_PATH=/fake/app.pem\n"
+        "CODEX_AUTOMATION_LOGIN='catalog-app[bot]'\n",
+        encoding="utf-8",
+    )
+    identity = root / "identity.py"
+    write(identity, fake_app_identity())
+    unused = root / "unused.py"
+    write(unused, "raise AssertionError('classifier should not run')\n")
+    return env_file, identity, unused
+
+
 def run_wrapper(
     env_file: Path,
     classifier: Path,
@@ -60,7 +76,6 @@ def run_wrapper(
         env=env,
         text=True,
         capture_output=True,
-        check=False,
         timeout=10,
     )
 
@@ -617,7 +632,7 @@ def test_comment_cli_selects_own_user_through_real_wrapper() -> None:
             result = subprocess.run(
                 [sys.executable, str(SCRIPT.with_name("github_comment.py")), "issue", "42",
                  "--repo", "director/catalog", "--body-file", str(body_file), *options],
-                env=env, text=True, capture_output=True, timeout=10, check=False,
+                env=env, text=True, capture_output=True, timeout=10,
             )
             assert result.returncode == 0, (result.stdout, result.stderr)
             payload = json.loads(result.stdout)
@@ -636,7 +651,7 @@ def test_comment_cli_selects_own_user_through_real_wrapper() -> None:
             result = subprocess.run(
                 [sys.executable, str(SCRIPT.with_name("github_comment.py")), "issue", "42",
                  "--repo", "director/catalog", "--body-file", str(body_file), "--edit-last"],
-                env=refused_env, text=True, capture_output=True, timeout=10, check=False,
+                env=refused_env, text=True, capture_output=True, timeout=10,
             )
             assert result.returncode != 0, result.stdout
             payload = json.loads(result.stdout)
@@ -703,7 +718,7 @@ def test_comment_cli_rejects_malformed_probe_once_before_authentication() -> Non
             result = subprocess.run(
                 [sys.executable, str(cli), "issue", "42",
                  f"--repo={repository}", "--body-file", str(body_file)],
-                env=env, text=True, capture_output=True, timeout=60, check=False,
+                env=env, text=True, capture_output=True, timeout=60,
             )
             assert result.returncode != 0, result.stdout
             payload = json.loads(result.stdout)
@@ -791,18 +806,7 @@ def test_app_login_comparison_is_case_insensitive() -> None:
 def test_print_auth_account_reports_verified_app_without_gh_auth_status() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        env_file = root / "local.env"
-        env_file.write_text(
-            "GITHUB_APP_ID=12345\n"
-            "GITHUB_APP_INSTALLATION_ID=67890\n"
-            "GITHUB_APP_PRIVATE_KEY_PATH=/fake/app.pem\n"
-            "CODEX_AUTOMATION_LOGIN='catalog-app[bot]'\n",
-            encoding="utf-8",
-        )
-        identity = root / "identity.py"
-        write(identity, fake_app_identity())
-        unused = root / "unused.py"
-        write(unused, "raise AssertionError('classifier should not run')\n")
+        env_file, identity, unused = app_fixture(root)
         fake_gh = root / "gh"
         write(fake_gh, "#!/bin/sh\nprintf 'command-output\\n'\n")
         result = run_wrapper(
@@ -823,18 +827,7 @@ def test_print_auth_account_reports_verified_app_without_gh_auth_status() -> Non
 def test_app_actor_probe_does_not_fabricate_other_paths_or_writes() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        env_file = root / "local.env"
-        env_file.write_text(
-            "GITHUB_APP_ID=12345\n"
-            "GITHUB_APP_INSTALLATION_ID=67890\n"
-            "GITHUB_APP_PRIVATE_KEY_PATH=/fake/app.pem\n"
-            "CODEX_AUTOMATION_LOGIN='catalog-app[bot]'\n",
-            encoding="utf-8",
-        )
-        identity = root / "identity.py"
-        write(identity, fake_app_identity())
-        unused = root / "unused.py"
-        write(unused, "raise AssertionError('classifier should not run')\n")
+        env_file, identity, unused = app_fixture(root)
         fake_gh = root / "gh"
         write(
             fake_gh,
