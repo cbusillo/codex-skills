@@ -91,11 +91,11 @@ def read_request(path):
 UNCHECKED = object()
 
 
-def write_json(path, data, *, expected=UNCHECKED):
+def write_json(path, data, *, expected: object = UNCHECKED):
     write_bytes(path, json.dumps(data, indent=2).encode(), expected=expected)
 
 
-def write_bytes(path, content, *, expected=UNCHECKED):
+def write_bytes(path, content, *, expected: object = UNCHECKED):
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent, delete=False) as output:
@@ -307,7 +307,7 @@ def managed_shim(env):
         return None
     shim = Path(value) / "process-wrapper"
     if (env.get("CLAUDE_CODE_PROCESS_WRAPPER") == str(shim) and not shim.is_symlink()
-            and shim.is_file() and shim.read_text().startswith(SHIM_HEADER)):
+            and (not shim.exists() or (shim.is_file() and shim.read_text().startswith(SHIM_HEADER)))):
         return shim
     return None
 
@@ -393,19 +393,23 @@ def uninstall(settings, write=False):
         entries = data.get("hooks", {}).get(event, [])
         retained = []
         for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("hooks", []), list):
+                retained.append(entry)
+                continue
             handlers = entry.get("hooks", [])
             remaining = []
             for handler in handlers:
                 command = handler.get("command") if isinstance(handler, dict) else None
                 parts = shlex.split(command) if isinstance(command, str) else []
-                if len(parts) != 4 or parts[1:] != ["-I", script, "hook"]:
+                if (len(parts) != 4 or parts[1] != "-I" or parts[3] != "hook"
+                        or Path(parts[2]).name != Path(script).name):
                     remaining.append(handler)
             if remaining or not handlers:
                 retained.append({**entry, "hooks": remaining})
         data["hooks"][event] = retained
     if write:
         write_json(settings, data, expected=previous)
-        shim.unlink()
+        shim.unlink(missing_ok=True)
     return data
 
 

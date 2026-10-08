@@ -25,8 +25,7 @@ class MoveTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         (self.root / "panel").mkdir()
-        self.account_reader = account_choice
-        self.reader_patch = patch.object(account, "reader", return_value=self.account_reader)
+        self.reader_patch = patch.object(account, "reader", return_value=account_choice)
         self.storage_patch = patch.object(account_choice, "storage_root", return_value=self.root / "panel")
         self.storage_patch.start()
         self.addCleanup(self.storage_patch.stop)
@@ -60,9 +59,9 @@ class MoveTests(unittest.TestCase):
         account.hook(self.payload, self.env)
 
     def move(self, choice=None):
-        with patch.object(self.account_reader, "load_config", return_value={"snapshot_command": ["fake"]}), \
-             patch.object(self.account_reader, "read_snapshot", return_value=({}, None)), \
-             patch.object(self.account_reader, "choose", return_value=choice or self.choice):
+        with patch.object(account_choice, "load_config", return_value={"snapshot_command": ["fake"]}), \
+             patch.object(account_choice, "read_snapshot", return_value=({}, None)), \
+             patch.object(account_choice, "choose", return_value=choice or self.choice):
             return account.move_environment(self.argv, self.env)
 
     def test_disabled_and_unrelated_hooks_are_inert(self):
@@ -80,7 +79,7 @@ class MoveTests(unittest.TestCase):
 
     def test_ordinary_and_other_session_launches_never_query_chooser(self):
         self.record()
-        with patch.object(self.account_reader, "load_config", side_effect=AssertionError("must not read")):
+        with patch.object(account_choice, "load_config", side_effect=AssertionError("must not read")):
             for argv in (["claude", "--print", "hello"], ["claude", "--resume", str(uuid.uuid4())],
                          ["claude", "--", "--resume", self.identifier]):
                 self.assertEqual(account.move_environment(argv, self.env), self.env)
@@ -105,13 +104,13 @@ class MoveTests(unittest.TestCase):
     def test_pending_attempt_retries_same_target_without_new_choice(self):
         self.record()
         self.move()
-        with patch.object(self.account_reader, "load_config", side_effect=AssertionError("must reuse")):
+        with patch.object(account_choice, "load_config", side_effect=AssertionError("must reuse")):
             self.assertEqual(account.move_environment(self.argv, self.env)["CLAUDE_CONFIG_DIR"], str(self.new))
         self.assertEqual(len(list((self.root / "panel" / "Launch Receipts").glob("*.json"))), 1)
 
     def test_choice_failure_and_same_account_preserve_recovery(self):
         self.record()
-        with patch.object(self.account_reader, "load_config", side_effect=ValueError("snapshot unavailable")):
+        with patch.object(account_choice, "load_config", side_effect=ValueError("snapshot unavailable")):
             self.assertEqual(account.move_environment(self.argv, self.env), self.env)
         self.assertTrue(self.request.exists())
         self.assertEqual(self.move({**self.choice, "env": {"CLAUDE_CONFIG_DIR": str(self.old)}}), self.env)
@@ -153,7 +152,7 @@ class MoveTests(unittest.TestCase):
 
     def test_snapshot_timeout_is_short_and_unavailable_is_preserved(self):
         with patch.object(account.subprocess, "run", side_effect=subprocess.TimeoutExpired("fake", 1.5)) as run:
-            snapshot, problem = self.account_reader.read_snapshot(["fake"], runner=account.bounded_snapshot)
+            snapshot, problem = account_choice.read_snapshot(["fake"], runner=account.bounded_snapshot)
         self.assertIsNone(snapshot)
         self.assertIn("TimeoutExpired", problem)
         self.assertLess(run.call_args.kwargs["timeout"], 3)
@@ -287,7 +286,6 @@ class MoveTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             account.install(settings, self.root / "moves", write=True)
         account.install(settings, self.root / "moves", write=True, refresh=True)
-        data = json.loads(settings.read_text())
         self.assertNotIn("my $old_python", shim.read_text())
         account.uninstall(settings, write=True)
         result = json.loads(settings.read_text())
@@ -340,6 +338,23 @@ class MoveTests(unittest.TestCase):
             self.assertEqual(set(fallback.split(b"\0")), set(expected.split(b"\0")))
             self.assertTrue(self.request.exists())
             shim.write_text(original)
+
+    def test_uninstall_recovers_missing_entrypoint_and_alternate_source_hooks(self):
+        settings = self.root / "settings.json"
+        installed = account.install(settings, self.root / "moves", write=True)
+        data = json.loads(settings.read_text())
+        for groups in data["hooks"].values():
+            for group in groups:
+                for handler in group["hooks"]:
+                    handler["command"] = handler["command"].replace(str(Path(account.__file__).parent), "/other/catalog/scripts")
+        settings.write_text(json.dumps(data))
+        Path(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"]).unlink()
+        with patch.object(account, "runtime_script", side_effect=ValueError("dirty runtime")):
+            account.uninstall(settings, write=True)
+        cleaned = json.loads(settings.read_text())
+        self.assertNotIn("CLAUDE_CODE_PROCESS_WRAPPER", cleaned["env"])
+        self.assertEqual(cleaned["hooks"]["StopFailure"], [])
+        self.assertEqual(cleaned["hooks"]["SessionStart"], [])
 
     def test_installer_preview_preserves_settings_and_repeat_is_idempotent(self):
         settings = self.root / "settings.json"

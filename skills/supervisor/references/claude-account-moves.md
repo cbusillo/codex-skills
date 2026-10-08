@@ -37,8 +37,11 @@ registers `StopFailure` for `rate_limit` and
 only the sessions covered by the enrollment authority so they read the settings.
 Do not stop a shared background service or the Director's sessions as a test.
 
-Use an absolute directory outside account homes, owned by the user with mode
-700. Write enrollment creates it and its managed `process-wrapper` entrypoint. Protect this directory
+Use an absolute persistent private configuration directory outside account
+homes, owned by the user with mode 700. Keep it off disposable task worktrees
+and removable volumes: this entrypoint is configuration required for relaunch,
+not a cache or task artifact. If it is missing, uninstall still removes matching
+enrollment settings and hooks without recreating the directory. Write enrollment creates it and its managed `process-wrapper` entrypoint. Protect this directory
 as private session evidence: requests contain working and transcript paths, but
 never error strings, tokens or credentials. Only sessions carrying `CLAUDE_ACCOUNT_MOVE_ENABLED=1` record or execute moves.
 The Supervisor terminal launcher contains this marker in a subshell for its
@@ -92,7 +95,8 @@ on its inherited home, allowing its ordinary wait-for-reset fallback.
 5. If the request remains, inspect its state, any `problem`, and the tab before taking any
    further action. A prepared attempt retries the same selected home without
    choosing another account. Repair the documented config/history problem
-   within existing scope or hand it off; never sign in, change login, clear
+   within existing scope or hand it off; a real cwd mismatch or repeatedly slow
+   snapshot means hand off for native qualification before another move attempt; never sign in, change login, clear
    history, or apply a reset. Preserve requests until recovery is verified.
    If the account resets and the session continues in place instead, cancel its
    obsolete move with `claude_account.py cancel --session-id <native-uuid>` using
