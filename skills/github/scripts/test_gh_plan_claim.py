@@ -352,7 +352,7 @@ class ClaimTests(unittest.TestCase):
                     self.assertEqual(artifacts, (self.pulls, self.inventory))
 
     def test_separate_handoff_identity_paragraph_layouts_preserve_conditions(self):
-        for layout in ("header_paragraph", "crlf", "spaced_blank", "single_newline"):
+        for layout in ("header_paragraph", "crlf", "spaced_blank", "single_newline", "session_footer", "pr_field"):
             for refresh in (False, True):
                 with self.subTest(layout=layout, refresh=refresh):
                     self.setUp()
@@ -364,8 +364,12 @@ class ClaimTests(unittest.TestCase):
                         body = body.replace("\n", "\r\n")
                     elif layout == "spaced_blank":
                         body = body.replace("\n\n", "\n \n")
-                    else:
+                    elif layout == "single_newline":
                         body = body.replace("\n\n", ".\n")
+                    elif layout == "session_footer":
+                        body = "Handoff from trial-b\nSource claim 1; PRs #99 and #100.\n\nPR #99 must merge first.\n\nSession: session-b"
+                    else:
+                        body = "Handoff from trial-b\nSource claim 1; Session: session-b.\nOpen PRs: #99 and #100.\nPR #99 must merge first."
                     self.comments[3]["body"] = body
                     with self.assertRaises(PLAN.PlanError):
                         self.run_claim()

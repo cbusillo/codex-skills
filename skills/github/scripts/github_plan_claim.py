@@ -77,7 +77,8 @@ def legacy_release_worker(text: str) -> str | None:
     return match.group(1) if match else None
 
 
-def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool = False) -> bool:
+def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool = False,
+                              handoff_permission: bool = False) -> bool:
     """Check ownership conditions independently of directive placement."""
     # Conditions must govern release/reclaiming, not downstream CI or
     # worktree cleanup. A condition directly after the ID also qualifies
@@ -146,7 +147,7 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
                            and not re.search(rf"{ownership}|{successor}", following, re.IGNORECASE))
         downstream_step = re.search(rf"\b{step}\b[^.!?;]*\b(?:before|to)\s+(?:you\s+)?{step}\b", statement, re.IGNORECASE)
         # The directive itself supplies permission at its adjacent prose edge.
-        directive_adjacent = index == (len(statements) - 1 if final_paragraph else 0)
+        directive_adjacent = handoff_permission or index == (len(statements) - 1 if final_paragraph else 0)
         prior_permission = index > 0 and re.search(rf"{ownership}|{successor}", statements[index - 1], re.IGNORECASE)
         if (index not in instruction_indexes and (standalone_prerequisite or standalone_condition)
                 and not (downstream_next or downstream_step)
@@ -618,22 +619,15 @@ def retained_handoff(
     first_line_release = released_claim_id(handoff_text.splitlines()[0] if handoff_text else "")
     if not (first_line_release == source_id or standalone):
         raise ValueError("Refresh handoff must identify the exact released source claim")
-    # A separate handoff's identity paragraph is not its release prose edge.
-    # Still check the full record so conditions inside that paragraph count.
-    handoff_prose = ""
-    identity_prose = handoff_text
-    if standalone and source_claim_match and source_session_match:
-        identity_prose = (handoff_text[:source_claim_match.start()]
-                          + handoff_text[source_claim_match.end():])
-        identity_end = max(source_claim_match.end(), source_session_match.end())
-        paragraphs = re.split(r"\r?\n[ \t]*\r?\n", handoff_text[identity_end:], maxsplit=1)
-        if len(paragraphs) == 2:
-            handoff_prose = paragraphs[1]
-        else:
-            handoff_prose = paragraphs[0].partition("\n")[2]
-    deferred = (released_claim_id(handoff_text) != source_id if first_line_release == source_id
-                else (conditional_release_prose(identity_prose, suffix="")
-                      or conditional_release_prose(handoff_prose, suffix="")))
+    if first_line_release == source_id:
+        deferred = released_claim_id(handoff_text) != source_id
+    else:
+        assert source_claim_match is not None
+        # Source identity is not an ownership statement. The verified handoff
+        # itself supplies permission, regardless of where its fields sit.
+        handoff_prose = (handoff_text[:source_claim_match.start()]
+                         + handoff_text[source_claim_match.end():])
+        deferred = conditional_release_prose(handoff_prose, suffix="", handoff_permission=True)
     if deferred:
         raise ValueError("Retained handoff must be unconditional; use a fresh source-authored handoff")
     permitted = {source_branch}
