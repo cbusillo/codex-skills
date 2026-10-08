@@ -618,9 +618,8 @@ the issue`, remain independent. A retained worktree's retirement instruction
 `use its host retire command after landing/closure and ownership/content checks`
 does not defer the claim release. A successor claim or ownership transfer
 condition in the same handoff still refuses. Recover ambiguous conditional
-handoffs (including
-destination/action wording such as `merges to deploy`) with a
-new, unconditional first-line exact-ID release from the source author after
+handoffs (including destination/action wording such as `merges to deploy`) with
+a new, unconditional first-line exact-ID release from the source author after
 the source claim; the helper does not infer that a condition has become true.
 
 An exact release may also be a standalone final paragraph after the handoff

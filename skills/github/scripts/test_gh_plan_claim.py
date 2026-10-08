@@ -443,6 +443,7 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(CLAIM.released_claim_id(release), source_id)
         release = release.replace("6025344226", "1").replace("#3111", "#99").replace("/pull/3111", "/pull/99")
         release = release.replace("#3110", "#100")
+        self.assertEqual(CLAIM.released_claim_id(release), self.args.resume_from)
         self.comments[2]["body"] = release
 
     def test_cleanup_handoff_accepts_ordinary_successor_without_retiring_artifacts(self):
@@ -462,14 +463,17 @@ class ClaimTests(unittest.TestCase):
             "Use its host retire command after landing/closure and ownership/content checks, then the next worker may claim.",
             "Use its host retire command after landing/closure and ownership/content checks. Then the next worker may pick it up.",
             "Use its host retire command after landing/closure and ownership/content checks; the next worker may pick it up then.",
+            "Use its host retire command after landing/closure and ownership/content checks. The next worker may claim afterward.",
+            "Use its host retire command after landing/closure and ownership/content checks. Receipts stay on Developer-Artifacts. Then the next worker may claim.",
         ):
             with self.subTest(condition=condition):
                 self.setUp()
                 self.cleanup_handoff_fixture()
                 self.comments[2]["body"] = CLAIM.without_operation_marker(self.comments[2]["body"]) + "\n\n" + condition
                 self.assertIsNone(CLAIM.released_claim_id(self.comments[2]["body"]))
-                with self.assertRaises(PLAN.ClassifiedPlanError):
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
                 self.assert_no_writes()
 
     def test_ordinary_handoff_preserves_issue_and_every_retained_pr_wait(self):
