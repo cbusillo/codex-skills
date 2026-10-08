@@ -2830,6 +2830,70 @@ def test_command_restores_parent_signal_handlers(monkeypatch):
     assert {sig: gh_pr_watch.signal.getsignal(sig) for sig in before} == before
 
 
+def test_ignored_hangup_keeps_running_command_and_confirms_write(monkeypatch, tmp_path):
+    _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
+    pid_file = tmp_path / "command.pid"
+    command = tmp_path / "fake-gh"
+    command.write_text(f"#!{sys.executable}\nimport os,time\n"
+                       f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+                       "time.sleep(0.4)\n")
+    command.chmod(0o700)
+    monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(command))
+    ctx = multiprocessing.get_context("fork")
+    results = ctx.Queue()
+    def retry_ignoring_hangup():
+        gh_pr_watch.signal.signal(gh_pr_watch.signal.SIGHUP, gh_pr_watch.signal.SIG_IGN)
+        result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+        assert gh_pr_watch.signal.getsignal(gh_pr_watch.signal.SIGHUP) == gh_pr_watch.signal.SIG_IGN
+        results.put(result)
+    worker = ctx.Process(target=retry_ignoring_hangup)
+    try:
+        worker.start()
+        deadline = gh_pr_watch.time.monotonic() + 3
+        while not pid_file.exists():
+            assert gh_pr_watch.time.monotonic() < deadline
+            gh_pr_watch.time.sleep(0.01)
+        os.kill(worker.pid, gh_pr_watch.signal.SIGHUP)
+        worker.join(timeout=2)
+        assert worker.exitcode == 0, "ignored hangup terminated the watcher"
+        assert results.get(timeout=1)["reason"] == "rerun_triggered"
+        assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "confirmed"
+    finally:
+        if worker.is_alive():
+            worker.kill()
+            worker.join(timeout=2)
+        if pid_file.exists():
+            try:
+                os.killpg(int(pid_file.read_text()), gh_pr_watch.signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        results.close()
+
+
+def test_wrapper_unsent_receipt_save_failure_reports_restore_disposition(monkeypatch, tmp_path):
+    _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
+    original_save = gh_pr_watch.save_state
+    saves = 0
+    def fail_restore(path_arg, state):
+        nonlocal saves
+        saves += 1
+        if saves == 1:
+            original_save(path_arg, state)
+        else:
+            raise OSError("unsent receipt restoration failed")
+    monkeypatch.setattr(gh_pr_watch, "save_state", fail_restore)
+    def refuse(*_a, **_kw):
+        raise gh_pr_watch.GhCommandNotSent("offline definite pre-write refusal")
+    monkeypatch.setattr(gh_pr_watch, "gh_text", refuse)
+    result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+    assert result["reason"] == "state_save_error"
+    assert result["not_sent_run_ids"] == [1]
+    assert result["unsent_state_restored"] is False
+    assert result["recovery_error"] == "unsent receipt restoration failed"
+    assert result["retries_used"] == 1
+    assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "submitting"
+
+
 @pytest.mark.parametrize("receipt", [None, {"schema_version": 1, "nonce": "old-invocation", "write_outcome": "not_started"}])
 def test_default_wrapper_requires_matching_receipt(monkeypatch, tmp_path, receipt):
     _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])

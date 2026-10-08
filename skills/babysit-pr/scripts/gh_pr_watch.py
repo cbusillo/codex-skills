@@ -283,7 +283,9 @@ def command_signal_cleanup():
         raise SystemExit(128 + signum)
     if threading.current_thread() is threading.main_thread():
         for signum in (signal.SIGTERM, signal.SIGHUP):
-            previous[signum] = signal.signal(signum, terminate)
+            handler = signal.getsignal(signum)
+            if handler != signal.SIG_IGN:
+                previous[signum] = signal.signal(signum, terminate)
     try:
         yield
     finally:
@@ -1779,6 +1781,16 @@ def retry_failed_now(args):
         return result
 
 
+def save_unsent_state(state_path, state, result):
+    try:
+        save_state(state_path, state)
+    except OSError as err:
+        result["unsent_state_restored"] = False
+        result["recovery_error"] = github_api.redact_string(str(err))
+        raise
+    result["unsent_state_restored"] = True
+
+
 def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
     pr = snapshot["pr"]
     state, _ = load_state(state_path)
@@ -1854,26 +1866,24 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
             if not result["rerun_run_ids"]:
                 set_retry_count(state, pr["head_sha"], retries_used)
             try:
-                save_state(state_path, state)
-                result["unsent_state_restored"] = True
-            except OSError as recovery_error:
-                result["unsent_state_restored"] = False
-                result["recovery_error"] = github_api.redact_string(str(recovery_error))
+                save_unsent_state(state_path, state, result)
+            except OSError:
+                pass
             raise
         result["rerun_attempted"] = True
         try:
             gh_text(["run", "rerun", str(run_id)] + ([] if recovery else ["--failed"]), repo=pr["repo"])
         except GhCommandError as err:
             detail = github_api.redact_string(str(err))
+            not_sent = isinstance(err, GhCommandNotSent) or isinstance(err.__cause__, FileNotFoundError)
             # gh rewrites HTTP 403 into this message, dropping the status.
             rejected = bool(re.search(r"HTTP (?:400|401|403|404|410|422|429)\b", detail)) or (
                 f"run {run_id} cannot be rerun;" in detail
                 or "failed to get run:" in detail
-                or isinstance(err.__cause__, FileNotFoundError)
-                or isinstance(err, GhCommandNotSent)
+                or not_sent
             )
             if rejected:
-                if isinstance(err, GhCommandNotSent) or isinstance(err.__cause__, FileNotFoundError):
+                if not_sent:
                     result.setdefault("not_sent_run_ids", []).append(run_id)
                 del pending[str(run_id)]
                 if not result["rerun_run_ids"]:
@@ -1882,7 +1892,10 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
                 nonretryable = "cannot be retried" in detail.lower()
                 if nonretryable:
                     rejected_runs[str(run_id)] = {"run_attempt": attempt, "reason": detail}
-                save_state(state_path, state)
+                if not_sent:
+                    save_unsent_state(state_path, state, result)
+                else:
+                    save_state(state_path, state)
                 if not nonretryable:
                     result["reason"] = "rerun_rejected"
                     result["error"] = detail

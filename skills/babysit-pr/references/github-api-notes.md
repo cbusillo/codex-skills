@@ -174,7 +174,8 @@ configuration/installation refusals without interpreting error text. The
 watcher releases only that unsent intent and charge. A genuine timeout without
 that receipt remains unknown,
 including a hung preflight; an unchanged attempt cannot prove no write was sent.
-On the main thread, SIGTERM and SIGHUP use the interruption cleanup path: kill
+On the main thread, SIGTERM and SIGHUP, unless already ignored, use the
+interruption cleanup path: kill
 and reap the command group, restore the parent's signal handlers, and exit while
 retaining submitting intent and budget. Cleanup does not prove no write occurred.
 An uncatchable SIGKILL, termination during process creation, or termination
