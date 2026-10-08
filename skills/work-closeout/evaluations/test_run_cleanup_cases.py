@@ -75,6 +75,8 @@ class CleanupRunnerTests(unittest.TestCase):
                 raise SystemExit(0)
             assert not any(key in os.environ for key in ("GH_TOKEN", "GITHUB_TOKEN", "CODEX_GITHUB_TOKEN", "SSH_AUTH_SOCK"))
             mode = os.environ.get("CODEX_CLEANUP_FIXTURE_MODE", "success")
+            marker = json.loads((pathlib.Path(os.environ["CODEX_HOME"]) / "auth.json").read_text())["fixture_marker"]
+            print(marker, file=sys.stderr, flush=True)
             if mode == "oversized":
                 sys.stdout.write("x" * (17 * 1024 * 1024))
                 sys.stdout.flush()
@@ -90,7 +92,6 @@ class CleanupRunnerTests(unittest.TestCase):
             session = pathlib.Path(os.environ["CODEX_HOME"]) / "sessions/2026/09/13/rollout-test.jsonl"
             session.parent.mkdir(parents=True, exist_ok=True)
             cwd = args[args.index("-C") + 1] if "-C" in args else str(pathlib.Path.cwd())
-            marker = json.loads((pathlib.Path(os.environ["CODEX_HOME"]) / "auth.json").read_text())["fixture_marker"]
             network_access = mode == "network-enabled"
             lines = [
                 {"type":"session_meta","payload":{"id":thread,"cli_version":"9.9.9-test","model_provider":"openai","source":"exec"}},
@@ -116,7 +117,6 @@ class CleanupRunnerTests(unittest.TestCase):
             print(json.dumps({"type":"turn.started"}))
             print(json.dumps({"type":"item.completed","item":{"type":"command_execution","command":"git status","aggregated_output":"","exit_code":0,"status":"completed"}}))
             print(json.dumps({"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}))
-            print(marker, file=sys.stderr)
             """
         )
 
@@ -388,10 +388,16 @@ class CleanupRunnerTests(unittest.TestCase):
                     environment={"CODEX_CLEANUP_FIXTURE_MODE": mode},
                 )
                 result = self.run_case(case)
-                self.assertEqual(2, result.returncode)
+                self.assertEqual(2, result.returncode, result.stderr)
                 self.assertFalse(outcome.exists())
                 artifact = self.outcomes / f"cleanup-{mode}.artifacts"
-                self.assertFalse(any(path.name.startswith("raw.") for path in artifact.rglob("*")))
+                self.assertNotIn(FIXTURE_AUTH_CANARY, result.stdout + result.stderr)
+                for path in artifact.rglob("*"):
+                    if path.is_file():
+                        self.assertFalse(
+                            FIXTURE_AUTH_CANARY.encode() in path.read_bytes(),
+                            f"fixture auth retained in {path.relative_to(artifact)}",
+                        )
                 self.assertFalse(any(self.private.iterdir()))
 
     def test_rejects_unmarked_workspace_secret_environment_and_external_output(self) -> None:
