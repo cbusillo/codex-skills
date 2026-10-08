@@ -139,9 +139,9 @@ records that run.
   choice. Follow it; do not keep a separate order or choose accounts by name.
   See the [direction#25 decision](https://github.com/cbusillo/direction/issues/25#issuecomment-5998554421)
   and [codex-skills#1270 clarification](https://github.com/cbusillo/codex-skills/issues/1270#issuecomment-6046982893).
-- Agents never apply a banked reset; ask Chris to apply it. A reset may be
-  applied only when every account of that provider is at 0, including its
-  use-last account. This covers Claude too, under the
+- Agents never apply a banked reset. Only when every account of that provider,
+  including its use-last account, has no capacity left (0% remaining), ask the
+  Director to apply one. This covers Claude too, under the
   [context-panel#791 reset decision](https://github.com/cbusillo/context-panel/issues/791#issuecomment-6050912240)
   and [Claude confirmation](https://github.com/cbusillo/context-panel/issues/791#issuecomment-6050965276).
 - Run enough productive work that banked resets get used before they expire,
