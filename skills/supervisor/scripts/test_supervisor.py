@@ -1034,7 +1034,12 @@ class TerminalTests(unittest.TestCase):
                         "zsh -lc 'CLAUDE_CONFIG_DIR=/other claude brief'", "eval 'CLAUDE_CONFIG_DIR=/other claude brief'",
                         "env -P /usr/bin CLAUDE_CONFIG_DIR=/other claude brief", "env -S 'CLAUDE_CONFIG_DIR=/other claude brief'",
                         "env -i claude brief", "env - claude brief", "readonly CLAUDE_CONFIG_DIR=/other; claude brief",
-                        "CLAUDE_CONFIG_DIR+=/other claude brief"):
+                        "CLAUDE_CONFIG_DIR+=/other claude brief",
+                        "bash --noprofile --norc -c 'CLAUDE_CONFIG_DIR=/other claude brief'",
+                        "env TERM=xterm-256color zsh -lc 'CLAUDE_CONFIG_DIR=/other claude brief'",
+                        "env FOO=1 env CLAUDE_CONFIG_DIR=/other claude brief",
+                        "FOO=1 exec env CLAUDE_CONFIG_DIR=/other claude brief",
+                        "fish -c 'set -gx CLAUDE_CONFIG_DIR /other; claude brief'"):
             with self.subTest(command=command), self.assertRaisesRegex(ValueError, "already sets CLAUDE_CONFIG_DIR"):
                 iterm_tab.with_account(command, choice)
         with self.assertRaisesRegex(ValueError, "already sets CODEX_HOME"):

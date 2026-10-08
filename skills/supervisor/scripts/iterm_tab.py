@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import shlex
 from pathlib import Path
 
@@ -81,6 +82,8 @@ async def wait_for_session(app, tab, timeout=10.0):
 
 def account_settings(command_text, keys, depth=0):
     """Find shell setters, rather than matching text inside a brief argument."""
+    if depth >= 5:
+        raise ValueError("nested launch commands are too deep; use one invocation and a brief file")
     lexer = shlex.shlex(command_text, posix=True, punctuation_chars=";&|()")
     lexer.whitespace_split = True
     segments = [[]]
@@ -92,25 +95,32 @@ def account_settings(command_text, keys, depth=0):
     found = set()
     for words in segments:
         index = 0
-        while index < len(words) and Path(words[index]).name in {"exec", "command", "nohup", "time", "builtin", "{"}:
-            index += 1
-            while index < len(words) and words[index].startswith("-"):
+        while index < len(words):
+            if Path(words[index]).name in {"exec", "command", "nohup", "time", "builtin", "{"}:
+                wrapper = Path(words[index]).name
                 index += 1
-        while index < len(words) and "=" in words[index]:
-            found.add(words[index].split("=", 1)[0].rstrip("+"))
-            index += 1
+                while index < len(words) and words[index].startswith("-"):
+                    if wrapper == "exec" and words[index] == "-c":
+                        found.update(keys)
+                    if wrapper == "exec" and words[index] == "-a":
+                        index += 1
+                    index += 1
+            elif re.match(r"^[A-Za-z_][A-Za-z0-9_]*\+?=", words[index]):
+                found.add(words[index].split("=", 1)[0].rstrip("+"))
+                index += 1
+            else:
+                break
         if index == len(words):
             continue
         command = Path(words[index]).name
         args = words[index + 1:]
-        if command in {"export", "declare", "typeset", "local", "readonly", "unset"}:
+        if command in {"export", "declare", "typeset", "local", "readonly", "unset", "set"}:
             found.update(arg.split("=", 1)[0].rstrip("+") for arg in args if not arg.startswith("-"))
         elif command == "eval" or (command in {"sh", "bash", "zsh", "dash", "fish"}
-                                    and any(arg.startswith("-") and "c" in arg for arg in args)):
-            if depth >= 5:
-                raise ValueError("nested launch commands are too deep; use one invocation and a brief file")
+                                    and any(re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", arg) for arg in args)):
             body = " ".join(args) if command == "eval" else next(
-                (args[i + 1] for i, arg in enumerate(args[:-1]) if arg.startswith("-") and "c" in arg), "")
+                (args[i + 1] for i, arg in enumerate(args[:-1])
+                 if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", arg)), "")
             found.update(account_settings(body, keys, depth + 1))
         elif command == "env":
             index = 0
@@ -135,6 +145,7 @@ def account_settings(command_text, keys, depth=0):
                 elif "=" in arg and not arg.startswith("-"):
                     found.add(arg.split("=", 1)[0])
                 elif not arg.startswith("-"):
+                    found.update(account_settings(shlex.join(args[index:]), keys, depth + 1))
                     break
                 index += 1
     return found.intersection(keys)
