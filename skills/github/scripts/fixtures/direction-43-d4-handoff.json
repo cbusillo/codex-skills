@@ -1,0 +1,30 @@
+{
+  "repo": "cbusillo/direction",
+  "issue": 43,
+  "comments": [
+    {
+      "author": "shiny-code-app[bot]",
+      "body": "Claimed by codex-DIR-43-D4\n\nSession: 01a11c74-ff6a-7663-8423-f1a9b9be6d1f\nBranch: work/dir-43-d4\nClaimed at: 2026-10-08T13:01:46-04:00\nNext action: Prepare only the exact Q102 Stop Boundaries bullet replacement in one DIRECTION.md-only PR against main; another-provider review, changed-file inspection evidence and CI, then Supervisor handoff for Chris code-owner approval. Capacity admission: current overall DIRECTION.md Order 3 admits tooling when every milestone available work already has the sessions it can use and provider capacity would otherwise go unused; this assigned spare-capacity DIR-43-D4 brief and codex-skills#1043 Owner decision 5982761132 admit this run. No assertion that every milestone waits on people; no PR labels, merge or train operation.\n\n<!-- github-plan:claim {\"branch\": \"work/dir-43-d4\", \"claimed_at\": \"2026-10-08T13:01:46-04:00\", \"session\": \"01a11c74-ff6a-7663-8423-f1a9b9be6d1f\", \"worker\": \"codex-DIR-43-D4\"} -->\n\nWait resolution: Q102 Director decision 6064308867 authorizes the exact bullet revision now. Current DIR-43-D4 brief explicitly selects plain claim without retained-handoff flags after direction#44 landed at 062be8fd0920813715991224311e991362c22720. Both earlier source claims have unconditional exact-ID releases; no open direction PR competes. Future Chris code-owner approval and other DR/Launchplane companion decisions do not block this authorized Q102 preparation.\n\nPrevious Current Status:\n> State: Q102-only revision preparation stopped before claim success on the known handoff-parser defect in https://github.com/cbusillo/codex-skills/issues/1460. DIR-43-D3 acquired no claim and created no source work or PR. Q85's overall PR https://github.com/cbusillo/direction/pull/44 has landed; its Launchplane companion https://github.com/cbusillo/launchplane/pull/3132 remains open with the Supervisor.\n> Next action: Supervisor arranges supported handoff/helper recovery, then rebriefs an agent to prepare the exact Q102 bullet replacement as one DIRECTION.md-only PR, get another-provider review, and return it for Chris's code-owner approval. Other DR items remain with Chris through the Supervisor; this run changed none of them.\n> Blocked by: No native issue blocker. Q102 preparation cannot pass claim until the handoff/parser refusal is resolved; defect tracked on codex-skills#1460. The attempted successor used source claim 6061486703 and handoff comment 6061912802 and returned write_outcome=not_started, completed_steps=[].\n> Waiting for: Agent handoff/helper recovery for Q102; no new Director decision before preparation. Chris's answers on remaining DR items and code-owner approval of the Launchplane companion remain separate waits. plan:active is preserved for the agent handoff.\n> Last verified: October 8, 2026, 12:26 PM ET. Q102 decision: https://github.com/cbusillo/direction/issues/43#issuecomment-6064308867. Overall #44 landing: 062be8fd0920813715991224311e991362c22720; companion #3132 head: e1288c73267738053c29826b6a51a26ea4c27856. No label, merge, land, train, runtime, grant or credential action.\n\n<!-- github-skill-operation:bcb9754004e5c872f603a8bd99151b88 -->\n",
+      "created_at": "2026-10-08T17:01:49Z",
+      "id": 6064968853,
+      "updated_at": "2026-10-08T17:01:49Z",
+      "url": "https://github.com/cbusillo/direction/issues/43#issuecomment-6064968853"
+    },
+    {
+      "author": "shiny-code-app[bot]",
+      "body": "Released claim 6064968853\n\n<!-- github-skill-operation:8c97f1180fd9b205e8b12749a1d00e6d -->\n",
+      "created_at": "2026-10-08T17:07:49Z",
+      "id": 6065071279,
+      "updated_at": "2026-10-08T17:07:49Z",
+      "url": "https://github.com/cbusillo/direction/issues/43#issuecomment-6065071279"
+    },
+    {
+      "author": "shiny-code-app[bot]",
+      "body": "DIR-43-D4 Q102 preparation is complete: [direction#46](https://github.com/cbusillo/direction/pull/46) Client release boundary, head `f6a82489710df66588bc59358891c04ee7b92c97`, changes only the exact Stop Boundaries bullet Chris decided; every other byte in DIRECTION.md is unchanged. Plain claim succeeded and is released. CI passed 1/1; Anthropic **claude-opus-5-5** reviewed this head, with [wording concerns and disposition](https://github.com/cbusillo/direction/issues/43#issuecomment-6065039218) retained here for Chris. No further policy change was made. The [Ready for the merge train comment](https://github.com/cbusillo/direction/pull/46#issuecomment-6065039766) requires Chris's GitHub code-owner approval first. **Supervisor's next action: bring this one PR and its review concerns to Chris, then own authorized routing.** Other DR work remains separate. JetBrains inspection not run: prose-only change, no code paths affected; local exact-replacement/scope/diff and existing direction checks pass. The clean pushed locked worktree and host-designated review/CI evidence are preserved for the open PR and Supervisor acceptance, with supported retirement after landing/closure; primary main and earlier worktrees remain untouched. Watcher and reviewer ended, task scratch is removed after durable read-back, and no unattended task work continues. No PR label, merge, land, train, runtime, access or Client-system action occurred. Love: exact scope with one existing release rule. Do not love: the unverified migration wording concern remains with Chris's code-owner review. Safe to exit: yes.\n\n<!-- github-skill-operation:9f7a7822690b5ce5fb732460f1efaa07 -->\n",
+      "created_at": "2026-10-08T17:07:54Z",
+      "id": 6065072598,
+      "updated_at": "2026-10-08T17:07:54Z",
+      "url": "https://github.com/cbusillo/direction/issues/43#issuecomment-6065072598"
+    }
+  ]
+}

@@ -491,7 +491,16 @@ machine:
 uv run skills/model-review/scripts/review_with_model.py check --repo .
 ```
 
-`agy` is the one that needs setup. Run headless it stops at the first tool that
+OpenAI and Anthropic reviews use Context Panel's account choice through the
+[shared Supervisor reader](skills/supervisor/scripts/account_choice.py), with the
+same private [account mappings](skills/supervisor/references/helpers.md). Each
+review sets only its child's home, removes inherited provider auth/routing overrides,
+and writes a count-only launch receipt before starting. Its JSON names the
+chosen account and receipt. If the choice or receipt storage is unavailable,
+the review fails before starting; it does not fall back to the caller's account.
+Google keeps its existing account setup.
+
+`agy` also needs tool permissions. Run headless it stops at the first tool that
 needs permission and returns an empty answer with exit code 0, which looks like
 a reviewer that found nothing. The helper reports that as a failure and prints
 the exact read-only allow rules to add to your own `agy` settings. They name

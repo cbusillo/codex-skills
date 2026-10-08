@@ -31,6 +31,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+# Share the Supervisor reader rather than keeping a second account chooser.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from skills.supervisor.scripts import account_choice
+
 PROVIDERS = {"openai": "codex", "anthropic": "claude", "google": "agy"}
 FAULT_MARKER_NAME = "model-review-fault.md"
 AGY_SETTINGS = Path("~/.gemini/antigravity-cli/settings.json")
@@ -88,8 +92,8 @@ def agy_unsafe_rules(allow: list[Any]) -> tuple[list[str], list[str]]:
     return sorted(stale), sorted(other)
 
 
-def run_cli(argv: list[str], cwd: Path, timeout: int) -> subprocess.CompletedProcess[str]:
-    env = {key: value for key, value in os.environ.items() if key != "CLAUDECODE"}
+def run_cli(argv: list[str], cwd: Path, timeout: int, env: Mapping[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    env = {key: value for key, value in (os.environ if env is None else env).items() if key != "CLAUDECODE"}
     return subprocess.run(
         argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout
     )
@@ -112,7 +116,8 @@ def openai_error_detail(message: str) -> str:
     return message[-400:]
 
 
-def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scratch: Path) -> dict[str, Any]:
+def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scratch: Path,
+                  env: Mapping[str, str] | None = None) -> dict[str, Any]:
     answer = scratch / "answer.md"
     # `-s read-only` does not reach MCP servers: they run outside the sandbox, and a tool that calls
     # itself read-only runs without approval. Ignoring the user's config drops their servers, plugins,
@@ -121,7 +126,7 @@ def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scra
     argv += ["--json", "-C", str(repo), "-s", "read-only", "-o", str(answer)]
     if model:
         argv += ["-m", model]
-    proc = run_cli([*argv, prompt], repo, timeout)
+    proc = run_cli([*argv, prompt], repo, timeout, env)
     response = answer.read_text() if answer.is_file() else ""
     # JSON mode does not include the model banner; a request is not proof of the model used.
     metadata = {"model": model, "model_source": "requested, not reported by the CLI" if model else "unknown"}
@@ -180,7 +185,8 @@ def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scra
             "successful_commands": commands}
 
 
-def review_anthropic(prompt: str, repo: Path, model: str | None, timeout: int, _scratch: Path) -> dict[str, Any]:
+def review_anthropic(prompt: str, repo: Path, model: str | None, timeout: int, _scratch: Path,
+                     env: Mapping[str, str] | None = None) -> dict[str, Any]:
     # `--tools` limits what exists in the session. `--allowedTools` would only pre-approve these
     # on top of the user's own settings, which may already allow editing. `--tools` does not reach
     # MCP servers, which can write outside the repository; `--strict-mcp-config` with no config drops them.
@@ -189,7 +195,7 @@ def review_anthropic(prompt: str, repo: Path, model: str | None, timeout: int, _
     argv += ["--output-format", "json"]
     if model:
         argv += ["--model", model]
-    proc = run_cli(argv, repo, timeout)
+    proc = run_cli(argv, repo, timeout, env)
     try:
         payload = json.loads(proc.stdout)
     except json.JSONDecodeError:
@@ -384,12 +390,33 @@ def branch_diff(repo: Path) -> bytes:
     return diff.stdout
 
 
+def reviewer_environment(choice: dict[str, Any]) -> dict[str, str]:
+    """Route only the child home; inherited auth overrides must not bypass its login."""
+    env = dict(os.environ)
+    provider = choice["provider"]
+    variable = account_choice.ACCOUNT_VARIABLES[provider]
+    overrides = {
+        "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+                      "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
+                      "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+                      "CLAUDE_CODE_USE_MANTLE", "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+                      "ANTHROPIC_CUSTOM_HEADERS"),
+        "openai": ("OPENAI_API_KEY", "CODEX_API_KEY"),
+    }
+    for key in (variable, *overrides[provider]):
+        env.pop(key, None)
+    if variable in choice["env"]:
+        env[variable] = os.path.expanduser(choice["env"][variable])
+    return env
+
+
 def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: int) -> dict[str, Any]:
     if shutil.which(PROVIDERS[provider]) is None:
         return failed(provider, f"`{PROVIDERS[provider]}` is not installed", installed=False)
     # File-tool reviewers need the generated diff under their authorized read root.
     # Do not change TMPDIR: child tools such as uv would leave locks in the checkout.
     scratch_options = {"dir": repo} if provider in {"google", "anthropic"} else {}
+    launch = {}
     try:
         with tempfile.TemporaryDirectory(prefix=".model-review-", **scratch_options) as scratch:
             diff = branch_diff(repo)
@@ -407,7 +434,15 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                 diff_path = Path(scratch) / "change.diff"
                 diff_path.write_text(diff.decode(errors="backslashreplace"))
                 preamble += f"The changes to review are in {diff_path}. Read that file with your read-only tools.\n\n"
-            result = REVIEWERS[provider](preamble + prompt, repo, model, timeout, Path(scratch))
+            if provider in account_choice.ACCOUNT_VARIABLES:
+                choice = account_choice.select(provider)
+                env = reviewer_environment(choice)
+                account_choice.prepare_launch(choice)
+                receipt = account_choice.record_launch(choice)
+                launch = {"account": account_choice.public(choice), "launch_receipt": str(receipt)}
+                result = REVIEWERS[provider](preamble + prompt, repo, model, timeout, Path(scratch), env)
+            else:
+                result = REVIEWERS[provider](preamble + prompt, repo, model, timeout, Path(scratch))
             if provider == "google" and result.get("denied") == ["command"]:
                 refusal = result
                 reminder = (
@@ -427,15 +462,15 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                 if refusal.get("command_diagnostic"):
                     result["recovery"]["command_diagnostic"] = refusal["command_diagnostic"]
     except subprocess.TimeoutExpired:
-        return failed(provider, f"no answer within {timeout} seconds")
-    except (OSError, RuntimeError) as exc:
-        return failed(provider, str(exc))
+        return failed(provider, f"no answer within {timeout} seconds", **launch)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return failed(provider, str(exc), **launch)
     if result["ok"] and not result["response"].strip():
         result = {**result, "ok": False, "error": "the reviewer returned nothing"}
         result.pop("response")
     if not result["ok"] and result.get("recovery", {}).get("denied_commands") and not result.get("denied_commands"):
         result["error"] += "; previous refused command: " + "; ".join(result["recovery"]["denied_commands"])
-    return result
+    return {**result, **launch}
 
 
 def fault_marker(source: Mapping[str, str] = os.environ) -> Path:
