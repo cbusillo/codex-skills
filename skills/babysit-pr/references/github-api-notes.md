@@ -100,9 +100,51 @@ progress with a failure exit. Transport errors retain intent and stop further
 submissions. Watch and retry processes serialize load/update/save through the
 same state-file lock.
 Saved intents suppress further retries and merge readiness until a later read
-shows a higher `run_attempt`. Missing or unchanged attempt evidence remains
-`check_rerun_outcome`; interrupted or unknown writes also emit
+shows a higher `run_attempt`. Unchanged attempt evidence remains
+`check_rerun_outcome`; a confirmed run absent from the complete head inventory
+also emits `stop_missing_rerun`. Its intent and budget remain saved for direct
+run investigation, rather than polling forever or resetting the state.
+Interrupted or unknown writes also emit
 `stop_unknown_rerun` rather than waiting indefinitely or resetting intent.
+Confirmed "cannot be retried" rejections are saved by head, run and attempt.
+They consume no budget and are skipped on later submissions; when all eligible
+attempts have that rejection, `stop_nonretryable_rerun` asks for a distinct
+supported recovery. A higher observed attempt permits normal selection again.
+Other confirmed rejections remain retryable after correcting their reported
+access/request problem. Neither rejection path infers rejection from an unchanged
+terminal attempt. A later acquisition PR-read failure returns `rerun_read_error`
+with the already confirmed `rerun_run_ids`, retry charge and redacted API error.
+
+## State lifetime and recovery
+
+Default state lives in `$XDG_STATE_HOME/pr-babysit` when configured, otherwise
+`~/.local/state/pr-babysit`, one JSON file per repository and PR. `--state-file`
+still selects an explicit location; use a persistent filesystem for restart
+recovery. State has no age-based expiry. Each new head has separate retry,
+pending and rejected-attempt records; old-head evidence remains in the file.
+
+When the new default file is absent, the watcher copies the previous matching
+`/tmp/pr-babysit-OWNER-REPO-prNUMBER.json` under both state locks before collecting
+a snapshot. It leaves that source evidence in place and never overwrites an
+existing new-default file. Stop watchers running older code before switching
+the default; concurrent old and new watchers otherwise use different files.
+To continue an existing watcher during a transition, keep passing its exact
+`--state-file`. If the old temporary file has already disappeared, its evidence
+cannot be reconstructed from an unchanged terminal attempt: do not treat a fresh
+file as permission to repeat an uncertain write.
+
+Writes flush and fsync the private temporary file before atomic replacement,
+then fsync its directory. These are filesystem durability requests, with
+process-restart coverage; no kernel crash, reboot or power-loss experiment was
+performed and storage hardware guarantees are not claimed.
+
+CLI rerun commands have a 60-second ceiling (shorter under an inherited GitHub
+deadline); timeout kills the command group, keeps the pre-write intent and
+budget, and returns `rerun_outcome_unknown`. Lock acquisition has a 60-second
+ceiling too; contention fails without changing evidence, so resume with the same
+file after its holder exits. Snapshot and pre-write readers share a bounded
+60-second deadline through the existing GitHub transport. No outer retry loop,
+identity fallback, expiry or replay is introduced.
 
 ### Required scans cancelled before runner acquisition
 

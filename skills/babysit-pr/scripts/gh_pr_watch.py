@@ -12,6 +12,7 @@ from contextlib import contextmanager
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,8 @@ import yaml
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_GH = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-with-env-token"
 GH_COMMAND = os.environ.get("GH_PR_WATCH_GH") or str(DEFAULT_GH)
+COMMAND_TIMEOUT_SECONDS = 60.0
+LOCK_TIMEOUT_SECONDS = 60.0
 DEFAULT_PR_HELPER = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-pr.py"
 PR_HELPER = os.environ.get("GH_PR_WATCH_PR_HELPER") or str(DEFAULT_PR_HELPER)
 DEFAULT_OWNER_REVIEW_HELPER = SCRIPT_DIR.parent.parent / "launchplane" / "scripts" / "launchplane-owner-review.py"
@@ -269,12 +272,30 @@ def gh_text(args, repo=None):
         cmd.extend(["-R", repo])
     cmd.extend(args)
     try:
-        proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, start_new_session=True)
+        try:
+            stdout, stderr = proc.communicate(timeout=min(
+                COMMAND_TIMEOUT_SECONDS, github_api.remaining_retry_timeout_seconds(),
+            ))
+        except (subprocess.TimeoutExpired, KeyboardInterrupt):
+            # The auth wrapper has child processes. Kill the whole command group
+            # so an inherited stdout pipe cannot keep communicate/our lock hung.
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.communicate()
+            raise
+        if proc.returncode:
+            raise subprocess.CalledProcessError(proc.returncode, cmd, stdout, stderr)
+    except subprocess.TimeoutExpired as err:
+        raise GhCommandError("GitHub CLI command timed out; rerun outcome is unknown") from err
     except FileNotFoundError as err:
         raise GhCommandError("`gh` command not found") from err
     except subprocess.CalledProcessError as err:
         raise GhCommandError(_format_gh_error(cmd, err)) from err
-    return proc.stdout
+    return stdout
 
 
 def gh_json(args, repo=None):
@@ -490,9 +511,18 @@ def load_state(path):
 
 @contextmanager
 def state_lock(path):
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with path.with_name(path.name + ".lock").open("a") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        deadline = time.monotonic() + min(LOCK_TIMEOUT_SECONDS, github_api.remaining_retry_timeout_seconds())
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(f"State lock timed out: {path}; preserve state and retry after its holder exits")
+                time.sleep(min(0.05, remaining))
         try:
             yield
         finally:
@@ -500,14 +530,21 @@ def state_lock(path):
 
 
 def save_state(path, state):
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     payload = json.dumps(state, indent=2, sort_keys=True) + "\n"
     fd, tmp_name = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=path.parent)
     tmp_path = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
             tmp_file.write(payload)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
         os.replace(tmp_path, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except Exception:
         try:
             tmp_path.unlink(missing_ok=True)
@@ -517,6 +554,11 @@ def save_state(path, state):
 
 
 def default_state_file_for(pr):
+    root = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state").expanduser()
+    return root / "pr-babysit" / legacy_state_file_for(pr).name
+
+
+def legacy_state_file_for(pr):
     repo_slug = pr["repo"].replace("/", "-")
     return Path(f"/tmp/pr-babysit-{repo_slug}-pr{pr['number']}.json")
 
@@ -1364,6 +1406,12 @@ def collect_snapshot(args):
     pr_diagnostic = pr.pop("_read_diagnostic", None)
     state_path = Path(args.state_file) if args.state_file else default_state_file_for(pr)
     with state_lock(state_path):
+        if not args.state_file and not state_path.exists():
+            legacy_path = legacy_state_file_for(pr)
+            with state_lock(legacy_path):
+                if legacy_path.exists():
+                    legacy_state, _ = load_state(legacy_path)
+                    save_state(state_path, legacy_state)
         return collect_locked_snapshot(args, pr, pr_diagnostic, state_path)
 
 
@@ -1374,6 +1422,7 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
         state["started_at"] = int(time.time())
 
     reader = watcher_reader()
+    reader.deadline_at = time.time() + min(COMMAND_TIMEOUT_SECONDS, github_api.remaining_retry_timeout_seconds())
     authenticated_login = get_authenticated_login(reader)
     new_review_items = fetch_new_review_items(
         pr,
@@ -1397,6 +1446,10 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
     failed_runs = failed_runs_from_workflow_runs(workflow_runs, pr["head_sha"])
     failed_jobs = failed_jobs_from_workflow_runs(pr["repo"], workflow_runs, pr["head_sha"], reader=reader)
     pending_reruns = reconcile_pending_reruns(state, pr["head_sha"], workflow_runs)
+    present_ids = {str(run.get("id")) for run in workflow_runs if run.get("head_sha") == pr["head_sha"]}
+    missing_confirmed_ids = [run_id for run_id, intent in pending_reruns.items()
+                             if intent["outcome"] == "confirmed" and run_id not in present_ids]
+    rejected = reconcile_rejected_reruns(state, pr["head_sha"], workflow_runs)
     retries_used = current_retry_count(state, pr["head_sha"])
     if (not pr["closed"] and not pr["merged"] and not pending_reruns
             and checks_summary.get("evidence_complete") is True and checks_summary["all_terminal"]
@@ -1431,8 +1484,16 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
         actions.append("check_rerun_outcome")
         if any(item["outcome"] != "confirmed" for item in pending_reruns.values()):
             actions.append("stop_unknown_rerun")
+        if missing_confirmed_ids:
+            actions.append("stop_missing_rerun")
     elif "retry_failed_checks" in actions and not retryable_failed_runs(failed_runs, failed_jobs):
         actions.remove("retry_failed_checks")
+    elif "retry_failed_checks" in actions and all(
+        rejected.get(str(run["run_id"]), {}).get("run_attempt") == run["run_attempt"]
+        for run in retryable_failed_runs(failed_runs, failed_jobs)
+    ):
+        actions.remove("retry_failed_checks")
+        actions.append("stop_nonretryable_rerun")
 
     state["pr"] = {"repo": pr["repo"], "number": pr["number"]}
     state["last_seen_head_sha"] = pr["head_sha"]
@@ -1452,6 +1513,8 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
             "current_sha_retries_used": retries_used,
             "max_flaky_retries": args.max_flaky_retries,
             "pending_run_ids": list(pending_reruns),
+            "missing_confirmed_run_ids": missing_confirmed_ids,
+            "rejected_run_ids": list(rejected),
         },
         "minimum_poll_seconds": max((github_read.poll_interval(result.headers) for result in reader.results), default=0.0),
         "read_diagnostics": {
@@ -1593,6 +1656,18 @@ def reconcile_pending_reruns(state, head_sha, workflow_runs):
     return pending
 
 
+def reconcile_rejected_reruns(state, head_sha, workflow_runs):
+    rejected = state.setdefault("rejected_reruns_by_sha", {}).setdefault(head_sha, {})
+    for run in workflow_runs:
+        run_id = str(run.get("id"))
+        prior = rejected.get(run_id, {}).get("run_attempt")
+        attempt = run.get("run_attempt")
+        if (run.get("head_sha") == head_sha and isinstance(prior, int)
+                and isinstance(attempt, int) and attempt > prior):
+            del rejected[run_id]
+    return rejected
+
+
 def retry_failed_now(args):
     snapshot, state_path = collect_snapshot(args)
     pr = snapshot["pr"]
@@ -1654,6 +1729,7 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
         return result
     recovery_runs = [run for run in eligible_runs if run.get("retry_mode") == "runner_acquisition"]
     submission_reader = watcher_reader()
+    submission_reader.deadline_at = time.time() + min(COMMAND_TIMEOUT_SECONDS, github_api.remaining_retry_timeout_seconds())
     if recovery_runs:
         # Pre-write acquisition evidence must reach GitHub, even inside the
         # polling cache's short coalescing window.
@@ -1661,11 +1737,15 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
     current_runs = {
         run.get("id"): run for run in get_workflow_runs_for_sha(pr["repo"], pr["head_sha"], reader=submission_reader)
     } if eligible_runs else {}
+    rejected_runs = reconcile_rejected_reruns(state, pr["head_sha"], list(current_runs.values()))
     cycle_charged = False
     for run in eligible_runs:
         run_id = run.get("run_id")
         current_run = current_runs.get(run_id, {})
         attempt = run.get("run_attempt")
+        if rejected_runs.get(str(run_id), {}).get("run_attempt") == attempt:
+            result["skipped_run_ids"].append(run_id)
+            continue
         if (not isinstance(attempt, int) or attempt <= 0
                 or current_run.get("head_sha") != pr["head_sha"]
                 or current_run.get("run_attempt") != attempt
@@ -1679,9 +1759,15 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
             result["skipped_run_ids"].append(run_id)
             continue
         if recovery:
-            fresh_pr = submission_reader.get_json(
-                f"/repos/{pr['repo']}/pulls/{pr['number']}", step="acquisition_pr_readback",
-            )
+            try:
+                fresh_pr = submission_reader.get_json(
+                    f"/repos/{pr['repo']}/pulls/{pr['number']}", step="acquisition_pr_readback",
+                )
+            except github_read.GitHubReadError as err:
+                result["reason"] = "rerun_read_error"
+                result["error"] = github_api.redact_string(str(err))
+                result["read_error"] = github_api.redact_body(err.result.as_dict())
+                break
             if (not isinstance(fresh_pr, dict) or fresh_pr.get("state") != "open"
                     or fresh_pr.get("merged") is not False
                     or (fresh_pr.get("head") or {}).get("sha") != pr["head_sha"]
@@ -1713,8 +1799,11 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
                 if not result["rerun_run_ids"]:
                     set_retry_count(state, pr["head_sha"], retries_used)
                     cycle_charged = False
+                nonretryable = "cannot be retried" in detail.lower()
+                if nonretryable:
+                    rejected_runs[str(run_id)] = {"run_attempt": attempt, "reason": detail}
                 save_state(state_path, state)
-                if "cannot be retried" not in detail.lower():
+                if not nonretryable:
                     result["reason"] = "rerun_rejected"
                     result["error"] = detail
                     break
@@ -1729,7 +1818,7 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
         result["rerun_count"] = len(result["rerun_run_ids"])
         save_state(state_path, state)
 
-    if result["reason"] not in {"rerun_outcome_unknown", "rerun_rejected", "pr_changed"}:
+    if result["reason"] not in {"rerun_outcome_unknown", "rerun_rejected", "pr_changed", "rerun_read_error"}:
         if result["rerun_run_ids"]:
             result["reason"] = "rerun_triggered"
         else:
@@ -1817,6 +1906,8 @@ def run_watch(args):
             "stop_pr_closed" in actions
             or "stop_exhausted_retries" in actions
             or "stop_unknown_rerun" in actions
+            or "stop_missing_rerun" in actions
+            or "stop_nonretryable_rerun" in actions
         ):
             print_event("stop", {"actions": snapshot.get("actions"), "pr": snapshot.get("pr")})
             return 0
