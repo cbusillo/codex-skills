@@ -85,13 +85,12 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     # Identity tokens and hidden transport/release receipts are not prose.
     condition = r"(?<![\w/.-])(?:if|after|once|when|unless|until|before|pending|provided|conditional|contingent (?:on|upon)|subject to|as soon as|on (?:merge|landing)|wait(?:ing)? for)(?![\w/-])"
     condition = rf"(?:{condition}|(?<![\w/.-])(?:upon|post-(?:merge|landing)|at (?:merge|landing))(?![\w/-]))"
-    # These phrases qualify an ownership statement, not an adjacent routing
+    # These phrases qualify ownership statements or sequenced permission, not a routing
     # note or an implicit condition on the directive itself.
     pr_reference = r"(?:PR )?(?:[\w.-]+/[\w.-]+)?#\d+"
     ownership_effect = (rf"(?<![\w/.-])(?:tomorrow|later today|on merging {pr_reference}|"
                         rf"(?:on|with|at) {pr_reference}(?:['’]s)? merg(?:e|ing)|"
                         r"at merge-train landing)(?![\w/-])")
-    future_time = r"(?<![\w/.-])(?:tomorrow|later today)(?![\w/-])"
     handoff = re.sub(r"(?s)<!--.*?-->", "", text)
     prose = ownership_text(handoff)
     prose = re.sub(r"(?m)^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", "", prose)
@@ -128,7 +127,7 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
         return True
     for index, statement in enumerate(statements):
         following = statements[index + 1].strip() if index + 1 < len(statements) else ""
-        if re.search(future_time, statement, re.IGNORECASE) and re.match(r"Then\b", following, re.IGNORECASE):
+        if re.search(ownership_effect, statement, re.IGNORECASE) and re.match(r"Then\b", following, re.IGNORECASE):
             # Release notes and deployment takeover are downstream work;
             # permission to claim/resume this work defers ownership.
             actor = (r"(?:you|anyone|someone(?:\s+else)?|(?:(?:the|a|any|another)\s+)?"
