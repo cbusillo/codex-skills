@@ -145,7 +145,13 @@ Writes flush and fsync the private temporary file before atomic replacement,
 then fsync its directory. These are filesystem durability requests, with
 process-restart coverage; no kernel crash, reboot or power-loss experiment was
 performed and storage hardware guarantees are not claimed.
-Pre-write sync failure stops before sending a command. A sync failure after a
+Pre-write sync failure stops before sending a command and reports
+`not_sent_run_ids`. The watcher attempts one state restoration, removing only
+that unsent intent and returning its charge when the cycle has no earlier
+confirmed write. `unsent_state_restored: true` permits a later retry after the
+filesystem is repaired. A failed restoration reports `recovery_error`; retain
+the saved state and unsent receipt rather than clearing unknown evidence.
+A sync failure after a
 confirmed command returns `state_save_error` with its already confirmed run IDs
 and available saved budget. Replacement may already have saved the intent;
 keep that evidence while repairing the filesystem, rather than treating the
@@ -161,13 +167,25 @@ deadline policy; lock holders can therefore wait on a legitimate GitHub cooldown
 An already-expired inherited command deadline refuses launch and returns the
 unspent budget, since no write was sent. The child wrapper receives a shorter
 deadline so managed preflight reads can report a definite refusal before the
-parent ceiling. Its explicit actor-verification refusal releases only the unsent
-intent and charge. A genuine timeout without that receipt remains unknown,
+parent ceiling. The maintained wrapper supplies a structured receipt tied to
+that invocation's nonce when it refuses before launching the requested command.
+This covers missing or mismatched identity, missing credentials, and App
+configuration/installation refusals without interpreting error text. The
+watcher releases only that unsent intent and charge. A genuine timeout without
+that receipt remains unknown,
 including a hung preflight; an unchanged attempt cannot prove no write was sent.
-That process-group ceiling requires the parent to remain alive. Abrupt parent
-termination can leave a child command running; its saved unknown intent still
-blocks replay. Investigate the outstanding command as well as GitHub readback
-before recovery.
+On the main thread, SIGTERM and SIGHUP, unless already ignored, use the
+interruption cleanup path: kill
+and reap the command group, restore the parent's signal handlers, and exit while
+retaining submitting intent and budget. Cleanup does not prove no write occurred.
+An uncatchable SIGKILL, termination during process creation, or termination
+outside that cleanup path can leave the command alive without its parent-enforced
+ceiling. Its saved unknown intent blocks replay. Identify the outstanding
+command and descendants before stopping them; read back GitHub through the
+configured automation route. A higher attempt in complete inventory reconciles
+the intent; if its outcome cannot be established, retain it and start distinct
+checks only on a reviewed task fix's new head. No automatic replay or PID-based
+cleanup of an orphan is supported.
 No outer transport retry loop,
 identity fallback, expiry or replay is introduced.
 
