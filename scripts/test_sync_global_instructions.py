@@ -168,6 +168,33 @@ class GlobalInstructionsTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(all("Shared fixture rules." in item["diff"] for item in json.loads(result.stdout)["outputs"]))
 
+    def test_instruction_cli_recovers_regular_output_while_preserving_linked_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, local, target = root / "shared.md", root / "private.md", root / "dotfiles.md"
+            source.write_text("Shared rules.\n")
+            local.write_text("Reconciled personal rule.\n")
+            target.write_text("Linked personal rule.\n")
+            codex, claude = root / ".codex", root / ".claude"
+            codex.mkdir()
+            claude.mkdir()
+            link = codex / "AGENTS.md"
+            link.symlink_to(target)
+            regular = claude / "CLAUDE.md"
+            regular.write_text(sync.HEADER + "\n\nHand-edited shared rule.\n")
+            original = regular.read_bytes()
+            args = [sys.executable, str(Path(sync.__file__)), "--home-dir", str(root),
+                    "--source", str(source), "--local-source", str(local)]
+            preview = subprocess.run(args, capture_output=True, text=True, check=True)
+            self.assertEqual(regular.read_bytes(), original)
+            self.assertEqual(json.loads(preview.stdout)["outputs"][1]["state"], "preserved")
+            subprocess.run([*args, "--write"], capture_output=True, text=True, check=True)
+            self.assertEqual(regular.read_text(), sync.render(source, local))
+            self.assertEqual(target.read_text(), "Linked personal rule.\n")
+            self.assertEqual(link.readlink(), target)
+            repeat = subprocess.run([*args, "--write"], capture_output=True, text=True, check=True)
+            self.assertEqual(json.loads(repeat.stdout)["outputs"][0]["state"], "current")
+
     def test_instruction_refresh_runs_without_site_packages(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

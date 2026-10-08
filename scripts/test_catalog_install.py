@@ -133,12 +133,13 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(self.install(write=False)["outputs"][0]["state"], "current")
         original = target.read_bytes()
         (self.catalog / "instructions" / "global.md").write_text("# Shared\nNew catalog instruction.\n")
-        self.assertEqual(self.install(write=False)["outputs"][0]["state"], "preserved")
+        self.assertEqual(self.install(write=False)["outputs"][0]["state"], "skipped")
         self.install()
         receipt = json.loads((self.catalog / ".local" / "catalog-install.json").read_text())
         self.assertEqual(receipt["instruction_hashes"][str(path)], installer.hashlib.sha256(original).hexdigest())
         self.assertIn("New catalog instruction.", (self.codex / "AGENTS.md").read_text())
         self.install()
+        self.assertEqual(self.install(write=False)["unmanaged_instruction_sources"], [])
         self.assertEqual(path.readlink(), target)
         self.assertEqual(target.read_bytes(), original)
 
@@ -1029,6 +1030,23 @@ class UpdateTests(unittest.TestCase):
             hooks.write_text('{"hooks": {}}\n')
             fixed = runtime.update(self.checkout)
             self.assertNotIn("alert_refresh", fixed)
+            self.assertEqual(runtime.status_line(self.checkout), "")
+            agents = fixture_home / ".codex" / "AGENTS.md"
+            target = fixture_home / "linked-generated.md"
+            original = agents.read_bytes()
+            target.write_bytes(original)
+            agents.unlink()
+            agents.symlink_to(target)
+            (self.seed / "instructions" / "global.md").write_text("Next catalog instructions.\n")
+            command("git", "commit", "-qam", "next catalog update", cwd=self.seed)
+            command("git", "push", "-q", "origin", "main", cwd=self.seed)
+            skipped = runtime.update(self.checkout)
+            self.assertIn("alert_refresh", skipped)
+            self.assertIn("Catalog notice", runtime.status_line(self.checkout))
+            self.assertEqual(target.read_bytes(), original)
+            self.assertTrue(agents.is_symlink())
+            target.write_bytes((fixture_home / ".claude" / "CLAUDE.md").read_bytes())
+            self.assertNotIn("alert_refresh", runtime.update(self.checkout))
             self.assertEqual(runtime.status_line(self.checkout), "")
 
 

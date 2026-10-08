@@ -37,24 +37,6 @@ def safe_file(path: Path, *, instruction: bool = False) -> str:
     return path.read_text() if path.exists() else ""
 
 
-def synchronize_instructions(sync, content: str, destinations: list[Path], *, write: bool) -> list[dict]:
-    """Read linked instructions for adoption, but leave their source under its owner."""
-    linked = {}
-    regular = []
-    targets = {path.resolve() for path in destinations if path.is_symlink()}
-    for path in destinations:
-        if path.resolve() in targets:
-            text = safe_file(path, instruction=True)
-            linked[path] = {"path": str(path), "sha256": hashlib.sha256(text.encode()).hexdigest(),
-                            "state": "current" if text == content else "preserved",
-                            "reason": "Symlink and target preserved; update the instruction source separately"}
-        else:
-            regular.append(path)
-    outputs = {Path(entry["path"]): entry for entry in sync.synchronize(content, regular, write=write)}
-    outputs.update(linked)
-    return [outputs[path] for path in destinations]
-
-
 def binding(path: Path, target: Path) -> bool:
     if path.is_symlink() and path.resolve() == target.resolve():
         return False
@@ -168,7 +150,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
     requested = {"codex": str(codex), "claude": str(claude)}
     previous = {key: previous_installation.get(key) for key in requested}
     configuration_change = {"previous": previous, "requested": requested} if previous_installation and previous != requested else None
-    unmanaged_sources = [str(path) for path in destinations if safe_file(path, instruction=True).strip() and not safe_file(path, instruction=True).startswith(sync.HEADER)]
+    unmanaged_sources = [str(path) for path in adoption if safe_file(path, instruction=True).strip() and not safe_file(path, instruction=True).startswith(sync.HEADER)]
     if previous_installation.get("home") and Path(previous_installation["home"]).resolve() != home.resolve():
         raise ValueError("Installed home differs; preserve this installation and use a separate catalog checkout for fixtures or another machine")
     if refresh_instructions and not previous_installation:
@@ -178,7 +160,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         if path.resolve() not in preserved_targets and str(path) in hashes and hashlib.sha256(text.encode()).hexdigest() != hashes[str(path)] and text != content:
             raise ValueError(f"Installed instructions changed: {path}; preserve the edits in {local}, preview scripts/sync-global-instructions.py, write the reconciled output and rerun")
     # All destinations are inspected before any mutation.
-    instruction_preview = synchronize_instructions(sync, content, destinations, write=False)
+    instruction_preview = sync.synchronize_instructions(content, destinations, write=False)
     hooks, hook_preview = None, []
     hook_path = codex / "hooks.json"
     hook_previous = None
@@ -330,7 +312,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         for path, target in pending:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.symlink_to(target, target_is_directory=True)
-        outputs = synchronize_instructions(sync, content, destinations, write=True)
+        outputs = sync.synchronize_instructions(content, destinations, write=True)
         sync.synchronize(base, [ROOT / ".local" / "catalog-global-source.md"], write=True)
         scheduled = updater or (previous_installation.get("scheduled_updater", False) and launch_path.is_file())
         scheduled_at = previous_installation.get("scheduled_at") if previous_installation.get("scheduled_updater") and launch_path.is_file() else None
