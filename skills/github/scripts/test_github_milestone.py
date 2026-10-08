@@ -97,7 +97,7 @@ def test_list_milestones_paginates_and_normalizes_due_on() -> None:
             return api_result(first_page, headers={"link": '<https://api.github.com>; rel="next"'})
         return api_result([milestone(101, due_on="2026-09-01T00:00:00+00:00")])
 
-    with patch.object(module.github_api_core, "call_gh_with_retry", fake_call):
+    with patch.object(github_api, "call_gh_with_retry", fake_call):
         result = module.list_milestones("owner/repo", state="all", limit=101)
 
     assert len(calls) == 2, calls
@@ -121,7 +121,7 @@ def test_list_milestones_preserves_retry_evidence() -> None:
     def fake_call(_method: str, _path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         return api_result([], retry_summary=summary)
 
-    with patch.object(module.github_api_core, "call_gh_with_retry", fake_call):
+    with patch.object(github_api, "call_gh_with_retry", fake_call):
         result = module.list_milestones("owner/repo")
 
     assert result["attempts"] == 2
@@ -141,7 +141,7 @@ def test_show_milestone_resolves_exact_title() -> None:
             return api_result([milestone(7, title="Release 7")])
         return api_result(milestone(7, title="Release 7"))
 
-    with patch.object(module.github_api_core, "call_gh_with_retry", fake_call):
+    with patch.object(github_api, "call_gh_with_retry", fake_call):
         result = module.show_milestone("owner/repo", "Release 7")
 
     assert result["milestone"]["number"] == 7
@@ -159,7 +159,7 @@ def test_show_milestone_preserves_case_insensitive_title_fallback() -> None:
             return api_result([milestone(8, title="Release Candidate")])
         return api_result(milestone(8, title="Release Candidate"))
 
-    with patch.object(module.github_api_core, "call_gh_with_retry", fake_call):
+    with patch.object(github_api, "call_gh_with_retry", fake_call):
         result = module.show_milestone("owner/repo", "release candidate")
 
     assert result["milestone"]["number"] == 8
@@ -175,7 +175,7 @@ def test_create_is_exact_title_idempotent_no_op() -> None:
         calls.append(method)
         return api_result([milestone(3, title="Sprint 3")])
 
-    with patch.object(module.github_api_core, "call_gh_with_retry", fake_call):
+    with patch.object(github_api, "call_gh_with_retry", fake_call):
         result = create_milestone(module, "owner/repo", "Sprint 3")
 
     assert result["created"] is False
@@ -192,7 +192,7 @@ def test_create_rejects_conflicting_exact_title() -> None:
             return api_result({"login": TEST_ACTOR})
         return api_result([milestone(3, title="Sprint 3", due_on="2026-09-02T00:00:00Z")])
 
-    with patch.object(module.github_api_core, "call_gh_with_retry", fake_call):
+    with patch.object(github_api, "call_gh_with_retry", fake_call):
         try:
             create_milestone(module, "owner/repo", "Sprint 3", due_on="2026-09-01")
         except module.MilestoneError as exc:
@@ -212,7 +212,7 @@ def test_create_rejects_case_insensitive_title_conflict() -> None:
             return api_result({"login": TEST_ACTOR})
         return api_result([milestone(3, title="Sprint 3")])
 
-    with patch.object(module.github_api_core, "call_gh_with_retry", fake_call):
+    with patch.object(github_api, "call_gh_with_retry", fake_call):
         try:
             create_milestone(module, "owner/repo", "sprint 3")
         except module.MilestoneError as exc:
@@ -232,7 +232,7 @@ def test_create_rejects_actor_mismatch_before_milestone_reads() -> None:
         calls.append(path)
         return api_result({"login": "unexpected-user"})
 
-    with patch.object(module.github_api_core, "call_gh_with_retry", fake_call):
+    with patch.object(github_api, "call_gh_with_retry", fake_call):
         try:
             create_milestone(module, "owner/repo", "Sprint 3")
         except module.MilestoneError as exc:
@@ -255,7 +255,7 @@ def test_update_no_op_skips_patch() -> None:
             return api_result([])
         return api_result(milestone(4, title="Sprint 4"))
 
-    with patch.object(module.github_api_core, "call_gh_with_retry", fake_call):
+    with patch.object(github_api, "call_gh_with_retry", fake_call):
         result = update_milestone(module, "owner/repo", "4", title="Sprint 4")
 
     assert result["updated"] is False
@@ -277,7 +277,7 @@ def test_update_verifies_success_response_and_clear_due_on() -> None:
             return api_result(milestone(4, title="Sprint 4", due_on=None))
         return api_result(milestone(4, title="Sprint 4", due_on="2026-09-01T00:00:00Z"))
 
-    with patch.object(module.github_api_core, "call_gh_with_retry", fake_call):
+    with patch.object(github_api, "call_gh_with_retry", fake_call):
         result = update_milestone(module, "owner/repo", "4", clear_due_on=True)
 
     assert result["updated"] is True
@@ -297,7 +297,7 @@ def test_update_accepts_server_coerced_due_on_time() -> None:
             return api_result(milestone(4, title="Sprint 4", due_on="2026-09-01T00:00:00Z"))
         return api_result(milestone(4, title="Sprint 4", due_on=None))
 
-    with patch.object(module.github_api_core, "call_gh_with_retry", fake_call):
+    with patch.object(github_api, "call_gh_with_retry", fake_call):
         result = update_milestone(
             module,
             "owner/repo",
@@ -321,7 +321,7 @@ def test_update_rejects_mismatched_success_response() -> None:
             return api_result(milestone(4, title="Sprint 4"))
         return api_result(milestone(4, title="Sprint 4"))
 
-    with patch.object(module.github_api_core, "call_gh_with_retry", fake_call):
+    with patch.object(github_api, "call_gh_with_retry", fake_call):
         try:
             update_milestone(module, "owner/repo", "4", title="Renamed")
         except module.MilestoneError as exc:
@@ -343,7 +343,7 @@ def test_numeric_reference_preserves_title_lookup_compatibility() -> None:
             return api_result([milestone(9, title="4")])
         return api_result(milestone(9, title="4"))
 
-    with patch.object(module.github_api_core, "call_gh_with_retry", fake_call):
+    with patch.object(github_api, "call_gh_with_retry", fake_call):
         result = module.show_milestone("owner/repo", "4")
 
     assert result["milestone"]["number"] == 9
@@ -380,7 +380,7 @@ def test_close_refuses_open_issue_and_pull_request() -> None:
             ]
         )
 
-    with patch.object(module.github_api_core, "call_gh_with_retry", fake_call):
+    with patch.object(github_api, "call_gh_with_retry", fake_call):
         try:
             close_milestone(module, "owner/repo", "5")
         except module.MilestoneError as exc:
@@ -408,7 +408,7 @@ def test_close_patches_empty_milestone() -> None:
             return api_result([])
         return api_result(milestone(6, title="Release 6", state="closed"))
 
-    with patch.object(module.github_api_core, "call_gh_with_retry", fake_call):
+    with patch.object(github_api, "call_gh_with_retry", fake_call):
         result = close_milestone(module, "owner/repo", "6")
 
     assert result["closed"] is True
