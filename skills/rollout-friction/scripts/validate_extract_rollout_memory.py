@@ -369,6 +369,8 @@ def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
         "https://example.com/app/@fs/media/example/uploads/avatar.png",
         "myhost.app/app/@fs/media/example/uploads/avatar.png",
         '"/srv/client files/media/example/uploads/avatar.png"',
+        'Mounted the 3.5" drive; copied "/srv/client files/media/example/uploads/avatar.png"',
+        'Unclosed ` output; copied `/srv/client files/media/example/uploads/avatar.png`',
         r"/srv/client\ files/media/example/uploads/avatar.png",
         "/opt/exports/o'brien/var/example/fixtures/sample.json",
         "请查看/srv/media/example/uploads/avatar.png",
@@ -419,6 +421,9 @@ def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
     text = 'Remember "/Users/example/private.txt" and backend/media/uploads/avatar.png.'
     if "backend/media/uploads/avatar.png" not in module.clean_text(text, redact_args):
         raise AssertionError("a quoted private path must not hide separate relative evidence")
+    text = "The workers' API is at /api/v1; uploads land in backend/media/uploads/avatar.png"
+    if "backend/media/uploads/avatar.png" not in module.clean_text(text, redact_args):
+        raise AssertionError("a possessive apostrophe must not hide repository-relative evidence")
     for text in (
         "cp /tmp/avatar.png backend/media/uploads/avatar.png",
         "changed /Users/example/private.txt, backend/media/uploads/avatar.png",
