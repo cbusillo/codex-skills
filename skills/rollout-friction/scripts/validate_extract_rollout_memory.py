@@ -309,6 +309,8 @@ def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
         "../mnt/fixtures/sample.json",
         "packages/web-ui/media/uploads/avatar.png",
         "packages/café/media/uploads/avatar.png",
+        "packages/@org/pkg/mnt/data.json",
+        "src/routes/+page/media/upload.png",
     )
     local_paths = (
         "/media/example/uploads/avatar.png",
@@ -328,6 +330,11 @@ def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
         "-L/home/example/fixtures/sample.json",
         "localhost:5173/@fs/media/example/uploads/avatar.png",
         "127.0.0.1:8000/home/example/fixtures/sample.json",
+        "localhost/media/example/uploads/avatar.png",
+        "devbox.local/mnt/example/fixtures/sample.json",
+        "127.0.0.1/media/example/uploads/avatar.png",
+        "src/Users/example/fixtures/sample.json",
+        "src/home/example/fixtures/sample.json",
         "http://localhost:5173/@fs/media/example/uploads/avatar.png",
         "https://vscode.dev/tunnel/workstation/mnt/example/fixtures/sample.json",
         "https://example.com/view?path=/media/example/uploads/avatar.png",
@@ -353,6 +360,17 @@ def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
                     raise AssertionError(f"redaction exposed a local path: {surface}")
             if trusted[0].text != text:
                 raise AssertionError("trusted originals changed the path evidence")
+
+    for separator in (":", ";"):
+        text = f"Remember backend/tmp/lib{separator}/Users/example/fixtures/sample.json."
+        data = json.dumps(response_item("user", text)).encode()
+        with patch.object(Path, "read_bytes", return_value=data):
+            candidate = module.extract([Path("/mnt/example/rollout.jsonl")], redact_args)[0]
+        surfaces = (candidate.text, *(event["text"] for event in candidate.context),
+                    json.dumps(list(module.prompt_batches([candidate], redact_args.batch_chars))))
+        for surface in surfaces:
+            if "backend/tmp/lib" not in surface or "example/fixtures/sample.json" in surface:
+                raise AssertionError(f"joined path lost relative evidence or exposed an absolute path: {surface}")
 
 
 def test_redacted_bundle_artifact_references_are_portable() -> None:

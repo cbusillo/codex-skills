@@ -445,27 +445,39 @@ def clean_text(text: str, args: argparse.Namespace) -> str:
     return cleaned.strip()
 
 
+def is_local_host(host: str, *, bare_is_local: bool = True) -> bool:
+    try:
+        return not ip_address(host).is_global
+    except ValueError:
+        return (bare_is_local and "." not in host) or host == "localhost" or host.endswith(
+            (".localhost", ".local", ".internal", ".lan", ".home.arpa", ".test", ".ts.net",
+             ".localdomain", ".home", ".corp", ".intranet")
+        )
+
+
 def redact_path_match(match: re.Match[str], *, embedded_path: bool = False) -> str:
     url = match.group("url")
     if url is None:
         # A root inside a repository-relative token is useful evidence. URL
         # paths are handled separately: editor and dev-server prefixes can
         # precede an absolute root without a plain-text boundary.
-        if not embedded_path and match.group("quoted") is None:
+        if (not embedded_path and match.group("quoted") is None
+                and match.group(0).startswith(("/media/", "/mnt/", "/tmp/", "/var/"))):
             prefix = re.search(r"[^\s,;\"'`<>=()\[\]{}]+$", match.string[:match.start()])
-            if prefix and re.fullmatch(r"(?:\.{1,2}/)*(?:[\w.][\w.-]*/)*[\w.][\w.-]*", prefix.group(0)):
-                return match.group(0)
+            if (prefix and re.fullmatch(r"(?:\.{1,2}/)*(?:[\w.@+][\w.@+-]*/)*[\w.@+][\w.@+-]*", prefix.group(0))
+                    and not is_local_host(prefix.group(0).split("/")[0], bare_is_local=False)):
+                path = match.group(0)
+                boundary = re.search(r"[:;](?=/)", path)
+                if boundary:
+                    return path[:boundary.start()] + PATH_RE.sub(
+                        lambda item: redact_path_match(item, embedded_path=True), path[boundary.start():]
+                    )
+                return path
         return "<path-redacted>"
     try:
         parsed = urlsplit(url)
         host = parsed.hostname or ""
-        try:
-            local = not ip_address(host).is_global
-        except ValueError:
-            local = "." not in host or host.endswith(
-                (".localhost", ".local", ".internal", ".lan", ".home.arpa", ".test", ".ts.net",
-                 ".localdomain", ".home", ".corp", ".intranet")
-            )
+        local = is_local_host(host)
         local = local or parsed.scheme.lower() not in {"http", "https"}
         local = local or parsed.path.startswith("/@fs/") or bool(re.match(r"/tunnel/[^/]+/", parsed.path))
     except ValueError:
