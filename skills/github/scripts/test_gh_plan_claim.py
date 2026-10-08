@@ -353,7 +353,7 @@ class ClaimTests(unittest.TestCase):
                     self.pulls.append({**copy.deepcopy(self.pulls[0]), "number": 47})
                 if change == "before_release": self.comments[:] = [source, handoff, release]
                 if change == "named_split":
-                    sibling = {**copy.deepcopy(self.pulls[0]), "number": 47}
+                    sibling: dict[str, Any] = {**copy.deepcopy(self.pulls[0]), "number": 47}
                     sibling["head"]["ref"] = "work/split-43"
                     self.pulls.append(sibling)
                     handoff["body"] += "\nAlso retain direction#47."
