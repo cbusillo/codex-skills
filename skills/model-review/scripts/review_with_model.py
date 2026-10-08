@@ -103,8 +103,8 @@ def openai_error_detail(message: str) -> str:
     """Bound CLI error text without including credential values or URL parameters."""
     # HTTP error bodies in tracing may quote JSON a second time.
     message = re.sub(r"\\([\"'])", r"\1", message)
-    message = re.sub(r"https?://[^\s]+", "[redacted URL]", message)
-    message = re.sub(r"(?i)\bBearer\s+[^\s]+", "Bearer [redacted]", message)
+    message = re.sub(r"https?://\S+", "[redacted URL]", message)
+    message = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [redacted]", message)
     message = re.sub(r"(?i)(?<![a-z0-9_-])([a-z0-9_-]*(?:api[_-]?key|token|password|secret|credential))"
                      r"([\"']?\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
                      r"\1\2[redacted]", message)
@@ -405,7 +405,7 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                 )
             if diff:
                 diff_path = Path(scratch) / "change.diff"
-                diff_path.write_text(diff.decode("utf-8", errors="backslashreplace"))
+                diff_path.write_text(diff.decode(errors="backslashreplace"))
                 preamble += f"The changes to review are in {diff_path}. Read that file with your read-only tools.\n\n"
             result = REVIEWERS[provider](preamble + prompt, repo, model, timeout, Path(scratch))
             if provider == "google" and result.get("denied") == ["command"]:
