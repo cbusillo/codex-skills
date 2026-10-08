@@ -881,7 +881,7 @@ def current_workflow_runs(runs: list[dict[str, Any]], head_sha: str) -> dict[str
 def current_check_runs(
     reader: GitHubReader, repo: str, head_sha: str, checks: list[dict[str, Any]],
     runs: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool, list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
     selection = current_workflow_runs(runs, head_sha)
     by_id = {run.get("id"): run for run in selection["current"]}
     old_by_id = {run.get("id"): run for run in selection["superseded"] if run.get("id") not in by_id}
