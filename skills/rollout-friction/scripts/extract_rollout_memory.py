@@ -492,8 +492,11 @@ def redact_path_match(
                    and match.string[start - 1] not in ",;\"'`<>=()[]{}"):
                 start -= 1
             prefix = match.string[start:match.start()]
+            first_named = next((item for item in prefix.split("/") if item not in {".", ".."}), "")
+            private_prefix = re.fullmatch(LOCAL_PATH_ROOTS, first_named) and first_named not in RELATIVE_PATH_ROOTS
             if (prefix and re.fullmatch(r"(?:\.{1,2}/)*(?:[\w.@+][\w.@+-]*/)*[\w.@+][\w.@+-]*", prefix)
-                    and (prefix in {".", ".."} or re.search(r"[^\W_]", prefix))
+                    and (all(item in {".", ".."} for item in prefix.split("/")) or re.search(r"[^\W_]", prefix))
+                    and not private_prefix
                     and previous_path_end is None
                     and not is_local_host(prefix.split("/")[0], bare_is_local=False)):
                 path = match.group(0)
