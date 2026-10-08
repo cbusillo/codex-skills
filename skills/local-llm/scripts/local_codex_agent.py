@@ -361,6 +361,13 @@ def run_process(
 ) -> tuple[int, str, str]:
     """Use bounded file captures so a noisy host cannot fill wrapper memory."""
     with tempfile.TemporaryFile(dir=run_dir) as stdin, tempfile.TemporaryFile(dir=run_dir) as stdout, tempfile.TemporaryFile(dir=run_dir) as stderr:
+        def check_output_limit() -> None:
+            capture_size = os.fstat(stdout.fileno()).st_size + os.fstat(stderr.fileno()).st_size
+            if extra_output is not None and extra_output.exists():
+                capture_size += extra_output.stat().st_size
+            if capture_size > MAX_CAPTURE_BYTES:
+                raise LocalCodexAgentError("host exceeded the 16 MiB output limit")
+
         stdin.write(input_text.encode())
         stdin.seek(0)
         with deferred_interrupts() as check_interrupted:
@@ -374,11 +381,7 @@ def run_process(
                 deadline = time.monotonic() + seconds
                 while True:
                     check_interrupted()
-                    capture_size = os.fstat(stdout.fileno()).st_size + os.fstat(stderr.fileno()).st_size
-                    if extra_output is not None and extra_output.exists():
-                        capture_size += extra_output.stat().st_size
-                    if capture_size > MAX_CAPTURE_BYTES:
-                        raise LocalCodexAgentError("host exceeded the 16 MiB output limit")
+                    check_output_limit()
                     returncode = process.poll()
                     if returncode is not None:
                         break
@@ -389,6 +392,9 @@ def run_process(
             finally:
                 if process is not None:
                     stop_process_group(process)
+        # Exit can race the last sample, and surviving children may write during
+        # cleanup. Check the settled captures before truncating or parsing them.
+        check_output_limit()
         stdout.seek(0)
         stderr.seek(0)
         return returncode, stdout.read(MAX_CAPTURE_BYTES).decode(errors="replace"), stderr.read(MAX_CAPTURE_BYTES).decode(errors="replace")
