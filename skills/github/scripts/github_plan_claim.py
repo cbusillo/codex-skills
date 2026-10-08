@@ -128,7 +128,8 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     for index, statement in enumerate(statements):
         if re.search(rf"{handoff_effect}[^.!?;]*\b(?:upon|post-(?:merge|landing)|at (?:merge|landing))\b", statement, re.IGNORECASE):
             return True
-        if not (re.search(rf"{condition}|{ownership_effect}", statement, re.IGNORECASE)
+        if not (re.search(condition, statement, re.IGNORECASE)
+                or re.search(ownership_effect, statement, re.IGNORECASE)
                 or re.search(required_step, statement, re.IGNORECASE)):
             continue
         if (re.search(ownership, statement, re.IGNORECASE)
