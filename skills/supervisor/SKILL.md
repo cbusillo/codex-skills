@@ -10,6 +10,12 @@ resources:
   - path: scripts/account_choice.py
     kind: script
     description: Follow Context Panel's ranked choices and write count-only launch receipts.
+  - path: scripts/claude_account.py
+    kind: script
+    description: Opt-in rate-limit move requests and pass-through Claude relaunch wrapper.
+  - path: references/claude-account-moves.md
+    kind: reference
+    description: Read when enrolling or moving a rate-limited Supervisor Claude session.
   - path: scripts/status.py
     kind: script
     description: Read context and activity for explicit ledger sessions.
@@ -251,6 +257,13 @@ records that run.
    and use `work-closeout`. This is the Director's one-week experiment from
    [codex-skills#885](https://github.com/cbusillo/codex-skills/issues/885), judged
    at the next weekly audit by continuation, handoffs and repeated/reverted work.
+
+## Move Rate-Limited Claude Sessions
+
+For an enrolled Supervisor Claude session with a pending rate-limit move, read
+[account moves](references/claude-account-moves.md) before typing `/restart`.
+Verify the exact idle tab, restart it in place, confirm the same session resumed
+on Context Panel's selected account, then send `continue`.
 
 ## Close Finished Sessions On Every Check
 
