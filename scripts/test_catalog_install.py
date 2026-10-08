@@ -100,6 +100,48 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(skills.resolve(), (self.catalog / "skills").resolve())
         self.assertFalse((self.catalog / "skills" / "shared").exists())
 
+    def test_linked_personal_instructions_are_adopted_without_changing_link_or_target(self):
+        target = self.root / "personal-instructions.md"
+        original = "Keep my linked instructions.\n"
+        target.write_text(original)
+        path = self.codex / "AGENTS.md"
+        path.symlink_to(target)
+        before = target.stat()
+        preview = self.install(write=False)
+        self.assertEqual(preview["outputs"][1]["state"], "preserved")
+        self.assertFalse((self.catalog / ".local").exists())
+        self.assertFalse((self.claude / "CLAUDE.md").exists())
+        self.install()
+        self.assertIn(original.strip(), (self.claude / "CLAUDE.md").read_text())
+        self.assertIn(original.strip(), (self.catalog / ".local" / "global-instructions.md").read_text())
+        snapshot = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        self.install()
+        self.assertEqual(snapshot, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
+        self.assertEqual(path.readlink(), target)
+        self.assertEqual(target.read_text(), original)
+        self.assertEqual(target.stat().st_ino, before.st_ino)
+        self.assertEqual(target.stat().st_mtime_ns, before.st_mtime_ns)
+        self.assertFalse(list(self.root.rglob("*.backup-*")))
+
+    def test_linked_catalog_instructions_keep_actual_receipt_hash_when_source_updates(self):
+        self.install()
+        path = self.claude / "CLAUDE.md"
+        target = self.root / "generated-instructions.md"
+        target.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(target)
+        self.assertEqual(self.install(write=False)["outputs"][0]["state"], "current")
+        original = target.read_bytes()
+        (self.catalog / "instructions" / "global.md").write_text("# Shared\nNew catalog instruction.\n")
+        self.assertEqual(self.install(write=False)["outputs"][0]["state"], "preserved")
+        self.install()
+        receipt = json.loads((self.catalog / ".local" / "catalog-install.json").read_text())
+        self.assertEqual(receipt["instruction_hashes"][str(path)], installer.hashlib.sha256(original).hexdigest())
+        self.assertIn("New catalog instruction.", (self.codex / "AGENTS.md").read_text())
+        self.install()
+        self.assertEqual(path.readlink(), target)
+        self.assertEqual(target.read_bytes(), original)
+
     def test_conflicting_personal_shared_binding_is_preserved_without_writes(self):
         shared = self.home / ".agents" / "skills" / "shared"
         shared.mkdir(parents=True)

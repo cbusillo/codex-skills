@@ -31,10 +31,27 @@ def load_sync():
     return module
 
 
-def safe_file(path: Path) -> str:
-    if path.is_symlink() or (path.exists() and not path.is_file()):
+def safe_file(path: Path, *, instruction: bool = False) -> str:
+    if (path.is_symlink() and not instruction) or ((path.exists() or path.is_symlink()) and not path.is_file()):
         raise ValueError(f"Refusing symlink or non-file: {path}")
     return path.read_text() if path.exists() else ""
+
+
+def synchronize_instructions(sync, content: str, destinations: list[Path], *, write: bool) -> list[dict]:
+    """Read linked instructions for adoption, but leave their source under its owner."""
+    linked = {}
+    regular = []
+    for path in destinations:
+        if path.is_symlink():
+            text = safe_file(path, instruction=True)
+            linked[path] = {"path": str(path), "sha256": hashlib.sha256(text.encode()).hexdigest(),
+                            "state": "current" if text == content else "preserved",
+                            "reason": "Symlink and target preserved; update the instruction source separately"}
+        else:
+            regular.append(path)
+    outputs = {Path(entry["path"]): entry for entry in sync.synchronize(content, regular, write=write)}
+    outputs.update(linked)
+    return [outputs[path] for path in destinations]
 
 
 def binding(path: Path, target: Path) -> bool:
@@ -50,7 +67,7 @@ def catalog_skills_directory(path: Path) -> bool:
     return resolved.name == "skills" and (resolved.parent / "instructions" / "global.md").is_file() and (resolved.parent / "scripts" / "sync-global-instructions.py").is_file()
 
 
-def personal_source(sync, destinations: list[Path], local: Path, *, new_destinations: set[Path] | None = None) -> str:
+def personal_source(sync, destinations: list[Path], local: Path, *, new_destinations: set[Path] | None = None, hashes: dict | None = None) -> str:
     """Import unmanaged text; generated documents require their known catalog prefix."""
     content = safe_file(local).strip()
     base = sync.render(ROOT / "instructions" / "global.md", ROOT / ".absent-personal-source")
@@ -59,7 +76,7 @@ def personal_source(sync, destinations: list[Path], local: Path, *, new_destinat
         raise ValueError(f"Private instruction source is missing: {local}; restore it, or create an empty file to intentionally remove private instructions")
     known = sync.render(ROOT / "instructions" / "global.md", local)
     initial_private = content
-    texts = {path: safe_file(path) for path in destinations}
+    texts = {path: safe_file(path, instruction=True) for path in destinations}
     bases = [base, previous_base]
     if not previous_base and any(text.startswith(sync.HEADER) and text != known for text in texts.values()):
         # On first adoption, identify the longest committed shared source before
@@ -70,6 +87,8 @@ def personal_source(sync, destinations: list[Path], local: Path, *, new_destinat
             if old.returncode == 0:
                 bases.append("\n\n".join(filter(None, (sync.HEADER, old.stdout.strip()))) + "\n")
     for path, text in texts.items():
+        if path.is_symlink() and (hashes or {}).get(str(path)) == hashlib.sha256(text.encode()).hexdigest():
+            continue  # Already adopted; its owner may retain an older catalog output.
         if not text or text == known:
             continue
         if text.startswith(sync.HEADER):
@@ -106,6 +125,9 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
     previous_installation = json.loads(safe_file(installation_path) or "{}")
     if not isinstance(previous_installation, dict):
         raise ValueError("Invalid catalog installation receipt")
+    hashes = previous_installation.get("instruction_hashes", {})
+    if not isinstance(hashes, dict):
+        raise ValueError("Invalid instruction hashes in catalog installation receipt")
     links, pending = [], []
     if not refresh_instructions:
         codex_skills = home / ".agents" / "skills"
@@ -136,27 +158,24 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         pending = [(path, target) for path, target in links if binding(path, target)]
     destinations = [claude / "CLAUDE.md", codex / "AGENTS.md"]
     local = ROOT / ".local" / "global-instructions.md"
-    personal = personal_source(sync, destinations, local, new_destinations={path for path in destinations if str(path) not in previous_installation.get("instruction_hashes", {})})
+    personal = personal_source(sync, destinations, local, new_destinations={path for path in destinations if str(path) not in hashes}, hashes=hashes)
     shared_source = (ROOT / "instructions" / "global.md").read_text()
     base = "\n\n".join(filter(None, (sync.HEADER, shared_source.strip()))) + "\n"
     content = "\n\n".join(filter(None, (base.strip(), personal.strip()))) + "\n"
     requested = {"codex": str(codex), "claude": str(claude)}
     previous = {key: previous_installation.get(key) for key in requested}
     configuration_change = {"previous": previous, "requested": requested} if previous_installation and previous != requested else None
-    unmanaged_sources = [str(path) for path in destinations if safe_file(path).strip() and not safe_file(path).startswith(sync.HEADER)]
+    unmanaged_sources = [str(path) for path in destinations if safe_file(path, instruction=True).strip() and not safe_file(path, instruction=True).startswith(sync.HEADER)]
     if previous_installation.get("home") and Path(previous_installation["home"]).resolve() != home.resolve():
         raise ValueError("Installed home differs; preserve this installation and use a separate catalog checkout for fixtures or another machine")
     if refresh_instructions and not previous_installation:
         raise ValueError("No installation receipt; run the installer once before refreshing instructions")
-    hashes = previous_installation.get("instruction_hashes", {})
-    if not isinstance(hashes, dict):
-        raise ValueError("Invalid instruction hashes in catalog installation receipt")
     for path in destinations:
-        text = safe_file(path)
+        text = safe_file(path, instruction=True)
         if str(path) in hashes and hashlib.sha256(text.encode()).hexdigest() != hashes[str(path)] and text != content:
             raise ValueError(f"Installed instructions changed: {path}; preserve the edits in {local}, preview scripts/sync-global-instructions.py, write the reconciled output and rerun")
     # All destinations are inspected before any mutation.
-    instruction_preview = sync.synchronize(content, destinations, write=False)
+    instruction_preview = synchronize_instructions(sync, content, destinations, write=False)
     hooks, hook_preview = None, []
     hook_path = codex / "hooks.json"
     hook_previous = None
@@ -308,7 +327,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         for path, target in pending:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.symlink_to(target, target_is_directory=True)
-        outputs = sync.synchronize(content, destinations, write=True)
+        outputs = synchronize_instructions(sync, content, destinations, write=True)
         sync.synchronize(base, [ROOT / ".local" / "catalog-global-source.md"], write=True)
         scheduled = updater or (previous_installation.get("scheduled_updater", False) and launch_path.is_file())
         scheduled_at = previous_installation.get("scheduled_at") if previous_installation.get("scheduled_updater") and launch_path.is_file() else None
@@ -318,7 +337,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                                    "scheduled_updater": scheduled, "scheduled_at": scheduled_at,
                                    "updater_plist": str(launch_path) if scheduled else None,
                                    "shared_source_sha256": hashlib.sha256(shared_source.encode()).hexdigest(),
-                                   "instruction_hashes": {str(path): hashlib.sha256(content.encode()).hexdigest() for path in destinations}}, indent=2) + "\n"
+                                   "instruction_hashes": {entry["path"]: entry["sha256"] for entry in outputs}}, indent=2) + "\n"
         sync.synchronize(installation, [installation_path], write=True)
         if hook_outputs:
             outputs += sync.write_codex_hooks(hook_outputs, codex, catalog=ROOT)

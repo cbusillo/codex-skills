@@ -43,8 +43,10 @@ Restart the harness to discover the bindings.
 Run without `--write` to preview; add `--show-diff` to inspect instruction changes
 locally (these may include private text). Existing personal instructions are preserved
 in the ignored `.local/global-instructions.md` and included in both outputs;
-changed instruction files are backed up. Existing unrelated bindings, symlink
-instruction files, malformed settings, or generated instructions whose private
+changed instruction files are backed up. Existing symlinked instruction files
+are read for adoption and reported as current or preserved; both the link and
+its target stay unchanged, so update their source separately if needed.
+Existing unrelated bindings, malformed settings, or generated instructions whose private
 source cannot be identified are reported and left in place. Inspect the reported
 path before moving it aside or restoring its private source, then rerun. Working
 legacy catalog bindings and other host settings are preserved. Personal skills
