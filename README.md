@@ -43,8 +43,20 @@ Restart the harness to discover the bindings.
 Run without `--write` to preview; add `--show-diff` to inspect instruction changes
 locally (these may include private text). Existing personal instructions are preserved
 in the ignored `.local/global-instructions.md` and included in both outputs;
-changed instruction files are backed up. Existing unrelated bindings, symlink
-instruction files, malformed settings, or generated instructions whose private
+changed instruction files are backed up. Existing symlinked instruction files
+are read for initial adoption and reported as current, preserved, or skipped; both the link and
+its target stay unchanged, including a target that is the other selected instruction
+file. Later linked-source edits stay in their external source and do not stop installation.
+To propagate those edits into regular outputs, update `.local/global-instructions.md`
+and rerun the installer; linked files remain under separate management.
+Stale generated linked instructions are reported as skipped, including by scheduled
+refresh. Preview with `--show-diff` to render the changes for the linked source's
+external manager, including when both destinations share one target. Generated
+linked text is preserved without guessing its private remainder; the catalog's
+private source supplies regular outputs. The separate instruction sync command preserves links in the same way,
+so it can reconcile regular outputs while another destination remains linked.
+Dangling links and non-file targets are refused; restore the external source before retrying.
+Existing unrelated bindings, malformed settings, or generated instructions whose private
 source cannot be identified are reported and left in place. Inspect the reported
 path before moving it aside or restoring its private source, then rerun. Working
 legacy catalog bindings and other host settings are preserved. Personal skills
@@ -308,7 +320,8 @@ uv run scripts/sync-global-instructions.py --codex-hook --write
 
 Run from the maintained runtime checkout after landing the source. The helper
 generates `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, backs up changed files,
-and refuses symlink destinations. `--home-dir` selects a fixture home for tests.
+and preserves linked instruction files and their targets. Symlinked hook/config
+destinations remain refused. `--home-dir` selects a fixture home for tests.
 Native `CODEX_HOME` and `CLAUDE_CONFIG_DIR` overrides are respected; use
 `--codex-dir` or `--claude-dir` for explicit host destinations. `CODE_HOME`
 continues to locate shared catalog state, not either host's global instructions.

@@ -325,6 +325,33 @@ def write_codex_hooks(outputs: HookOutputs, codex: Path, catalog: Path = ROOT) -
     return receipt
 
 
+def synchronize_instructions(content: str, destinations: list[Path], *, write: bool, local_source_missing: bool = False, allow_missing_local: bool = False) -> list[dict[str, str]]:
+    """Preserve linked instruction sources while synchronizing regular outputs."""
+    linked = {}
+    regular = []
+    targets = {path.resolve() for path in destinations if path.is_symlink()}
+    for path in destinations:
+        if path.resolve() in targets:
+            if not path.is_file():
+                raise ValueError(f"Refusing a symlink or non-file destination: {path}")
+            text = path.read_text()
+            state = "current" if text == content else "skipped" if text.startswith(HEADER) else "preserved"
+            linked[path] = {"path": str(path), "sha256": hashlib.sha256(text.encode()).hexdigest(),
+                            "state": state,
+                            "reason": "Symlink and target preserved; update the instruction source separately"}
+            if text != content:
+                linked[path]["diff"] = "".join(difflib.unified_diff(
+                    text.splitlines(keepends=True), content.splitlines(keepends=True),
+                    fromfile=str(path), tofile=f"{path} (generated)"))
+        else:
+            regular.append(path)
+    outputs = {Path(entry["path"]): entry for entry in synchronize(
+        content, regular, write=write, local_source_missing=local_source_missing,
+        allow_missing_local=allow_missing_local)}
+    outputs.update(linked)
+    return [outputs[path] for path in destinations]
+
+
 def synchronize(content: str, destinations: list[Path], *, write: bool, local_source_missing: bool = False, allow_missing_local: bool = False, expected_previous: dict[Path, bytes | None] | None = None) -> list[dict[str, str]]:
     desired = content.encode()
     # Inspect every destination before writing either one.
@@ -408,7 +435,7 @@ def main() -> int:
         hook_outputs = prepare_codex_hooks(codex_dir, upgrade_session_start=args.upgrade_session_start) if args.codex_hook else {}
         hook_previews = [entry for path, content in hook_outputs.items() for entry in synchronize(content, [path], write=False)]
         local_missing = not args.local_source.exists()
-        outputs = [] if args.hooks_only else synchronize(render(args.source, args.local_source), [
+        outputs = [] if args.hooks_only else synchronize_instructions(render(args.source, args.local_source), [
             claude_dir / "CLAUDE.md", codex_dir / "AGENTS.md",
         ], write=args.write, local_source_missing=local_missing, allow_missing_local=args.allow_missing_local)
         if args.write:

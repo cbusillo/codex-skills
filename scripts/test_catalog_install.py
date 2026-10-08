@@ -100,6 +100,113 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(skills.resolve(), (self.catalog / "skills").resolve())
         self.assertFalse((self.catalog / "skills" / "shared").exists())
 
+    def test_linked_personal_instructions_are_adopted_without_changing_link_or_target(self):
+        target = self.root / "personal-instructions.md"
+        original = "Keep my linked instructions.\n"
+        target.write_text(original)
+        path = self.codex / "AGENTS.md"
+        path.symlink_to(target)
+        before = target.stat()
+        preview = self.install(write=False)
+        self.assertEqual(preview["outputs"][1]["state"], "preserved")
+        self.assertFalse((self.catalog / ".local").exists())
+        self.assertFalse((self.claude / "CLAUDE.md").exists())
+        self.install()
+        self.assertIn(original.strip(), (self.claude / "CLAUDE.md").read_text())
+        self.assertIn(original.strip(), (self.catalog / ".local" / "global-instructions.md").read_text())
+        snapshot = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        self.install()
+        self.assertEqual(snapshot, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
+        self.assertEqual(path.readlink(), target)
+        self.assertEqual(target.read_text(), original)
+        self.assertEqual(target.stat().st_ino, before.st_ino)
+        self.assertEqual(target.stat().st_mtime_ns, before.st_mtime_ns)
+        self.assertFalse(list(self.root.rglob("*.backup-*")))
+
+    def test_linked_catalog_instructions_keep_actual_receipt_hash_when_source_updates(self):
+        self.install()
+        path = self.claude / "CLAUDE.md"
+        target = self.root / "generated-instructions.md"
+        target.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(target)
+        self.assertEqual(self.install(write=False)["outputs"][0]["state"], "current")
+        original = target.read_bytes()
+        (self.catalog / "instructions" / "global.md").write_text("# Shared\nNew catalog instruction.\n")
+        self.assertEqual(self.install(write=False)["outputs"][0]["state"], "skipped")
+        self.install()
+        receipt = json.loads((self.catalog / ".local" / "catalog-install.json").read_text())
+        self.assertEqual(receipt["instruction_hashes"][str(path)], installer.hashlib.sha256(original).hexdigest())
+        self.assertIn("New catalog instruction.", (self.codex / "AGENTS.md").read_text())
+        self.install()
+        self.assertEqual(self.install(write=False)["unmanaged_instruction_sources"], [])
+        self.assertEqual(path.readlink(), target)
+        self.assertEqual(target.read_bytes(), original)
+
+    def test_linked_source_edits_are_preserved_and_private_source_can_propagate_them(self):
+        target = self.root / "personal-instructions.md"
+        target.write_text("Old personal rule.\n")
+        path = self.codex / "AGENTS.md"
+        path.symlink_to(target)
+        self.install()
+        target.write_text("New personal rule.\n")
+        self.install()
+        local = self.catalog / ".local" / "global-instructions.md"
+        self.assertEqual(local.read_text(), "Old personal rule.\n")
+        local.write_text("New personal rule.\n")
+        self.install()
+        text = (self.claude / "CLAUDE.md").read_text()
+        self.assertIn("New personal rule.", text)
+        self.assertNotIn("Old personal rule.", text)
+        self.assertEqual(target.read_text(), "New personal rule.\n")
+        self.assertEqual(path.readlink(), target)
+
+    def test_link_to_other_selected_instruction_preserves_target_and_repeat_after_catalog_update(self):
+        target = self.claude / "CLAUDE.md"
+        original = "Shared personal rule.\n"
+        target.write_text(original)
+        path = self.codex / "AGENTS.md"
+        path.symlink_to(target)
+        self.install()
+        self.assertEqual(target.read_text(), original)
+        (self.catalog / "instructions" / "global.md").write_text("# Shared\nNew catalog rule.\n")
+        self.install()
+        self.install()
+        self.assertEqual(target.read_text(), original)
+        self.assertEqual(path.readlink(), target)
+        receipt = json.loads((self.catalog / ".local" / "catalog-install.json").read_text())
+        for destination in (path, target):
+            self.assertEqual(receipt["instruction_hashes"][str(destination)], installer.hashlib.sha256(destination.read_bytes()).hexdigest())
+
+    def test_new_linked_generated_destination_is_preserved_without_adopting_unknown_private_text(self):
+        self.install()
+        local = self.catalog / ".local" / "global-instructions.md"
+        local.write_text("Authoritative private rule.\n")
+        self.install()
+        for index, shared in enumerate(("Old unknown catalog rules.", "# Shared\nUse the catalog.")):
+            with self.subTest(shared=shared):
+                codex = self.home / f"new-codex-{index}"
+                codex.mkdir()
+                target = self.root / f"old-generated-{index}.md"
+                original = self.sync.HEADER + "\n\n" + shared + "\n\nDifferent private rule.\n"
+                target.write_text(original)
+                (codex / "AGENTS.md").symlink_to(target)
+                preview = installer.install(self.home, codex, self.claude, write=False, updater=False, show_diff=True)
+                self.assertEqual(preview["outputs"][1]["state"], "skipped")
+                self.assertIn("Authoritative private rule.", preview["outputs"][1]["diff"])
+                installer.install(self.home, codex, self.claude, write=True, updater=False)
+                self.assertEqual(target.read_text(), original)
+                self.assertEqual(local.read_text(), "Authoritative private rule.\n")
+
+    def test_link_to_catalog_shared_source_does_not_duplicate_it_as_private_text(self):
+        shared = self.catalog / "instructions" / "global.md"
+        (self.codex / "AGENTS.md").symlink_to(shared)
+        original = shared.read_bytes()
+        self.install()
+        self.assertEqual((self.catalog / ".local" / "global-instructions.md").read_text(), "")
+        self.assertEqual((self.claude / "CLAUDE.md").read_text(), self.sync.render(shared, self.catalog / ".local" / "global-instructions.md"))
+        self.assertEqual(shared.read_bytes(), original)
+
     def test_conflicting_personal_shared_binding_is_preserved_without_writes(self):
         shared = self.home / ".agents" / "skills" / "shared"
         shared.mkdir(parents=True)
@@ -952,6 +1059,31 @@ class UpdateTests(unittest.TestCase):
             hooks.write_text('{"hooks": {}}\n')
             fixed = runtime.update(self.checkout)
             self.assertNotIn("alert_refresh", fixed)
+            self.assertEqual(runtime.status_line(self.checkout), "")
+            agents = fixture_home / ".codex" / "AGENTS.md"
+            target = fixture_home / "linked-generated.md"
+            original = agents.read_bytes()
+            target.write_bytes(original)
+            agents.unlink()
+            agents.symlink_to(target)
+            (self.seed / "instructions" / "global.md").write_text("Next catalog instructions.\n")
+            command("git", "commit", "-qam", "next catalog update", cwd=self.seed)
+            command("git", "push", "-q", "origin", "main", cwd=self.seed)
+            skipped = runtime.update(self.checkout)
+            self.assertIn("instruction_refresh", skipped)
+            self.assertIn("Catalog notice", runtime.status_line(self.checkout))
+            self.assertIn("instruction refresh was skipped", runtime.status_line(self.checkout))
+            self.assertEqual(target.read_bytes(), original)
+            self.assertTrue(agents.is_symlink())
+            hooks.write_text("invalid JSON")
+            both = runtime.update(self.checkout)
+            self.assertIn("instruction_refresh", both)
+            self.assertIn("alert_refresh", both)
+            self.assertIn("instruction refresh", runtime.status_line(self.checkout))
+            self.assertIn("alert refresh", runtime.status_line(self.checkout))
+            hooks.write_text('{"hooks": {}}\n')
+            target.write_bytes((fixture_home / ".claude" / "CLAUDE.md").read_bytes())
+            self.assertNotIn("instruction_refresh", runtime.update(self.checkout))
             self.assertEqual(runtime.status_line(self.checkout), "")
 
 
