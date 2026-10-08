@@ -169,7 +169,7 @@ def user_token_fixture(root: Path) -> tuple[Path, Path, Path, Path]:
     write(
         fake_gh,
         "#!/bin/sh\n[ \"$GH_TOKEN\" = fixture-token ] || exit 41\n"
-        f"printf '%s\\n' \"$@\" > '{root / 'called'}'\nprintf 'fixture response\\n'\n",
+        f"printf '%s\\n' \"$@\" >> '{root / 'called'}'\nprintf 'fixture response\\n'\n",
     )
     return env_file, classifier, identity, fake_gh
 
