@@ -38,6 +38,10 @@ FUTURE_OWNERSHIP_EFFECTS = (
     "Ownership transfers on merging PR #99.",
     "Effective on PR #99 merging.",
     "Ownership transfers at merge-train landing.",
+    "Ownership transfers on PR #99's merge.",
+    "Ownership transfers with #99's merge.",
+    "Effective on owner/repo#99 merging.",
+    "Effective at PR #99's merge.",
 )
 RESPONSIBILITY_STATUS = (
     "After these proposals, 61 OPW and 57 CM provider-only entries would remain, "
@@ -2065,6 +2069,18 @@ class ClaimTests(unittest.TestCase):
                 self.comments[2]["body"] = "Released claim 1\n\nHandoff: PR #99 and #100.\n\n" + prose
                 self.run_claim()
                 self.assertEqual(self.emitted.call_args.args[0]["claim"]["refresh_pr"], self.args.refresh_pr)
+
+    def test_schedule_notes_and_merging_work_keep_genuine_release_usable(self):
+        for release in (
+            "Released claim 1. Tomorrow I start #1402.",
+            "Released claim 1\n\nLater today the deploy completes.",
+            "Released claim 1\n\nThe next worker can take over the remaining work on merging the stacked PRs.",
+        ):
+            with self.subTest(release=release):
+                self.setUp()
+                self.released_status_fixture(release)
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_nonadjacent_first_line_effects_preserve_and_recover_claims(self):
         for prose in (
