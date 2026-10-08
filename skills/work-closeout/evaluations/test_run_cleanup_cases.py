@@ -398,7 +398,8 @@ class CleanupRunnerTests(unittest.TestCase):
                     ready = self.workspace / f"capture-{stream}-{excess}.ready"
                     child_ready = ready.with_suffix(".child")
                     child_command = textwrap.dedent(f"""\
-                        import json, os, pathlib, time
+                        import json, os, pathlib, time, signal
+                        signal.signal(signal.SIGTERM, lambda signum, frame: (time.sleep(0.2), os._exit(0)))
                         ready = pathlib.Path({str(child_ready)!r})
                         pending = ready.with_suffix('.pending-child')
                         pending.write_text(json.dumps({{"pid": os.getpid(), "group": os.getpgrp()}}), encoding='utf-8')
@@ -464,16 +465,8 @@ class CleanupRunnerTests(unittest.TestCase):
                                 if stdout:
                                     self.assertEqual(1, len(runner.json_events(stdout)))
                         self.assertEqual(1, len(processes))
-                        group_absent = False
-                        group_deadline = time.monotonic() + 2
-                        while time.monotonic() < group_deadline:
-                            try:
-                                os.killpg(processes[0].pid, 0)
-                            except ProcessLookupError:
-                                group_absent = True
-                                break
-                            time.sleep(0.005)
-                        self.assertTrue(group_absent, "owned invoke process group remained after capture")
+                        with self.assertRaises(ProcessLookupError):
+                            os.killpg(processes[0].pid, 0)
                     finally:
                         for child_pid, witnessed_group in descendants.items():
                             try:
