@@ -564,10 +564,10 @@ An issue URL in a PR body is context alone. Title or branch ownership,
 implementation references (`Refs`, `Fixes`, `Closes`, `Resolves`, `Implements`,
 including full issue URLs), and a PR branch recorded in the issue's structured
 claim still cause refusal. Releasing a claim does not release its retained PR.
-The `Code follow-ups recorded without starting implementation:` line remains
-supported; an implementation reference on that line still counts, including a
-colon or Markdown link. Retained-handoff identity and active-peer checks remain
-required.
+Retained handoffs keep their independent issue-link check: an ordinary body
+URL may attest a PR named by its source author, while explicitly unstarted
+follow-up links alone do not. Identity, same-repository and active-peer checks
+remain required.
 
 Use the actual native session ID, not a made-up label. On Claude Code, use
 session metadata or `claude agents --json` to identify this session by its

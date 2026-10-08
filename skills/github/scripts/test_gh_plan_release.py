@@ -109,6 +109,13 @@ class ReleaseTests(unittest.TestCase):
         self.f.args.handoff_comment = self.f.comments[-1]["id"]
         self.successor()
 
+    def test_retained_pr_contextual_link_remains_valid_for_release(self):
+        self.refresh_setup()
+        self.f.pulls[0]["body"] = "Planning issue: https://github.com/owner/repo/issues/42"
+        self.run_release()
+        self.f.args.handoff_comment = self.f.comments[-1]["id"]
+        self.successor()
+
     def test_repairshopr_embedded_release_is_claimable_without_supervisor(self):
         self.f.comments.append(self.comment(2, "Owner question: verify read-only usage?\n\nReleased claim 1", "2026-10-01T01:00:00Z"))
         self.successor()

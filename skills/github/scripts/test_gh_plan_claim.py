@@ -1449,6 +1449,37 @@ class ClaimTests(unittest.TestCase):
                          [{"source": "open_pr", "number": 100, "branch": "work/repair"}])
         self.assert_no_writes()
 
+    def test_retained_handoff_keeps_contextual_issue_links_and_waits(self):
+        self.ordinary_handoff_fixture()
+        self.pulls[0]["body"] = "Planning issue: https://github.com/owner/repo/issues/42"
+        self.targets["99"]["body"] = self.pulls[0]["body"] + "\n\n## Current Status\n\nWaiting for: Owner acceptance."
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_wait_unresolved")
+        self.assert_no_writes()
+        self.args.wait_resolved = "Existing source authorization preserves the acceptance hold."
+        self.run_claim()
+        self.assertIn("Owner acceptance", self.comments[-1]["body"])
+
+    def test_cross_repository_planning_claim_branch_remains_competing(self):
+        self.cross_repository_fixture()
+        source = CLAIM.records(self.comments[0]["body"])[0]
+        source["branch"] = "work/runtime-authorization"
+        self.comments[0]["body"] = CLAIM.marker(source)
+        self.pulls = [pull for pull in self.pulls if pull["head"]["ref"] != source["branch"]]
+        original_reader = self.read_pages
+        def pages(path, **kwargs):
+            if path == "/repos/other/plans/pulls":
+                return "bot", [{"number": 200, "body": "Planning issue: https://github.com/other/plans/issues/42",
+                                "head": {"ref": source["branch"]}}]
+            return original_reader(path, **kwargs)
+        self.read_pages = pages
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertIn({"source": "open_pr", "number": 200, "branch": source["branch"]},
+                      caught.exception.payload["competing_evidence"])
+        self.assert_no_writes()
+
     def test_explicitly_unstarted_docs_followups_allow_both_claims(self):
         self.pulls = [{"number": 48, "title": "docs: align API guidance",
                        "body": "Code follow-ups recorded without starting implementation: "
