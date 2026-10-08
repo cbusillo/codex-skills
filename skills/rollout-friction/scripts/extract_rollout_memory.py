@@ -457,6 +457,10 @@ def is_local_host(host: str, *, bare_is_local: bool = True) -> bool:
         )
 
 
+def is_local_dev_path(path: str) -> bool:
+    return path.startswith("/@fs/") or bool(re.match(r"/tunnel/[^/]+/", path))
+
+
 def redact_paths(text: str, *, embedded_path: bool = False) -> str:
     previous_path_end: int | None = None
     checked_to = 0
@@ -494,9 +498,13 @@ def redact_path_match(
             prefix = match.string[start:match.start()]
             first_named = next((item for item in prefix.split("/") if item not in {".", ".."}), "")
             private_prefix = re.fullmatch(LOCAL_PATH_ROOTS, first_named) and first_named not in RELATIVE_PATH_ROOTS
+            ambiguous_word = ("/" not in prefix and prefix not in {".", ".."}
+                              and (not prefix.isascii() or prefix.endswith(".")))
+            dev_prefix = prefix == "@fs" or is_local_dev_path("/" + prefix.partition("/")[2] + "/")
             if (prefix and re.fullmatch(r"(?:\.{1,2}/)*(?:[\w.@+][\w.@+-]*/)*[\w.@+][\w.@+-]*", prefix)
                     and (all(item in {".", ".."} for item in prefix.split("/")) or re.search(r"[^\W_]", prefix))
                     and not private_prefix
+                    and not ambiguous_word and not dev_prefix
                     and previous_path_end is None
                     and not is_local_host(prefix.split("/")[0], bare_is_local=False)):
                 path = match.group(0)
@@ -515,7 +523,7 @@ def redact_path_match(
         host = parsed.hostname or ""
         local = is_local_host(host)
         local = local or parsed.scheme.lower() not in {"http", "https"}
-        local = local or parsed.path.startswith("/@fs/") or bool(re.match(r"/tunnel/[^/]+/", parsed.path))
+        local = local or is_local_dev_path(parsed.path)
     except ValueError:
         local = True  # Malformed URLs do not establish a public host.
     if local:
