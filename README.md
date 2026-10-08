@@ -394,9 +394,9 @@ setting.
 
 Configuration and caches outside the catalog (`local.env`, `state/`) use one
 order everywhere: `$CODE_HOME`, then `$CODEX_HOME`, then `~/.code`. Those are
-only directory names and work on any host. One helper also reads an optional
-`github-planning.json` from `~/.codex` when `~/.code` holds neither skills nor
-plans, so that a stock Codex home keeps working. Shared references that several
+only directory names and work on any host. Planning configuration follows the
+[GitHub plan config schema](skills/github/references/config-schema.md).
+Shared references that several
 skills link as `../references/...` live in `skills/references`. Repository
 tooling (`scripts/`, `.github/`) stays at the root and is not part of an
 install.
@@ -681,10 +681,9 @@ host adds a new bundled system skill with the same name as a top-level skill,
 update the top-level override skill or the validator allowlist intentionally
 instead of editing `.system/` directly.
 
-If an injected available-skills list points at a missing repo-local path such as
-`.system/openai-docs/SKILL.md`, treat that as stale runtime metadata. For allowlisted
-overrides, the usable source path is the top-level override, for example
-`skills/openai-docs/SKILL.md`.
+If an injected available-skills list points at a repo-local path that does not
+exist, treat that as stale runtime metadata. Check the selected host's binding
+using [runtime binding lookup](#runtime-binding-lookup).
 
 Preferred patterns:
 

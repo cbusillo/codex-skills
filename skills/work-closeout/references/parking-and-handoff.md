@@ -66,7 +66,9 @@ use the `github-plan` close flow so done labels and Project Status are updated.
 For GitHub-backed repos, recovery-critical handoff content belongs in the
 owning GitHub issue or PR comment. Use local handoff files only as temporary
 scratch while drafting or when the user explicitly asks for an offline/private
-handoff.
+handoff. For an explicit private/offline handoff, name its authorized durable
+location in the closeout and verify reconstructable recovery state using the
+local-only preservation checks above.
 
 If a cross-repository prerequisite issue must still be created or identified,
 use `github-plan`'s [missing-gate handoff rule](../../github-plan/SKILL.md#missing-cross-repository-gates)
