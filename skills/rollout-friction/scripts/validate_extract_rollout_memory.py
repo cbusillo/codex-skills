@@ -335,6 +335,11 @@ def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
         "127.0.0.1/media/example/uploads/avatar.png",
         "src/Users/example/fixtures/sample.json",
         "src/home/example/fixtures/sample.json",
+        "+/mnt/example/fixtures/sample.json",
+        "_/mnt/example/fixtures/sample.json",
+        ".../mnt/example/fixtures/sample.json",
+        "LOCALHOST/media/example/uploads/avatar.png",
+        "Devbox.Local/mnt/example/fixtures/sample.json",
         "http://localhost:5173/@fs/media/example/uploads/avatar.png",
         "https://vscode.dev/tunnel/workstation/mnt/example/fixtures/sample.json",
         "https://example.com/view?path=/media/example/uploads/avatar.png",
@@ -361,7 +366,7 @@ def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
             if trusted[0].text != text:
                 raise AssertionError("trusted originals changed the path evidence")
 
-    for separator in (":", ";"):
+    for separator in (":", ";", "](", "->", "=", "|", ">"):
         text = f"Remember backend/tmp/lib{separator}/Users/example/fixtures/sample.json."
         data = json.dumps(response_item("user", text)).encode()
         with patch.object(Path, "read_bytes", return_value=data):

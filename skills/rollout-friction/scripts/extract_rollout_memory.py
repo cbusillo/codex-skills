@@ -446,6 +446,7 @@ def clean_text(text: str, args: argparse.Namespace) -> str:
 
 
 def is_local_host(host: str, *, bare_is_local: bool = True) -> bool:
+    host = host.lower()
     try:
         return not ip_address(host).is_global
     except ValueError:
@@ -465,9 +466,10 @@ def redact_path_match(match: re.Match[str], *, embedded_path: bool = False) -> s
                 and match.group(0).startswith(("/media/", "/mnt/", "/tmp/", "/var/"))):
             prefix = re.search(r"[^\s,;\"'`<>=()\[\]{}]+$", match.string[:match.start()])
             if (prefix and re.fullmatch(r"(?:\.{1,2}/)*(?:[\w.@+][\w.@+-]*/)*[\w.@+][\w.@+-]*", prefix.group(0))
+                    and (prefix.group(0) in {".", ".."} or re.search(r"[^\W_]", prefix.group(0)))
                     and not is_local_host(prefix.group(0).split("/")[0], bare_is_local=False)):
                 path = match.group(0)
-                boundary = re.search(r"[:;](?=/)", path)
+                boundary = re.search(r"[^\w.@+/-]", path)
                 if boundary:
                     return path[:boundary.start()] + PATH_RE.sub(
                         lambda item: redact_path_match(item, embedded_path=True), path[boundary.start():]
