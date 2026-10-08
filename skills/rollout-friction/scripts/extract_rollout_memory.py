@@ -46,7 +46,7 @@ LOCAL_PATH_ROOTS = r"(?:Users|home|workspace|workspaces|tmp|var|private|Volumes|
 PATH_RE = re.compile(
     # Public URLs may contain the same root names as local paths. Match them
     # first so those components remain useful evidence rather than local paths.
-    r"(?P<url>(?i:https?|file|vscode)://[^\s<>\"'`]+)|"
+    r"(?P<url>(?i:[a-z][a-z0-9+.-]*)://[^\s<>\"'`]+)|"
     rf"(?P<quoted>[\"'`])/{LOCAL_PATH_ROOTS}/[^\n]*?(?:(?P=quoted)|(?=\n|$))|"
     rf"(?:/Volumes/[^/\n,;:'\"`<>]+/|/{LOCAL_PATH_ROOTS}/)(?:\\ |[^\s,'\"`])+"
 )
@@ -452,7 +452,8 @@ def redact_path_match(match: re.Match[str], *, embedded_path: bool = False) -> s
         # paths are handled separately: editor and dev-server prefixes can
         # precede an absolute root without a plain-text boundary.
         if (not embedded_path and match.group("quoted") is None and match.start()
-                and re.match(r"[\w./~-]", match.string[match.start() - 1])):
+                and re.match(r"[\w./-]", match.string[match.start() - 1])
+                and not match.string[:match.start()].endswith("/@fs")):
             return match.group(0)
         return "<path-redacted>"
     try:
@@ -465,7 +466,7 @@ def redact_path_match(match: re.Match[str], *, embedded_path: bool = False) -> s
                 (".localhost", ".local", ".internal", ".lan", ".home.arpa", ".test", ".ts.net",
                  ".localdomain", ".home", ".corp", ".intranet")
             )
-        local = local or parsed.scheme.lower() in {"file", "vscode"}
+        local = local or parsed.scheme.lower() not in {"http", "https"}
         local = local or parsed.path.startswith("/@fs/") or bool(re.match(r"/tunnel/[^/]+/", parsed.path))
     except ValueError:
         local = True  # Malformed URLs do not establish a public host.
