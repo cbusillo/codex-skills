@@ -1720,7 +1720,7 @@ def test_resolved_comments_do_not_replay_after_graphql_failure(monkeypatch):
     body["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"][0]["isResolved"] = False
     assert gh_pr_watch.fetch_new_review_items(pr, state, False, reader=reader) == []
     assert "resolve_review_threads" in gh_pr_watch.recommend_actions(pr, sample_checks(), [], [], [], 0, 3)
-def retry_snapshot(monkeypatch, tmp_path, runs, jobs):
+def retry_snapshot(monkeypatch, tmp_path, runs, jobs) -> tuple[dict[str, Any], Path]:
     state_path = tmp_path / "retry-state.json"
     snapshot = {
         "pr": sample_pr(),
@@ -2347,9 +2347,9 @@ def test_default_location_copies_legacy_evidence_without_reset(monkeypatch, tmp_
     monkeypatch.setattr(gh_pr_watch, "legacy_state_file_for", lambda _pr: legacy)
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *_a, **_kw: sample_pr())
     observed = []
-    def collect(_args, _pr, _diag, path):
-        observed.append(gh_pr_watch.load_state(path))
-        return {}, path
+    def collect(_args, _pr, _diag, target_path):
+        observed.append(gh_pr_watch.load_state(target_path))
+        return {}, target_path
     monkeypatch.setattr(gh_pr_watch, "collect_locked_snapshot", collect)
     args = argparse.Namespace(pr="123", repo=None, state_file=None)
     _, path = gh_pr_watch.collect_snapshot(args)
@@ -2576,7 +2576,7 @@ def test_directory_sync_failure_stops_before_api_and_reports_error(monkeypatch, 
         calls.append(fd)
         if len(calls) == 2:
             raise OSError("directory sync unsupported")
-        return sync(fd)
+        sync(fd)
     monkeypatch.setattr(gh_pr_watch.os, "fsync", fail_directory)
     monkeypatch.setattr(gh_pr_watch, "gh_text", lambda *_a, **_kw: pytest.fail("write after failed sync"))
     monkeypatch.setattr(gh_pr_watch, "parse_args", lambda: argparse.Namespace(retry_failed_now=True))
