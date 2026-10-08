@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 from typing import Any
+from unittest.mock import patch
 
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 os.environ["CODEX_AUTOMATION_LOGIN"] = "fixture-automation"
@@ -145,16 +146,6 @@ def test_create_unknown_outcome_requires_reconciliation_before_retry() -> None:
 
 
 def test_create_unknown_outcome_returns_unique_reconciled_issue() -> None:
-    original_now = github_issue._utc_now
-    github_issue._utc_now = lambda: github_issue.dt.datetime(
-        2026,
-        7,
-        16,
-        22,
-        0,
-        tzinfo=github_issue.dt.timezone.utc,
-    )
-
     get_calls = 0
     submitted_body = ""
 
@@ -175,15 +166,16 @@ def test_create_unknown_outcome_returns_unique_reconciled_issue() -> None:
         return success([matched])
 
     def run(calls: list[dict[str, Any]]) -> None:
-        try:
+        with patch.object(
+            github_issue, "_utc_now",
+            return_value=github_issue.dt.datetime(2026, 7, 16, 22, 0, tzinfo=github_issue.dt.timezone.utc),
+        ):
             payload = github_issue.create_issue(
                 "Issue title",
                 "body",
                 repo="owner/repo",
                 gh_cmd="fake-gh",
             )
-        finally:
-            github_issue._utc_now = original_now
         assert payload["reconciled"] is True, payload
         assert payload["reconciliation"]["result"] == "matched", payload
         assert payload["completed_steps"] == ["resolve_actor", "reconcile_create"], payload
@@ -194,18 +186,6 @@ def test_create_unknown_outcome_returns_unique_reconciled_issue() -> None:
 
 
 def test_create_reconciliation_survives_explicit_actor_fallback() -> None:
-    original_now = github_issue._utc_now
-    original_fallback = os.environ.get("GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK")
-    github_issue._utc_now = lambda: github_issue.dt.datetime(
-        2026,
-        7,
-        16,
-        22,
-        0,
-        tzinfo=github_issue.dt.timezone.utc,
-    )
-    os.environ["GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK"] = "1"
-
     get_calls = 0
     submitted_body = ""
 
@@ -235,19 +215,19 @@ def test_create_reconciliation_survives_explicit_actor_fallback() -> None:
         return success([matched])
 
     def run(_calls: list[dict[str, Any]]) -> None:
-        try:
+        with (
+            patch.object(
+                github_issue, "_utc_now",
+                return_value=github_issue.dt.datetime(2026, 7, 16, 22, 0, tzinfo=github_issue.dt.timezone.utc),
+            ),
+            patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1"}),
+        ):
             payload = github_issue.create_issue(
                 "Issue title",
                 "body",
                 repo="owner/repo",
                 gh_cmd="fake-gh",
             )
-        finally:
-            github_issue._utc_now = original_now
-            if original_fallback is None:
-                os.environ.pop("GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK", None)
-            else:
-                os.environ["GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK"] = original_fallback
         assert payload["reconciled"] is True, payload
         assert payload["actor"] == "cbusillo", payload
         assert payload["expected_actor"] is None, payload
@@ -256,15 +236,6 @@ def test_create_reconciliation_survives_explicit_actor_fallback() -> None:
 
 
 def test_create_reconciliation_rejects_concurrent_identical_issue() -> None:
-    original_now = github_issue._utc_now
-    github_issue._utc_now = lambda: github_issue.dt.datetime(
-        2026,
-        7,
-        17,
-        3,
-        20,
-        tzinfo=github_issue.dt.timezone.utc,
-    )
     get_calls = 0
 
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
@@ -286,7 +257,10 @@ def test_create_reconciliation_rejects_concurrent_identical_issue() -> None:
         return success([concurrent])
 
     def run(_calls: list[dict[str, Any]]) -> None:
-        try:
+        with patch.object(
+            github_issue, "_utc_now",
+            return_value=github_issue.dt.datetime(2026, 7, 17, 3, 20, tzinfo=github_issue.dt.timezone.utc),
+        ):
             try:
                 github_issue.create_issue(
                     "Issue title",
@@ -298,23 +272,11 @@ def test_create_reconciliation_rejects_concurrent_identical_issue() -> None:
                 assert exc.payload["reconciliation"]["result"] == "no_match", exc.payload
             else:
                 raise AssertionError("a concurrent invocation's marker must not satisfy reconciliation")
-        finally:
-            github_issue._utc_now = original_now
 
     with_call_stub(callback, run, allow_retry=True)
 
 
 def test_create_reconciliation_rejects_preexisting_identical_issue() -> None:
-    original_now = github_issue._utc_now
-    github_issue._utc_now = lambda: github_issue.dt.datetime(
-        2026,
-        7,
-        16,
-        22,
-        0,
-        tzinfo=github_issue.dt.timezone.utc,
-    )
-
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
             return success({"login": "fixture-automation"})
@@ -327,7 +289,10 @@ def test_create_reconciliation_rejects_preexisting_identical_issue() -> None:
         return success([preexisting])
 
     def run(_calls: list[dict[str, Any]]) -> None:
-        try:
+        with patch.object(
+            github_issue, "_utc_now",
+            return_value=github_issue.dt.datetime(2026, 7, 16, 22, 0, tzinfo=github_issue.dt.timezone.utc),
+        ):
             try:
                 github_issue.create_issue(
                     "Issue title",
@@ -339,22 +304,11 @@ def test_create_reconciliation_rejects_preexisting_identical_issue() -> None:
                 assert exc.payload["reconciliation"]["result"] == "no_match", exc.payload
             else:
                 raise AssertionError("pre-existing issue must not satisfy reconciliation")
-        finally:
-            github_issue._utc_now = original_now
 
     with_call_stub(callback, run)
 
 
 def test_create_reconciliation_excludes_preexisting_same_second_issue() -> None:
-    original_now = github_issue._utc_now
-    github_issue._utc_now = lambda: github_issue.dt.datetime(
-        2026,
-        7,
-        16,
-        22,
-        0,
-        tzinfo=github_issue.dt.timezone.utc,
-    )
     preexisting = issue_body(body="original body", created_at="2026-07-16T22:00:00Z")
     preexisting["labels"] = []
     preexisting["assignees"] = []
@@ -375,7 +329,10 @@ def test_create_reconciliation_excludes_preexisting_same_second_issue() -> None:
         return success([preexisting])
 
     def run(_calls: list[dict[str, Any]]) -> None:
-        try:
+        with patch.object(
+            github_issue, "_utc_now",
+            return_value=github_issue.dt.datetime(2026, 7, 16, 22, 0, tzinfo=github_issue.dt.timezone.utc),
+        ):
             try:
                 github_issue.create_issue(
                     "Issue title",
@@ -389,8 +346,6 @@ def test_create_reconciliation_excludes_preexisting_same_second_issue() -> None:
                 assert reconciliation["preexisting_issue_ids"] == [9042], reconciliation
             else:
                 raise AssertionError("pre-existing same-second issue must not satisfy reconciliation")
-        finally:
-            github_issue._utc_now = original_now
         assert post_calls == 1, post_calls
 
     with_call_stub(callback, run, allow_retry=True)
