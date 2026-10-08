@@ -1165,8 +1165,8 @@ def _project_next_actions(value: object) -> list[dict[str, object]]:
 
 
 def _project_product_config_public_hosts(value: object) -> dict[str, object]:
-    lists = {"before", "after", "added", "updated", "removed", "unchanged", "read_back_hosts"}
-    source = _require_exact_fields(value, lists | {
+    lists = ("before", "after", "added", "updated", "removed", "unchanged", "read_back_hosts")
+    source = _require_exact_fields(value, set(lists) | {
         "plan_digest", "runtime_port", "https", "service_name", "certificate_type", "verified"
     })
     projected: dict[str, object] = {}
@@ -1174,7 +1174,9 @@ def _project_product_config_public_hosts(value: object) -> dict[str, object]:
         hosts = source[key]
         if not isinstance(hosts, list) or len(hosts) > 64:
             raise LaunchplaneSafetyError("invalid_response")
-        normalized = _public_string_list(hosts)
+        if not all(isinstance(host, str) for host in hosts):
+            raise LaunchplaneSafetyError("invalid_response")
+        normalized = hosts
         if any(
             len(host) > 253 or len(host.split(".")) < 2 or host != host.lower()
             or any(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) is None
@@ -1248,7 +1250,9 @@ def _project_product_config_apply_result(result: object) -> dict[str, object]:
         instance != "prod" or source["public_hosts"]["verified"] != (source["mode"] == "apply")
     ):
         raise LaunchplaneSafetyError("invalid_response")
-    assert_public_safe_shape(projected)
+    # Hostnames are validated as DNS names by their typed projector. Generic
+    # token heuristics would misclassify legitimate names such as desk-app.example.
+    assert_public_safe_shape({key: value for key, value in projected.items() if key != "public_hosts"})
     return projected
 
 
@@ -3838,7 +3842,12 @@ def _project_success_output(
         result = provider_payload.get("result")
         if isinstance(result, dict) and "intent" in result:
             return records, _project_product_config_preflight_result(result)
-        return records, _project_product_config_apply_result(result)
+        projected_config = _project_product_config_apply_result(result)
+        if "public_hosts" in projected_config and projected_config.get("mode") != (
+            "apply" if operation == "product-config-apply" else "dry-run"
+        ):
+            raise LaunchplaneSafetyError("invalid_response")
+        return records, projected_config
     if operation == "preview-feedback-remediation":
         records = _project_records(
             provider_payload.get("records"),

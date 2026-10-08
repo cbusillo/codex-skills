@@ -2016,6 +2016,24 @@ def test_product_config_public_host_verification_must_match_mode() -> None:
         write_action._project_product_config_apply_result(response["result"])
 
 
+def test_product_config_apply_cannot_accept_a_dry_run_result() -> None:
+    with pytest.raises(safety.LaunchplaneSafetyError):
+        write_action.summarize_success(
+            operation="product-config-apply", request={}, provider_payload=_public_hosts_response(),
+        )
+
+
+def test_public_dns_names_with_token_like_substrings_are_supported() -> None:
+    response = _public_hosts_response(mode="apply")
+    hosts = ["helpdesk-portal.example.com", "kiosk-app.example.com"]
+    for key in ("after", "added", "read_back_hosts"):
+        response["result"]["public_hosts"][key] = hosts
+    result = write_action.summarize_success(
+        operation="product-config-apply", request={}, provider_payload=response,
+    )
+    assert result["result"]["public_hosts"]["read_back_hosts"] == hosts
+
+
 def test_product_config_secret_results_keep_declared_secret_class() -> None:
     projected = write_action._project_secret_results(
         [
