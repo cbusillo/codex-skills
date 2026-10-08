@@ -485,6 +485,66 @@ class CleanupRunnerTests(unittest.TestCase):
                                 pass
                             owned_process.wait(timeout=2)
 
+    def test_invoke_capture_boundary_after_producer_exit(self) -> None:
+        spec = importlib.util.spec_from_file_location("cleanup_runner_completed_capture", SCRIPT)
+        assert spec is not None and spec.loader is not None
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        real_popen = subprocess.Popen
+        for stream in ("stdout", "stderr", "combined"):
+            for excess in (0, 1):
+                with self.subTest(stream=stream, excess=excess):
+                    total = runner.CAPTURE_LIMIT + excess
+                    stdout_size = {"stdout": total, "stderr": 0, "combined": total // 2}[stream]
+                    stderr_size = total - stdout_size
+                    prefix, suffix = b'{"padding":"', b'"}\n'
+                    expected_stdout = (
+                        prefix + b'x' * (stdout_size - len(prefix) - len(suffix)) + suffix
+                        if stdout_size else b""
+                    )
+                    expected_stderr = b'x' * stderr_size
+                    command = [sys.executable, "-c", textwrap.dedent(f"""\
+                        import sys
+                        prefix, suffix = {prefix!r}, {suffix!r}
+                        if {stdout_size}:
+                            sys.stdout.buffer.write(prefix + b'x' * ({stdout_size} - len(prefix) - len(suffix)) + suffix)
+                        sys.stderr.buffer.write(b'x' * {stderr_size})
+                        """)]
+                    processes: list[subprocess.Popen[bytes]] = []
+
+                    def completed_popen(*args, **kwargs):
+                        spawned_process = real_popen(*args, **kwargs)
+                        processes.append(spawned_process)
+                        # Hand invoke a completed real process so its live polling
+                        # branch cannot mask a missing post-exit size check.
+                        self.assertEqual(0, spawned_process.wait(timeout=5))
+                        return spawned_process
+
+                    try:
+                        with mock.patch.object(subprocess, "Popen", side_effect=completed_popen):
+                            if excess:
+                                with self.assertRaises(runner.RunnerError) as rejection:
+                                    runner.invoke(command, "completed capture proof", os.environ.copy(),
+                                                  self.workspace, 30, self.base / f"completed-{stream}-{excess}")
+                                self.assertIs(type(rejection.exception), runner.RunnerError)
+                            else:
+                                returncode, stdout, stderr, _ = runner.invoke(
+                                    command, "completed capture proof", os.environ.copy(), self.workspace,
+                                    30, self.base / f"completed-{stream}-{excess}",
+                                )
+                                self.assertEqual(0, returncode)
+                                self.assertEqual(expected_stdout, stdout.encode())
+                                self.assertEqual(expected_stderr, stderr.encode())
+                                if stdout:
+                                    self.assertEqual(1, len(runner.json_events(stdout)))
+                        self.assertEqual(1, len(processes))
+                        self.assertEqual(0, processes[0].returncode)
+                    finally:
+                        for owned_process in processes:
+                            if owned_process.poll() is None:
+                                owned_process.kill()
+                            owned_process.wait(timeout=2)
+
     def test_oversized_and_malformed_output_leave_no_raw_capture(self) -> None:
         for mode in ("oversized", "oversized-native", "malformed"):
             with self.subTest(mode=mode):
