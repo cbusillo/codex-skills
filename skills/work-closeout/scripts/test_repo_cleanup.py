@@ -395,22 +395,31 @@ class CleanupContracts(unittest.TestCase):
 
     def test_revalidate_detects_content_change_even_when_all_metadata_matches(self):
         nested = self.private_files(self.output)
+        path = nested / "private.db"
+        original = path.stat()
+        original_signature = cleanup_probe.signature
+
+        def stable_file_signature(info: os.stat_result) -> dict[str, int]:
+            result = original_signature(info)
+            if (info.st_dev, info.st_ino) == (original.st_dev, original.st_ino):
+                # ctime cannot be restored through utime. Normalize it before
+                # scanning so metadata cannot substitute for byte verification.
+                result["ctime_ns"] = original.st_ctime_ns
+            return result
+
         # Installed runtime bindings are not inputs to this content fixture.
-        with patch.object(cleanup, "bindings", return_value=[]):
+        with (
+            patch.object(cleanup, "bindings", return_value=[]),
+            patch.object(cleanup_probe, "signature", side_effect=stable_file_signature),
+        ):
             before = self.inventory()
             self.assertTrue(before["complete"], cleanup.public(before))
             unchanged = cleanup.check_manifest(before)
             self.assertTrue(unchanged["ok"], unchanged["errors"])
-            path = nested / "private.db"
-            original = path.stat()
             path.write_bytes(b"x" * original.st_size)
             os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
             entry = before["roots"][0]["entries"]["nested/private.db"]
-            current_stat = cleanup_probe.signature(path.stat())
-            # ctime cannot be restored through utime. Model matching metadata
-            # in this synthetic baseline so it cannot mask a broken content check.
-            entry["stat"]["ctime_ns"] = current_stat["ctime_ns"]
-            self.assertEqual(entry["stat"], current_stat)
+            self.assertEqual(entry["stat"], cleanup_probe.signature(path.stat()))
             result = cleanup.check_manifest(before)
             self.assertFalse(result["ok"])
             self.assertIn("retained_content_or_identity_changed", result["errors"])
