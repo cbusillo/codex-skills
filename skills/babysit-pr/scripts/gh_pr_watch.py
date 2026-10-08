@@ -279,7 +279,12 @@ def _format_gh_error(cmd, err):
 def command_signal_cleanup():
     """Let catchable parent termination use the same cleanup as interruption."""
     previous = {}
+    terminating = False
     def terminate(signum, _frame):
+        nonlocal terminating
+        if terminating:
+            return
+        terminating = True
         raise SystemExit(128 + signum)
     if threading.current_thread() is threading.main_thread():
         for signum in (signal.SIGTERM, signal.SIGHUP):

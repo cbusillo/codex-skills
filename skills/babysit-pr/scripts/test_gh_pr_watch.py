@@ -2711,7 +2711,7 @@ def test_real_wrapper_distinguishes_preflight_refusal_from_unknown_write(monkeyp
         assert pending["1"]["outcome"] == "submitting"
 
 
-@pytest.mark.parametrize("termination", ["SIGTERM", "SIGHUP", "SIGKILL"])
+@pytest.mark.parametrize("termination", ["SIGTERM", "SIGHUP", "SIGKILL", "SIGTERM_then_SIGHUP"])
 def test_parent_termination_cleans_catchable_commands_and_preserves_unknown(monkeypatch, tmp_path, termination):
     _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
     command = tmp_path / "fake-gh"
@@ -2726,7 +2726,16 @@ def test_parent_termination_cleans_catchable_commands_and_preserves_unknown(monk
     command.chmod(0o700)
     monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(command))
     monkeypatch.setattr(gh_pr_watch, "COMMAND_TIMEOUT_SECONDS", 5.0)
-    worker = multiprocessing.get_context("fork").Process(
+    ctx = multiprocessing.get_context("fork")
+    cleanup_started = ctx.Event()
+    if termination == "SIGTERM_then_SIGHUP":
+        kill_group = os.killpg
+        def delayed_cleanup(pid, sig):
+            cleanup_started.set()
+            gh_pr_watch.time.sleep(0.3)
+            kill_group(pid, sig)
+        monkeypatch.setattr(gh_pr_watch.os, "killpg", delayed_cleanup)
+    worker = ctx.Process(
         target=lambda: gh_pr_watch.retry_failed_now(argparse.Namespace()),
     )
     try:
@@ -2735,7 +2744,11 @@ def test_parent_termination_cleans_catchable_commands_and_preserves_unknown(monk
         while not (heartbeat.exists() and descendant.exists() and descendant.stat().st_size):
             assert gh_pr_watch.time.monotonic() < deadline, "offline command did not start"
             gh_pr_watch.time.sleep(0.01)
-        os.kill(worker.pid, getattr(gh_pr_watch.signal, termination))
+        first_signal = "SIGTERM" if termination == "SIGTERM_then_SIGHUP" else termination
+        os.kill(worker.pid, getattr(gh_pr_watch.signal, first_signal))
+        if termination == "SIGTERM_then_SIGHUP":
+            assert cleanup_started.wait(timeout=2)
+            os.kill(worker.pid, gh_pr_watch.signal.SIGHUP)
         worker.join(timeout=2)
         assert not worker.is_alive()
         gh_pr_watch.time.sleep(0.1)
