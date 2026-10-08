@@ -1114,8 +1114,13 @@ class TerminalTests(unittest.TestCase):
             args = argparse.Namespace(command="new", window_id="chosen", command_file=files,
                                       account_provider="anthropic", account=None, account_config=None)
             choices = account_choice.choose_batch("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None, count=2)
-            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select_batch", return_value=choices), patch.object(account_choice, "record_launch") as receipt,
-                patch.object(account_choice, "prepare_launch"), self.assertRaisesRegex(ValueError, "already sets"):
+            with (
+                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
+                patch.object(account_choice, "select_batch", return_value=choices),
+                patch.object(account_choice, "record_launch") as receipt,
+                patch.object(account_choice, "prepare_launch"),
+                self.assertRaisesRegex(ValueError, "already sets"),
+            ):
                 asyncio.run(iterm_tab.operate(app, args))
             window.async_create_tab.assert_not_awaited()
             receipt.assert_not_called()
