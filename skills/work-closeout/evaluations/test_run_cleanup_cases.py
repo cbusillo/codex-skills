@@ -399,13 +399,12 @@ class CleanupRunnerTests(unittest.TestCase):
                     FIXTURE_AUTH_CANARY in result.stdout + result.stderr,
                     "fixture auth echoed by runner",
                 )
-                for root in (self.outcomes, self.workspace):
-                    for path in root.rglob("*"):
-                        if path.is_file():
-                            self.assertFalse(
-                                FIXTURE_AUTH_CANARY.encode() in path.read_bytes(),
-                                f"fixture auth retained in {path.relative_to(self.base)}",
-                            )
+                for path in self.base.rglob("*"):
+                    if path.is_file() and path != self.auth_home / "auth.json":
+                        self.assertFalse(
+                            FIXTURE_AUTH_CANARY.encode() in path.read_bytes(),
+                            f"fixture auth retained in {path.relative_to(self.base)}",
+                        )
                 self.assertFalse(any(self.private.iterdir()))
 
     def test_rejects_unmarked_workspace_secret_environment_and_external_output(self) -> None:
