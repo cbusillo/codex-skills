@@ -15,7 +15,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any, Callable
+from typing import Any
 
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 os.environ["CODEX_AUTOMATION_LOGIN"] = "fixture-automation"
