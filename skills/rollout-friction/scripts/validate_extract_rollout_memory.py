@@ -343,6 +343,8 @@ def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
         "/Users/example/google drive/media/example/uploads/avatar.png",
         "/Users/example/client's/mnt/example/fixtures/sample.json",
         "'/Users/example/client's/mnt/example/fixtures/sample.json'",
+        "'/Users/example/kids' photos/media/example/uploads/avatar.png'",
+        r'"/Users/example/kids\" photos/media/example/uploads/avatar.png"',
         "/Users/example/smith,john/var/example/fixtures/sample.json",
         "backup/mnt/Users/example/fixtures/sample.json",
         "coverage/tmp/home/example/fixtures/sample.json",

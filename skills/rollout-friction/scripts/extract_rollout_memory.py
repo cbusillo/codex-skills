@@ -462,10 +462,12 @@ def redact_paths(text: str, *, embedded_path: bool = False) -> str:
 
     def replace(match: re.Match[str]) -> str:
         nonlocal previous_path_end
+        if previous_path_end is not None and text.find("\n", previous_path_end, match.start()) != -1:
+            previous_path_end = None
         result = redact_path_match(match, embedded_path=embedded_path, previous_path_end=previous_path_end)
         if result != match.group(0):
             quote = match.group("quoted")
-            quoted_argument = (quote and match.group(0).endswith(quote)
+            quoted_argument = (quote == '"' and match.group(0).endswith(quote) and not match.group(0).endswith('\\"')
                                and (match.end() == len(text) or text[match.end()] in " \t\r\n,;)]}"))
             previous_path_end = None if quoted_argument else match.end()
         return result
@@ -483,13 +485,15 @@ def redact_path_match(
         # precede an absolute root without a plain-text boundary.
         if (not embedded_path and match.group("quoted") is None
                 and match.group(0).split("/", 2)[1] in RELATIVE_PATH_ROOTS):
-            prefix = re.search(r"[^\s,;\"'`<>=()\[\]{}]+$", match.string[:match.start()])
-            gap = match.string[previous_path_end:prefix.start()] if prefix and previous_path_end is not None else ""
-            continued_private_path = previous_path_end is not None and "\n" not in gap
-            if (prefix and re.fullmatch(r"(?:\.{1,2}/)*(?:[\w.@+][\w.@+-]*/)*[\w.@+][\w.@+-]*", prefix.group(0))
-                    and (prefix.group(0) in {".", ".."} or re.search(r"[^\W_]", prefix.group(0)))
-                    and not continued_private_path
-                    and not is_local_host(prefix.group(0).split("/")[0], bare_is_local=False)):
+            start = match.start()
+            while (start and not match.string[start - 1].isspace()
+                   and match.string[start - 1] not in ",;\"'`<>=()[]{}"):
+                start -= 1
+            prefix = match.string[start:match.start()]
+            if (prefix and re.fullmatch(r"(?:\.{1,2}/)*(?:[\w.@+][\w.@+-]*/)*[\w.@+][\w.@+-]*", prefix)
+                    and (prefix in {".", ".."} or re.search(r"[^\W_]", prefix))
+                    and previous_path_end is None
+                    and not is_local_host(prefix.split("/")[0], bare_is_local=False)):
                 path = match.group(0)
                 boundary = re.search(r"[^\w.@+/-]", path)
                 end = boundary.start() if boundary else len(path)
