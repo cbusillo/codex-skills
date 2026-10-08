@@ -79,7 +79,7 @@ class ClaimTests(unittest.TestCase):
         self.configs = {}
         self.planning_inventory = None
         self.target_comments = {}
-        self.comments = []
+        self.comments: list[dict[str, Any]] = []
         self.inventory = {"worktrees": [], "local_branches": [], "remote_branches": [], "sessions": [],
                           "session_coverage": {"codex": {"status": "unavailable"}, "claude": {"status": "available"}}}
         self.pulls = []
@@ -381,7 +381,7 @@ class ClaimTests(unittest.TestCase):
         # for split handoffs. Source-branch PR refresh binds through the source
         # record instead; the caller still verifies the real source session.
         self.historical_direction_fixture("d4", refresh=True)
-        self.comments[-1]["body"] = "LP-2693-D1 handoff: direction#46; source work finished."
+        self.comments[-1]["body"] = "LP-2693-D1 handoff: PR #46; source work finished."
         self.run_claim()
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
