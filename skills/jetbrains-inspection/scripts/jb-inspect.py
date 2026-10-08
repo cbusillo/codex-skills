@@ -9445,7 +9445,8 @@ def bounded_inspection_lane_result(lane: dict[str, Any]) -> dict[str, Any]:
     diagnostic.update(inspection_stage_diagnostics(lane, lane_run_id))
     bounded["diagnostic"] = diagnostic
     for field in ("files", "relative_files"):
-        values = lane.get(field) if isinstance(lane.get(field), list) else []
+        raw_values = lane.get(field)
+        values = raw_values if isinstance(raw_values, list) else []
         bounded[field] = values[:MAX_LANE_FILE_PATHS]
         bounded[f"{field}_limit"] = MAX_LANE_FILE_PATHS
         bounded[f"{field}_omitted_count"] = max(0, len(values) - MAX_LANE_FILE_PATHS)
@@ -9464,7 +9465,8 @@ def bounded_lane_selection(value: Any) -> dict[str, Any] | None:
         "explicit_exclusion_overrides",
         "unmatched_files",
     ):
-        values = value.get(field) if isinstance(value.get(field), list) else []
+        raw_values = value.get(field)
+        values = raw_values if isinstance(raw_values, list) else []
         bounded[field] = values[:MAX_LANE_FILE_PATHS]
         bounded[f"{field}_count"] = len(values)
         bounded[f"{field}_limit"] = MAX_LANE_FILE_PATHS
