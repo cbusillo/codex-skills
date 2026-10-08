@@ -637,7 +637,7 @@ def retained_handoff(
 
     handoff_text = handoff.get("body") or ""
     source_record = records(source["body"])[0]
-    source_claim_match = re.search(rf"\bclaim {source_id}(?!\d)", handoff_text)
+    source_claim_match = re.search(rf"\bclaim:? {source_id}(?!\d)", handoff_text)
     source_session_match = re.search(rf"(?<![\w-]){re.escape(source_record['session'])}(?![\w-])", handoff_text)
     standalone = (handoff_text.splitlines()[:1] == [f"Handoff from {source_record['worker']}"]
                   and source_claim_match and source_session_match

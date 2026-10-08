@@ -131,6 +131,70 @@ class InstallTests(unittest.TestCase):
                 self.assertFalse((self.catalog / ".local").exists())
                 skills.unlink()
 
+    def test_chrome_config_is_preflighted_before_any_host_write(self):
+        local = self.catalog / ".local"
+        local.mkdir()
+        (local / "chrome.toml").write_text('pinned_home = "/missing-account-home"\nhomes = []\n')
+        with self.assertRaisesRegex(ValueError, "nonempty homes"):
+            self.install()
+        self.assertFalse((self.claude / "CLAUDE.md").exists())
+        self.assertFalse((self.codex / "hooks.json").exists())
+        self.assertFalse((self.claude / "skills" / "shared").exists())
+
+    def test_installer_enrolls_configured_chrome_homes_but_refresh_does_not(self):
+        import chrome_mcp
+        local = self.catalog / ".local"
+        local.mkdir()
+        pinned = self.home / "extension-account"
+        pinned.mkdir()
+        (local / "chrome.toml").write_text(
+            f'pinned_home = {json.dumps(str(pinned))}\nhomes = [{json.dumps(str(self.claude))}]\n')
+        entries = {}
+
+        def native(cli_command, directory, args):
+            self.assertEqual(cli_command, "claude")
+            if args[0] == "add-json":
+                entries[directory] = json.loads(args[2])
+                return subprocess.CompletedProcess(args, 0, "", "")
+            entry = entries.get(directory)
+            if entry is None:
+                return subprocess.CompletedProcess(args, 1, f'No MCP server named "{chrome_mcp.SERVER}".', "")
+            assert isinstance(entry, dict)
+            text = "\n".join([f"{chrome_mcp.SERVER}:",
+                "  Scope: User config (available in all your projects)", "  Type: stdio",
+                f"  Command: {entry['command']}", f"  Args: {' '.join(entry['args'])}", "  Environment:",
+                *(f"    {key}={value}" for key, value in entry['env'].items())])
+            return subprocess.CompletedProcess(args, 0, text, "")
+
+        with mock.patch.object(chrome_mcp, "run_mcp", side_effect=native):
+            preview = self.install(write=False)
+            self.assertEqual(entries, {})
+            self.assertEqual(len(preview["chrome_mcp"]), 2)
+            self.install()
+            self.assertEqual(set(entries), {self.claude, pinned})
+            for installed_entry in entries.values():
+                self.assertEqual(installed_entry["env"]["CLAUDE_CONFIG_DIR"], str(pinned))
+        (local / "chrome.toml").write_text("invalid TOML [")
+        # Automatic instruction refresh never adds or updates browser access.
+        installer.install(self.home, self.codex, self.claude, write=True, updater=False,
+                          refresh_instructions=True)
+
+    def test_chrome_failure_does_not_record_an_unactivated_updater(self):
+        import chrome_mcp
+        with mock.patch.object(chrome_mcp, 'prepare', return_value={'entries': []}), \
+                mock.patch.object(chrome_mcp, 'apply', side_effect=ValueError('fixture apply failed')), \
+                mock.patch.object(sys, 'platform', 'darwin'), \
+                mock.patch.object(shutil, 'which', return_value='/fixture/uv'), \
+                mock.patch.object(runtime, 'checkout_state', return_value={'state': 'current'}), \
+                mock.patch.object(subprocess, 'run') as launchctl:
+            launchctl.return_value.returncode = 1
+            with self.assertRaisesRegex(ValueError, 'fixture apply failed'):
+                installer.install(self.home, self.codex, self.claude, write=True, updater=True)
+        self.assertFalse((self.catalog / '.local' / 'catalog-install.json').exists())
+        self.assertFalse((self.home / 'Library' / 'LaunchAgents' / f'{installer.LABEL}.plist').exists())
+        self.assertFalse((self.claude / 'CLAUDE.md').exists())
+        self.assertFalse((self.codex / 'AGENTS.md').exists())
+
     def test_generated_tail_with_no_private_source_is_never_guessed(self):
         path = self.codex / "AGENTS.md"
         text = self.sync.render(self.catalog / "instructions" / "global.md", self.catalog / "missing") + "\nRemoved shared paragraph.\n"
@@ -842,7 +906,7 @@ class UpdateTests(unittest.TestCase):
     def test_installed_update_refreshes_instructions_and_exposes_new_skill(self):
         source = Path(__file__).resolve().parent
         (self.seed / "scripts").mkdir()
-        for name in ("install-catalog.py", "catalog_runtime.py", "sync-global-instructions.py"):
+        for name in ("install-catalog.py", "chrome_mcp.py", "catalog_runtime.py", "sync-global-instructions.py"):
             shutil.copyfile(source / name, self.seed / "scripts" / name)
         (self.seed / "instructions").mkdir()
         (self.seed / "instructions" / "global.md").write_text("First shared instructions.\n")

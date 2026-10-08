@@ -821,8 +821,9 @@ and use a head and base in the PR's repository; fork refreshes are not supported
 The issue and target PR's recorded waits still require verified resolution.
 
 The handoff must start with the exact-ID release line described above, or with
-`Handoff from <source-worker>` and include the exact claim ID and native source
-session ID. A generic bot rollup or refresh claim is not a handoff. Authorship
+`Handoff from <source-worker>` and include the exact claim ID (`Source claim <id>`
+or `Source claim: <id>`) and native source session ID. This source reference
+does not itself release a claim. A generic bot rollup or refresh claim is not a handoff. Authorship
 checks are at GitHub identity level; verify the actual finished-session handoff
 before invoking the route because several sessions can share that identity.
 Every open PR on a retained branch must be named in this handoff and authored
