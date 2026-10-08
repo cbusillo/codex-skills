@@ -76,6 +76,8 @@ def status_line(root: Path) -> str:
                 state = {"state": "stale", "reason": "shared instructions changed; run scripts/catalog_runtime.py --update to refresh installed instructions"}
             if state["state"] == "current" and receipt.exists() and recorded.get("alert_refresh"):
                 state = {"state": "notice", "reason": "catalog checkout is current but alert refresh was skipped; preview scripts/install-catalog.py --refresh-instructions --show-diff, reconcile the reported hook source, then run scripts/catalog_runtime.py --update"}
+            if state["state"] == "current" and receipt.exists() and recorded.get("instruction_refresh"):
+                state = {"state": "notice", "reason": "catalog checkout is current but instruction refresh was skipped; preview scripts/install-catalog.py --refresh-instructions --show-diff, reconcile the reported instruction source, then run scripts/catalog_runtime.py --update"}
         if state["state"] == "current":
             return ""
         return f"Catalog {state['state']}: {state['reason']} ({root})."
@@ -121,7 +123,10 @@ def update(root: Path) -> dict[str, str]:
                     if result.returncode:
                         raise ValueError("catalog is current but instruction refresh failed; preview scripts/install-catalog.py --refresh-instructions to diagnose and reconcile")
                     refreshed = json.loads(result.stdout)
-                    if any(entry.get("state") == "skipped" for entry in refreshed.get("outputs", [])):
+                    skipped = [entry for entry in refreshed.get("outputs", []) if entry.get("state") == "skipped"]
+                    if any(Path(entry["path"]).name in ("CLAUDE.md", "AGENTS.md") for entry in skipped):
+                        state["instruction_refresh"] = "skipped; preview scripts/install-catalog.py --refresh-instructions --show-diff to diagnose"
+                    if any(Path(entry["path"]).name not in ("CLAUDE.md", "AGENTS.md") for entry in skipped):
                         state["alert_refresh"] = "skipped; preview scripts/install-catalog.py --refresh-instructions to diagnose"
         except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
             state = {"state": "error", "reason": str(error), "failure_step": failure_step}

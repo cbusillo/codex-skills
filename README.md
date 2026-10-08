@@ -50,7 +50,10 @@ file. Later linked-source edits stay in their external source and do not stop in
 To propagate those edits into regular outputs, update `.local/global-instructions.md`
 and rerun the installer; linked files remain under separate management.
 Stale generated linked instructions are reported as skipped, including by scheduled
-refresh. The separate instruction sync command preserves links in the same way,
+refresh. Preview with `--show-diff` to render the changes for the linked source's
+external manager, including when both destinations share one target. Generated
+linked text is preserved without guessing its private remainder; the catalog's
+private source supplies regular outputs. The separate instruction sync command preserves links in the same way,
 so it can reconcile regular outputs while another destination remains linked.
 Existing unrelated bindings, malformed settings, or generated instructions whose private
 source cannot be identified are reported and left in place. Inspect the reported

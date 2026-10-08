@@ -178,6 +178,26 @@ class InstallTests(unittest.TestCase):
         for destination in (path, target):
             self.assertEqual(receipt["instruction_hashes"][str(destination)], installer.hashlib.sha256(destination.read_bytes()).hexdigest())
 
+    def test_new_linked_generated_destination_is_preserved_without_adopting_unknown_private_text(self):
+        self.install()
+        local = self.catalog / ".local" / "global-instructions.md"
+        local.write_text("Authoritative private rule.\n")
+        self.install()
+        for index, shared in enumerate(("Old unknown catalog rules.", "# Shared\nUse the catalog.")):
+            with self.subTest(shared=shared):
+                codex = self.home / f"new-codex-{index}"
+                codex.mkdir()
+                target = self.root / f"old-generated-{index}.md"
+                original = self.sync.HEADER + "\n\n" + shared + "\n\nDifferent private rule.\n"
+                target.write_text(original)
+                (codex / "AGENTS.md").symlink_to(target)
+                preview = installer.install(self.home, codex, self.claude, write=False, updater=False, show_diff=True)
+                self.assertEqual(preview["outputs"][1]["state"], "skipped")
+                self.assertIn("Authoritative private rule.", preview["outputs"][1]["diff"])
+                installer.install(self.home, codex, self.claude, write=True, updater=False)
+                self.assertEqual(target.read_text(), original)
+                self.assertEqual(local.read_text(), "Authoritative private rule.\n")
+
     def test_conflicting_personal_shared_binding_is_preserved_without_writes(self):
         shared = self.home / ".agents" / "skills" / "shared"
         shared.mkdir(parents=True)
@@ -1041,12 +1061,13 @@ class UpdateTests(unittest.TestCase):
             command("git", "commit", "-qam", "next catalog update", cwd=self.seed)
             command("git", "push", "-q", "origin", "main", cwd=self.seed)
             skipped = runtime.update(self.checkout)
-            self.assertIn("alert_refresh", skipped)
+            self.assertIn("instruction_refresh", skipped)
             self.assertIn("Catalog notice", runtime.status_line(self.checkout))
+            self.assertIn("instruction refresh was skipped", runtime.status_line(self.checkout))
             self.assertEqual(target.read_bytes(), original)
             self.assertTrue(agents.is_symlink())
             target.write_bytes((fixture_home / ".claude" / "CLAUDE.md").read_bytes())
-            self.assertNotIn("alert_refresh", runtime.update(self.checkout))
+            self.assertNotIn("instruction_refresh", runtime.update(self.checkout))
             self.assertEqual(runtime.status_line(self.checkout), "")
 
 

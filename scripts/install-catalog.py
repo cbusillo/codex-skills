@@ -139,10 +139,11 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         pending = [(path, target) for path, target in links if binding(path, target)]
     destinations = [claude / "CLAUDE.md", codex / "AGENTS.md"]
     preserved_targets = {path.resolve() for path in destinations if path.is_symlink()}
+    local = ROOT / ".local" / "global-instructions.md"
     # Adopt linked text once. Later edits stay with its owner; the private source
     # remains authoritative for outputs the installer can write.
-    adoption = [path for path in destinations if path.resolve() not in preserved_targets or str(path) not in hashes]
-    local = ROOT / ".local" / "global-instructions.md"
+    adoption = [path for path in destinations if path.resolve() not in preserved_targets or (
+        str(path) not in hashes and (not local.exists() or not safe_file(path, instruction=True).startswith(sync.HEADER)))]
     personal = personal_source(sync, adoption, local, new_destinations={path for path in destinations if str(path) not in hashes})
     shared_source = (ROOT / "instructions" / "global.md").read_text()
     base = "\n\n".join(filter(None, (sync.HEADER, shared_source.strip()))) + "\n"

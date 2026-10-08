@@ -339,6 +339,10 @@ def synchronize_instructions(content: str, destinations: list[Path], *, write: b
             linked[path] = {"path": str(path), "sha256": hashlib.sha256(text.encode()).hexdigest(),
                             "state": state,
                             "reason": "Symlink and target preserved; update the instruction source separately"}
+            if text != content:
+                linked[path]["diff"] = "".join(difflib.unified_diff(
+                    text.splitlines(keepends=True), content.splitlines(keepends=True),
+                    fromfile=str(path), tofile=f"{path} (generated)"))
         else:
             regular.append(path)
     outputs = {Path(entry["path"]): entry for entry in synchronize(
