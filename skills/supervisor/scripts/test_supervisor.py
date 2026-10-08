@@ -13,7 +13,7 @@ import shlex
 import os
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -559,7 +559,7 @@ def account_row(label, remaining, resets, state="available", cfg="cfg"):
         "provider": "anthropic",
         "label": label,
         "configurationID": cfg,
-        "id": "row-" + cfg,
+        "id": "anthropic-def" if cfg == "cfg-spare" else "anthropic-abc",
         "state": state,
         "remainingFraction": remaining,
         "windows": [
@@ -584,185 +584,182 @@ def choose_from(rows, recommendations=None, **extra):
 
 
 class AccountChoiceTests(unittest.TestCase):
+    def snapshot(self, provider="anthropic", order=None, stale=False, age=0):
+        rows = [account_row("main", .01, []), account_row("spare", .04, [], cfg="cfg-spare")]
+        for row in rows:
+            row["provider"] = provider
+            row["id"] = row["id"].replace("anthropic", provider)
+        order = order if order is not None else [rows[1]["id"], rows[0]["id"], rows[1]["id"]]
+        return {"schemaVersion": 1, "accounts": rows,
+                "answers": {"useNext": [] if stale else [{"provider": provider, "accountID": rows[1]["id"]}]},
+                "ranking": [{"provider": provider, "launchOrder": order,
+                             "basedOnStaleReadings": stale,
+                             "readingsObservedAt": (NOW - timedelta(minutes=age)).isoformat()}]}
 
-    def test_context_panel_choice_overrides_weekly_ranking_for_each_provider(self):
+    def test_use_next_is_authoritative_despite_config_reserves_order_and_row_state(self):
         for provider in account_choice.PROVIDERS:
-            with self.subTest(provider=provider):
-                config = accounts_config()
-                for account in config["accounts"]:
-                    account["provider"] = provider
-                rows = [
-                    account_row("main", 0.6, ["2026-10-04T03:00:00Z"]),
-                    account_row("spare", 0.5, ["2026-10-07T08:00:00Z"], cfg="cfg-spare"),
-                ]
-                for row, count in zip(rows, [1, 2]):
-                    row["provider"] = provider
-                    row["bankedResets"] = {"summary": {
-                        "availableCount": count,
-                        "knownExpiries": ["2026-10-05T03:00:00Z", "2026-10-06T03:00:00Z"][:count],
-                    }}
-                snapshot = {"accounts": rows, "answers": {"useNext": [
-                    {"provider": other, "accountID": "irrelevant"}
-                    for other in account_choice.PROVIDERS if other != provider
-                ] + [{"provider": provider, "accountID": "row-cfg-spare"}]}}
-                choice = account_choice.choose(provider, config, snapshot, None, now=NOW)
-                self.assertEqual((choice["name"], choice["source"]), ("spare", "context-panel"))
-                self.assertIn("Context Panel use next", choice["reason"])
-                # Label-based configuration must resolve the same snapshot ID too.
-                snapshot["answers"]["useNext"][-1]["accountID"] = "row-cfg"
-                rows[0]["useLast"] = True  # The consumer must not re-rank the app's answer.
-                self.assertEqual(account_choice.choose(provider, config, snapshot, None, now=NOW)["name"], "main")
+            config = accounts_config()
+            for account in config["accounts"]:
+                account["provider"] = provider
+            snapshot = self.snapshot(provider)
+            snapshot["accounts"][1].update(state="limited", useLast=True)
+            # The tightest (model-only) window may be empty while CP ranks the main window.
+            snapshot["accounts"][1]["remainingFraction"] = 0
+            choice = account_choice.choose(provider, config, snapshot, None, now=NOW)
+            self.assertEqual((choice["name"], choice["source"]), ("spare", "context-panel"))
+            self.assertEqual(choice["account_id"], provider + "-def")
+            config["accounts"].reverse()
+            self.assertEqual(account_choice.choose(provider, config, snapshot, None, now=NOW)["name"], "spare")
 
-    def test_missing_provider_choice_reports_previous_ranking_as_fallback(self):
-        rows = [
-            account_row("main", 0.6, ["2026-10-07T08:00:00Z"]),
-            account_row("spare", 0.5, ["2026-10-04T03:00:00Z"], cfg="cfg-spare"),
-        ]
-        for recommendations in (None, [], [{"provider": "openai", "accountID": "other"}]):
-            with self.subTest(recommendations=recommendations):
-                choice = choose_from(rows, recommendations=recommendations)
-                self.assertEqual((choice["name"], choice["source"]), ("spare", "fallback"))
-                self.assertIn("no anthropic use-next choice", choice["reason"])
-                self.assertIn("soonest reset with room", choice["reason"])
+    def test_batch_follows_published_order_including_repeated_accounts(self):
+        snapshot = self.snapshot()
+        choices = account_choice.choose_batch("anthropic", accounts_config(), snapshot, None, count=3, now=NOW)
+        self.assertEqual([c["name"] for c in choices], ["spare", "main", "spare"])
+        with self.assertRaisesRegex(ValueError, "smaller batch"):
+            account_choice.choose_batch("anthropic", accounts_config(), snapshot, None, count=4, now=NOW)
 
-    def test_unlaunchable_context_panel_choice_refuses_without_substitution(self):
-        rows = [account_row("main", 0.6, []), account_row("spare", 0.5, [], cfg="cfg-spare")]
-        recommendation = [{"provider": "anthropic", "accountID": "row-cfg-spare"}]
-        rows[1]["remainingFraction"] = 0.01
-        with self.assertRaisesRegex(ValueError, "use-next account cannot be launched"):
-            choose_from(rows, recommendations=recommendation)
-        rows[1].update(remainingFraction=None, state="stale")
-        with self.assertRaisesRegex(ValueError, "use-next account cannot be launched"):
-            choose_from(rows, recommendations=recommendation)
-        with self.assertRaisesRegex(ValueError, "no single account row"):
-            choose_from(rows, recommendations=[{"provider": "anthropic", "accountID": "missing"}])
-        rows[1].update(configurationID="unconfigured", id="row-unconfigured")
-        with self.assertRaisesRegex(ValueError, "no single configured account"):
-            choose_from(rows, recommendations=[{"provider": "anthropic", "accountID": "row-unconfigured"}])
-        with self.assertRaisesRegex(ValueError, "ambiguous"):
-            choose_from(rows, recommendations=recommendation * 2)
+    def test_stale_list_uses_observation_age_and_refuses_at_thirty_minutes(self):
+        for age in (0, 29.99):
+            snapshot = self.snapshot(stale=True, age=age)
+            choice = account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)
+            self.assertEqual((choice["name"], choice["source"]), ("spare", "context-panel-stale"))
+        for age in (30, 31, -1):
+            with self.subTest(age=age), self.assertRaisesRegex(ValueError, "not under 30 minutes"):
+                account_choice.choose("anthropic", accounts_config(), self.snapshot(stale=True, age=age), None, now=NOW)
+        snapshot = self.snapshot(stale=True)
+        snapshot["ranking"][0].pop("readingsObservedAt")
+        with self.assertRaisesRegex(ValueError, "not under 30 minutes"):
+            account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)
 
-    def test_weekly_reset_ranks_and_five_hour_windows_do_not(self):
-        rows = [
-            # Main's five-hour window resets first, but its week ends later.
-            account_row("main", 0.6, ["2026-10-03T17:00:00Z", "2026-10-07T08:00:00Z"]),
-            account_row("Spare", 0.5, ["2026-10-03T19:00:00Z", "2026-10-04T03:00:00Z"], cfg="cfg-spare"),
-        ]
-        choice = choose_from(rows)
-        self.assertEqual((choice["name"], choice["source"]), ("spare", "fallback"))
-        self.assertEqual(choice["resets_at"], "2026-10-04T03:00:00+00:00")
-        self.assertEqual([o["name"] for o in choice["others"]], ["main"])
-        # Near the end of a week the five-hour window outlasts it; the week still ranks.
-        rows = [
-            account_row("main", 0.6, ["2026-10-03T20:00:00Z", "2026-10-03T17:00:00Z"]),
-            account_row("spare", 0.5, ["2026-10-03T18:30:00Z", "2026-10-03T18:00:00Z"], cfg="cfg-spare"),
-        ]
-        self.assertEqual(choose_from(rows)["name"], "main")
+    def test_no_choice_refuses_and_reports_next_capacity_without_private_fallback(self):
+        snapshot = self.snapshot(order=[])
+        snapshot["answers"]["useNext"] = []
+        snapshot["ranking"][0]["nextCapacityAt"] = "2026-10-04T03:00:00Z"
+        with self.assertRaisesRegex(ValueError, "next capacity at 2026-10-04T03:00:00Z"):
+            account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)
+        with self.assertRaisesRegex(ValueError, "snapshot unavailable.*exited 1"):
+            account_choice.choose("anthropic", accounts_config(), None, "snapshot command exited 1")
 
-    def test_reserve_and_stale_readings_are_skipped(self):
-        rows = [
-            account_row("main", 0.6, ["2026-10-07T08:00:00Z"]),
-            account_row("spare", 0.04, ["2026-10-04T03:00:00Z"], cfg="cfg-spare"),
-        ]
-        self.assertEqual(choose_from(rows)["name"], "main")
-        rows[0]["remainingFraction"] = 0.15  # below main's own 20% reserve
-        with self.assertRaisesRegex(ValueError, "main: 15% left.*spare: 4% left"):
-            choose_from(rows)
-        rows[0].update(remainingFraction=0.9, state="stale")
-        with self.assertRaisesRegex(ValueError, "no current reading"):
-            choose_from(rows)
+    def test_ambiguous_or_unconfigured_choices_refuse_without_substitution(self):
+        for change, error in (("missing", "single account row"), ("unconfigured", "single configured account"),
+                              ("duplicates", "ambiguous"), ("rowduplicates", "single account row")):
+            snapshot = self.snapshot()
+            if change == "missing":
+                snapshot["answers"]["useNext"][0]["accountID"] = "anthropic-123"
+            elif change == "unconfigured":
+                snapshot["accounts"][1]["configurationID"] = "unknown"
+            elif change == "duplicates":
+                snapshot["answers"]["useNext"] *= 2
+            else:
+                snapshot["accounts"].append(dict(snapshot["accounts"][1]))
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, error):
+                account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)
 
-    def test_known_readings_without_room_refuse_rather_than_fall_back(self):
-        exhausted = [
-            account_row("main", None, [], state="limited"),
-            account_row("spare", None, [], state="limited", cfg="cfg-spare"),
-        ]
-        with self.assertRaisesRegex(ValueError, "main: no room.*spare: no room"):
-            choose_from(exhausted)
-        ambiguous = [account_row("main", 0.9, []), account_row("Main", 0.9, [])]
-        with self.assertRaisesRegex(ValueError, "2 Context Panel rows match"):
-            choose_from(ambiguous)
+    def test_explicit_account_overrides_ranking_but_needs_snapshot_receipt_id(self):
+        choice = account_choice.choose("anthropic", accounts_config(), self.snapshot(), None, now=NOW, name="main")
+        self.assertEqual((choice["name"], choice["source"], choice["account_id"]), ("main", "named", "anthropic-abc"))
+        with self.assertRaisesRegex(ValueError, "snapshot unavailable"):
+            account_choice.choose("anthropic", accounts_config(), None, "reader failed", name="main")
+        with self.assertRaisesRegex(ValueError, "named missing"):
+            account_choice.choose("anthropic", accounts_config(), self.snapshot(), None, name="missing")
 
-    def test_fallback_only_without_a_current_reading(self):
-        unavailable = account_choice.choose(
-            "anthropic", accounts_config(), None, "snapshot command exited 1", now=NOW
-        )
-        self.assertEqual((unavailable["name"], unavailable["source"]), ("main", "fallback"))
-        self.assertIn("snapshot command exited 1", unavailable["reason"])
-        unread = choose_from([
-            account_row("main", None, [], state="unknown"),
-            account_row("spare", None, [], state="stale", cfg="cfg-spare"),
-        ])
-        self.assertEqual((unread["name"], unread["source"]), ("main", "fallback"))
-        named = choose_from([], name="spare")
-        self.assertEqual((named["name"], named["source"]), ("spare", "named"))
-        with self.assertRaises(ValueError):
-            choose_from([], name="missing")
+    def test_configuration_errors_and_plain_reset_lines_reported(self):
+        snapshot = self.snapshot()
+        snapshot["configurationErrors"] = ["multipleUseLast:anthropic"]
+        snapshot["resetPrompts"] = [{"provider": "anthropic", "accountID": "anthropic-abc", "line": "Apply main's reset now"}]
+        choice = choose_from(snapshot["accounts"], snapshot["answers"]["useNext"])
+        self.assertEqual(choice["name"], "spare")
+        choice = account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)
+        self.assertEqual(choice["configuration_errors"], snapshot["configurationErrors"])
+        self.assertEqual(choice["reset_prompts"], ["Apply main's reset now"])
+        snapshot["answers"]["useNext"] = []
+        with self.assertRaisesRegex(ValueError, "(?s)no anthropic choice.*multipleUseLast.*Apply main"):
+            account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)
 
     def test_snapshot_read_failures_mean_unavailable(self):
-        def runner(code=0, stdout="", error=None):
-            def fake_run(*_args, **_kwargs):
-                if error:
-                    raise error
-                return SimpleNamespace(returncode=code, stdout=stdout)
-            return fake_run
-
-        cases = {
-            "exited 1": runner(code=1),
-            "not JSON": runner(stdout="{"),
-            "version 1": runner(stdout='{"schemaVersion": 2, "accounts": []}'),
-            "could not run": runner(error=FileNotFoundError()),
-        }
-        for reason, fake in cases.items():
+        for stdout, code, reason in (("{", 0, "not JSON"), ('{"schemaVersion":2}', 0, "version 1"), ("", 1, "exited 1")):
             with self.subTest(reason=reason):
-                snapshot, problem = account_choice.read_snapshot(["reader"], runner=fake)
+                snapshot, problem = account_choice.read_snapshot(["reader"], runner=Mock(return_value=SimpleNamespace(stdout=stdout, returncode=code)))
                 self.assertIsNone(snapshot)
                 self.assertIn(reason, problem)
-        snapshot, problem = account_choice.read_snapshot(
-            ["reader"], runner=runner(stdout='{"schemaVersion": 1, "accounts": []}')
-        )
-        self.assertEqual((snapshot["accounts"], problem), ([], None))
+        snapshot, problem = account_choice.read_snapshot(["reader"], runner=Mock(side_effect=FileNotFoundError()))
+        self.assertIsNone(snapshot)
+        self.assertIn("could not run", problem)
 
-    def test_private_config_location_and_invalid_config(self):
+    def test_private_config_location_legacy_reserves_ignored_and_env_validated(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "skill-data/supervisor.toml"
             path.parent.mkdir()
             path.write_text(ACCOUNTS_TOML)
             config = account_choice.load_config(env={"CODE_HOME": folder}, home=Path("/nowhere"))
-            self.assertEqual([a["reserve"] for a in config["accounts"]], [0.2, 0.05])
-            path.write_text(ACCOUNTS_TOML.replace('context_panel_label = "Main"', ""))
-            with self.assertRaisesRegex(ValueError, "exactly one"):
-                account_choice.load_config(env={"CODE_HOME": folder}, home=Path("/nowhere"))
-            # Codex still requires an explicit account home.
-            path.write_text(ACCOUNTS_TOML.replace('provider = "anthropic"', 'provider = "openai"'))
-            with self.assertRaisesRegex(ValueError, "must set CODEX_HOME"):
-                account_choice.load_config(env={"CODE_HOME": folder}, home=Path("/nowhere"))
-            for key in ("CODEX_HOME", "CLAUDE_CONFIG_DIRS"):
-                path.write_text(ACCOUNTS_TOML.replace("CLAUDE_CONFIG_DIR", key))
-                with self.subTest(key=key), self.assertRaisesRegex(ValueError, "must set CLAUDE_CONFIG_DIR"):
+            self.assertEqual([a["name"] for a in config["accounts"]], ["main", "spare"])
+            self.assertTrue(all("reserve" not in a for a in config["accounts"]))
+            for text, error in ((ACCOUNTS_TOML.replace('context_panel_label = "Main"', ''), "exactly one"),
+                                (ACCOUNTS_TOML.replace('provider = "anthropic"', 'provider = "openai"'), "must set CODEX_HOME"),
+                                (ACCOUNTS_TOML.replace('CLAUDE_CONFIG_DIR = "~/claude-main"', 'CLAUDE_CONFIG_DIR = false'), "env must map")):
+                path.write_text(text)
+                with self.assertRaisesRegex(ValueError, error):
                     account_choice.load_config(env={"CODE_HOME": folder}, home=Path("/nowhere"))
 
-    def test_default_claude_profile_can_be_selected_by_use_next_or_name(self):
-        config = accounts_config(ACCOUNTS_TOML.replace(
-            'env = { CLAUDE_CONFIG_DIR = "~/claude-main" }', 'env = {}'
-        ))
-        rows = [account_row("Main", 0.6, []), account_row("spare", 0.5, [], cfg="cfg-spare")]
-        snapshot = {"accounts": rows, "answers": {"useNext": [
-            {"provider": "anthropic", "accountID": "row-cfg"}
-        ]}}
+    def test_default_claude_profile_has_no_env_values(self):
+        config = accounts_config(ACCOUNTS_TOML.replace('env = { CLAUDE_CONFIG_DIR = "~/claude-main" }', 'env = {}'))
         for name in (None, "main"):
-            with self.subTest(name=name):
-                choice = account_choice.choose("anthropic", config, snapshot, None, now=NOW, name=name)
-                self.assertEqual(choice["name"], "main")
-                self.assertEqual(choice["env"], {})
-                self.assertEqual(account_choice.public(choice)["env_keys"], [])
+            snapshot = self.snapshot()
+            snapshot["answers"]["useNext"][0]["accountID"] = "anthropic-abc"
+            choice = account_choice.choose("anthropic", config, snapshot, None, name=name)
+            self.assertEqual(account_choice.public(choice)["env_keys"], [])
 
-    def test_default_profile_does_not_allow_invalid_env_values(self):
-        for env in ('{ CLAUDE_CONFIG_DIR = "" }', '{ CLAUDE_CONFIG_DIR = false }', '[]'):
-            with self.subTest(env=env), self.assertRaisesRegex(ValueError, "env must map"):
-                accounts_config(ACCOUNTS_TOML.replace(
-                    'env = { CLAUDE_CONFIG_DIR = "~/claude-main" }', f'env = {env}'
-                ))
+    def test_select_preview_and_receipts_use_readers_storage_root(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            config = accounts_config()
+            config["snapshot_command"] = ["reader", "--storage-root", str(root)]
+            with patch.object(account_choice, "load_config", return_value=config), patch.object(account_choice, "read_snapshot", return_value=(self.snapshot(), None)):
+                choice = account_choice.select("anthropic")
+            self.assertEqual(list(root.iterdir()), [])  # preview makes no receipt
+            path = account_choice.record_launch(choice, NOW)
+            receipt = json.loads(path.read_text())
+            self.assertEqual(receipt, {"schemaVersion": 1, "provider": "anthropic", "accountID": "anthropic-def", "launchedAt": "2026-10-03T16:00:00Z"})
+            self.assertEqual(path.parent, root / "Launch Receipts")
+            self.assertLess(path.stat().st_size, 1024)
+            self.assertEqual(list(path.parent.glob("*.tmp")), [])
+            self.assertNotIn(str(root), json.dumps(account_choice.public(choice)))
+
+    def test_atomic_receipt_and_pruning_preserve_other_writers_and_symlinks(self):
+        with tempfile.TemporaryDirectory() as folder:
+            choice = account_choice.choose("anthropic", accounts_config(), self.snapshot(), None)
+            choice["storage_root"] = Path(folder)
+            old = account_choice.record_launch(choice, NOW - timedelta(days=1))
+            directory = old.parent
+            other = directory / "20261001T160000Z-other.json"
+            other.write_bytes(old.read_bytes())
+            symlink = directory / "20261001T160000Z-supervisor-11111111111111111111111111111111.json"
+            symlink.symlink_to(other)
+            recent = account_choice.record_launch(choice, NOW - timedelta(hours=23))
+            self.assertTrue(old.exists())
+            original_replace = account_choice.os.replace
+            observed = []
+            def replace(source, target):
+                self.assertEqual(source.parent, target.parent)
+                self.assertFalse(target.exists())
+                self.assertEqual(json.loads(source.read_text())["accountID"], "anthropic-def")
+                observed.append(target)
+                original_replace(source, target)
+            with patch.object(account_choice.os, "replace", side_effect=replace):
+                account_choice.record_launch(choice, NOW)
+            self.assertEqual(len(observed), 1)
+            self.assertFalse(old.exists())
+            self.assertTrue(recent.exists())
+            self.assertTrue(other.exists())
+            self.assertTrue(symlink.is_symlink())
+
+    def test_receipt_rename_failure_leaves_no_partial_json_or_temp_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            choice = account_choice.choose("anthropic", accounts_config(), self.snapshot(), None)
+            choice["storage_root"] = Path(folder)
+            with patch.object(account_choice.os, "replace", side_effect=OSError("disk failure")), self.assertRaises(OSError):
+                account_choice.record_launch(choice, NOW)
+            self.assertEqual(list((Path(folder) / "Launch Receipts").iterdir()), [])
 
 
 class TerminalTests(unittest.TestCase):
@@ -770,7 +767,7 @@ class TerminalTests(unittest.TestCase):
         config = accounts_config(ACCOUNTS_TOML.replace(
             'env = { CLAUDE_CONFIG_DIR = "~/claude-main" }', 'env = {}'
         ))
-        choice = account_choice.choose("anthropic", config, None, None, name="main")
+        choice = account_choice.choose("anthropic", config, AccountChoiceTests().snapshot(), None, name="main")
         with tempfile.TemporaryDirectory() as folder:
             fake_claude = Path(folder) / "claude"
             fake_claude.write_text('#!/bin/sh\nprintf "%s\\n" "${CLAUDE_CONFIG_DIR+set}" "$1"\n')
@@ -940,10 +937,11 @@ class TerminalTests(unittest.TestCase):
         rows = [account_row("main", 0.6, []), account_row("spare", 0.5, [], cfg="cfg-spare")]
         for row in rows:
             row["provider"] = "openai"
+            row["id"] = row["id"].replace("anthropic", "openai")
         config = accounts_config(ACCOUNTS_TOML.replace("anthropic", "openai").replace("CLAUDE_CONFIG_DIR", "CODEX_HOME"))
         choice = account_choice.choose("openai", config, {
             "accounts": rows,
-            "answers": {"useNext": [{"provider": "openai", "accountID": "row-cfg-spare"}]},
+            "answers": {"useNext": [{"provider": "openai", "accountID": "openai-def"}]},
         }, None, now=NOW)
         # Stand in for the CLI without reading auth or starting a real session.
         with tempfile.TemporaryDirectory() as folder:
@@ -974,6 +972,7 @@ class TerminalTests(unittest.TestCase):
             with (
                 patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                 patch.object(account_choice, "select", return_value=choice),
+                patch.object(account_choice, "record_launch") as receipt,
             ):
                 result = asyncio.run(iterm_tab.operate(app, args))
                 command.write_text("env CLAUDE_CONFIG_DIR=/other claude\n")
@@ -984,8 +983,68 @@ class TerminalTests(unittest.TestCase):
             ("export CLAUDE_CONFIG_DIR='/accounts/spare dir' && cd /repo && claude 'brief'",),
         )
         window.async_create_tab.assert_awaited_once_with(select=False)
+        receipt.assert_called_once_with(choice)
         self.assertEqual(result["account"]["env_keys"], ["CLAUDE_CONFIG_DIR"])
         self.assertNotIn("env", result["account"])
+
+    def test_batch_creates_one_count_only_receipt_before_each_command(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            files = [root / "first.txt", root / "second.txt"]
+            for index, path in enumerate(files):
+                path.write_text(f"claude brief-{index}")
+            snapshot = AccountChoiceTests().snapshot()
+            config = accounts_config()
+            config["snapshot_command"] = ["reader", "--storage-root", str(root)]
+            counts_at_send = []
+            async def submit(_text, **_kwargs):
+                counts_at_send.append(len(list((root / "Launch Receipts").glob("*.json"))))
+            terminals = [SimpleNamespace(session_id=f"session-{i}", async_send_text=AsyncMock(side_effect=submit)) for i in range(2)]
+            tabs = [SimpleNamespace(tab_id=f"tab-{i}", current_session=t) for i, t in enumerate(terminals)]
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(side_effect=tabs))
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=files,
+                                      account_provider="anthropic", account=None, account_config=None)
+            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "load_config", return_value=config), patch.object(account_choice, "read_snapshot", return_value=(snapshot, None)):
+                results = asyncio.run(iterm_tab.operate(app, args))
+            self.assertEqual([r["account"]["name"] for r in results], ["spare", "main"])
+            self.assertEqual(counts_at_send, [1, 1, 2, 2])
+            receipts = [json.loads(p.read_text()) for p in (root / "Launch Receipts").glob("*.json")]
+            self.assertCountEqual([r["accountID"] for r in receipts], ["anthropic-def", "anthropic-abc"])
+            for receipt in receipts:
+                self.assertEqual(set(receipt), {"schemaVersion", "provider", "accountID", "launchedAt"})
+
+    def test_receipt_failure_prevents_command_submission(self):
+        terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
+        window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(return_value=SimpleNamespace(tab_id="tab", current_session=terminal)))
+        app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+        choice = account_choice.choose("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "launch.txt"
+            path.write_text("claude brief")
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=path,
+                                      account_provider="anthropic", account=None, account_config=None)
+            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select", return_value=choice), patch.object(account_choice, "record_launch", side_effect=OSError("disk full")), self.assertRaises(OSError):
+                asyncio.run(iterm_tab.operate(app, args))
+            terminal.async_send_text.assert_not_awaited()
+
+    def test_batch_refusal_and_bad_second_command_create_no_tabs_or_receipts(self):
+        window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
+        app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+        with tempfile.TemporaryDirectory() as folder:
+            files = [Path(folder) / "first.txt", Path(folder) / "second.txt"]
+            files[0].write_text("claude brief")
+            files[1].write_text("env CLAUDE_CONFIG_DIR=/other claude")
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=files,
+                                      account_provider="anthropic", account=None, account_config=None)
+            choices = account_choice.choose_batch("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None, count=2)
+            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select_batch", return_value=choices), patch.object(account_choice, "record_launch") as receipt, self.assertRaisesRegex(ValueError, "already sets"):
+                asyncio.run(iterm_tab.operate(app, args))
+            window.async_create_tab.assert_not_awaited()
+            receipt.assert_not_called()
+            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select_batch", side_effect=ValueError("no choice")), self.assertRaises(ValueError):
+                asyncio.run(iterm_tab.operate(app, args))
+            window.async_create_tab.assert_not_awaited()
 
     def test_invalid_launch_file_creates_no_tab(self):
         window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())

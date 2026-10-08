@@ -149,26 +149,34 @@ async def operate(app, args):
         ]
         if len(windows) != 1:
             raise ValueError("window id does not identify one window")
-        command_text = args.command_file.read_text(encoding="utf-8").rstrip("\n")
-        validate_text(command_text)
-        choice = None
+        files = args.command_file if isinstance(args.command_file, list) else [args.command_file]
+        command_texts = [path.read_text(encoding="utf-8").rstrip("\n") for path in files]
+        for text in command_texts:
+            validate_text(text)
+        choices = [None] * len(files)
         if getattr(args, "account_provider", None):
-            choice = account_choice.select(
-                args.account_provider, args.account_config, args.account
-            )
-            command_text = with_account(command_text, choice)
+            if len(files) == 1:
+                choices = [account_choice.select(args.account_provider, args.account_config, args.account)]
+            else:
+                choices = account_choice.select_batch(
+                    args.account_provider, args.account_config, args.account, count=len(files)
+                )
+            command_texts = [with_account(text, choice) for text, choice in zip(command_texts, choices)]
         elif getattr(args, "account", None):
             raise ValueError("--account needs --account-provider")
-        tab = await windows[0].async_create_tab(select=False)
-        session = await wait_for_session(app, tab)
-        await send(session, command_text)
-        result = {
-            "window_id": windows[0].window_id,
-            "tab_id": tab.tab_id,
-            "session_id": session.session_id,
-        }
-        if choice:
-            result["account"] = account_choice.public(choice)
+        results = []
+        for command_text, choice in zip(command_texts, choices):
+            tab = await windows[0].async_create_tab(select=False)
+            session = await wait_for_session(app, tab)
+            if choice:
+                account_choice.record_launch(choice)
+            await send(session, command_text)
+            result = {"window_id": windows[0].window_id,
+                      "tab_id": tab.tab_id, "session_id": session.session_id}
+            if choice:
+                result["account"] = account_choice.public(choice)
+            results.append(result)
+        return results[0] if len(results) == 1 else results
     if args.command == "window" and previous_tab:
         await previous_tab.async_select()
     return result
@@ -181,11 +189,12 @@ def main():
     commands.add_parser("window")
     new = commands.add_parser("new")
     new.add_argument("--window-id", required=True)
-    new.add_argument("--command-file", type=Path, required=True)
+    new.add_argument("--command-file", type=Path, action="append", required=True,
+                     help="repeat for a batch, in launch order")
     new.add_argument(
         "--account-provider",
         choices=account_choice.PROVIDERS,
-        help="launch on Context Panel's use-next account, with a reported fallback",
+        help="launch on Context Panel's use-next account or ranked batch order",
     )
     new.add_argument("--account", help="use this configured account by name")
     new.add_argument("--account-config", type=Path)

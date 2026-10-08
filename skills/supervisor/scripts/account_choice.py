@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Choose Context Panel's use-next account for the provider, with a reported fallback.
+"""Follow Context Panel's ranked choices and record count-only launch receipts.
 
 Capacity and resets come from Context Panel's agent account snapshot (schema 1).
 Accounts, their launch environment and the snapshot command come from private
@@ -13,31 +13,20 @@ local config; nothing here reads credentials or changes any login.
 import argparse
 import json
 import os
+import pwd
 import re
 import subprocess
+import tempfile
 import tomllib
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import NamedTuple
 
 PROVIDERS = ("openai", "anthropic", "google")
-CURRENT_STATES = {"available", "closeToLimit"}
-# Context Panel states with no current reading; "limited" is a current reading with no room.
-NO_READING_STATES = {"unknown", "stale", "refreshing", "unavailable", "notConnected", "off"}
 # The variable that puts a launched harness on an account; Google has none yet.
 ACCOUNT_VARIABLES = {"openai": "CODEX_HOME", "anthropic": "CLAUDE_CONFIG_DIR"}
-WEEKLY = re.compile(r"week", re.IGNORECASE)
-DEFAULT_RESERVE = 0.05
 SNAPSHOT_TIMEOUT_SECONDS = 60
-
-
-class Assessment(NamedTuple):
-    account: dict
-    eligible: bool
-    reset: datetime | None
-    remaining: float | None
-    reason: str
-    no_reading: bool = False
+OWN_RECEIPT = re.compile(r"^\d{8}T\d{6}Z-supervisor-[0-9a-f]{32}\.json$")
 
 
 def config_paths(env, home):
@@ -78,7 +67,6 @@ def validate_config(section):
         or not all(isinstance(part, str) and part for part in command)
     ):
         raise ValueError("snapshot_command must be a nonempty list of strings")
-    default_reserve = reserve_value(section.get("reserve", DEFAULT_RESERVE))
     accounts = section.get("account")
     if not isinstance(accounts, list) or not accounts:
         raise ValueError("configure at least one [[accounts.account]]")
@@ -119,16 +107,9 @@ def validate_config(section):
                 "match": keys[0],
                 "match_value": account[keys[0]],
                 "env": dict(launch_env),
-                "reserve": reserve_value(account.get("reserve", default_reserve)),
             }
         )
     return {"snapshot_command": command, "accounts": result}
-
-
-def reserve_value(value):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value < 1:
-        raise ValueError("reserve must be a fraction from 0 up to 1")
-    return float(value)
 
 
 def read_snapshot(command, runner=None):
@@ -176,137 +157,193 @@ def matching_rows(account, rows):
     return matches
 
 
-def assess(account, rows, now):
-    """Judge one configured account against its Context Panel row."""
-    matches = matching_rows(account, rows)
-    if len(matches) != 1:
-        return Assessment(account, False, None, None, f"{len(matches)} Context Panel rows match; expected one")
-    row = matches[0]
-    remaining = row.get("remainingFraction")
-    if row.get("state") in NO_READING_STATES:
-        return Assessment(account, False, None, None, f"no current reading (state {row['state']})", True)
-    if row.get("state") not in CURRENT_STATES or not isinstance(remaining, (int, float)):
-        return Assessment(account, False, None, None, f"no room (state {row.get('state')})")
-    if remaining <= account["reserve"]:
-        return Assessment(
-            account,
-            False,
-            None,
-            float(remaining),
-            f"{remaining:.0%} left, at or below its {account['reserve']:.0%} reserve",
-        )
-    # Five-hour windows reset for every account all the time; the weekly allowance
-    # is the capacity that lapses, so its soonest reset ranks. Without a weekly
-    # label, the latest reset stands in for the longest window.
-    parsed = [
-        (str(window.get("label", "")), parse_time(window.get("naturalResetAt")))
-        for window in row.get("windows") or []
-        if isinstance(window, dict)
-    ]
-    future = [(label, at) for label, at in parsed if at and at > now]
-    weekly = [at for label, at in future if WEEKLY.search(label)]
-    reset = min(weekly) if weekly else max((at for _, at in future), default=None)
-    when = f"resets {reset.isoformat()}" if reset else "no reset time reported"
-    return Assessment(account, True, reset, float(remaining), f"{remaining:.0%} left, {when}")
+def snapshot_notices(snapshot):
+    """Preserve Context Panel's configuration errors and plain reset prompts."""
+    errors = snapshot.get("configurationErrors", [])
+    prompts = snapshot.get("resetPrompts", [])
+    if not isinstance(errors, list) or not all(isinstance(e, str) for e in errors):
+        raise ValueError("Context Panel configurationErrors must be a list of strings")
+    if not isinstance(prompts, list) or not all(
+        isinstance(p, dict) and isinstance(p.get("line"), str) for p in prompts
+    ):
+        raise ValueError("Context Panel resetPrompts must contain plain lines")
+    return {"configuration_errors": errors, "reset_prompts": [p["line"] for p in prompts]}
 
 
-def choose(provider, config, snapshot, unavailable_reason, now=None, name=None):
-    """Pick one configured account for provider; raise ValueError when none may be used."""
+def provider_ranking(snapshot, provider):
+    rankings = snapshot.get("ranking", [])
+    if not isinstance(rankings, list) or not all(isinstance(r, dict) for r in rankings):
+        raise ValueError("Context Panel ranking must be a list")
+    matches = [r for r in rankings if r.get("provider") == provider]
+    if len(matches) > 1:
+        raise ValueError(f"Context Panel has an ambiguous {provider} ranking")
+    return matches[0] if matches else {}
+
+
+def resolve_choice(provider, config, snapshot, account_id, source, reason):
+    if not isinstance(account_id, str) or not re.fullmatch(rf"{provider}-[0-9a-f]{{1,64}}", account_id):
+        raise ValueError("Context Panel choice needs the snapshot's opaque account ID")
+    rows = [r for r in snapshot["accounts"] if isinstance(r, dict) and r.get("provider") == provider]
+    matched = [r for r in rows if r.get("id") == account_id]
+    if len(matched) != 1:
+        raise ValueError(f"Context Panel {provider} choice matches no single account row")
+    configured = [a for a in config["accounts"] if a["provider"] == provider
+                  and matching_rows(a, rows) == matched]
+    if len(configured) != 1:
+        raise ValueError(f"Context Panel {provider} choice matches no single configured account")
+    row = matched[0]
+    return decision(configured[0], source, reason, account_id=account_id,
+                    remaining=row.get("remainingFraction"), **snapshot_notices(snapshot))
+
+
+def choose_batch(provider, config, snapshot, unavailable_reason, count=1, now=None, name=None):
+    try:
+        return _choose_batch(provider, config, snapshot, unavailable_reason, count, now, name)
+    except ValueError as error:
+        if snapshot is not None:
+            notices = snapshot_notices(snapshot)
+            lines = [*notices["configuration_errors"], *notices["reset_prompts"]]
+            if lines:
+                raise ValueError(str(error) + "\n" + "\n".join(lines)) from error
+        raise
+
+
+def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, name):
+    """Consume the published order without ranking or reserving capacity ourselves."""
     now = now or datetime.now(timezone.utc)
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError("launch count must be a positive integer")
     accounts = [a for a in config["accounts"] if a["provider"] == provider]
     if not accounts:
         raise ValueError(f"no configured {provider} accounts")
+    if snapshot is None:
+        raise ValueError(f"Context Panel snapshot unavailable ({unavailable_reason}); no account chosen")
     if name is not None:
         named = [a for a in accounts if a["name"] == name]
-        if not named:
+        if len(named) != 1:
             raise ValueError(f"no configured {provider} account named {name}")
-        return decision(named[0], "named", "chosen by name; capacity not checked")
-    if snapshot is None:
-        return decision(
-            accounts[0],
-            "fallback",
-            f"Context Panel snapshot unavailable ({unavailable_reason}); "
-            "used the configured order, capacity not checked",
-        )
-    rows = [r for r in snapshot["accounts"] if isinstance(r, dict) and r.get("provider") == provider]
-    assessed = [assess(account, rows, now) for account in accounts]
-    answers = snapshot.get("answers") or {}
+        rows = [r for r in snapshot["accounts"] if isinstance(r, dict) and r.get("provider") == provider]
+        matches = matching_rows(named[0], rows)
+        if len(matches) != 1 or not matches[0].get("id"):
+            raise ValueError("named account needs one Context Panel row for its launch receipt")
+        return [resolve_choice(provider, config, snapshot, matches[0]["id"], "named",
+                               "explicit --account; capacity not checked") for _ in range(count)]
+    ranking = provider_ranking(snapshot, provider)
+    stale = ranking.get("basedOnStaleReadings", False)
+    if stale:
+        observed = parse_time(ranking.get("readingsObservedAt"))
+        if observed is None or not timedelta(0) <= now - observed < timedelta(minutes=30):
+            raise ValueError(f"Context Panel {provider} stale ranking is not under 30 minutes old; no account chosen")
+    answers = snapshot.get("answers", {})
     if not isinstance(answers, dict):
         raise ValueError("Context Panel answers must be an object")
-    recommendations = answers.get("useNext") or []
+    recommendations = answers.get("useNext", [])
     if not isinstance(recommendations, list) or not all(isinstance(r, dict) for r in recommendations):
         raise ValueError("Context Panel useNext must be a list of recommendations")
-    next_choices = [r for r in recommendations if r.get("provider") == provider]
-    if next_choices:
-        if len(next_choices) != 1 or not next_choices[0].get("accountID"):
-            raise ValueError(f"Context Panel has an ambiguous {provider} use-next choice")
-        next_id = next_choices[0]["accountID"]
-        next_rows = [row for row in rows if row.get("id") == next_id]
-        if len(next_rows) != 1:
-            raise ValueError(f"Context Panel {provider} use-next choice matches no single account row")
-        configured = [entry for entry in assessed
-                      if matching_rows(entry.account, rows) == next_rows]
-        if len(configured) != 1:
-            raise ValueError(f"Context Panel {provider} use-next choice matches no single configured account")
-        best = configured[0]
-        if not best.eligible:
-            raise ValueError(f"Context Panel {provider} use-next account cannot be launched ({best.reason})")
-        return decision(
-            best.account,
-            "context-panel",
-            f"Context Panel use next: {best.reason}",
-            resets_at=best.reset,
-            remaining=best.remaining,
-            skipped=[entry for entry in assessed if entry is not best],
-        )
-    fallback_reason = f"Context Panel has no {provider} use-next choice; "
-    if all(entry.no_reading for entry in assessed):
-        return decision(
-            accounts[0],
-            "fallback",
-            fallback_reason + f"no current {provider} reading for any configured account; "
-            "used the configured order, capacity not checked",
-            skipped=assessed,
-        )
-    eligible = [entry for entry in assessed if entry.eligible]
-    if not eligible:
-        details = "; ".join(f"{e.account['name']}: {e.reason}" for e in assessed)
-        raise ValueError(f"no {provider} account can be chosen ({details})")
-    far_future = datetime.max.replace(tzinfo=timezone.utc)
-    # min keeps the first configured account for ties and unknown resets.
-    best = min(eligible, key=lambda entry: entry.reset or far_future)
-    return decision(
-        best.account,
-        "fallback",
-        fallback_reason + f"used soonest reset with room: {best.reason}",
-        resets_at=best.reset,
-        remaining=best.remaining,
-        skipped=[entry for entry in assessed if entry is not best],
-    )
+    choices = [r for r in recommendations if r.get("provider") == provider]
+    if len(choices) > 1 or (choices and not choices[0].get("accountID")):
+        raise ValueError(f"Context Panel has an ambiguous {provider} use-next choice")
+    order = ranking.get("launchOrder", [])
+    if not isinstance(order, list) or not all(isinstance(i, str) and i for i in order):
+        raise ValueError("Context Panel launchOrder must be a list of account IDs")
+    if count == 1 and not stale:
+        ids = [choices[0]["accountID"]] if choices else []
+        source, reason = "context-panel", "Context Panel use next"
+    else:
+        ids = order[:count]
+        source = "context-panel-stale" if stale else "context-panel-batch"
+        reason = "Context Panel recent stale launch order" if stale else "Context Panel ranked launch order"
+    if not ids:
+        raise ValueError(f"Context Panel has no {provider} choice; next capacity at "
+                         f"{ranking.get('nextCapacityAt') or 'unknown'}")
+    if len(ids) != count:
+        raise ValueError(f"Context Panel {provider} launch order covers only {len(ids)} of {count} launches; use a smaller batch")
+    return [resolve_choice(provider, config, snapshot, i, source, reason) for i in ids]
 
 
-def decision(account, source, reason, resets_at=None, remaining=None, skipped=()):
-    return {
-        "name": account["name"],
-        "provider": account["provider"],
-        "source": source,
-        "reason": reason,
-        "resets_at": resets_at.isoformat() if resets_at else None,
-        "remaining_fraction": remaining,
-        "env": account["env"],
-        "others": [{"name": e.account["name"], "reason": e.reason} for e in skipped],
-    }
+def choose(provider, config, snapshot, unavailable_reason, now=None, name=None):
+    return choose_batch(provider, config, snapshot, unavailable_reason, now=now, name=name)[0]
+
+
+def decision(account, source, reason, account_id=None, remaining=None,
+             configuration_errors=(), reset_prompts=()):
+    return {"name": account["name"], "provider": account["provider"], "source": source,
+            "reason": reason, "account_id": account_id, "remaining_fraction": remaining,
+            "env": account["env"], "configuration_errors": list(configuration_errors),
+            "reset_prompts": list(reset_prompts)}
+
+
+def storage_root(command):
+    """Use the reader's explicit root or its documented default, never an account home."""
+    if command and "--storage-root" in command:
+        index = command.index("--storage-root")
+        if index + 1 >= len(command):
+            raise ValueError("snapshot --storage-root has no directory")
+        return Path(command[index + 1]).expanduser()
+    home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    return home / "Library/Group Containers/MM5YXC7T6E.group.com.shinycomputers.contextpanel/Context Panel"
+
+
+def select_batch(provider, config_path=None, name=None, count=1):
+    config = load_config(config_path)
+    snapshot, problem = read_snapshot(config["snapshot_command"])
+    choices = choose_batch(provider, config, snapshot, problem, count=count, name=name)
+    root = storage_root(config["snapshot_command"])
+    return [{**choice, "storage_root": root} for choice in choices]
 
 
 def select(provider, config_path=None, name=None):
-    config = load_config(config_path)
-    snapshot, problem = (None, None) if name else read_snapshot(config["snapshot_command"])
-    return choose(provider, config, snapshot, problem, name=name)
+    return select_batch(provider, config_path, name)[0]
+
+
+def record_launch(choice, now=None):
+    """Write immediately before submitting a launch; retain on an uncertain submit."""
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    provider, account_id = choice["provider"], choice.get("account_id")
+    if not isinstance(account_id, str) or not re.fullmatch(rf"{provider}-[0-9a-f]{{1,64}}", account_id):
+        raise ValueError("launch receipt needs the snapshot's opaque account ID")
+    directory = Path(choice["storage_root"]) / "Launch Receipts"
+    # A bad root must not create a replacement Context Panel store.
+    directory.mkdir(mode=0o700, exist_ok=True)
+    prune_receipts(directory, now)
+    receipt = {"schemaVersion": 1, "provider": provider,
+               "accountID": account_id, "launchedAt": now.isoformat(timespec="seconds").replace("+00:00", "Z")}
+    target = directory / f"{now:%Y%m%dT%H%M%SZ}-supervisor-{uuid.uuid4().hex}.json"
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
+                                         prefix=".supervisor-", suffix=".tmp", delete=False) as output:
+            temporary = Path(output.name)
+            json.dump(receipt, output, separators=(",", ":"))
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return target
+
+
+def prune_receipts(directory, now):
+    """Delete only this launcher's day-old files; preserve other launchers and symlinks."""
+    for path in directory.iterdir():
+        if not OWN_RECEIPT.fullmatch(path.name) or path.is_symlink() or not path.is_file():
+            continue
+        try:
+            if path.stat().st_size > 1024:
+                continue
+            data = json.loads(path.read_text(encoding="utf-8"))
+            launched = parse_time(data.get("launchedAt")) if isinstance(data, dict) else None
+            if launched and now - launched >= timedelta(days=1):
+                path.unlink()
+        except (OSError, ValueError):
+            continue
 
 
 def public(choice):
-    """Launch output: env variable names only; values are private local paths."""
-    return {**{k: v for k, v in choice.items() if k != "env"}, "env_keys": sorted(choice["env"])}
+    """Launch output contains environment names, never private paths."""
+    return {**{k: v for k, v in choice.items() if k not in {"env", "storage_root"}},
+            "env_keys": sorted(choice["env"])}
 
 
 def main():
@@ -314,9 +351,11 @@ def main():
     parser.add_argument("--provider", choices=PROVIDERS, required=True)
     parser.add_argument("--config", type=Path, help="private config; default skill-data/supervisor.toml")
     parser.add_argument("--account", help="use this configured account by name")
+    parser.add_argument("--count", type=int, default=1, help="preview a batch from the published launch order")
     args = parser.parse_args()
     try:
-        print(json.dumps(public(select(args.provider, args.config, args.account)), indent=2))
+        choices = select_batch(args.provider, args.config, args.account, args.count)
+        print(json.dumps(public(choices[0]) if args.count == 1 else [public(c) for c in choices], indent=2))
     except ValueError as error:
         parser.exit(1, f"refused: {error}\n")
 
