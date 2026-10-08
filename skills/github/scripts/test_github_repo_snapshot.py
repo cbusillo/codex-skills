@@ -119,15 +119,20 @@ class SnapshotTests(unittest.TestCase):
     def test_unavailable_or_invalid_policy_never_means_not_enrolled(self):
         for response, exit_code in ((None, 0), ({}, 0), ({"status": "unauthorized"}, 1)):
             for metadata in ({}, helper_metadata(),
-                             *({"launchplane": {"mergeTrain": {"enabled": enabled}}}
+                             *({"launchplane": {"mergeTrain": {"enabled": enabled,
+                                                             "baseBranch": "stale", "readyLabel": "stale"}}}
                                for enabled in (True, False))):
                 result = self.snapshot(metadata, policy=response, policy_exit=exit_code)
                 summary = json.loads(result.stdout)["launchplane"]["mergeTrain"]
                 self.assertEqual(summary["status"], "unknown")
                 self.assertIsNone(summary["enabled"])
-                self.assertIn("mergeTrainEnabled: unknown", self.snapshot(
+                self.assertEqual(summary["targets"], [])
+                self.assertIsNone(summary["policy"])
+                text_result = self.snapshot(
                     metadata, text=True, policy=response, policy_exit=exit_code,
-                ).stdout)
+                )
+                self.assertIn("mergeTrainEnabled: unknown", text_result.stdout)
+                self.assertNotIn("mergeTrainTarget:", text_result.stdout)
 
 
     def test_unknown_reason_drops_provider_prose(self):

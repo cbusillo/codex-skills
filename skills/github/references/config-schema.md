@@ -227,7 +227,7 @@ Common top-level keys:
   put repository-specific release semantics in global skills.
 - `launchplane`: public-safe routing metadata for Launchplane context,
   admin, and merge-train surfaces. It may name environment variable names,
-  helper paths, workflow names, labels, local config examples, and expected
+  helper paths, local config examples, and expected
   capabilities. It must not contain tokens, cookies, secret values, concrete
   Launchplane service URLs, private credential paths, provider payloads,
   product/runtime endpoints, or plaintext runtime configuration.
@@ -248,9 +248,11 @@ Common top-level keys:
   remains routing metadata. Do not store a `launchplane.mergeTrain` block in
   repository config: enrollment, base branches and enqueue labels belong to
   the service policy. The snapshot ignores legacy copies. The
-  [merge-train reference](../../launchplane/references/merge-train.md) owns
-  controller/runner invocation and revision evidence; repository `docs` may
-  point there without copying its workflow defaults or response-field paths.
+  [merge-train reference](../../launchplane/references/merge-train.md) describes
+  controller invocation and required landing evidence. Launchplane's own
+  [merge-train policy documentation](https://github.com/cbusillo/launchplane/blob/main/docs/merge-train-policy.md)
+  describes its Actions runner entrypoints. Repository `docs` may point to
+  those sources; do not copy runner defaults or response-field paths into config.
 - `jetbrains`: preferred IDE inspection target when it is not obvious. Use
   `ide` for the macOS app name, `mainWorktreePath` for the canonical checkout
   path when linked worktrees exist, `openProjectPath` for the repo-relative path
