@@ -48,6 +48,12 @@ Before calling it parked, verify the pushed SHA at the remote and verify the
 durable issue link that owns the recovery state; link any related PR from that
 issue.
 
+Keep the owning issue's Current Status, labels, and native relationships current
+under github-plan's [Status Labels](../../github-plan/SKILL.md#status-labels)
+when parking or handing off work. Projects remain automatic views; do not maintain manual
+Focus, Manager, Finish Line, or roadmap fields. For completed planning issues,
+use the `github-plan` close flow so done labels and Project Status are updated.
+
 ### Local-only preservation checks
 
 A local-only route is valid when it uses a known, already approved durable
@@ -56,12 +62,6 @@ patches, and needed local files are reconstructable. Trash, a reflog, or a
 temporary cleanup manifest alone is not durable parking. If no authorized route
 exists, retain the original work, name the missing choice, and continue any
 independent authorized cleanup.
-
-Keep the owning issue's Current Status, labels, and native relationships current
-under github-plan's [Status Labels](../../github-plan/SKILL.md#status-labels)
-when parking or handing off work. Projects remain automatic views; do not maintain manual
-Focus, Manager, Finish Line, or roadmap fields. For completed planning issues,
-use the `github-plan` close flow so done labels and Project Status are updated.
 
 ## Handoff Surfaces
 

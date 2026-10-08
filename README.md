@@ -392,9 +392,10 @@ Codex-family binding, such as one that installs only through Claude Code, the
 helpers that read that state find it relative to themselves, so nothing needs
 setting.
 
-Configuration and caches outside the catalog (`local.env`, `state/`) use one
-order everywhere: `$CODE_HOME`, then `$CODEX_HOME`, then `~/.code`. Those are
-only directory names and work on any host. Planning configuration follows the
+General configuration and caches outside the catalog (`local.env`, `state/`)
+use this order: `$CODE_HOME`, then `$CODEX_HOME`, then `~/.code`. Those are
+only directory names and work on any host. Planning configuration uses its own
+runtime-home lookup in the
 [GitHub plan config schema](skills/github/references/config-schema.md).
 Shared references that several
 skills link as `../references/...` live in `skills/references`. Repository

@@ -80,8 +80,8 @@ preserved, or intentionally left in place.
 
 1. Identify the repo, branch, active task, and whether a PR/issue/plan is in
    play. Before saying "safe to exit," name the owning durable surface in the
-   closeout answer: the PR, issue, GitHub plan, or explicit
-   "none" when no owning surface exists. Also state whether that surface was
+   closeout answer: the PR, issue, GitHub plan, approved private recovery
+   location, or explicit "none" when no owning surface exists. Also state whether that surface was
    closed, updated, left open or parked with the current blocker and next action,
    or confirmed not applicable, with evidence.
    If release, runtime, deploy, browser, or device evidence is decisive, ensure
@@ -271,7 +271,7 @@ Safe to exit: yes
 - Gates, inspections, docs checks, metadata checks, and post-merge checks are
   done or explicitly not applicable.
 - The owning durable surface was named as closed/updated with evidence, or no
-  owning PR, issue, or GitHub plan was in play.
+  owning PR, issue, GitHub plan, or approved private recovery location was in play.
 - Background review state follows the point-in-time contract above.
   Current-target findings are resolved, non-blocking, explicitly tracked, or
   declined with a recorded reason under `../references/model-review.md`;
@@ -308,7 +308,8 @@ Safe to exit: no
 
 - Uncommitted or unexplained work remains.
 - Expected gates/readiness checks have not been run and no reason is recorded.
-- An owning issue, PR, or GitHub plan remains stale, incorrectly
+- An owning issue, PR, GitHub plan, or approved private recovery location remains
+  stale, incorrectly
   blocked, or missing the completed/remaining work state.
 - Source-of-truth docs or runbooks disagree with the owning issue/plan and that
   disagreement has not been reconciled or explicitly parked.
@@ -465,7 +466,8 @@ Use a compact closeout report:
 - Cleanup: artifacts, plans, handoffs, branches, or worktrees removed or left
   intentionally.
 - State: dirty files, PR status, CI status, or plan status when relevant.
-- Owning surface: PR, issue, GitHub plan, or none; say whether
+- Owning surface: PR, issue, GitHub plan, approved private recovery location, or
+  none; say whether
   it was closed, updated, left open or parked with current blocker and next
   action, or not applicable.
 - Safe to exit: yes/no/conditional, with the condition if needed.
