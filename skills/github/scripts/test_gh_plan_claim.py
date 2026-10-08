@@ -434,6 +434,58 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(before, (self.inventory, self.pulls, self.closed_pulls))
         self.assertEqual(output["session_coverage"]["codex"]["status"], "unavailable")
 
+    def cleanup_handoff_fixture(self):
+        self.ordinary_handoff_fixture()
+        # Historical full release from launchplane#3109 comment 6025762772.
+        # Remap only record/PR identities to the offline claim fixture.
+        release = Path(__file__).with_name("fixtures").joinpath("launchplane-3109-d3-release.md").read_text()
+        source_id = int(release.splitlines()[0].removeprefix("Released claim "))
+        self.assertEqual(CLAIM.released_claim_id(release), source_id)
+        release = release.replace("6025344226", "1").replace("#3111", "#99").replace("/pull/3111", "/pull/99")
+        release = release.replace("#3110", "#100")
+        self.assertEqual(CLAIM.released_claim_id(release), self.args.resume_from)
+        self.comments[2]["body"] = release
+
+    def test_cleanup_handoff_accepts_ordinary_successor_without_retiring_artifacts(self):
+        self.cleanup_handoff_fixture()
+        before = copy.deepcopy((self.inventory, self.pulls, self.closed_pulls))
+        self.run_claim()
+        output = self.emitted.call_args.args[0]
+        self.assertTrue(output["ok"])
+        self.assertIn("metadata_readback", output["completed_steps"])
+        self.assertEqual(before, (self.inventory, self.pulls, self.closed_pulls))
+
+    def test_cleanup_handoff_does_not_release_a_conditional_successor(self):
+        for condition in (
+            "The next worker may claim after landing/closure and ownership/content checks.",
+            "Ownership transfers after landing/closure and ownership/content checks.",
+            "The next session may continue once ownership/content checks pass.",
+            "Use its host retire command after landing/closure and ownership/content checks, then the next worker may claim.",
+            "Use its host retire command after landing/closure and ownership/content checks. Then the next worker may pick it up.",
+            "Use its host retire command after landing/closure and ownership/content checks; the next worker may pick it up then.",
+            "Use its host retire command after landing/closure and ownership/content checks. The next worker may claim afterward.",
+            "Use its host retire command after landing/closure and ownership/content checks. Receipts stay on Developer-Artifacts. Then the next worker may claim.",
+            "Use its host retire command after landing/closure and ownership/content checks. Then the next worker may start.",
+        ):
+            with self.subTest(condition=condition):
+                self.setUp()
+                self.cleanup_handoff_fixture()
+                release = CLAIM.without_operation_marker(self.comments[2]["body"])
+                if condition.startswith("Use its host retire command"):
+                    # Change the real instruction instead of adding a second
+                    # ownership-check sentence that could mask the guard.
+                    release = release.replace(
+                        "use its host retire command after landing/closure and ownership/content checks.", condition,
+                    )
+                else:
+                    release += "\n\n" + condition
+                self.comments[2]["body"] = release
+                self.assertIsNone(CLAIM.released_claim_id(self.comments[2]["body"]))
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assert_no_writes()
+
     def test_ordinary_handoff_preserves_issue_and_every_retained_pr_wait(self):
         for place in ("issue", "99", "100"):
             with self.subTest(place=place):
