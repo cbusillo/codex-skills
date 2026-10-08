@@ -123,7 +123,13 @@ For each snapshot:
    preserve the saved intent, and report the partial progress. Do not clear it
    or replay the write without authoritative readback. Explicit API rejections
    return `rerun_rejected` with a failure exit and release only that rejected
-   intent; fix the reported access or request problem before retrying. A new
+   intent; fix the reported access or request problem before retrying.
+   `stop_missing_rerun` means a saved confirmed run is absent from the complete
+   head inventory: stop polling, preserve its evidence and budget, and investigate
+   the run directly before deciding recovery. `stop_nonretryable_rerun` means
+   GitHub has already rejected the eligible attempt as nonretryable; the helper
+   will not resubmit it. Investigate a distinct supported recovery rather than
+   clearing saved state. A new
    head gets its own retry state. See [API notes](references/github-api-notes.md)
    for selection and retry accounting.
 5. **Behind the base** (`update_behind_branch`): after review and CI work, and
@@ -156,6 +162,11 @@ This is the only stop rule. Stop only when:
   failure, an unknown rerun write awaiting authoritative readback, a push that cannot land safely, unclear ownership or overlapping
   edits, a review request needing a product decision or coordination, or a
   human comment needing a written reply.
+
+Missing confirmed runs and confirmed nonretryable attempts also stop the watcher
+for explicit recovery; their saved evidence is retained. See
+[state lifetime and recovery](references/github-api-notes.md#state-lifetime-and-recovery)
+for the durable default, legacy migration and bounded command/lock behavior.
 
 Everything else continues: pending or queued CI, an `idle` snapshot,
 unknown mergeability, awaiting approval, green-and-mergeable but still open,
