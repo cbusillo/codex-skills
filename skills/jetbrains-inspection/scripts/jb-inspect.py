@@ -9507,9 +9507,9 @@ def print_findings(problems: list[dict[str, Any]]) -> None:
             if line:
                 location = f"{location}:{line}"
             print(safe_text("- [{severity}] {location} {description}", {
-                "severity": problem.get("severity", "unknown"),
+                "severity": problem.get("severity") or "unknown",
                 "location": location,
-                "description": problem.get("description", ""),
+                "description": problem.get("description") or "",
             }))
 
 
@@ -9528,7 +9528,9 @@ def print_human(payload: dict[str, Any], assess: bool = True) -> None:
                 "LANE: "
                 f"{lane.get('id')} required={str(lane.get('required')).lower()} "
                 f"ide={ide.get('product') or ide.get('requested')} files={len(lane.get('files') or [])} "
-                f"verdict={lane.get('verdict')} bucket={lane.get('bucket')} cleanup={cleanup.get('status')}"
+                f"verdict={lane.get('verdict')} bucket={lane.get('bucket')} cleanup={cleanup.get('status')} "
+                f"findings={len(lane.get('findings') or [])}/{lane.get('finding_count')} "
+                f"truncated={str(lane.get('findings_truncated')).lower()}"
             )
             print_findings_artifact(lane)
             print_findings(lane.get("findings") or [])

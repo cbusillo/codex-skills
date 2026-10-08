@@ -15298,6 +15298,24 @@ class FindingsPreservationTests(unittest.TestCase):
                 self.assertIn(f"{finding['file']}:{finding['line']} {finding['description']}\n", section)
         self.assertEqual(text.count("- ["), sum(len(lane["findings"]) for lane in lanes))
 
+    def test_unknown_truncated_lane_reports_counts_and_missing_finding_fields(self):
+        self.problems[0].pop("description")
+        result = jb_inspect.summarize_problems(self.context, self.route, self.page(0) | {"capture_incomplete": True})
+        self.assertEqual(result["verdict"], "UNKNOWN")
+        self.assertIsNone(jb_inspect.preserve_inspection_findings(self.args, self.context, result))
+        lane = jb_inspect.compact_inspection_lane_result(
+            jb_inspect.InspectionLane("python", "PyCharm", True, ("**/*.py",), (), None),
+            0, self.context, [{"file": "app.py", "absolute_path": "/fixture/app.py"}], result,
+        )
+        output = io.StringIO()
+        with redirect_stdout(output):
+            jb_inspect.emit({"lane_results": [lane]}, json_only=False, exit_code=1)
+        text = output.getvalue()
+        self.assertIn(f"findings={len(lane['findings'])}/{lane['finding_count']} truncated=true", text)
+        self.assertIn(f"- [unknown] {self.problems[0]['file']}:{self.problems[0]['line']} \n", text)
+        self.assertEqual(text.count("- [unknown]"), len(lane["findings"]))
+        self.assertEqual(lane["verdict"], "UNKNOWN")
+
     def test_nonzero_display_offset_still_preserves_the_complete_run(self):
         self.args.offset = 25
         offsets = []
