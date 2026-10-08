@@ -370,6 +370,21 @@ class ClaimTests(unittest.TestCase):
                 self.assertIn(expected, str(caught.exception))
                 self.assert_no_writes()
 
+    def test_unmodified_d4_handoff_is_only_a_source_pr_refresh(self):
+        self.historical_direction_fixture("d4", refresh=False)
+        with self.assertRaisesRegex(PLAN.PlanError, "identify the exact released source claim"):
+            self.run_claim()
+        self.assert_no_writes()
+
+    def test_source_pr_refresh_binds_record_without_inventing_session_prose(self):
+        # The historical launchplane#2693 unbound opening remains unusable
+        # for split handoffs. Source-branch PR refresh binds through the source
+        # record instead; the caller still verifies the real source session.
+        self.historical_direction_fixture("d4", refresh=True)
+        self.comments[-1]["body"] = "LP-2693-D1 handoff: direction#46; source work finished."
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
     def test_malformed_source_refresh_headers_cannot_bypass_identity_proof(self):
         for header in ("Handoff from: codex-DIR-43-D4", "handoff from codex-DIR-43-D4",
                        "  Handoff from codex-DIR-43-D4"):

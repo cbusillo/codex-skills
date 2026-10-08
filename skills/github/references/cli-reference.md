@@ -606,7 +606,10 @@ Release state comes from the exact authored directive and its structured source
 claim, not free prose elsewhere in the handoff. Cleanup, retirement, worktree,
 CI and routing sentences do not qualify the release. Other narrative does not
 revise the directive either; recorded issue/PR waits and native blockers are
-checked separately and still need existing resolution evidence.
+checked separately and still need existing resolution evidence. This applies to
+existing exact directives too: narrative that formerly deferred their effect
+no longer delays release. Any continuing wait belongs in the issue/PR's recorded
+wait fields, or in a condition-qualified directive until a new exact release.
 The same author must post it after the source claim;
 release does not resolve a recorded wait or authorize the next task's actions.
 Use one exact-ID release per comment; a first-line release takes precedence
@@ -790,8 +793,9 @@ checks are at GitHub identity level; verify the actual finished-session handoff
 before invoking the route because several sessions can share that identity.
 Every open PR on a retained branch must be named in this handoff and authored
 by the source author, including a new PR on the original source branch.
-An embedded release alone does not establish this handoff identity. For an old
-handoff with a different opening, have the source session record a new
+For ordinary successors and split retained branches, an embedded release alone
+does not establish handoff identity. For an old handoff with a different opening,
+have the source session record a new
 `Handoff from <source-worker>` comment after release, naming the source claim,
 native source session, and every retained PR, and linking its original handoff
 and release comments. Use supported session routing to reach that session;
