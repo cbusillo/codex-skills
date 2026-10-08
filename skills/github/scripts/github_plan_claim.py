@@ -91,6 +91,7 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     ownership_effect = (rf"(?<![\w/.-])(?:tomorrow|later today|on merging {pr_reference}|"
                         rf"(?:on|with|at) {pr_reference}(?:['’]s)? merg(?:e|ing)|"
                         r"at merge-train landing)(?![\w/-])")
+    future_time = r"(?<![\w/.-])(?:tomorrow|later today)(?![\w/-])"
     handoff = re.sub(r"(?s)<!--.*?-->", "", text)
     prose = ownership_text(handoff)
     prose = re.sub(r"(?m)^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", "", prose)
@@ -130,6 +131,7 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
             return True
         if not (re.search(condition, statement, re.IGNORECASE)
                 or re.search(ownership_effect, statement, re.IGNORECASE)
+                or re.search(future_time, statement, re.IGNORECASE)
                 or re.search(required_step, statement, re.IGNORECASE)):
             continue
         if (re.search(ownership, statement, re.IGNORECASE)
@@ -158,7 +160,8 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
         if re.search(ownership, following, re.IGNORECASE) and (starts_condition or prerequisite_step):
             return True
         sequences_next = (re.match(r"Then\b", following, re.IGNORECASE)
-                          and (starts_condition or re.search(required_step, statement, re.IGNORECASE)))
+                          and (starts_condition or re.search(required_step, statement, re.IGNORECASE)
+                               or re.search(future_time, statement, re.IGNORECASE)))
         if ((prerequisite_step or sequences_next
              or re.match(rf"(?:Please\s+)?(?:{wait_prefix}{condition}|wait(?:ing)? for\b)", statement.strip(), re.IGNORECASE)
              or (starts_condition and "," not in statement))
