@@ -398,14 +398,14 @@ test_refs = ["github/scripts/test_github_comment.py:test_append_filters_old_page
 
 [[operations]]
 id = "github.pr.checks"
-capabilities = ["pull_requests_read", "checks_read", "statuses_read"]
+capabilities = ["pull_requests_read", "checks_read", "statuses_read", "actions_read"]
 permission_mode = "fixed"
-permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
+permission_note = "Actions read selects current head workflow executions and latest jobs for repeated attempts. It uses the existing Actions safe probe and default grant; unavailable reads preserve check failures and incomplete selection blocks readiness and retries. No new grant or writer role."
 entrypoint = "github/scripts/gh-pr.py checks"
 intent = "Read PR head check runs, commit statuses, and combined status summary."
 current_transport = "rest_api"
 selected_transport = "rest_api"
-endpoint_or_command = "GET /repos/{repo}/commits/{sha}/check-runs; GET /repos/{repo}/commits/{sha}/statuses; GET /repos/{repo}/commits/{sha}/status"
+endpoint_or_command = "GET /repos/{repo}/commits/{sha}/check-runs; GET /repos/{repo}/commits/{sha}/statuses; GET /repos/{repo}/commits/{sha}/status; paged GET /repos/{repo}/actions/runs?head_sha={sha}; paged GET /repos/{repo}/actions/runs/{run_id}/jobs?filter=latest"
 quota_bucket = "rest_core"
 actor_policy = "automation_required"
 mutation_class = "read"
@@ -414,7 +414,7 @@ retry_eligibility = "safe"
 reconciliation_strategy = "fresh_read"
 retained_graphql_rationale = "No retained GraphQL transport; REST check-run and status endpoints provide the polling data needed for readiness decisions."
 source_refs = ["github/scripts/gh-pr.py:cmd_checks"]
-test_refs = ["github/scripts/validate-gh-plan.py:test_pr_checks_aggregates_retry_fields_across_reads", "github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
+test_refs = ["babysit-pr/scripts/test_gh_pr_watch.py:test_standalone_checks_select_superseded_runs_and_fail_closed_on_unavailable_runs", "github/scripts/validate-gh-plan.py:test_pr_checks_aggregates_retry_fields_across_reads", "github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
 
 [[operations]]
 id = "github.pr.update_branch"
@@ -558,14 +558,14 @@ test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_
 
 [[operations]]
 id = "github.read.pull_checks"
-capabilities = ["pull_requests_read", "checks_read", "statuses_read"]
+capabilities = ["pull_requests_read", "checks_read", "statuses_read", "actions_read"]
 permission_mode = "fixed"
-permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
+permission_note = "Actions read selects current head workflow executions and latest jobs for repeated attempts. It uses the existing Actions safe probe and default grant; unavailable reads preserve check failures and incomplete selection blocks readiness and retries. No new grant or writer role."
 entrypoint = "github/scripts/github_read.py pull-checks"
 intent = "Read pull request check runs and commit statuses through REST."
 current_transport = "rest_api"
 selected_transport = "rest_api"
-endpoint_or_command = "GET /repos/{repo}/pulls/{number}; paged GET check-runs and statuses"
+endpoint_or_command = "GET /repos/{repo}/pulls/{number}; paged GET check-runs and statuses; GET combined status; paged GET /repos/{repo}/actions/runs?head_sha={sha}; paged GET /repos/{repo}/actions/runs/{run_id}/jobs?filter=latest"
 quota_bucket = "rest_core"
 actor_policy = "automation_required"
 mutation_class = "read"
@@ -574,7 +574,7 @@ retry_eligibility = "safe"
 reconciliation_strategy = "paged_read"
 retained_graphql_rationale = "No retained GraphQL transport; check runs and statuses are available from REST."
 source_refs = ["github/scripts/github_read.py:pull_request_checks"]
-test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_matrix_approved", "github/scripts/test_github_read.py:test_pull_checks_share_paged_readers_and_ids"]
+test_refs = ["babysit-pr/scripts/test_gh_pr_watch.py:test_standalone_checks_select_superseded_runs_and_fail_closed_on_unavailable_runs", "github/scripts/test_github_read.py:test_reader_cli_operations_are_matrix_approved", "github/scripts/test_github_read.py:test_pull_checks_share_paged_readers_and_ids"]
 
 [[operations]]
 id = "github.read.issues"
@@ -1358,7 +1358,7 @@ entrypoint = "github/scripts/github-ci-diagnose.py diagnose"
 intent = "Diagnose PR checks, fetch relevant workflow run metadata and logs, and summarize failing snippets."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "Shared GET /pulls/{number}, paged /commits/{sha}/check-runs and /statuses, GET /commits/{sha}/status, GET /actions/runs/{run_id}, paged /actions/runs/{run_id}/jobs?filter=latest, and GET /actions/jobs/{job_id}/logs"
+endpoint_or_command = "Shared GET /pulls/{number}, paged /commits/{sha}/check-runs and /statuses, GET /commits/{sha}/status, paged GET /actions/runs?head_sha={sha}, GET /actions/runs/{run_id}, paged /actions/runs/{run_id}/jobs?filter=latest, and GET /actions/jobs/{job_id}/logs"
 quota_bucket = "rest_core"
 actor_policy = "automation_required"
 mutation_class = "read"
@@ -2222,7 +2222,7 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github/scripts/github_identity.py" = "44f8eaaa8a9507865239bdb431bbeccfc35cf7652e80f8ec3928cba5de35d0a1"
 "github/scripts/github_issue.py" = "09b3718804c3fbde4d2c97f6fa9edf13eb54aefc77728b87f282555bc325fc62"
 "github/scripts/github_milestone.py" = "08cf5da1e6e93bf6d577b572ea508e71da9e1e0224ef0ebfb588c403bf8f5598"
-"github/scripts/github_read.py" = "3188ef35440d2870b403a6c039af98e9901bf2dd5aff7fe7772a3aed4334f58b"
+"github/scripts/github_read.py" = "b977198cc0b5eb97399cebd3941caaec2de04e37727ea7d93dc8fcca22627c44"
 "github/scripts/github_rulesets.py" = "f87765e84350d958a8b6ef8416f26ffb4144d5ee35abb84f254744eaec256281"
 "github/scripts/github_workflow_babysit.py" = "af4836d2d8a1a0214c13c62886978d5facedae3d0c82bfbdd02e199babda80ba"
 "github/scripts/reconcile-runtime-checkout.py" = "8cc6a9806bf57175dfdb898aa0776cfa2bd68f852553beb6648b84e7ab6fe4f3"

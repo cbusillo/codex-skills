@@ -81,7 +81,11 @@ def main() -> int:
     counts_complete = bool(summary.get("countsComplete", True))
     checks_available = bool(availability.get("checkRuns", True) or availability.get("commitStatuses", True))
     failing_count = sum(1 for item in analyzed if item["classification"] == "failing") if checks_available else None
+    if failing_count is not None:
+        failing_count += summary.get("failedWorkflowRunCount", 0)
     pending_count = sum(1 for item in analyzed if item["classification"] == "pending") if checks_available else None
+    if pending_count is not None:
+        pending_count += summary.get("pendingWorkflowRunCount", 0)
     external_count = sum(1 for item in analyzed if item["classification"] == "external") if checks_available else None
 
     payload = {
@@ -105,7 +109,7 @@ def main() -> int:
     else:
         render(payload)
 
-    return 1 if failing_count is None or failing_count else 0
+    return 1 if failing_count is None or failing_count or not counts_complete else 0
 
 
 def parse_args() -> argparse.Namespace:

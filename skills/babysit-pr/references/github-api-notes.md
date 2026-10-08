@@ -72,8 +72,41 @@ snapshot does not repeat PR metadata merely to rediscover that SHA.
 - `github/scripts/gh-with-env-token api repos/{owner}/{repo}/actions/runs --method GET -f head_sha=<sha> -f per_page=100`
 
 Used to discover failed workflow runs and rerunnable run IDs.
-Job detail is fetched only for completed failed runs that need diagnosis, never
-as routine detail polling for queued/running or successful runs.
+The shared check reader selects the current execution by head SHA, workflow ID,
+event, source branch, source repository and returned PR target context. Run
+number orders original executions and run attempt orders retries. A later
+attempt of an older run takes precedence when its attempt start is newer;
+unfinished older runs and attempts without ordering evidence remain current.
+Workflow/job names and update times cannot prove supersession. Separate
+dispatches retain their own run IDs because inputs can
+differ. Actions job checks must match the run, head and check suite; reporter
+checks with custom links or a check ID distinct from the linked job remain
+independent. A queued or running replacement remains unfinished even before
+it has checks. The shared summary and CI diagnosis count an
+unfinished workflow without pending checks in `pendingWorkflowRunCount` and
+`pendingCount`, so standalone reads also report pending work. Current skipped
+or neutral jobs retain GitHub's existing success semantics; superseded checks
+never impose additional requirements on the replacement. The watcher's existing
+head-pinned protection/review-readiness query remains authoritative for required
+gates, alongside complete current CI evidence.
+Likewise, a current failed workflow without failing job checks contributes to
+`failedWorkflowRunCount` and `failingCount`; missing job checks never turn a
+known current workflow failure green.
+
+Superseded executions remain in `superseded_workflow_runs` and
+`superseded_check_runs`, separate from counts, diagnosis and retry candidates.
+Missing execution/check identity or unavailable selection reads preserve the
+checks and make evidence incomplete. External Apps' checks remain independent.
+For an execution with multiple attempts, GitHub's latest job inventory selects
+current checks, including successful jobs reused by a partial rerun. Job detail
+is otherwise fetched only for completed current failed runs needing diagnosis.
+
+For standalone reads, workflow discovery starts when Actions checks are present;
+the watcher always supplies its full head-pinned run inventory. Saved
+rerun intents reconcile against the full inventory, including superseded runs:
+supersession alone never releases an unknown write. Before any retry write,
+an uncached run read rechecks current execution and attempt; a replacement that
+appeared since the snapshot skips the obsolete retry without spending budget.
 
 ### Failed log inspection
 
