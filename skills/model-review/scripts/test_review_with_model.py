@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import stat
 import subprocess
@@ -22,6 +23,7 @@ import review_with_model
 SCRIPT = Path(__file__).with_name("review_with_model.py")
 
 FAKE_CODEX = """#!/bin/sh
+[ -n "$FAKE_REVIEW_ENV_FILE" ] && env > "$FAKE_REVIEW_ENV_FILE"
 # Writes the answer to the file given after -o, like `codex exec`.
 [ -n "$FAKE_CODEX_ARGV_FILE" ] && printf '%s\\n' "$@" > "$FAKE_CODEX_ARGV_FILE"
 while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done
@@ -35,6 +37,7 @@ printf '%s' "$FAKE_CODEX_STDERR" >&2
 exit "${FAKE_CODEX_EXIT:-0}"
 """
 FAKE_CLAUDE = """#!/bin/sh
+[ -n "$FAKE_REVIEW_ENV_FILE" ] && env > "$FAKE_REVIEW_ENV_FILE"
 [ -n "$FAKE_CLAUDE_ARGV_FILE" ] && printf '%s\\n' "$@" > "$FAKE_CLAUDE_ARGV_FILE"
 printf '%s' "$FAKE_CLAUDE_JSON"
 """
@@ -93,6 +96,31 @@ class ReviewWithModelTests(unittest.TestCase):
             directory.mkdir(parents=True)
         self.prompt = self.root / "prompt.txt"
         self.prompt.write_text("Review skills/x.md.\n")
+        self.snapshot_file = self.root / "snapshot.json"
+        self.storage = self.root / "context-panel"
+        self.storage.mkdir()
+        self.reader = self.bin / "snapshot-reader"
+        self.reader.write_text('#!/bin/sh\ncat "$FAKE_SNAPSHOT_FILE"\n')
+        self.reader.chmod(0o700)
+        self.snapshot_file.write_text(json.dumps({
+            "schemaVersion": 1,
+            "accounts": [{"id": "openai-a", "provider": "openai", "label": "openai-test"},
+                         {"id": "anthropic-b", "provider": "anthropic", "label": "anthropic-test"}],
+            "answers": {"useNext": [{"provider": "openai", "accountID": "openai-a"},
+                                   {"provider": "anthropic", "accountID": "anthropic-b"}]},
+        }))
+        config = self.home / ".code/skill-data/supervisor.toml"
+        config.parent.mkdir(parents=True)
+        config.write_text(
+            '[accounts]\nsnapshot_command = ' + json.dumps(
+                [str(self.reader), "--storage-root", str(self.storage)]) + '\n'
+            '[[accounts.account]]\nname = "openai-review"\nprovider = "openai"\n'
+            'context_panel_label = "openai-test"\n[accounts.account.env]\nCODEX_HOME = ' +
+            json.dumps(str(self.home / "openai-review")) + '\n'
+            '[[accounts.account]]\nname = "anthropic-review"\nprovider = "anthropic"\n'
+            'context_panel_label = "anthropic-test"\n[accounts.account.env]\nCLAUDE_CONFIG_DIR = ' +
+            json.dumps(str(self.home / "anthropic-review")) + '\n'
+        )
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -104,7 +132,7 @@ class ReviewWithModelTests(unittest.TestCase):
 
     def run_helper(self, *args: str, **env: str) -> tuple[int, dict]:
         # PATH holds only the fakes plus the interpreter's directory, so an uninstalled provider stays uninstalled.
-        environment = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), **env}
+        environment = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "FAKE_SNAPSHOT_FILE": str(self.snapshot_file), **env}
         proc = subprocess.run(
             [sys.executable, str(SCRIPT), *args], capture_output=True, text=True, env=environment
         )
@@ -114,6 +142,109 @@ class ReviewWithModelTests(unittest.TestCase):
         return self.run_helper(
             "run", "--provider", provider, "--repo", str(self.repo), "--prompt-file", str(self.prompt), **env
         )
+
+    def test_reviews_route_provider_home_and_write_count_only_receipt(self) -> None:
+        self.install("codex", FAKE_CODEX)
+        self.install("claude", FAKE_CLAUDE)
+        capture = self.root / "child-env"
+        for provider, variable in review_with_model.account_choice.ACCOUNT_VARIABLES.items():
+            with self.subTest(provider=provider):
+                code, result = self.review(
+                    provider, CODEX_HOME=str(self.home / "caller-openai"),
+                    CLAUDE_CONFIG_DIR=str(self.home / "caller-anthropic"),
+                    OPENAI_API_KEY="fake-openai-key", CODEX_API_KEY="fake-codex-key",
+                    ANTHROPIC_API_KEY="fake-anthropic-key", ANTHROPIC_AUTH_TOKEN="fake-auth",
+                    CLAUDE_CODE_OAUTH_TOKEN="fake-oauth", CLAUDECODE="caller", KEEP_ME="inherited",
+                    FAKE_REVIEW_ENV_FILE=str(capture), FAKE_ANSWER="none",
+                    FAKE_CLAUDE_JSON=json.dumps({"result": "none"}),
+                )
+                self.assertEqual((code, result["ok"]), (0, True))
+                child = dict(line.split("=", 1) for line in capture.read_text().splitlines())
+                self.assertEqual(child[variable], str(self.home / f"{provider}-review"))
+                self.assertEqual(child["KEEP_ME"], "inherited")
+                self.assertNotIn("CLAUDECODE", child)
+                for key in (("OPENAI_API_KEY", "CODEX_API_KEY") if provider == "openai" else
+                            ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")):
+                    self.assertNotIn(key, child)
+                receipt = json.loads(Path(result["launch_receipt"]).read_text())
+                self.assertEqual(receipt["accountID"], result["account"]["account_id"])
+                self.assertEqual(receipt["provider"], provider)
+                self.assertEqual(result["account"]["name"], f"{provider}-review")
+                self.assertEqual(set(receipt), {"schemaVersion", "provider", "accountID", "launchedAt"})
+                self.assertNotIn(str(self.home), json.dumps(result["account"]))
+                self.assertNotIn("fake-oauth", json.dumps(result))
+
+    def test_each_review_reads_the_current_context_panel_choice(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        capture = self.root / "child-env"
+        config = self.home / ".code/skill-data/supervisor.toml"
+        config.write_text(config.read_text() +
+                         '[[accounts.account]]\nname = "second-review"\nprovider = "anthropic"\n'
+                         'context_panel_label = "second-test"\n[accounts.account.env]\n'
+                         'CLAUDE_CONFIG_DIR = "~/second-home"\n')
+        for account_id, label, home in (("anthropic-b", "anthropic-test", str(self.home / "anthropic-review")),
+                                        ("anthropic-c", "second-test", str(self.home / "second-home"))):
+            snapshot = json.loads(self.snapshot_file.read_text())
+            snapshot["accounts"] = [{"id": account_id, "provider": "anthropic", "label": label}]
+            snapshot["answers"]["useNext"] = [{"provider": "anthropic", "accountID": account_id}]
+            self.snapshot_file.write_text(json.dumps(snapshot))
+            code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture),
+                                       FAKE_CLAUDE_JSON=json.dumps({"result": "none"}))
+            self.assertEqual((code, result["account"]["account_id"]), (0, account_id))
+            child = dict(line.split("=", 1) for line in capture.read_text().splitlines())
+            self.assertEqual(child["CLAUDE_CONFIG_DIR"], home)
+        self.assertEqual(len(list((self.storage / "Launch Receipts").glob("*.json"))), 2)
+
+    def test_default_anthropic_choice_removes_inherited_home_without_mutating_parent(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        config = self.home / ".code/skill-data/supervisor.toml"
+        config.write_text(config.read_text().replace(
+            'CLAUDE_CONFIG_DIR = ' + json.dumps(str(self.home / "anthropic-review")), ""))
+        capture = self.root / "child-env"
+        code, result = self.review("anthropic", CLAUDE_CONFIG_DIR="caller-home",
+                                   FAKE_REVIEW_ENV_FILE=str(capture),
+                                   FAKE_CLAUDE_JSON=json.dumps({"result": "none"}))
+        self.assertEqual((code, result["ok"]), (0, True))
+        self.assertNotIn("CLAUDE_CONFIG_DIR=", capture.read_text())
+        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": "caller-home", "KEEP_ME": "inherited"}):
+            before = dict(os.environ)
+            child = review_with_model.reviewer_environment({"provider": "anthropic", "env": {}})
+            self.assertNotIn("CLAUDE_CONFIG_DIR", child)
+            self.assertEqual(dict(os.environ), before)
+
+    def test_unavailable_or_unmapped_choices_never_launch_reviewer_or_receipt(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        capture = self.root / "child-env"
+        original = self.snapshot_file.read_text()
+        for snapshot in ("not JSON", json.dumps({"schemaVersion": 1, "accounts": [], "answers": {}}),
+                         original.replace("anthropic-test", "unmapped")):
+            with self.subTest(snapshot=snapshot):
+                self.snapshot_file.write_text(snapshot)
+                code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture))
+                self.assertEqual((code, result["ok"]), (1, False))
+                self.assertFalse(capture.exists())
+                self.assertFalse((self.storage / "Launch Receipts").exists())
+        self.snapshot_file.write_text(original)
+        (self.home / ".code/skill-data/supervisor.toml").unlink()
+        code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture))
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertIn("no [accounts]", result["error"])
+        self.assertFalse(capture.exists())
+
+    def test_receipt_failure_prevents_launch_and_provider_failure_retains_receipt(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        capture = self.root / "child-env"
+        self.storage.rmdir()
+        self.storage.write_text("storage is unavailable")
+        code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture))
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertIn("cannot prepare launch receipt", result["error"])
+        self.assertFalse(capture.exists())
+        self.storage.unlink()
+        self.storage.mkdir()
+        code, result = self.review("anthropic", FAKE_CLAUDE_JSON=json.dumps({"is_error": True, "result": "limit"}))
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertTrue(Path(result["launch_receipt"]).is_file())
 
     def test_each_provider_returns_its_review_and_the_model_that_ran(self) -> None:
         self.install("codex", FAKE_CODEX)
@@ -579,7 +710,7 @@ class ReviewWithModelTests(unittest.TestCase):
     def test_a_planted_finding_arrives_once_inside_a_real_review_and_only_when_the_owner_set_it(self) -> None:
         self.install("codex", FAKE_CODEX)
         marker = self.home / ".code" / "model-review-fault.md"
-        marker.parent.mkdir()
+        marker.parent.mkdir(exist_ok=True)
         # No marker: the review is exactly what the reviewer said.
         code, result = self.review("openai", FAKE_ANSWER="Low: rename x.\n")
         self.assertEqual((code, result["response"]), (0, "Low: rename x.\n"))
