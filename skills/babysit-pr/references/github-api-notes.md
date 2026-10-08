@@ -91,7 +91,7 @@ passed gates remain history.
 `executionSelectionGaps` names each uncovered failed gate and replacement run;
 the watcher carries it as `checks.execution_selection_gaps`. Once no current
 workflow remains unfinished, `stop_incomplete_replacement` stops polling for
-explicit diagnosis and source repair under the skill's recovery procedure.
+explicit diagnosis and CI recovery under the skill's recovery procedure.
 An independent reporter failure uses normal check diagnosis; a job link never
 grants rerun authority by itself.
 

@@ -148,9 +148,15 @@ For each snapshot:
    `awaiting_review` means approval is required. Keep watching in all three.
    `stop_incomplete_replacement` is a terminal coverage gap: read
    `checks.execution_selection_gaps`, diagnose the named gate with
-   `github/scripts/github-ci-diagnose.py`, and fix event/gate coverage on an
-   authorized task branch. Resume on the corrected head using the same saved
-   state; do not retry obsolete executions or erase retry custody.
+   `github/scripts/github-ci-diagnose.py`, and apply [CI failures](#ci-failures).
+   Fix code or event/gate coverage only when the evidence proves that defect.
+   For a flaky failure, restore full CI on a new authorized task head without
+   changing tested content: the existing bot commit helper supports
+   `--allow-empty -m "ci: refresh current-head checks"`. Push through `github`
+   and resume with the same saved state. For a base-owned
+   `pull_request_target` defect, use a separate authorized PR to the base;
+   missing repair authority goes to the owning work record for handoff.
+   Do not retry obsolete executions or erase retry custody.
 7. **Ready** (`ready_to_merge`): read it as ready for a merge decision; see
    [Merge readiness](#merge-readiness). Keep watching while the PR is open.
 8. **After any push or rerun**: restart `--watch` on the new head in the same
@@ -170,7 +176,7 @@ This is the only stop rule. Stop only when:
 
 Missing confirmed runs, confirmed nonretryable attempts and terminal
 replacement coverage gaps also stop the watcher for explicit recovery; their
-saved evidence is retained. This calls for agent diagnosis and source repair,
+saved evidence is retained. This calls for agent diagnosis and CI recovery,
 not a new approval requirement. See
 [state lifetime and recovery](references/github-api-notes.md#state-lifetime-and-recovery)
 for the durable default, legacy migration and bounded command/lock behavior.
