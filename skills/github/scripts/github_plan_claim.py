@@ -609,9 +609,10 @@ def retained_handoff(
 
     handoff_text = handoff.get("body") or ""
     source_record = records(source["body"])[0]
+    source_claim_match = re.search(rf"\bclaim {source_id}(?!\d)", handoff_text)
+    source_session_match = re.search(rf"(?<![\w-]){re.escape(source_record['session'])}(?![\w-])", handoff_text)
     standalone = (handoff_text.splitlines()[:1] == [f"Handoff from {source_record['worker']}"]
-                  and re.search(rf"\bclaim {source_id}(?!\d)", handoff_text)
-                  and re.search(rf"(?<![\w-]){re.escape(source_record['session'])}(?![\w-])", handoff_text)
+                  and source_claim_match and source_session_match
                   and not records(handoff_text))
     # An embedded release proves release, not the identity of the handoff.
     first_line_release = released_claim_id(handoff_text.splitlines()[0] if handoff_text else "")
@@ -619,7 +620,12 @@ def retained_handoff(
         raise ValueError("Refresh handoff must identify the exact released source claim")
     # A separate handoff's identity paragraph is not its release prose edge.
     # Still check the full record so conditions inside that paragraph count.
-    handoff_prose = handoff_text.partition("\n\n")[2] if standalone else ""
+    handoff_prose = ""
+    if standalone and source_claim_match and source_session_match:
+        identity_end = max(source_claim_match.end(), source_session_match.end())
+        paragraphs = re.split(r"\r?\n[ \t]*\r?\n", handoff_text[identity_end:], maxsplit=1)
+        if len(paragraphs) == 2:
+            handoff_prose = paragraphs[1]
     if (conditional_release_prose(handoff_text, suffix="")
             or conditional_release_prose(handoff_prose, suffix="")):
         raise ValueError("Retained handoff must be unconditional; use a fresh source-authored handoff")

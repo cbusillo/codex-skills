@@ -320,6 +320,7 @@ class ClaimTests(unittest.TestCase):
             "PR #99 must merge first.",
             "Wait until PR #99 merges.",
             "Hold off until PR #99 merges.",
+            "Ownership transfers now.\n\n> Ownership transfers once PR #99 merges.",
         ):
             for refresh in (False, True):
                 with self.subTest(prose=prose, refresh=refresh):
@@ -346,7 +347,47 @@ class ClaimTests(unittest.TestCase):
                     output = self.emitted.call_args.args[0]
                     self.assertTrue(output["ok"])
                     self.assertEqual(output["claim"].get("refresh_pr"), self.args.refresh_pr)
+                    if not refresh:
+                        self.assertTrue(output["claim"]["retained_handoff"].endswith("#issuecomment-6"))
                     self.assertEqual(artifacts, (self.pulls, self.inventory))
+
+    def test_separate_handoff_identity_paragraph_layouts_preserve_conditions(self):
+        for layout in ("header_paragraph", "crlf", "spaced_blank"):
+            for refresh in (False, True):
+                with self.subTest(layout=layout, refresh=refresh):
+                    self.setUp()
+                    self.separate_handoff_fixture("PR #99 must merge first.", refresh=refresh)
+                    body = self.comments[3]["body"]
+                    if layout == "header_paragraph":
+                        body = body.replace("trial-b\nSource", "trial-b\n\nSource")
+                    elif layout == "crlf":
+                        body = body.replace("\n", "\r\n")
+                    else:
+                        body = body.replace("\n\n", "\n \n")
+                    self.comments[3]["body"] = body
+                    with self.assertRaises(PLAN.PlanError):
+                        self.run_claim()
+                    self.assert_no_writes()
+                    self.comments.append({"id": 5, "body": body.replace("PR #99 must merge first.", "Ownership transfers now."),
+                                          "user": {"login": TEST_BOT}})
+                    self.args.handoff_comment = 5
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_later_release_handoff_keeps_its_own_condition_after_genuine_release(self):
+        for refresh in (False, True):
+            with self.subTest(refresh=refresh):
+                self.setUp()
+                self.separate_handoff_fixture("", refresh=refresh)
+                self.comments[3]["body"] = "Released claim 1\n\nIf CI passes, the next worker may claim.\nHandoff: PR #99 and #100."
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+                self.comments.append({"id": 5, "body": "Released claim 1\n\nHandoff: PR #99 and #100.",
+                                      "user": {"login": TEST_BOT}})
+                self.args.handoff_comment = 5
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_separate_unconditional_handoff_keeps_downstream_gates_usable(self):
         for prose in (

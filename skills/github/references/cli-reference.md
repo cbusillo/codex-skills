@@ -822,6 +822,7 @@ An earlier unconditional release does not make a separate deferred handoff
 unconditional. Ownership conditions in that handoff use the same checks as
 release prose above; recover with a fresh unconditional source-authored handoff
 and its new comment ID, rather than inferring that a condition resolved.
+Link the earlier handoff instead of quoting its conditional prose in the new one.
 Unmentioned same-bot PRs also refuse.
 The named PR identities bind their current branches to that finished session's
 handoff, including split branches that differ from the original claim branch.
