@@ -2230,6 +2230,8 @@ class ClaimTests(unittest.TestCase):
     def test_future_time_sequences_preserve_and_recover_claims(self):
         for handoff in (
             "PR #99 merges later today. Then the next worker may claim.",
+            "PR #99 merges later today. Then, the next worker may claim.",
+            "PR #99 merges later today. Then you may claim.",
             "PR #99 lands tomorrow. Then the next session can resume.",
             "CI finishes later today. Then take over.",
         ):
@@ -2262,6 +2264,8 @@ class ClaimTests(unittest.TestCase):
             "PR #99 lands tomorrow. Then publish the release notes.",
             "PR #99 merges later today. Then the Supervisor takes over deployment.",
             "The drill runs tomorrow. Then the train resumes.",
+            "The train runs tomorrow. Then the next worker verifies the release on prod.",
+            "PR #99 lands tomorrow. Then the next session drafts the release notes.",
             "PR #99 merges later today. The next worker may claim now.",
             "Source session finished. The next session can resume now.",
             "PR #99 merged yesterday. Then the next worker may claim.",
