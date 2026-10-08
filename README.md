@@ -1043,3 +1043,47 @@ committed examples and docs are still scanned before PRs merge.
 
 For Launchplane context-specific review, also see
 `skills/launchplane/references/public-safety.md`.
+
+## Chrome across Claude account homes
+
+Opt in with the ignored `.local/chrome.toml` in the installed catalog checkout:
+
+```toml
+pinned_home = "~/path/to/extension-account-home"
+homes = ["~/.claude", "~/path/to/another-account-home"]
+```
+
+List every Claude account home here; the installer also includes its selected
+Claude destination and the pinned home. All homes must already exist and be
+signed in by the Director. The pinned home must match the Chrome extension's
+account. This config chooses the browser child process's home, not the session's
+provider account; Context Panel continues to choose session accounts.
+
+Preview and apply through `scripts/install-catalog.py` as above. It uses Claude's
+[native MCP management commands](https://code.claude.com/docs/en/mcp#add-mcp-servers-from-json-configuration)
+to install one user-scoped `catalog-chrome` server per home, invoking
+`claude --claude-in-chrome-mcp` with the pinned `CLAUDE_CONFIG_DIR`. It never
+uses the caller's authentication overrides: the native `env -u` launcher removes
+those variable names without reading their values. For a pinned `~/.claude`
+default account, it also unsets `CLAUDE_CONFIG_DIR`, preserving Claude's native
+default login/config location rather than creating an alternate config there.
+It never
+opens login files or a credential store. Unrelated configuration stays under
+Claude's own management. An identical entry is kept; conflicting entries are
+preserved and reported. The ignored `.local/chrome-install.json` records owned
+entries, so changing only `pinned_home` updates those entries on the next explicit
+install. A failed update attempts to restore the previous managed entry; a
+failed restoration names the receipt to recover from. Inspect a reported
+conflict with `claude mcp get catalog-chrome`, reconcile that entry deliberately,
+and preview again. Removing a home from the list leaves its installed entry
+in place; remove it explicitly with `claude mcp remove catalog-chrome -s user`
+in that home if desired. Instruction-only scheduled refreshes preserve MCP
+configuration; they do not enroll new accounts.
+
+After installing, start fresh sessions without `--chrome`; the user entry
+already supplies the browser tools. The Chrome server entry point is internal
+to Claude Code and may change with a CLI update. Acceptance after installation
+or a CLI update: from a signed-in session on an account different from the
+extension, call only `mcp__catalog-chrome__list_connected_browsers` and verify
+the existing Chrome appears. Do not pair, select, navigate or modify the browser
+for this check. An installer success alone does not prove cross-account pairing.

@@ -94,6 +94,9 @@ def personal_source(sync, destinations: list[Path], local: Path, *, new_destinat
 
 
 def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool, show_diff: bool = False, refresh_instructions: bool = False, skip_codex_hooks: bool = False) -> dict:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import chrome_mcp
+
     if codex.resolve().is_relative_to(ROOT.resolve()) or claude.resolve().is_relative_to(ROOT.resolve()):
         raise ValueError("Host configuration overlaps the catalog checkout; use separate host configuration directories and clone the catalog outside them as in README")
     sync = load_sync()
@@ -254,6 +257,9 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                     hook_preview = [entry]
         except (OSError, ValueError) as error:
             hook_preview = [{"path": str(config_path), "state": "skipped", "reason": str(error)}]
+    chrome_plan = None if refresh_instructions else chrome_mcp.prepare(ROOT, home, claude)
+    chrome_outputs = [{"path": str(entry["path"]), "state": entry["state"]}
+                      for entry in chrome_plan["entries"]] if chrome_plan else []
     launch_path = home / "Library" / "LaunchAgents" / f"{LABEL}.plist"
     launch_content = None
     launch_changed = False
@@ -322,6 +328,8 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                     outputs.append({"path": str(hook_path), "state": "skipped", "reason": str(error)})
             else:
                 outputs += hook_preview
+        if chrome_plan:
+            chrome_outputs = chrome_mcp.apply(chrome_plan)
         if launch_content is not None:
             sync.synchronize(launch_content, [launch_path], write=True)
             (ROOT / ".local").mkdir(exist_ok=True)
@@ -338,6 +346,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
     # Avoid printing private instruction text/diffs in the normal install output.
     return {"bindings": [{"path": str(path), "target": str(target), "state": "create" if (path, target) in pending else "current"} for path, target in links],
             "configuration_change": configuration_change, "unmanaged_instruction_sources": unmanaged_sources,
+            "chrome_mcp": chrome_outputs,
             "outputs": [{key: value for key, value in entry.items() if key != "diff" or show_diff} for entry in outputs],
             "private_source": str(local), "updater": "enabled" if updater and write else "requested" if updater else "unchanged" if previous_installation.get("scheduled_updater") else "off",
             "migrated_events": hook_outputs.migrated_events if hook_outputs else {},
