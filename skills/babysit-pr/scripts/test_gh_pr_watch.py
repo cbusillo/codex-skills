@@ -3181,7 +3181,7 @@ def test_terminal_replacement_must_cover_the_old_failed_gate(monkeypatch, tmp_pa
     if replacement_check:
         checks.append(execution_check(new, 21, replacement_check))
     snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [old, new], checks)
-    assert snapshot["checks"]["failed_count"] == 1
+    assert snapshot["checks"]["failed_count"] == 0
     assert snapshot["checks"]["evidence_complete"] is False
     assert "ready_to_merge" not in snapshot["actions"]
     assert "retry_failed_checks" not in snapshot["actions"]
@@ -3293,7 +3293,7 @@ def test_coverage_uses_winner_when_older_run_remains_unfinished(monkeypatch, tmp
     winner = execution(3)
     snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [oldest, unfinished, winner],
         [execution_check(oldest, 11, "failure"), execution_check(winner, 31, "skipped")])
-    assert snapshot["checks"]["failed_count"] == 1
+    assert snapshot["checks"]["failed_count"] == 0
     assert snapshot["checks"]["execution_selection_gaps"][0]["replacementRunId"] == 3
     assert "stop_incomplete_replacement" not in snapshot["actions"]
     assert "ready_to_merge" not in snapshot["actions"]

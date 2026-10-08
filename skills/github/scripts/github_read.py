@@ -926,7 +926,7 @@ def current_check_runs(
                             and candidate.get("name") == check.get("name")]
                 if (check.get("conclusion") in {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
                         and (not matching or all(candidate.get("conclusion") in {"skipped", "neutral"} for candidate in matching))):
-                    current.append(check)
+                    superseded.append(check)
                     complete = False
                     gaps.append({**check, "replacementRunId": replacement["id"],
                                  "reason": "replacement_did_not_cover_failed_gate"})

@@ -151,8 +151,9 @@ For each snapshot:
    `github/scripts/github-ci-diagnose.py`, and apply [CI failures](#ci-failures).
    Fix code or event/gate coverage only when the evidence proves that defect.
    For a flaky failure without a supported current-run retry, record the exact
-   gate, run and completeness gap on the owning work record and hand recovery
-   to the repository's CI maintainer within existing authority. Resume with the
+   gate, run and completeness gap on the PR's linked plan issue, naming the
+   executing agent or authorized successor and its concrete next action. Follow
+   `github-plan` Status Labels for that handoff. Resume with the
    same saved state after authoritative current-gate readback; do not create
    empty commits to reset retry budgets. Follow the existing
    [state lifetime and recovery](references/github-api-notes.md#state-lifetime-and-recovery)

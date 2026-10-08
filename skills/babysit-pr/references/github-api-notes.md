@@ -86,12 +86,14 @@ it has checks. The shared summary and CI diagnosis count an
 unfinished workflow without pending checks in `pendingWorkflowRunCount` and
 `pendingCount`, so standalone reads also report pending work. A completed
 replacement must cover an old failed gate; a missing gate or a skipped/neutral
-replacement preserves that failure and incomplete evidence. Missing previously
+replacement keeps the failed check in history and reports incomplete evidence,
+without counting it as a current failure. Missing previously
 passed gates remain history.
 `executionSelectionGaps` names each uncovered failed gate and replacement run;
 the watcher carries it as `checks.execution_selection_gaps`. Once no current
 workflow remains unfinished, `stop_incomplete_replacement` stops polling for
 explicit diagnosis and CI recovery under the skill's recovery procedure.
+CI diagnosis exposes historical gate logs separately in `historicalGapDiagnoses`.
 An independent reporter failure uses normal check diagnosis; a job link never
 grants rerun authority by itself.
 

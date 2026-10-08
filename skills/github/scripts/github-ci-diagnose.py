@@ -75,6 +75,8 @@ def main() -> int:
     client = DiagnosisClient(reader, repo)
     checks = combined_checks(checks_payload)
     analyzed = [analyze_check(check, client, args.max_lines, args.context) for check in checks]
+    gap_checks = combined_checks({"checkRuns": checks_payload.get("executionSelectionGaps", [])})
+    gap_diagnoses = [analyze_check(check, client, args.max_lines, args.context) for check in gap_checks]
     interesting = [item for item in analyzed if item["classification"] in {"failing", "pending", "external"}]
     summary = checks_payload.get("summary") or {}
     availability = summary.get("availability") or {}
@@ -95,6 +97,7 @@ def main() -> int:
         "countsComplete": counts_complete,
         "unavailableCheckComponents": summary.get("unavailableComponents") or [],
         "executionSelectionGaps": checks_payload.get("executionSelectionGaps", []),
+        "historicalGapDiagnoses": gap_diagnoses,
         "actor": reader.actor,
         "expectedActor": EXPECTED_ACTOR,
         "checks": interesting if args.only_interesting else analyzed,
@@ -108,7 +111,7 @@ def main() -> int:
     else:
         render(payload)
 
-    return 1 if failing_count is None or failing_count else 0
+    return 1 if failing_count is None or failing_count or not counts_complete else 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -457,6 +460,10 @@ def render(payload: dict[str, Any]) -> None:
     if diagnostics.get("degraded"):
         components = ", ".join(diagnostics.get("degradedComponents") or []) or "GitHub metadata"
         print(f"Diagnosis degraded: {components} unavailable or incomplete.")
+    for gap in payload.get("historicalGapDiagnoses", []):
+        print(f"Uncovered historical gate: {gap.get('name', '')}, run {gap.get('runId', '')}.")
+        if gap.get("failureSnippet"):
+            print(indent(gap["failureSnippet"]))
     checks: Iterable[dict[str, Any]] = payload["checks"]
     for check in checks:
         print("-" * 72)

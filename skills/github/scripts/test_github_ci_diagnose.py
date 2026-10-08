@@ -350,8 +350,32 @@ def test_queued_replacement_remains_pending_in_diagnosis() -> None:
     assert payload["countsComplete"] is True
 
 
+
+def test_uncovered_historical_gate_blocks_without_current_failure_count() -> None:
+    responses = base_responses("https://github.com/o/r/actions/runs/22/job/11")
+    check = responses["/repos/o/r/commits/abc/check-runs?per_page=100&page=1"]["body"]["check_runs"][0]
+    check.update({"head_sha": "abc", "app": {"slug": "github-actions"}})
+    current = {**check, "id": 21, "check_suite": {"id": 45}, "conclusion": "skipped",
+               "details_url": "https://github.com/o/r/actions/runs/23/job/21"}
+    responses["/repos/o/r/commits/abc/check-runs?per_page=100&page=1"]["body"]["check_runs"].append(current)
+    old = {"id": 22, "workflow_id": 71, "run_number": 1, "run_attempt": 1,
+           "head_sha": "abc", "head_branch": "feature", "head_repository": {"id": 81},
+           "event": "pull_request", "check_suite_id": 44, "status": "completed", "conclusion": "cancelled"}
+    new = {**old, "id": 23, "run_number": 2, "check_suite_id": 45, "conclusion": "success"}
+    responses["/repos/o/r/actions/runs?head_sha=abc&per_page=100&page=1"] = {"body": {"workflow_runs": [old, new]}}
+    responses["/repos/o/r/actions/jobs/11/logs"] = responses["/repos/o/r/actions/jobs/33/logs"]
+    process, _ = run_fixture(responses)
+    payload = json.loads(process.stdout)
+    assert process.returncode == 1
+    assert payload["failingCount"] == payload["pendingCount"] == 0
+    assert payload["countsComplete"] is False
+    assert payload["historicalGapDiagnoses"][0]["runId"] == "22"
+    assert "assertion failed" in payload["historicalGapDiagnoses"][0]["failureSnippet"]
+
+
 def main() -> None:
     tests = [
+        test_uncovered_historical_gate_blocks_without_current_failure_count,
         test_queued_replacement_remains_pending_in_diagnosis,
         test_fixture_ignores_inherited_live_cooldown,
         test_failing_check_uses_rest_metadata_and_job_log,
