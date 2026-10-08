@@ -212,6 +212,9 @@ Command model:
   problems, and clean up helper-opened projects.
 - `inspect-closeout --repo "$PWD" --scope changed_files`: readiness/hand-off
   inspection; use before saying a change is ready, safe to push, safe to merge, safe to hand off, or safe to exit.
+- Human assessment output prints retained findings beneath each lane summary,
+  including file, line, severity and description, so small sets remain readable
+  from saved output after cleanup. JSON output retains the same lane details.
 - For a RED assessment with more findings than the compact output shows, read
   `findings_artifact.path` (under each executed lane, or at the top level for a
   single IDE). Before cleanup, the helper collects every page with the same
