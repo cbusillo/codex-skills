@@ -107,41 +107,31 @@ def milestone_data(
     }
 
 
-def save_next_helpers(module: Any) -> dict[str, Any]:
-    return {
-        name: getattr(module, name)
-        for name in (
-            "collect_paged_rest_items",
-            "next_focus_context",
-            "read_next_issue_relationships",
-            "load_direction",
-            "emit",
-        )
-    }
-
-
-def restore_next_helpers(module: Any, originals: dict[str, Any]) -> None:
-    for name, value in originals.items():
-        setattr(module, name, value)
-
-
 @contextmanager
-def dependency_next_fixture(
+def local_next_fixture(
     module: Any,
     plans: list[dict[str, Any]],
     *,
     read_relationships: Callable[..., Any],
+    collect_plans: Callable[..., Any] | None = None,
+    focus_context: Callable[..., Any] | None = None,
+    direction: Callable[..., Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Run a local next command with explicit dependency evidence and no project."""
+    """Capture a local next command with explicit evidence and scoped patches."""
     captured: dict[str, Any] = {}
     with patch.multiple(
         module,
-        collect_paged_rest_items=lambda *_args, **_kwargs: ("automation-gh", plans),
-        next_focus_context=lambda _repo, _config: (
-            "automation-gh", {}, {"available": False, "reason": "project_not_configured"},
+        collect_paged_rest_items=(
+            collect_plans if collect_plans is not None
+            else lambda *_args, **_kwargs: ("automation-gh", plans)
+        ),
+        next_focus_context=(
+            focus_context if focus_context is not None else lambda _repo, _config: (
+                "automation-gh", {}, {"available": False, "reason": "project_not_configured"},
+            )
         ),
         read_next_issue_relationships=read_relationships,
-        load_direction=lambda _repo: DIRECTION,
+        load_direction=direction if direction is not None else lambda _repo: DIRECTION,
         emit=captured.update,
     ):
         yield captured
@@ -355,7 +345,6 @@ def test_next_focus_context_normalizes_keys_and_reports_truncation() -> None:
 
 def test_cmd_next_is_bounded_read_only_and_explainable() -> None:
     module = load_module()
-    captured: dict[str, Any] = {}
     observed_query: dict[str, Any] = {}
     plans = [
         issue(1, created_at="2026-07-01T00:00:00Z"),
@@ -393,17 +382,17 @@ def test_cmd_next_is_bounded_read_only_and_explainable() -> None:
             return "automation-gh", relationships(blocked_by=[related(10)]), []
         return "automation-gh", relationships(), []
 
-    originals = save_next_helpers(module)
-    module.collect_paged_rest_items = fake_collect
-    module.next_focus_context = lambda _repo, _config: (
-        "automation-gh",
-        {plans[0]["html_url"]: "Now", plans[1]["html_url"]: "Next"},
-        {"available": True},
-    )
-    module.read_next_issue_relationships = fake_relationships
-    module.load_direction = lambda _repo: DIRECTION
-    module.emit = captured.update
-    try:
+    with local_next_fixture(
+        module,
+        plans,
+        collect_plans=fake_collect,
+        focus_context=lambda _repo, _config: (
+            "automation-gh",
+            {plans[0]["html_url"]: "Now", plans[1]["html_url"]: "Next"},
+            {"available": True},
+        ),
+        read_relationships=fake_relationships,
+    ) as captured:
         module.cmd_next(
             type(
                 "Args",
@@ -411,8 +400,6 @@ def test_cmd_next_is_bounded_read_only_and_explainable() -> None:
                 {"repo": "owner/repo", "milestone": None, "limit": 1, "scan_limit": 2},
             )()
         )
-    finally:
-        restore_next_helpers(module, originals)
 
     assert observed_query["state"] == "open"
     assert observed_query["sort"] == "created"
@@ -428,25 +415,18 @@ def test_cmd_next_is_bounded_read_only_and_explainable() -> None:
 
 def test_cmd_next_degrades_when_direction_is_unavailable_or_unparsed() -> None:
     module = load_module()
-    captured: dict[str, Any] = {}
     plan = issue(
         1,
         milestone=milestone_data(9, "Unlisted", created_at="2026-07-01T00:00:00Z"),
     )
-    originals = save_next_helpers(module)
-    module.collect_paged_rest_items = lambda *_args, **_kwargs: ("automation-gh", [plan])
-    module.next_focus_context = lambda *_args, **_kwargs: (
-        None,
-        {},
-        {"available": False, "reason": "project_not_configured"},
-    )
-    module.read_next_issue_relationships = lambda *_args, **_kwargs: (
-        "automation-gh",
-        relationships(),
-        [],
-    )
-    module.emit = captured.update
-    try:
+    with local_next_fixture(
+        module,
+        [plan],
+        focus_context=lambda *_args, **_kwargs: (
+            None, {}, {"available": False, "reason": "project_not_configured"},
+        ),
+        read_relationships=lambda *_args, **_kwargs: ("automation-gh", relationships(), []),
+    ) as captured:
         module.load_direction = lambda _repo: (_ for _ in ()).throw(module.PlanError("temporary 502"))
         module.cmd_next(
             type("Args", (), {"repo": "owner/repo", "milestone": None, "limit": 5, "scan_limit": 5})()
@@ -469,8 +449,6 @@ def test_cmd_next_degrades_when_direction_is_unavailable_or_unparsed() -> None:
             type("Args", (), {"repo": "owner/repo", "milestone": None, "limit": 5, "scan_limit": 5})()
         )
         assert captured["candidates"][0]["notes"] == ["milestone_unlisted_from_direction"]
-    finally:
-        restore_next_helpers(module, originals)
 
 
 def test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions() -> None:
@@ -482,7 +460,7 @@ def test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions() -
         relationship_calls.append(number)
         raise module.PlanError("dependency endpoint unavailable")
 
-    with dependency_next_fixture(module, plans, read_relationships=fake_relationships) as captured:
+    with local_next_fixture(module, plans, read_relationships=fake_relationships) as captured:
         module.cmd_next(
             type(
                 "Args",
@@ -508,7 +486,7 @@ def test_cmd_next_excludes_truncated_dependencies_with_only_closed_visible_block
         for number in range(2, module.NEXT_RELATIONSHIP_LIMIT + 2)
     ]
 
-    with dependency_next_fixture(
+    with local_next_fixture(
         module,
         [issue(1)],
         read_relationships=lambda *_args, **_kwargs: (
@@ -546,7 +524,7 @@ def test_cmd_next_reraises_dependency_api_failures() -> None:
     def failed_relationships(*_args: Any, **_kwargs: Any) -> Any:
         raise module.PlanError("retry later", failure=failure)
 
-    with dependency_next_fixture(module, [issue(1)], read_relationships=failed_relationships):
+    with local_next_fixture(module, [issue(1)], read_relationships=failed_relationships):
         try:
             module.cmd_next(
                 type(
@@ -590,7 +568,6 @@ def test_next_relationship_reads_are_bounded_and_report_truncation() -> None:
 
 def test_cmd_next_supports_milestone_scope_and_focus_degradation() -> None:
     module = load_module()
-    captured: dict[str, Any] = {}
     observed_query: dict[str, Any] = {}
     scoped_plan = issue(10)
 
@@ -603,32 +580,32 @@ def test_cmd_next_supports_milestone_scope_and_focus_degradation() -> None:
         observed_query.update(query)
         return "automation-gh", [scoped_plan]
 
-    originals = save_next_helpers(module)
-    original_route = module.milestone_route
-    original_show = module.github_milestone_core.show_milestone
-    module.collect_paged_rest_items = fake_collect
-    module.next_focus_context = lambda _repo, _config: (
-        None,
-        {},
-        {"available": False, "reason": "project_focus_unavailable"},
-    )
-    module.read_next_issue_relationships = lambda *_args, **_kwargs: (
-        "automation-gh",
-        relationships(),
-        [],
-    )
-    module.milestone_route = lambda: ("gh", "automation-gh")
-    module.github_milestone_core.show_milestone = lambda *_args, **_kwargs: {
-        "actor": "automation-gh",
-        "milestone": {
-            "number": 7,
-            "title": "Release 7",
-            "state": "open",
-            "due_on": "2026-09-01T00:00:00Z",
-        },
-    }
-    module.emit = captured.update
-    try:
+    with (
+        local_next_fixture(
+            module,
+            [scoped_plan],
+            collect_plans=fake_collect,
+            focus_context=lambda _repo, _config: (
+                None, {}, {"available": False, "reason": "project_focus_unavailable"},
+            ),
+            read_relationships=lambda *_args, **_kwargs: ("automation-gh", relationships(), []),
+            direction=module.load_direction,
+        ) as captured,
+        patch.object(module, "milestone_route", lambda: ("gh", "automation-gh")),
+        patch.object(
+            module.github_milestone_core,
+            "show_milestone",
+            lambda *_args, **_kwargs: {
+                "actor": "automation-gh",
+                "milestone": {
+                    "number": 7,
+                    "title": "Release 7",
+                    "state": "open",
+                    "due_on": "2026-09-01T00:00:00Z",
+                },
+            },
+        ),
+    ):
         module.cmd_next(
             type(
                 "Args",
@@ -636,10 +613,6 @@ def test_cmd_next_supports_milestone_scope_and_focus_degradation() -> None:
                 {"repo": "owner/repo", "milestone": "Release 7", "limit": 5, "scan_limit": 5},
             )()
         )
-    finally:
-        restore_next_helpers(module, originals)
-        module.milestone_route = original_route
-        module.github_milestone_core.show_milestone = original_show
 
     assert observed_query["milestone"] == 7
     assert captured["scope"]["kind"] == "milestone"

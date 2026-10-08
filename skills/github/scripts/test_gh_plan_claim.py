@@ -301,6 +301,152 @@ class ClaimTests(unittest.TestCase):
         self.args.handoff_comment = 4
         self.run_claim()
 
+    def separate_handoff_fixture(self, prose, *, refresh=True):
+        self.refresh_fixture()
+        if not refresh:
+            self.args.refresh_pr = None
+        self.comments.append({
+            "id": 4, "body": "Handoff from trial-b\nSource claim 1; Session: session-b; PR #99 and #100\n\n" + prose,
+            "user": {"login": TEST_BOT},
+        })
+        self.args.handoff_comment = 4
+
+    def test_separate_deferred_handoff_requires_fresh_unconditional_recovery(self):
+        for prose in (
+            "Ownership transfers with PR #99's merge.",
+            "Ownership transfers upon merge of PR #99.",
+            "The next worker may claim on merging PR #99.",
+            "If CI passes, the next worker may claim.",
+            "PR #99 must merge first.",
+            "Wait until PR #99 merges.",
+            "Hold off until PR #99 merges.",
+            "Ownership transfers now.\n\n> Ownership transfers once PR #99 merges.",
+        ):
+            for refresh in (False, True):
+                with self.subTest(prose=prose, refresh=refresh):
+                    self.setUp()
+                    self.separate_handoff_fixture(prose, refresh=refresh)
+                    before = copy.deepcopy((self.issue, self.comments, self.pulls, self.inventory))
+                    # The earlier exact release is genuine; only the later
+                    # retained-artifact authorization is deferred.
+                    self.assertEqual(CLAIM.released_claim_id(self.comments[2]["body"]), 1)
+                    with self.assertRaises(PLAN.PlanError):
+                        self.run_claim()
+                    self.assert_no_writes()
+                    self.assertEqual(before, (self.issue, self.comments, self.pulls, self.inventory))
+                    # A new release alone cannot rewrite the selected handoff.
+                    self.comments.append({"id": 5, "body": "Released claim 1", "user": {"login": TEST_BOT}})
+                    with self.assertRaises(PLAN.PlanError):
+                        self.run_claim()
+                    self.assert_no_writes()
+                    self.comments.pop()  # Recovery needs the new handoff alone.
+                    self.comments.append({"id": 6, "body": self.comments[3]["body"].replace(prose, "Ownership transfers now."),
+                                          "user": {"login": TEST_BOT}})
+                    self.args.handoff_comment = 6
+                    artifacts = copy.deepcopy((self.pulls, self.inventory))
+                    self.run_claim()
+                    output = self.emitted.call_args.args[0]
+                    self.assertTrue(output["ok"])
+                    self.assertEqual(output["claim"].get("refresh_pr"), self.args.refresh_pr)
+                    if not refresh:
+                        self.assertTrue(output["claim"]["retained_handoff"].endswith("#issuecomment-6"))
+                    self.assertEqual(artifacts, (self.pulls, self.inventory))
+
+    def test_separate_handoff_identity_paragraph_layouts_preserve_conditions(self):
+        for layout in ("header_paragraph", "crlf", "spaced_blank", "single_newline", "session_footer", "pr_field",
+                       "release_header", "inline_release"):
+            for refresh in (False, True):
+                with self.subTest(layout=layout, refresh=refresh):
+                    self.setUp()
+                    self.separate_handoff_fixture("PR #99 must merge first.", refresh=refresh)
+                    body = self.comments[3]["body"]
+                    if layout == "header_paragraph":
+                        body = body.replace("trial-b\nSource", "trial-b\n\nSource")
+                    elif layout == "crlf":
+                        body = body.replace("\n", "\r\n")
+                    elif layout == "spaced_blank":
+                        body = body.replace("\n\n", "\n \n")
+                    elif layout == "single_newline":
+                        body = body.replace("\n\n", ".\n")
+                    elif layout == "session_footer":
+                        body = "Handoff from trial-b\nSource claim 1; PRs #99 and #100.\n\nPR #99 must merge first.\n\nSession: session-b"
+                    elif layout == "pr_field":
+                        body = "Handoff from trial-b\nSource claim 1; Session: session-b.\nOpen PRs: #99 and #100.\nPR #99 must merge first."
+                    elif layout == "release_header":
+                        body = "Released claim 1\nHandoff: PR #99 and #100.\nPR #99 must merge first."
+                    else:
+                        body = "Released claim 1. Handoff: PR #99 and #100. PR #99 must merge first."
+                    self.comments[3]["body"] = body
+                    with self.assertRaises(PLAN.PlanError):
+                        self.run_claim()
+                    self.assert_no_writes()
+                    self.comments.append({"id": 5, "body": body.replace("PR #99 must merge first.", "Ownership transfers now."),
+                                          "user": {"login": TEST_BOT}})
+                    self.args.handoff_comment = 5
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_later_release_handoff_keeps_its_own_condition_after_genuine_release(self):
+        for refresh in (False, True):
+            with self.subTest(refresh=refresh):
+                self.setUp()
+                self.separate_handoff_fixture("", refresh=refresh)
+                self.comments[3]["body"] = "Released claim 1\n\nIf CI passes, the next worker may claim.\nHandoff: PR #99 and #100."
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+                self.comments.append({"id": 5, "body": "Released claim 1\n\nHandoff: PR #99 and #100.",
+                                      "user": {"login": TEST_BOT}})
+                self.args.handoff_comment = 5
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_separate_unconditional_handoff_keeps_downstream_gates_usable(self):
+        for prose in (
+            "Ownership transfers immediately.",
+            "Supervisor routes PR #99 after PR #100 merges. Keep the worktree until landing.",
+            "After PR #99 lands, close out the issue. When resuming, rebase onto main.",
+            "Fix is effective across repos.",
+        ):
+            for refresh in (False, True):
+                with self.subTest(prose=prose, refresh=refresh):
+                    self.setUp()
+                    self.separate_handoff_fixture(prose, refresh=refresh)
+                    before = copy.deepcopy((self.pulls, self.inventory))
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                    self.assertEqual(before, (self.pulls, self.inventory))
+
+    def test_handoff_claim_identity_does_not_defer_unconditional_pr_notes(self):
+        for body in (
+            "Released claim 1\nHandoff: PR #99 and #100, both rebased after #98 merged.",
+            "Handoff from trial-b\nSource claim 1, session session-b: PR #99 and #100 pending review",
+        ):
+            for refresh in (False, True):
+                with self.subTest(body=body, refresh=refresh):
+                    self.setUp()
+                    self.separate_handoff_fixture("", refresh=refresh)
+                    self.comments[3]["body"] = body
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_ambiguous_repeated_release_identity_recovers_with_separate_handoff(self):
+        for refresh in (False, True):
+            with self.subTest(refresh=refresh):
+                self.setUp()
+                self.separate_handoff_fixture("", refresh=refresh)
+                self.comments[3]["body"] = "Released claim 1\nSource claim 1, session session-b: PR #99 and #100 pending review"
+                self.assertEqual(CLAIM.released_claim_id(self.comments[2]["body"]), 1)
+                self.assertIsNone(CLAIM.released_claim_id(self.comments[3]["body"]))
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+                self.comments.append({"id": 5, "body": "Handoff from trial-b\nSource claim 1, session session-b: PR #99 and #100 pending review",
+                                      "user": {"login": TEST_BOT}})
+                self.args.handoff_comment = 5
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
     def test_cross_repository_uses_canonical_planning_label_configuration(self):
         self.cross_repository_fixture()
         self.configs["other/plans"] = copy.deepcopy(PLAN.DEFAULT_CONFIG)
