@@ -21,7 +21,7 @@ import runpy
 import shutil
 import subprocess
 import sys
-import tomllib
+import fnmatch
 from typing import Any, Callable
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -58,9 +58,7 @@ WAIT_REFERENCE = re.compile(
 
 STATUS_FIELD = r"(?:State|Next action|Blocked by|Waiting for|Parked until|Waiting since|Last verified|Validation|Evidence|Retention|Recovery|Worker|Session|Branch)"
 
-# The capacity count of the overall direction (`OWNER/direction` only). The
-# map is data in that repository, changed by pull request like DIRECTION.md.
-RANK_MAP_PATH = "ranks.toml"
+# The overall direction owns classification; repositories can contain mixed work.
 RANKS = ("milestone", "tooling", "own")
 OWN_SHARE_FLOOR = 0.20
 REPO_NAME = re.compile(r"[\w.-]+/[\w.-]+")
@@ -280,10 +278,6 @@ def audit(
 
     findings.extend(wait_findings.values())
     if capacity is not None:
-        if capacity["rank_map"] is None:
-            findings.append({"kind": "rank_map_missing", "detail": f"{RANK_MAP_PATH} not found on the default branch; every repository is unranked"})
-        for row in capacity["unranked"]:
-            findings.append({"kind": "repository_unranked", "title": row["repo"], "merged": row["merged"]})
         if capacity["own_share_floor"] == "below":
             findings.append({"kind": "own_share_below_floor", "own_share": capacity["own_share"], "floor": OWN_SHARE_FLOOR})
 
@@ -303,8 +297,6 @@ def audit(
         "gate_phrase": 9,
         "waiting_blocks_other_repository": 8,
         "milestone_wait_invalid": 8,
-        "rank_map_missing": 10,
-        "repository_unranked": 10,
         "own_share_below_floor": 10,
     }
     findings.sort(key=lambda item: (order.get(item["kind"], 99), str(item.get("number") or item.get("milestone") or item.get("title") or "")))
@@ -1093,21 +1085,121 @@ def enrich_milestone_waits(
     return incomplete
 
 
-def parse_rank_map(text: str) -> dict[str, str]:
-    """The `[repositories]` table of the rank map, keyed by lowercase OWNER/REPO."""
+def own_project_patterns(text: str) -> list[str]:
+    """Read repository names/patterns from the own-project item in merged Order."""
+    order = github_direction_next.section_map(text).get("Order", "")
+    match = re.search(r"(?ms)^4\.\s+(.*?)(?=^\d+\.\s|\Z)", order)
+    if not match or ":" not in match[1]:
+        raise AuditError("Order own-project list is missing")
+    listing = match[1].split(":", 1)[1].split("This list", 1)[0]
+    names = re.findall(r"`([\w.*-]+)`", listing)
+    # Parentheses carry explicit identifiers and explanatory prose. Only single
+    # repository identifiers in the surrounding comma/and-separated list count.
+    plain = re.sub(r"\([^)]*\)", "", listing, flags=re.S)
+    plain = re.sub(r"`[^`]*`", "", plain)
+    plain = re.sub(r"\band its\b[^,]*", "", plain)
+    for part in re.split(r",|\band\b", plain):
+        name = part.strip().rstrip(".")
+        if re.fullmatch(r"[\w.-]+", name):
+            names.append(name)
+    if not names:
+        raise AuditError("Order own-project list contains no repository identifiers")
+    return sorted({name.casefold() for name in names})
+
+
+def tracked_capacity_issues(
+    direction_repo: str, text: str, *, fetch: Callable[[list[str]], Any], max_nodes: int = 500,
+) -> tuple[set[tuple[str, int]], list[str]]:
+    """Walk Track native blockers/sub-issues, including completed weekly work.
+
+    These are the edges global next walks, without its availability filter:
+    closed/waiting nodes still attribute the PRs that delivered their work.
+    """
     try:
-        data = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
-        raise AuditError(f"{RANK_MAP_PATH} is not valid TOML: {exc}") from exc
-    table = data.get("repositories")
-    if not isinstance(table, dict):
-        raise AuditError(f"{RANK_MAP_PATH} needs a [repositories] table")
-    ranks: dict[str, str] = {}
-    for repo, rank in table.items():
-        if not REPO_NAME.fullmatch(repo) or rank not in RANKS:
-            raise AuditError(f"{RANK_MAP_PATH}: {repo} = {rank!r}; expected \"OWNER/REPO\" = one of {', '.join(RANKS)}")
-        ranks[repo.casefold()] = rank
-    return ranks
+        roots, cut = fetch_paginated(f"repos/{direction_repo}/issues?state=all", fetch=fetch)
+    except AuditError:
+        return set(), ["capacity_tracks"]
+    errors = ["capacity_tracks"] if cut else []
+    titles = set(parse_direction(text)["milestones"])
+    pending = [(direction_repo.casefold(), row["number"]) for row in roots
+               if "pull_request" not in row and str(row.get("title", "")).startswith("Track:")
+               and (row.get("milestone") or {}).get("title") in titles]
+    seen: set[tuple[str, int]] = set()
+    while pending:
+        key = pending.pop()
+        if key in seen:
+            continue
+        if len(seen) >= max_nodes:
+            errors.append("capacity_graph_limit")
+            break
+        seen.add(key)
+        repo, number = key
+        for endpoint in ("dependencies/blocked_by", "sub_issues"):
+            try:
+                edges, cut = fetch_paginated(f"repos/{repo}/issues/{number}/{endpoint}", fetch=fetch)
+                if cut:
+                    errors.append(f"capacity_graph:{repo}#{number}:{endpoint}")
+                for edge in edges:
+                    match = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)", str(edge.get("html_url") or ""))
+                    if not match or "pull_request" in edge:
+                        raise AuditError("capacity graph relationship identity unknown")
+                    pending.append((match[1].casefold(), int(match[2])))
+            except AuditError:
+                errors.append(f"capacity_graph:{repo}#{number}:{endpoint}")
+    return seen, sorted(set(errors))
+
+
+def pull_issue_refs(repo: str, pull: dict[str, Any]) -> set[tuple[str, int]]:
+    """Explicit closing/Refs clauses, rather than incidental issue mentions."""
+    refs = set(pull.get("_native_issue_refs") or [])
+    text = f"{pull.get('title') or ''}\n{pull.get('body') or ''}"
+    text = re.sub(r"\[[^\]]*\]\((https://github\.com/[\w.-]+/[\w.-]+/issues/\d+)\)", r"\1", text)
+    for clause in re.finditer(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs)\b\s*:?[ \t]+([^\n]+)", text, re.I):
+        # Only a reference list immediately following the keyword is a link.
+        tail = clause[1]
+        while match := re.match(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)|([\w.-]+/[\w.-]+)?#(\d+)", tail):
+            refs.add(((match[1] or match[3] or repo).casefold(), int(match[2] or match[4])))
+            tail = tail[match.end():]
+            separator = re.match(r"\s*(?:,|and)\s*", tail)
+            if separator is None:
+                break
+            tail = tail[separator.end():]
+    return refs
+
+
+def native_pull_issue_refs(repo: str, number: int, *, fetch: Callable[[list[str]], Any]) -> set[tuple[str, int]]:
+    """Read GitHub's native PR issue links; REST pull listings omit them."""
+    owner, name = repo.split("/")
+    cursor = None
+    refs: set[tuple[str, int]] = set()
+    for _ in range(MAX_PAGES):
+        query = """query($owner:String!,$name:String!,$number:Int!,$cursor:String){
+          repository(owner:$owner,name:$name){pullRequest(number:$number){
+            closingIssuesReferences(first:100,after:$cursor){
+              nodes{number repository{nameWithOwner}} pageInfo{hasNextPage endCursor}
+            }
+          }}
+        }"""
+        args = ["api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}",
+                "-f", f"name={name}", "-F", f"number={number}"]
+        if cursor:
+            args += ["-f", f"cursor={cursor}"]
+        response = fetch(args)
+        try:
+            links = response["data"]["repository"]["pullRequest"]["closingIssuesReferences"]
+            if response.get("errors"):
+                raise AuditError("native PR issue links unavailable")
+            for node in links["nodes"]:
+                refs.add((node["repository"]["nameWithOwner"].casefold(), int(node["number"])))
+            info = links["pageInfo"]
+            if not info["hasNextPage"]:
+                return refs
+            if not info["endCursor"] or info["endCursor"] == cursor:
+                raise AuditError("native PR issue links cursor missing")
+            cursor = info["endCursor"]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise AuditError("native PR issue links response unavailable") from exc
+    raise AuditError("native PR issue links truncated")
 
 
 def _within(value: Any, since: dt.datetime, until: dt.datetime) -> bool:
@@ -1116,16 +1208,14 @@ def _within(value: Any, since: dt.datetime, until: dt.datetime) -> bool:
 
 
 def capacity_summary(
-    *, rank_map: dict[str, str] | None, rank_map_source: str | None,
+    *, own_projects: list[str], tracked_issues: set[tuple[str, int]], direction_source: str,
     pulls: dict[str, list[dict[str, Any]]], milestones: dict[str, list[dict[str, Any]]],
     events: dict[str, list[dict[str, Any]]], since: dt.datetime, until: dt.datetime,
     incomplete: bool = False,
 ) -> dict[str, Any]:
     """The overall direction's weekly numbers from per-repository listings."""
-    ranks = rank_map or {}
-    merged_by_rank = dict.fromkeys((*RANKS, "unranked"), 0)
+    merged_by_rank = dict.fromkeys(RANKS, 0)
     by_repository: dict[str, dict[str, Any]] = {}
-    unranked: list[dict[str, Any]] = []
     reverts: list[dict[str, Any]] = []
     for repo in sorted(pulls):
         # A pull request updated mid-read can shift into the next page twice.
@@ -1133,14 +1223,19 @@ def capacity_summary(
         merged = [pull for pull in unique.values() if _within(pull.get("merged_at"), since, until)]
         if not merged:
             continue
-        rank = ranks.get(repo.casefold(), "unranked")
-        merged_by_rank[rank] += len(merged)
-        by_repository[repo] = {"rank": rank, "merged": len(merged)}
-        if rank == "unranked":
-            unranked.append({"repo": repo, "merged": len(merged)})
+        counts = dict.fromkeys(RANKS, 0)
         for pull in merged:
+            if pull_issue_refs(repo, pull) & tracked_issues:
+                rank = "milestone"
+            elif any(fnmatch.fnmatchcase(repo.split("/")[1].casefold(), pattern) for pattern in own_projects):
+                rank = "own"
+            else:
+                rank = "tooling"
+            merged_by_rank[rank] += 1
+            counts[rank] += 1
             if REVERT_TITLE.search(str(pull.get("title") or "")) or REVERT_BODY.search(str(pull.get("body") or "")):
                 reverts.append({"repo": repo, "number": pull.get("number"), "title": pull.get("title"), "merged_at": pull.get("merged_at")})
+        by_repository[repo] = {"merged": len(merged), "merged_by_rank": counts}
     total = sum(merged_by_rank.values())
     own = merged_by_rank["own"]
     own_share = round(own / total, 3) if total else None
@@ -1151,11 +1246,8 @@ def capacity_summary(
         floor = "no_merges"
     elif own / total >= OWN_SHARE_FLOOR:
         floor = "met"
-    elif (own + merged_by_rank["unranked"]) / total < OWN_SHARE_FLOOR:
-        floor = "below"
     else:
-        # Unranked merges could lift own projects over the floor; the map decides.
-        floor = "unknown"
+        floor = "below"
     closed = [
         {"repo": repo, "number": item.get("number"), "title": item.get("title"), "closed_at": item.get("closed_at")}
         for repo in sorted(milestones) for item in milestones[repo]
@@ -1174,13 +1266,12 @@ def capacity_summary(
     return {
         "since": since.isoformat().replace("+00:00", "Z"),
         "until": until.isoformat().replace("+00:00", "Z"),
-        "rank_map": rank_map_source,
+        "classification_source": direction_source,
         "merged_total": total,
         "merged_by_rank": merged_by_rank,
         "own_share": own_share,
         "own_share_floor": floor,
         "by_repository": by_repository,
-        "unranked": unranked,
         "milestones_closed": closed,
         "issues_reopened": sorted(reopened.values(), key=lambda item: (item["repo"], str(item["number"]))),
         "revert_pulls": reverts,
@@ -1191,11 +1282,17 @@ def capacity_summary(
 def fetch_capacity(
     direction_repo: str, since: dt.datetime, until: dt.datetime, *, fetch: Callable[[list[str]], Any],
 ) -> tuple[dict[str, Any], list[str]]:
-    """Read the rank map and the owner's repositories one by one, never the search API."""
+    """Read merged direction, its Track graph and per-repository listings."""
     owner = direction_repo.split("/")[0].casefold()
     truncated: list[str] = []
-    text = merged_file(direction_repo, RANK_MAP_PATH, fetch=fetch)
-    rank_map = parse_rank_map(text) if text is not None else None
+    text = merged_direction(direction_repo, fetch=fetch)
+    try:
+        own_projects = own_project_patterns(text or "")
+    except AuditError:
+        own_projects = []
+        truncated.append("capacity_own_projects")
+    tracked_issues, graph_errors = tracked_capacity_issues(direction_repo, text or "", fetch=fetch)
+    truncated.extend(graph_errors)
     try:
         listed, cut = fetch_paginated("installation/repositories", fetch=fetch, key="repositories")
     except AuditError as installation_error:
@@ -1210,14 +1307,6 @@ def fetch_capacity(
         str(item.get("full_name")).casefold(): item for item in listed
         if str(((item.get("owner") or {}).get("login")) or "").casefold() == owner
     }
-    for name in sorted(rank_map or {}):
-        if name in repos:
-            continue
-        try:
-            repos[name] = fetch(["api", f"repos/{name}", "--method", "GET"])
-        except AuditError:
-            truncated.append(f"capacity_repository:{name}")
-
     def older(field: str) -> Callable[[dict[str, Any]], bool]:
         return lambda item: (moment := _parse_time(item.get(field))) is not None and moment < since
 
@@ -1241,15 +1330,24 @@ def fetch_capacity(
                     fetch=fetch, stop=older("updated_at"),
                 )
                 truncated += [f"capacity_pulls:{name}"] if cut else []
+                for pull in {row.get("number"): row for row in pulls[name]}.values():
+                    if not _within(pull.get("merged_at"), since, until):
+                        continue
+                    if pull_issue_refs(name, pull) & tracked_issues:
+                        continue
+                    try:
+                        pull["_native_issue_refs"] = native_pull_issue_refs(name, pull["number"], fetch=fetch)
+                    except AuditError:
+                        truncated.append(f"capacity_pull_links:{name}#{pull.get('number')}")
             milestones[name], cut = fetch_paginated(f"repos/{name}/milestones?state=closed", fetch=fetch, max_pages=2)
             truncated += [f"capacity_milestones:{name}"] if cut else []
             events[name], cut = fetch_paginated(f"repos/{name}/issues/events", fetch=fetch, stop=older("created_at"))
             truncated += [f"capacity_events:{name}"] if cut else []
         except AuditError:
             truncated.append(f"capacity_reads:{name}")
-    source = f"{direction_repo}:{RANK_MAP_PATH}@default-branch" if rank_map is not None else None
+    source = f"{direction_repo}:DIRECTION.md@default-branch"
     summary = capacity_summary(
-        rank_map=rank_map, rank_map_source=source, pulls=pulls,
+        own_projects=own_projects, tracked_issues=tracked_issues, direction_source=source, pulls=pulls,
         milestones=milestones, events=events, since=since, until=until,
         incomplete=bool(truncated),
     )

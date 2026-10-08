@@ -359,25 +359,24 @@ reference reads; any limit or unread evidence keeps `complete` false.
 The audit of `OWNER/direction` also returns `capacity`, the overall
 direction's weekly numbers for the window since the prior audit: merged pull
 requests per rank, the own-projects share against the 20% floor, milestones
-closed, issues reopened, and merged pull requests that mark a revert. Ranks
-come from `ranks.toml` in that repository, one `"OWNER/REPO" = "rank"` line
-per repository under `[repositories]`, with `milestone`, `tooling`, or `own`;
-the Director changes it by pull request like `DIRECTION.md`. The audit reads
-each repository of that account the reader can see, never the search API, so
-it takes a few minutes. Reopened and reverted work is the quality signal the
-throughput numbers do not carry; report it with the share. Provider capacity
-left unused stays manual until an account reader exists
+closed, issues reopened, and merged pull requests that mark a revert. Each
+merged PR counts as milestone work when a closing keyword, `Refs`, or native
+PR issue link reaches an issue in a listed milestone's `Track:` graph (native
+blockers and sub-issues, including completed work). Otherwise its repository
+counts as own when named by the merged overall `DIRECTION.md` Order item 4,
+and tooling otherwise. Read that list; do not copy it into catalog guidance
+or a separate map. A repository can contain more than one kind of work.
+The audit reads each repository of that account the reader can see, never the
+search API, so it takes a few minutes. Reopened and reverted work is the quality
+signal the throughput numbers do not carry; report it with the share. Provider
+capacity left unused stays manual until an account reader exists
 ([codex-skills#974](https://github.com/cbusillo/codex-skills/issues/974)).
-Its findings:
 
-- `repository_unranked`: merged work in a repository missing from the map.
-  Propose its rank to the Director by a pull request to `ranks.toml`; never
-  assign one in the report. `own_share_floor` stays `unknown` while unranked
-  merges could change it.
-- `own_share_below_floor`: own projects took under 20% of merged pull
-  requests. It is an alarm, not a quota; tell the Director with the counts.
-- `rank_map_missing`: the direction repository has no merged `ranks.toml`, so
-  every merge is unranked.
+`own_share_below_floor` means own projects took under 20% of merged pull
+requests. It is an alarm, not a quota; tell the Director with the counts.
+Incomplete graph, native link, repository or Order-list reads keep the floor
+`unknown` and the audit window open for a rerun; partial counts are not a
+settled share.
 
 In the audit of `OWNER/direction`, you may also list, as information only, the
 repositories that received executing-loop work since the last audit but have no
