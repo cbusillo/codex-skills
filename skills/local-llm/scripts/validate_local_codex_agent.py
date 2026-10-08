@@ -83,6 +83,9 @@ snapshot["prompt"] = sys.stdin.read()
 snapshot["sandbox"] = args.s
 snapshot["workdir"] = args.C
 record.with_suffix(".exec.json").write_text(json.dumps(snapshot))
+if options.get("output_gate"):
+    while not Path(options["output_gate"]).exists():
+        time.sleep(0.01)
 mode = options.get("mode", "success")
 if mode in {"timeout", "surviving_child", "interrupt"}:
     child_source = """
@@ -111,7 +114,12 @@ time.sleep(60)
         time.sleep(60)
 
 if mode == "output_limit":
-    sys.stdout.write("x" * (17 * 1024 * 1024))
+    payload = "x" * options["output_bytes"]
+    destination = options.get("output_destination", "stdout")
+    if destination == "final":
+        args.output_last_message.write_text(payload)
+    else:
+        getattr(sys, destination).write(payload)
     raise SystemExit(0)
 message = "LOCAL_AGENT_OK"
 if mode == "blank":
@@ -159,6 +167,40 @@ def spawn(*args, **kwargs):
             agent.stop_process_group(process)
             raise
         Path(options["deadline_start"]).write_text(str(time.monotonic()))
+    return process
+
+agent.subprocess.Popen = spawn
+raise SystemExit(agent.main(sys.argv[1:]))
+'''
+
+
+OUTPUT_BOUNDARY_DRIVER = r'''
+import sys
+from pathlib import Path
+
+options = OPTIONS
+sys.path.insert(0, options["script_dir"])
+import local_codex_agent as agent
+
+real_popen = agent.subprocess.Popen
+
+def spawn(*args, **kwargs):
+    process = real_popen(*args, **kwargs)
+    if "-C" in args[0]:
+        real_poll = process.poll
+        released = False
+
+        def poll():
+            nonlocal released
+            if not released:
+                released = True
+                # run_process has sampled the empty captures. Let the actual
+                # host write and exit before this first exit observation.
+                Path(options["output_gate"]).touch()
+                process.wait(timeout=6)
+            return real_poll()
+
+        process.poll = poll
     return process
 
 agent.subprocess.Popen = spawn
@@ -607,19 +649,91 @@ class LocalCodexAgentTests(unittest.TestCase):
                                 pass
 
     def test_output_limit_fails_without_publishing_output(self) -> None:
-        self.write_host(mode="output_limit")
         output = self.root / "last.txt"
         output.write_text("previous result")
-        for iteration in range(20):
-            with self.subTest(iteration=iteration):
-                result = self.invoke("--output-last-message", str(output))
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("output limit", result.stderr)
-                self.assertFalse(result.stdout)
-                self.assertEqual(output.read_text(), "previous result")
-                observed = self.observed()
-                self.assert_stopped(observed["pid"])
-                self.assertFalse(Path(observed["env"]["CODEX_HOME"]).exists())
+        for destination in ("stdout", "stderr", "final"):
+            for json_output in (False, True):
+                with self.subTest(destination=destination, json_output=json_output):
+                    gate = self.root / f"output-gate-{destination}-{json_output}"
+                    self.write_host(
+                        mode="output_limit", output_bytes=agent.MAX_CAPTURE_BYTES + 1,
+                        output_destination=destination, output_gate=str(gate),
+                    )
+                    result = self.invoke_at_output_boundary(gate, output, json_output)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertTrue("output limit" in result.stderr, result.stderr[-1000:])
+                    self.assertFalse(result.stdout)
+                    self.assertEqual(output.read_text(), "previous result")
+                    observed = self.observed()
+                    self.assert_stopped(observed["pid"])
+                    self.assertFalse(Path(observed["env"]["CODEX_HOME"]).exists())
+
+    def invoke_at_output_boundary(self, gate: Path, output: Path, json_output: bool) -> subprocess.CompletedProcess[str]:
+        driver = self.root / "output-boundary-driver.py"
+        options = {"script_dir": str(SCRIPT.parent.resolve()), "output_gate": str(gate)}
+        driver.write_text(textwrap.dedent(OUTPUT_BOUNDARY_DRIVER).replace("OPTIONS", repr(options), 1))
+        return subprocess.run(
+            [sys.executable, str(driver), *self.command(
+                "--output-last-message", str(output), *(["--json"] if json_output else []),
+            )[2:]],
+            input="synthetic private prompt\n", text=True, capture_output=True, timeout=15,
+        )
+
+    def test_bounded_output_at_exit_keeps_success_and_invalid_jsonl_distinct(self) -> None:
+        output = self.root / "last.txt"
+        for mode in ("success", "invalid_json"):
+            for json_output in (False, True):
+                with self.subTest(mode=mode, json_output=json_output):
+                    output.write_text("previous result")
+                    gate = self.root / f"output-gate-{mode}-{json_output}"
+                    self.write_host(mode=mode, output_gate=str(gate))
+                    result = self.invoke_at_output_boundary(gate, output, json_output)
+                    if mode == "success":
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(output.read_text(), "LOCAL_AGENT_OK")
+                        if json_output:
+                            self.assertEqual(json.loads(result.stdout.splitlines()[-1])["type"], "turn.completed")
+                        else:
+                            self.assertEqual(result.stdout, "LOCAL_AGENT_OK\n")
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("invalid exec JSONL", result.stderr)
+                        self.assertNotIn("output limit", result.stderr)
+                        self.assertFalse(result.stdout)
+                        self.assertEqual(output.read_text(), "previous result")
+
+    def test_capture_limit_combines_streams_and_final_file_after_cleanup(self) -> None:
+        final = self.root / "captured-final.txt"
+        for excess in (0, 1):
+            with self.subTest(excess=excess):
+                final.write_bytes(b"")
+                process = Mock()
+                streams: dict[str, Any] = {}
+
+                def spawn(_command: list[str], **kwargs: Any) -> Mock:
+                    streams.update(kwargs)
+                    return process
+
+                def poll() -> int:
+                    # Each stream is below the budget, including their sum.
+                    os.ftruncate(streams["stdout"].fileno(), agent.MAX_CAPTURE_BYTES // 2)
+                    os.ftruncate(streams["stderr"].fileno(), agent.MAX_CAPTURE_BYTES // 4)
+                    return 0
+
+                def stop(_process: Mock) -> None:
+                    # Model an owned descendant's final write during cleanup.
+                    with final.open("wb") as captured:
+                        captured.truncate(agent.MAX_CAPTURE_BYTES // 4 + excess)
+
+                process.poll.side_effect = poll
+                with patch.object(agent.subprocess, "Popen", side_effect=spawn), patch.object(agent, "stop_process_group", side_effect=stop):
+                    if excess:
+                        with self.assertRaisesRegex(agent.LocalCodexAgentError, "output limit"):
+                            agent.run_process(["synthetic-host"], {}, self.root, seconds=1, extra_output=final)
+                    else:
+                        status, stdout, stderr = agent.run_process(["synthetic-host"], {}, self.root, seconds=1, extra_output=final)
+                        self.assertEqual(status, 0)
+                        self.assertEqual(len(stdout) + len(stderr) + final.stat().st_size, agent.MAX_CAPTURE_BYTES)
 
     def test_unconfirmed_process_exit_is_a_cleanup_failure(self) -> None:
         process = Mock()
