@@ -2158,8 +2158,8 @@ def cmd_claim(args: argparse.Namespace) -> None:
             try:
                 _, retained_pull = api_json("GET", f"/repos/{target_repo}/pulls/{missing}",
                                             bucket="rest_core", failed_step="refresh_retained_pr")
-            except PlanError as exc:
-                if (exc.api_result or {}).get("status") != 404:
+            except PlanError as retained_error:
+                if (retained_error.api_result or {}).get("status") != 404:
                     raise
                 continue
             target_pulls.append(retained_pull)
@@ -2215,9 +2215,9 @@ def cmd_claim(args: argparse.Namespace) -> None:
             if competing:
                 refuse(competing)
         if issue_repo.casefold() != target_repo.casefold():
-            planning_checkout = getattr(args, "planning_checkout", None)
-            config_path = repo_config_path(issue_repo) if not planning_checkout else None
-            planning_path = pathlib.Path(planning_checkout) if planning_checkout else config_path.parent.parent if config_path else None
+            handoff_checkout = getattr(args, "planning_checkout", None)
+            config_path = repo_config_path(issue_repo) if not handoff_checkout else None
+            planning_path = pathlib.Path(handoff_checkout) if handoff_checkout else config_path.parent.parent if config_path else None
             if planning_path is None:
                 raise PlanError("Cross-repository refresh requires a verified planning checkout; pass --planning-checkout PATH")
             planning_inventory = github_plan_claim.local_inventory(issue_repo, number, cwd=planning_path)
@@ -2236,8 +2236,8 @@ def cmd_claim(args: argparse.Namespace) -> None:
     agent = github_agent.running_agent(getattr(args, "agent", None))
     override = (getattr(args, "agent_override", None) or "").strip()
 
-    def check_agent(issue: dict[str, Any]) -> None:
-        mismatch = github_agent.exclusion(issue, agent)
+    def check_agent(assigned_issue: dict[str, Any]) -> None:
+        mismatch = github_agent.exclusion(assigned_issue, agent)
         if mismatch and not override:
             names = ", ".join(mismatch["agent_labels"])
             raise ClassifiedPlanError("agent_assignment_mismatch",
