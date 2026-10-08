@@ -1959,6 +1959,81 @@ def test_product_config_projection_keeps_adoption_names_and_refuses_values() -> 
         raise AssertionError(f"expected {unsafe!r} to be refused")
 
 
+def _public_hosts_response(*, mode: str = "dry-run") -> dict[str, Any]:
+    hosts = ["example.com", "www.example.com"]
+    return {
+        "status": "accepted", "trace_id": "launchplane_req_hosts", "records": {},
+        "result": {
+            "status": "ok", "mode": mode, "product": "example-product",
+            "context": "example-site", "instance": "prod",
+            "runtime_environment": {"action": "skipped", "scope": "instance",
+                                    "context": "example-site", "instance": "prod"},
+            "runtime_key_safety": {"required": False, "status": "not_required"},
+            "secrets": [], "summary": {"runtime_changed_key_count": 0, "secret_change_count": 0},
+            "next_actions": [],
+            "public_hosts": {
+                "plan_digest": "b" * 64, "before": [], "after": hosts,
+                "added": hosts, "updated": [], "removed": [], "unchanged": [],
+                "runtime_port": 8069, "https": True, "service_name": "web",
+                "certificate_type": "none", "verified": mode == "apply",
+                "read_back_hosts": hosts if mode == "apply" else [],
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize("mode", ["dry-run", "apply"])
+def test_product_config_projects_public_hostname_diff_and_readback(mode: str) -> None:
+    response = _public_hosts_response(mode=mode)
+    result = write_action.summarize_success(
+        operation="product-config-apply" if mode == "apply" else "product-config-dry-run",
+        request={"product": "example-product", "context": "example-site", "instance": "prod"},
+        provider_payload=response,
+    )
+    assert result["result"]["public_hosts"] == response["result"]["public_hosts"]
+
+
+@pytest.mark.parametrize("change", [
+    {"provider": {"token": "private-value"}}, {"after": ["https://example.com"]},
+    {"before": ["example.com", "example.com"]}, {"added": "example.com"},
+    {"plan_digest": "private-value"}, {"runtime_port": True}, {"runtime_port": 0},
+    {"https": False}, {"service_name": "admin"}, {"certificate_type": "letsencrypt"},
+    {"verified": "true"}, {"verified": True}, {"read_back_hosts": ["example.com"]},
+])
+def test_product_config_refuses_unsafe_or_inconsistent_public_host_results(change: dict[str, object]) -> None:
+    response = _public_hosts_response()
+    response["result"]["public_hosts"].update(change)
+    with pytest.raises(safety.LaunchplaneSafetyError):
+        write_action.summarize_success(
+            operation="product-config-dry-run", request={}, provider_payload=response,
+        )
+
+
+def test_product_config_public_host_verification_must_match_mode() -> None:
+    response = _public_hosts_response(mode="apply")
+    response["result"]["mode"] = "dry-run"
+    with pytest.raises(safety.LaunchplaneSafetyError):
+        write_action._project_product_config_apply_result(response["result"])
+
+
+def test_product_config_apply_cannot_accept_a_dry_run_result() -> None:
+    with pytest.raises(safety.LaunchplaneSafetyError):
+        write_action.summarize_success(
+            operation="product-config-apply", request={}, provider_payload=_public_hosts_response(),
+        )
+
+
+def test_public_dns_names_with_token_like_substrings_are_supported() -> None:
+    response = _public_hosts_response(mode="apply")
+    hosts = ["helpdesk-portal.example.com", "kiosk-app.example.com"]
+    for key in ("after", "added", "read_back_hosts"):
+        response["result"]["public_hosts"][key] = hosts
+    result = write_action.summarize_success(
+        operation="product-config-apply", request={}, provider_payload=response,
+    )
+    assert result["result"]["public_hosts"]["read_back_hosts"] == hosts
+
+
 def test_product_config_secret_results_keep_declared_secret_class() -> None:
     projected = write_action._project_secret_results(
         [
