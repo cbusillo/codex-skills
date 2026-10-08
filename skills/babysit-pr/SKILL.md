@@ -146,6 +146,11 @@ For each snapshot:
    watcher may issue one GraphQL read pinned to the repository, PR, base, and
    head SHA, and a null decision counts only with a clean merge state.
    `awaiting_review` means approval is required. Keep watching in all three.
+   `stop_incomplete_replacement` is a terminal coverage gap: read
+   `checks.execution_selection_gaps`, diagnose the named gate with
+   `github/scripts/github-ci-diagnose.py`, and fix event/gate coverage on an
+   authorized task branch. Resume on the corrected head using the same saved
+   state; do not retry obsolete executions or erase retry custody.
 7. **Ready** (`ready_to_merge`): read it as ready for a merge decision; see
    [Merge readiness](#merge-readiness). Keep watching while the PR is open.
 8. **After any push or rerun**: restart `--watch` on the new head in the same
@@ -163,8 +168,10 @@ This is the only stop rule. Stop only when:
   edits, a review request needing a product decision or coordination, or a
   human comment needing a written reply.
 
-Missing confirmed runs and confirmed nonretryable attempts also stop the watcher
-for explicit recovery; their saved evidence is retained. See
+Missing confirmed runs, confirmed nonretryable attempts and terminal
+replacement coverage gaps also stop the watcher for explicit recovery; their
+saved evidence is retained. This calls for agent diagnosis and source repair,
+not a new approval requirement. See
 [state lifetime and recovery](references/github-api-notes.md#state-lifetime-and-recovery)
 for the durable default, legacy migration and bounded command/lock behavior.
 

@@ -680,6 +680,8 @@ def summarize_checks(checks, expected_head_sha):
         "counts_are_lower_bounds": counts_are_lower_bounds,
         "unavailable_components": [str(item) for item in unavailable],
         "head_matches": head_matches,
+        **({"execution_selection_gaps": checks["executionSelectionGaps"]}
+           if checks.get("executionSelectionGaps") else {}),
     }
 
 
@@ -1439,6 +1441,9 @@ def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_i
 
     if checks_summary.get("evidence_complete") is not True:
         actions.append("check_evidence_incomplete")
+    if (checks_summary.get("execution_selection_gaps")
+            and checks_summary.get("unfinished_workflow_run_count", 0) == 0):
+        actions.append("stop_incomplete_replacement")
 
     if has_failed_pr_checks:
         if checks_summary["all_terminal"] and retries_used >= max_retries:
@@ -2015,6 +2020,7 @@ def run_watch(args):
             or "stop_unknown_rerun" in actions
             or "stop_missing_rerun" in actions
             or "stop_nonretryable_rerun" in actions
+            or "stop_incomplete_replacement" in actions
         ):
             print_event("stop", {"actions": snapshot.get("actions"), "pr": snapshot.get("pr")})
             return 0

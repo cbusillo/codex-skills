@@ -88,6 +88,12 @@ unfinished workflow without pending checks in `pendingWorkflowRunCount` and
 replacement must cover an old failed gate; a missing gate or a skipped/neutral
 replacement preserves that failure and incomplete evidence. Missing previously
 passed gates remain history.
+`executionSelectionGaps` names each uncovered failed gate and replacement run;
+the watcher carries it as `checks.execution_selection_gaps`. Once no current
+workflow remains unfinished, `stop_incomplete_replacement` stops polling for
+explicit diagnosis and source repair under the skill's recovery procedure.
+An independent reporter failure uses normal check diagnosis; a job link never
+grants rerun authority by itself.
 
 Superseded executions remain in `superseded_workflow_runs` and
 `superseded_check_runs`, separate from counts, diagnosis and retry candidates.
@@ -97,7 +103,8 @@ For an execution with multiple attempts, GitHub's latest job inventory selects
 current checks, including successful jobs reused by a partial rerun. Job detail
 is otherwise fetched only for completed current failed runs needing diagnosis.
 
-The watcher shares its head-pinned run inventory with the check reader. Saved
+For standalone reads, workflow discovery starts when Actions checks are present;
+the watcher always supplies its full head-pinned run inventory. Saved
 rerun intents reconcile against the full inventory, including superseded runs:
 supersession alone never releases an unknown write. Before any retry write,
 an uncached run read rechecks current execution and attempt; a replacement that

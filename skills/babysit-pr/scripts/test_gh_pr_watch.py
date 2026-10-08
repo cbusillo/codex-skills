@@ -3152,9 +3152,6 @@ def test_prior_attempt_in_run_history_does_not_hide_current_checks(monkeypatch, 
     assert "ready_to_merge" in snapshot["actions"]
 
 
-
-
-
 @pytest.mark.parametrize("details_url", [None, "https://example.invalid/test-report"])
 def test_actions_reporter_without_job_link_remains_independent_current_check(monkeypatch, tmp_path, details_url):
     run = execution(1)
@@ -3188,9 +3185,6 @@ def test_terminal_replacement_must_cover_the_old_failed_gate(monkeypatch, tmp_pa
     assert snapshot["checks"]["evidence_complete"] is False
     assert "ready_to_merge" not in snapshot["actions"]
     assert "retry_failed_checks" not in snapshot["actions"]
-
-
-
 
 
 @pytest.mark.parametrize("attempt", [1, 2])
@@ -3244,9 +3238,6 @@ def test_duplicate_pagination_run_does_not_appear_in_its_own_history(monkeypatch
     assert "ready_to_merge" in snapshot["actions"]
 
 
-
-
-
 @pytest.mark.parametrize("status,conclusion", [("queued", None), ("in_progress", None), ("completed", "failure"), ("completed", "success")])
 def test_later_attempt_of_older_execution_is_current(monkeypatch, tmp_path, status, conclusion):
     old = execution(1, conclusion, status=status, run_attempt=2, run_started_at="2026-10-08T00:03:00Z")
@@ -3276,6 +3267,35 @@ def test_older_attempt_without_start_ordering_remains_current(monkeypatch, tmp_p
         [execution_check(old, 11, "failure"), execution_check(new, 21)], jobs={1: [job]})
     assert snapshot["checks"]["failed_count"] == 1
     assert snapshot["superseded_workflow_runs"] == []
+    assert "ready_to_merge" not in snapshot["actions"]
+
+
+def test_terminal_uncovered_gate_stops_watch_with_recovery_evidence(monkeypatch, tmp_path):
+    old, new = execution(1, "cancelled"), execution(2)
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [old, new],
+        [execution_check(old, 11, "failure"), execution_check(new, 21, "skipped")])
+    assert "stop_incomplete_replacement" in snapshot["actions"]
+    gap = snapshot["checks"]["execution_selection_gaps"][0]
+    assert (gap["runId"], gap["jobId"], gap["replacementRunId"]) == (1, 11, 2)
+    events = []
+    monkeypatch.setattr(gh_pr_watch, "print_event", lambda event, payload: events.append(event))
+    monkeypatch.setattr(gh_pr_watch.time, "sleep", lambda *_a: pytest.fail("terminal gap polling"))
+    args = argparse.Namespace(pr="123", repo=None, state_file=str(tmp_path / "state.json"),
+                              max_flaky_retries=3, poll_seconds=60, green_poll_seconds=300)
+    assert gh_pr_watch.run_watch(args) == 0
+    assert events == ["snapshot", "stop"]
+    assert gh_pr_watch.current_retry_count(gh_pr_watch.load_state(tmp_path / "state.json")[0], "abc123") == 0
+
+
+def test_coverage_uses_winner_when_older_run_remains_unfinished(monkeypatch, tmp_path):
+    oldest = execution(1, "cancelled")
+    unfinished = execution(2, None, status="queued")
+    winner = execution(3)
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [oldest, unfinished, winner],
+        [execution_check(oldest, 11, "failure"), execution_check(winner, 31, "skipped")])
+    assert snapshot["checks"]["failed_count"] == 1
+    assert snapshot["checks"]["execution_selection_gaps"][0]["replacementRunId"] == 3
+    assert "stop_incomplete_replacement" not in snapshot["actions"]
     assert "ready_to_merge" not in snapshot["actions"]
 
 

@@ -881,14 +881,18 @@ def current_workflow_runs(runs: list[dict[str, Any]], head_sha: str) -> dict[str
 def current_check_runs(
     reader: GitHubReader, repo: str, head_sha: str, checks: list[dict[str, Any]],
     runs: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool, list[dict[str, Any]]]:
     selection = current_workflow_runs(runs, head_sha)
     by_id = {run.get("id"): run for run in selection["current"]}
     old_by_id = {run.get("id"): run for run in selection["superseded"] if run.get("id") not in by_id}
     current, superseded = [], []
     latest_jobs: dict[int, Optional[set[int]]] = {}
-    current_by_identity = {workflow_execution_identity(run): run for run in selection["current"]
-                           if workflow_execution_identity(run) is not None}
+    current_by_identity = {}
+    for run in selection["current"]:
+        identity = workflow_execution_identity(run)
+        if identity is not None:
+            current_by_identity.setdefault(identity, run)
+    gaps = []
     complete = True
     # Resolve current attempts before checking which old gates they replace.
     for check in sorted(checks, key=lambda item: item.get("runId") in old_by_id):
@@ -924,6 +928,8 @@ def current_check_runs(
                         and (not matching or all(candidate.get("conclusion") in {"skipped", "neutral"} for candidate in matching))):
                     current.append(check)
                     complete = False
+                    gaps.append({**check, "replacementRunId": replacement["id"],
+                                 "reason": "replacement_did_not_cover_failed_gate"})
                     continue
             superseded.append(check)
             continue
@@ -959,7 +965,7 @@ def current_check_runs(
                 superseded.append(check)
                 continue
         current.append(check)
-    return current, superseded, complete
+    return current, superseded, complete, gaps
 
 
 def pull_request_checks(
@@ -1002,6 +1008,7 @@ def pull_request_checks(
     statuses = latest_status_events(statuses)
     normalized_checks = [normalize_check_run(item) for item in check_runs]
     superseded_checks = []
+    selection_gaps = []
     if any(check.get("appSlug") == "github-actions" for check in normalized_checks):
         availability["workflowSelection"] = True
         try:
@@ -1010,7 +1017,7 @@ def pull_request_checks(
                     f"/repos/{repo}/actions/runs", step_prefix="check_workflow_runs",
                     params={"head_sha": sha}, collection_key="workflow_runs",
                 )
-            normalized_checks, superseded_checks, complete = current_check_runs(
+            normalized_checks, superseded_checks, complete, selection_gaps = current_check_runs(
                 reader, repo, sha, normalized_checks, workflow_runs,
             )
             availability["workflowSelection"] = complete
@@ -1052,6 +1059,7 @@ def pull_request_checks(
         },
         "checkRuns": normalized_checks,
         "supersededCheckRuns": superseded_checks,
+        "executionSelectionGaps": selection_gaps,
         "statuses": normalized_statuses,
     }
 

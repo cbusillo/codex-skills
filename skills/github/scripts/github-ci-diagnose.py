@@ -94,6 +94,7 @@ def main() -> int:
         "externalCount": external_count,
         "countsComplete": counts_complete,
         "unavailableCheckComponents": summary.get("unavailableComponents") or [],
+        "executionSelectionGaps": checks_payload.get("executionSelectionGaps", []),
         "actor": reader.actor,
         "expectedActor": EXPECTED_ACTOR,
         "checks": interesting if args.only_interesting else analyzed,
