@@ -434,6 +434,55 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(before, (self.inventory, self.pulls, self.closed_pulls))
         self.assertEqual(output["session_coverage"]["codex"]["status"], "unavailable")
 
+    def cleanup_handoff_fixture(self):
+        self.ordinary_handoff_fixture()
+        # Historical full release from launchplane#3109 comment 6025762772.
+        # Remap only record/PR identities to the offline claim fixture.
+        release = Path(__file__).with_name("fixtures").joinpath("launchplane-3109-d3-release.md").read_text()
+        source_id = int(release.splitlines()[0].removeprefix("Released claim "))
+        self.assertEqual(CLAIM.released_claim_id(release), source_id)
+        release = release.replace("6025344226", "1").replace("#3111", "#99").replace("/pull/3111", "/pull/99")
+        release = release.replace("#3110", "#100")
+        self.comments[2]["body"] = release
+
+    def test_cleanup_handoff_accepts_ordinary_successor_without_retiring_artifacts(self):
+        self.cleanup_handoff_fixture()
+        before = copy.deepcopy((self.inventory, self.pulls, self.closed_pulls))
+        self.run_claim()
+        output = self.emitted.call_args.args[0]
+        self.assertTrue(output["ok"])
+        self.assertIn("metadata_readback", output["completed_steps"])
+        self.assertEqual(before, (self.inventory, self.pulls, self.closed_pulls))
+
+    def test_cleanup_handoff_does_not_release_a_conditional_successor(self):
+        for condition in (
+            "The next worker may claim after landing/closure and ownership/content checks.",
+            "Ownership transfers after landing/closure and ownership/content checks.",
+        ):
+            with self.subTest(condition=condition):
+                self.setUp()
+                self.cleanup_handoff_fixture()
+                self.comments[2]["body"] += "\n" + condition
+                with self.assertRaises(PLAN.ClassifiedPlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+
+    def test_cleanup_handoff_preserves_retained_pr_identity_and_live_sessions(self):
+        for change in ("wrong_author", "unmentioned_pr", "live_session"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.cleanup_handoff_fixture()
+                if change == "wrong_author":
+                    self.pulls[0]["user"]["login"] = "another-author"
+                if change == "unmentioned_pr":
+                    self.comments[2]["body"] = self.comments[2]["body"].replace("#99", "#101").replace("/pull/99", "/pull/101")
+                if change == "live_session":
+                    source = CLAIM.records(self.comments[0]["body"])[0]
+                    self.inventory["sessions"] = [{"sessionId": source["session"], "cwd": "/elsewhere"}]
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+
     def test_ordinary_handoff_preserves_issue_and_every_retained_pr_wait(self):
         for place in ("issue", "99", "100"):
             with self.subTest(place=place):
