@@ -48,6 +48,8 @@ Before calling it parked, verify the pushed SHA at the remote and verify the
 durable issue link that owns the recovery state; link any related PR from that
 issue.
 
+### Local-only preservation checks
+
 A local-only route is valid when it uses a known, already approved durable
 location outside the removal target and verification shows the Git state, dirty
 patches, and needed local files are reconstructable. Trash, a reflog, or a
