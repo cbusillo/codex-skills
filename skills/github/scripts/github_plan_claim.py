@@ -130,17 +130,12 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
         following = statements[index + 1].strip() if index + 1 < len(statements) else ""
         if re.search(future_time, statement, re.IGNORECASE) and re.match(r"Then\b", following, re.IGNORECASE):
             # Release notes and deployment takeover are downstream work;
-            # successor permission or a bare handoff action defers ownership.
-            successor_subject = re.match(
-                r"Then,?\s+(?:you\b|anyone\b|(?:the\s+)?successor\b|"
-                r"(?:the\s+)?next\s+(?:[\w-]+\s+)?(?:worker|session|agent)\b|"
-                r"(?:a\s+)?(?:new|fresh)\s+session\b)", following, re.IGNORECASE,
-            )
-            bare_permission = re.fullmatch(rf"Then,?\s+(?:{successor_action}|(?:re)?claim)[.!?;]?",
-                                           following, re.IGNORECASE)
-            if ((successor_subject or bare_permission)
-                    and (re.search(r"\b(?:claims?|claiming|reclaim(?:ing)?)\b", following, re.IGNORECASE)
-                         or re.search(successor, following, re.IGNORECASE))):
+            # permission to claim/resume this work defers ownership.
+            actor = (r"(?:you|anyone|someone(?:\s+else)?|(?:(?:the|a|any|another)\s+)?"
+                     r"(?:next\s+|new\s+|fresh\s+)?(?:[\w-]+\s+)?(?:worker|session|agent|owner|successor))")
+            task_object = r"(?:\s+(?:work(?: on this issue)?|this issue|the issue|the PR|it))?"
+            permission = rf"Then,?\s+(?:{actor}\s+(?:(?:can|may)\s+)?)?(?:{successor_action}|(?:re)?claims?){task_object}[.!?;]?"
+            if re.fullmatch(permission, following, re.IGNORECASE):
                 return True
         if re.search(rf"{handoff_effect}[^.!?;]*\b(?:upon|post-(?:merge|landing)|at (?:merge|landing))\b", statement, re.IGNORECASE):
             return True

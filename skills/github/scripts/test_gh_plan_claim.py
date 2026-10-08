@@ -2235,6 +2235,7 @@ class ClaimTests(unittest.TestCase):
             "PR #99 merges later today. Then you can take over.",
             "PR #99 lands tomorrow. Then the next agent can resume.",
             "PR #99 lands tomorrow. Then you can resume work on this issue.",
+            "PR #99 merges later today. Then another worker may claim.",
             "PR #99 lands tomorrow. Then the next session can resume.",
             "CI finishes later today. Then take over.",
         ):
@@ -2273,6 +2274,9 @@ class ClaimTests(unittest.TestCase):
             "The merge freeze ends tomorrow. Then deploys can resume.",
             "PR #99 lands tomorrow. Then claim follow-up #1440.",
             "PR #99 lands tomorrow. Then the Supervisor moves deployment ownership to the train.",
+            "PR #99 lands tomorrow. Then the next worker can claim follow-up #1440.",
+            "PR #99 merges later today. Then the next session takes over deployment.",
+            "The train deploys tomorrow. Then you can resume monitoring the rollout.",
             "PR #99 merges later today. The next worker may claim now.",
             "Source session finished. The next session can resume now.",
             "PR #99 merged yesterday. Then the next worker may claim.",
