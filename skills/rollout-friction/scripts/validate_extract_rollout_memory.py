@@ -342,9 +342,12 @@ def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
         "Devbox.Local/mnt/example/fixtures/sample.json",
         "/Users/example/google drive/media/example/uploads/avatar.png",
         "/Users/example/client's/mnt/example/fixtures/sample.json",
+        "'/Users/example/client's/mnt/example/fixtures/sample.json'",
         "/Users/example/smith,john/var/example/fixtures/sample.json",
         "backup/mnt/Users/example/fixtures/sample.json",
         "coverage/tmp/home/example/fixtures/sample.json",
+        "rootfs/mnt/var/home/example/fixtures/sample.json",
+        "/Users/example/my big project/media/example/uploads/avatar.png",
         "http://localhost:5173/@fs/media/example/uploads/avatar.png",
         "https://vscode.dev/tunnel/workstation/mnt/example/fixtures/sample.json",
         "https://example.com/view?path=/media/example/uploads/avatar.png",
@@ -382,9 +385,21 @@ def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
             if "backend/tmp/lib" not in surface or "example/fixtures/sample.json" in surface:
                 raise AssertionError(f"joined path lost relative evidence or exposed an absolute path: {surface}")
 
-    text = "Remember /Users/example/private.txt and backend/media/uploads/avatar.png."
+    text = 'Remember "/Users/example/private.txt" and backend/media/uploads/avatar.png.'
     if "backend/media/uploads/avatar.png" not in module.clean_text(text, redact_args):
-        raise AssertionError("a previous private path must not hide separately introduced relative evidence")
+        raise AssertionError("a quoted private path must not hide separate relative evidence")
+    for text in (
+        "cp /tmp/avatar.png backend/media/uploads/avatar.png",
+        "changed /Users/example/private.txt, backend/media/uploads/avatar.png",
+    ):
+        if "media/uploads/avatar.png" in module.clean_text(text, redact_args):
+            raise AssertionError("an unquoted private path must keep ambiguous later fragments masked")
+    text = 'cp "/tmp/avatar.png" backend/media/uploads/avatar.png'
+    if "backend/media/uploads/avatar.png" not in module.clean_text(text, redact_args):
+        raise AssertionError("quoting an absolute argument must preserve the relative destination")
+    text = "Remember /Users/example/private.txt\nRemember backend/media/uploads/avatar.png"
+    if "backend/media/uploads/avatar.png" not in module.clean_text(text, redact_args):
+        raise AssertionError("a private path on an earlier line must not hide relative evidence")
 
 
 def test_redacted_bundle_artifact_references_are_portable() -> None:

@@ -464,7 +464,10 @@ def redact_paths(text: str, *, embedded_path: bool = False) -> str:
         nonlocal previous_path_end
         result = redact_path_match(match, embedded_path=embedded_path, previous_path_end=previous_path_end)
         if result != match.group(0):
-            previous_path_end = match.end()
+            quote = match.group("quoted")
+            quoted_argument = (quote and match.group(0).endswith(quote)
+                               and (match.end() == len(text) or text[match.end()] in " \t\r\n,;)]}"))
+            previous_path_end = None if quoted_argument else match.end()
         return result
 
     return PATH_RE.sub(replace, text)
@@ -482,7 +485,7 @@ def redact_path_match(
                 and match.group(0).split("/", 2)[1] in RELATIVE_PATH_ROOTS):
             prefix = re.search(r"[^\s,;\"'`<>=()\[\]{}]+$", match.string[:match.start()])
             gap = match.string[previous_path_end:prefix.start()] if prefix and previous_path_end is not None else ""
-            continued_private_path = bool(gap) and not gap.strip(" \t,'\"`")
+            continued_private_path = previous_path_end is not None and "\n" not in gap
             if (prefix and re.fullmatch(r"(?:\.{1,2}/)*(?:[\w.@+][\w.@+-]*/)*[\w.@+][\w.@+-]*", prefix.group(0))
                     and (prefix.group(0) in {".", ".."} or re.search(r"[^\W_]", prefix.group(0)))
                     and not continued_private_path
@@ -490,7 +493,7 @@ def redact_path_match(
                 path = match.group(0)
                 boundary = re.search(r"[^\w.@+/-]", path)
                 end = boundary.start() if boundary else len(path)
-                for nested in re.finditer(rf"/{LOCAL_PATH_ROOTS}/", path[1:]):
+                for nested in re.finditer(rf"/{LOCAL_PATH_ROOTS}(?=/)", path[1:]):
                     if nested.group(0).split("/")[1] not in RELATIVE_PATH_ROOTS:
                         end = min(end, nested.start() + 1)
                         break
