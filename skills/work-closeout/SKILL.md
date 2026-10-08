@@ -292,7 +292,9 @@ Safe to exit: yes
 Safe to exit: conditional
 
 - Work is unfinished but intentionally parked.
-- Blockers and next steps are recorded in a PR, issue, or GitHub plan.
+- Blockers and next steps are recorded in a PR, issue, or GitHub plan, or an
+  approved reconstructable location under the
+  [cleanup preservation route](references/parking-and-handoff.md#cleanup-preservation-routes).
 - The owning durable surface is named, current, and contains the blocker or next
   action needed to resume.
 - Failing and not-run checks are recorded with reasons.
@@ -350,7 +352,8 @@ checks below as relevant.
   assumption, update the GitHub issue graph before relying on a handoff summary.
 - Treat an accurate issue graph as closeout evidence. A handoff that describes
   work not represented in the owning issue, PR, or related issue graph is
-  incomplete unless the user explicitly asked for private/offline parking.
+  incomplete unless private/offline parking follows the
+  [cleanup preservation route](references/parking-and-handoff.md#cleanup-preservation-routes).
 - After a landing, follow github-plan's
   [Close Or Hand Off](../github-plan/SKILL.md#close-or-hand-off) reconciliation.
 - Mark completed checklist items, record blockers, and remove or rewrite stale

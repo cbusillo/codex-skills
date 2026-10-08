@@ -1,6 +1,6 @@
 ---
 name: github-plan
-description: Use when the user asks for a plan, what's next / what is next in a plan or workstream, how work fits the plan, plan direction/alignment, durable work tracking, roadmap, workstream planning, GitHub issue-backed planning, issue graphs, parent issues, sub-issues, blockers, milestones, Projects, or replacing local plans with GitHub issues. Use declared repo docs before private operational lookup; use docs-lookup only for missing operational context. Think in chat first, then keep long-running work aligned over time by updating Current Status, blockers, relationships, and issue graph state as reality changes.
+description: Use when the user asks for a plan, what's next / what is next in a plan or workstream, how work fits the plan, plan direction/alignment, durable work tracking, roadmap, workstream planning, GitHub issue-backed planning, issue graphs, parent issues, sub-issues, blockers, milestones, Projects. Use declared repo docs before private operational lookup; use docs-lookup only for missing operational context. Think in chat first, then keep long-running work aligned over time by updating Current Status, blockers, relationships, and issue graph state as reality changes.
 metadata:
   short-description: Plan durable work in GitHub issues
 commands:
