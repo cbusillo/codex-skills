@@ -499,6 +499,13 @@ def redact_path_match(
                    and match.string[start - 1] not in ",;\"'`<>=()[]{}"):
                 start -= 1
             prefix = match.string[start:match.start()]
+            joined_absolute = False
+            if start and match.string[start - 1] in "=,":
+                prior = start - 1
+                while (prior and not match.string[prior - 1].isspace()
+                       and match.string[prior - 1] not in ",;\"'`<>=()[]{}"):
+                    prior -= 1
+                joined_absolute = match.string[prior:start - 1].startswith("/")
             first_named = next((item for item in prefix.split("/") if item not in {".", ".."}), "")
             private_prefix = re.fullmatch(LOCAL_PATH_ROOTS, first_named) and first_named not in RELATIVE_PATH_ROOTS
             ambiguous_word = ("/" not in prefix and prefix not in {".", ".."}
@@ -509,10 +516,11 @@ def redact_path_match(
                     and (all(item in {".", ".."} for item in prefix.split("/")) or re.search(r"[^\W_]", prefix))
                     and not private_prefix
                     and not ambiguous_word and not dev_prefix
+                    and not joined_absolute
                     and previous_path_end is None
                     and not is_local_host(prefix.split("/")[0], bare_is_local=False)):
                 path = match.group(0)
-                boundary = re.search(r"[^\w.@+/-]", path)
+                boundary = re.search(rf"[^\w.@+/-]|/(?=/{LOCAL_PATH_ROOTS}/)", path)
                 end = boundary.start() if boundary else len(path)
                 for nested in re.finditer(rf"/{LOCAL_PATH_ROOTS}(?=/)", path[1:]):
                     if nested.group(0).split("/")[1] not in RELATIVE_PATH_ROOTS:

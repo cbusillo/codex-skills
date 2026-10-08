@@ -331,8 +331,10 @@ memory/profile/local-config candidates.
    Mounted-volume paths in text and context are redacted, including quoted paths
    with spaces. Repository-relative `media`, `mnt`, `tmp` and `var` paths such as
    `backend/media/uploads/avatar.png` remain readable.
-   Use an explicit `./` prefix for a relative path with a first directory containing non-ASCII
-   directory, a trailing period, or a prefix resembling a dev-server link.
+   Use an explicit `./` prefix when the preserved directory sits directly under
+   one directory with non-ASCII characters or a trailing period, or under a
+   prefix resembling a dev-server link. An ASCII word glued directly to an
+   absolute path can look repository-relative; quote absolute paths in prose.
    Later path fragments on a line with an ambiguous absolute path or redacted URL
    remain masked conservatively; double-quote the absolute filesystem argument
    or use a closed backtick code span to preserve a separate relative one at an
