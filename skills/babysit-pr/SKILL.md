@@ -150,12 +150,16 @@ For each snapshot:
    `checks.execution_selection_gaps`, diagnose the named gate with
    `github/scripts/github-ci-diagnose.py`, and apply [CI failures](#ci-failures).
    Fix code or event/gate coverage only when the evidence proves that defect.
-   For a flaky failure, restore full CI on a new authorized task head without
-   changing tested content: the existing bot commit helper supports
-   `--allow-empty -m "ci: refresh current-head checks"`. Push through `github`
-   and resume with the same saved state. For a base-owned
+   For a flaky failure without a supported current-run retry, record the exact
+   gate, run and completeness gap on the owning work record and hand recovery
+   to the repository's CI maintainer within existing authority. Resume with the
+   same saved state after authoritative current-gate readback; do not create
+   empty commits to reset retry budgets. Follow the existing
+   [state lifetime and recovery](references/github-api-notes.md#state-lifetime-and-recovery)
+   rules for a reviewed task fix's new head. For a base-owned
    `pull_request_target` defect, use a separate authorized PR to the base;
-   missing repair authority goes to the owning work record for handoff.
+   missing repair authority goes to the owning work record for handoff. Apply
+   [Fixes And Pushes](#fixes-and-pushes) before changing or pushing any branch.
    Do not retry obsolete executions or erase retry custody.
 7. **Ready** (`ready_to_merge`): read it as ready for a merge decision; see
    [Merge readiness](#merge-readiness). Keep watching while the PR is open.
