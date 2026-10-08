@@ -320,6 +320,64 @@ class ClaimTests(unittest.TestCase):
         self.args.handoff_comment = 4
         self.run_claim()
 
+    def direction_handoff_fixture(self, *, spelling="claim:", refresh=False):
+        self.refresh_fixture()
+        source = {**CLAIM.records(self.comments[0]["body"])[0],
+                  "worker": "codex-DIR-43-D2", "session": "01a11bcc-2c5e-7872-9ff9-428d4f244d98"}
+        self.comments[0].update(id=6061486703, body=CLAIM.marker(source))
+        self.comments[2]["body"] = "Released claim 6061486703"
+        self.args.resume_from = 6061486703
+        if not refresh:
+            self.args.refresh_pr = None
+        # direction#43 comment 6061912802's exact opening and source line.
+        self.comments.append({"id": 6061912802, "user": {"login": TEST_BOT}, "body": (
+            "Handoff from codex-DIR-43-D2\n\n"
+            f"Source {spelling} 6061486703; native session: 01a11bcc-2c5e-7872-9ff9-428d4f244d98. "
+            "The executing claim is released. **Q85 revision preparation is complete**:\n\n"
+            "- PR #99: current-head CI passed.\n- PR #100: current-head CI passed.\n\n"
+            "**Next:** Supervisor brings the pair back to Chris for his own direction approval. "
+            "No PR labels, merges or train operations occurred."
+        )})
+        self.args.handoff_comment = 6061912802
+
+    def test_direction_source_claim_spellings_allow_released_handoff(self):
+        for refresh in (False, True):
+            for spelling in ("claim:", "claim"):
+                with self.subTest(refresh=refresh, spelling=spelling):
+                    self.setUp()
+                    self.direction_handoff_fixture(spelling=spelling, refresh=refresh)
+                    self.run_claim()
+                    output = self.emitted.call_args.args[0]
+                    self.assertTrue(output["ok"])
+                    self.assertEqual(self.events.count("post"), 1)
+                    if refresh:
+                        self.assertEqual(output["claim"]["refresh_pr"], self.args.refresh_pr)
+                    else:
+                        self.assertTrue(output["claim"]["retained_handoff"].endswith("#issuecomment-6061912802"))
+
+    def test_direction_source_claim_colon_preserves_provenance_and_release_guards(self):
+        for refresh in (False, True):
+            for change in ("wrong_id", "id_prefix", "no_release", "foreign_author", "wrong_session", "deferred"):
+                with self.subTest(refresh=refresh, change=change):
+                    self.setUp()
+                    self.direction_handoff_fixture(refresh=refresh)
+                    handoff = self.comments[-1]
+                    if change == "wrong_id":
+                        handoff["body"] = handoff["body"].replace("claim: 6061486703", "claim: 6061486704")
+                    if change == "id_prefix":
+                        handoff["body"] = handoff["body"].replace("claim: 6061486703", "claim: 60614867030")
+                    if change == "no_release":
+                        self.comments[2]["body"] = "Source preparation complete."
+                    if change == "foreign_author":
+                        handoff["user"]["login"] = "stranger"
+                    if change == "wrong_session":
+                        handoff["body"] = handoff["body"].replace("01a11bcc-2c5e-7872-9ff9-428d4f244d98", "different-session")
+                    if change == "deferred":
+                        handoff["body"] += "\n\nOwnership transfers upon merge of PR #99."
+                    with self.assertRaises(PLAN.PlanError):
+                        self.run_claim()
+                    self.assert_no_writes()
+
     def separate_handoff_fixture(self, prose, *, refresh=True):
         self.refresh_fixture()
         if not refresh:
