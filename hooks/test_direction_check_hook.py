@@ -48,6 +48,21 @@ class ReminderTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(HOOK), "--skills-only"], cwd=directory, env=env, text=True, capture_output=True, check=True)
             self.assertEqual(result.stdout, "")
 
+    def test_each_claude_prompt_gets_only_the_step_table(self) -> None:
+        protocol = hook.SKILLS_PROTOCOL_PATH.read_text()
+        rows = [line for line in protocol.splitlines() if line.startswith("|")]
+        with tempfile.TemporaryDirectory() as directory:
+            env = {"DIRECTION_MARKER": str(Path(directory) / "missing.json"), "CLAUDECODE": "1"}
+            result = subprocess.run([sys.executable, str(HOOK), "--turn"], cwd=directory, env=env, text=True, capture_output=True, check=True)
+            self.assertIn(result.stdout.strip(), protocol)
+            self.assertLess(len(result.stdout.strip()), len(protocol.strip()))
+            self.assertTrue(rows)
+            for row in rows:
+                self.assertIn(row, result.stdout)
+            env.pop("CLAUDECODE")
+            result = subprocess.run([sys.executable, str(HOOK), "--turn"], cwd=directory, env=env, text=True, capture_output=True, check=True)
+            self.assertEqual(result.stdout, "")
+
     def test_skills_protocol_is_claude_only_and_independent_of_direction_adoption(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

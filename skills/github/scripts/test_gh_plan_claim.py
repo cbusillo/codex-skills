@@ -1831,6 +1831,78 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
+    def test_contingent_release_and_handoff_preserve_and_recover_claims(self):
+        for prose in (
+            "Release is contingent on PR #99 merging.",
+            "Release is contingent upon PR #99 merging.",
+            "Hands off to the next worker upon merge.",
+            "Hands off to the next worker at merge.",
+            "Hands off to the next worker post-merge.",
+        ):
+            for final in (False, True):
+                for retained in (False, True):
+                    with self.subTest(prose=prose, final=final, retained=retained):
+                        self.setUp()
+                        release = (prose + "\n\nReleased claim 1" if final
+                                   else "Released claim 1\n\n" + prose)
+                        self.released_status_fixture(release)
+                        if not retained:
+                            self.issue["body"] = PLAN.template_body("Repair")
+                            self.args.resume_from = None
+                            self.inventory["local_branches"] = []
+                            self.inventory["worktrees"] = []
+                        with self.assertRaises(PLAN.ClassifiedPlanError):
+                            self.run_claim()
+                        self.assert_no_writes()
+                        self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
+                                              "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
+                        self.run_claim()
+                        output = self.emitted.call_args.args[0]
+                        self.assertTrue(output["ok"])
+                        self.assertEqual(CLAIM.records(self.issue["body"]), [output["claim"]])
+
+    def test_contingent_handoff_refresh_requires_new_authored_release(self):
+        for prose in (
+            "Release is contingent on PR #99 merging.",
+            "Release is contingent upon PR #99 merging.",
+            "Hands off to the next worker upon merge.",
+            "Hands off to the next worker at merge.",
+            "Hands off to the next worker post-merge.",
+        ):
+            for final in (False, True):
+                with self.subTest(prose=prose, final=final):
+                    self.setUp()
+                    self.refresh_fixture()
+                    handoff = "Handoff from trial-b\nSource claim 1; Session: session-b; PR #99 and #100.\n\n"
+                    self.comments[2]["body"] = (handoff + prose + "\n\nReleased claim 1" if final
+                                               else "Released claim 1\n\n" + handoff + prose)
+                    with self.assertRaises(PLAN.PlanError):
+                        self.run_claim()
+                    self.assert_no_writes()
+                    self.comments.append({"id": 4, "body": "Released claim 1\nHandoff: PR #99 and #100.",
+                                          "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
+                    self.args.handoff_comment = 4
+                    self.run_claim()
+                    self.assertEqual(self.emitted.call_args.args[0]["claim"]["refresh_pr"], self.args.refresh_pr)
+
+    def test_contingent_downstream_routing_keeps_unconditional_release_usable(self):
+        for prose in (
+            "Source session finished. Deployment is contingent on PR #99 merging.",
+            "Source session finished. Deployment is contingent upon PR #99 merging.",
+            "Source session finished. Supervisor hands off to the merge train upon CI completion.",
+            "Source session finished. Supervisor hands off to the merge train at merge.",
+            "Source session finished. Supervisor hands off to the merge train post-merge.",
+            "Hands off to the next worker now. Supervisor routes PR #99 after CI passes.",
+        ):
+            for final in (False, True):
+                with self.subTest(prose=prose, final=final):
+                    self.setUp()
+                    release = (prose + "\n\nReleased claim 1" if final
+                               else "Released claim 1\n\n" + prose)
+                    self.released_status_fixture(release)
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
     def test_conditional_successor_actions_preserve_and_recover_claims(self):
         handoffs = (
             "The next worker can pick this up once PR #99 merges.",

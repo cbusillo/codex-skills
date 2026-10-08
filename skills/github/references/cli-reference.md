@@ -114,6 +114,37 @@ local HTTP attempts by helper, operation, repository and quota bucket. Use
 live under the shared retry-state directory's `request-usage` folder and contain
 no request/response bodies, endpoint queries or credentials. Delegating watchers
 pass their caller name to the PR helper, so its reads count toward that watcher.
+Repeat `--state-dir <retry-state-directory>` to combine existing host/account
+ledgers (or privately collected copies); explicit directories replace the default.
+Copied receipts with the same host, actor and GitHub request ID count once.
+Records without IDs cannot be deduplicated. Missing files, unreadable records,
+and the number of files read are reported as coverage evidence.
+`ledger_coverage` separates each input directory by its index after resolving
+aliases and removing duplicates, without exposing private paths, and flags
+absent or unreadable receipt directories.
+
+`quota_windows` groups response-header observations by host, actor, repository
+owner, quota bucket and reset epoch. Its peak `max_used` includes spending by
+other clients of that installation; local `primary_requests` remains the
+instrumented subset. The first/last observation times expose partial windows.
+These peaks are not interval-end totals and cannot attribute the unobserved
+spending to a controller. Unknown repository owners stay separate. These groups
+describe App installation quotas; a PAT or user token can share a quota across
+repositories, so its repeated peaks must not be added together. Prefer
+response headers over a conflicting `/rate_limit` result, as
+[GitHub documents](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#checking-the-status-of-your-rate-limit).
+
+New receipts optionally carry a private session identifier from
+`GITHUB_REQUEST_SESSION`. Otherwise the shared agent-family detector selects
+`CODEX_THREAD_ID` / `CODEX_SESSION_ID` or `CLAUDE_CODE_SESSION_ID` when available;
+inherited markers from both families leave attribution unknown. The report
+lists attributed counts and unattributed requests; a
+distinct receipt session is not proof of a simultaneously working session.
+Background watchers and train drivers inherit their launching session's ID
+unless explicitly attributed with `GITHUB_REQUEST_SESSION`; their traffic is
+still identified separately by helper and operation in the consumer rows.
+`session_ceiling` remains null: declaring fleet capacity requires a timed load
+with verified concurrency, controller traffic and quota-window coverage.
 
 HTTP attempts and primary requests are separate: authenticated 304 responses
 and `/rate_limit` probes use no primary requests. Local App actor replies
@@ -144,6 +175,15 @@ permission checks, write reconciliation or the existing bounded reset waits.
 Receipts are retained for retrospective measurement; the pilot's closeout must
 decide retention after preserving its acceptance evidence.
 See [GitHub's conditional-request guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests).
+
+Ordinary comment appends limit their pre-existing-ID scan and unknown-write
+reconciliation to the existing creation/clock-skew window, using GitHub's
+`since` filter on update time. One extra second in the query includes the exact
+creation boundary despite the exclusive filter. Recently edited old comments
+remain subject to the original creation-time check. Body deduplication and
+edit-last still read the full thread; actor, operation-marker, existing-ID and
+ambiguous-write checks are unchanged. Append reads still paginate within that
+window, and a failed reconciliation read never authorizes a repeated POST.
 
 ### Shared Retry Policy
 
@@ -564,6 +604,10 @@ standalone prerequisite: `Released claim 1. PR #99 must merge first.` refuses,
 as does `PR #99 must merge first.` immediately before a final release paragraph.
 Resuming permission and standalone `Wait until CI finishes`, `Please wait until
 PR #99 merges`, and `Hold off until PR #99 merges` prerequisites are checked too.
+Explicit release contingency (`Release is contingent on PR #99 merging`) and
+successor handoff effects (`Hands off to the next worker upon merge`) refuse
+in both placements. A deployment contingency or Supervisor routing condition
+does not itself defer ownership.
 Downstream routing and cleanup gates, such as `After PR #99 lands, close out
 the issue`, remain independent. Recover ambiguous conditional handoffs (including
 destination/action wording such as `merges to deploy`) with a
