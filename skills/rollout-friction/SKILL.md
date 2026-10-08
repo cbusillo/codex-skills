@@ -333,7 +333,8 @@ memory/profile/local-config candidates.
    `backend/media/uploads/avatar.png` remain readable. Path redaction preserves
    public HTTP(S) URL paths except local file/editor and
    dev-server/tunnel file links; literal query/fragment paths and person data are
-   still redacted. Unquoted whitespace is ambiguous with neighboring prose and
+   still redacted. Other URI schemes and path-shaped query/fragment values are
+   masked conservatively. Unquoted whitespace is ambiguous with neighboring prose and
    can leave path fragments or consume prose; percent-encoded paths are not
    decoded by this redactor. Under `--redact`, diagnostic
    artifact references are filenames relative to the output bundle, so its local

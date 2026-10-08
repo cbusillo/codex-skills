@@ -340,6 +340,11 @@ def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
         ".../mnt/example/fixtures/sample.json",
         "LOCALHOST/media/example/uploads/avatar.png",
         "Devbox.Local/mnt/example/fixtures/sample.json",
+        "/Users/example/google drive/media/example/uploads/avatar.png",
+        "/Users/example/client's/mnt/example/fixtures/sample.json",
+        "/Users/example/smith,john/var/example/fixtures/sample.json",
+        "backup/mnt/Users/example/fixtures/sample.json",
+        "coverage/tmp/home/example/fixtures/sample.json",
         "http://localhost:5173/@fs/media/example/uploads/avatar.png",
         "https://vscode.dev/tunnel/workstation/mnt/example/fixtures/sample.json",
         "https://example.com/view?path=/media/example/uploads/avatar.png",
@@ -376,6 +381,10 @@ def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
         for surface in surfaces:
             if "backend/tmp/lib" not in surface or "example/fixtures/sample.json" in surface:
                 raise AssertionError(f"joined path lost relative evidence or exposed an absolute path: {surface}")
+
+    text = "Remember /Users/example/private.txt and backend/media/uploads/avatar.png."
+    if "backend/media/uploads/avatar.png" not in module.clean_text(text, redact_args):
+        raise AssertionError("a previous private path must not hide separately introduced relative evidence")
 
 
 def test_redacted_bundle_artifact_references_are_portable() -> None:

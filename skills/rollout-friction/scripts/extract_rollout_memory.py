@@ -43,6 +43,7 @@ SECRET_RE = re.compile(
     r"(?:api[_-]?key|token|secret|password|credential)\s*[:=]\s*[^\s,'\"]+)"
 )
 LOCAL_PATH_ROOTS = r"(?:Users|home|workspace|workspaces|tmp|var|private|Volumes|mnt|media)"
+RELATIVE_PATH_ROOTS = {"media", "mnt", "tmp", "var"}
 PATH_RE = re.compile(
     # Public URLs may contain the same root names as local paths. Match them
     # first so those components remain useful evidence rather than local paths.
@@ -439,7 +440,7 @@ def context_window(events: list[Event], index: int, radius: int, args: argparse.
 def clean_text(text: str, args: argparse.Namespace) -> str:
     cleaned = SECRET_RE.sub("<secret-redacted>", text)
     if args.redact:
-        cleaned = PATH_RE.sub(redact_path_match, cleaned)
+        cleaned = redact_paths(cleaned)
         cleaned = redact_person_data(cleaned)
     cleaned = " ".join(cleaned.split())
     return cleaned.strip()
@@ -456,24 +457,45 @@ def is_local_host(host: str, *, bare_is_local: bool = True) -> bool:
         )
 
 
-def redact_path_match(match: re.Match[str], *, embedded_path: bool = False) -> str:
+def redact_paths(text: str, *, embedded_path: bool = False) -> str:
+    previous_path_end: int | None = None
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal previous_path_end
+        result = redact_path_match(match, embedded_path=embedded_path, previous_path_end=previous_path_end)
+        if result != match.group(0):
+            previous_path_end = match.end()
+        return result
+
+    return PATH_RE.sub(replace, text)
+
+
+def redact_path_match(
+    match: re.Match[str], *, embedded_path: bool = False, previous_path_end: int | None = None,
+) -> str:
     url = match.group("url")
     if url is None:
         # A root inside a repository-relative token is useful evidence. URL
         # paths are handled separately: editor and dev-server prefixes can
         # precede an absolute root without a plain-text boundary.
         if (not embedded_path and match.group("quoted") is None
-                and match.group(0).startswith(("/media/", "/mnt/", "/tmp/", "/var/"))):
+                and match.group(0).split("/", 2)[1] in RELATIVE_PATH_ROOTS):
             prefix = re.search(r"[^\s,;\"'`<>=()\[\]{}]+$", match.string[:match.start()])
+            gap = match.string[previous_path_end:prefix.start()] if prefix and previous_path_end is not None else ""
+            continued_private_path = bool(gap) and not gap.strip(" \t,'\"`")
             if (prefix and re.fullmatch(r"(?:\.{1,2}/)*(?:[\w.@+][\w.@+-]*/)*[\w.@+][\w.@+-]*", prefix.group(0))
                     and (prefix.group(0) in {".", ".."} or re.search(r"[^\W_]", prefix.group(0)))
+                    and not continued_private_path
                     and not is_local_host(prefix.group(0).split("/")[0], bare_is_local=False)):
                 path = match.group(0)
                 boundary = re.search(r"[^\w.@+/-]", path)
-                if boundary:
-                    return path[:boundary.start()] + PATH_RE.sub(
-                        lambda item: redact_path_match(item, embedded_path=True), path[boundary.start():]
-                    )
+                end = boundary.start() if boundary else len(path)
+                for nested in re.finditer(rf"/{LOCAL_PATH_ROOTS}/", path[1:]):
+                    if nested.group(0).split("/")[1] not in RELATIVE_PATH_ROOTS:
+                        end = min(end, nested.start() + 1)
+                        break
+                if end < len(path):
+                    return path[:end] + redact_paths(path[end:], embedded_path=True)
                 return path
         return "<path-redacted>"
     try:
@@ -491,14 +513,14 @@ def redact_path_match(match: re.Match[str], *, embedded_path: bool = False) -> s
         non_http = scheme.lower() not in {"http", "https"}
         if non_http:
             remainder = "/" + remainder
-        redacted = PATH_RE.sub(lambda item: redact_path_match(item, embedded_path=True), remainder)
+        redacted = redact_paths(remainder, embedded_path=True)
         if non_http:
             redacted = redacted.removeprefix("/")
         return scheme + separator + redacted
     query_or_fragment = re.search(r"[?#]", url)
     if query_or_fragment:
         index = query_or_fragment.start()
-        return url[:index] + PATH_RE.sub(lambda item: redact_path_match(item, embedded_path=True), url[index:])
+        return url[:index] + redact_paths(url[index:], embedded_path=True)
     return url
 
 
