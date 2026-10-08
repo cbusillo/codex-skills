@@ -320,9 +320,9 @@ def managed_shim(env):
     if not isinstance(value, str):
         return None
     shim = Path(value) / "process-wrapper"
-    wrapper = env.get("CLAUDE_CODE_PROCESS_WRAPPER")
+    configured_wrapper = env.get("CLAUDE_CODE_PROCESS_WRAPPER")
     try:
-        matches = wrapper == str(shim) or json.loads(wrapper) == [str(shim)]
+        matches = configured_wrapper == str(shim) or json.loads(configured_wrapper) == [str(shim)]
     except (ValueError, TypeError):
         matches = False
     if (matches and not shim.is_symlink()
