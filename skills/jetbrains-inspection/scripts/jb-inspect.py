@@ -9504,6 +9504,21 @@ def print_findings_artifact(payload: dict[str, Any]) -> None:
         }))
 
 
+def print_findings(problems: list[dict[str, Any]]) -> None:
+    if problems:
+        print("\nFINDINGS:")
+        for problem in problems[:MAX_AGENT_FINDINGS]:
+            location = problem.get("file") or "unknown"
+            line = problem.get("line")
+            if line:
+                location = f"{location}:{line}"
+            print(safe_text("- [{severity}] {location} {description}", {
+                "severity": problem.get("severity") or "unknown",
+                "location": location,
+                "description": problem.get("description") or "",
+            }))
+
+
 def print_human(payload: dict[str, Any], assess: bool = True) -> None:
     if assess:
         apply_verdict(payload)
@@ -9519,9 +9534,12 @@ def print_human(payload: dict[str, Any], assess: bool = True) -> None:
                 "LANE: "
                 f"{lane.get('id')} required={str(lane.get('required')).lower()} "
                 f"ide={ide.get('product') or ide.get('requested')} files={len(lane.get('files') or [])} "
-                f"verdict={lane.get('verdict')} bucket={lane.get('bucket')} cleanup={cleanup.get('status')}"
+                f"verdict={lane.get('verdict')} bucket={lane.get('bucket')} cleanup={cleanup.get('status')} "
+                f"findings={len(lane.get('findings') or [])}/{lane.get('finding_count')} "
+                f"truncated={str(lane.get('findings_truncated')).lower()}"
             )
             print_findings_artifact(lane)
+            print_findings(lane.get("findings") or [])
         selection = payload.get("lane_selection") if isinstance(payload.get("lane_selection"), dict) else {}
         if selection.get("excluded_files"):
             print(f"EXCLUDED_FILES: {len(selection['excluded_files'])}")
@@ -9610,19 +9628,7 @@ def print_human(payload: dict[str, Any], assess: bool = True) -> None:
     wait = payload.get("wait") or {}
     if wait:
         print_capture_diagnostic(wait.get("capture_diagnostic"))
-    problems = payload.get("problems") or []
-    if problems:
-        print("\nFINDINGS:")
-        for problem in problems[:20]:
-            location = problem.get("file") or "unknown"
-            line = problem.get("line")
-            if line:
-                location = f"{location}:{line}"
-            print(safe_text("- [{severity}] {location} {description}", {
-                "severity": problem.get("severity", "unknown"),
-                "location": location,
-                "description": problem.get("description", ""),
-            }))
+    print_findings(payload.get("problems") or [])
     if not route and not status:
         # codeql[py/clear-text-logging-sensitive-data]
         print(public_json(payload))
