@@ -9,7 +9,7 @@ resources:
     description: List, read, launch and reach exact iTerm sessions.
   - path: scripts/account_choice.py
     kind: script
-    description: Follow Context Panel's use-next launch account, with a reported fallback.
+    description: Follow Context Panel's ranked choices and write count-only launch receipts.
   - path: scripts/status.py
     kind: script
     description: Read context and activity for explicit ledger sessions.

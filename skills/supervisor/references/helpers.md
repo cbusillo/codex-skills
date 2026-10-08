@@ -74,7 +74,7 @@ already granted for this run.
 
 ```sh
 uv run skills/supervisor/scripts/iterm_tab.py window
-uv run skills/supervisor/scripts/iterm_tab.py new --window-id <dedicated-window-id> --command-file <private-launch-file>
+uv run skills/supervisor/scripts/iterm_tab.py new --window-id <dedicated-window-id> --command-file <private-launch-file> --account-provider openai
 uv run skills/supervisor/scripts/iterm_tab.py list
 uv run skills/supervisor/scripts/iterm_tab.py read --session-id <iterm-session-id>
 uv run skills/supervisor/scripts/iterm_tab.py send --session-id <iterm-session-id> --text-file <private-message-file> --verified-target
@@ -87,12 +87,12 @@ iTerm hierarchy before launching. A session-wait timeout names the tab for
 inspection. If creation returns no tab identity, run `list` and inspect first;
 the tab may still exist. Do not create another tab or replay the launch without
 checking it. `window` still restores the previous tab after creation.
-Launch files contain the exact
-brief and account/model settings already authorized, without the Discord
-channels flag; `--account-provider` can choose the account instead (see
-below). Run one agent invocation, without restart loops or commands
-that continue after it exits; put required environment settings on that launch
-command (for example with `env`). Read the launched screen once for folder trust or another
+Launch files contain the exact brief and model settings already authorized,
+without the Discord channels flag. Every `new` launch requires
+`--account-provider` as below; keep account variables out of launch files.
+Use `--account` for an explicit override through the same mapping and receipt
+path. Run one agent invocation, without restart loops or commands that continue
+after it exits. Read the launched screen once for folder trust or another
 blocking prompt. Record the new native thread and exact transcript in the
 ledger. Prefer `codex queue` for Codex nudges with the verified thread id and
 its configured home; never queue exit commands. The terminal helper suppresses
@@ -102,35 +102,52 @@ before `--verified-target`, then read back once; do not replay an uncertain send
 
 ## Choosing the account
 
-Launch with `--account-provider openai|anthropic|google` and the helper follows
-Context Panel's own **Use next** choice for that provider, as the Director
-corrected on [codex-skills#1108](https://github.com/cbusillo/codex-skills/issues/1108).
-It reads `answers.useNext` from the same agent snapshot and maps its `accountID`
-to one configured launch account. Context Panel owns the ranking, including
-banked reset expiries and Use last. The existing capacity reserve still applies;
-a choice without room or without a unique configured match refuses instead of
-silently launching a different account.
+Launch with `--account-provider openai|anthropic|google`. Context Panel is the
+only account-choice source, under the decisions on
+[codex-skills#1270](https://github.com/cbusillo/codex-skills/issues/1270).
+A single launch follows `answers.useNext`; repeat `--command-file` for a batch,
+and the helper uses the first corresponding IDs in the provider's published
+`launchOrder`. It never re-ranks, substitutes a configured account or applies
+a private reserve. Account configuration only maps snapshot rows to launch
+environments. An unmatched or ambiguous choice refuses before creating tabs.
 
-The helper exports that account's `env` settings ahead of the launch command,
-so they also reach an agent started after `cd`, and reports the source, account,
-reason and other accounts in the launch output. Read that output before
-recording the session.
+Read Context Panel's
+[Use next ranking and launch receipts contract](https://github.com/cbusillo/context-panel/blob/main/docs/provider-usage-access.md#use-next-ranking-and-launch-receipts)
+for ranking, stale-list eligibility, count-only receipt fields and retention.
+The launcher checks the published stale list's observation time, refuses once
+it reaches 30 minutes, and reports `nextCapacityAt` when nothing is rankable.
+Reader failure refuses; `--account <name>` is the explicit override, but still
+needs a snapshot row so its launch receipt uses the correct opaque ID.
+Configuration errors and Context Panel's plain reset prompt lines are reported
+in launch output. Never apply a reset; Chris does that.
+
+The helper exports the account's `env` ahead of the command, including an agent
+started after `cd`. A command that sets or unsets account variables refuses, including through
+common shell wrappers. Keep brief text separate from shell settings: quote it
+with `shlex.quote`, or use a private brief file and a quoted `$(cat <brief-file>)`
+argument for complex text rather than shell-specific ANSI-C quoting.
+A temporary write probe checks receipt storage before any tab is created; it
+is removed and never counted as a launch. A probe failure names the error type
+and asks for write access to the reader's storage root. Each receipt is written
+atomically immediately before the launch command is
+submitted, after its tab has a session. A failed or uncertain submit retains its
+receipt; inspect the tab before retrying. Receipts use the snapshot command's
+`--storage-root`, or the reader's documented App Group default. The launcher
+prunes only its own day-old files (identified by the `supervisor-` filename
+suffix). A batch failure reports the completed launch identities and the failed tab,
+including whether its receipt was written and whether submission was attempted.
+List and read these tabs before retrying, rather than replaying the whole batch.
 
 ```sh
+# Read-only previews; these do not write receipts.
 uv run skills/supervisor/scripts/account_choice.py --provider anthropic
+uv run skills/supervisor/scripts/account_choice.py --provider openai --count 3
 uv run skills/supervisor/scripts/iterm_tab.py new --window-id <id> --command-file <launch-file> --account-provider anthropic
+uv run skills/supervisor/scripts/iterm_tab.py new --window-id <id> --command-file <first-launch> --command-file <second-launch> --account-provider openai
 ```
 
-Capacity and the choice come from Context Panel's agent account snapshot
-(schema 1, its `ContextPanelAccountSnapshot` reader). When a provider has no
-Use next choice, the helper reports `fallback` and keeps the previous behavior:
-it chooses the soonest weekly reset with room above the account's reserve
-(or the latest reset when no weekly window is labeled). If the reader fails
-or every configured account has no current reading (unknown, stale, refreshing,
-unavailable, not connected or off), it uses the configured order without a
-capacity check and says why. Known readings with no room and ambiguous matches
-still refuse and create no tab. `--account <name>` launches on a named configured
-account instead. A launch file that already sets the account's variable is refused.
+Read the returned account, source and reason before recording the session. Each
+launch reports environment variable names, without their private path values.
 
 For Codex's shared app server, launch with `codex --remote unix://`: the empty
 Unix endpoint resolves through the selected `CODEX_HOME`, so each account uses
@@ -142,19 +159,17 @@ for that home when needed.
 Accounts live only in private config, the first `[accounts]` table in
 `$CODE_HOME`, then `$CODEX_HOME`, then `~/.code`, under
 `skill-data/supervisor.toml`, or `--account-config`. List each provider's
-accounts in the Director's fallback order:
+accounts in any order:
 
 ```toml
 [accounts]
 snapshot_command = ["<path to ContextPanelAccountSnapshot>"]
-reserve = 0.05  # default share of the tightest window kept unused
 
 [[accounts.account]]
 name = "<local nickname>"
 provider = "anthropic"
 context_panel_configuration_id = "<configurationID from the snapshot>"  # or context_panel_label
 env = { CLAUDE_CONFIG_DIR = "<account config dir>" }
-reserve = 0.2  # optional per-account reserve
 
 [[accounts.account]]
 name = "<default-profile nickname>"
@@ -162,6 +177,15 @@ provider = "anthropic"
 context_panel_label = "<default profile label in the snapshot>"
 env = {}
 ```
+
+Private-config migration: delete the `reserve =` lines under `[accounts]`
+and in each `[[accounts.account]]`, including any per-account reserve.
+Keep the `[accounts]` table, snapshot command and account environment mappings;
+remove obsolete comments that prescribe a fallback order.
+They are ignored by the launcher for compatibility with existing files; account
+order now only helps people read the mapping. Configure Use last and other
+capacity choices in Context Panel. Document this change for the Director;
+do not edit their private config yourself.
 
 Codex accounts must set `CODEX_HOME` to the account's home. Claude Code
 accounts set `CLAUDE_CONFIG_DIR` for an alternate profile or use `env = {}`
