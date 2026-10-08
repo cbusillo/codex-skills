@@ -24,6 +24,7 @@ os.environ["GH_WITH_ENV_TOKEN_EXPECTED_LOGIN"] = "fixture-automation"
 
 import github_api
 import github_issue
+from github_fixture_support import with_call_stub
 
 
 def success(
@@ -81,37 +82,6 @@ def issue_body(
         "assignees": [{"login": actor}],
         "milestone": {"number": 7, "title": "Sprint 7"},
     }
-
-
-def with_call_stub(
-    callback: Callable[..., github_api.ApiResult],
-    test: Callable[[list[dict[str, Any]]], None],
-    *,
-    allow_retry: bool = False,
-) -> None:
-    calls: list[dict[str, Any]] = []
-    original = github_issue.github_api_core.call_gh
-    original_policy = github_issue.github_api_core.default_retry_policy
-
-    def stub(method: str, path: str, body: Any = None, **kwargs: Any) -> github_api.ApiResult:
-        calls.append({"method": method, "path": path, "body": body, "kwargs": kwargs})
-        return callback(method, path, body, **kwargs)
-
-    with tempfile.TemporaryDirectory() as temp_dir:
-        github_issue.github_api_core.call_gh = stub
-        github_issue.github_api_core.default_retry_policy = lambda: github_api.RetryPolicy(
-            max_wait_seconds=10.0,
-            max_attempts=2 if allow_retry else 1,
-            base_backoff_seconds=0.0,
-            max_backoff_seconds=0.0,
-            jitter_seconds=0.0,
-            state_dir=pathlib.Path(temp_dir),
-        )
-        try:
-            test(calls)
-        finally:
-            github_issue.github_api_core.call_gh = original
-            github_issue.github_api_core.default_retry_policy = original_policy
 
 
 def test_create_preserves_fields_and_emits_operation_marker() -> None:
