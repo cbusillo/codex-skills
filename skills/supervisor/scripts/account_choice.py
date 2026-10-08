@@ -296,6 +296,20 @@ def select(provider, config_path=None, name=None):
     return select_batch(provider, config_path, name)[0]
 
 
+def prepare_launch(choice):
+    """Detect storage failures before making tabs, without creating a receipt."""
+    try:
+        directory = Path(choice["storage_root"]) / "Launch Receipts"
+        directory.mkdir(mode=0o700, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=directory, prefix=".supervisor-probe-", suffix=".tmp") as probe:
+            probe.write(b" ")
+            probe.flush()
+            os.fsync(probe.fileno())
+    except OSError as error:
+        raise ValueError(f"cannot prepare launch receipt storage ({type(error).__name__}); "
+                         "check write access to the reader's storage root before retrying") from error
+
+
 def record_launch(choice, now=None):
     """Write immediately before submitting a launch; retain on an uncertain submit."""
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)

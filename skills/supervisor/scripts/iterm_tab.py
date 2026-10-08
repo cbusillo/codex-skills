@@ -175,6 +175,8 @@ async def operate(app, args):
             command_texts = [with_account(text, choice) for text, choice in zip(command_texts, choices)]
         elif getattr(args, "account", None):
             raise ValueError("--account needs --account-provider")
+        if choices[0]:
+            account_choice.prepare_launch(choices[0])
         results = []
         for command_text, choice in zip(command_texts, choices):
             progress = {"window_id": windows[0].window_id, "tab_id": None,

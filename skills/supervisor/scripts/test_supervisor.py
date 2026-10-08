@@ -973,6 +973,7 @@ class TerminalTests(unittest.TestCase):
                 patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                 patch.object(account_choice, "select", return_value=choice),
                 patch.object(account_choice, "record_launch") as receipt,
+                patch.object(account_choice, "prepare_launch"),
             ):
                 result = asyncio.run(iterm_tab.operate(app, args))
                 command.write_text("env CLAUDE_CONFIG_DIR=/other claude\n")
@@ -1014,6 +1015,31 @@ class TerminalTests(unittest.TestCase):
             for receipt in receipts:
                 self.assertEqual(set(receipt), {"schemaVersion", "provider", "accountID", "launchedAt"})
 
+    def test_unwritable_receipt_root_refuses_before_any_tab_and_creates_no_receipt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            path = root / "launch.txt"
+            path.write_text("claude brief")
+            choice = account_choice.choose("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None)
+            choice["storage_root"] = root / "missing-store"
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=path,
+                                      account_provider="anthropic", account=None, account_config=None)
+            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select", return_value=choice):
+                with self.assertRaisesRegex(ValueError, "check write access") as failed:
+                    asyncio.run(iterm_tab.operate(app, args))
+            window.async_create_tab.assert_not_awaited()
+            self.assertNotIn(str(root), str(failed.exception))
+            self.assertFalse(choice["storage_root"].exists())
+            choice["storage_root"] = root
+            account_choice.prepare_launch(choice)
+            self.assertEqual(list((root / "Launch Receipts").iterdir()), [])
+            with patch.object(account_choice.os, "fsync", side_effect=OSError("disk full")):
+                with self.assertRaisesRegex(ValueError, "cannot prepare"):
+                    account_choice.prepare_launch(choice)
+            self.assertEqual(list((root / "Launch Receipts").iterdir()), [])
+
     def test_partial_batch_failure_preserves_started_and_failed_launch_identities(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -1021,6 +1047,8 @@ class TerminalTests(unittest.TestCase):
             for path in files:
                 path.write_text("claude brief")
             choices = account_choice.choose_batch("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None, count=2)
+            for choice in choices:
+                choice["storage_root"] = root
             terminals = [SimpleNamespace(session_id=f"session-{i}", async_send_text=AsyncMock()) for i in range(2)]
             tabs = [SimpleNamespace(tab_id=f"tab-{i}", current_session=t) for i, t in enumerate(terminals)]
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(side_effect=tabs))
@@ -1050,7 +1078,7 @@ class TerminalTests(unittest.TestCase):
             path.write_text("claude brief")
             args = argparse.Namespace(command="new", window_id="chosen", command_file=path,
                                       account_provider="anthropic", account=None, account_config=None)
-            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select", return_value=choice), patch.object(account_choice, "record_launch", side_effect=OSError("disk full")), self.assertRaises(iterm_tab.LaunchFailure):
+            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select", return_value=choice), patch.object(account_choice, "record_launch", side_effect=OSError("disk full")), patch.object(account_choice, "prepare_launch"), self.assertRaises(iterm_tab.LaunchFailure):
                 asyncio.run(iterm_tab.operate(app, args))
             terminal.async_send_text.assert_not_awaited()
 
@@ -1086,7 +1114,8 @@ class TerminalTests(unittest.TestCase):
             args = argparse.Namespace(command="new", window_id="chosen", command_file=files,
                                       account_provider="anthropic", account=None, account_config=None)
             choices = account_choice.choose_batch("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None, count=2)
-            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select_batch", return_value=choices), patch.object(account_choice, "record_launch") as receipt, self.assertRaisesRegex(ValueError, "already sets"):
+            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select_batch", return_value=choices), patch.object(account_choice, "record_launch") as receipt,
+                patch.object(account_choice, "prepare_launch"), self.assertRaisesRegex(ValueError, "already sets"):
                 asyncio.run(iterm_tab.operate(app, args))
             window.async_create_tab.assert_not_awaited()
             receipt.assert_not_called()

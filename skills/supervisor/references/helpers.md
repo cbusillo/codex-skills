@@ -123,7 +123,10 @@ in launch output. Never apply a reset; Chris does that.
 
 The helper exports the account's `env` ahead of the command, including an agent
 started after `cd`. A command that already sets the account variable refuses.
-Each receipt is written atomically immediately before the launch command is
+A temporary write probe checks receipt storage before any tab is created; it
+is removed and never counted as a launch. A probe failure names the error type
+and asks for write access to the reader's storage root. Each receipt is written
+atomically immediately before the launch command is
 submitted, after its tab has a session. A failed or uncertain submit retains its
 receipt; inspect the tab before retrying. Receipts use the snapshot command's
 `--storage-root`, or the reader's documented App Group default. The launcher
