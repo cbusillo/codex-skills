@@ -472,7 +472,15 @@ def redact_path_match(match: re.Match[str], *, embedded_path: bool = False) -> s
         local = True  # Malformed URLs do not establish a public host.
     if local:
         scheme, separator, remainder = url.partition("://")
-        return scheme + separator + PATH_RE.sub(lambda item: redact_path_match(item, embedded_path=True), remainder)
+        # Non-HTTP links can put a path root in the authority (file://Users/...).
+        # Include that root in the same matcher rather than exposing it.
+        non_http = scheme.lower() not in {"http", "https"}
+        if non_http:
+            remainder = "/" + remainder
+        redacted = PATH_RE.sub(lambda item: redact_path_match(item, embedded_path=True), remainder)
+        if non_http:
+            redacted = redacted.removeprefix("/")
+        return scheme + separator + redacted
     query_or_fragment = re.search(r"[?#]", url)
     if query_or_fragment:
         index = query_or_fragment.start()

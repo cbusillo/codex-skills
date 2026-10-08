@@ -314,6 +314,8 @@ def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
         "/media/example/uploads/avatar.png",
         "/mnt/example/fixtures/sample.json",
         "file:///media/example/uploads/avatar.png",
+        "file://media/example/uploads/avatar.png",
+        r"ok\n/mnt/example/fixtures/sample.json",
         "vscode://file/mnt/example/fixtures/sample.json:12",
         "vscode-insiders://file/media/example/uploads/avatar.png:12",
         "vscodium://file/mnt/example/fixtures/sample.json:12",
