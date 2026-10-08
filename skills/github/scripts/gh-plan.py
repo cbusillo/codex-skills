@@ -279,7 +279,7 @@ def get_runtime_home() -> pathlib.Path:
     if os.environ.get("CODEX_HOME"):
         return pathlib.Path(os.environ["CODEX_HOME"]).expanduser()
     code_home = pathlib.Path("~/.code").expanduser()
-    if (code_home / "skills").is_dir() or (code_home / "plans").exists():
+    if (code_home / "skills").is_dir():
         return code_home
     return pathlib.Path("~/.codex").expanduser()
 

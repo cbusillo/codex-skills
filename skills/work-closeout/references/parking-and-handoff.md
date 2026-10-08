@@ -15,8 +15,6 @@ link related artifacts when useful:
   strategy, cross-repo coordination, blockers, and Project state.
 - Issue: durable repo work not tied to the current branch, including bugs,
   security/quality findings, and cleanup tasks someone may pick up later.
-- Saved local plan: only explicit offline/private context not ready or
-  appropriate for GitHub.
 
 For conditional safe-to-exit, at least one durable place must hold the next
 step. Avoid duplicating every detail everywhere; link PRs, issues, and plans

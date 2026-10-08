@@ -131,8 +131,8 @@ policy:
 Use GitHub issues as the durable planning database: one canonical issue or
 graph with an observable finish line, current status, next action, and accurate
 dependencies. Keep fuzzy ideas in chat until they need a durable record. Projects
-and other views display that record; use local plans only for an explicitly
-requested offline/private workflow.
+and other views display that record. Keep offline/private drafts in chat until
+they are ready for a GitHub issue.
 
 Apply [task scope and authorization](../references/execution-scope.md) and
 [talking with the Director](../references/talking-with-the-director.md). Follow the

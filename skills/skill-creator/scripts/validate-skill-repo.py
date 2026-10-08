@@ -22,7 +22,6 @@ ROOT = Path(__file__).resolve().parents[2]
 IGNORED_SKILL_DIRS = {".disabled", ".git", ".local", ".system", ".code"}
 SYSTEM_OVERRIDE_NAMES = {
     "openai-docs",
-    "plan",
     "plugin-creator",
     "skill-creator",
 }

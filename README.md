@@ -672,7 +672,6 @@ behavior; when both copies are exposed, select the maintained top-level source
 by its full path rather than combine conflicting workflows:
 
 - `openai-docs`
-- `plan`
 - `plugin-creator`
 - `skill-creator`
 
@@ -683,9 +682,9 @@ update the top-level override skill or the validator allowlist intentionally
 instead of editing `.system/` directly.
 
 If an injected available-skills list points at a missing repo-local path such as
-`.system/plan/SKILL.md`, treat that as stale runtime metadata. For allowlisted
+`.system/openai-docs/SKILL.md`, treat that as stale runtime metadata. For allowlisted
 overrides, the usable source path is the top-level override, for example
-`skills/plan/SKILL.md`.
+`skills/openai-docs/SKILL.md`.
 
 Preferred patterns:
 
