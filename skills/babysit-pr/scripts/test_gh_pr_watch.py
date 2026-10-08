@@ -2481,16 +2481,24 @@ def test_sync_failure_prevents_write_and_keeps_saved_intent(monkeypatch, tmp_pat
     assert not list(tmp_path.glob("*.tmp"))
 
 
-def test_later_read_error_reports_already_confirmed_progress(monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize("failed_read", ["pr", "acquisition"])
+def test_later_read_error_reports_already_confirmed_progress(monkeypatch, tmp_path, capsys, failed_read):
     recovery = {**failed_run(2), "retry_mode": "runner_acquisition"}
     _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1), recovery], [failed_job(1)])
     reader = AcquisitionReader()
     monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
-    monkeypatch.setattr(gh_pr_watch, "runner_acquisition_retry", lambda *_a: True)
+    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *_a, **_kw: [
+        {"id": run_id, "head_sha": "abc123", "run_attempt": 1,
+         "status": "completed", "conclusion": "failure"} for run_id in (1, 2)
+    ])
     failure = gh_pr_watch.github_api.ApiResult(ok=False, status=503, body=None)
     def unavailable(*_a, **_kw):
         raise gh_pr_watch.github_read.GitHubReadError("service unavailable", result=failure, diagnostics={})
-    reader.get_json = unavailable
+    if failed_read == "pr":
+        monkeypatch.setattr(gh_pr_watch, "runner_acquisition_retry", lambda *_a, **_kw: True)
+        reader.get_json = unavailable
+    else:
+        reader.paged_json = unavailable
     writes = []
     monkeypatch.setattr(gh_pr_watch, "gh_text", lambda args, **_kw: writes.append(args))
     monkeypatch.setattr(gh_pr_watch, "parse_args", lambda: argparse.Namespace(retry_failed_now=True))
@@ -2504,6 +2512,84 @@ def test_later_read_error_reports_already_confirmed_progress(monkeypatch, tmp_pa
     assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"] == {
         "1": {"run_attempt": 1, "outcome": "confirmed"},
     }
+
+
+def test_snapshot_honors_long_managed_cooldown(monkeypatch, tmp_path, watcher_transport):
+    fixture = watcher_transport
+    monkeypatch.setenv("GITHUB_RETRY_MAX_WAIT_SECONDS", "120")
+    monkeypatch.setattr(gh_pr_watch.time, "time", lambda: fixture.clock[0])
+    fixture.replies.extend([
+        (503, {"retry-after": "70"}, {"message": "Service unavailable"}, "fixture-bot"),
+        (200, {}, [], "fixture-bot"),
+    ])
+    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_a: "fixture-bot")
+    def reviews(pr, _state, **kwargs):
+        return kwargs["reader"].get_json(f"/repos/{pr['repo']}/issues/123/comments", step="comments")
+    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", reviews)
+    monkeypatch.setattr(gh_pr_watch.github_read, "pull_request_checks", lambda *_a, **_kw: {})
+    monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *_a, **_kw: sample_checks())
+    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *_a, **_kw: [])
+    monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *_a, **_kw: [])
+    snapshot, _ = gh_pr_watch.collect_locked_snapshot(argparse.Namespace(max_flaky_retries=3), sample_pr(), {}, tmp_path / "state.json")
+    assert fixture.clock[0] >= 1070
+    assert len(fixture.calls) == 2
+    assert "ready_to_merge" in snapshot["actions"]
+
+
+def test_watch_continues_after_bounded_lock_contention(monkeypatch):
+    reads = [gh_pr_watch.StateLockTimeout(Path("state.json")),
+             ({"pr": sample_pr(), "actions": ["stop_pr_closed"]}, Path("state.json"))]
+    def collect(_args):
+        result = reads.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+    events, sleeps = [], []
+    monkeypatch.setattr(gh_pr_watch, "collect_snapshot", collect)
+    monkeypatch.setattr(gh_pr_watch, "print_event", lambda event, payload: events.append(event))
+    monkeypatch.setattr(gh_pr_watch.time, "sleep", sleeps.append)
+    monkeypatch.setattr(gh_pr_watch.github_read, "poll_delay", lambda seconds, *_a, **_kw: seconds)
+    assert gh_pr_watch.run_watch(argparse.Namespace(poll_seconds=60, green_poll_seconds=300)) == 0
+    assert events == ["state_busy", "snapshot", "stop"]
+    assert sleeps == [60]
+
+
+def test_expired_deadline_does_not_launch_or_charge_a_write(monkeypatch, tmp_path):
+    _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
+    monkeypatch.setenv("GITHUB_RETRY_DEADLINE_AT", str(gh_pr_watch.time.time() - 10))
+    monkeypatch.setattr(gh_pr_watch.subprocess, "Popen", lambda *_a, **_kw: pytest.fail("launch after deadline"))
+    result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+    assert result["reason"] == "rerun_rejected"
+    assert "no write sent" in result["error"]
+    assert result["retries_used"] == 0
+    assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"] == {}
+
+
+def test_directory_sync_failure_stops_before_api_and_reports_error(monkeypatch, tmp_path, capsys):
+    _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
+    sync = gh_pr_watch.os.fsync
+    calls = []
+    def fail_directory(fd):
+        calls.append(fd)
+        if len(calls) == 2:
+            raise OSError("directory sync unsupported")
+        return sync(fd)
+    monkeypatch.setattr(gh_pr_watch.os, "fsync", fail_directory)
+    monkeypatch.setattr(gh_pr_watch, "gh_text", lambda *_a, **_kw: pytest.fail("write after failed sync"))
+    monkeypatch.setattr(gh_pr_watch, "parse_args", lambda: argparse.Namespace(retry_failed_now=True))
+    assert gh_pr_watch.main() == 1
+    captured = capsys.readouterr()
+    assert "directory sync unsupported" in captured.err
+    assert "Traceback" not in captured.err
+    state = gh_pr_watch.load_state(path)[0]
+    assert state["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "submitting"
+    assert state["retries_by_sha"]["abc123"] == 1
+
+
+def test_relative_xdg_location_uses_home_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_STATE_HOME", "relative-state")
+    monkeypatch.setattr(gh_pr_watch.Path, "home", lambda: tmp_path)
+    assert gh_pr_watch.default_state_file_for(sample_pr()).is_relative_to(tmp_path / ".local" / "state")
 
 
 if __name__ == "__main__":

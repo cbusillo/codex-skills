@@ -118,7 +118,8 @@ with the already confirmed `rerun_run_ids`, retry charge and redacted API error.
 ## State lifetime and recovery
 
 Default state lives in `$XDG_STATE_HOME/pr-babysit` when configured, otherwise
-`~/.local/state/pr-babysit`, one JSON file per repository and PR. `--state-file`
+`~/.local/state/pr-babysit`, one JSON file per repository and PR. A relative
+`XDG_STATE_HOME` is ignored. `--state-file`
 still selects an explicit location; use a persistent filesystem for restart
 recovery. State has no age-based expiry. Each new head has separate retry,
 pending and rejected-attempt records; old-head evidence remains in the file.
@@ -137,14 +138,28 @@ Writes flush and fsync the private temporary file before atomic replacement,
 then fsync its directory. These are filesystem durability requests, with
 process-restart coverage; no kernel crash, reboot or power-loss experiment was
 performed and storage hardware guarantees are not claimed.
+If sync fails, the helper stops before sending the write and reports the storage
+error. Replacement may already have saved the intent; keep that evidence while
+repairing the filesystem, rather than treating the error as permission to rerun.
 
 CLI rerun commands have a 60-second ceiling (shorter under an inherited GitHub
 deadline); timeout kills the command group, keeps the pre-write intent and
 budget, and returns `rerun_outcome_unknown`. Lock acquisition has a 60-second
-ceiling too; contention fails without changing evidence, so resume with the same
-file after its holder exits. Snapshot and pre-write readers share a bounded
-60-second deadline through the existing GitHub transport. No outer retry loop,
+ceiling too; one-shot contention fails without changing evidence, so resume with
+the same file after its holder exits. Watch mode emits `state_busy` and tries
+the next poll. Reads retain the existing transport's managed cooldown and
+deadline policy; lock holders can therefore wait on a legitimate GitHub cooldown.
+An already-expired inherited command deadline refuses launch and returns the
+unspent budget, since no write was sent. No outer transport retry loop,
 identity fallback, expiry or replay is introduced.
+
+To resume after a missing-run stop, read the run directly through the configured
+automation wrapper (`api repos/OWNER/REPO/actions/runs/RUN_ID`). If GitHub reports
+a higher attempt, run `--watch --state-file <same-file>` again; ordinary readback
+reconciles it. If the run is gone or GitHub says its attempt cannot be retried,
+the next reviewed task fix commit starts fresh checks on a distinct head, using
+that same state file and retaining the old evidence. Never clear unknown intent
+or treat unchanged terminal evidence as a rejection to force a replay.
 
 ### Required scans cancelled before runner acquisition
 

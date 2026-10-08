@@ -203,6 +203,16 @@ class GhCommandError(RuntimeError):
     pass
 
 
+class GhCommandNotSent(GhCommandError):
+    pass
+
+
+class StateLockTimeout(RuntimeError):
+    def __init__(self, path):
+        super().__init__(f"State lock timed out: {path}; preserve state and retry after its holder exits")
+        self.path = path
+
+
 class PrHelperReadError(GhCommandError):
     def __init__(self, message, payload):
         super().__init__(message)
@@ -271,13 +281,14 @@ def gh_text(args, repo=None):
     if repo and (not args or args[0] != "api"):
         cmd.extend(["-R", repo])
     cmd.extend(args)
+    timeout = min(COMMAND_TIMEOUT_SECONDS, github_api.remaining_retry_timeout_seconds())
+    if timeout <= 0:
+        raise GhCommandNotSent("GitHub command deadline expired before launch; no write sent")
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, start_new_session=True)
         try:
-            stdout, stderr = proc.communicate(timeout=min(
-                COMMAND_TIMEOUT_SECONDS, github_api.remaining_retry_timeout_seconds(),
-            ))
+            stdout, stderr = proc.communicate(timeout=timeout)
         except (subprocess.TimeoutExpired, KeyboardInterrupt):
             # The auth wrapper has child processes. Kill the whole command group
             # so an inherited stdout pipe cannot keep communicate/our lock hung.
@@ -521,7 +532,7 @@ def state_lock(path):
             except BlockingIOError:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise RuntimeError(f"State lock timed out: {path}; preserve state and retry after its holder exits")
+                    raise StateLockTimeout(path)
                 time.sleep(min(0.05, remaining))
         try:
             yield
@@ -555,6 +566,8 @@ def save_state(path, state):
 
 def default_state_file_for(pr):
     root = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state").expanduser()
+    if not root.is_absolute():
+        root = Path.home() / ".local" / "state"
     return root / "pr-babysit" / legacy_state_file_for(pr).name
 
 
@@ -1422,7 +1435,6 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
         state["started_at"] = int(time.time())
 
     reader = watcher_reader()
-    reader.deadline_at = time.time() + min(COMMAND_TIMEOUT_SECONDS, github_api.remaining_retry_timeout_seconds())
     authenticated_login = get_authenticated_login(reader)
     new_review_items = fetch_new_review_items(
         pr,
@@ -1536,7 +1548,7 @@ def retryable_failed_runs(failed_runs, failed_jobs):
             or run.get("retry_mode") == "runner_acquisition"]
 
 
-def runner_acquisition_retry(pr, run, reader):
+def runner_acquisition_retry(pr, run, reader, *, raise_read_errors=False):
     """Admit a full retry only when no job executed and a check is required."""
     run_id, attempt = run.get("run_id"), run.get("run_attempt")
     if (run.get("status") != "completed" or run.get("conclusion") != "failure"
@@ -1604,7 +1616,11 @@ def runner_acquisition_retry(pr, run, reader):
                 and fresh_run.get("run_attempt") == attempt
                 and fresh_run.get("status") == "completed" and fresh_run.get("conclusion") == "failure"
                 and not any(r.get("component") == "actor" for r in reader.degraded_reasons))
-    except (github_read.GitHubReadError, github_read.GitHubReadShapeError, GhCommandError):
+    except github_read.GitHubReadError:
+        if raise_read_errors:
+            raise
+        return False
+    except (github_read.GitHubReadShapeError, GhCommandError):
         return False
 
 
@@ -1729,7 +1745,6 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
         return result
     recovery_runs = [run for run in eligible_runs if run.get("retry_mode") == "runner_acquisition"]
     submission_reader = watcher_reader()
-    submission_reader.deadline_at = time.time() + min(COMMAND_TIMEOUT_SECONDS, github_api.remaining_retry_timeout_seconds())
     if recovery_runs:
         # Pre-write acquisition evidence must reach GitHub, even inside the
         # polling cache's short coalescing window.
@@ -1753,13 +1768,13 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
             result["skipped_run_ids"].append(run_id)
             continue
         recovery = run.get("retry_mode") == "runner_acquisition"
-        if recovery and not runner_acquisition_retry(pr, {
-            **run, "conclusion": current_run.get("conclusion"),
-        }, submission_reader):
-            result["skipped_run_ids"].append(run_id)
-            continue
         if recovery:
             try:
+                if not runner_acquisition_retry(pr, {
+                    **run, "conclusion": current_run.get("conclusion"),
+                }, submission_reader, raise_read_errors=True):
+                    result["skipped_run_ids"].append(run_id)
+                    continue
                 fresh_pr = submission_reader.get_json(
                     f"/repos/{pr['repo']}/pulls/{pr['number']}", step="acquisition_pr_readback",
                 )
@@ -1793,6 +1808,7 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
                 f"run {run_id} cannot be rerun;" in detail
                 or "failed to get run:" in detail
                 or isinstance(err.__cause__, FileNotFoundError)
+                or isinstance(err, GhCommandNotSent)
             )
             if rejected:
                 del pending[str(run_id)]
@@ -1874,7 +1890,14 @@ def run_watch(args):
     last_change_key = None
     unchanged_polls = 0
     while True:
-        snapshot, state_path = collect_snapshot(args)
+        try:
+            snapshot, state_path = collect_snapshot(args)
+        except StateLockTimeout as err:
+            print_event("state_busy", {
+                "state_file": str(err.path), "next_poll_seconds": args.poll_seconds,
+            })
+            time.sleep(args.poll_seconds)
+            continue
         current_change_key = snapshot_change_key(snapshot)
         changed = current_change_key != last_change_key
         unchanged_polls = 0 if changed else min(unchanged_polls + 1, 10)
@@ -1935,7 +1958,7 @@ def main():
     except PrHelperReadError as err:
         print_event("read_error", err.payload)
         return 1
-    except (GhCommandError, RuntimeError, ValueError) as err:
+    except (GhCommandError, RuntimeError, ValueError, OSError) as err:
         sys.stderr.write(f"gh_pr_watch.py error: {err}\n")
         return 1
     except KeyboardInterrupt:
