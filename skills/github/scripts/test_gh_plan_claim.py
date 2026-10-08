@@ -459,11 +459,15 @@ class ClaimTests(unittest.TestCase):
             "The next worker may claim after landing/closure and ownership/content checks.",
             "Ownership transfers after landing/closure and ownership/content checks.",
             "The next session may continue once ownership/content checks pass.",
+            "Use its host retire command after landing/closure and ownership/content checks, then the next worker may claim.",
+            "Use its host retire command after landing/closure and ownership/content checks. Then the next worker may pick it up.",
+            "Use its host retire command after landing/closure and ownership/content checks; the next worker may pick it up then.",
         ):
             with self.subTest(condition=condition):
                 self.setUp()
                 self.cleanup_handoff_fixture()
-                self.comments[2]["body"] += "\n" + condition
+                self.comments[2]["body"] = CLAIM.without_operation_marker(self.comments[2]["body"]) + "\n\n" + condition
+                self.assertIsNone(CLAIM.released_claim_id(self.comments[2]["body"]))
                 with self.assertRaises(PLAN.ClassifiedPlanError):
                     self.run_claim()
                 self.assert_no_writes()

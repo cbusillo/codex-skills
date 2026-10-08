@@ -89,14 +89,18 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     prose = ownership_text(handoff)
     prose = re.sub(r"(?m)^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", "", prose)
     statements = [statement.strip() for statement in re.split(r"(?<=[.!?;])\s+|\n[ \t]*\n", prose) if statement.strip()]
-    # Only the retirement instruction's artifact checks are cleanup context.
-    statements = [re.sub(r"\bownership/content checks\b", "artifact checks", statement, flags=re.IGNORECASE)
-                  if re.match(r"^use its host retire command\b", statement, re.IGNORECASE) else statement
-                  for statement in statements]
     ownership = r"\b(?:releases?|claims?|claiming|reclaim(?:ing)?|ownership|takes? effect|effective)\b"
     successor_action = r"(?:pick (?:this|it) up|pick up (?:this|the) issue|takes? (?:(?:it|this) )?over|taking over|resumes?|resuming)"
     handoff_effect = r"\bhands? off to (?:the )?next (?:worker|session)\b"
     successor = rf"(?:\b(?:{successor_action}|handoff (?:is )?complete[ds]?)\b|{handoff_effect})"
+    # Artifact checks belong to retirement unless the next statement uses
+    # that condition to sequence successor ownership.
+    for index, statement in enumerate(statements):
+        following = statements[index + 1] if index + 1 < len(statements) else ""
+        sequenced_successor = (re.search(r"\bthen\b", following, re.IGNORECASE)
+                               and re.search(rf"{ownership}|{successor}|\bnext (?:worker|session)\b", following, re.IGNORECASE))
+        if re.match(r"^use its host retire command\b", statement, re.IGNORECASE) and not sequenced_successor:
+            statements[index] = re.sub(r"\bownership/content checks\b", "artifact checks", statement, flags=re.IGNORECASE)
     # An instruction about what to do on resumption does not defer ownership.
     resumption_instruction = rf"^(?:(?:When|If) you {successor_action}|(?:When|If|After|Once|Upon) resuming),(?![^.!?;]*\bdo so\b)\s*"
     instruction_indexes = {index for index, statement in enumerate(statements)
