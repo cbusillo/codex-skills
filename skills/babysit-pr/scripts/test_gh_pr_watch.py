@@ -3174,19 +3174,6 @@ def test_independent_dispatches_do_not_supersede_one_another(monkeypatch, tmp_pa
     assert "ready_to_merge" not in snapshot["actions"]
 
 
-@pytest.mark.parametrize("replacement_check", [None, "skipped", "neutral"])
-def test_terminal_replacement_must_cover_the_old_failed_gate(monkeypatch, tmp_path, replacement_check):
-    old, new = execution(1, "cancelled"), execution(2)
-    checks = [execution_check(old, 11, "failure")]
-    if replacement_check:
-        checks.append(execution_check(new, 21, replacement_check))
-    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [old, new], checks)
-    assert snapshot["checks"]["failed_count"] == 0
-    assert snapshot["checks"]["evidence_complete"] is False
-    assert "ready_to_merge" not in snapshot["actions"]
-    assert "retry_failed_checks" not in snapshot["actions"]
-
-
 @pytest.mark.parametrize("attempt", [1, 2])
 def test_standalone_checks_report_queued_replacement_without_jobs_as_pending(attempt):
     old = execution(1, "cancelled")
@@ -3270,33 +3257,41 @@ def test_older_attempt_without_start_ordering_remains_current(monkeypatch, tmp_p
     assert "ready_to_merge" not in snapshot["actions"]
 
 
-def test_terminal_uncovered_gate_stops_watch_with_recovery_evidence(monkeypatch, tmp_path):
+
+
+
+
+
+@pytest.mark.parametrize("conclusion", ["skipped", "neutral"])
+def test_current_skipped_gate_does_not_resurrect_cancelled_history(monkeypatch, tmp_path, conclusion):
     old, new = execution(1, "cancelled"), execution(2)
     snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [old, new],
-        [execution_check(old, 11, "failure"), execution_check(new, 21, "skipped")])
-    assert "stop_incomplete_replacement" in snapshot["actions"]
-    gap = snapshot["checks"]["execution_selection_gaps"][0]
-    assert (gap["runId"], gap["jobId"], gap["replacementRunId"]) == (1, 11, 2)
-    events = []
-    monkeypatch.setattr(gh_pr_watch, "print_event", lambda event, payload: events.append(event))
-    monkeypatch.setattr(gh_pr_watch.time, "sleep", lambda *_a: pytest.fail("terminal gap polling"))
-    args = argparse.Namespace(pr="123", repo=None, state_file=str(tmp_path / "state.json"),
-                              max_flaky_retries=3, poll_seconds=60, green_poll_seconds=300)
-    assert gh_pr_watch.run_watch(args) == 0
-    assert events == ["snapshot", "stop"]
-    assert gh_pr_watch.current_retry_count(gh_pr_watch.load_state(tmp_path / "state.json")[0], "abc123") == 0
-
-
-def test_coverage_uses_winner_when_older_run_remains_unfinished(monkeypatch, tmp_path):
-    oldest = execution(1, "cancelled")
-    unfinished = execution(2, None, status="queued")
-    winner = execution(3)
-    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [oldest, unfinished, winner],
-        [execution_check(oldest, 11, "failure"), execution_check(winner, 31, "skipped")])
+        [execution_check(old, 11, "failure"), execution_check(new, 21, conclusion)])
     assert snapshot["checks"]["failed_count"] == 0
-    assert snapshot["checks"]["execution_selection_gaps"][0]["replacementRunId"] == 3
-    assert "stop_incomplete_replacement" not in snapshot["actions"]
+    assert snapshot["checks"]["evidence_complete"] is True
+    assert snapshot["failed_runs"] == snapshot["failed_jobs"] == []
+    assert [check["id"] for check in snapshot["superseded_check_runs"]] == [11]
+    assert "ready_to_merge" in snapshot["actions"]
+
+
+def test_changed_job_names_keep_superseded_checks_historical(monkeypatch, tmp_path):
+    old, new = execution(1, "cancelled"), execution(2)
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [old, new],
+        [execution_check(old, 11, "failure", name="matrix (old lane)"), execution_check(new, 21)])
+    assert snapshot["checks"]["failed_count"] == 0
+    assert snapshot["checks"]["evidence_complete"] is True
+    assert "ready_to_merge" in snapshot["actions"]
+
+
+def test_current_terminal_workflow_failure_without_checks_blocks_ready(monkeypatch, tmp_path):
+    old, new = execution(1, "cancelled"), execution(2, "failure")
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [old, new],
+        [execution_check(old, 11, "failure")], jobs={2: []})
+    assert snapshot["checks"]["failed_count"] == 1
+    assert snapshot["checks"]["passed_count"] == 0
+    assert [run["run_id"] for run in snapshot["failed_runs"]] == [2]
     assert "ready_to_merge" not in snapshot["actions"]
+    assert "diagnose_ci_failure" in snapshot["actions"]
 
 
 if __name__ == "__main__":

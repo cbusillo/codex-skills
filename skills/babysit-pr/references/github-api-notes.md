@@ -84,18 +84,14 @@ checks with custom links or a check ID distinct from the linked job remain
 independent. A queued or running replacement remains unfinished even before
 it has checks. The shared summary and CI diagnosis count an
 unfinished workflow without pending checks in `pendingWorkflowRunCount` and
-`pendingCount`, so standalone reads also report pending work. A completed
-replacement must cover an old failed gate; a missing gate or a skipped/neutral
-replacement keeps the failed check in history and reports incomplete evidence,
-without counting it as a current failure. Missing previously
-passed gates remain history.
-`executionSelectionGaps` names each uncovered failed gate and replacement run;
-the watcher carries it as `checks.execution_selection_gaps`. Once no current
-workflow remains unfinished, `stop_incomplete_replacement` stops polling for
-explicit diagnosis and CI recovery under the skill's recovery procedure.
-CI diagnosis exposes historical gate logs separately in `historicalGapDiagnoses`.
-An independent reporter failure uses normal check diagnosis; a job link never
-grants rerun authority by itself.
+`pendingCount`, so standalone reads also report pending work. Current skipped
+or neutral jobs retain GitHub's existing success semantics; superseded checks
+never impose additional requirements on the replacement. The watcher's existing
+head-pinned protection/review-readiness query remains authoritative for required
+gates, alongside complete current CI evidence.
+Likewise, a current failed workflow without failing job checks contributes to
+`failedWorkflowRunCount` and `failingCount`; missing job checks never turn a
+known current workflow failure green.
 
 Superseded executions remain in `superseded_workflow_runs` and
 `superseded_check_runs`, separate from counts, diagnosis and retry candidates.

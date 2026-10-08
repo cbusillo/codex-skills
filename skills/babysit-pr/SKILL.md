@@ -146,22 +146,6 @@ For each snapshot:
    watcher may issue one GraphQL read pinned to the repository, PR, base, and
    head SHA, and a null decision counts only with a clean merge state.
    `awaiting_review` means approval is required. Keep watching in all three.
-   `stop_incomplete_replacement` is a terminal coverage gap: read
-   `checks.execution_selection_gaps`, diagnose the named gate with
-   `github/scripts/github-ci-diagnose.py`, and apply [CI failures](#ci-failures).
-   Fix code or event/gate coverage only when the evidence proves that defect.
-   For a flaky failure without a supported current-run retry, record the exact
-   gate, run and completeness gap on the PR's linked plan issue, naming the
-   executing agent or authorized successor and its concrete next action. Follow
-   `github-plan` Status Labels for that handoff. Resume with the
-   same saved state after authoritative current-gate readback; do not create
-   empty commits to reset retry budgets. Follow the existing
-   [state lifetime and recovery](references/github-api-notes.md#state-lifetime-and-recovery)
-   rules for a reviewed task fix's new head. For a base-owned
-   `pull_request_target` defect, use a separate authorized PR to the base;
-   missing repair authority goes to the owning work record for handoff. Apply
-   [Fixes And Pushes](#fixes-and-pushes) before changing or pushing any branch.
-   Do not retry obsolete executions or erase retry custody.
 7. **Ready** (`ready_to_merge`): read it as ready for a merge decision; see
    [Merge readiness](#merge-readiness). Keep watching while the PR is open.
 8. **After any push or rerun**: restart `--watch` on the new head in the same
@@ -179,10 +163,8 @@ This is the only stop rule. Stop only when:
   edits, a review request needing a product decision or coordination, or a
   human comment needing a written reply.
 
-Missing confirmed runs, confirmed nonretryable attempts and terminal
-replacement coverage gaps also stop the watcher for explicit recovery; their
-saved evidence is retained. This calls for agent diagnosis and CI recovery,
-not a new approval requirement. See
+Missing confirmed runs and confirmed nonretryable attempts also stop the watcher
+for explicit recovery; their saved evidence is retained. See
 [state lifetime and recovery](references/github-api-notes.md#state-lifetime-and-recovery)
 for the durable default, legacy migration and bounded command/lock behavior.
 

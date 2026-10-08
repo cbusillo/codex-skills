@@ -887,15 +887,8 @@ def current_check_runs(
     old_by_id = {run.get("id"): run for run in selection["superseded"] if run.get("id") not in by_id}
     current, superseded = [], []
     latest_jobs: dict[int, Optional[set[int]]] = {}
-    current_by_identity = {}
-    for run in selection["current"]:
-        identity = workflow_execution_identity(run)
-        if identity is not None:
-            current_by_identity.setdefault(identity, run)
-    gaps = []
     complete = True
-    # Resolve current attempts before checking which old gates they replace.
-    for check in sorted(checks, key=lambda item: item.get("runId") in old_by_id):
+    for check in checks:
         if (check.get("appSlug") != "github-actions"
                 or check.get("runId") is None or check.get("jobId") is None
                 or check.get("id") != check.get("jobId")):
@@ -916,21 +909,6 @@ def current_check_runs(
             complete = False
             continue
         if run_id in old_by_id:
-            replacement = current_by_identity[workflow_execution_identity(run)]
-            if replacement.get("status") == "completed":
-                matching = [candidate for candidate in current
-                            if candidate.get("runId") == replacement["id"]
-                            and candidate.get("checkSuiteId") == replacement["check_suite_id"]
-                            and candidate.get("headSha") == head_sha
-                            and candidate.get("appSlug") == check.get("appSlug")
-                            and candidate.get("name") == check.get("name")]
-                if (check.get("conclusion") in {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
-                        and (not matching or all(candidate.get("conclusion") in {"skipped", "neutral"} for candidate in matching))):
-                    superseded.append(check)
-                    complete = False
-                    gaps.append({**check, "replacementRunId": replacement["id"],
-                                 "reason": "replacement_did_not_cover_failed_gate"})
-                    continue
             superseded.append(check)
             continue
         attempt = run["run_attempt"]
@@ -965,7 +943,7 @@ def current_check_runs(
                 superseded.append(check)
                 continue
         current.append(check)
-    return current, superseded, complete, gaps
+    return current, superseded, complete
 
 
 def pull_request_checks(
@@ -1008,7 +986,6 @@ def pull_request_checks(
     statuses = latest_status_events(statuses)
     normalized_checks = [normalize_check_run(item) for item in check_runs]
     superseded_checks = []
-    selection_gaps = []
     if any(check.get("appSlug") == "github-actions" for check in normalized_checks):
         availability["workflowSelection"] = True
         try:
@@ -1017,7 +994,7 @@ def pull_request_checks(
                     f"/repos/{repo}/actions/runs", step_prefix="check_workflow_runs",
                     params={"head_sha": sha}, collection_key="workflow_runs",
                 )
-            normalized_checks, superseded_checks, complete, selection_gaps = current_check_runs(
+            normalized_checks, superseded_checks, complete = current_check_runs(
                 reader, repo, sha, normalized_checks, workflow_runs,
             )
             availability["workflowSelection"] = complete
@@ -1033,6 +1010,11 @@ def pull_request_checks(
         not any(check.get("runId") == run.get("id") for check in pending)
         for run in unfinished_runs
     )
+    failed_workflows_without_checks = sum(
+        run.get("status") == "completed" and run.get("conclusion") in failure_conclusions
+        and not any(check.get("runId") == run.get("id") for check in failing)
+        for run in current_runs
+    )
     failed_statuses = [item for item in normalized_statuses if item.get("state") in {"failure", "error"}]
     pending_statuses = [item for item in normalized_statuses if item.get("state") == "pending"]
     combined_state = combined.get("state")
@@ -1045,7 +1027,8 @@ def pull_request_checks(
         "summary": {
             "checkRunCount": len(normalized_checks) if availability["checkRuns"] else None,
             "statusCount": len(normalized_statuses) if availability["commitStatuses"] else None,
-            "failingCount": len(failing) + len(failed_statuses),
+            "failingCount": len(failing) + len(failed_statuses) + failed_workflows_without_checks,
+            "failedWorkflowRunCount": failed_workflows_without_checks,
             "pendingCount": len(pending) + len(pending_statuses) + pending_workflows_without_checks,
             "pendingWorkflowRunCount": pending_workflows_without_checks,
             "unfinishedWorkflowRunCount": len(unfinished_runs),
@@ -1059,7 +1042,6 @@ def pull_request_checks(
         },
         "checkRuns": normalized_checks,
         "supersededCheckRuns": superseded_checks,
-        "executionSelectionGaps": selection_gaps,
         "statuses": normalized_statuses,
     }
 

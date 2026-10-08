@@ -351,7 +351,7 @@ def test_queued_replacement_remains_pending_in_diagnosis() -> None:
 
 
 
-def test_uncovered_historical_gate_blocks_without_current_failure_count() -> None:
+def test_skipped_replacement_does_not_count_historical_failure() -> None:
     responses = base_responses("https://github.com/o/r/actions/runs/22/job/11")
     check = responses["/repos/o/r/commits/abc/check-runs?per_page=100&page=1"]["body"]["check_runs"][0]
     check.update({"head_sha": "abc", "app": {"slug": "github-actions"}})
@@ -364,18 +364,17 @@ def test_uncovered_historical_gate_blocks_without_current_failure_count() -> Non
     new = {**old, "id": 23, "run_number": 2, "check_suite_id": 45, "conclusion": "success"}
     responses["/repos/o/r/actions/runs?head_sha=abc&per_page=100&page=1"] = {"body": {"workflow_runs": [old, new]}}
     responses["/repos/o/r/actions/jobs/11/logs"] = responses["/repos/o/r/actions/jobs/33/logs"]
-    process, _ = run_fixture(responses)
+    process, calls = run_fixture(responses)
     payload = json.loads(process.stdout)
-    assert process.returncode == 1
+    assert process.returncode == 0
     assert payload["failingCount"] == payload["pendingCount"] == 0
-    assert payload["countsComplete"] is False
-    assert payload["historicalGapDiagnoses"][0]["runId"] == "22"
-    assert "assertion failed" in payload["historicalGapDiagnoses"][0]["failureSnippet"]
+    assert payload["countsComplete"] is True
+    assert not any("/actions/jobs/11/logs" in call for call in calls)
 
 
 def main() -> None:
     tests = [
-        test_uncovered_historical_gate_blocks_without_current_failure_count,
+        test_skipped_replacement_does_not_count_historical_failure,
         test_queued_replacement_remains_pending_in_diagnosis,
         test_fixture_ignores_inherited_live_cooldown,
         test_failing_check_uses_rest_metadata_and_job_log,
