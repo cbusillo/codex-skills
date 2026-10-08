@@ -1373,6 +1373,17 @@ Before any explicitly authorized active-auth command runs, the wrapper reports
 the resolved active login (or `unknown` when it cannot be resolved). Write actor
 preflight failures use the shared classifier before the mutation is refused.
 
+Callers needing a definite unsent-write receipt can set
+`GH_WITH_ENV_TOKEN_RECEIPT_NONCE` to a fresh 32-character lowercase hex nonce.
+On a nonzero exit before launching a recognized write command, the wrapper's
+last stderr line is JSON with `schema_version: 1`, that `nonce`, and
+`write_outcome: "not_started"`. No receipt is emitted after command launch,
+and the nonce is withheld from the delegated CLI. Validate the exact receipt
+against this invocation and the maintained wrapper path; refusal text alone,
+missing/malformed receipts, and process termination establish no unsent write.
+Early bootstrap/argument failures may have no receipt. This additive stderr
+contract changes no actor selection, fallback authorization or API retry policy.
+
 For commits and pushes performed by Code or spawned agents, use
 `scripts/git-commit-as-bot` and `scripts/git-push-as-bot` so Git author,
 committer, push events, and resulting Actions runs stay owned by

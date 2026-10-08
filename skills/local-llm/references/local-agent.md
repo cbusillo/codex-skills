@@ -54,6 +54,12 @@ claim to manage unrelated or independently detached services. Preserve the
 host's diagnostic result if timeout, missing final output, or incompatibility
 prevents a successful run.
 
+Output capture has a combined 16 MiB budget for stdout, stderr, and the host's
+final-message file. The wrapper checks it while the host runs and again after
+owned-process cleanup, before reading or validating the settled output. An
+oversized capture fails with an output-limit diagnostic even if the host exits
+between checks; it publishes no captured output or replacement final artifact.
+
 ## Qualify and report
 
 Start with a synthetic task that requires one observable action, such as reading

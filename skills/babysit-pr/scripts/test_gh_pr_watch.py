@@ -2588,8 +2588,65 @@ def test_directory_sync_failure_stops_before_api_and_reports_error(monkeypatch, 
     assert result["rerun_run_ids"] == []
     assert not captured.err
     state = gh_pr_watch.load_state(path)[0]
-    assert state["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "submitting"
-    assert state["retries_by_sha"]["abc123"] == 1
+    assert result["not_sent_run_ids"] == [1]
+    assert result["unsent_state_restored"] is True
+    assert state["pending_reruns_by_sha"]["abc123"] == {}
+    assert state["retries_by_sha"]["abc123"] == 0
+    writes = []
+    monkeypatch.setattr(gh_pr_watch, "gh_text", lambda args, **_kw: writes.append(args[2]))
+    recovered = gh_pr_watch.retry_failed_now(argparse.Namespace())
+    assert recovered["reason"] == "rerun_triggered"
+    assert recovered["rerun_run_ids"] == [1]
+    assert writes == ["1"]
+
+
+def test_unsent_storage_recovery_keeps_earlier_confirmed_write(monkeypatch, tmp_path):
+    _, path = retry_snapshot(monkeypatch, tmp_path,
+                             [failed_run(1), failed_run(2)], [failed_job(1), failed_job(2)])
+    sync = gh_pr_watch.os.fsync
+    count = 0
+    def fail_third_directory(fd):
+        nonlocal count
+        count += 1
+        if count == 6:
+            raise OSError("directory fsync interrupted")
+        sync(fd)
+    monkeypatch.setattr(gh_pr_watch.os, "fsync", fail_third_directory)
+    writes = []
+    monkeypatch.setattr(gh_pr_watch, "gh_text", lambda args, **_kw: writes.append(args[2]))
+    result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+    assert result["reason"] == "state_save_error"
+    assert result["not_sent_run_ids"] == [2]
+    assert result["unsent_state_restored"] is True
+    assert result["rerun_run_ids"] == [1]
+    assert result["retries_used"] == 1
+    assert writes == ["1"]
+    assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"] == {
+        "1": {"run_attempt": 1, "outcome": "confirmed"},
+    }
+
+
+def test_failed_unsent_restoration_preserves_recovery_error_and_intent(monkeypatch, tmp_path):
+    _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
+    original_save = gh_pr_watch.save_state
+    saves = 0
+    def unavailable(path_arg, state):
+        nonlocal saves
+        saves += 1
+        if saves == 1:
+            original_save(path_arg, state)
+            raise OSError("directory fsync failed after replace")
+        raise OSError("storage remains unavailable")
+    monkeypatch.setattr(gh_pr_watch, "save_state", unavailable)
+    monkeypatch.setattr(gh_pr_watch, "gh_text", lambda *_a, **_kw: pytest.fail("unsent write"))
+    result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+    assert result["reason"] == "state_save_error"
+    assert result["not_sent_run_ids"] == [1]
+    assert result["unsent_state_restored"] is False
+    assert result["recovery_error"] == "storage remains unavailable"
+    assert result["rerun_attempted"] is False
+    assert result["retries_used"] == 1
+    assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "submitting"
 
 
 def test_relative_xdg_location_uses_home_state(monkeypatch, tmp_path):
@@ -2658,6 +2715,220 @@ def test_real_wrapper_distinguishes_preflight_refusal_from_unknown_write(monkeyp
         assert len(actual_calls) == 2
         assert "rerun" in actual_calls[1]
         assert pending["1"]["outcome"] == "submitting"
+
+
+@pytest.mark.parametrize("termination", ["SIGTERM", "SIGHUP", "SIGKILL", "SIGTERM_then_SIGHUP"])
+def test_parent_termination_cleans_catchable_commands_and_preserves_unknown(monkeypatch, tmp_path, termination):
+    _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
+    command = tmp_path / "fake-gh"
+    pid_file = tmp_path / "command.pid"
+    heartbeat = tmp_path / "heartbeat"
+    descendant = tmp_path / "descendant-heartbeat"
+    ticking = "import pathlib,time; p=pathlib.Path({!r}); n=0\nwhile True:\n n+=1; p.write_text(str(n)); time.sleep(0.02)\n"
+    command.write_text(f"#!{sys.executable}\nimport os,subprocess,sys\n"
+                       f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+                       f"subprocess.Popen([sys.executable, '-c', {ticking.format(str(descendant))!r}])\n"
+                       + ticking.format(str(heartbeat)))
+    command.chmod(0o700)
+    monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(command))
+    monkeypatch.setattr(gh_pr_watch, "COMMAND_TIMEOUT_SECONDS", 5.0)
+    ctx = multiprocessing.get_context("fork")
+    cleanup_started = ctx.Event()
+    if termination == "SIGTERM_then_SIGHUP":
+        kill_group = os.killpg
+        def delayed_cleanup(pid, sig):
+            cleanup_started.set()
+            gh_pr_watch.time.sleep(0.3)
+            kill_group(pid, sig)
+        monkeypatch.setattr(gh_pr_watch.os, "killpg", delayed_cleanup)
+    worker = ctx.Process(
+        target=lambda: gh_pr_watch.retry_failed_now(argparse.Namespace()),
+    )
+    try:
+        worker.start()
+        deadline = gh_pr_watch.time.monotonic() + 3
+        while not (heartbeat.exists() and descendant.exists() and descendant.stat().st_size):
+            assert gh_pr_watch.time.monotonic() < deadline, "offline command did not start"
+            gh_pr_watch.time.sleep(0.01)
+        first_signal = "SIGTERM" if termination == "SIGTERM_then_SIGHUP" else termination
+        os.kill(worker.pid, getattr(gh_pr_watch.signal, first_signal))
+        if termination == "SIGTERM_then_SIGHUP":
+            assert cleanup_started.wait(timeout=2)
+            os.kill(worker.pid, gh_pr_watch.signal.SIGHUP)
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        gh_pr_watch.time.sleep(0.1)
+        before = (heartbeat.read_text(), descendant.read_text())
+        gh_pr_watch.time.sleep(0.2)
+        after = (heartbeat.read_text(), descendant.read_text())
+        if termination == "SIGKILL":
+            assert after != before, "uncatchable termination coverage did not leave a live command"
+        else:
+            assert after == before, "catchable termination left a command/descendant alive"
+        saved = gh_pr_watch.load_state(path)[0]
+        assert saved["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "submitting"
+        assert saved["retries_by_sha"]["abc123"] == 1
+        monkeypatch.setattr(gh_pr_watch, "LOCK_TIMEOUT_SECONDS", 0.2)
+        monkeypatch.setattr(gh_pr_watch, "gh_text", lambda *_a, **_kw: pytest.fail("unknown write replay"))
+        assert gh_pr_watch.retry_failed_now(argparse.Namespace())["reason"] == "rerun_outcome_pending"
+    finally:
+        if worker.is_alive():
+            worker.kill()
+            worker.join(timeout=2)
+        if pid_file.exists():
+            try:
+                os.killpg(int(pid_file.read_text()), gh_pr_watch.signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+@pytest.mark.parametrize("refusal", ["missing_login", "missing_identity", "missing_token", "user_mismatch",
+                                    "app_mismatch", "incomplete_app", "app_failure", "malformed_app", "contributor"])
+def test_real_wrapper_prewrite_receipts_release_only_unsent_intent(monkeypatch, tmp_path, refusal):
+    _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
+    for name in ("GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
+                 "GH_TOKEN", "GITHUB_TOKEN", "CODEX_GITHUB_TOKEN", "CODEX_AUTOMATION_LOGIN",
+                 "GH_WITH_ENV_TOKEN_EXPECTED_LOGIN", "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK",
+                 "GH_WITH_ENV_TOKEN_OWN_USER", "GH_WITH_ENV_TOKEN_CLASSIFIER",
+                 "GH_WITH_ENV_TOKEN_IDENTITY_HELPER", "GITHUB_RETRY_DEADLINE_AT"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CODEX_SKILLS_ENV_FILE", str(tmp_path / "missing.env"))
+    if refusal not in {"missing_login", "missing_identity"}:
+        monkeypatch.setenv("CODEX_AUTOMATION_LOGIN", "fixture-bot")
+    if refusal not in {"missing_token", "missing_identity"}:
+        monkeypatch.setenv("CODEX_GITHUB_TOKEN", "offline-fixture-token")
+    monkeypatch.setenv("GH_WITH_ENV_TOKEN_PYTHON", sys.executable)
+    calls = tmp_path / "calls"
+    command = tmp_path / "fake-gh"
+    command.write_text(f"#!{sys.executable}\nimport sys\n"
+                       f"open({str(calls)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n"
+                       "print('HTTP/2 200\\ncontent-type: application/json\\n\\n{\"login\":\"other-fixture\"}')\n")
+    command.chmod(0o700)
+    monkeypatch.setenv("GH_WITH_ENV_TOKEN_GH", str(command))
+    if refusal.startswith("app_") or refusal in {"incomplete_app", "malformed_app", "contributor"}:
+        monkeypatch.setenv("GITHUB_APP_ID", "1")
+        if refusal != "incomplete_app":
+            monkeypatch.setenv("GITHUB_APP_INSTALLATION_ID", "2")
+            monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY_PATH", "/offline/unused.pem")
+        identity = tmp_path / "identity.py"
+        if refusal == "app_failure":
+            identity.write_text("import sys; print('offline App refusal', file=sys.stderr); sys.exit(1)\n")
+        elif refusal == "contributor":
+            identity.write_text("import sys; sys.exit(3)\n")
+        elif refusal == "malformed_app":
+            identity.write_text("print('missing-token')\n")
+        else:
+            identity.write_text("print('other-fixture'); print('offline-fixture-token')\n")
+        monkeypatch.setenv("GH_WITH_ENV_TOKEN_IDENTITY_HELPER", str(identity))
+    monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(gh_pr_watch.DEFAULT_GH))
+    result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+    assert result["reason"] == "rerun_rejected"
+    assert result["not_sent_run_ids"] == [1]
+    assert result["retries_used"] == 0
+    actual_calls = calls.read_text().splitlines() if calls.exists() else []
+    assert all("rerun" not in call for call in actual_calls)
+    assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"] == {}
+
+
+def test_custom_command_receipt_is_not_trusted(monkeypatch, tmp_path):
+    _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
+    command = tmp_path / "custom-gh"
+    command.write_text("#!/bin/sh\n"
+                       "printf '{\"schema_version\":1,\"nonce\":\"%s\",\"write_outcome\":\"not_started\"}\\n' \"$GH_WITH_ENV_TOKEN_RECEIPT_NONCE\" >&2\n"
+                       "exit 1\n")
+    command.chmod(0o700)
+    monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(command))
+    result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+    assert result["reason"] == "rerun_outcome_unknown"
+    assert result["retries_used"] == 1
+    assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "submitting"
+
+
+def test_command_restores_parent_signal_handlers(monkeypatch):
+    before = {sig: gh_pr_watch.signal.getsignal(sig) for sig in (gh_pr_watch.signal.SIGTERM, gh_pr_watch.signal.SIGHUP)}
+    monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", sys.executable)
+    assert gh_pr_watch.gh_text(["-c", "print('offline')"]).strip() == "offline"
+    assert {sig: gh_pr_watch.signal.getsignal(sig) for sig in before} == before
+
+
+def test_ignored_hangup_keeps_running_command_and_confirms_write(monkeypatch, tmp_path):
+    _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
+    pid_file = tmp_path / "command.pid"
+    command = tmp_path / "fake-gh"
+    command.write_text(f"#!{sys.executable}\nimport os,time\n"
+                       f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+                       "time.sleep(0.4)\n")
+    command.chmod(0o700)
+    monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(command))
+    ctx = multiprocessing.get_context("fork")
+    results = ctx.Queue()
+    def retry_ignoring_hangup():
+        gh_pr_watch.signal.signal(gh_pr_watch.signal.SIGHUP, gh_pr_watch.signal.SIG_IGN)
+        result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+        assert gh_pr_watch.signal.getsignal(gh_pr_watch.signal.SIGHUP) == gh_pr_watch.signal.SIG_IGN
+        results.put(result)
+    worker = ctx.Process(target=retry_ignoring_hangup)
+    try:
+        worker.start()
+        deadline = gh_pr_watch.time.monotonic() + 3
+        while not pid_file.exists():
+            assert gh_pr_watch.time.monotonic() < deadline
+            gh_pr_watch.time.sleep(0.01)
+        os.kill(worker.pid, gh_pr_watch.signal.SIGHUP)
+        worker.join(timeout=2)
+        assert worker.exitcode == 0, "ignored hangup terminated the watcher"
+        assert results.get(timeout=1)["reason"] == "rerun_triggered"
+        assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "confirmed"
+    finally:
+        if worker.is_alive():
+            worker.kill()
+            worker.join(timeout=2)
+        if pid_file.exists():
+            try:
+                os.killpg(int(pid_file.read_text()), gh_pr_watch.signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        results.close()
+
+
+def test_wrapper_unsent_receipt_save_failure_reports_restore_disposition(monkeypatch, tmp_path):
+    _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
+    original_save = gh_pr_watch.save_state
+    saves = 0
+    def fail_restore(path_arg, state):
+        nonlocal saves
+        saves += 1
+        if saves == 1:
+            original_save(path_arg, state)
+        else:
+            raise OSError("unsent receipt restoration failed")
+    monkeypatch.setattr(gh_pr_watch, "save_state", fail_restore)
+    def refuse(*_a, **_kw):
+        raise gh_pr_watch.GhCommandNotSent("offline definite pre-write refusal")
+    monkeypatch.setattr(gh_pr_watch, "gh_text", refuse)
+    result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+    assert result["reason"] == "state_save_error"
+    assert result["not_sent_run_ids"] == [1]
+    assert result["unsent_state_restored"] is False
+    assert result["recovery_error"] == "unsent receipt restoration failed"
+    assert result["retries_used"] == 1
+    assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "submitting"
+
+
+@pytest.mark.parametrize("receipt", [None, {"schema_version": 1, "nonce": "old-invocation", "write_outcome": "not_started"}])
+def test_default_wrapper_requires_matching_receipt(monkeypatch, tmp_path, receipt):
+    _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
+    monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(gh_pr_watch.DEFAULT_GH))
+    text = "error: unable to verify the automation GitHub actor; refusing write\n"
+    if receipt is not None:
+        text += json.dumps(receipt) + "\n"
+    monkeypatch.setattr(gh_pr_watch.subprocess, "Popen", lambda *_a, **_kw: SimpleNamespace(
+        returncode=1, communicate=lambda timeout: ("", text),
+    ))
+    result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+    assert result["reason"] == "rerun_outcome_unknown"
+    assert result["retries_used"] == 1
+    assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "submitting"
 
 
 if __name__ == "__main__":
