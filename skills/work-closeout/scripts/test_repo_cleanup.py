@@ -393,16 +393,27 @@ class CleanupContracts(unittest.TestCase):
         result = cleanup.check_manifest(before, removed=[str(self.output)])
         self.assertIn("protected_or_ambiguous_root_removed", result["errors"])
 
-    def test_revalidate_detects_content_change_even_when_size_and_mtime_match(self):
+    def test_revalidate_detects_content_change_even_when_all_metadata_matches(self):
         nested = self.private_files(self.output)
-        before = self.inventory()
-        path = nested / "private.db"
-        original = path.stat()
-        path.write_bytes(b"x" * original.st_size)
-        os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
-        result = cleanup.check_manifest(before)
-        self.assertFalse(result["ok"])
-        self.assertIn("retained_content_or_identity_changed", result["errors"])
+        # Installed runtime bindings are not inputs to this content fixture.
+        with patch.object(cleanup, "bindings", return_value=[]):
+            before = self.inventory()
+            self.assertTrue(before["complete"], cleanup.public(before))
+            unchanged = cleanup.check_manifest(before)
+            self.assertTrue(unchanged["ok"], unchanged["errors"])
+            path = nested / "private.db"
+            original = path.stat()
+            path.write_bytes(b"x" * original.st_size)
+            os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+            entry = before["roots"][0]["entries"]["nested/private.db"]
+            current_stat = cleanup_probe.signature(path.stat())
+            # ctime cannot be restored through utime. Model matching metadata
+            # in this synthetic baseline so it cannot mask a broken content check.
+            entry["stat"]["ctime_ns"] = current_stat["ctime_ns"]
+            self.assertEqual(entry["stat"], current_stat)
+            result = cleanup.check_manifest(before)
+            self.assertFalse(result["ok"])
+            self.assertIn("retained_content_or_identity_changed", result["errors"])
 
     def test_failed_move_and_copy_without_source_removal_fail(self):
         self.private_files(self.output)
