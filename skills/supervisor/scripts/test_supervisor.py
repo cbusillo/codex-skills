@@ -983,6 +983,8 @@ class TerminalTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "already sets"):
                     asyncio.run(iterm_tab.operate(app, args))
             sent = terminal.async_send_text.await_args_list[0].args[0]
+            if sent.startswith("\x1b[200~"):
+                sent = sent.removeprefix("\x1b[200~").removesuffix("\x1b[201~")
             launched = subprocess.run(["/bin/sh", "-c", sent], capture_output=True, text=True, check=True)
             self.assertEqual(launched.stdout.splitlines(), [choice["env"]["CLAUDE_CONFIG_DIR"], "1", "brief"])
         window.async_create_tab.assert_awaited_once_with(select=False)

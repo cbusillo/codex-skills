@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
+import account_choice
 import claude_account as account
 
 
@@ -23,8 +24,12 @@ class MoveTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
-        self.account_reader = account.reader()
+        (self.root / "panel").mkdir()
+        self.account_reader = account_choice
         self.reader_patch = patch.object(account, "reader", return_value=self.account_reader)
+        self.storage_patch = patch.object(account_choice, "storage_root", return_value=self.root / "panel")
+        self.storage_patch.start()
+        self.addCleanup(self.storage_patch.stop)
         self.reader_patch.start()
         self.addCleanup(self.reader_patch.stop)
         self.runtime_patch = patch.object(account, "runtime_script", return_value=Path(account.__file__).resolve())
@@ -49,7 +54,7 @@ class MoveTests(unittest.TestCase):
                         "transcript_path": str(self.transcript)}
         self.request = self.root / "moves" / (self.identifier + ".json")
         self.argv = ["/fake/claude", "--resume", self.identifier, "--model", "unchanged value"]
-        self.choice = {"source": "context-panel", "name": "next", "env": {"CLAUDE_CONFIG_DIR": str(self.new)}}
+        self.choice = {"source": "context-panel", "name": "next", "account_id": "anthropic-b", "env": {"CLAUDE_CONFIG_DIR": str(self.new)}}
 
     def record(self):
         account.hook(self.payload, self.env)
@@ -102,6 +107,7 @@ class MoveTests(unittest.TestCase):
         self.move()
         with patch.object(self.account_reader, "load_config", side_effect=AssertionError("must reuse")):
             self.assertEqual(account.move_environment(self.argv, self.env)["CLAUDE_CONFIG_DIR"], str(self.new))
+        self.assertEqual(len(list((self.root / "panel" / "Launch Receipts").glob("*.json"))), 1)
 
     def test_choice_failure_and_same_account_preserve_recovery(self):
         self.record()
@@ -124,7 +130,8 @@ class MoveTests(unittest.TestCase):
         self.assertEqual(account.resumed_session(["claude", "--resume=" + self.identifier]), self.identifier)
         self.assertEqual(account.resumed_session(["claude", "-r", self.identifier]), self.identifier)
         self.assertIsNone(account.resumed_session(["claude", "--resume", str(self.transcript)]))
-        self.assertIsNone(account.resumed_session([*self.argv, "--resume", self.identifier]))
+        self.assertEqual(account.resumed_session([*self.argv, "--resume", self.identifier]), self.identifier)
+        self.assertIsNone(account.resumed_session([*self.argv, "--resume", str(uuid.uuid4())]))
 
     def test_exec_failure_keeps_move_request(self):
         self.record()
@@ -138,7 +145,7 @@ class MoveTests(unittest.TestCase):
         fake.write_text("import os,sys,json\nprint(json.dumps({'args':sys.argv[1:], 'keep':os.environ['INHERITED'], 'home':os.environ['CLAUDE_CONFIG_DIR']}))\nsys.exit(17)\n")
         result = subprocess.run([sys.executable, str(Path(account.__file__)), "wrap", sys.executable,
                                  str(fake), "space value", "--resume=unused"],
-                                env={**os.environ, **self.env}, capture_output=True, text=True, check=False)
+                                env={**os.environ, **self.env}, capture_output=True, text=True)
         self.assertEqual(result.returncode, 17)
         self.assertEqual(json.loads(result.stdout), {"args": ["space value", "--resume=unused"],
                                                    "keep": "keep me", "home": str(self.old)})
@@ -162,7 +169,7 @@ class MoveTests(unittest.TestCase):
             "answers": {"useNext": [{"provider": "anthropic", "accountID": "anthropic-b"}]}
         }) + "))\n")
         (private / "supervisor.toml").write_text(
-            "[accounts]\nsnapshot_command = " + json.dumps([sys.executable, str(snapshot)]) + "\n"
+            "[accounts]\nsnapshot_command = " + json.dumps([sys.executable, str(snapshot), "--storage-root", str(self.root / "panel")]) + "\n"
             "[[accounts.account]]\nname = \"next\"\nprovider = \"anthropic\"\ncontext_panel_label = \"next\"\n"
             "[accounts.account.env]\nCLAUDE_CONFIG_DIR = " + json.dumps(str(self.new)) + "\n")
         child = self.root / "resume.py"
@@ -175,9 +182,10 @@ class MoveTests(unittest.TestCase):
         for key in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN",
                     "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"):
             env.pop(key, None)
-        result = subprocess.run([sys.executable, account.__file__, "wrap", sys.executable,
+        installed = account.install(self.old / "settings.json", self.root / "moves", write=True)
+        result = subprocess.run([installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"], sys.executable,
                                  str(child), "--resume", self.identifier], env=env,
-                                capture_output=True, text=True, check=False)
+                                capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), {"session": self.identifier, "context": "prior work",
                                                    "home": str(self.new), "keep": "keep me"})
@@ -198,8 +206,8 @@ class MoveTests(unittest.TestCase):
 
     def test_installed_wrapper_preserves_every_environment_variable(self):
         settings = self.root / "settings.json"
-        installed = account.install(settings, self.root / "moves")
-        argv = json.loads(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])
+        installed = account.install(settings, self.root / "moves", write=True)
+        argv = [installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"]]
         code = "import os,json;print(json.dumps(dict(os.environ)))"
         env = {**os.environ, **self.env, "HOME": str(self.root), "PYTHONPATH": "unchanged"}
         direct = subprocess.check_output([sys.executable, "-I", "-c", code], env=env)
@@ -237,8 +245,8 @@ class MoveTests(unittest.TestCase):
                       "transcript_path": str(self.projects / (other + ".jsonl"))}, self.env)
         other_path = self.request.parent / (other + ".json")
         other_path.write_text(json.dumps({"schema": 1, "session_id": other}))
-        result = subprocess.run([sys.executable, account.__file__, "cancel", "--session-id", self.identifier],
-                                env={**os.environ, **self.env}, capture_output=True, text=True, check=False)
+        result = subprocess.run([sys.executable, str(account.__file__), "cancel", "--session-id", self.identifier],
+                                env={**os.environ, **self.env}, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.request.exists())
         self.assertTrue(other_path.exists())
@@ -246,8 +254,8 @@ class MoveTests(unittest.TestCase):
 
     def test_status_without_enrollment_and_unsafe_directory_are_visible(self):
         env = {k: v for k, v in os.environ.items() if k != account.MOVE_DIR}
-        result = subprocess.run([sys.executable, account.__file__, "status"], env=env,
-                                capture_output=True, text=True, check=False)
+        result = subprocess.run([sys.executable, str(account.__file__), "status"], env=env,
+                                capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         directory = self.root / "moves"
         directory.mkdir(mode=0o755)
@@ -274,15 +282,13 @@ class MoveTests(unittest.TestCase):
         settings.write_text('{"env":{"OTHER":"keep"},"hooks":{"StopFailure":[{"matcher":"overloaded","hooks":[{"type":"command","command":"other"}]}]}}')
         account.install(settings, self.root / "moves", write=True)
         data = json.loads(settings.read_text())
-        args = json.loads(data["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])
-        args[0] = "/old/python"
-        data["env"]["CLAUDE_CODE_PROCESS_WRAPPER"] = json.dumps(args)
-        settings.write_text(json.dumps(data))
+        shim = Path(data["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])
+        shim.write_text(shim.read_text().replace("my $python =", "my $old_python ="))
         with self.assertRaises(ValueError):
             account.install(settings, self.root / "moves", write=True)
         account.install(settings, self.root / "moves", write=True, refresh=True)
         data = json.loads(settings.read_text())
-        self.assertNotEqual(json.loads(data["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])[0], "/old/python")
+        self.assertNotIn("my $old_python", shim.read_text())
         account.uninstall(settings, write=True)
         result = json.loads(settings.read_text())
         self.assertEqual(result["env"], {"OTHER": "keep"})
@@ -311,6 +317,29 @@ class MoveTests(unittest.TestCase):
         self.assertEqual(moved["CLAUDE_CONFIG_DIR"], str(self.new))
         account.hook({**self.payload, "hook_event_name": "SessionStart", "source": "resume"}, moved)
         self.assertFalse(self.request.exists())
+
+    def test_shell_free_entrypoint_preserves_unset_locale_and_falls_back(self):
+        settings = self.root / "settings.json"
+        installed = account.install(settings, self.root / "moves", write=True)
+        shim = Path(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])
+        env = {**os.environ, **self.env, "OLDPWD": "/nonexistent-old-directory"}
+        env = {k: v for k, v in env.items() if not k.startswith(("LANG", "LC_"))}
+        expected = subprocess.check_output(["/usr/bin/env", "-0"], env=env)
+        ordinary = subprocess.check_output([str(shim), "/usr/bin/env", "-0"], env=env)
+        self.assertEqual(set(ordinary.split(b"\0")), set(expected.split(b"\0")))
+        self.record()
+        child = self.root / "child"
+        child.write_text('#!/usr/bin/perl\nexec {"/usr/bin/env"} "/usr/bin/env", "-0";\n')
+        child.chmod(0o700)
+        for assignment in ("my $python", "my $script"):
+            original = shim.read_text()
+            lines = [line if not line.startswith(assignment + " =") else assignment + " = '/missing/dependency';"
+                     for line in original.splitlines()]
+            shim.write_text("\n".join(lines) + "\n")
+            fallback = subprocess.check_output([str(shim), str(child), "--resume", self.identifier], env=env)
+            self.assertEqual(set(fallback.split(b"\0")), set(expected.split(b"\0")))
+            self.assertTrue(self.request.exists())
+            shim.write_text(original)
 
     def test_installer_preview_preserves_settings_and_repeat_is_idempotent(self):
         settings = self.root / "settings.json"

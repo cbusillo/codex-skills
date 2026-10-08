@@ -40,7 +40,7 @@ def runtime_script():
     if not any(path.resolve() in (catalog, catalog / "skills") for path, _, _ in runtime.runtime_skills_paths()):
         raise ValueError("run enrollment from the active catalog runtime binding")
     def git(*args):
-        result = subprocess.run(["git", "-C", str(catalog), *args], capture_output=True, text=True, check=False, timeout=5)
+        result = subprocess.run(["git", "-C", str(catalog), *args], capture_output=True, text=True, timeout=5)
         if result.returncode:
             raise ValueError("runtime must have a known default branch and clean checkout")
         return result.stdout.strip()
@@ -88,17 +88,24 @@ def read_request(path):
     return data
 
 
-def write_json(path, data, *, expected=None):
+UNCHECKED = object()
+
+
+def write_json(path, data, *, expected=UNCHECKED):
+    write_bytes(path, json.dumps(data, indent=2).encode(), expected=expected)
+
+
+def write_bytes(path, content, *, expected=UNCHECKED):
     temporary = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as output:
+        with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent, delete=False) as output:
             temporary = Path(output.name)
-            json.dump(data, output)
+            output.write(content)
             output.flush()
             os.fsync(output.fileno())
         if path.exists():
             os.chmod(temporary, stat.S_IMODE(path.stat().st_mode))
-        if expected is not None and (not path.exists() or path.read_bytes() != expected):
+        if expected is not UNCHECKED and (path.read_bytes() if path.exists() else None) != expected:
             raise ValueError("settings changed during enrollment; preview again")
         os.replace(temporary, path)
     finally:
@@ -162,7 +169,7 @@ def resumed_session(argv):
             identifiers.append(session_id(argv[index + 1]) if index + 1 < len(argv) else None)
         elif argument.startswith("--resume="):
             identifiers.append(session_id(argument.split("=", 1)[1]))
-    return identifiers[0] if len(identifiers) == 1 else None
+    return identifiers[0] if identifiers and identifiers[0] and len(set(identifiers)) == 1 else None
 
 
 def bounded_snapshot(*args, **kwargs):
@@ -215,12 +222,18 @@ def move_environment(argv, env):
                 if set(choice["env"]) - {"CLAUDE_CONFIG_DIR"}:
                     raise ValueError("account move supports only the account home environment")
                 data.update(target_home=str(target), account=choice["name"],
+                            account_id=choice["account_id"],
+                            storage_root=str(account_choice.storage_root(config["snapshot_command"])),
                             target_default="CLAUDE_CONFIG_DIR" not in choice["env"])
             target = Path(data["target_home"])
             if not (target / "settings.json").is_file() or (target / "settings.json").resolve() != settings.resolve():
                 raise ValueError("selected account must share the enrolled settings file")
             if not target.is_dir() or not history_matches(data, target):
                 raise ValueError("selected account history is unavailable")
+            if not data.get("launch_receipt"):
+                receipt = reader().record_launch({"provider": "anthropic", "account_id": data["account_id"],
+                                                  "storage_root": data["storage_root"]})
+                data["launch_receipt"] = str(receipt)
             data.pop("problem", None)
             data["state"] = "restarting"
             write_json(path, data)
@@ -242,6 +255,12 @@ def wrapper(argv):
     if not argv:
         return 2
     env = dict(os.environ)
+    locale_set = env.pop("CLAUDE_ACCOUNT_MOVE_LC_SET", None)
+    locale_value = env.pop("CLAUDE_ACCOUNT_MOVE_LC_VALUE", "")
+    if locale_set == "0":
+        env.pop("LC_CTYPE", None)
+    elif locale_set == "1":
+        env["LC_CTYPE"] = locale_value
     try:
         env = move_environment(argv, env)
     except Exception:
@@ -252,15 +271,45 @@ def wrapper(argv):
         return 127  # The pending request survives a failed exec.
 
 
-def own_wrapper(value, script, action):
-    if not isinstance(value, str):
-        return False
-    try:
-        parts = json.loads(value) if action == "wrap" else shlex.split(value)
-    except (ValueError, TypeError):
-        return False
-    return (isinstance(parts, list) and len(parts) == 4 and parts[1:] == ["-I", script, action])
+SHIM_HEADER = "#!/usr/bin/perl\n# codex-skills claude account wrapper v1\n"
 
+
+def shim_content(python, script):
+    def literal(value):
+        return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+    return SHIM_HEADER + "use strict;\nuse warnings;\n" + (
+        "my $python = " + literal(python) + ";\nmy $script = " + literal(script) + ";\n"
+    ) + r'''my $session = '';
+my $next = 0;
+for my $argument (@ARGV[1 .. $#ARGV]) {
+    last if $argument eq '--';
+    if ($next) { $session = $argument; $next = 0; }
+    elsif ($argument eq '--resume' || $argument eq '-r') { $next = 1; }
+    elsif ($argument =~ /^--resume=(.*)$/) { $session = $1; }
+}
+if (($ENV{'CLAUDE_ACCOUNT_MOVE_ENABLED'} // '') eq '1'
+    && $session =~ /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/
+    && $ENV{'CLAUDE_ACCOUNT_MOVE_DIR'}
+    && -f "$ENV{'CLAUDE_ACCOUNT_MOVE_DIR'}/$session.json"
+    && -x $python && -f $script) {
+    $ENV{'CLAUDE_ACCOUNT_MOVE_LC_SET'} = exists $ENV{'LC_CTYPE'} ? '1' : '0';
+    $ENV{'CLAUDE_ACCOUNT_MOVE_LC_VALUE'} = $ENV{'LC_CTYPE'} // '';
+    exec {$python} $python, '-I', $script, 'wrap', @ARGV;
+}
+exec {$ARGV[0]} @ARGV;
+exit 127;
+'''
+
+
+def managed_shim(env):
+    value = env.get(MOVE_DIR)
+    if not isinstance(value, str):
+        return None
+    shim = Path(value) / "process-wrapper"
+    if (env.get("CLAUDE_CODE_PROCESS_WRAPPER") == str(shim) and not shim.is_symlink()
+            and shim.is_file() and shim.read_text().startswith(SHIM_HEADER)):
+        return shim
+    return None
 
 def install(settings, directory, write=False, refresh=False):
     if not settings.is_absolute() or settings.is_symlink():
@@ -272,23 +321,34 @@ def install(settings, directory, write=False, refresh=False):
     if not isinstance(data, dict) or not isinstance(data.get("env", {}), dict):
         raise ValueError("user settings and env must be objects")
     wrapper_path = str(runtime_script())
-    python = str(Path(sys._base_executable).resolve())
+    python = str(Path(sys.executable).resolve())
     if not os.access(python, os.X_OK):
         raise ValueError("base Python interpreter is not executable")
     if directory.exists():
         state_root({MOVE_DIR: str(directory)})
     env = data.setdefault("env", {})
-    expected = {"CLAUDE_CODE_PROCESS_WRAPPER": json.dumps([python, "-I", wrapper_path, "wrap"]), MOVE_DIR: str(directory)}
+    shim = directory / "process-wrapper"
+    content = shim_content(python, wrapper_path).encode()
+    old_shim = shim.read_bytes() if shim.exists() and not shim.is_symlink() else None
+    if shim.is_symlink() or (old_shim is not None and (
+            not old_shim.startswith(SHIM_HEADER.encode()) or (old_shim != content and not refresh))):
+        raise ValueError("existing wrapper file preserved; use --refresh for this helper's enrollment")
+    if not Path("/usr/bin/perl").is_file():
+        raise ValueError("enrollment requires the operating system /usr/bin/perl launcher")
+    expected = {"CLAUDE_CODE_PROCESS_WRAPPER": str(shim), MOVE_DIR: str(directory)}
     for key, value in expected.items():
-        if (key in env and env[key] != value
-                and not (refresh and key == "CLAUDE_CODE_PROCESS_WRAPPER"
-                         and own_wrapper(env[key], wrapper_path, "wrap"))):
+        if key in env and env[key] != value:
             raise ValueError("existing account-move or process wrapper setting preserved; reconcile explicitly")
     env.update(expected)
     groups = data.setdefault("hooks", {})
     if not isinstance(groups, dict):
         raise ValueError("hooks must be an object")
     command = shlex.join([python, "-I", wrapper_path, "hook"])
+    def own_hook(handler):
+        if not isinstance(handler, dict) or not isinstance(handler.get("command"), str):
+            return False
+        parts = shlex.split(handler["command"])
+        return len(parts) == 4 and parts[1:] == ["-I", wrapper_path, "hook"]
     for event, matcher in (("StopFailure", "rate_limit"), ("SessionStart", "resume")):
         entries = groups.setdefault(event, [])
         if not isinstance(entries, list):
@@ -300,7 +360,7 @@ def install(settings, directory, write=False, refresh=False):
                 if isinstance(existing, dict) and isinstance(existing.get("hooks"), list):
                     before = len(existing["hooks"])
                     existing["hooks"] = [handler for handler in existing["hooks"] if not (
-                        isinstance(handler, dict) and own_wrapper(handler.get("command"), wrapper_path, "hook"))]
+                        own_hook(handler))]
                     if before and not existing["hooks"]:
                         managed_groups.append(existing)
             entries[:] = [existing for existing in entries if existing not in managed_groups]
@@ -309,6 +369,8 @@ def install(settings, directory, write=False, refresh=False):
     if write:
         state_root({MOVE_DIR: str(directory)}, create=True)
         settings.parent.mkdir(parents=True, exist_ok=True)
+        write_bytes(shim, content, expected=old_shim)
+        shim.chmod(0o700)
         write_json(settings, data, expected=previous)
     return data
 
@@ -320,9 +382,10 @@ def uninstall(settings, write=False):
     data = json.loads(previous)
     if not isinstance(data, dict) or not isinstance(data.get("env"), dict) or not isinstance(data.get("hooks"), dict):
         raise ValueError("invalid enrollment settings; preserved")
-    script = str(runtime_script())
+    script = str(Path(__file__).resolve())
     env = data.get("env", {})
-    if not own_wrapper(env.get("CLAUDE_CODE_PROCESS_WRAPPER"), script, "wrap"):
+    shim = managed_shim(env)
+    if shim is None:
         raise ValueError("existing wrapper is not this helper's enrollment; preserved")
     env.pop("CLAUDE_CODE_PROCESS_WRAPPER")
     env.pop(MOVE_DIR, None)
@@ -331,12 +394,18 @@ def uninstall(settings, write=False):
         retained = []
         for entry in entries:
             handlers = entry.get("hooks", [])
-            remaining = [h for h in handlers if not own_wrapper(h.get("command"), script, "hook")]
+            remaining = []
+            for handler in handlers:
+                command = handler.get("command") if isinstance(handler, dict) else None
+                parts = shlex.split(command) if isinstance(command, str) else []
+                if len(parts) != 4 or parts[1:] != ["-I", script, "hook"]:
+                    remaining.append(handler)
             if remaining or not handlers:
                 retained.append({**entry, "hooks": remaining})
         data["hooks"][event] = retained
     if write:
         write_json(settings, data, expected=previous)
+        shim.unlink()
     return data
 
 

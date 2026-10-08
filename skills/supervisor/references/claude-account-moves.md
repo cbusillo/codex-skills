@@ -9,8 +9,9 @@ credentials, changes shells, or creates account homes or history links.
 ## Enrollment
 
 Enrollment is an explicit user-settings write, separate from delivering the
-source change. The helper refuses a task worktree or a dirty/non-default runtime
-checkout, using the maintained runtime binding lookup. Preview first, using the catalog's stable runtime path:
+source change. Install and refresh refuse a task worktree or a dirty/non-default runtime
+checkout, using the maintained runtime binding lookup. Uninstall recognizes its
+private wrapper directly, so removal also works while the runtime is blocked. Preview first, using the catalog's stable runtime path:
 
 ```sh
 uv run skills/supervisor/scripts/claude_account.py install --settings /absolute/shared/settings.json --move-dir /absolute/private/claude-moves
@@ -26,16 +27,18 @@ add `--write` to replace only this helper's existing wrapper and hook interprete
 To remove enrollment, preview `claude_account.py uninstall --settings
 /absolute/shared/settings.json`, then add `--write` within settings-write
 authority. Removal preserves other hooks/settings, transcripts and move state.
-Run these commands with `uv run` from the stable runtime, using a currently
-installed Python; they do not invoke the old pinned interpreter.
+Run these commands with `uv run` and a currently installed Python; they do not
+invoke the old pinned interpreter. Uninstall preserves the private move directory
+and requests while removing this helper's entrypoint and settings.
 The installed `env` has `CLAUDE_CODE_PROCESS_WRAPPER` and
-`CLAUDE_ACCOUNT_MOVE_DIR`; it registers `StopFailure` for `rate_limit` and
+`CLAUDE_ACCOUNT_MOVE_DIR`; the wrapper is one absolute executable path. It
+registers `StopFailure` for `rate_limit` and
 `SessionStart` for `resume`. No plugin hook or shell export is needed. Restart
 only the sessions covered by the enrollment authority so they read the settings.
 Do not stop a shared background service or the Director's sessions as a test.
 
 Use an absolute directory outside account homes, owned by the user with mode
-700. The helper creates it on the first eligible failure. Protect this directory
+700. Write enrollment creates it and its managed `process-wrapper` entrypoint. Protect this directory
 as private session evidence: requests contain working and transcript paths, but
 never error strings, tokens or credentials. Only sessions carrying `CLAUDE_ACCOUNT_MOVE_ENABLED=1` record or execute moves.
 The Supervisor terminal launcher contains this marker in a subshell for its
@@ -95,14 +98,26 @@ on its inherited home, allowing its ordinary wait-for-reset fallback.
    obsolete move with `claude_account.py cancel --session-id <native-uuid>` using
    the same move-directory environment. Verify the session first; this removes
    only its request and keeps the transcript. Do this before a later restart.
+   If the prepared target itself is limited, a new rate-limit hook after a
+   verified `continue` replaces the attempt and queries useNext again. If resume
+   succeeds but login fails, hand off the failed turn; the receipt does not
+   authorize a login or claim authentication succeeded.
+
+A move records one count-only launch receipt through the existing account
+reader when committing to the target, and retains it on an uncertain exec just
+as the launcher does. Retries reuse that receipt.
 
 The hook uses a per-session lock and atomic writes. It records only the affected
 session. The wrapper bounds its snapshot subprocess to 1.5 seconds to stay
 inside the launcher's roughly three-second startup budget; it is silent before
-exec. Enrollment records the absolute base Python interpreter with `-I`;
-`uv` stays outside the wrapper path so inherited `PATH`, `VIRTUAL_ENV` and other
-variables reach Claude unchanged. The account reader loads lazily only for a
-pending move. Failed exec/startup leaves the move request for recovery. A new rate limit
+exec. The entrypoint uses the operating system's `/usr/bin/perl` on supported
+POSIX hosts to preserve the inherited environment without a shell or Python
+startup. Ordinary commands go straight to exec. Only a pending marked UUID
+enters the absolute Python interpreter with `-I`; missing Python or helper source
+falls back to the original command. The entrypoint preserves pre-Python locale
+state across Python's C-locale coercion. The account reader loads lazily only for
+a pending move. Install refuses if the OS entrypoint interpreter is unavailable;
+qualify the supported host before enrollment. Failed exec/startup leaves the move request for recovery. A new rate limit
 replaces that session's previous attempt and clears its old resume receipt.
 
 ## Version qualification
