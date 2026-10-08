@@ -459,15 +459,17 @@ def is_local_host(host: str, *, bare_is_local: bool = True) -> bool:
 
 def redact_paths(text: str, *, embedded_path: bool = False) -> str:
     previous_path_end: int | None = None
+    checked_to = 0
 
     def replace(match: re.Match[str]) -> str:
-        nonlocal previous_path_end
-        if previous_path_end is not None and text.find("\n", previous_path_end, match.start()) != -1:
+        nonlocal previous_path_end, checked_to
+        if previous_path_end is not None and text.find("\n", checked_to, match.start()) != -1:
             previous_path_end = None
+        checked_to = match.end()
         result = redact_path_match(match, embedded_path=embedded_path, previous_path_end=previous_path_end)
         if result != match.group(0):
             quote = match.group("quoted")
-            quoted_argument = (quote == '"' and match.group(0).endswith(quote) and not match.group(0).endswith('\\"')
+            quoted_argument = (quote in {'"', '`'} and match.group(0).endswith(quote) and not match.group(0).endswith("\\" + quote)
                                and (match.end() == len(text) or text[match.end()] in " \t\r\n,;)]}"))
             previous_path_end = None if quoted_argument else match.end()
         return result

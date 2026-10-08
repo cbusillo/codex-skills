@@ -399,6 +399,9 @@ def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
     text = 'cp "/tmp/avatar.png" backend/media/uploads/avatar.png'
     if "backend/media/uploads/avatar.png" not in module.clean_text(text, redact_args):
         raise AssertionError("quoting an absolute argument must preserve the relative destination")
+    text = "moved from `/tmp/avatar.png` to `backend/media/uploads/avatar.png`"
+    if "backend/media/uploads/avatar.png" not in module.clean_text(text, redact_args):
+        raise AssertionError("closed Markdown code spans must preserve the relative destination")
     text = "Remember /Users/example/private.txt\nRemember backend/media/uploads/avatar.png"
     if "backend/media/uploads/avatar.png" not in module.clean_text(text, redact_args):
         raise AssertionError("a private path on an earlier line must not hide relative evidence")

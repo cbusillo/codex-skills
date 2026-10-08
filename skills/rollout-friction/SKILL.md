@@ -333,7 +333,8 @@ memory/profile/local-config candidates.
    `backend/media/uploads/avatar.png` remain readable.
    Later path fragments on a line with an ambiguous absolute path or redacted URL
    remain masked conservatively; double-quote the absolute filesystem argument
-   to preserve a separate relative one. Single-quote ambiguity remains conservative.
+   or use a closed backtick code span to preserve a separate relative one at an
+   argument boundary. Single-quote ambiguity remains conservative.
    Path redaction preserves public HTTP(S) URL paths except local file/editor and
    dev-server/tunnel file links; literal query/fragment paths and person data are
    still redacted. Other URI schemes and path-shaped query/fragment values are
