@@ -672,7 +672,6 @@ behavior; when both copies are exposed, select the maintained top-level source
 by its full path rather than combine conflicting workflows:
 
 - `openai-docs`
-- `plan`
 - `plugin-creator`
 - `skill-creator`
 
