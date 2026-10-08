@@ -77,8 +77,10 @@ class CleanupRunnerTests(unittest.TestCase):
             mode = os.environ.get("CODEX_CLEANUP_FIXTURE_MODE", "success")
             marker = json.loads((pathlib.Path(os.environ["CODEX_HOME"]) / "auth.json").read_text())["fixture_marker"]
             print(marker, file=sys.stderr, flush=True)
+            if mode in ("oversized", "oversized-native", "malformed"):
+                pathlib.Path("rejection-mode").write_text(mode, encoding="utf-8")
             if mode == "oversized":
-                sys.stdout.write("x" * (17 * 1024 * 1024))
+                sys.stdout.write(marker + "x" * (17 * 1024 * 1024))
                 sys.stdout.flush()
                 time.sleep(10)
             if mode == "timeout":
@@ -86,7 +88,7 @@ class CleanupRunnerTests(unittest.TestCase):
             output = pathlib.Path(args[args.index("-o") + 1])
             output.write_text("completed", encoding="utf-8")
             if mode == "malformed":
-                print("not-json", flush=True)
+                print("not-json " + marker, flush=True)
                 raise SystemExit(0)
             thread = "00000000-0000-0000-0000-000000000001"
             session = pathlib.Path(os.environ["CODEX_HOME"]) / "sessions/2026/09/13/rollout-test.jsonl"
@@ -115,7 +117,7 @@ class CleanupRunnerTests(unittest.TestCase):
             ]), encoding="utf-8")
             print(json.dumps({"type":"thread.started","thread_id":thread}))
             print(json.dumps({"type":"turn.started"}))
-            print(json.dumps({"type":"item.completed","item":{"type":"command_execution","command":"git status","aggregated_output":"","exit_code":0,"status":"completed"}}))
+            print(json.dumps({"type":"item.completed","item":{"type":"command_execution","command":"git status","aggregated_output":marker,"exit_code":0,"status":"completed"}}))
             print(json.dumps({"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}))
             """
         )
@@ -389,9 +391,15 @@ class CleanupRunnerTests(unittest.TestCase):
                 )
                 result = self.run_case(case)
                 self.assertEqual(2, result.returncode, result.stderr)
+                observed = self.workspace / "rejection-mode"
+                self.assertTrue(observed.is_file(), result.stderr)
+                self.assertEqual(mode, observed.read_text(encoding="utf-8"))
                 self.assertFalse(outcome.exists())
                 artifact = self.outcomes / f"cleanup-{mode}.artifacts"
-                self.assertNotIn(FIXTURE_AUTH_CANARY, result.stdout + result.stderr)
+                self.assertFalse(
+                    FIXTURE_AUTH_CANARY in result.stdout + result.stderr,
+                    "fixture auth echoed by runner",
+                )
                 for path in artifact.rglob("*"):
                     if path.is_file():
                         self.assertFalse(
