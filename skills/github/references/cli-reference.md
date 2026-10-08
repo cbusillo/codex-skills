@@ -591,74 +591,20 @@ Current Status and post `Released claim <claim-comment-id>` through the same bot
 identity. Release affects that exact comment, not another worker's
 record or retained branch/worktree evidence; those still need ordinary
 ownership and preservation review.
-The first release line is exactly `Released claim <id>`, or ends its exact ID
-with a period followed by optional handoff prose. A condition directly after
-the ID or conditional release/reclaiming prose later in that handoff refuses
-rather than release ownership early. For example, `Takes effect once PR #99
-merges`, `The next worker can pick this up once CI is green`, or
-`PR #99 must merge first. Then the next worker may claim` does not release the
-claim. Conditional successor actions (pick this up, resume, take over) and
-handoff completion are checked across the handoff for both release placements.
-The two-sentence handoff `PR #99 merges later today. Then the next worker
-may claim.` also preserves ownership. Following that schedule note with
-`Then retire the worktree.` or `Then the Supervisor routes deployment.` remains usable.
-Successor sequencing also includes `afterwards`, `At that point`, and trailing
-`then`; intervening receipt notes do not clear the condition. The reproduced
-`this afternoon` schedule, ownership passing to the next worker, passive issue
-claiming, and permission to resume `this` or claim `the work` (including `should
-claim`) preserve ownership too. Times such as `10 a.m. ET` remain part of their
-schedule sentence. Explicitly named follow-up claims and downstream deployment
-or cleanup remain independent. Recover with a fresh unconditional source-authored
-release or, for a separate retained handoff, a fresh source-authored handoff comment
-selected with `--handoff-comment`.
-Deferred effects such as `Takes effect upon merge.` and `Ownership transfers
-upon merge of PR #99.` refuse even in a later paragraph after a first-line
-release. Future-time and merge effects such as `Effective tomorrow.`,
-`Ownership transfers later today.`, `Ownership transfers with PR #99's merge.`,
-and `The next worker may claim on merging PR #99.` also preserve ownership;
-the same applies to `Effective on PR #99 merging.` and ownership transfer
-`at merge-train landing`. `Takes effect` prose also refuses without a condition
-word unless it says `now` or `immediately`; ordinary descriptions such as `Fix is effective
-across repos.` still work after a first-line release.
-Successor permission ending in `then` or `afterward(s)` also defers ownership
-when an adjacent future-time schedule follows it. Forward sequencing also
-recognizes `At that point,`, `afterward`, and `can then claim`.
-Future-modal `will merge this afternoon` schedules defer
-sequenced permission too; completed `merged this afternoon` handoffs remain usable.
-An adjacent prerequisite after successor permission also refuses, such as
-`The next worker can take over. PR #99 must merge first.` or a standalone
-`Wait until PR #99 merges.` following that permission.
-The exact release directive also supplies implicit permission for an adjacent
-standalone prerequisite: `Released claim 1. PR #99 must merge first.` refuses,
-as does `PR #99 must merge first.` immediately before a final release paragraph.
-Resuming permission and standalone `Wait until CI finishes`, `Please wait until
-PR #99 merges`, and `Hold off until PR #99 merges` prerequisites are checked too.
-Explicit release contingency (`Release is contingent on PR #99 merging`) and
-successor handoff effects (`Hands off to the next worker upon merge`) refuse
-in both placements. A deployment contingency or Supervisor routing condition
-does not itself defer ownership.
-Downstream routing and cleanup gates, such as `After PR #99 lands, close out
-the issue`, remain independent. A retained worktree's retirement instruction
-`use its host retire command after landing/closure and ownership/content checks`
-does not defer the claim release. A successor claim or ownership transfer
-condition in the same handoff still refuses. Recover ambiguous conditional
-handoffs (including destination/action wording such as `merges to deploy`) with
-a new, unconditional first-line exact-ID release from the source author after
-the source claim; the helper does not infer that a condition has become true.
+The release directive is an unquoted, unindented line exactly
+`Released claim <id>` (an ending period and trailing whitespace are allowed).
+It must be the first line or a standalone final paragraph, optionally followed
+by the helper's operation marker. Conditions or other prose on the directive
+line do not release ownership. Put handoff narrative on subsequent lines;
+for a conditional release, post the exact directive only when the condition is
+resolved. A final directive inside a code fence/raw HTML example, or following
+a colon introducing an example/instruction, is not a release.
 
-An exact release may also be a standalone final paragraph after the handoff
-prose, optionally followed by the helper's operation marker. It must be an
-unquoted, unindented `Released claim <id>` line (an ending period is allowed);
-fenced or raw HTML examples, inline mentions, and later prose do not count.
-The conditional-handoff checks above apply to all preceding prose.
-Conditional text on the release line, a preceding paragraph starting with
-`If`, `After`, `Once`, `When`, `Unless`, or `Until`, or an introduction ending
-with a colon also refuses. Use a separate first-line release when the embedded
-format is ambiguous. Conditional release/reclaiming prose anywhere in the
-preceding handoff also refuses, including `Takes effect upon merge.` before
-the final release paragraph. Downstream CI, routing and cleanup conditions
-remain independent, as for first-line releases. Recover with a new unconditional
-authored release; the helper does not infer that the earlier condition resolved.
+Release state comes from the exact authored directive and its structured source
+claim, not free prose elsewhere in the handoff. Cleanup, retirement, worktree,
+CI and routing sentences do not qualify the release. Other narrative does not
+revise the directive either; recorded issue/PR waits and native blockers are
+checked separately and still need existing resolution evidence.
 The same author must post it after the source claim;
 release does not resolve a recorded wait or authorize the next task's actions.
 Use one exact-ID release per comment; a first-line release takes precedence
@@ -837,12 +783,9 @@ another session sharing its bot login must not impersonate it. When the source
 session cannot record this, retained-work recovery remains blocked. Preserve
 the original records and use the new comment ID with `--handoff-comment`.
 A release posted after the old handoff does not validate it retroactively.
-An earlier unconditional release does not make a separate deferred handoff
-unconditional. Ownership conditions use the release-prose checks above;
-standalone prerequisites anywhere in a verified handoff qualify its permission.
-Recover with a fresh unconditional source-authored handoff and its new comment
-ID, rather than inferring that a condition resolved.
-Link the earlier handoff instead of quoting its conditional prose in the new one.
+The exact source-authored release owns release state. The selected handoff
+binds source identity and named retained PRs; its free prose is not scanned for
+release conditions. Recorded waits and competing ownership still refuse.
 Unmentioned same-bot PRs also refuse.
 The named PR identities bind their current branches to that finished session's
 handoff, including split branches that differ from the original claim branch.

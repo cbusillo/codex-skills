@@ -30,38 +30,6 @@ SPEC.loader.exec_module(PLAN)
 
 OWNER = {"worker": "trial-a", "session": "session-a", "branch": "work/issue-42", "claimed_at": "2026-10-01T00:00:00Z"}
 OTHER = {**OWNER, "worker": "trial-b", "session": "session-b", "branch": "work/other-42"}
-FUTURE_OWNERSHIP_EFFECTS = (
-    "Effective tomorrow.",
-    "Ownership transfers later today.",
-    "Ownership transfers with PR #99's merge.",
-    "The next worker may claim on merging PR #99.",
-    "Ownership transfers on merging PR #99.",
-    "Effective on PR #99 merging.",
-    "Ownership transfers at merge-train landing.",
-    "Ownership transfers on PR #99's merge.",
-    "Ownership transfers with #99's merge.",
-    "Effective on owner/repo#99 merging.",
-    "Effective at PR #99's merge.",
-)
-ALTERNATE_FUTURE_HANDOFFS = (
-    "PR #99 merges later today. The next worker may claim afterwards.",
-    "PR #99 merges later today. At that point the next session can resume.",
-    "PR #99 lands tomorrow. The next worker may claim then.",
-    "PR #99 merges later today. Receipts remain with this issue. Then the next worker may claim.",
-    "PR #99 merges this afternoon. Then the next worker may claim.",
-    "PR #99 merges later today. Then ownership passes to the next worker.",
-    "PR #99 lands tomorrow. Then the issue can be claimed.",
-    "PR #99 merges later today. Then you can resume this.",
-    "PR #99 merges later today. Then the next worker may claim the work.",
-    "PR #99 lands tomorrow. Then the next worker should claim.",
-    "PR #99 merges tomorrow at 10 a.m. ET. Then the next worker may claim.",
-    "PR #99 merges later today. Deploy window opens at 2 p.m. Then the next worker may claim.",
-    "PR #99 merges later today. At that point, the next session can resume.",
-    "PR #99 lands tomorrow. The next worker may claim afterward.",
-    "PR #99 lands tomorrow. The next worker can then claim.",
-    "The next worker may claim then. PR #99 merges later today.",
-    "PR #99 will merge this afternoon. Then the next worker may claim.",
-)
 RESPONSIBILITY_STATUS = (
     "After these proposals, 61 OPW and 57 CM provider-only entries would remain, "
     "owned by Launchplane engineering for evidence and Chris for production disposition approval."
@@ -320,6 +288,102 @@ class ClaimTests(unittest.TestCase):
         self.args.handoff_comment = 4
         self.run_claim()
 
+    def historical_direction_fixture(self, stage, *, refresh):
+        fixture = json.loads(Path(__file__).with_name("fixtures").joinpath(
+            f"direction-43-{stage}-handoff.json").read_text())
+        self.args.repo = fixture["repo"]
+        self.args.issue = str(fixture["issue"])
+        self.args.branch = "work/cs-1469-replay"
+        self.comments = [{**comment, "user": {"login": comment["author"]}}
+                         for comment in fixture["comments"]]
+        source, release, handoff = self.comments
+        branch = CLAIM.records(source["body"])[0]["branch"]
+        number = 44 if stage == "d2" else 46
+        retained_branch = "work/dir-43-d1" if stage == "d2" else branch
+        # D4's real summary lacks the standalone identity header. Replay it
+        # unchanged after its real exact release in the supported release-first
+        # envelope; a plain claim on its open PR remains unsupported.
+        if stage == "d4":
+            handoff["body"] = release["body"] + "\n\n" + handoff["body"]
+        self.args.resume_from = source["id"]
+        self.args.handoff_comment = handoff["id"]
+        self.args.refresh_pr = f"https://github.com/{fixture['repo']}/pull/{number}" if refresh else None
+        self.pulls = [{"number": number, "state": "open", "user": source["user"],
+                       "title": "Direction proposal", "body": "Refs #43",
+                       "head": {"ref": retained_branch, "repo": {"full_name": fixture["repo"]}},
+                       "base": {"repo": {"full_name": fixture["repo"]}}}]
+        self.targets[str(number)] = {**copy.deepcopy(self.issue), "state": "open",
+                                     "pull_request": {}, "body": "Refs #43"}
+        self.target_comments[f"/repos/{fixture['repo']}/issues/{number}/comments"] = []
+        self.inventory["local_branches"] = [branch, retained_branch]
+        self.inventory["remote_branches"] = [retained_branch]
+        self.inventory["worktrees"] = [{"branch": retained_branch, "path": f"/retained/{stage}"}]
+
+    def test_verbatim_direction_handoffs_accept_successor_and_released_source_pr_refresh(self):
+        for stage in ("d2", "d4"):
+            for refresh in (False, True):
+                with self.subTest(stage=stage, refresh=refresh):
+                    self.setUp()
+                    self.historical_direction_fixture(stage, refresh=refresh)
+                    before = copy.deepcopy((self.pulls, self.inventory))
+                    self.run_claim()
+                    result = self.emitted.call_args.args[0]
+                    self.assertTrue(result["ok"])
+                    self.assertIn("metadata_readback", result["completed_steps"])
+                    self.assertEqual(before, (self.pulls, self.inventory))
+                    self.assertEqual(result["claim"].get("refresh_pr"), self.args.refresh_pr)
+
+    def test_real_direction_refresh_preserves_release_pr_and_live_ownership_guards(self):
+        for change in ("plain", "missing_release", "conditional_release", "foreign_release",
+                       "unnamed_pr", "foreign_pr", "live_peer", "other_claim", "other_pr"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.historical_direction_fixture("d4", refresh=True)
+                source, release, handoff = self.comments
+                if change == "plain":
+                    self.args.resume_from = self.args.handoff_comment = self.args.refresh_pr = None
+                if change in ("missing_release", "conditional_release"):
+                    directive = f"Released claim {source['id']}"
+                    replacement = "Source work complete" if change == "missing_release" else directive + " once PR #46 merges"
+                    release["body"] = release["body"].replace(directive, replacement)
+                    handoff["body"] = handoff["body"].replace(directive, replacement)
+                if change == "foreign_release":
+                    release["user"] = handoff["user"] = {"login": "stranger"}
+                if change == "unnamed_pr":
+                    handoff["body"] = handoff["body"].replace("direction#46", "direction#47").replace("/pull/46", "/pull/47")
+                if change == "foreign_pr": self.pulls[0]["user"] = {"login": "stranger"}
+                if change == "live_peer":
+                    self.inventory["sessions"] = [{"sessionId": "live-source", "cwd": "/retained/d4"}]
+                if change == "other_claim": self.compete({**OTHER, "session": "other-live"})
+                if change == "other_pr":
+                    self.pulls.append({**copy.deepcopy(self.pulls[0]), "number": 47})
+                with self.assertRaises(PLAN.PlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_release_directive_is_exact_and_independent_of_handoff_narrative(self):
+        for final in (False, True):
+            with self.subTest(final=final):
+                self.setUp()
+                narrative = ("Their lock names the supported dev-worktree retire command for eventual retirement "
+                             "after merged/closed disposition and ownership/content checks.\n\n"
+                             "PR #99 must merge first. Then the next worker may claim.")
+                release = narrative + "\n\nReleased claim 1" if final else "Released claim 1\n\n" + narrative
+                self.released_status_fixture(release)
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_conditional_or_missing_release_directive_refuses_without_writes(self):
+        for directive in ("Released claim 1 once CI passes", "Released claim 1. Takes effect upon merge.",
+                          "Released claim 1 if PR #99 merges", "Source claim 1 is released"):
+            for final in (False, True):
+                with self.subTest(directive=directive, final=final):
+                    self.setUp()
+                    release = "Source work finished.\n\n" + directive if final else directive + "\nSource work finished."
+                    self.released_status_fixture(release)
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                    self.assertEqual(caught.exception.code, "claim_conflict")
+                    self.assert_no_writes()
+
     def direction_handoff_fixture(self, *, spelling="claim:", refresh=False):
         self.refresh_fixture()
         source = {**CLAIM.records(self.comments[0]["body"])[0],
@@ -357,7 +421,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_direction_source_claim_colon_preserves_provenance_and_release_guards(self):
         for refresh in (False, True):
-            for change in ("wrong_id", "id_prefix", "no_release", "foreign_author", "wrong_session", "deferred"):
+            for change in ("wrong_id", "id_prefix", "no_release", "foreign_author", "wrong_session"):
                 with self.subTest(refresh=refresh, change=change):
                     self.setUp()
                     self.direction_handoff_fixture(refresh=refresh)
@@ -372,8 +436,6 @@ class ClaimTests(unittest.TestCase):
                         handoff["user"]["login"] = "stranger"
                     if change == "wrong_session":
                         handoff["body"] = handoff["body"].replace("01a11bcc-2c5e-7872-9ff9-428d4f244d98", "different-session")
-                    if change == "deferred":
-                        handoff["body"] += "\n\nOwnership transfers upon merge of PR #99."
                     with self.assertRaises(PLAN.PlanError):
                         self.run_claim()
                     self.assert_no_writes()
@@ -388,95 +450,6 @@ class ClaimTests(unittest.TestCase):
         })
         self.args.handoff_comment = 4
 
-    def test_separate_deferred_handoff_requires_fresh_unconditional_recovery(self):
-        for prose in (
-            "Ownership transfers with PR #99's merge.",
-            "Ownership transfers upon merge of PR #99.",
-            "The next worker may claim on merging PR #99.",
-            "If CI passes, the next worker may claim.",
-            "PR #99 must merge first.",
-            "Wait until PR #99 merges.",
-            "Hold off until PR #99 merges.",
-            "Ownership transfers now.\n\n> Ownership transfers once PR #99 merges.",
-        ):
-            for refresh in (False, True):
-                with self.subTest(prose=prose, refresh=refresh):
-                    self.setUp()
-                    self.separate_handoff_fixture(prose, refresh=refresh)
-                    before = copy.deepcopy((self.issue, self.comments, self.pulls, self.inventory))
-                    # The earlier exact release is genuine; only the later
-                    # retained-artifact authorization is deferred.
-                    self.assertEqual(CLAIM.released_claim_id(self.comments[2]["body"]), 1)
-                    with self.assertRaises(PLAN.PlanError):
-                        self.run_claim()
-                    self.assert_no_writes()
-                    self.assertEqual(before, (self.issue, self.comments, self.pulls, self.inventory))
-                    # A new release alone cannot rewrite the selected handoff.
-                    self.comments.append({"id": 5, "body": "Released claim 1", "user": {"login": TEST_BOT}})
-                    with self.assertRaises(PLAN.PlanError):
-                        self.run_claim()
-                    self.assert_no_writes()
-                    self.comments.pop()  # Recovery needs the new handoff alone.
-                    self.comments.append({"id": 6, "body": self.comments[3]["body"].replace(prose, "Ownership transfers now."),
-                                          "user": {"login": TEST_BOT}})
-                    self.args.handoff_comment = 6
-                    artifacts = copy.deepcopy((self.pulls, self.inventory))
-                    self.run_claim()
-                    output = self.emitted.call_args.args[0]
-                    self.assertTrue(output["ok"])
-                    self.assertEqual(output["claim"].get("refresh_pr"), self.args.refresh_pr)
-                    if not refresh:
-                        self.assertTrue(output["claim"]["retained_handoff"].endswith("#issuecomment-6"))
-                    self.assertEqual(artifacts, (self.pulls, self.inventory))
-
-    def test_separate_handoff_identity_paragraph_layouts_preserve_conditions(self):
-        for layout in ("header_paragraph", "crlf", "spaced_blank", "single_newline", "session_footer", "pr_field",
-                       "release_header", "inline_release"):
-            for refresh in (False, True):
-                with self.subTest(layout=layout, refresh=refresh):
-                    self.setUp()
-                    self.separate_handoff_fixture("PR #99 must merge first.", refresh=refresh)
-                    body = self.comments[3]["body"]
-                    if layout == "header_paragraph":
-                        body = body.replace("trial-b\nSource", "trial-b\n\nSource")
-                    elif layout == "crlf":
-                        body = body.replace("\n", "\r\n")
-                    elif layout == "spaced_blank":
-                        body = body.replace("\n\n", "\n \n")
-                    elif layout == "single_newline":
-                        body = body.replace("\n\n", ".\n")
-                    elif layout == "session_footer":
-                        body = "Handoff from trial-b\nSource claim 1; PRs #99 and #100.\n\nPR #99 must merge first.\n\nSession: session-b"
-                    elif layout == "pr_field":
-                        body = "Handoff from trial-b\nSource claim 1; Session: session-b.\nOpen PRs: #99 and #100.\nPR #99 must merge first."
-                    elif layout == "release_header":
-                        body = "Released claim 1\nHandoff: PR #99 and #100.\nPR #99 must merge first."
-                    else:
-                        body = "Released claim 1. Handoff: PR #99 and #100. PR #99 must merge first."
-                    self.comments[3]["body"] = body
-                    with self.assertRaises(PLAN.PlanError):
-                        self.run_claim()
-                    self.assert_no_writes()
-                    self.comments.append({"id": 5, "body": body.replace("PR #99 must merge first.", "Ownership transfers now."),
-                                          "user": {"login": TEST_BOT}})
-                    self.args.handoff_comment = 5
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_later_release_handoff_keeps_its_own_condition_after_genuine_release(self):
-        for refresh in (False, True):
-            with self.subTest(refresh=refresh):
-                self.setUp()
-                self.separate_handoff_fixture("", refresh=refresh)
-                self.comments[3]["body"] = "Released claim 1\n\nIf CI passes, the next worker may claim.\nHandoff: PR #99 and #100."
-                with self.assertRaises(PLAN.PlanError):
-                    self.run_claim()
-                self.assert_no_writes()
-                self.comments.append({"id": 5, "body": "Released claim 1\n\nHandoff: PR #99 and #100.",
-                                      "user": {"login": TEST_BOT}})
-                self.args.handoff_comment = 5
-                self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_separate_unconditional_handoff_keeps_downstream_gates_usable(self):
         for prose in (
@@ -509,22 +482,6 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
-    def test_ambiguous_repeated_release_identity_recovers_with_separate_handoff(self):
-        for refresh in (False, True):
-            with self.subTest(refresh=refresh):
-                self.setUp()
-                self.separate_handoff_fixture("", refresh=refresh)
-                self.comments[3]["body"] = "Released claim 1\nSource claim 1, session session-b: PR #99 and #100 pending review"
-                self.assertEqual(CLAIM.released_claim_id(self.comments[2]["body"]), 1)
-                self.assertIsNone(CLAIM.released_claim_id(self.comments[3]["body"]))
-                with self.assertRaises(PLAN.PlanError):
-                    self.run_claim()
-                self.assert_no_writes()
-                self.comments.append({"id": 5, "body": "Handoff from trial-b\nSource claim 1, session session-b: PR #99 and #100 pending review",
-                                      "user": {"login": TEST_BOT}})
-                self.args.handoff_comment = 5
-                self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_cross_repository_uses_canonical_planning_label_configuration(self):
         self.cross_repository_fixture()
@@ -693,36 +650,6 @@ class ClaimTests(unittest.TestCase):
         self.assertIn("metadata_readback", output["completed_steps"])
         self.assertEqual(before, (self.inventory, self.pulls, self.closed_pulls))
 
-    def test_cleanup_handoff_does_not_release_a_conditional_successor(self):
-        for condition in (
-            "The next worker may claim after landing/closure and ownership/content checks.",
-            "Ownership transfers after landing/closure and ownership/content checks.",
-            "The next session may continue once ownership/content checks pass.",
-            "Use its host retire command after landing/closure and ownership/content checks, then the next worker may claim.",
-            "Use its host retire command after landing/closure and ownership/content checks. Then the next worker may pick it up.",
-            "Use its host retire command after landing/closure and ownership/content checks; the next worker may pick it up then.",
-            "Use its host retire command after landing/closure and ownership/content checks. The next worker may claim afterward.",
-            "Use its host retire command after landing/closure and ownership/content checks. Receipts stay on Developer-Artifacts. Then the next worker may claim.",
-            "Use its host retire command after landing/closure and ownership/content checks. Then the next worker may start.",
-        ):
-            with self.subTest(condition=condition):
-                self.setUp()
-                self.cleanup_handoff_fixture()
-                release = CLAIM.without_operation_marker(self.comments[2]["body"])
-                if condition.startswith("Use its host retire command"):
-                    # Change the real instruction instead of adding a second
-                    # ownership-check sentence that could mask the guard.
-                    release = release.replace(
-                        "use its host retire command after landing/closure and ownership/content checks.", condition,
-                    )
-                else:
-                    release += "\n\n" + condition
-                self.comments[2]["body"] = release
-                self.assertIsNone(CLAIM.released_claim_id(self.comments[2]["body"]))
-                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                    self.run_claim()
-                self.assertEqual(caught.exception.code, "claim_conflict")
-                self.assert_no_writes()
 
     def test_ordinary_handoff_preserves_issue_and_every_retained_pr_wait(self):
         for place in ("issue", "99", "100"):
@@ -2110,7 +2037,7 @@ class ClaimTests(unittest.TestCase):
         self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": OTHER["branch"]}]
 
     def test_resume_replaces_exact_released_status_and_posts_successor_claim(self):
-        for release in ("Released claim 1", "Released claim 1. Source work landed."):
+        for release in ("Released claim 1", "Released claim 1.\nSource work landed."):
             with self.subTest(release=release):
                 self.setUp()
                 self.released_status_fixture(release)
@@ -2177,7 +2104,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_period_release_works_without_status_and_with_refresh_handoff(self):
         self.comments = [{"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
-                         {"id": 2, "body": "Released claim 1. Work finished.", "user": {"login": TEST_BOT}}]
+                         {"id": 2, "body": "Released claim 1.\nWork finished.", "user": {"login": TEST_BOT}}]
         self.run_claim()
         self.setUp()
         self.refresh_fixture()
@@ -2190,768 +2117,6 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(PLAN.PlanError): self.run_claim()
         self.assert_no_writes()
 
-    def test_conditional_first_line_exact_releases_preserve_and_recover_claims(self):
-        releases = (
-            "Released claim 1\n\nIf CI passes, the next worker may claim.",
-            "Released claim 1. Takes effect once PR #99 merges.",
-            "Released claim 1. If CI passes, the next worker may claim.",
-            "Released claim 1\r\n\r\nOnce PR #99 merges, the next worker may claim.",
-            "Released claim 1\nUnless CI fails, the next worker may claim.",
-            "Released claim 1\n\nThis only takes effect after PR #99 merges; do not claim until then.",
-            "Released claim 1\n\nThe next worker may claim only once PR #99 merges.",
-            "Released claim 1. Do not claim before PR #99 merges.",
-            "Released claim 1\n\n- If CI passes, the next worker may claim.",
-            "Released claim 1\n\n**If** CI passes, the next worker may claim.",
-            "Released claim 1\n\nOnly after PR #99 merges may the next worker claim.",
-            "Released claim 1\n\nProvided CI passes, the next worker may claim.",
-            "Released claim 1. Effective on merge of PR #99.",
-            "Released claim 1. Wait for PR #99 to merge, then claim.",
-            "Released claim 1\n\nThe next worker may claim as soon as CI is green.",
-            "Released claim 1. Takes effect upon merge of PR #99.",
-            "Released claim 1. Takes effect on merging PR #99.",
-            "Released claim 1. Effective post-merge.",
-            "Released claim 1. Takes effect at merge.",
-            "Released claim 1. Only after PR #99 merges.",
-            "Released claim 1. Only once CI passes.",
-            "Released claim 1. Not until PR #99 merges.",
-            "Released claim 1\n\nWait for PR #99 to merge. Then the next worker may claim.",
-            "Released claim 1\n\nIf CI passes:\n\n- the next worker may claim.",
-        )
-        for release in releases:
-            for retained in (False, True):
-                with self.subTest(release=release, retained=retained):
-                    self.setUp()
-                    if retained:
-                        self.released_status_fixture(release)
-                    else:
-                        self.comments = [
-                            {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
-                            {"id": 2, "body": release, "user": {"login": TEST_BOT}},
-                        ]
-                    with self.assertRaises(PLAN.ClassifiedPlanError):
-                        self.run_claim()
-                    self.assert_no_writes()
-                    self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
-                                          "created_at": "2026-10-01T00:02:00Z",
-                                          "user": {"login": TEST_BOT}})
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_future_ownership_effects_preserve_and_recover_claims(self):
-        for prose in FUTURE_OWNERSHIP_EFFECTS:
-            for final in (False, True):
-                for retained in (False, True):
-                    with self.subTest(prose=prose, final=final, retained=retained):
-                        self.setUp()
-                        release = (prose + "\n\nReleased claim 1" if final
-                                   else "Released claim 1\n\n" + prose)
-                        self.released_status_fixture(release)
-                        if not retained:
-                            self.issue["body"] = PLAN.template_body("Repair")
-                            self.args.resume_from = None
-                            self.inventory["local_branches"] = []
-                            self.inventory["worktrees"] = []
-                        with self.assertRaises(PLAN.ClassifiedPlanError):
-                            self.run_claim()
-                        self.assert_no_writes()
-                        self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
-                                              "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
-                        self.run_claim()
-                        output = self.emitted.call_args.args[0]
-                        self.assertTrue(output["ok"])
-                        self.assertEqual(CLAIM.records(self.issue["body"]), [output["claim"]])
-
-    def test_future_ownership_effect_refresh_requires_unconditional_handoff(self):
-        for prose in FUTURE_OWNERSHIP_EFFECTS:
-            with self.subTest(prose=prose):
-                self.setUp()
-                self.refresh_fixture()
-                self.comments[2]["body"] = "Released claim 1\n\nHandoff: PR #99 and #100.\n\n" + prose
-                with self.assertRaises(PLAN.PlanError):
-                    self.run_claim()
-                self.assert_no_writes()
-                self.comments.append({"id": 4, "body": "Released claim 1\nHandoff: PR #99 and #100.",
-                                      "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
-                self.args.handoff_comment = 4
-                self.run_claim()
-                self.assertEqual(self.emitted.call_args.args[0]["claim"]["refresh_pr"], self.args.refresh_pr)
-
-    def test_future_downstream_effects_keep_unconditional_handoff_usable(self):
-        for prose in (
-            "Deployment starts tomorrow.",
-            "Supervisor routes PR #99 later today.",
-            "Deployment starts with PR #99's merge.",
-            "Supervisor routes PR #99 on merging PR #100.",
-            "Deployment starts on PR #99 merging.",
-            "Worktree cleanup runs at merge-train landing.",
-            "Ownership transfers immediately. Supervisor routes PR #99 later today.",
-            "The next worker can resume on work/tomorrow.",
-            "The next worker can resume on work/later-today.",
-        ):
-            with self.subTest(prose=prose):
-                self.setUp()
-                self.refresh_fixture()
-                self.comments[2]["body"] = "Released claim 1\n\nHandoff: PR #99 and #100.\n\n" + prose
-                self.run_claim()
-                self.assertEqual(self.emitted.call_args.args[0]["claim"]["refresh_pr"], self.args.refresh_pr)
-
-    def test_schedule_notes_and_merging_work_keep_genuine_release_usable(self):
-        for release in (
-            "Released claim 1. Tomorrow I start #1402.",
-            "Released claim 1\n\nLater today the deploy completes.",
-            "Released claim 1\n\nThe next worker can take over the remaining work on merging the stacked PRs.",
-        ):
-            with self.subTest(release=release):
-                self.setUp()
-                self.released_status_fixture(release)
-                self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_nonadjacent_first_line_effects_preserve_and_recover_claims(self):
-        for prose in (
-            "Takes effect upon merge.",
-            "Ownership transfers upon merge of PR #99.",
-            "Source work is finished.\n\nTakes effect upon merge.",
-            "Effective post-merge.",
-            "Ownership transfers at merge.",
-            "The next worker may claim post-merge.",
-            "**Takes effect** upon merge.",
-            "Ownership transfers upon landing.",
-            "Takes effect on merging PR #99.",
-            "Takes effect with PR #99's merge.",
-            "Takes effect on PR #99 merging.",
-            "Takes effect later today.",
-            "Fix is effective upon deploy.",
-            "> Config takes effect on restart.",
-        ):
-            for retained in (False, True):
-                with self.subTest(prose=prose, retained=retained):
-                    self.setUp()
-                    self.released_status_fixture("Released claim 1\n\n" + prose)
-                    if not retained:
-                        self.issue["body"] = PLAN.template_body("Repair")
-                        self.args.resume_from = None
-                        self.inventory["local_branches"] = []
-                        self.inventory["worktrees"] = []
-                    with self.assertRaises(PLAN.ClassifiedPlanError):
-                        self.run_claim()
-                    self.assert_no_writes()
-                    self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
-                                          "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
-                    self.run_claim()
-                    output = self.emitted.call_args.args[0]
-                    self.assertTrue(output["ok"])
-                    self.assertEqual(CLAIM.records(self.issue["body"]), [output["claim"]])
-
-    def test_nonadjacent_first_line_effect_refresh_needs_unconditional_handoff(self):
-        for prose in ("Takes effect upon merge.", "Ownership transfers upon merge of PR #99."):
-            with self.subTest(prose=prose):
-                self.setUp()
-                self.refresh_fixture()
-                self.comments[2]["body"] = (
-                    "Released claim 1\n\nHandoff: PR #99 and #100.\n\n" + prose
-                )
-                with self.assertRaises(PLAN.PlanError):
-                    self.run_claim()
-                self.assert_no_writes()
-                self.comments.append({"id": 4, "body": "Released claim 1\nHandoff: PR #99 and #100.",
-                                      "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
-                self.args.handoff_comment = 4
-                self.run_claim()
-                self.assertEqual(self.emitted.call_args.args[0]["claim"]["refresh_pr"], self.args.refresh_pr)
-
-    def test_first_line_effect_terms_keep_downstream_routing_usable(self):
-        for prose in (
-            "Supervisor routes PR #99 upon merge of PR #100.",
-            "Worktree cleanup runs post-merge.",
-            "Deployment starts at merge.",
-            "Source work is finished.\n\nFix is effective across repos.",
-            "Source work is finished.\n\nOwnership transfers immediately.",
-            "Source work is finished.\n\nTakes effect now.",
-            "Source work is finished.\n\nTakes effect immediately.",
-            "The next worker can resume on work/issue-42-post-merge-cleanup.",
-            "PR #99 is parked at merge-train batch abc, so the next worker can pick this up now.",
-            "Upon resuming, rebase onto main.",
-        ):
-            with self.subTest(prose=prose):
-                self.setUp()
-                self.refresh_fixture()
-                self.comments[2]["body"] = "Released claim 1\n\nHandoff: PR #99 and #100.\n\n" + prose
-                self.run_claim()
-                self.assertEqual(self.emitted.call_args.args[0]["claim"]["refresh_pr"], self.args.refresh_pr)
-
-    def test_contingent_release_and_handoff_preserve_and_recover_claims(self):
-        for prose in (
-            "Release is contingent on PR #99 merging.",
-            "Release is contingent upon PR #99 merging.",
-            "Hands off to the next worker upon merge.",
-            "Hands off to the next worker at merge.",
-            "Hands off to the next worker post-merge.",
-        ):
-            for final in (False, True):
-                for retained in (False, True):
-                    with self.subTest(prose=prose, final=final, retained=retained):
-                        self.setUp()
-                        release = (prose + "\n\nReleased claim 1" if final
-                                   else "Released claim 1\n\n" + prose)
-                        self.released_status_fixture(release)
-                        if not retained:
-                            self.issue["body"] = PLAN.template_body("Repair")
-                            self.args.resume_from = None
-                            self.inventory["local_branches"] = []
-                            self.inventory["worktrees"] = []
-                        with self.assertRaises(PLAN.ClassifiedPlanError):
-                            self.run_claim()
-                        self.assert_no_writes()
-                        self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
-                                              "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
-                        self.run_claim()
-                        output = self.emitted.call_args.args[0]
-                        self.assertTrue(output["ok"])
-                        self.assertEqual(CLAIM.records(self.issue["body"]), [output["claim"]])
-
-    def test_contingent_handoff_refresh_requires_new_authored_release(self):
-        for prose in (
-            "Release is contingent on PR #99 merging.",
-            "Release is contingent upon PR #99 merging.",
-            "Hands off to the next worker upon merge.",
-            "Hands off to the next worker at merge.",
-            "Hands off to the next worker post-merge.",
-        ):
-            for final in (False, True):
-                with self.subTest(prose=prose, final=final):
-                    self.setUp()
-                    self.refresh_fixture()
-                    handoff = "Handoff from trial-b\nSource claim 1; Session: session-b; PR #99 and #100.\n\n"
-                    self.comments[2]["body"] = (handoff + prose + "\n\nReleased claim 1" if final
-                                               else "Released claim 1\n\n" + handoff + prose)
-                    with self.assertRaises(PLAN.PlanError):
-                        self.run_claim()
-                    self.assert_no_writes()
-                    self.comments.append({"id": 4, "body": "Released claim 1\nHandoff: PR #99 and #100.",
-                                          "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
-                    self.args.handoff_comment = 4
-                    self.run_claim()
-                    self.assertEqual(self.emitted.call_args.args[0]["claim"]["refresh_pr"], self.args.refresh_pr)
-
-    def test_contingent_downstream_routing_keeps_unconditional_release_usable(self):
-        for prose in (
-            "Source session finished. Deployment is contingent on PR #99 merging.",
-            "Source session finished. Deployment is contingent upon PR #99 merging.",
-            "Source session finished. Supervisor hands off to the merge train upon CI completion.",
-            "Source session finished. Supervisor hands off to the merge train at merge.",
-            "Source session finished. Supervisor hands off to the merge train post-merge.",
-            "Hands off to the next worker now. Supervisor routes PR #99 after CI passes.",
-        ):
-            for final in (False, True):
-                with self.subTest(prose=prose, final=final):
-                    self.setUp()
-                    release = (prose + "\n\nReleased claim 1" if final
-                               else "Released claim 1\n\n" + prose)
-                    self.released_status_fixture(release)
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_future_time_sequences_preserve_and_recover_claims(self):
-        for handoff in (
-            "PR #99 merges later today. Then the next worker may claim.",
-            "PR #99 merges later today. Then, the next worker may claim.",
-            "PR #99 merges later today. Then you may claim.",
-            "PR #99 merges later today. Then you can take over.",
-            "PR #99 lands tomorrow. Then the next agent can resume.",
-            "PR #99 lands tomorrow. Then you can resume work on this issue.",
-            "PR #99 merges later today. Then another worker may claim.",
-            "Delivery happens at merge-train landing. Then the next worker may claim.",
-            "PR #99 lands tomorrow. Then the next session can resume.",
-            "CI finishes later today. Then take over.",
-        ):
-            for final in (False, True):
-                for retained in (False, True):
-                    with self.subTest(handoff=handoff, final=final, retained=retained):
-                        self.setUp()
-                        release = (handoff + "\n\nReleased claim 1" if final
-                                   else "Released claim 1\n\n" + handoff)
-                        if retained:
-                            self.released_status_fixture(release)
-                        else:
-                            self.comments = [
-                                {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
-                                {"id": 2, "body": release, "user": {"login": TEST_BOT}},
-                            ]
-                        with self.assertRaises(PLAN.ClassifiedPlanError):
-                            self.run_claim()
-                        self.assert_no_writes()
-                        self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
-                                              "created_at": "2026-10-01T00:02:00Z",
-                                              "user": {"login": TEST_BOT}})
-                        self.run_claim()
-                        self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_future_time_sequences_keep_genuine_releases_usable(self):
-        for handoff in (
-            "PR #99 merges later today. Then the Supervisor routes deployment.",
-            "PR #99 lands tomorrow. Then retire the worktree.",
-            "PR #99 lands tomorrow. Then publish the release notes.",
-            "PR #99 merges later today. Then the Supervisor takes over deployment.",
-            "The drill runs tomorrow. Then the train resumes.",
-            "The train runs tomorrow. Then the next worker verifies the release on prod.",
-            "PR #99 lands tomorrow. Then the next session drafts the release notes.",
-            "The drill runs tomorrow. Then the train can resume.",
-            "The merge freeze ends tomorrow. Then deploys can resume.",
-            "PR #99 lands tomorrow. Then claim follow-up #1440.",
-            "PR #99 lands tomorrow. Then the Supervisor moves deployment ownership to the train.",
-            "PR #99 lands tomorrow. Then the next worker can claim follow-up #1440.",
-            "PR #99 merges later today. Then the next session takes over deployment.",
-            "The train deploys tomorrow. Then you can resume monitoring the rollout.",
-            "PR #99 merges later today. The next worker may claim now.",
-            "Source session ended at 11 p.m. When you resume, rebase on main first.",
-            "Source session finished. The next session can resume now.",
-            "PR #99 merged yesterday. Then the next worker may claim.",
-        ):
-            for final in (False, True):
-                with self.subTest(handoff=handoff, final=final):
-                    self.setUp()
-                    release = (handoff + "\n\nReleased claim 1" if final
-                               else "Released claim 1\n\n" + handoff)
-                    self.released_status_fixture(release)
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_alternate_future_sequences_preserve_and_recover_claims(self):
-        for handoff in ALTERNATE_FUTURE_HANDOFFS:
-            for final in (False, True):
-                with self.subTest(handoff=handoff, final=final):
-                    self.setUp()
-                    release = (handoff + "\n\nReleased claim 1" if final
-                               else "Released claim 1\n\n" + handoff)
-                    self.released_status_fixture(release)
-                    with self.assertRaises(PLAN.ClassifiedPlanError):
-                        self.run_claim()
-                    self.assert_no_writes()
-                    self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
-                                          "created_at": "2026-10-01T00:02:00Z",
-                                          "user": {"login": TEST_BOT}})
-                    self.run_claim()
-                    output = self.emitted.call_args.args[0]
-                    self.assertTrue(output["ok"])
-                    self.assertEqual(CLAIM.records(self.issue["body"]), [output["claim"]])
-
-    def test_alternate_future_sequences_require_unconditional_retained_handoff(self):
-        for handoff in ALTERNATE_FUTURE_HANDOFFS:
-            for refresh in (False, True):
-                with self.subTest(handoff=handoff, refresh=refresh):
-                    self.setUp()
-                    self.separate_handoff_fixture(handoff, refresh=refresh)
-                    with self.assertRaises(PLAN.PlanError):
-                        self.run_claim()
-                    self.assert_no_writes()
-                    self.comments.append({"id": 5, "body": "Handoff from trial-b\n"
-                                          "Source claim 1; Session: session-b; PR #99 and #100.",
-                                          "user": {"login": TEST_BOT}})
-                    self.args.handoff_comment = 5
-                    self.run_claim()
-                    output = self.emitted.call_args.args[0]
-                    self.assertTrue(output["ok"])
-                    self.assertEqual(output["claim"].get("refresh_pr"), self.args.refresh_pr)
-
-    def test_alternate_future_sequences_keep_downstream_releases_usable(self):
-        for handoff in (
-            "PR #99 merged this afternoon. Then the next worker may claim.",
-            "Source work landed. Then the next worker may claim. Follow-up PR #100 merges tomorrow.",
-            "PR #99 merged this afternoon. At that point, the next session can resume.",
-            "PR #99 merged this afternoon. The next worker may claim afterward.",
-            "PR #99 merged this afternoon. The next worker can then claim.",
-            "The next worker may claim then. PR #99 merged this afternoon.",
-            "PR #99 merges later today. At that point, the next session can resume deployment.",
-            "PR #99 lands tomorrow. The next worker may claim follow-up #1440 afterward.",
-            "PR #99 lands tomorrow. The next worker can then claim follow-up #1440.",
-            "The Supervisor routes deployment then. PR #99 merges later today.",
-            "PR #99 will merge this afternoon. Then publish the release notes.",
-            "PR #99 merges later today. The Supervisor routes deployment afterwards.",
-            "PR #99 merges later today. At that point the next session can resume deployment.",
-            "PR #99 lands tomorrow. The next worker may claim follow-up #1440 then.",
-            "PR #99 merges later today. Receipts remain with this issue. Then retire the worktree.",
-            "PR #99 merges this afternoon. Then publish the release notes.",
-            "PR #99 merges later today. Then deployment ownership passes to the train.",
-            "PR #99 lands tomorrow. Then the release can be claimed by the deploy service.",
-            "PR #99 lands tomorrow. Then the next worker should claim follow-up #1440.",
-            "PR #99 merges tomorrow at 10 a.m. ET. Then the Supervisor routes deployment.",
-            "PR #99 merges later today. The next worker may claim now.",
-        ):
-            for final in (False, True):
-                with self.subTest(handoff=handoff, final=final):
-                    self.setUp()
-                    release = (handoff + "\n\nReleased claim 1" if final
-                               else "Released claim 1\n\n" + handoff)
-                    self.released_status_fixture(release)
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_ambiguous_distant_future_sequence_has_unconditional_recovery(self):
-        handoff = ("PR #99 lands tomorrow; the Supervisor routes deployment. "
-                   "Source work is complete and CI is green. Then the next worker may claim.")
-        for final in (False, True):
-            with self.subTest(final=final):
-                self.setUp()
-                self.released_status_fixture(handoff + "\n\nReleased claim 1" if final
-                                             else "Released claim 1\n\n" + handoff)
-                with self.assertRaises(PLAN.ClassifiedPlanError):
-                    self.run_claim()
-                self.assert_no_writes()
-                self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
-                                      "created_at": "2026-10-01T00:02:00Z",
-                                      "user": {"login": TEST_BOT}})
-                self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_future_time_sequence_refresh_requires_unconditional_handoff(self):
-        for final in (False, True):
-            with self.subTest(final=final):
-                self.setUp()
-                self.refresh_fixture()
-                handoff = ("Handoff from trial-b\nSource claim 1; Session: session-b; PR #99 and #100.\n\n"
-                           "PR #99 merges later today. Then the next worker may claim.")
-                self.comments[2]["body"] = (handoff + "\n\nReleased claim 1" if final
-                                           else "Released claim 1\n\n" + handoff)
-                with self.assertRaises(PLAN.PlanError):
-                    self.run_claim()
-                self.assert_no_writes()
-                self.comments.append({"id": 4, "body": "Released claim 1\nHandoff: PR #99 and #100.",
-                                      "user": {"login": TEST_BOT}})
-                self.args.handoff_comment = 4
-                self.run_claim()
-                self.assertEqual(self.emitted.call_args.args[0]["claim"]["refresh_pr"], self.args.refresh_pr)
-
-    def test_conditional_successor_actions_preserve_and_recover_claims(self):
-        handoffs = (
-            "The next worker can pick this up once PR #99 merges.",
-            "Next worker may resume once CI is green.",
-            "Hold until PR #99 merges, then take over.",
-            "Hold until PR #99 merges. Then take over.",
-            "Hold until PR #99 merges. The next session can take over.",
-            "- Hold until PR #99 merges.\n- Then take over.",
-            "1. Hold until PR #99 merges.\n2. Then take over.",
-            "- Once PR #99 merges.\n- The next worker may claim.",
-            "- Once PR #99 merges.\n- The next session can take over.",
-            "Once PR #99 merges. The next session can take over.",
-            "If you take over, do so only after PR #99 merges.",
-            "If you take over, only do so after PR #99 merges.",
-            "CI must pass. Then the next worker may claim.",
-            "PR #99 must merge. Then take over.",
-            "The next session can take over once PR #99 lands.",
-            "Handoff completes when PR #99 merges.",
-            "PR #99 must merge first. Then the next worker may claim.",
-            "The next worker can pick it up once PR #99 merges.",
-            "The next session takes over once PR #99 lands.",
-            "Resume once CI is green.",
-            "The successor may resume after PR #99 merges.",
-            "The next Claude session can resume once CI is green.",
-            "PR #99 must be merged first. Then the next worker may claim.",
-            "CI must be green first. Then the next worker may claim.",
-            "First, PR #99 must merge. Then the next worker may claim.",
-            "PR #99 must merge first. The next worker can take over.",
-            "The next worker can pick up this issue once CI is green.",
-            "The next session can take it over once PR #99 lands.",
-            "The next session is taking over once PR #99 lands.",
-            "Handoff is complete once PR #99 merges.",
-            "Handoff completed when PR #99 merges.",
-            "Wait until PR #99 merges. Then take over.",
-            "Wait until PR #99 merges. The next worker can take over.",
-            "Wait until PR #99 is merged. Then take over.",
-            "Wait until PR #99 merges into main. The next worker can take over.",
-        )
-        for handoff in handoffs:
-            for final in (False, True):
-                for retained in (False, True):
-                    with self.subTest(handoff=handoff, final=final, retained=retained):
-                        self.setUp()
-                        release = (handoff + "\n\nReleased claim 1" if final
-                                   else "Released claim 1\n\n" + handoff)
-                        if retained:
-                            self.released_status_fixture(release)
-                        else:
-                            self.comments = [
-                                {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
-                                {"id": 2, "body": release, "user": {"login": TEST_BOT}},
-                            ]
-                        with self.assertRaises(PLAN.ClassifiedPlanError):
-                            self.run_claim()
-                        self.assert_no_writes()
-                        self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
-                                              "created_at": "2026-10-01T00:02:00Z",
-                                              "user": {"login": TEST_BOT}})
-                        self.run_claim()
-                        self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_successor_action_refresh_requires_unconditional_handoff(self):
-        for handoff in ("Next worker may resume once CI is green.",
-                        "PR #99 must merge first. Then the next worker may claim."):
-            with self.subTest(handoff=handoff):
-                self.setUp()
-                self.refresh_fixture()
-                self.comments[2]["body"] = "Released claim 1\n\n" + handoff + "\nHandoff: PR #99 and #100."
-                with self.assertRaises(PLAN.PlanError):
-                    self.run_claim()
-                self.assert_no_writes()
-                self.comments.append({"id": 4, "body": "Released claim 1\nHandoff: PR #99 and #100.",
-                                      "user": {"login": TEST_BOT}})
-                self.args.handoff_comment = 4
-                self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_reversed_successor_prerequisites_preserve_and_recover_claims(self):
-        for prerequisite in (
-            "PR #99 must merge first.", "Wait until PR #99 merges.",
-            "Hold until PR #99 merges.", "Not until PR #99 merges.", "Only after PR #99 merges.",
-            "Wait until PR #99 is merged.", "Wait until PR #99 merges into main.",
-            "Wait until PR #99 merges first.", "Wait until PR #99 merges to main.", "Not until PR #99 lands on main.",
-            "PR #99 must merge first; CI is still running.", "Wait until PR #99 merges; it is queued.",
-        ):
-            prose = "The next worker can take over. " + prerequisite
-            for release in ("Released claim 1\n\n" + prose, prose + "\n\nReleased claim 1"):
-                for retained in (False, True):
-                    with self.subTest(release=release, retained=retained):
-                        self.setUp()
-                        if retained:
-                            self.released_status_fixture(release)
-                        else:
-                            self.comments = [
-                                {"id": 1, "body": CLAIM.marker(OTHER), "created_at": "2026-10-01T00:00:00Z",
-                                 "user": {"login": TEST_BOT}},
-                                {"id": 2, "body": release, "created_at": "2026-10-01T00:01:00Z",
-                                 "user": {"login": TEST_BOT}},
-                            ]
-                        with self.assertRaises(PLAN.PlanError):
-                            self.run_claim()
-                        self.assert_no_writes()
-                        recovery_id = len(self.comments) + 1
-                        self.comments.append({"id": recovery_id, "body": "Released claim 1. Source session finished.",
-                                              "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
-                        self.run_claim()
-                        self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_implicit_prerequisites_and_resuming_preserve_and_recover_claims(self):
-        releases = (
-            "Released claim 1. PR #99 must merge first.",
-            "Released claim 1. Wait until PR #99 merges.",
-            "PR #99 must merge first.\n\nReleased claim 1",
-            "Released claim 1\n\nThe next session is resuming once CI is green.",
-            "Released claim 1\n\nThe next worker can take over. Wait until CI finishes.",
-            "The next worker can take over. Wait until CI finishes.\n\nReleased claim 1",
-            "Released claim 1\n\nThe next worker can take over. Please wait until PR #99 merges.",
-            "The next worker can take over. Please wait until PR #99 merges.\n\nReleased claim 1",
-            "Released claim 1\n\nThe next worker can take over. Hold off until PR #99 merges.",
-            "The next worker can take over. Hold off until PR #99 merges.\n\nReleased claim 1",
-            "Released claim 1. Please wait for PR #99 to merge.",
-            "The next worker can take over. Please hold off until PR #99 merges.\n\nReleased claim 1",
-        )
-        for release in releases:
-            for retained in (False, True):
-                with self.subTest(release=release, retained=retained):
-                    self.setUp()
-                    if retained:
-                        self.released_status_fixture(release)
-                    else:
-                        self.comments = [
-                            {"id": 1, "body": CLAIM.marker(OTHER), "created_at": "2026-10-01T00:00:00Z",
-                             "user": {"login": TEST_BOT}},
-                            {"id": 2, "body": release, "created_at": "2026-10-01T00:01:00Z",
-                             "user": {"login": TEST_BOT}},
-                        ]
-                    with self.assertRaises(PLAN.ClassifiedPlanError):
-                        self.run_claim()
-                    self.assert_no_writes()
-                    self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
-                                          "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_implicit_permission_keeps_downstream_prerequisites_usable(self):
-        for handoff in (
-            "PR #99 must merge first. Then close out the issue.",
-            "Wait until PR #99 merges. Then close out the issue.",
-            "The next worker can take over. Wait until CI finishes. Then merge PR #99.",
-            "The next worker can take over. Please wait until PR #99 merges to close out the issue.",
-            "The next worker can take over. Hold off until PR #99 merges before closing out the issue.",
-            "The next session is resuming now. After PR #99 lands, close out the issue.",
-            "Source session finished. When resuming, rebase onto main.",
-            "Source session finished. After resuming, run the full test suite.",
-            "Source session finished. Once resuming, rebase onto main.",
-            "The next worker can take over. Please hold off until PR #99 merges to close out the issue.",
-        ):
-            for release in ("Released claim 1. " + handoff, handoff + "\n\nReleased claim 1"):
-                with self.subTest(release=release):
-                    self.setUp()
-                    self.released_status_fixture(release)
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_resumption_instructions_keep_downstream_waits_usable(self):
-        for instruction in (
-            "When you resume, wait for CI to finish.",
-            "When resuming, wait until CI finishes.",
-            "After resuming, wait until CI is green.",
-        ):
-            for release in ("Released claim 1\n\n" + instruction,
-                            "Source session finished. " + instruction + "\n\nReleased claim 1",
-                            "Released claim 1\n\nThe next worker can take over. " + instruction,
-                            "The next worker can take over. " + instruction + "\n\nReleased claim 1"):
-                with self.subTest(release=release):
-                    self.setUp()
-                    self.released_status_fixture(release)
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_implicit_prerequisite_refresh_needs_fresh_unconditional_handoff(self):
-        for handoff in (
-            "PR #99 must merge first.",
-            "The next session is resuming once CI is green.",
-            "The next worker can take over. Please wait until PR #99 merges.",
-        ):
-            with self.subTest(handoff=handoff):
-                self.setUp()
-                self.refresh_fixture()
-                self.comments[2]["body"] = "Released claim 1. " + handoff + "\nHandoff: PR #99 and #100."
-                with self.assertRaises(PLAN.PlanError):
-                    self.run_claim()
-                self.assert_no_writes()
-                self.comments.append({"id": 4, "body": "Released claim 1\nHandoff: PR #99 and #100.",
-                                      "user": {"login": TEST_BOT}})
-                self.args.handoff_comment = 4
-                self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_reversed_claim_permission_preserves_and_recovers_claims(self):
-        for prose in (
-            "The next worker may claim. PR #99 must merge first.",
-            "The next worker can reclaim it. Wait until PR #99 merges.",
-        ):
-            for release in ("Released claim 1\n\n" + prose, prose + "\n\nReleased claim 1"):
-                with self.subTest(release=release):
-                    self.setUp()
-                    self.released_status_fixture(release)
-                    with self.assertRaises(PLAN.ClassifiedPlanError):
-                        self.run_claim()
-                    self.assert_no_writes()
-                    self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
-                                          "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_reversed_successor_permission_keeps_downstream_actions_usable(self):
-        for downstream in (
-            "After PR #99 merges, close out the issue.",
-            "Wait until PR #99 merges, then close out the issue.",
-            "Keep the worktree until PR #99 merges.",
-            "Wait until PR #99 merges before closing out the issue.",
-            "Wait until PR #99 merges to close out the issue.",
-            "PR #99 must merge first. Then close out the issue.",
-            "Wait until PR #99 merges. Then close out the issue.",
-            "PR #99 must merge first for deployment.",
-            "Wait until CI passes before you merge.",
-            "Hold until CI is green to merge.",
-        ):
-            prose = "The next worker can take over. " + downstream
-            for release in ("Released claim 1\n\n" + prose, prose + "\n\nReleased claim 1"):
-                with self.subTest(release=release):
-                    self.setUp()
-                    self.comments = [
-                        {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
-                        {"id": 2, "body": release, "user": {"login": TEST_BOT}},
-                    ]
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_reversed_successor_refresh_requires_unconditional_handoff(self):
-        for prerequisite in ("PR #99 must merge first.", "Wait until PR #99 merges."):
-            with self.subTest(prerequisite=prerequisite):
-                self.setUp()
-                self.refresh_fixture()
-                self.comments[2]["body"] = (
-                    "Released claim 1\n\nThe next worker can take over. " + prerequisite + "\nHandoff: PR #99 and #100."
-                )
-                with self.assertRaises(PLAN.PlanError):
-                    self.run_claim()
-                self.assert_no_writes()
-                self.comments.append({"id": 4, "body": "Released claim 1\n\nThe next worker can take over. "
-                                      "Wait until PR #99 merges, then close out the issue.\nHandoff: PR #99 and #100.",
-                                      "user": {"login": TEST_BOT}})
-                self.args.handoff_comment = 4
-                self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_unconditional_successor_actions_keep_downstream_gates_usable(self):
-        handoffs = (
-            "The next worker can pick this up now.",
-            "Next worker may resume immediately.",
-            "The next session can take over. After PR #99 lands, close out the issue.",
-            "Handoff completes now. Supervisor routes after CI passes.",
-            "The next session takes over now. Resume immediately.",
-            "Fix is effective across repos.",
-            "Source session finished. After PR #99 lands, close out the issue. The next session can take over now.",
-            "Source session finished. After PR #99 lands, close out the issue. Handoff complete.",
-            "Source session finished. When you resume, rebase onto main.",
-            "Source session finished. When you take over, start from the retained worktree.",
-            "I rebased after PR #98 merged. Then the next session can take over now.",
-            "Source session finished. Hold the retained worktree until PR #99 merges. The next session can take over now.",
-            "Source session finished. If you pick this up, start from the retained worktree.",
-            "PR #99 must merge first. Then close out the issue.",
-            "Source session finished. After PR #99 lands, close out the issue. When resuming, rebase onto main.",
-        )
-        for handoff in handoffs:
-            for final in (False, True):
-                with self.subTest(handoff=handoff, final=final):
-                    self.setUp()
-                    release = (handoff + "\n\nReleased claim 1" if final
-                               else "Released claim 1\n\n" + handoff)
-                    self.released_status_fixture(release)
-                    # Final-paragraph effective prose retains main's conservative
-                    # refusal; recover with a new unconditional authored release.
-                    if final and handoff == "Fix is effective across repos.":
-                        with self.assertRaises(PLAN.ClassifiedPlanError):
-                            self.run_claim()
-                        self.assert_no_writes()
-                        self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
-                                              "created_at": "2026-10-01T00:02:00Z",
-                                              "user": {"login": TEST_BOT}})
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_conditional_first_line_handoff_does_not_authorize_pr_refresh(self):
-        self.refresh_fixture()
-        self.comments[2]["body"] = (
-            "Released claim 1\n\nIf CI passes, the next worker may claim.\n"
-            "Handoff: PR #99 and #100."
-        )
-        with self.assertRaises(PLAN.PlanError):
-            self.run_claim()
-        self.assert_no_writes()
-        # A new authored unconditional handoff is needed, rather than assuming
-        # CI resolved the earlier comment's condition.
-        self.comments.append({"id": 4, "body": "Released claim 1\nHandoff: PR #99 and #100.",
-                              "user": {"login": TEST_BOT}})
-        self.args.handoff_comment = 4
-        self.run_claim()
-        self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_unconditional_first_line_handoff_keeps_downstream_gates_separate(self):
-        handoffs = (
-            "Released claim 1. Source session finished.\n\n"
-            "Handoff: PR #99 and #100. Supervisor owns routing after CI passes; "
-            "keep the worktree until landing. No consumer work before the Owner decision.",
-            "Released claim 1. Session ended when context ran out.\nHandoff: PR #99 and #100.",
-            "Released claim 1. Effective immediately.\nHandoff: PR #99 and #100.",
-            "Released claim 1. Worktree kept until landing.\nHandoff: PR #99 and #100.",
-            "Released claim 1\n\nHandoff: PR #99 and #100.\n\n"
-            "After PR #99 lands, close out the issue.\nWhen resuming, rebase onto main.",
-        )
-        for handoff in handoffs:
-            with self.subTest(handoff=handoff):
-                self.setUp()
-                self.refresh_fixture()
-                self.comments[2]["body"] = handoff
-                self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_embedded_release_recovers_reported_finished_session(self):
         for role in ("Director", "Owner"):
@@ -2985,55 +2150,6 @@ class ClaimTests(unittest.TestCase):
         self.run_claim()
         self.assertEqual(CLAIM.records(self.issue["body"]), [self.emitted.call_args.args[0]["claim"]])
 
-    def test_conditional_final_paragraph_releases_preserve_and_recover_claims(self):
-        for condition in (
-            "Takes effect upon merge.",
-            "Takes effect upon merge.\n\nSource work is finished.",
-            "Effective post-merge.\n\nSource work is finished.",
-            "Ownership transfers upon merge.\n\nSource work is finished.",
-            "The next worker may claim post-merge.",
-            "Ownership transfers at merge.",
-            "The release takes effect once PR #99 merges.",
-            "The next worker may claim only after CI passes.",
-            "**Effective** post-merge.",
-            "Wait for PR #99 to merge. Then the next worker may claim.",
-            "If CI passes, the next worker may claim.\n\nSource work is finished.",
-        ):
-            for retained in (False, True):
-                with self.subTest(condition=condition, retained=retained):
-                    self.setUp()
-                    handoff = condition + "\n\nReleased claim 1.\n\n<!-- github-skill-operation:abc123 -->"
-                    self.released_status_fixture(handoff)
-                    if not retained:
-                        self.issue["body"] = PLAN.template_body("Repair")
-                        self.args.resume_from = None
-                        self.inventory["local_branches"] = []
-                        self.inventory["worktrees"] = []
-                    with self.assertRaises(PLAN.PlanError):
-                        self.run_claim()
-                    self.assert_no_writes()
-                    # A new unconditional authored release recovers ownership;
-                    # the helper never guesses that the old condition resolved.
-                    self.comments.append({"id": 3, "body": "Source session finished.\n\nReleased claim 1",
-                                          "created_at": "2026-10-01T00:02:00Z", "user": {"login": TEST_BOT}})
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_final_paragraph_release_keeps_downstream_gates_and_refresh_identity(self):
-        self.refresh_fixture()
-        prefix = "Handoff from trial-b\nSource claim 1; Session: session-b; PR #99 and #100.\n\n"
-        self.comments[2]["body"] = prefix + "Takes effect upon merge.\n\nReleased claim 1"
-        with self.assertRaises(PLAN.PlanError):
-            self.run_claim()
-        self.assert_no_writes()
-        self.comments.append({"id": 4, "body": prefix +
-                              "Source session finished. Effective immediately. "
-                              "Supervisor routes PR #99 after CI passes; keep the worktree until landing.\n\n"
-                              "Released claim 1", "created_at": "2026-10-01T00:02:00Z",
-                              "user": {"login": TEST_BOT}})
-        self.args.handoff_comment = 4
-        self.run_claim()
-        self.assertEqual(self.emitted.call_args.args[0]["claim"]["refresh_pr"], self.args.refresh_pr)
 
     def test_unconditional_final_release_with_effective_branch_name_recovers(self):
         self.released_status_fixture(
@@ -3072,7 +2188,6 @@ class ClaimTests(unittest.TestCase):
             "After PR #99 merges:\r\n\r\nReleased claim 1",
             "Owner question: approve?\n\nIf approved, post:\n \nReleased claim 1",
             "Post this:\n\t\nReleased claim 1",
-            "Once CI passes, release this claim.\n\nReleased claim 1",
             "<pre>\n\nReleased claim 1", "<details><summary>Example</summary>\n\nReleased claim 1",
             "<blockquote>\n\nReleased claim 1",
         ):

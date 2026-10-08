@@ -77,134 +77,11 @@ def legacy_release_worker(text: str) -> str | None:
     return match.group(1) if match else None
 
 
-def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool = False,
-                              handoff_permission: bool = False) -> bool:
-    """Check ownership conditions independently of directive placement."""
-    # Conditions must govern release/reclaiming, not downstream CI or
-    # worktree cleanup. A condition directly after the ID also qualifies
-    # the directive even when it leaves that subject implicit.
-    # Identity tokens and hidden transport/release receipts are not prose.
-    condition = r"(?<![\w/.-])(?:if|after|once|when|unless|until|before|pending|provided|conditional|contingent (?:on|upon)|subject to|as soon as|on (?:merge|landing)|wait(?:ing)? for)(?![\w/-])"
-    condition = rf"(?:{condition}|(?<![\w/.-])(?:upon|post-(?:merge|landing)|at (?:merge|landing))(?![\w/-]))"
-    # These phrases qualify ownership statements or sequenced permission, not a routing
-    # note or an implicit condition on the directive itself.
-    pr_reference = r"(?:PR )?(?:[\w.-]+/[\w.-]+)?#\d+"
-    ownership_effect = (rf"(?<![\w/.-])(?:tomorrow|later today|on merging {pr_reference}|"
-                        rf"(?:on|with|at) {pr_reference}(?:['’]s)? merg(?:e|ing)|"
-                        r"at merge-train landing)(?![\w/-])")
-    handoff = re.sub(r"(?s)<!--.*?-->", "", text)
-    prose = ownership_text(handoff)
-    prose = re.sub(r"(?m)^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", "", prose)
-    statements = [statement.strip() for statement in re.split(
-        r"(?<=[.!?;])(?!(?<=[ap]\.m\.)\s+(?:[ECMP][SD]?T|UTC|GMT)\b)\s+|\n[ \t]*\n",
-        prose, flags=re.IGNORECASE,
-    ) if statement.strip()]
-    ownership = r"\b(?:releases?|claims?|claiming|reclaim(?:ing)?|ownership|takes? effect|effective)\b"
-    successor_action = r"(?:pick (?:this|it) up|pick up (?:this|the) issue|takes? (?:(?:it|this) )?over|taking over|resumes?|resuming)"
-    handoff_effect = r"\bhands? off to (?:the )?next (?:worker|session)\b"
-    successor = rf"(?:\b(?:{successor_action}|handoff (?:is )?complete[ds]?)\b|{handoff_effect})"
-    # Recognize permission for this task, leaving deployment, release notes,
-    # and explicitly named follow-up tasks outside the ownership effect.
-    actor = (r"(?:you|anyone|someone(?:\s+else)?|(?:(?:the|a|any|another)\s+)?"
-             r"(?:next\s+|new\s+|fresh\s+)?(?:[\w-]+\s+)?(?:worker|session|agent|owner|successor))")
-    task_object = r"(?:\s+(?:work(?: on this issue)?|this issue|the issue|the PR|the work|this|it))?"
-    permission = rf"(?:{actor}\s+(?:(?:can|may|should)\s+)?)?(?:{successor_action}|(?:re)?claims?){task_object}"
-    ownership_permission = rf"(?:ownership passes to {actor}|the issue can be claimed)"
-    task_permission = rf"(?:{permission}|{ownership_permission})"
-    trailing_sequence = rf"{task_permission}\s+(?:afterwards?|then)"
-    sequenced_permission = (rf"(?:(?:Then,?|At that point,?)\s+{task_permission}|"
-                            rf"{trailing_sequence}|"
-                            rf"{actor}\s+(?:can|may|should)\s+then\s+"
-                            rf"(?:{successor_action}|(?:re)?claims?){task_object})[.!?;]?")
-    # Artifact checks belong to retirement unless later ownership/successor
-    # prose could make them a prerequisite for the handoff.
-    for index, statement in enumerate(statements):
-        later_ownership = any(re.search(rf"{ownership}|{successor}|\bnext (?:worker|session)\b", later, re.IGNORECASE)
-                              for later in statements[index + 1:])
-        if re.match(r"^use its host retire command\b", statement, re.IGNORECASE) and not later_ownership:
-            statements[index] = re.sub(r"\bownership/content checks\b", "artifact checks", statement, flags=re.IGNORECASE)
-    # An instruction about what to do on resumption does not defer ownership.
-    resumption_instruction = rf"^(?:(?:When|If) you {successor_action}|(?:When|If|After|Once|Upon) resuming),(?![^.!?;]*\bdo so\b)\s*"
-    instruction_indexes = {index for index, statement in enumerate(statements)
-                           if re.match(resumption_instruction, statement, re.IGNORECASE)}
-    statements = [re.sub(resumption_instruction, "", statement,
-                         flags=re.IGNORECASE) for statement in statements]
-    step = r"(?:merge[ds]?|land(?:s|ed)?|pass(?:es|ed)?|finish(?:es|ed)?|complete[ds]?|green)"
-    wait_prefix = r"(?:Wait|Hold(?:\s+off)?)\s+"
-    wait_condition = rf"(?:Please\s+)?(?:{wait_prefix})?(?:only\s+|not\s+)?{condition}"
-    required_step = rf"\bmust\s+(?:be\s+)?{step}\b"
-    prerequisite = rf"{required_step}[^.!?;]*\bfirst\b|^First,?\s+[^.!?;]*{required_step}"
-    effective = r"\b(?:takes? effect|effective)\b(?!\s+(?:now|immediately)\b)"
-    deferred_effect = r"(?<![\w/.-])\btakes? effect\b(?![\w/-])(?!\s+(?:now|immediately)\b)"
-    if final_paragraph:
-        effective = r"(?<![\w/.-])" + effective + r"(?![\w/-])"
-    if (re.match(r"(?:only\s+|not\s+)?" + condition, ownership_text(suffix), re.IGNORECASE)
-            or re.search(effective, prose if final_paragraph else ownership_text(suffix), re.IGNORECASE)
-            or re.search(deferred_effect, prose, re.IGNORECASE)):
-        return True
-    for index, statement in enumerate(statements):
-        following = statements[index + 1].strip() if index + 1 < len(statements) else ""
-        if (re.search(ownership_effect, statement, re.IGNORECASE)
-                or re.search(r"\b(?:merges|lands|will (?:merge|land)) this afternoon\b", statement, re.IGNORECASE)):
-            # Receipts or other intervening notes do not make deferred
-            # successor permission unconditional.
-            if any(re.fullmatch(sequenced_permission, later, re.IGNORECASE)
-                   for later in statements[index + 1:]):
-                return True
-            # A leading Then can refer back to completed source work rather
-            # than forward to this schedule.
-            if index > 0 and re.fullmatch(rf"{trailing_sequence}[.!?;]?", statements[index - 1], re.IGNORECASE):
-                return True
-        if re.search(rf"{handoff_effect}[^.!?;]*\b(?:upon|post-(?:merge|landing)|at (?:merge|landing))\b", statement, re.IGNORECASE):
-            return True
-        if not (re.search(condition, statement, re.IGNORECASE)
-                or re.search(ownership_effect, statement, re.IGNORECASE)
-                or re.search(required_step, statement, re.IGNORECASE)):
-            continue
-        if (re.search(ownership, statement, re.IGNORECASE)
-                or re.search(successor, statement, re.IGNORECASE)):
-            return True
-        prerequisite_step = re.search(prerequisite, statement, re.IGNORECASE)
-        standalone_prerequisite = re.fullmatch(rf"[^.!?;]*(?:{prerequisite})[.!?;]?", statement.strip(), re.IGNORECASE)
-        standalone_condition = re.fullmatch(
-            rf"{wait_condition}[^,;.!?]*\b{step}(?:\s+(?:into|to|on)\s+[\w/-]+)?(?:\s+first)?[.!?;]?",
-            statement.strip(), re.IGNORECASE,
-        )
-        downstream_next = (re.match(r"Then\b", following, re.IGNORECASE)
-                           and not re.search(rf"{ownership}|{successor}", following, re.IGNORECASE))
-        downstream_step = re.search(rf"\b{step}\b[^.!?;]*\b(?:before|to)\s+(?:you\s+)?{step}\b", statement, re.IGNORECASE)
-        # The directive itself supplies permission at its adjacent prose edge.
-        directive_adjacent = handoff_permission or index == (len(statements) - 1 if final_paragraph else 0)
-        prior_permission = index > 0 and re.search(rf"{ownership}|{successor}", statements[index - 1], re.IGNORECASE)
-        if (index not in instruction_indexes and (standalone_prerequisite or standalone_condition)
-                and not (downstream_next or downstream_step)
-                and (directive_adjacent or prior_permission)):
-            return True
-        if index + 1 == len(statements):
-            continue
-        starts_condition = re.match(r"(?:only\s+|not\s+)?" + condition, statement.strip(), re.IGNORECASE)
-        if re.search(ownership, following, re.IGNORECASE) and (starts_condition or prerequisite_step):
-            return True
-        sequences_next = (re.match(r"Then\b", following, re.IGNORECASE)
-                          and (starts_condition or re.search(required_step, statement, re.IGNORECASE)))
-        if ((prerequisite_step or sequences_next
-             or re.match(rf"(?:Please\s+)?(?:{wait_prefix}{condition}|wait(?:ing)? for\b)", statement.strip(), re.IGNORECASE)
-             or (starts_condition and "," not in statement))
-                and re.search(successor, following, re.IGNORECASE)):
-            return True
-        if sequences_next and re.search(ownership, following, re.IGNORECASE):
-            return True
-    return False
-
-
 def released_claim_id(text: str) -> int | None:
-    """Read a first-line release or a standalone final release paragraph."""
+    """Read an exact release directive; handoff narrative is not release state."""
     first = text.splitlines()[:1]
-    match = re.fullmatch(r"Released claim (\d+)(?:\.(?:\s.*)?|[ \t]*)", first[0]) if first else None
+    match = re.fullmatch(r"Released claim (\d+)\.?[ \t]*", first[0]) if first else None
     if match:
-        suffix = first[0][match.end(1):].lstrip(". \t")
-        if conditional_release_prose(suffix + "\n" + "\n".join(text.splitlines()[1:]), suffix=suffix):
-            return None
         return int(match.group(1))
     text = "\n".join(line if line.strip() else "" for line in text.splitlines())
     text = without_operation_marker(text)
@@ -215,9 +92,8 @@ def released_claim_id(text: str) -> int | None:
     if not match:
         return None
     preceding = text.rsplit("\n\n", 1)[0].rstrip()
-    paragraph = preceding.rsplit("\n\n", 1)[-1].strip()
-    if (preceding.endswith(":") or re.match(r"(?i)(?:if|after|once|when|unless|until)\b", paragraph)
-            or conditional_release_prose(preceding, suffix=paragraph, final_paragraph=True)):
+    # A colon introduces an example/instruction rather than an authored directive.
+    if preceding.endswith(":"):
         return None
     # A final line inside an unclosed code fence or raw HTML block is an example,
     # not a release. Quoted and indented directives never match the exact line.
@@ -646,19 +522,8 @@ def retained_handoff(
     first_line_release = released_claim_id(handoff_text.splitlines()[0] if handoff_text else "")
     if not (first_line_release == source_id or standalone):
         raise ValueError("Refresh handoff must identify the exact released source claim")
-    if first_line_release == source_id:
-        handoff_prose = handoff_text[len(f"Released claim {source_id}"):].lstrip(". \t")
-        deferred = (released_claim_id(handoff_text) != source_id
-                    or conditional_release_prose(handoff_prose, suffix="", handoff_permission=True))
-    else:
-        assert source_claim_match is not None
-        # Source identity is not an ownership statement. The verified handoff
-        # itself supplies permission, regardless of where its fields sit.
-        handoff_prose = (handoff_text[:source_claim_match.start()]
-                         + handoff_text[source_claim_match.end():])
-        deferred = conditional_release_prose(handoff_prose, suffix="", handoff_permission=True)
-    if deferred:
-        raise ValueError("Retained handoff must be unconditional; use a fresh source-authored handoff")
+    # The exact authored release above owns release state. The separate handoff
+    # binds source identity and retained PRs, not natural-language conditions.
     permitted = {source_branch}
     target_found = False
     attested = False
