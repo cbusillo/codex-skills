@@ -56,6 +56,11 @@ ALTERNATE_FUTURE_HANDOFFS = (
     "PR #99 lands tomorrow. Then the next worker should claim.",
     "PR #99 merges tomorrow at 10 a.m. ET. Then the next worker may claim.",
     "PR #99 merges later today. Deploy window opens at 2 p.m. Then the next worker may claim.",
+    "PR #99 merges later today. At that point, the next session can resume.",
+    "PR #99 lands tomorrow. The next worker may claim afterward.",
+    "PR #99 lands tomorrow. The next worker can then claim.",
+    "The next worker may claim then. PR #99 merges later today.",
+    "PR #99 will merge this afternoon. Then the next worker may claim.",
 )
 RESPONSIBILITY_STATUS = (
     "After these proposals, 61 OPW and 57 CM provider-only entries would remain, "
@@ -418,6 +423,7 @@ class ClaimTests(unittest.TestCase):
     def test_separate_unconditional_handoff_keeps_downstream_gates_usable(self):
         for prose in (
             "PR #99 merged this afternoon. Then the next worker may claim.",
+            "Source work landed. Then the next worker may claim. Follow-up PR #100 merges tomorrow.",
             "Ownership transfers immediately.",
             "Supervisor routes PR #99 after PR #100 merges. Keep the worktree until landing.",
             "After PR #99 lands, close out the issue. When resuming, rebase onto main.",
@@ -2493,6 +2499,16 @@ class ClaimTests(unittest.TestCase):
     def test_alternate_future_sequences_keep_downstream_releases_usable(self):
         for handoff in (
             "PR #99 merged this afternoon. Then the next worker may claim.",
+            "Source work landed. Then the next worker may claim. Follow-up PR #100 merges tomorrow.",
+            "PR #99 merged this afternoon. At that point, the next session can resume.",
+            "PR #99 merged this afternoon. The next worker may claim afterward.",
+            "PR #99 merged this afternoon. The next worker can then claim.",
+            "The next worker may claim then. PR #99 merged this afternoon.",
+            "PR #99 merges later today. At that point, the next session can resume deployment.",
+            "PR #99 lands tomorrow. The next worker may claim follow-up #1440 afterward.",
+            "PR #99 lands tomorrow. The next worker can then claim follow-up #1440.",
+            "The Supervisor routes deployment then. PR #99 merges later today.",
+            "PR #99 will merge this afternoon. Then publish the release notes.",
             "PR #99 merges later today. The Supervisor routes deployment afterwards.",
             "PR #99 merges later today. At that point the next session can resume deployment.",
             "PR #99 lands tomorrow. The next worker may claim follow-up #1440 then.",

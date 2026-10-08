@@ -308,7 +308,8 @@ also include the shared `api_result` diagnostics envelope.
   Use `--edit-comment ID` for a known comment; optional `--expected-body-file`
   and `--expected-updated-at` check its prior state as described below.
 - `scripts/gh-pr.py checks <pr>`: Show check runs and commit statuses
-  for the PR head.
+  for the PR head, with Actions execution history selected under the
+  [current execution contract](../../babysit-pr/references/github-api-notes.md#workflow-runs-for-head-sha).
 - `scripts/gh-pr.py update-branch <pr> [--wait-seconds 0..60]`: Merge the base
   into the PR branch after the ownership and authorization checks in
   [Merge Readiness](repo-workflow.md#merge-readiness), through the automation
@@ -619,6 +620,11 @@ the same applies to `Effective on PR #99 merging.` and ownership transfer
 `at merge-train landing`. `Takes effect` prose also refuses without a condition
 word unless it says `now` or `immediately`; ordinary descriptions such as `Fix is effective
 across repos.` still work after a first-line release.
+Successor permission ending in `then` or `afterward(s)` also defers ownership
+when an adjacent future-time schedule follows it. Forward sequencing also
+recognizes `At that point,`, `afterward`, and `can then claim`.
+Future-modal `will merge this afternoon` schedules defer
+sequenced permission too; completed `merged this afternoon` handoffs remain usable.
 An adjacent prerequisite after successor permission also refuses, such as
 `The next worker can take over. PR #99 must merge first.` or a standalone
 `Wait until PR #99 merges.` following that permission.

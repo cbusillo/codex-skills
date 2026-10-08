@@ -708,6 +708,8 @@ def normalize_check_run(item: dict[str, Any]) -> dict[str, Any]:
         "completedAt": item.get("completed_at"),
         "workflowName": (item.get("app") or {}).get("name"),
         "checkSuiteId": (item.get("check_suite") or {}).get("id"),
+        "headSha": item.get("head_sha"),
+        "appSlug": (item.get("app") or {}).get("slug"),
         "runId": run_id,
         "jobId": job_id,
     }
@@ -815,8 +817,138 @@ def list_pull_requests(
     return [normalize_pull_request(item) for item in items]
 
 
+def workflow_execution_identity(run: dict[str, Any]) -> Optional[tuple[Any, ...]]:
+    numbers = [run.get(field) for field in ("id", "workflow_id", "run_number", "run_attempt", "check_suite_id")]
+    repository_id = (run.get("head_repository") or {}).get("id")
+    valid_numbers = all(isinstance(value, int) and not isinstance(value, bool) and value > 0
+                        for value in [*numbers, repository_id])
+    if not valid_numbers or not run.get("head_sha") or not run.get("event") or not run.get("head_branch"):
+        return None
+    identity = (run["head_sha"], run["workflow_id"], run["event"], run["head_branch"], repository_id)
+    pull_targets = tuple(sorted(
+        (pull.get("number"), (pull.get("base") or {}).get("ref"),
+         ((pull.get("base") or {}).get("repo") or {}).get("id"))
+        for pull in run.get("pull_requests", [])
+    ))
+    identity += (pull_targets,)
+    # Dispatches can use different inputs on the very same head.
+    if run["event"] not in {"push", "pull_request", "pull_request_target"}:
+        identity += (run["id"],)
+    return identity
+
+
+def current_workflow_runs(runs: list[dict[str, Any]], head_sha: str) -> dict[str, Any]:
+    """Separate execution history only with complete Actions identity.
+
+    Workflow names and update times are not identities: an old cancellation
+    can finish after its replacement starts. Run numbers order executions;
+    attempts order reruns of the same execution.
+    """
+    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    current = []
+    for run in runs:
+        if not isinstance(run, dict) or run.get("head_sha") != head_sha:
+            continue
+        key = workflow_execution_identity(run)
+        if key is None:
+            current.append(run)
+            continue
+        groups.setdefault(key, []).append(run)
+    superseded = []
+    for group in groups.values():
+        group = [candidate for index, candidate in enumerate(group) if candidate not in group[:index]]
+        winner = max(group, key=lambda candidate: (candidate["run_number"], candidate["id"], candidate["run_attempt"]))
+        winner_started = str(winner.get("run_started_at") or "")
+        later_attempts = [candidate for candidate in group
+                          if candidate["run_attempt"] > 1 and winner_started
+                          and str(candidate.get("run_started_at") or "") > winner_started]
+        if later_attempts:
+            winner = max(later_attempts, key=lambda candidate: candidate["run_started_at"])
+        current.append(winner)
+        for candidate in group:
+            if candidate is winner:
+                continue
+            uncertain_attempt = candidate["run_attempt"] > 1 and (
+                not candidate.get("run_started_at") or not winner.get("run_started_at")
+            )
+            if candidate["id"] != winner["id"] and (candidate.get("status") != "completed" or uncertain_attempt):
+                current.append(candidate)
+            else:
+                superseded.append(candidate)
+    return {"current": current, "superseded": superseded}
+
+
+def current_check_runs(
+    reader: GitHubReader, repo: str, head_sha: str, checks: list[dict[str, Any]],
+    runs: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+    selection = current_workflow_runs(runs, head_sha)
+    by_id = {run.get("id"): run for run in selection["current"]}
+    old_by_id = {run.get("id"): run for run in selection["superseded"] if run.get("id") not in by_id}
+    current, superseded = [], []
+    latest_jobs: dict[int, Optional[set[int]]] = {}
+    complete = True
+    for check in checks:
+        if (check.get("appSlug") != "github-actions"
+                or check.get("runId") is None or check.get("jobId") is None
+                or check.get("id") != check.get("jobId")):
+            # GITHUB_TOKEN can publish independent reporter checks with custom
+            # links. The App slug alone does not make a check an Actions job.
+            current.append(check)
+            continue
+        run_id: int = check["runId"]
+        run: Optional[dict[str, Any]] = by_id.get(run_id) or old_by_id.get(run_id)
+        if run is None:
+            current.append(check)
+            complete = False
+            continue
+        if (check.get("headSha") != head_sha
+                or workflow_execution_identity(run) is None
+                or check.get("checkSuiteId") != run.get("check_suite_id")):
+            current.append(check)
+            complete = False
+            continue
+        if run_id in old_by_id:
+            superseded.append(check)
+            continue
+        attempt = run["run_attempt"]
+        if attempt > 1:
+            # A partial rerun can reuse successful jobs from a prior attempt.
+            # GitHub's latest job inventory owns that selection, not check IDs
+            # or timestamps inferred from check names.
+            if run_id not in latest_jobs:
+                try:
+                    jobs = reader.paged_json(
+                        f"/repos/{repo}/actions/runs/{run_id}/jobs",
+                        step_prefix=f"current_run_{run_id}_jobs",
+                        params={"filter": "latest"}, collection_key="jobs",
+                    )
+                    latest_jobs[run_id] = {job["id"] for job in jobs
+                                           if isinstance(job.get("id"), int)}
+                    if (not jobs and run.get("status") == "completed") or any(
+                        job.get("run_id") != run_id or not isinstance(job.get("id"), int)
+                        or not isinstance(job.get("run_attempt"), int)
+                        or not 0 < job["run_attempt"] <= attempt
+                        or job.get("head_sha", head_sha) != head_sha
+                        for job in jobs
+                    ):
+                        latest_jobs[run_id] = None
+                except (GitHubReadError, GitHubReadShapeError):
+                    latest_jobs[run_id] = None
+            job_ids = latest_jobs[run_id]
+            job_id = check.get("jobId")
+            if job_ids is None:
+                complete = False
+            elif job_id not in job_ids:
+                superseded.append(check)
+                continue
+        current.append(check)
+    return current, superseded, complete
+
+
 def pull_request_checks(
-    reader: GitHubReader, repo: str, number: int, *, head_sha: Optional[str] = None
+    reader: GitHubReader, repo: str, number: int, *, head_sha: Optional[str] = None,
+    workflow_runs: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     pull: Optional[dict[str, Any]] = None
     sha = str(head_sha or "")
@@ -853,14 +985,40 @@ def pull_request_checks(
         combined = {}
     statuses = latest_status_events(statuses)
     normalized_checks = [normalize_check_run(item) for item in check_runs]
+    superseded_checks = []
+    if any(check.get("appSlug") == "github-actions" for check in normalized_checks):
+        availability["workflowSelection"] = True
+        try:
+            if workflow_runs is None:
+                workflow_runs = reader.paged_json(
+                    f"/repos/{repo}/actions/runs", step_prefix="check_workflow_runs",
+                    params={"head_sha": sha}, collection_key="workflow_runs",
+                )
+            normalized_checks, superseded_checks, complete = current_check_runs(
+                reader, repo, sha, normalized_checks, workflow_runs,
+            )
+            availability["workflowSelection"] = complete
+        except (GitHubReadError, GitHubReadShapeError):
+            availability["workflowSelection"] = False
     normalized_statuses = [normalize_status(item) for item in statuses]
     failure_conclusions = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
     failing = [item for item in normalized_checks if item.get("conclusion") in failure_conclusions]
     pending = [item for item in normalized_checks if item.get("status") != "completed"]
+    current_runs = current_workflow_runs(workflow_runs or [], sha)["current"]
+    unfinished_runs = [run for run in current_runs if run.get("status") != "completed"]
+    pending_workflows_without_checks = sum(
+        not any(check.get("runId") == run.get("id") for check in pending)
+        for run in unfinished_runs
+    )
+    failed_workflows_without_checks = sum(
+        run.get("status") == "completed" and run.get("conclusion") in failure_conclusions
+        and not any(check.get("runId") == run.get("id") for check in failing)
+        for run in current_runs
+    )
     failed_statuses = [item for item in normalized_statuses if item.get("state") in {"failure", "error"}]
     pending_statuses = [item for item in normalized_statuses if item.get("state") == "pending"]
     combined_state = combined.get("state")
-    counts_complete = availability["checkRuns"] and availability["commitStatuses"]
+    counts_complete = all(available for name, available in availability.items() if name != "combinedStatus")
     unavailable_components = [name for name, available in availability.items() if not available]
     return {
         "repo": repo,
@@ -869,8 +1027,11 @@ def pull_request_checks(
         "summary": {
             "checkRunCount": len(normalized_checks) if availability["checkRuns"] else None,
             "statusCount": len(normalized_statuses) if availability["commitStatuses"] else None,
-            "failingCount": len(failing) + len(failed_statuses),
-            "pendingCount": len(pending) + len(pending_statuses),
+            "failingCount": len(failing) + len(failed_statuses) + failed_workflows_without_checks,
+            "failedWorkflowRunCount": failed_workflows_without_checks,
+            "pendingCount": len(pending) + len(pending_statuses) + pending_workflows_without_checks,
+            "pendingWorkflowRunCount": pending_workflows_without_checks,
+            "unfinishedWorkflowRunCount": len(unfinished_runs),
             "countsComplete": counts_complete,
             "countsAreLowerBounds": not counts_complete,
             "combinedState": combined_state if normalized_statuses and availability["combinedStatus"] else None,
@@ -880,6 +1041,7 @@ def pull_request_checks(
             "unavailableComponents": unavailable_components,
         },
         "checkRuns": normalized_checks,
+        "supersededCheckRuns": superseded_checks,
         "statuses": normalized_statuses,
     }
 
