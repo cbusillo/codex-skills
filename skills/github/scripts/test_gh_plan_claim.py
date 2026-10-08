@@ -2259,6 +2259,9 @@ class ClaimTests(unittest.TestCase):
         for handoff in (
             "PR #99 merges later today. Then the Supervisor routes deployment.",
             "PR #99 lands tomorrow. Then retire the worktree.",
+            "PR #99 lands tomorrow. Then publish the release notes.",
+            "PR #99 merges later today. Then the Supervisor takes over deployment.",
+            "The drill runs tomorrow. Then the train resumes.",
             "PR #99 merges later today. The next worker may claim now.",
             "Source session finished. The next session can resume now.",
             "PR #99 merged yesterday. Then the next worker may claim.",

@@ -129,7 +129,8 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     for index, statement in enumerate(statements):
         following = statements[index + 1].strip() if index + 1 < len(statements) else ""
         if (re.search(future_time, statement, re.IGNORECASE)
-                and re.match(r"Then\b", following, re.IGNORECASE)
+                and re.match(rf"Then\s+(?:(?:the\s+)?next\s+(?:worker|session)\b|{successor_action}\b|(?:re)?claim\b)",
+                             following, re.IGNORECASE)
                 and re.search(rf"{ownership}|{successor}", following, re.IGNORECASE)):
             return True
         if re.search(rf"{handoff_effect}[^.!?;]*\b(?:upon|post-(?:merge|landing)|at (?:merge|landing))\b", statement, re.IGNORECASE):
