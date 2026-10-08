@@ -329,7 +329,9 @@ memory/profile/local-config candidates.
    Source-file metadata is masked in full regardless of its path root;
    `--trusted-originals` preserves the original source path.
    Mounted-volume paths in text and context are redacted, including quoted paths
-   with spaces. Path redaction preserves public HTTP(S) URL paths except local
+   with spaces. Repository-relative paths such as
+   `backend/media/uploads/avatar.png` remain readable. Path redaction preserves
+   public HTTP(S) URL paths except local file/editor and
    dev-server/tunnel file links; literal query/fragment paths and person data are
    still redacted. Unquoted whitespace is ambiguous with neighboring prose and
    can leave path fragments or consume prose; percent-encoded paths are not

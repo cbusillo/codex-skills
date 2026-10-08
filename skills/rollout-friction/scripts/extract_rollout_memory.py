@@ -46,7 +46,7 @@ LOCAL_PATH_ROOTS = r"(?:Users|home|workspace|workspaces|tmp|var|private|Volumes|
 PATH_RE = re.compile(
     # Public URLs may contain the same root names as local paths. Match them
     # first so those components remain useful evidence rather than local paths.
-    r"(?P<url>(?i:https?)://[^\s<>\"'`]+)|"
+    r"(?P<url>(?i:https?|file|vscode)://[^\s<>\"'`]+)|"
     rf"(?P<quoted>[\"'`])/{LOCAL_PATH_ROOTS}/[^\n]*?(?:(?P=quoted)|(?=\n|$))|"
     rf"(?:/Volumes/[^/\n,;:'\"`<>]+/|/{LOCAL_PATH_ROOTS}/)(?:\\ |[^\s,'\"`])+"
 )
@@ -445,9 +445,15 @@ def clean_text(text: str, args: argparse.Namespace) -> str:
     return cleaned.strip()
 
 
-def redact_path_match(match: re.Match[str]) -> str:
+def redact_path_match(match: re.Match[str], *, embedded_path: bool = False) -> str:
     url = match.group("url")
     if url is None:
+        # A root inside a repository-relative token is useful evidence. URL
+        # paths are handled separately: editor and dev-server prefixes can
+        # precede an absolute root without a plain-text boundary.
+        if (not embedded_path and match.group("quoted") is None and match.start()
+                and re.match(r"[\w./~-]", match.string[match.start() - 1])):
+            return match.group(0)
         return "<path-redacted>"
     try:
         parsed = urlsplit(url)
@@ -459,16 +465,17 @@ def redact_path_match(match: re.Match[str]) -> str:
                 (".localhost", ".local", ".internal", ".lan", ".home.arpa", ".test", ".ts.net",
                  ".localdomain", ".home", ".corp", ".intranet")
             )
+        local = local or parsed.scheme.lower() in {"file", "vscode"}
         local = local or parsed.path.startswith("/@fs/") or bool(re.match(r"/tunnel/[^/]+/", parsed.path))
     except ValueError:
         local = True  # Malformed URLs do not establish a public host.
     if local:
         scheme, separator, remainder = url.partition("://")
-        return scheme + separator + PATH_RE.sub(redact_path_match, remainder)
+        return scheme + separator + PATH_RE.sub(lambda item: redact_path_match(item, embedded_path=True), remainder)
     query_or_fragment = re.search(r"[?#]", url)
     if query_or_fragment:
         index = query_or_fragment.start()
-        return url[:index] + PATH_RE.sub(redact_path_match, url[index:])
+        return url[:index] + PATH_RE.sub(lambda item: redact_path_match(item, embedded_path=True), url[index:])
     return url
 
 
