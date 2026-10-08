@@ -465,6 +465,7 @@ class ClaimTests(unittest.TestCase):
             "Use its host retire command after landing/closure and ownership/content checks; the next worker may pick it up then.",
             "Use its host retire command after landing/closure and ownership/content checks. The next worker may claim afterward.",
             "Use its host retire command after landing/closure and ownership/content checks. Receipts stay on Developer-Artifacts. Then the next worker may claim.",
+            "Use its host retire command after landing/closure and ownership/content checks. Then the next worker may start.",
         ):
             with self.subTest(condition=condition):
                 self.setUp()
