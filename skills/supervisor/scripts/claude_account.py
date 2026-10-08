@@ -8,6 +8,7 @@
 import argparse
 import fcntl
 import json
+import importlib.util
 import os
 import shlex
 import subprocess
@@ -16,9 +17,37 @@ import tempfile
 import uuid
 from pathlib import Path
 
-import account_choice
-
 MOVE_DIR = "CLAUDE_ACCOUNT_MOVE_DIR"
+ENABLED = "CLAUDE_ACCOUNT_MOVE_ENABLED"
+
+
+def load_module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def reader():
+    return load_module("account_choice", Path(__file__).with_name("account_choice.py"))
+
+
+def runtime_script():
+    script = Path(__file__).resolve()
+    catalog = script.parents[3]
+    runtime = load_module("runtime_binding", catalog / "skills/github/scripts/reconcile-runtime-checkout.py")
+    if not any(path.resolve() in (catalog, catalog / "skills") for path, _, _ in runtime.runtime_skills_paths()):
+        raise ValueError("run enrollment from the active catalog runtime binding")
+    def git(*args):
+        result = subprocess.run(["git", "-C", str(catalog), *args], capture_output=True, text=True, check=False, timeout=5)
+        if result.returncode:
+            raise ValueError("runtime must have a known default branch and clean checkout")
+        return result.stdout.strip()
+    branch = git("symbolic-ref", "--short", "HEAD")
+    default = git("symbolic-ref", "--short", "refs/remotes/origin/HEAD").removeprefix("origin/")
+    if branch != default or git("status", "--porcelain"):
+        raise ValueError("enroll only from the clean default-branch runtime checkout")
+    return script
 
 
 def session_id(value):
@@ -89,7 +118,7 @@ def hook(payload, env):
     if event == "StopFailure" and payload.get("error") != "rate_limit":
         return
     identifier = session_id(payload.get("session_id"))
-    if not identifier or not env.get(MOVE_DIR):
+    if not identifier or not env.get(MOVE_DIR) or env.get(ENABLED) != "1":
         return
     root = state_root(env, create=True)
     path = root / (identifier + ".json")
@@ -118,6 +147,8 @@ def hook(payload, env):
 
 
 def resumed_session(argv):
+    if "--fork-session" in argv:
+        return None
     identifiers = []
     for index, argument in enumerate(argv[1:], 1):
         if argument == "--":
@@ -137,7 +168,7 @@ def bounded_snapshot(*args, **kwargs):
 def move_environment(argv, env):
     """Ordinary self-spawns neither read private account config nor query Context Panel."""
     identifier = resumed_session(argv)
-    if not identifier or not env.get(MOVE_DIR):
+    if not identifier or not env.get(MOVE_DIR) or env.get(ENABLED) != "1":
         return env
     root = state_root(env)
     path = root / (identifier + ".json")
@@ -149,11 +180,20 @@ def move_environment(argv, env):
             return env
         data = read_request(path)
         try:
-            if any(env.get(key) for key in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN")):
+            if any(env.get(key) for key in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN",
+                                                  "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
+                                                  "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")):
                 raise ValueError("authentication override is present; account move cannot select a home login")
+            settings = config_home(env) / "settings.json"
+            if not settings.is_file():
+                raise ValueError("move requires shared user settings")
+            user_settings = json.loads(settings.read_text())
+            if not isinstance(user_settings, dict) or user_settings.get("apiKeyHelper"):
+                raise ValueError("move requires shared user settings without apiKeyHelper")
             if data["cwd"] != str(Path.cwd()) or not history_matches(data, config_home(env)):
                 raise ValueError("current working directory or source history differs")
             if not data.get("target_home"):
+                account_choice = reader()
                 config = account_choice.load_config(env=env)
                 snapshot, problem = account_choice.read_snapshot(config["snapshot_command"], runner=bounded_snapshot)
                 choice = account_choice.choose("anthropic", config, snapshot, problem)
@@ -167,6 +207,8 @@ def move_environment(argv, env):
                     raise ValueError("next account must already share this session history")
                 data.update(target_home=str(target), account=choice["name"])
             target = Path(data["target_home"])
+            if not (target / "settings.json").is_file() or (target / "settings.json").resolve() != settings.resolve():
+                raise ValueError("selected account must share the enrolled settings file")
             if not target.is_dir() or not history_matches(data, target):
                 raise ValueError("selected account history is unavailable")
             data.pop("problem", None)
@@ -174,7 +216,7 @@ def move_environment(argv, env):
             write_json(path, data)
             # Keep the request until SessionStart confirms resume on the selected home.
             return {**env, "CLAUDE_CONFIG_DIR": str(target)}
-        except (ValueError, OSError, KeyError, TypeError) as error:
+        except (ValueError, OSError, KeyError, TypeError, ImportError) as error:
             data["problem"] = str(error) if isinstance(error, ValueError) else type(error).__name__
             data["state"] = "pending"
             write_json(path, data)
@@ -187,7 +229,7 @@ def wrapper(argv):
     env = dict(os.environ)
     try:
         env = move_environment(argv, env)
-    except (ValueError, OSError, KeyError, TypeError):
+    except (ValueError, OSError, KeyError, TypeError, ImportError):
         pass  # Preserve the request and Claude's ordinary fallback; no terminal output.
     try:
         os.execvpe(argv[0], argv, env)
@@ -203,9 +245,14 @@ def install(settings, directory, write=False):
     data = json.loads(settings.read_text()) if settings.exists() else {}
     if not isinstance(data, dict) or not isinstance(data.get("env", {}), dict):
         raise ValueError("user settings and env must be objects")
-    wrapper_path = str(Path(__file__).resolve())
+    wrapper_path = str(runtime_script())
+    python = str(Path(sys._base_executable).resolve())
+    if not os.access(python, os.X_OK):
+        raise ValueError("base Python interpreter is not executable")
+    if directory.exists():
+        state_root({MOVE_DIR: str(directory)})
     env = data.setdefault("env", {})
-    expected = {"CLAUDE_CODE_PROCESS_WRAPPER": json.dumps([wrapper_path, "wrap"]), MOVE_DIR: str(directory)}
+    expected = {"CLAUDE_CODE_PROCESS_WRAPPER": json.dumps([python, "-I", wrapper_path, "wrap"]), MOVE_DIR: str(directory)}
     for key, value in expected.items():
         if key in env and env[key] != value:
             raise ValueError("existing account-move or process wrapper setting preserved; reconcile explicitly")
@@ -213,7 +260,7 @@ def install(settings, directory, write=False):
     groups = data.setdefault("hooks", {})
     if not isinstance(groups, dict):
         raise ValueError("hooks must be an object")
-    command = shlex.join([wrapper_path, "hook"])
+    command = shlex.join([python, "-I", wrapper_path, "hook"])
     for event, matcher in (("StopFailure", "rate_limit"), ("SessionStart", "resume")):
         entries = groups.setdefault(event, [])
         if not isinstance(entries, list):
@@ -222,6 +269,7 @@ def install(settings, directory, write=False):
         if entry not in entries:
             entries.append(entry)
     if write:
+        state_root({MOVE_DIR: str(directory)}, create=True)
         settings.parent.mkdir(parents=True, exist_ok=True)
         write_json(settings, data)
     return data
@@ -234,6 +282,8 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("hook")
     sub.add_parser("status")
+    cancel = sub.add_parser("cancel")
+    cancel.add_argument("--session-id", required=True)
     setup = sub.add_parser("install")
     setup.add_argument("--settings", type=Path, required=True)
     setup.add_argument("--move-dir", type=Path, required=True)
@@ -247,10 +297,24 @@ def main():
             print(json.dumps({"written": args.write, "env": {key: data["env"][key] for key in
                              ("CLAUDE_CODE_PROCESS_WRAPPER", MOVE_DIR)},
                              "hook_events": ["StopFailure", "SessionStart"]}, indent=2))
+        elif args.command == "cancel":
+            identifier = session_id(args.session_id)
+            if not identifier or not os.environ.get(MOVE_DIR):
+                raise ValueError("cancel requires a session UUID and configured move directory")
+            root = state_root(os.environ)
+            path = root / (identifier + ".json")
+            if path.exists():
+                with (root / (identifier + ".lock")).open("a") as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    read_request(path)
+                    path.unlink()
+            print(json.dumps({"session_id": identifier, "state": "cancelled"}))
         else:
+            if not os.environ.get(MOVE_DIR):
+                raise ValueError("move directory is not configured")
             root = state_root(os.environ)
             print(json.dumps([json.loads(p.read_text()) for p in sorted(root.glob("*.json"))] if root else [], indent=2))
-    except (ValueError, OSError, KeyError, TypeError) as error:
+    except (ValueError, OSError, KeyError, TypeError, ImportError) as error:
         if args.command != "hook":
             parser.exit(1, f"refused: {error}\n")
     return 0

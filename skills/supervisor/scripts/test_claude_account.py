@@ -23,10 +23,19 @@ class MoveTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
+        self.account_reader = account.reader()
+        self.reader_patch = patch.object(account, "reader", return_value=self.account_reader)
+        self.reader_patch.start()
+        self.addCleanup(self.reader_patch.stop)
+        self.runtime_patch = patch.object(account, "runtime_script", return_value=Path(account.__file__).resolve())
+        self.runtime_patch.start()
+        self.addCleanup(self.runtime_patch.stop)
         self.old = self.root / "old"
         self.new = self.root / "new"
         self.old.mkdir()
         self.new.mkdir()
+        (self.old / "settings.json").write_text("{}")
+        (self.new / "settings.json").symlink_to(self.old / "settings.json")
         self.projects = self.old / "projects"
         self.projects.mkdir()
         (self.new / "projects").symlink_to(self.projects, target_is_directory=True)
@@ -34,7 +43,7 @@ class MoveTests(unittest.TestCase):
         self.transcript = self.projects / (self.identifier + ".jsonl")
         self.transcript.write_text('{"context":"prior work"}\n')
         self.env = {"CLAUDE_CONFIG_DIR": str(self.old), account.MOVE_DIR: str(self.root / "moves"),
-                    "INHERITED": "keep me", "CLAUDE_CODE_PROCESS_WRAPPER": "keep wrapper"}
+                    "INHERITED": "keep me", account.ENABLED: "1", "CLAUDE_CODE_PROCESS_WRAPPER": "keep wrapper"}
         self.payload = {"hook_event_name": "StopFailure", "error": "rate_limit",
                         "session_id": self.identifier, "cwd": str(Path.cwd()),
                         "transcript_path": str(self.transcript)}
@@ -46,9 +55,9 @@ class MoveTests(unittest.TestCase):
         account.hook(self.payload, self.env)
 
     def move(self, choice=None):
-        with patch.object(account.account_choice, "load_config", return_value={"snapshot_command": ["fake"]}), \
-             patch.object(account.account_choice, "read_snapshot", return_value=({}, None)), \
-             patch.object(account.account_choice, "choose", return_value=choice or self.choice):
+        with patch.object(self.account_reader, "load_config", return_value={"snapshot_command": ["fake"]}), \
+             patch.object(self.account_reader, "read_snapshot", return_value=({}, None)), \
+             patch.object(self.account_reader, "choose", return_value=choice or self.choice):
             return account.move_environment(self.argv, self.env)
 
     def test_disabled_and_unrelated_hooks_are_inert(self):
@@ -66,7 +75,7 @@ class MoveTests(unittest.TestCase):
 
     def test_ordinary_and_other_session_launches_never_query_chooser(self):
         self.record()
-        with patch.object(account.account_choice, "load_config", side_effect=AssertionError("must not read")):
+        with patch.object(self.account_reader, "load_config", side_effect=AssertionError("must not read")):
             for argv in (["claude", "--print", "hello"], ["claude", "--resume", str(uuid.uuid4())],
                          ["claude", "--", "--resume", self.identifier]):
                 self.assertEqual(account.move_environment(argv, self.env), self.env)
@@ -91,12 +100,12 @@ class MoveTests(unittest.TestCase):
     def test_pending_attempt_retries_same_target_without_new_choice(self):
         self.record()
         self.move()
-        with patch.object(account.account_choice, "load_config", side_effect=AssertionError("must reuse")):
+        with patch.object(self.account_reader, "load_config", side_effect=AssertionError("must reuse")):
             self.assertEqual(account.move_environment(self.argv, self.env)["CLAUDE_CONFIG_DIR"], str(self.new))
 
     def test_choice_failure_and_same_account_preserve_recovery(self):
         self.record()
-        with patch.object(account.account_choice, "load_config", side_effect=ValueError("snapshot unavailable")):
+        with patch.object(self.account_reader, "load_config", side_effect=ValueError("snapshot unavailable")):
             self.assertEqual(account.move_environment(self.argv, self.env), self.env)
         self.assertTrue(self.request.exists())
         self.assertEqual(self.move({**self.choice, "env": {"CLAUDE_CONFIG_DIR": str(self.old)}}), self.env)
@@ -137,7 +146,7 @@ class MoveTests(unittest.TestCase):
 
     def test_snapshot_timeout_is_short_and_unavailable_is_preserved(self):
         with patch.object(account.subprocess, "run", side_effect=subprocess.TimeoutExpired("fake", 1.5)) as run:
-            snapshot, problem = account.account_choice.read_snapshot(["fake"], runner=account.bounded_snapshot)
+            snapshot, problem = self.account_reader.read_snapshot(["fake"], runner=account.bounded_snapshot)
         self.assertIsNone(snapshot)
         self.assertIn("TimeoutExpired", problem)
         self.assertLess(run.call_args.kwargs["timeout"], 3)
@@ -163,7 +172,8 @@ class MoveTests(unittest.TestCase):
                          "print(json.dumps({'session':identifier,'context':json.loads(transcript.read_text())['context'],"
                          "'home':os.environ['CLAUDE_CONFIG_DIR'],'keep':os.environ['INHERITED']}))\n")
         env = {**os.environ, **self.env, "CODE_HOME": str(private.parent), "HOME": str(self.root)}
-        for key in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"):
+        for key in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN",
+                    "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"):
             env.pop(key, None)
         result = subprocess.run([sys.executable, account.__file__, "wrap", sys.executable,
                                  str(child), "--resume", self.identifier], env=env,
@@ -178,6 +188,73 @@ class MoveTests(unittest.TestCase):
         env = {**self.env, "ANTHROPIC_API_KEY": "test-private-value"}
         self.assertEqual(account.move_environment(self.argv, env), env)
         self.assertNotIn("test-private-value", self.request.read_text())
+
+    def test_shared_settings_director_session_is_inert(self):
+        env = {k: v for k, v in self.env.items() if k != account.ENABLED}
+        account.hook(self.payload, env)
+        self.assertFalse(self.request.exists())
+        self.record()
+        self.assertEqual(account.move_environment(self.argv, env), env)
+
+    def test_installed_wrapper_preserves_every_environment_variable(self):
+        settings = self.root / "settings.json"
+        installed = account.install(settings, self.root / "moves")
+        argv = json.loads(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])
+        code = "import os,json;print(json.dumps(dict(os.environ)))"
+        env = {**os.environ, **self.env, "HOME": str(self.root), "PYTHONPATH": "unchanged"}
+        direct = subprocess.check_output([sys.executable, "-I", "-c", code], env=env)
+        wrapped = subprocess.check_output([*argv, sys.executable, "-I", "-c", code], env=env)
+        self.assertEqual(json.loads(wrapped), json.loads(direct))
+
+    def test_enrollment_refuses_task_worktree(self):
+        self.runtime_patch.stop()
+        from types import SimpleNamespace
+        module = SimpleNamespace(runtime_skills_paths=lambda: [(Path(account.__file__).resolve().parents[2], "fixture", True)])
+        responses = [SimpleNamespace(returncode=0, stdout="work/task"),
+                     SimpleNamespace(returncode=0, stdout="origin/main")]
+        with patch.object(account, "load_module", return_value=module), \
+             patch.object(account.subprocess, "run", side_effect=responses):
+            with self.assertRaises(ValueError):
+                account.runtime_script()
+
+    def test_settings_and_auth_modes_cannot_acknowledge_wrong_account(self):
+        self.record()
+        (self.new / "settings.json").unlink()
+        (self.new / "settings.json").write_text("{}")
+        self.assertEqual(self.move(), self.env)
+        (self.new / "settings.json").unlink()
+        (self.new / "settings.json").symlink_to(self.old / "settings.json")
+        (self.old / "settings.json").write_text('{"apiKeyHelper":"fixture-command"}')
+        self.assertEqual(self.move(), self.env)
+        for key in ("ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"):
+            env = {**self.env, key: "fixture-override"}
+            self.assertEqual(account.move_environment(self.argv, env), env)
+
+    def test_cancel_removes_only_requested_move_without_touching_transcript(self):
+        self.record()
+        other = str(uuid.uuid4())
+        account.hook({**self.payload, "session_id": other,
+                      "transcript_path": str(self.projects / (other + ".jsonl"))}, self.env)
+        other_path = self.request.parent / (other + ".json")
+        other_path.write_text(json.dumps({"schema": 1, "session_id": other}))
+        result = subprocess.run([sys.executable, account.__file__, "cancel", "--session-id", self.identifier],
+                                env={**os.environ, **self.env}, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.request.exists())
+        self.assertTrue(other_path.exists())
+        self.assertTrue(self.transcript.exists())
+
+    def test_status_without_enrollment_and_unsafe_directory_are_visible(self):
+        env = {k: v for k, v in os.environ.items() if k != account.MOVE_DIR}
+        result = subprocess.run([sys.executable, account.__file__, "status"], env=env,
+                                capture_output=True, text=True, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        directory = self.root / "moves"
+        directory.mkdir(mode=0o755)
+        directory.chmod(0o755)
+        with self.assertRaises(ValueError):
+            account.install(self.root / "settings.json", directory, write=True)
+        self.assertFalse((self.root / "settings.json").exists())
 
     def test_installer_preview_preserves_settings_and_repeat_is_idempotent(self):
         settings = self.root / "settings.json"

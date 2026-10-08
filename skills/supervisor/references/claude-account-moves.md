@@ -9,7 +9,8 @@ credentials, changes shells, or creates account homes or history links.
 ## Enrollment
 
 Enrollment is an explicit user-settings write, separate from delivering the
-source change. Preview first, using the catalog's stable runtime path:
+source change. The helper refuses a task worktree or a dirty/non-default runtime
+checkout, using the maintained runtime binding lookup. Preview first, using the catalog's stable runtime path:
 
 ```sh
 uv run skills/supervisor/scripts/claude_account.py install --settings /absolute/shared/settings.json --move-dir /absolute/private/claude-moves
@@ -29,14 +30,18 @@ Do not stop a shared background service or the Director's sessions as a test.
 Use an absolute directory outside account homes, owned by the user with mode
 700. The helper creates it on the first eligible failure. Protect this directory
 as private session evidence: requests contain working and transcript paths, but
-never error strings, tokens or credentials. Only enrolled sessions record moves.
+never error strings, tokens or credentials. Only sessions carrying `CLAUDE_ACCOUNT_MOVE_ENABLED=1` record or execute moves.
+The Supervisor terminal launcher sets this marker for Anthropic launches. Other
+sessions sharing these settings remain inert, including the Director's sessions.
 With no pending move, the wrapper execs the inherited command, arguments and
 environment unchanged and never reads account config or queries Context Panel.
 
 Target homes must already share the same `projects/` history. The source
 transcript must exist as `<session-id>.jsonl` in it. The wrapper requires the
 same working directory, a fresh `useNext` answer, and a different existing home.
-It changes only `CLAUDE_CONFIG_DIR`. An inherited authentication override makes
+It requires the same canonical shared `settings.json` so resume confirmation
+runs on the target home, and changes only `CLAUDE_CONFIG_DIR`. An inherited
+authentication override or a configured `apiKeyHelper` makes
 a home move ineffective, so the move remains pending rather than changing or
 removing the override. Context Panel failure, stale choice, missing shared
 history or an unchanged account also leave the request pending and launch Claude
@@ -68,16 +73,23 @@ on its inherited home, allowing its ordinary wait-for-reset fallback.
 4. At the verified replacement prompt, send a private message file containing
    `continue`, once, and read back. Verify its next turn continues the prior
    work. A receipt proves resume identity, not a successful model turn.
-5. If the request remains, inspect its `problem` and the tab before taking any
+5. If the request remains, inspect its state, any `problem`, and the tab before taking any
    further action. A prepared attempt retries the same selected home without
    choosing another account. Repair the documented config/history problem
    within existing scope or hand it off; never sign in, change login, clear
    history, or apply a reset. Preserve requests until recovery is verified.
+   If the account resets and the session continues in place instead, cancel its
+   obsolete move with `claude_account.py cancel --session-id <native-uuid>` using
+   the same move-directory environment. Verify the session first; this removes
+   only its request and keeps the transcript. Do this before a later restart.
 
 The hook uses a per-session lock and atomic writes. It records only the affected
 session. The wrapper bounds its snapshot subprocess to 1.5 seconds to stay
 inside the launcher's roughly three-second startup budget; it is silent before
-exec. Failed exec/startup leaves the move request for recovery. A new rate limit
+exec. Enrollment records the absolute base Python interpreter with `-I`;
+`uv` stays outside the wrapper path so inherited `PATH`, `VIRTUAL_ENV` and other
+variables reach Claude unchanged. The account reader loads lazily only for a
+pending move. Failed exec/startup leaves the move request for recovery. A new rate limit
 replaces that session's previous attempt and clears its old resume receipt.
 
 ## Version qualification

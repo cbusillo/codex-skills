@@ -964,7 +964,10 @@ class TerminalTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as folder:
             command = Path(folder) / "launch.txt"
-            command.write_text("cd /repo && claude 'brief'\n")
+            child = Path(folder) / "claude"
+            child.write_text('#!/bin/sh\nprintf "%s\\n" "$CLAUDE_CONFIG_DIR" "$CLAUDE_ACCOUNT_MOVE_ENABLED" "$1"\n')
+            child.chmod(0o700)
+            command.write_text("cd / && " + shlex.quote(str(child)) + " 'brief'\n")
             args = argparse.Namespace(
                 command="new", window_id="chosen", command_file=command,
                 account_provider="anthropic", account=None, account_config=None,
@@ -979,10 +982,9 @@ class TerminalTests(unittest.TestCase):
                 command.write_text("env CLAUDE_CONFIG_DIR=/other claude\n")
                 with self.assertRaisesRegex(ValueError, "already sets"):
                     asyncio.run(iterm_tab.operate(app, args))
-        self.assertEqual(
-            terminal.async_send_text.await_args_list[0].args,
-            ("export CLAUDE_CONFIG_DIR='/accounts/spare dir' && cd /repo && claude 'brief'",),
-        )
+            sent = terminal.async_send_text.await_args_list[0].args[0]
+            launched = subprocess.run(["/bin/sh", "-c", sent], capture_output=True, text=True, check=True)
+            self.assertEqual(launched.stdout.splitlines(), [choice["env"]["CLAUDE_CONFIG_DIR"], "1", "brief"])
         window.async_create_tab.assert_awaited_once_with(select=False)
         receipt.assert_called_once_with(choice)
         self.assertEqual(result["account"]["env_keys"], ["CLAUDE_CONFIG_DIR"])
