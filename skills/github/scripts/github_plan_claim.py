@@ -89,17 +89,29 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     # These phrases qualify ownership statements or sequenced permission, not a routing
     # note or an implicit condition on the directive itself.
     pr_reference = r"(?:PR )?(?:[\w.-]+/[\w.-]+)?#\d+"
-    ownership_effect = (rf"(?<![\w/.-])(?:tomorrow|later today|on merging {pr_reference}|"
+    ownership_effect = (rf"(?<![\w/.-])(?:tomorrow|later today|this afternoon|on merging {pr_reference}|"
                         rf"(?:on|with|at) {pr_reference}(?:['’]s)? merg(?:e|ing)|"
                         r"at merge-train landing)(?![\w/-])")
     handoff = re.sub(r"(?s)<!--.*?-->", "", text)
     prose = ownership_text(handoff)
     prose = re.sub(r"(?m)^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", "", prose)
-    statements = [statement.strip() for statement in re.split(r"(?<=[.!?;])\s+|\n[ \t]*\n", prose) if statement.strip()]
+    statements = [statement.strip() for statement in re.split(
+        r"(?<!\ba\.m\.)(?<!\bp\.m\.)(?<=[.!?;])\s+|\n[ \t]*\n", prose, flags=re.IGNORECASE,
+    ) if statement.strip()]
     ownership = r"\b(?:releases?|claims?|claiming|reclaim(?:ing)?|ownership|takes? effect|effective)\b"
     successor_action = r"(?:pick (?:this|it) up|pick up (?:this|the) issue|takes? (?:(?:it|this) )?over|taking over|resumes?|resuming)"
     handoff_effect = r"\bhands? off to (?:the )?next (?:worker|session)\b"
     successor = rf"(?:\b(?:{successor_action}|handoff (?:is )?complete[ds]?)\b|{handoff_effect})"
+    # Recognize permission for this task, leaving deployment, release notes,
+    # and explicitly named follow-up tasks outside the ownership effect.
+    actor = (r"(?:you|anyone|someone(?:\s+else)?|(?:(?:the|a|any|another)\s+)?"
+             r"(?:next\s+|new\s+|fresh\s+)?(?:[\w-]+\s+)?(?:worker|session|agent|owner|successor))")
+    task_object = r"(?:\s+(?:work(?: on this issue)?|this issue|the issue|the PR|the work|this|it))?"
+    permission = rf"(?:{actor}\s+(?:(?:can|may|should)\s+)?)?(?:{successor_action}|(?:re)?claims?){task_object}"
+    ownership_permission = rf"(?:ownership passes to {actor}|the issue can be claimed)"
+    task_permission = rf"(?:{permission}|{ownership_permission})"
+    sequenced_permission = (rf"(?:(?:Then,?|At that point)\s+{task_permission}|"
+                            rf"{task_permission}\s+(?:afterwards|then))[.!?;]?")
     # Artifact checks belong to retirement unless later ownership/successor
     # prose could make them a prerequisite for the handoff.
     for index, statement in enumerate(statements):
@@ -128,14 +140,11 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
         return True
     for index, statement in enumerate(statements):
         following = statements[index + 1].strip() if index + 1 < len(statements) else ""
-        if re.search(ownership_effect, statement, re.IGNORECASE) and re.match(r"Then\b", following, re.IGNORECASE):
-            # Release notes and deployment takeover are downstream work;
-            # permission to claim/resume this work defers ownership.
-            actor = (r"(?:you|anyone|someone(?:\s+else)?|(?:(?:the|a|any|another)\s+)?"
-                     r"(?:next\s+|new\s+|fresh\s+)?(?:[\w-]+\s+)?(?:worker|session|agent|owner|successor))")
-            task_object = r"(?:\s+(?:work(?: on this issue)?|this issue|the issue|the PR|it))?"
-            permission = rf"Then,?\s+(?:{actor}\s+(?:(?:can|may)\s+)?)?(?:{successor_action}|(?:re)?claims?){task_object}[.!?;]?"
-            if re.fullmatch(permission, following, re.IGNORECASE):
+        if re.search(ownership_effect, statement, re.IGNORECASE):
+            # Receipts or other intervening notes do not make deferred
+            # successor permission unconditional.
+            if any(re.fullmatch(sequenced_permission, later, re.IGNORECASE)
+                   for later in statements[index + 1:]):
                 return True
         if re.search(rf"{handoff_effect}[^.!?;]*\b(?:upon|post-(?:merge|landing)|at (?:merge|landing))\b", statement, re.IGNORECASE):
             return True
