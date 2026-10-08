@@ -451,10 +451,10 @@ def redact_path_match(match: re.Match[str], *, embedded_path: bool = False) -> s
         # A root inside a repository-relative token is useful evidence. URL
         # paths are handled separately: editor and dev-server prefixes can
         # precede an absolute root without a plain-text boundary.
-        if (not embedded_path and match.group("quoted") is None and match.start()
-                and re.match(r"[\w./-]", match.string[match.start() - 1])
-                and not match.string[:match.start()].endswith("/@fs")):
-            return match.group(0)
+        if not embedded_path and match.group("quoted") is None:
+            prefix = re.search(r"[^\s,;\"'`<>=()\[\]{}]+$", match.string[:match.start()])
+            if prefix and re.fullmatch(r"(?:\.{1,2}/)*(?:[\w.][\w.-]*/)*[\w.][\w.-]*", prefix.group(0)):
+                return match.group(0)
         return "<path-redacted>"
     try:
         parsed = urlsplit(url)
