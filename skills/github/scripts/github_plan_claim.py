@@ -85,6 +85,12 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     # Identity tokens and hidden transport/release receipts are not prose.
     condition = r"(?<![\w/.-])(?:if|after|once|when|unless|until|before|pending|provided|conditional|contingent (?:on|upon)|subject to|as soon as|on (?:merge|landing)|wait(?:ing)? for)(?![\w/-])"
     condition = rf"(?:{condition}|(?<![\w/.-])(?:upon|post-(?:merge|landing)|at (?:merge|landing))(?![\w/-]))"
+    # These phrases qualify an ownership statement, not an adjacent routing
+    # note or an implicit condition on the directive itself.
+    pr_reference = r"(?:PR )?(?:[\w.-]+/[\w.-]+)?#\d+"
+    ownership_effect = (rf"(?<![\w/.-])(?:tomorrow|later today|on merging {pr_reference}|"
+                        rf"(?:on|with|at) {pr_reference}(?:['’]s)? merg(?:e|ing)|"
+                        r"at merge-train landing)(?![\w/-])")
     handoff = re.sub(r"(?s)<!--.*?-->", "", text)
     prose = ownership_text(handoff)
     prose = re.sub(r"(?m)^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", "", prose)
@@ -123,6 +129,7 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
         if re.search(rf"{handoff_effect}[^.!?;]*\b(?:upon|post-(?:merge|landing)|at (?:merge|landing))\b", statement, re.IGNORECASE):
             return True
         if not (re.search(condition, statement, re.IGNORECASE)
+                or re.search(ownership_effect, statement, re.IGNORECASE)
                 or re.search(required_step, statement, re.IGNORECASE)):
             continue
         if (re.search(ownership, statement, re.IGNORECASE)
