@@ -601,6 +601,15 @@ handoff completion are checked across the handoff for both release placements.
 The two-sentence handoff `PR #99 merges later today. Then the next worker
 may claim.` also preserves ownership. Following that schedule note with
 `Then retire the worktree.` or `Then the Supervisor routes deployment.` remains usable.
+Successor sequencing also includes `afterwards`, `At that point`, and trailing
+`then`; intervening receipt notes do not clear the condition. The reproduced
+`this afternoon` schedule, ownership passing to the next worker, passive issue
+claiming, and permission to resume `this` or claim `the work` (including `should
+claim`) preserve ownership too. Times such as `10 a.m. ET` remain part of their
+schedule sentence. Explicitly named follow-up claims and downstream deployment
+or cleanup remain independent. Recover with a fresh unconditional source-authored
+release or, for a separate retained handoff, a fresh source-authored handoff comment
+selected with `--handoff-comment`.
 Deferred effects such as `Takes effect upon merge.` and `Ownership transfers
 upon merge of PR #99.` refuse even in a later paragraph after a first-line
 release. Future-time and merge effects such as `Effective tomorrow.`,
