@@ -607,8 +607,9 @@ Successor sequencing also includes `afterwards`, `At that point`, and trailing
 claiming, and permission to resume `this` or claim `the work` (including `should
 claim`) preserve ownership too. Times such as `10 a.m. ET` remain part of their
 schedule sentence. Explicitly named follow-up claims and downstream deployment
-or cleanup remain independent; use a fresh unconditional source-authored release
-to recover a deferred handoff.
+or cleanup remain independent. Recover with a fresh unconditional source-authored
+release or, for a separate retained handoff, a fresh source-authored handoff comment
+selected with `--handoff-comment`.
 Deferred effects such as `Takes effect upon merge.` and `Ownership transfers
 upon merge of PR #99.` refuse even in a later paragraph after a first-line
 release. Future-time and merge effects such as `Effective tomorrow.`,

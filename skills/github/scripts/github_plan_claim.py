@@ -96,7 +96,8 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     prose = ownership_text(handoff)
     prose = re.sub(r"(?m)^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", "", prose)
     statements = [statement.strip() for statement in re.split(
-        r"(?<!\ba\.m\.)(?<!\bp\.m\.)(?<=[.!?;])\s+|\n[ \t]*\n", prose, flags=re.IGNORECASE,
+        r"(?<=[.!?;])(?!(?<=[ap]\.m\.)\s+(?:[ECMP][SD]?T|UTC|GMT)\b)\s+|\n[ \t]*\n",
+        prose, flags=re.IGNORECASE,
     ) if statement.strip()]
     ownership = r"\b(?:releases?|claims?|claiming|reclaim(?:ing)?|ownership|takes? effect|effective)\b"
     successor_action = r"(?:pick (?:this|it) up|pick up (?:this|the) issue|takes? (?:(?:it|this) )?over|taking over|resumes?|resuming)"

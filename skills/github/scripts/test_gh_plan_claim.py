@@ -55,6 +55,7 @@ ALTERNATE_FUTURE_HANDOFFS = (
     "PR #99 merges later today. Then the next worker may claim the work.",
     "PR #99 lands tomorrow. Then the next worker should claim.",
     "PR #99 merges tomorrow at 10 a.m. ET. Then the next worker may claim.",
+    "PR #99 merges later today. Deploy window opens at 2 p.m. Then the next worker may claim.",
 )
 RESPONSIBILITY_STATUS = (
     "After these proposals, 61 OPW and 57 CM provider-only entries would remain, "
@@ -2438,6 +2439,7 @@ class ClaimTests(unittest.TestCase):
             "PR #99 merges later today. Then the next session takes over deployment.",
             "The train deploys tomorrow. Then you can resume monitoring the rollout.",
             "PR #99 merges later today. The next worker may claim now.",
+            "Source session ended at 11 p.m. When you resume, rebase on main first.",
             "Source session finished. The next session can resume now.",
             "PR #99 merged yesterday. Then the next worker may claim.",
         ):
