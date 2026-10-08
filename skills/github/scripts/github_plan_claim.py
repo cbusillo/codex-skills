@@ -610,7 +610,6 @@ def retained_handoff(
     first_line_release = released_claim_id(handoff_text.splitlines()[0] if handoff_text else "")
     if not (first_line_release == source_id or standalone):
         raise ValueError("Refresh handoff must identify the exact released source claim")
-    empty = {"local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}
     permitted = {source_branch}
     target_found = False
     attested = False
@@ -629,8 +628,8 @@ def retained_handoff(
             continue
         # Classify only the issue reference, independently of branch evidence
         # or lifecycle state (open/merged admission was checked above).
-        if not artifact_evidence(empty, [{**pull, "head": {"ref": ""}, "state": "open"}], issue_number, {},
-                                 own_record=False, repo=issue_repo, inventory_repo=target_repo):
+        if not pr_issue_reference(pull, issue_number, repo=issue_repo,
+                                  local_references=issue_repo.casefold() == target_repo.casefold(), attestation=True):
             continue
         permitted.add(branch)
         attested = True
@@ -642,11 +641,50 @@ def retained_handoff(
     return permitted
 
 
+def recorded_claim_branches(status: str, comments: list[dict[str, Any]]) -> set[str]:
+    """A released claim leaves its PR branch as artifact evidence."""
+    return {record["branch"] for text in [status, *(c.get("body") or "" for c in comments)]
+            for record in records(text)}
+
+
+def pr_issue_reference(pull: dict[str, Any], number: int, *, repo: str,
+                       local_references: bool = True, attestation: bool = False) -> bool:
+    """Ownership needs implementation evidence; named handoffs may attest links."""
+    title = pull.get("title") or ""
+    body = pull.get("body") or ""
+    issue_url = rf"https://github\.com/{re.escape(repo)}/issues/{number}"
+    issue_reference = rf"(?:{re.escape(repo)}#{number}|{issue_url})(?!\d)"
+    if local_references:
+        issue_reference = rf"(?:#{number}|{issue_reference})(?!\d)"
+    any_issue = r"(?:https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*(?:#[\w-]+)?|[\w.-]+/[\w.-]+#[1-9]\d*|#[1-9]\d*)"
+    list_item = rf"(?:{any_issue}|<{any_issue}>|\[[^\]\n]+\]\({any_issue}(?:[ \t]+\"[^\"]*\")?\))"
+    separator = r"(?:[ \t]*,[ \t]*(?:and[ \t]+)?|[ \t]+and[ \t]+)"
+    ownership_reference = (
+        rf"(?i)(?<![\w])(?:__)?(?:refs?|fix(?:es|ed)?|clos(?:e|es|ed)|resolv(?:e|es|ed)|implement(?:s|ed|ing)?)"
+        rf"(?:\*\*|__)?\s*:?(?:\*\*|__)?\s+(?:{list_item}{separator})*"
+        rf"(?:{issue_reference}|<{issue_url}(?!\d)[^>]*>|"
+        rf"\[[^\]\n]+\]\({issue_url}(?!\d)[^\n)]*\))"
+    )
+    # Preserve the existing independent-link rule for source-authored retained
+    # handoffs, including exclusion of explicitly unstarted follow-up links.
+    link_text = title
+    if attestation:
+        link_text += "\n" + "\n".join(
+            line for line in body.splitlines()
+            if not (line.startswith("Code follow-ups recorded without starting implementation:")
+                    and not re.search(ownership_reference, line))
+        )
+    return bool((repo and re.search(issue_url + r"(?!\d)", link_text, re.IGNORECASE))
+                or re.search(ownership_reference, body)
+                or (local_references and re.search(rf"(?<![\w/])#{number}(?!\d)", title)))
+
+
 def artifact_evidence(
     inventory: dict[str, Any], pulls: list[dict[str, Any]], number: int,
     claim: dict[str, str], *, own_record: bool, retained: str | None = None, repo: str = "",
     retained_branches: set[str] | None = None, retained_repo: str | None = None,
     inventory_repo: str | None = None,
+    recorded_branches: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     conflicts = []
     local_references = inventory_repo is None or inventory_repo.casefold() == repo.casefold()
@@ -673,28 +711,9 @@ def artifact_evidence(
                               "state": session.get("state") or session.get("status")})
     for pull in pulls:
         branch = (pull.get("head") or {}).get("ref", "")
-        title = pull.get("title") or ""
-        body = pull.get("body") or ""
-        issue_url = rf"https://github\.com/{re.escape(repo)}/issues/{number}"
-        # Only the explicitly unstarted follow-up line is contextual.
-        # Other URLs, titles, branches and implementation references still hold.
-        issue_reference = rf"(?:{re.escape(repo)}#{number}|{issue_url})(?!\d)"
-        if local_references:
-            issue_reference = rf"(?:#{number}|{issue_reference})(?!\d)"
-        ownership_reference = (
-            rf"(?i)(?<![\w])(?:__)?(?:refs?|fix(?:es|ed)?|clos(?:e|es|ed)|resolv(?:e|es|ed)|implement(?:s|ed|ing)?)"
-            rf"(?:\*\*|__)?\s*:?(?:\*\*|__)?\s+(?:{issue_reference}|<{issue_url}(?!\d)[^>]*>|"
-            rf"\[[^\]\n]+\]\({issue_url}(?!\d)[^\n)]*\))"
-        )
-        ownership_body = "\n".join(
-            line for line in body.splitlines()
-            if not (line.startswith("Code follow-ups recorded without starting implementation:")
-                    and not re.search(ownership_reference, line))
-        )
-        explicit_url = bool(repo and re.search(issue_url + r"(?!\d)", title + "\n" + ownership_body, re.IGNORECASE))
-        linked = bool(re.search(ownership_reference, body))
-        titled = local_references and bool(re.search(rf"(?<![\w/])#{number}(?!\d)", title))
-        if explicit_url or linked or titled or (local_references and references_issue(branch, number)):
+        if (pr_issue_reference(pull, number, repo=repo, local_references=local_references)
+                or branch in (recorded_branches or set())
+                or (local_references and references_issue(branch, number))):
             if pull.get("state") == "closed":
                 # Closed PRs are not open ownership evidence. Preserve any
                 # unaccounted local/remote artifacts even for nonnumeric names.

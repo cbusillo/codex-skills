@@ -560,14 +560,16 @@ comment as intent or history, rather than a new ownership assertion.
 Keep generated identity lines exact when editing an owned status; altered
 ownership or intent prose is rechecked conservatively on recovery.
 
-An issue URL on a PR body line starting exactly `Code follow-ups recorded
-without starting implementation:` is context-only. Title or branch ownership,
-implementation references (`Refs`, `Fixes`, `Closes`, `Resolves`, including full
-issue URLs), and links elsewhere in the body still cause refusal. Unmarked or
-wrapped follow-up links remain uncertain ownership evidence. A context line
-containing ownership keywords such as `Fixes`, `Closes`, or `Implements` tied
-to the issue also remains evidence, including a colon or Markdown link.
-Keep implemented work out of this explicitly unstarted line.
+An issue URL in a PR body is context alone. Title or branch ownership,
+implementation references (`Refs`, `Fixes`, `Closes`, `Resolves`, `Implements`,
+including full issue URLs), and a PR branch recorded in the issue's structured
+claim still cause refusal. Each issue in a comma- or `and`-separated list after
+an implementation keyword counts. Releasing a claim does not release its retained PR.
+Retained handoffs keep their independent issue-link check: an ordinary body
+URL may attest a PR named by its source author. An unwrapped body line starting
+exactly `Code follow-ups recorded without starting implementation:` supplies
+no attestation by itself; an implementation keyword on it still counts.
+Identity, same-repository and active-peer checks remain required.
 
 Use the actual native session ID, not a made-up label. On Claude Code, use
 session metadata or `claude agents --json` to identify this session by its
