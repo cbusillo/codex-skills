@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
 # dependencies = []
@@ -23,7 +22,6 @@ from unittest.mock import patch
 import cleanup_git
 import cleanup_probe
 import repo_cleanup as cleanup
-
 
 # Public canary text for temporary fixtures; never real credentials.
 FIXTURE_MARKER = "SYNTHETIC-PRIVATE-CONTENT-47129"
@@ -521,12 +519,12 @@ class CleanupContracts(unittest.TestCase):
         command = [sys.executable, str(script), "inventory", "--repo", str(self.repo),
                    "--root", str(self.output), "--manifest", str(manifest),
                    "--purpose", "synthetic CLI round trip", "--json"]
-        first = subprocess.run(command, capture_output=True, cwd=self.base, timeout=30)
+        first = subprocess.run(command, check=False, capture_output=True, cwd=self.base, timeout=30)
         self.assertEqual(first.returncode, 0, first.stdout.decode())
         self.assertNotIn(FIXTURE_MARKER.encode(), first.stdout + first.stderr)
         self.assertFalse(json.loads(first.stdout)["policy"]["may_delete"])
         second = subprocess.run([sys.executable, str(script), "revalidate", "--before", str(manifest), "--json"],
-                                capture_output=True, cwd=self.base, timeout=30)
+                                check=False, capture_output=True, cwd=self.base, timeout=30)
         self.assertEqual(second.returncode, 0, second.stdout.decode())
         self.assertEqual(json.loads(second.stdout)["evidence"], "snapshot_unchanged")
 
@@ -554,13 +552,16 @@ class CleanupContracts(unittest.TestCase):
 
     def test_malformed_manifest_roots_fail_without_echoing_input(self):
         path = self.base / "malformed.json"
-        path.write_text(json.dumps({"schema_version": 1, "roots": [FIXTURE_MARKER]}))
-        path.chmod(0o600)
-        result = subprocess.run([sys.executable, str(Path(cleanup.__file__)), "revalidate", "--before", str(path), "--json"],
-                                capture_output=True, cwd=self.base, timeout=5)
-        self.assertEqual(result.returncode, 2)
-        self.assertNotIn(FIXTURE_MARKER.encode(), result.stdout + result.stderr)
-        self.assertEqual(json.loads(result.stdout)["error"], "manifest_invalid")
+        for data in (FIXTURE_MARKER, {"roots": FIXTURE_MARKER},
+                     {"schema_version": 1, "roots": [FIXTURE_MARKER]}):
+            with self.subTest(data=data):
+                path.write_text(json.dumps(data))
+                path.chmod(0o600)
+                result = subprocess.run([sys.executable, str(Path(cleanup.__file__)), "revalidate", "--before", str(path), "--json"],
+                                        check=False, capture_output=True, cwd=self.base, timeout=5)
+                self.assertEqual(result.returncode, 2)
+                self.assertNotIn(FIXTURE_MARKER.encode(), result.stdout + result.stderr)
+                self.assertEqual(json.loads(result.stdout)["error"], "manifest_invalid")
 
 
 class ProtectedRootContracts(unittest.TestCase):
