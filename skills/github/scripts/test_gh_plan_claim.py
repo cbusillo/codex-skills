@@ -43,6 +43,20 @@ FUTURE_OWNERSHIP_EFFECTS = (
     "Effective on owner/repo#99 merging.",
     "Effective at PR #99's merge.",
 )
+ALTERNATE_FUTURE_HANDOFFS = (
+    "PR #99 merges later today. The next worker may claim afterwards.",
+    "PR #99 merges later today. At that point the next session can resume.",
+    "PR #99 lands tomorrow. The next worker may claim then.",
+    "PR #99 merges later today. Receipts remain with this issue. Then the next worker may claim.",
+    "PR #99 merges this afternoon. Then the next worker may claim.",
+    "PR #99 merges later today. Then ownership passes to the next worker.",
+    "PR #99 lands tomorrow. Then the issue can be claimed.",
+    "PR #99 merges later today. Then you can resume this.",
+    "PR #99 merges later today. Then the next worker may claim the work.",
+    "PR #99 lands tomorrow. Then the next worker should claim.",
+    "PR #99 merges tomorrow at 10 a.m. ET. Then the next worker may claim.",
+    "PR #99 merges later today. Deploy window opens at 2 p.m. Then the next worker may claim.",
+)
 RESPONSIBILITY_STATUS = (
     "After these proposals, 61 OPW and 57 CM provider-only entries would remain, "
     "owned by Launchplane engineering for evidence and Chris for production disposition approval."
@@ -403,6 +417,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_separate_unconditional_handoff_keeps_downstream_gates_usable(self):
         for prose in (
+            "PR #99 merged this afternoon. Then the next worker may claim.",
             "Ownership transfers immediately.",
             "Supervisor routes PR #99 after PR #100 merges. Keep the worktree until landing.",
             "After PR #99 lands, close out the issue. When resuming, rebase onto main.",
@@ -2425,6 +2440,7 @@ class ClaimTests(unittest.TestCase):
             "PR #99 merges later today. Then the next session takes over deployment.",
             "The train deploys tomorrow. Then you can resume monitoring the rollout.",
             "PR #99 merges later today. The next worker may claim now.",
+            "Source session ended at 11 p.m. When you resume, rebase on main first.",
             "Source session finished. The next session can resume now.",
             "PR #99 merged yesterday. Then the next worker may claim.",
         ):
@@ -2436,6 +2452,83 @@ class ClaimTests(unittest.TestCase):
                     self.released_status_fixture(release)
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_alternate_future_sequences_preserve_and_recover_claims(self):
+        for handoff in ALTERNATE_FUTURE_HANDOFFS:
+            for final in (False, True):
+                with self.subTest(handoff=handoff, final=final):
+                    self.setUp()
+                    release = (handoff + "\n\nReleased claim 1" if final
+                               else "Released claim 1\n\n" + handoff)
+                    self.released_status_fixture(release)
+                    with self.assertRaises(PLAN.ClassifiedPlanError):
+                        self.run_claim()
+                    self.assert_no_writes()
+                    self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
+                                          "created_at": "2026-10-01T00:02:00Z",
+                                          "user": {"login": TEST_BOT}})
+                    self.run_claim()
+                    output = self.emitted.call_args.args[0]
+                    self.assertTrue(output["ok"])
+                    self.assertEqual(CLAIM.records(self.issue["body"]), [output["claim"]])
+
+    def test_alternate_future_sequences_require_unconditional_retained_handoff(self):
+        for handoff in ALTERNATE_FUTURE_HANDOFFS:
+            for refresh in (False, True):
+                with self.subTest(handoff=handoff, refresh=refresh):
+                    self.setUp()
+                    self.separate_handoff_fixture(handoff, refresh=refresh)
+                    with self.assertRaises(PLAN.PlanError):
+                        self.run_claim()
+                    self.assert_no_writes()
+                    self.comments.append({"id": 5, "body": "Handoff from trial-b\n"
+                                          "Source claim 1; Session: session-b; PR #99 and #100.",
+                                          "user": {"login": TEST_BOT}})
+                    self.args.handoff_comment = 5
+                    self.run_claim()
+                    output = self.emitted.call_args.args[0]
+                    self.assertTrue(output["ok"])
+                    self.assertEqual(output["claim"].get("refresh_pr"), self.args.refresh_pr)
+
+    def test_alternate_future_sequences_keep_downstream_releases_usable(self):
+        for handoff in (
+            "PR #99 merged this afternoon. Then the next worker may claim.",
+            "PR #99 merges later today. The Supervisor routes deployment afterwards.",
+            "PR #99 merges later today. At that point the next session can resume deployment.",
+            "PR #99 lands tomorrow. The next worker may claim follow-up #1440 then.",
+            "PR #99 merges later today. Receipts remain with this issue. Then retire the worktree.",
+            "PR #99 merges this afternoon. Then publish the release notes.",
+            "PR #99 merges later today. Then deployment ownership passes to the train.",
+            "PR #99 lands tomorrow. Then the release can be claimed by the deploy service.",
+            "PR #99 lands tomorrow. Then the next worker should claim follow-up #1440.",
+            "PR #99 merges tomorrow at 10 a.m. ET. Then the Supervisor routes deployment.",
+            "PR #99 merges later today. The next worker may claim now.",
+        ):
+            for final in (False, True):
+                with self.subTest(handoff=handoff, final=final):
+                    self.setUp()
+                    release = (handoff + "\n\nReleased claim 1" if final
+                               else "Released claim 1\n\n" + handoff)
+                    self.released_status_fixture(release)
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_ambiguous_distant_future_sequence_has_unconditional_recovery(self):
+        handoff = ("PR #99 lands tomorrow; the Supervisor routes deployment. "
+                   "Source work is complete and CI is green. Then the next worker may claim.")
+        for final in (False, True):
+            with self.subTest(final=final):
+                self.setUp()
+                self.released_status_fixture(handoff + "\n\nReleased claim 1" if final
+                                             else "Released claim 1\n\n" + handoff)
+                with self.assertRaises(PLAN.ClassifiedPlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+                self.comments.append({"id": 3, "body": "Released claim 1. Source session finished.",
+                                      "created_at": "2026-10-01T00:02:00Z",
+                                      "user": {"login": TEST_BOT}})
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_future_time_sequence_refresh_requires_unconditional_handoff(self):
         for final in (False, True):
