@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
 # dependencies = []
@@ -28,7 +27,6 @@ import cleanup_forks
 import cleanup_git
 import cleanup_probe
 from cleanup_probe import PRIVATE_PARTS, ProbeError, scan_root, signature
-
 
 SCHEMA = 1
 LIMITS = {"max_entries": 20000, "max_bytes": 256 * 1024 * 1024, "max_depth": 64,
@@ -306,7 +304,7 @@ def load_manifest(path: str) -> dict:
                 raise ProbeError("manifest_changed_or_too_large")
             data = json.loads(raw)
             if not isinstance(data, dict) or not isinstance(data.get("roots"), list):
-                raise ValueError
+                raise TypeError
             if any(not isinstance(root, dict) for root in data["roots"]):
                 raise ValueError
             if data["schema_version"] != SCHEMA or len(bytes.fromhex(data["_key"])) != 32:
