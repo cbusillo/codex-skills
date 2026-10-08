@@ -1206,7 +1206,9 @@ def repository_preparation_config_hash(context: dict[str, Any]) -> str:
             return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
         except OSError:
             pass
-    preparation = context.get("repository_preparation") if isinstance(context.get("repository_preparation"), dict) else {}
+    preparation = context.get("repository_preparation")
+    if not isinstance(preparation, dict):
+        preparation = {}
     return stable_value_hash(
         json.dumps(
             {
@@ -1225,7 +1227,9 @@ def repository_preparation_receipt_path(context: dict[str, Any]) -> Path:
 
 
 def repository_preparation_generated_state(context: dict[str, Any]) -> list[str]:
-    preparation = context.get("repository_preparation") if isinstance(context.get("repository_preparation"), dict) else {}
+    preparation = context.get("repository_preparation")
+    if not isinstance(preparation, dict):
+        preparation = {}
     values = preparation.get("required_generated_state")
     if not isinstance(values, list):
         return []
@@ -1393,7 +1397,9 @@ def repository_preparation_next_action(reason: str, preparation: dict[str, Any])
 
 
 def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
-    state = context.get("repository_preparation") if isinstance(context.get("repository_preparation"), dict) else {}
+    state = context.get("repository_preparation")
+    if not isinstance(state, dict):
+        state = {}
     if state.get("configured") is not True:
         return bounded_repository_preparation(state, target_worktree=str(repository_preparation_target(context)))
     target = repository_preparation_target(context)
