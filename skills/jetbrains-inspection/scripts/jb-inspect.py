@@ -9430,7 +9430,8 @@ def bounded_inspection_lane_result(lane: dict[str, Any]) -> dict[str, Any]:
     ):
         if isinstance(lane.get(key), dict):
             bounded.pop(key, None)
-    existing_diagnostic = lane.get("diagnostic") if isinstance(lane.get("diagnostic"), dict) else {}
+    raw_diagnostic = lane.get("diagnostic")
+    existing_diagnostic = raw_diagnostic if isinstance(raw_diagnostic, dict) else {}
     diagnostic = {
         key: value
         for key, value in existing_diagnostic.items()
@@ -9440,12 +9441,14 @@ def bounded_inspection_lane_result(lane: dict[str, Any]) -> dict[str, Any]:
             *INSPECTION_DIAGNOSTIC_CHILD_KEYS,
         }
     }
-    lane_evidence_ids = lane.get("evidence_ids") if isinstance(lane.get("evidence_ids"), dict) else {}
+    raw_evidence_ids = lane.get("evidence_ids")
+    lane_evidence_ids = raw_evidence_ids if isinstance(raw_evidence_ids, dict) else {}
     lane_run_id = positive_run_id(lane_evidence_ids.get("inspection_run_id")) or inspection_run_id(lane)
     diagnostic.update(inspection_stage_diagnostics(lane, lane_run_id))
     bounded["diagnostic"] = diagnostic
     for field in ("files", "relative_files"):
-        values = lane.get(field) if isinstance(lane.get(field), list) else []
+        raw_values = lane.get(field)
+        values = raw_values if isinstance(raw_values, list) else []
         bounded[field] = values[:MAX_LANE_FILE_PATHS]
         bounded[f"{field}_limit"] = MAX_LANE_FILE_PATHS
         bounded[f"{field}_omitted_count"] = max(0, len(values) - MAX_LANE_FILE_PATHS)
@@ -9464,7 +9467,8 @@ def bounded_lane_selection(value: Any) -> dict[str, Any] | None:
         "explicit_exclusion_overrides",
         "unmatched_files",
     ):
-        values = value.get(field) if isinstance(value.get(field), list) else []
+        raw_values = value.get(field)
+        values = raw_values if isinstance(raw_values, list) else []
         bounded[field] = values[:MAX_LANE_FILE_PATHS]
         bounded[f"{field}_count"] = len(values)
         bounded[f"{field}_limit"] = MAX_LANE_FILE_PATHS
