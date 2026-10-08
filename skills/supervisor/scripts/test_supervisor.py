@@ -1028,9 +1028,17 @@ class TerminalTests(unittest.TestCase):
         for command in ("CLAUDE_CONFIG_DIR=/other claude brief", "cd / && env CLAUDE_CONFIG_DIR=/other claude brief",
                         "export CLAUDE_CONFIG_DIR=/other && claude brief", "declare -x CLAUDE_CONFIG_DIR=/other; claude brief",
                         "unset CLAUDE_CONFIG_DIR && claude brief", "env -u CLAUDE_CONFIG_DIR claude brief",
-                        "env --unset=CLAUDE_CONFIG_DIR claude brief", "env -uCLAUDE_CONFIG_DIR claude brief"):
+                        "env --unset=CLAUDE_CONFIG_DIR claude brief", "env -uCLAUDE_CONFIG_DIR claude brief",
+                        "exec env CLAUDE_CONFIG_DIR=/other claude brief", "command env CLAUDE_CONFIG_DIR=/other claude brief",
+                        "time CLAUDE_CONFIG_DIR=/other claude brief", "{ CLAUDE_CONFIG_DIR=/other claude brief; }",
+                        "zsh -lc 'CLAUDE_CONFIG_DIR=/other claude brief'", "eval 'CLAUDE_CONFIG_DIR=/other claude brief'",
+                        "env -P /usr/bin CLAUDE_CONFIG_DIR=/other claude brief", "env -S 'CLAUDE_CONFIG_DIR=/other claude brief'",
+                        "env -i claude brief", "env - claude brief", "readonly CLAUDE_CONFIG_DIR=/other; claude brief",
+                        "CLAUDE_CONFIG_DIR+=/other claude brief"):
             with self.subTest(command=command), self.assertRaisesRegex(ValueError, "already sets CLAUDE_CONFIG_DIR"):
                 iterm_tab.with_account(command, choice)
+        with self.assertRaisesRegex(ValueError, "already sets CODEX_HOME"):
+            iterm_tab.with_account("CODEX_HOME=/manual codex brief", choice)
         command = "MY_CLAUDE_CONFIG_DIR=example claude 'Discuss CLAUDE_CONFIG_DIR=/example and CODEX_HOME=/example'"
         prepared = iterm_tab.with_account(command, choice)
         with tempfile.TemporaryDirectory() as folder:
@@ -1039,6 +1047,16 @@ class TerminalTests(unittest.TestCase):
             cli.chmod(0o700)
             result = subprocess.run(["/bin/sh", "-c", prepared], env={**os.environ, "PATH": folder + ":" + os.environ["PATH"]}, capture_output=True, text=True, check=True)
         self.assertEqual(result.stdout.splitlines(), [choice["env"]["CLAUDE_CONFIG_DIR"], "Discuss CLAUDE_CONFIG_DIR=/example and CODEX_HOME=/example"])
+        with tempfile.TemporaryDirectory() as folder:
+            cli = Path(folder) / "claude"
+            cli.write_text('#!/bin/sh\nprintf "%s\\n" "$CLAUDE_CONFIG_DIR" "$1"\n')
+            cli.chmod(0o700)
+            brief = Path(folder) / "brief.txt"
+            content = "Don't change CLAUDE_CONFIG_DIR=/example; discuss the setting."
+            brief.write_text(content)
+            prepared = iterm_tab.with_account(f'claude "$(cat {shlex.quote(str(brief))})"', choice)
+            result = subprocess.run(["/bin/sh", "-c", prepared], env={**os.environ, "PATH": folder + ":" + os.environ["PATH"]}, capture_output=True, text=True, check=True)
+            self.assertEqual(result.stdout.splitlines(), [choice["env"]["CLAUDE_CONFIG_DIR"], content])
 
     def test_manual_account_environment_without_provider_refuses_before_tabs(self):
         with tempfile.TemporaryDirectory() as folder:

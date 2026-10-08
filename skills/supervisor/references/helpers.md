@@ -122,7 +122,10 @@ Configuration errors and Context Panel's plain reset prompt lines are reported
 in launch output. Never apply a reset; Chris does that.
 
 The helper exports the account's `env` ahead of the command, including an agent
-started after `cd`. A command that already sets the account variable refuses.
+started after `cd`. A command that sets or unsets account variables refuses, including through
+common shell wrappers. Keep brief text separate from shell settings: quote it
+with `shlex.quote`, or use a private brief file and a quoted `$(cat <brief-file>)`
+argument for complex text rather than shell-specific ANSI-C quoting.
 A temporary write probe checks receipt storage before any tab is created; it
 is removed and never counted as a launch. A probe failure names the error type
 and asks for write access to the reader's storage root. Each receipt is written

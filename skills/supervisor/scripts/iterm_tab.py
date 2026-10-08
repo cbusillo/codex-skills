@@ -79,7 +79,7 @@ async def wait_for_session(app, tab, timeout=10.0):
         ) from error
 
 
-def account_settings(command_text, keys):
+def account_settings(command_text, keys, depth=0):
     """Find shell setters, rather than matching text inside a brief argument."""
     lexer = shlex.shlex(command_text, posix=True, punctuation_chars=";&|()")
     lexer.whitespace_split = True
@@ -92,20 +92,39 @@ def account_settings(command_text, keys):
     found = set()
     for words in segments:
         index = 0
+        while index < len(words) and Path(words[index]).name in {"exec", "command", "nohup", "time", "builtin", "{"}:
+            index += 1
+            while index < len(words) and words[index].startswith("-"):
+                index += 1
         while index < len(words) and "=" in words[index]:
-            found.add(words[index].split("=", 1)[0])
+            found.add(words[index].split("=", 1)[0].rstrip("+"))
             index += 1
         if index == len(words):
             continue
         command = Path(words[index]).name
         args = words[index + 1:]
-        if command in {"export", "declare", "typeset", "local", "unset"}:
-            found.update(arg.split("=", 1)[0] for arg in args if not arg.startswith("-"))
+        if command in {"export", "declare", "typeset", "local", "readonly", "unset"}:
+            found.update(arg.split("=", 1)[0].rstrip("+") for arg in args if not arg.startswith("-"))
+        elif command == "eval" or (command in {"sh", "bash", "zsh", "dash", "fish"}
+                                    and any(arg.startswith("-") and "c" in arg for arg in args)):
+            if depth >= 5:
+                raise ValueError("nested launch commands are too deep; use one invocation and a brief file")
+            body = " ".join(args) if command == "eval" else next(
+                (args[i + 1] for i, arg in enumerate(args[:-1]) if arg.startswith("-") and "c" in arg), "")
+            found.update(account_settings(body, keys, depth + 1))
         elif command == "env":
             index = 0
             while index < len(args):
                 arg = args[index]
-                if arg in {"-u", "--unset"}:
+                if arg in {"-i", "--ignore-environment", "-"}:
+                    found.update(keys)
+                elif arg in {"-P", "-C", "--chdir"}:
+                    index += 1
+                elif arg in {"-S", "--split-string"}:
+                    index += 1
+                    if index < len(args):
+                        found.update(account_settings(args[index], keys, depth + 1))
+                elif arg in {"-u", "--unset"}:
                     index += 1
                     if index < len(args):
                         found.add(args[index])
@@ -126,7 +145,7 @@ def with_account(command_text, choice):
     if "\n" in command_text:
         raise ValueError("account selection needs a one-line launch command")
     default_claude = choice["provider"] == "anthropic" and "CLAUDE_CONFIG_DIR" not in choice["env"]
-    checked_keys = set(choice["env"])
+    checked_keys = set(choice["env"]) | set(account_choice.ACCOUNT_VARIABLES.values())
     if default_claude:
         checked_keys.add("CLAUDE_CONFIG_DIR")
     conflicts = account_settings(command_text, checked_keys)
