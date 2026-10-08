@@ -41,8 +41,9 @@ def synchronize_instructions(sync, content: str, destinations: list[Path], *, wr
     """Read linked instructions for adoption, but leave their source under its owner."""
     linked = {}
     regular = []
+    targets = {path.resolve() for path in destinations if path.is_symlink()}
     for path in destinations:
-        if path.is_symlink():
+        if path.resolve() in targets:
             text = safe_file(path, instruction=True)
             linked[path] = {"path": str(path), "sha256": hashlib.sha256(text.encode()).hexdigest(),
                             "state": "current" if text == content else "preserved",
@@ -67,7 +68,7 @@ def catalog_skills_directory(path: Path) -> bool:
     return resolved.name == "skills" and (resolved.parent / "instructions" / "global.md").is_file() and (resolved.parent / "scripts" / "sync-global-instructions.py").is_file()
 
 
-def personal_source(sync, destinations: list[Path], local: Path, *, new_destinations: set[Path] | None = None, hashes: dict | None = None) -> str:
+def personal_source(sync, destinations: list[Path], local: Path, *, new_destinations: set[Path] | None = None) -> str:
     """Import unmanaged text; generated documents require their known catalog prefix."""
     content = safe_file(local).strip()
     base = sync.render(ROOT / "instructions" / "global.md", ROOT / ".absent-personal-source")
@@ -87,8 +88,6 @@ def personal_source(sync, destinations: list[Path], local: Path, *, new_destinat
             if old.returncode == 0:
                 bases.append("\n\n".join(filter(None, (sync.HEADER, old.stdout.strip()))) + "\n")
     for path, text in texts.items():
-        if path.is_symlink() and (hashes or {}).get(str(path)) == hashlib.sha256(text.encode()).hexdigest():
-            continue  # Already adopted; its owner may retain an older catalog output.
         if not text or text == known:
             continue
         if text.startswith(sync.HEADER):
@@ -157,8 +156,12 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             raise ValueError("Claude personal skills directory overlaps the catalog checkout; use a separate personal skills directory")
         pending = [(path, target) for path, target in links if binding(path, target)]
     destinations = [claude / "CLAUDE.md", codex / "AGENTS.md"]
+    preserved_targets = {path.resolve() for path in destinations if path.is_symlink()}
+    # Adopt linked text once. Later edits stay with its owner; the private source
+    # remains authoritative for outputs the installer can write.
+    adoption = [path for path in destinations if path.resolve() not in preserved_targets or str(path) not in hashes]
     local = ROOT / ".local" / "global-instructions.md"
-    personal = personal_source(sync, destinations, local, new_destinations={path for path in destinations if str(path) not in hashes}, hashes=hashes)
+    personal = personal_source(sync, adoption, local, new_destinations={path for path in destinations if str(path) not in hashes})
     shared_source = (ROOT / "instructions" / "global.md").read_text()
     base = "\n\n".join(filter(None, (sync.HEADER, shared_source.strip()))) + "\n"
     content = "\n\n".join(filter(None, (base.strip(), personal.strip()))) + "\n"
@@ -172,7 +175,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         raise ValueError("No installation receipt; run the installer once before refreshing instructions")
     for path in destinations:
         text = safe_file(path, instruction=True)
-        if str(path) in hashes and hashlib.sha256(text.encode()).hexdigest() != hashes[str(path)] and text != content:
+        if path.resolve() not in preserved_targets and str(path) in hashes and hashlib.sha256(text.encode()).hexdigest() != hashes[str(path)] and text != content:
             raise ValueError(f"Installed instructions changed: {path}; preserve the edits in {local}, preview scripts/sync-global-instructions.py, write the reconciled output and rerun")
     # All destinations are inspected before any mutation.
     instruction_preview = synchronize_instructions(sync, content, destinations, write=False)

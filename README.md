@@ -44,8 +44,11 @@ Run without `--write` to preview; add `--show-diff` to inspect instruction chang
 locally (these may include private text). Existing personal instructions are preserved
 in the ignored `.local/global-instructions.md` and included in both outputs;
 changed instruction files are backed up. Existing symlinked instruction files
-are read for adoption and reported as current or preserved; both the link and
-its target stay unchanged, so update their source separately if needed.
+are read for initial adoption and reported as current or preserved; both the link and
+its target stay unchanged, including a target that is the other selected instruction
+file. Later linked-source edits stay in their external source and do not stop installation.
+To propagate those edits into regular outputs, update `.local/global-instructions.md`
+and rerun the installer; linked files remain under separate management.
 Existing unrelated bindings, malformed settings, or generated instructions whose private
 source cannot be identified are reported and left in place. Inspect the reported
 path before moving it aside or restoring its private source, then rerun. Working

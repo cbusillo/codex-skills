@@ -142,6 +142,41 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(path.readlink(), target)
         self.assertEqual(target.read_bytes(), original)
 
+    def test_linked_source_edits_are_preserved_and_private_source_can_propagate_them(self):
+        target = self.root / "personal-instructions.md"
+        target.write_text("Old personal rule.\n")
+        path = self.codex / "AGENTS.md"
+        path.symlink_to(target)
+        self.install()
+        target.write_text("New personal rule.\n")
+        self.install()
+        local = self.catalog / ".local" / "global-instructions.md"
+        self.assertEqual(local.read_text(), "Old personal rule.\n")
+        local.write_text("New personal rule.\n")
+        self.install()
+        text = (self.claude / "CLAUDE.md").read_text()
+        self.assertIn("New personal rule.", text)
+        self.assertNotIn("Old personal rule.", text)
+        self.assertEqual(target.read_text(), "New personal rule.\n")
+        self.assertEqual(path.readlink(), target)
+
+    def test_link_to_other_selected_instruction_preserves_target_and_repeat_after_catalog_update(self):
+        target = self.claude / "CLAUDE.md"
+        original = "Shared personal rule.\n"
+        target.write_text(original)
+        path = self.codex / "AGENTS.md"
+        path.symlink_to(target)
+        self.install()
+        self.assertEqual(target.read_text(), original)
+        (self.catalog / "instructions" / "global.md").write_text("# Shared\nNew catalog rule.\n")
+        self.install()
+        self.install()
+        self.assertEqual(target.read_text(), original)
+        self.assertEqual(path.readlink(), target)
+        receipt = json.loads((self.catalog / ".local" / "catalog-install.json").read_text())
+        for destination in (path, target):
+            self.assertEqual(receipt["instruction_hashes"][str(destination)], installer.hashlib.sha256(destination.read_bytes()).hexdigest())
+
     def test_conflicting_personal_shared_binding_is_preserved_without_writes(self):
         shared = self.home / ".agents" / "skills" / "shared"
         shared.mkdir(parents=True)
