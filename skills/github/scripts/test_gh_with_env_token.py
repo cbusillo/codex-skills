@@ -154,39 +154,45 @@ def test_user_token_write_verifies_actor_before_running_gh() -> None:
                     assert "user-token" not in result.stdout + result.stderr
 
 
+def user_token_fixture(root: Path) -> tuple[Path, Path, Path, Path]:
+    env_file = root / "local.env"
+    env_file.write_text("CODEX_GITHUB_TOKEN=fixture-token\n", encoding="utf-8")
+    identity = root / "identity.py"
+    write(identity, "raise AssertionError('App helper should not run')\n")
+    classifier = root / "classifier.py"
+    write(
+        classifier,
+        f"from pathlib import Path\nPath({str(root / 'probed')!r}).touch()\n"
+        "raise AssertionError('Actor probe should not run')\n",
+    )
+    fake_gh = root / "gh"
+    write(
+        fake_gh,
+        "#!/bin/sh\n[ \"$GH_TOKEN\" = fixture-token ] || exit 41\n"
+        f"printf '%s\\n' \"$@\" > '{root / 'called'}'\nprintf 'fixture response\\n'\n",
+    )
+    return env_file, classifier, identity, fake_gh
+
+
 def test_user_token_write_without_expected_login_refuses_before_actor_probe() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        env_file = root / "local.env"
-        env_file.write_text("CODEX_GITHUB_TOKEN=fixture-token\n", encoding="utf-8")
-        identity = root / "identity.py"
-        write(identity, "raise AssertionError('App helper should not run')\n")
-        classifier = root / "classifier.py"
-        probed = root / "probed"
-        write(classifier, f"from pathlib import Path\nPath({str(probed)!r}).touch()\n")
-        fake_gh = root / "gh"
-        called = root / "called"
-        write(fake_gh, f"#!/bin/sh\ntouch '{called}'\n")
+        env_file, classifier, identity, fake_gh = user_token_fixture(root)
         result = run_wrapper(
             env_file, classifier, identity, "issue", "comment", "1", "--body", "fixture",
             gh_command=fake_gh,
         )
         assert result.returncode == 1, result
-        assert not called.exists(), result
-        assert not probed.exists(), result
+        assert not (root / "called").exists(), result
+        assert not (root / "probed").exists(), result
         assert "fixture-token" not in result.stdout + result.stderr
 
 
 def test_user_token_expected_login_override_takes_precedence() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        env_file = root / "local.env"
-        identity = root / "identity.py"
-        write(identity, "raise AssertionError('App helper should not run')\n")
-        classifier = root / "classifier.py"
-        fake_gh = root / "gh"
+        env_file, classifier, identity, fake_gh = user_token_fixture(root)
         called = root / "called"
-        write(fake_gh, f"#!/bin/sh\nprintf '%s\\n' \"$@\" > '{called}'\n")
         command = ("issue", "comment", "1", "--body", "fixture")
         for override_in_file in (False, True):
             env_file.write_text(
@@ -219,22 +225,11 @@ def test_user_token_expected_login_override_takes_precedence() -> None:
 def test_user_token_get_and_head_delegate_without_actor_verification() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        env_file = root / "local.env"
-        identity = root / "identity.py"
-        write(identity, "raise AssertionError('App helper should not run')\n")
-        classifier = root / "classifier.py"
-        probed = root / "probed"
-        write(classifier, f"from pathlib import Path\nPath({str(probed)!r}).touch()\nraise AssertionError('Read must not verify actor')\n")
-        fake_gh = root / "gh"
+        env_file, classifier, identity, fake_gh = user_token_fixture(root)
         called = root / "called"
-        write(
-            fake_gh,
-            f"#!/bin/sh\n[ \"$GH_TOKEN\" = fixture-token ] || exit 41\n"
-            f"printf '%s\\n' \"$@\" > '{called}'\nprintf 'fixture response\\n'\n",
-        )
         for expected_login in ("", "CODEX_AUTOMATION_LOGIN=default-user\n"):
             env_file.write_text("CODEX_GITHUB_TOKEN=fixture-token\n" + expected_login, encoding="utf-8")
-            methods = [()]
+            methods: list[tuple[str, ...]] = [()]
             for method in ("GET", "get", "HEAD", "head"):
                 methods.extend((("--method", method), (f"--method={method}",), ("-X", method), (f"-X{method}",)))
             for flags in methods:
@@ -244,7 +239,7 @@ def test_user_token_get_and_head_delegate_without_actor_verification() -> None:
                 assert result.returncode == 0, result
                 assert called.read_text().splitlines() == list(command)
                 assert result.stdout == "fixture response\n", result
-                assert not probed.exists(), result
+                assert not (root / "probed").exists(), result
                 assert "fixture-token" not in result.stdout + result.stderr
 
 
