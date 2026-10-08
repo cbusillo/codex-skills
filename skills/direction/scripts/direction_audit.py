@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fnmatch
 import json
 import os
 import pathlib
@@ -21,7 +22,6 @@ import runpy
 import shutil
 import subprocess
 import sys
-import fnmatch
 from typing import Any, Callable
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -61,7 +61,6 @@ STATUS_FIELD = r"(?:State|Next action|Blocked by|Waiting for|Parked until|Waitin
 # The overall direction owns classification; repositories can contain mixed work.
 RANKS = ("milestone", "tooling", "own")
 OWN_SHARE_FLOOR = 0.20
-REPO_NAME = re.compile(r"[\w.-]+/[\w.-]+")
 # GitHub's revert button titles the pull request `Revert "..."` and writes
 # `Reverts OWNER/REPO#N`; `git revert` writes `This reverts commit <sha>`.
 REVERT_TITLE = re.compile(r"^\s*revert\b", re.I)
@@ -1088,7 +1087,7 @@ def enrich_milestone_waits(
 def own_project_patterns(text: str) -> list[str]:
     """Read repository names/patterns from the own-project item in merged Order."""
     order = github_direction_next.section_map(text).get("Order", "")
-    match = re.search(r"(?ms)^4\.\s+(.*?)(?=^\d+\.\s|\Z)", order)
+    match = re.search(r"(?ms)^\d+\.\s+(Own projects\b.*?)(?=^\d+\.\s|\Z)", order)
     if not match or ":" not in match[1]:
         raise AuditError("Order own-project list is missing")
     listing = match[1].split(":", 1)[1].split("This list", 1)[0]
@@ -1108,22 +1107,34 @@ def own_project_patterns(text: str) -> list[str]:
 
 
 def tracked_capacity_issues(
-    direction_repo: str, text: str, *, fetch: Callable[[list[str]], Any], max_nodes: int = 500,
+    direction_repo: str, text: str, since: dt.datetime, *, fetch: Callable[[list[str]], Any], max_nodes: int = 500,
 ) -> tuple[set[tuple[str, int]], list[str]]:
     """Walk Track native blockers/sub-issues, including completed weekly work.
 
     These are the edges global next walks, without its availability filter:
     closed/waiting nodes still attribute the PRs that delivered their work.
     """
-    try:
-        roots, cut = fetch_paginated(f"repos/{direction_repo}/issues?state=all", fetch=fetch)
-    except AuditError:
-        return set(), ["capacity_tracks"]
-    errors = ["capacity_tracks"] if cut else []
     titles = set(parse_direction(text)["milestones"])
-    pending = [(direction_repo.casefold(), row["number"]) for row in roots
-               if "pull_request" not in row and str(row.get("title", "")).startswith("Track:")
-               and (row.get("milestone") or {}).get("title") in titles]
+    errors: list[str] = []
+    pending: list[tuple[str, int]] = []
+    try:
+        milestones, cut = fetch_paginated(f"repos/{direction_repo}/milestones?state=all", fetch=fetch)
+        if cut:
+            errors.append("capacity_track_milestones")
+        for milestone in milestones:
+            closed_at = _parse_time(milestone.get("closed_at"))
+            recent = milestone.get("state") == "closed" and closed_at is not None and closed_at >= since
+            if milestone.get("title") not in titles and not recent:
+                continue
+            roots, cut = fetch_paginated(
+                f"repos/{direction_repo}/issues?state=all&milestone={milestone['number']}", fetch=fetch,
+            )
+            if cut:
+                errors.append(f"capacity_tracks:{milestone['number']}")
+            pending.extend((direction_repo.casefold(), row["number"]) for row in roots
+                           if "pull_request" not in row and str(row.get("title", "")).startswith("Track:"))
+    except AuditError:
+        errors.append("capacity_tracks")
     seen: set[tuple[str, int]] = set()
     while pending:
         key = pending.pop()
@@ -1154,13 +1165,16 @@ def pull_issue_refs(repo: str, pull: dict[str, Any]) -> set[tuple[str, int]]:
     refs = set(pull.get("_native_issue_refs") or [])
     text = f"{pull.get('title') or ''}\n{pull.get('body') or ''}"
     text = re.sub(r"\[[^\]]*\]\((https://github\.com/[\w.-]+/[\w.-]+/issues/\d+)\)", r"\1", text)
-    for clause in re.finditer(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs)\b\s*:?[ \t]+([^\n]+)", text, re.I):
-        # Only a reference list immediately following the keyword is a link.
-        tail = clause[1]
-        while match := re.match(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)|([\w.-]+/[\w.-]+)?#(\d+)", tail):
+    for clause in re.finditer(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs)\b[ \t]*:?[ \t]*", text, re.I):
+        if re.search(r"\b(?:not|never|doesn't|don't)\s*$", text[max(0, clause.start() - 20):clause.start()], re.I):
+            continue
+        # Only an immediate reference list is a link; list rows may be on the
+        # following lines. Prose after the references ends the list.
+        tail = re.sub(r"^\s*(?:[-*]\s+)?", "", text[clause.end():])
+        while match := re.match(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)|([\w.-]+/[\w.-]+)?#(\d+)\b", tail):
             refs.add(((match[1] or match[3] or repo).casefold(), int(match[2] or match[4])))
             tail = tail[match.end():]
-            separator = re.match(r"\s*(?:,|and)\s*", tail)
+            separator = re.match(r"(?:[ \t]*(?:,|and)[ \t]*|[ \t]*\n\s*(?:[-*]\s+)?)", tail)
             if separator is None:
                 break
             tail = tail[separator.end():]
@@ -1267,6 +1281,7 @@ def capacity_summary(
         "since": since.isoformat().replace("+00:00", "Z"),
         "until": until.isoformat().replace("+00:00", "Z"),
         "classification_source": direction_source,
+        "own_projects": own_projects,
         "merged_total": total,
         "merged_by_rank": merged_by_rank,
         "own_share": own_share,
@@ -1291,7 +1306,7 @@ def fetch_capacity(
     except AuditError:
         own_projects = []
         truncated.append("capacity_own_projects")
-    tracked_issues, graph_errors = tracked_capacity_issues(direction_repo, text or "", fetch=fetch)
+    tracked_issues, graph_errors = tracked_capacity_issues(direction_repo, text or "", since, fetch=fetch)
     truncated.extend(graph_errors)
     try:
         listed, cut = fetch_paginated("installation/repositories", fetch=fetch, key="repositories")

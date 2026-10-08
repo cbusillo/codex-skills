@@ -1099,6 +1099,7 @@ def test_capacity_lists_reverts_reopened_issues_and_closed_milestones_in_window(
 def test_own_project_list_reads_identifiers_patterns_and_edits() -> None:
     module = load()
     names = module.own_project_patterns(OWN_DIRECTION)
+    assert module.own_project_patterns(OWN_DIRECTION.replace("4. Own", "5. Own")) == names
     assert names == ["companion", "companion*", "edge_codec", "fun", "house-tools", "node-remote", "toy-app"]
     result = summary(module, pulls={name: [merged_pull(1, NOW)] for name in
                                    ("o/Companion-Module", "o/node-remote", "o/house-tools", "o/workbench")})
@@ -1108,7 +1109,8 @@ def test_own_project_list_reads_identifiers_patterns_and_edits() -> None:
                                                       "o/new-project": [merged_pull(2, NOW)]})["merged_by_rank"] == {
         "milestone": 0, "tooling": 1, "own": 1,
     }
-    for text in (DIRECTION, OWN_DIRECTION.replace("4. Own", "4. Other").split("## Order")[0]):
+    for text in (DIRECTION, OWN_DIRECTION.replace("4. Own", "4. Other"),
+                 OWN_DIRECTION.replace("below:", "below")):
         try:
             module.own_project_patterns(text)
         except module.AuditError:
@@ -1127,23 +1129,72 @@ def test_capacity_graph_includes_closed_waiting_children_blockers_and_cycles() -
     def fetch(args: list[str]) -> Any:
         path = args[1].split("?")[0]
         calls.append(path)
+        if path == "repos/o/direction/milestones":
+            return [{"number": 1, "title": "Dogfood week", "state": "closed", "closed_at": stamp(NOW)}]
         if path == "repos/o/direction/issues":
             return [
                 {"number": 1, "title": "Track: shipped", "state": "closed", "milestone": {"title": "Dogfood week"}},
-                {"number": 2, "title": "Track: unrelated", "milestone": {"title": "Other"}},
                 {"number": 4, "title": "Ordinary", "milestone": {"title": "Dogfood week"}},
             ]
         return edges.get(path, [])
-    tracked, incomplete = module.tracked_capacity_issues("o/direction", OWN_DIRECTION, fetch=fetch)
+    tracked, incomplete = module.tracked_capacity_issues("o/direction", OWN_DIRECTION, SINCE, fetch=fetch)
     assert tracked == {("o/direction", 1), ("x/product", 9), ("o/tools", 3)} and not incomplete
     assert len(calls) == len(set(calls))
-    limited, incomplete = module.tracked_capacity_issues("o/direction", OWN_DIRECTION, fetch=fetch, max_nodes=1)
+    limited, incomplete = module.tracked_capacity_issues("o/direction", OWN_DIRECTION, SINCE, fetch=fetch, max_nodes=1)
     assert limited == {("o/direction", 1)} and incomplete == ["capacity_graph_limit"]
     def denied(args: list[str]) -> Any:
         if "/blocked_by" in args[1]:
             raise module.AuditError("HTTP 403")
         return fetch(args)
-    assert module.tracked_capacity_issues("o/direction", OWN_DIRECTION, fetch=denied)[1]
+    assert module.tracked_capacity_issues("o/direction", OWN_DIRECTION, SINCE, fetch=denied)[1]
+
+
+def test_capacity_fetch_attribution_and_retired_milestone_window() -> None:
+    import base64
+    module = load()
+    native_calls = []
+    paths = []
+    def fetch(args: list[str]) -> Any:
+        path = args[1]
+        paths.append(path)
+        if "/contents/" in path:
+            return {"content": base64.b64encode(OWN_DIRECTION.encode()).decode()}
+        if path.startswith("repos/o/direction/milestones"):
+            return [
+                {"number": 7, "title": "Shipped and removed", "state": "closed", "closed_at": stamp(SINCE)},
+                {"number": 8, "title": "Old removed milestone", "state": "closed", "closed_at": stamp(SINCE-dt.timedelta(seconds=1))},
+            ]
+        if path.startswith("repos/o/direction/issues?state=all&milestone=7"):
+            return [{"number": 1, "title": "Track: shipped", "state": "closed"}]
+        if path.startswith("repos/o/direction/issues/1/sub_issues"):
+            return [{"html_url": "https://github.com/o/live/issues/10", "state": "closed"}]
+        if path.startswith("installation/repositories"):
+            return {"repositories": [{"full_name": "o/fun", "owner": {"login": "o"}, "pushed_at": stamp(NOW)}]}
+        if path.startswith("repos/o/fun/pulls"):
+            return [merged_pull(1, NOW), merged_pull(2, NOW),
+                    merged_pull(3, NOW, body="Refs: \n- [tracked](https://github.com/o/live/issues/10)\n- #99"),
+                    merged_pull(4, NOW, body="Doesn't fix o/live#10")]
+        if path == "graphql":
+            number = int(next(arg.split("=",1)[1] for arg in args if arg.startswith("number=")))
+            native_calls.append(number)
+            return {"data": {"repository": {"pullRequest": {"closingIssuesReferences": {
+                "nodes": [{"number": 10, "repository": {"nameWithOwner": "o/live"}}] if number == 1 else [],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }}}}}
+        return []
+    result, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=fetch)
+    assert not errors
+    assert result["merged_by_rank"] == {"milestone": 2, "tooling": 0, "own": 2}
+    assert native_calls == [1, 2, 4]  # Explicit proven links do not need another read.
+    assert not any("milestone=8" in path for path in paths)
+    assert result["own_projects"] == module.own_project_patterns(OWN_DIRECTION)
+    def missing_order(args: list[str]) -> Any:
+        if "/contents/" in args[1]:
+            return {"content": base64.b64encode(DIRECTION.encode()).decode()}
+        return fetch(args)
+    partial, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=missing_order)
+    assert "capacity_own_projects" in errors and partial["own_share_floor"] == "unknown"
+    assert partial["merged_by_rank"]["milestone"] == 2
 
 
 def test_native_pull_links_are_paged_and_partial_errors_refuse() -> None:

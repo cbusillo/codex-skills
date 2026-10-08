@@ -361,7 +361,8 @@ direction's weekly numbers for the window since the prior audit: merged pull
 requests per rank, the own-projects share against the 20% floor, milestones
 closed, issues reopened, and merged pull requests that mark a revert. Each
 merged PR counts as milestone work when a closing keyword, `Refs`, or native
-PR issue link reaches an issue in a listed milestone's `Track:` graph (native
+PR issue link reaches a milestone's `Track:` graph (listed milestones and
+those closed since the window began, including removed lines; native
 blockers and sub-issues, including completed work). Otherwise its repository
 counts as own when named by the merged overall `DIRECTION.md` Order item 4,
 and tooling otherwise. Read that list; do not copy it into catalog guidance
