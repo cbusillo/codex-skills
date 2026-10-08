@@ -492,7 +492,7 @@ def redact_paths(text: str, *, embedded_path: bool = False) -> str:
                     quote_context = None
             elif char in "\"'`":
                 interior_apostrophe = char == "'" and index > 0 and text[index - 1].isalnum()
-                if not interior_apostrophe:
+                if not interior_apostrophe or text[index + 1:index + 2] == "/":
                     if quote_context is None or text[index + 1:index + 2] == "/":
                         quote_context = char
                         token_start = scanned_to

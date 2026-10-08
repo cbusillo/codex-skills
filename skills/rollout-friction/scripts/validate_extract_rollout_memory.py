@@ -369,6 +369,8 @@ def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
         "https://example.com/app/@fs/media/example/uploads/avatar.png",
         "myhost.app/app/@fs/media/example/uploads/avatar.png",
         '"/srv/client files/media/example/uploads/avatar.png"',
+        "f'/srv/client files/media/example/uploads/avatar.png'",
+        "Path(r'/opt/acme exports/tmp/example/fixtures/sample.json')",
         'Mounted the 3.5" drive; copied "/srv/client files/media/example/uploads/avatar.png"',
         'Unclosed ` output; copied `/srv/client files/media/example/uploads/avatar.png`',
         r"/srv/client\ files/media/example/uploads/avatar.png",
