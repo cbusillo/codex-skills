@@ -649,9 +649,13 @@ def pr_issue_reference(pull: dict[str, Any], number: int, *, repo: str,
     issue_reference = rf"(?:{re.escape(repo)}#{number}|{issue_url})(?!\d)"
     if local_references:
         issue_reference = rf"(?:#{number}|{issue_reference})(?!\d)"
+    any_issue = r"(?:https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*(?:#[\w-]+)?|[\w.-]+/[\w.-]+#[1-9]\d*|#[1-9]\d*)"
+    list_item = rf"(?:{any_issue}|<{any_issue}>|\[[^\]\n]+\]\({any_issue}(?:[ \t]+\"[^\"]*\")?\))"
+    separator = r"(?:[ \t]*,[ \t]*(?:and[ \t]+)?|[ \t]+and[ \t]+)"
     ownership_reference = (
         rf"(?i)(?<![\w])(?:__)?(?:refs?|fix(?:es|ed)?|clos(?:e|es|ed)|resolv(?:e|es|ed)|implement(?:s|ed|ing)?)"
-        rf"(?:\*\*|__)?\s*:?(?:\*\*|__)?\s+(?:{issue_reference}|<{issue_url}(?!\d)[^>]*>|"
+        rf"(?:\*\*|__)?\s*:?(?:\*\*|__)?\s+(?:{list_item}{separator})*"
+        rf"(?:{issue_reference}|<{issue_url}(?!\d)[^>]*>|"
         rf"\[[^\]\n]+\]\({issue_url}(?!\d)[^\n)]*\))"
     )
     # Preserve the existing independent-link rule for source-authored retained

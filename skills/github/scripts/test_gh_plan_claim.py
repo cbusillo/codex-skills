@@ -1449,6 +1449,29 @@ class ClaimTests(unittest.TestCase):
                          [{"source": "open_pr", "number": 100, "branch": "work/repair"}])
         self.assert_no_writes()
 
+    def test_implementation_reference_list_keeps_each_competing_issue(self):
+        for body in (
+            "Refs https://github.com/owner/repo/issues/10, https://github.com/owner/repo/issues/42",
+            "Fixes #10 and https://github.com/owner/repo/issues/42",
+            "Closes [first](https://github.com/other/repo/issues/10), and [repair](https://github.com/owner/repo/issues/42)",
+            "Refs #10, #42",
+        ):
+            with self.subTest(body=body):
+                self.setUp()
+                self.pulls = [{"number": 99, "body": body, "head": {"ref": "work/repair"}}]
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.payload["competing_evidence"],
+                                 [{"source": "open_pr", "number": 99, "branch": "work/repair"}])
+                self.assert_no_writes()
+
+    def test_unrelated_implementation_list_does_not_claim_context_link(self):
+        self.pulls = [{"number": 99,
+                       "body": "Refs #10, #11 and other/repo#42\n\nRuntime/docs qualification stays on https://github.com/owner/repo/issues/42",
+                       "head": {"ref": "work/docs"}}]
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
     def test_retained_handoff_keeps_contextual_issue_links_and_waits(self):
         self.ordinary_handoff_fixture()
         self.pulls[0]["body"] = "Planning issue: https://github.com/owner/repo/issues/42"
