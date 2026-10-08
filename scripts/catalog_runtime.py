@@ -76,8 +76,10 @@ def status_line(root: Path) -> str:
                 state = {"state": "stale", "reason": "shared instructions changed; run scripts/catalog_runtime.py --update to refresh installed instructions"}
             if state["state"] == "current" and receipt.exists() and recorded.get("alert_refresh"):
                 state = {"state": "notice", "reason": "catalog checkout is current but alert refresh was skipped; preview scripts/install-catalog.py --refresh-instructions --show-diff, reconcile the reported hook source, then run scripts/catalog_runtime.py --update"}
-            if state["state"] == "current" and receipt.exists() and recorded.get("instruction_refresh"):
+            if state["state"] in ("current", "notice") and receipt.exists() and recorded.get("instruction_refresh"):
                 state = {"state": "notice", "reason": "catalog checkout is current but instruction refresh was skipped; preview scripts/install-catalog.py --refresh-instructions --show-diff, reconcile the reported instruction source, then run scripts/catalog_runtime.py --update"}
+                if recorded.get("alert_refresh"):
+                    state["reason"] += "; alert refresh was also skipped; reconcile the reported hook source as well"
         if state["state"] == "current":
             return ""
         return f"Catalog {state['state']}: {state['reason']} ({root})."

@@ -55,6 +55,7 @@ external manager, including when both destinations share one target. Generated
 linked text is preserved without guessing its private remainder; the catalog's
 private source supplies regular outputs. The separate instruction sync command preserves links in the same way,
 so it can reconcile regular outputs while another destination remains linked.
+Dangling links and non-file targets are refused; restore the external source before retrying.
 Existing unrelated bindings, malformed settings, or generated instructions whose private
 source cannot be identified are reported and left in place. Inspect the reported
 path before moving it aside or restoring its private source, then rerun. Working
@@ -319,7 +320,8 @@ uv run scripts/sync-global-instructions.py --codex-hook --write
 
 Run from the maintained runtime checkout after landing the source. The helper
 generates `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, backs up changed files,
-and refuses symlink destinations. `--home-dir` selects a fixture home for tests.
+and preserves linked instruction files and their targets. Symlinked hook/config
+destinations remain refused. `--home-dir` selects a fixture home for tests.
 Native `CODEX_HOME` and `CLAUDE_CONFIG_DIR` overrides are respected; use
 `--codex-dir` or `--claude-dir` for explicit host destinations. `CODE_HOME`
 continues to locate shared catalog state, not either host's global instructions.

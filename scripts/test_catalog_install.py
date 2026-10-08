@@ -198,6 +198,15 @@ class InstallTests(unittest.TestCase):
                 self.assertEqual(target.read_text(), original)
                 self.assertEqual(local.read_text(), "Authoritative private rule.\n")
 
+    def test_link_to_catalog_shared_source_does_not_duplicate_it_as_private_text(self):
+        shared = self.catalog / "instructions" / "global.md"
+        (self.codex / "AGENTS.md").symlink_to(shared)
+        original = shared.read_bytes()
+        self.install()
+        self.assertEqual((self.catalog / ".local" / "global-instructions.md").read_text(), "")
+        self.assertEqual((self.claude / "CLAUDE.md").read_text(), self.sync.render(shared, self.catalog / ".local" / "global-instructions.md"))
+        self.assertEqual(shared.read_bytes(), original)
+
     def test_conflicting_personal_shared_binding_is_preserved_without_writes(self):
         shared = self.home / ".agents" / "skills" / "shared"
         shared.mkdir(parents=True)
@@ -1066,6 +1075,13 @@ class UpdateTests(unittest.TestCase):
             self.assertIn("instruction refresh was skipped", runtime.status_line(self.checkout))
             self.assertEqual(target.read_bytes(), original)
             self.assertTrue(agents.is_symlink())
+            hooks.write_text("invalid JSON")
+            both = runtime.update(self.checkout)
+            self.assertIn("instruction_refresh", both)
+            self.assertIn("alert_refresh", both)
+            self.assertIn("instruction refresh", runtime.status_line(self.checkout))
+            self.assertIn("alert refresh", runtime.status_line(self.checkout))
+            hooks.write_text('{"hooks": {}}\n')
             target.write_bytes((fixture_home / ".claude" / "CLAUDE.md").read_bytes())
             self.assertNotIn("instruction_refresh", runtime.update(self.checkout))
             self.assertEqual(runtime.status_line(self.checkout), "")
