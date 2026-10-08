@@ -393,7 +393,7 @@ class CleanupRunnerTests(unittest.TestCase):
             for excess in (0, 1):
                 with self.subTest(stream=stream, excess=excess):
                     total = runner.CAPTURE_LIMIT + excess
-                    stdout_size = total if stream == "stdout" else total // 2 if stream == "combined" else 0
+                    stdout_size = {"stdout": total, "stderr": 0, "combined": total // 2}[stream]
                     stderr_size = total - stdout_size
                     ready = self.workspace / f"capture-{stream}-{excess}.ready"
                     command = [sys.executable, "-c", textwrap.dedent(f"""\
@@ -404,13 +404,17 @@ class CleanupRunnerTests(unittest.TestCase):
                             sys.stdout.buffer.flush()
                         sys.stderr.buffer.write(b'x' * {stderr_size})
                         sys.stderr.buffer.flush()
-                        pathlib.Path({str(ready)!r}).write_text(str(os.getpid()), encoding='utf-8')
-                        if {excess}:
-                            time.sleep(20)
+                        ready = pathlib.Path({str(ready)!r})
+                        pending = ready.with_suffix('.pending')
+                        pending.write_text(str(os.getpid()), encoding='utf-8')
+                        pending.replace(ready)
+                        time.sleep(20 if {excess} else 0.2)
                         """)]
-                    processes = []
+                    processes: list[subprocess.Popen[bytes]] = []
+                    output_ready_at = 0.0
 
                     def witnessed_popen(*args, **kwargs):
+                        nonlocal output_ready_at
                         owned_process = real_popen(*args, **kwargs)
                         processes.append(owned_process)
                         readiness_deadline = time.monotonic() + 5
@@ -420,18 +424,21 @@ class CleanupRunnerTests(unittest.TestCase):
                         self.assertEqual(str(owned_process.pid), ready.read_text(encoding="utf-8"))
                         if excess:
                             self.assertEqual(owned_process.pid, os.getpgid(owned_process.pid))
+                        output_ready_at = time.monotonic()
                         return owned_process
 
                     try:
                         with mock.patch.object(subprocess, "Popen", side_effect=witnessed_popen):
                             if excess:
                                 with self.assertRaises(runner.RunnerError) as rejection:
-                                    runner.invoke(command, "capture proof", os.environ.copy(), self.workspace, 1,
+                                    runner.invoke(command, "capture proof", os.environ.copy(), self.workspace, 30,
                                                   self.base / f"capture-{stream}-{excess}")
                                 self.assertIs(type(rejection.exception), runner.RunnerError)
+                                self.assertLess(time.monotonic() - output_ready_at, 10,
+                                                "overflow waited for producer exit or invocation timeout")
                             else:
                                 returncode, stdout, stderr, _ = runner.invoke(
-                                    command, "capture proof", os.environ.copy(), self.workspace, 1,
+                                    command, "capture proof", os.environ.copy(), self.workspace, 30,
                                     self.base / f"capture-{stream}-{excess}",
                                 )
                                 self.assertEqual(0, returncode)
@@ -452,8 +459,11 @@ class CleanupRunnerTests(unittest.TestCase):
                     finally:
                         for owned_process in processes:
                             try:
-                                if os.getpgid(owned_process.pid) == owned_process.pid:
-                                    os.killpg(owned_process.pid, runner.signal.SIGKILL)
+                                if owned_process.poll() is None:
+                                    if os.getpgid(owned_process.pid) == owned_process.pid:
+                                        os.killpg(owned_process.pid, runner.signal.SIGKILL)
+                                    else:
+                                        owned_process.kill()
                             except ProcessLookupError:
                                 pass
                             owned_process.wait(timeout=2)
