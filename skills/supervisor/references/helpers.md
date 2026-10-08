@@ -173,7 +173,7 @@ env = {}
 ```
 
 Private-config migration: delete the `reserve =` lines under `[accounts]`
-and in each `[[accounts.account]]`, including the old codex-info 20% reserve.
+and in each `[[accounts.account]]`, including any per-account reserve.
 Keep the `[accounts]` table, snapshot command and account environment mappings;
 remove obsolete comments that prescribe a fallback order.
 They are ignored by the launcher for compatibility with existing files; account

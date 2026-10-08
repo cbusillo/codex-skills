@@ -1061,7 +1061,7 @@ class TerminalTests(unittest.TestCase):
             path.write_text("claude brief")
             choice = account_choice.choose("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None)
             choice["storage_root"] = root
-            terminal = SimpleNamespace(session_id="session", async_send_text=AsyncMock(side_effect=OSError("lost connection")))
+            terminal = SimpleNamespace(session_id="session", async_send_text=AsyncMock(side_effect=Exception("private RPC payload")))
             tab = SimpleNamespace(tab_id="tab", current_session=terminal)
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(return_value=tab))
             app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
@@ -1074,6 +1074,7 @@ class TerminalTests(unittest.TestCase):
             self.assertEqual(failed.exception.detail["failed_launch"]["submission"], "unknown")
             self.assertTrue(failed.exception.detail["failed_launch"]["receipt_written"])
             self.assertEqual(failed.exception.detail["failed_launch"]["tab_id"], "tab")
+            self.assertNotIn("private RPC payload", json.dumps(failed.exception.detail))
 
     def test_batch_refusal_and_bad_second_command_create_no_tabs_or_receipts(self):
         window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())

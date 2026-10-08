@@ -19,7 +19,7 @@ class LaunchFailure(ValueError):
     """Preserve launch identities so a partial batch is never mistaken for refusal."""
 
     def __init__(self, launched, failed, error):
-        reason = type(error).__name__ if isinstance(error, OSError) else str(error)
+        reason = str(error) if isinstance(error, ValueError) else type(error).__name__
         self.detail = {"status": "launch_failed", "reason": reason,
                        "launched": launched, "failed_launch": failed,
                        "next_action": "List and read these tabs before retrying; earlier launches may be running."}
@@ -192,7 +192,7 @@ async def operate(app, args):
                     progress["receipt_written"] = True
                 progress.update(submission="unknown", phase="submit_command")
                 await send(session, command_text)
-            except (ValueError, OSError) as error:
+            except Exception as error:
                 raise LaunchFailure(results, progress, error) from error
             result = {"window_id": windows[0].window_id,
                       "tab_id": tab.tab_id, "session_id": session.session_id}
