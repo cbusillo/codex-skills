@@ -12,10 +12,12 @@ from contextlib import contextmanager
 import json
 import os
 import re
+import secrets
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -273,6 +275,22 @@ def _format_gh_error(cmd, err):
     return "\n".join(parts)
 
 
+@contextmanager
+def command_signal_cleanup():
+    """Let catchable parent termination use the same cleanup as interruption."""
+    previous = {}
+    def terminate(signum, _frame):
+        raise SystemExit(128 + signum)
+    if threading.current_thread() is threading.main_thread():
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            previous[signum] = signal.signal(signum, terminate)
+    try:
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
 def gh_text(args, repo=None):
     cmd = [GH_COMMAND]
     # `gh api` does not accept `-R/--repo` on all gh versions. The watcher's
@@ -285,15 +303,22 @@ def gh_text(args, repo=None):
     if timeout <= 0:
         raise GhCommandNotSent("GitHub command deadline expired before launch; no write sent")
     env = os.environ.copy()
+    receipt_nonce = secrets.token_hex(16)
+    env["GH_WITH_ENV_TOKEN_RECEIPT_NONCE"] = receipt_nonce
     # Let managed preflight reads refuse before our process-group ceiling.
     # Reserve a short interval for the wrapper to report that refusal.
     env["GITHUB_RETRY_DEADLINE_AT"] = str(time.time() + timeout - min(2.0, timeout / 2))
+    with command_signal_cleanup():
+        return run_gh_command(cmd, env, timeout, receipt_nonce)
+
+
+def run_gh_command(cmd, env, timeout, receipt_nonce):
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, start_new_session=True, env=env)
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
-        except (subprocess.TimeoutExpired, KeyboardInterrupt):
+        except BaseException:
             # The auth wrapper has child processes. Kill the whole command group
             # so an inherited stdout pipe cannot keep communicate/our lock hung.
             try:
@@ -303,10 +328,15 @@ def gh_text(args, repo=None):
             proc.communicate()
             raise
         if proc.returncode:
-            if (GH_COMMAND == str(DEFAULT_GH) and stderr.strip().splitlines()[-1:] == [
-                "error: unable to verify the automation GitHub actor; refusing write",
-            ]):
-                raise GhCommandNotSent("GitHub wrapper refused before sending the write: " + stderr.strip())
+            lines = stderr.strip().splitlines()
+            try:
+                receipt = json.loads(lines[-1]) if lines else None
+            except json.JSONDecodeError:
+                receipt = None
+            if GH_COMMAND == str(DEFAULT_GH) and receipt == {
+                "schema_version": 1, "nonce": receipt_nonce, "write_outcome": "not_started",
+            }:
+                raise GhCommandNotSent("GitHub wrapper refused before sending the write: " + "\n".join(lines[:-1]))
             raise subprocess.CalledProcessError(proc.returncode, cmd, stdout, stderr)
     except subprocess.TimeoutExpired as err:
         raise GhCommandError("GitHub CLI command timed out; rerun outcome is unknown") from err
@@ -1814,7 +1844,22 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
         pending[str(run_id)] = {"run_attempt": run.get("run_attempt"), "outcome": "submitting"}
         if recovery:
             pending[str(run_id)]["retry_mode"] = "runner_acquisition"
-        save_state(state_path, state)
+        try:
+            save_state(state_path, state)
+        except OSError:
+            # No command has launched. Restore only this unsent intent, keeping
+            # earlier confirmed progress and its cycle charge intact.
+            result.setdefault("not_sent_run_ids", []).append(run_id)
+            del pending[str(run_id)]
+            if not result["rerun_run_ids"]:
+                set_retry_count(state, pr["head_sha"], retries_used)
+            try:
+                save_state(state_path, state)
+                result["unsent_state_restored"] = True
+            except OSError as recovery_error:
+                result["unsent_state_restored"] = False
+                result["recovery_error"] = github_api.redact_string(str(recovery_error))
+            raise
         result["rerun_attempted"] = True
         try:
             gh_text(["run", "rerun", str(run_id)] + ([] if recovery else ["--failed"]), repo=pr["repo"])
@@ -1828,6 +1873,8 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
                 or isinstance(err, GhCommandNotSent)
             )
             if rejected:
+                if isinstance(err, GhCommandNotSent) or isinstance(err.__cause__, FileNotFoundError):
+                    result.setdefault("not_sent_run_ids", []).append(run_id)
                 del pending[str(run_id)]
                 if not result["rerun_run_ids"]:
                     set_retry_count(state, pr["head_sha"], retries_used)
