@@ -825,6 +825,12 @@ def workflow_execution_identity(run: dict[str, Any]) -> Optional[tuple[Any, ...]
     if not valid_numbers or not run.get("head_sha") or not run.get("event") or not run.get("head_branch"):
         return None
     identity = (run["head_sha"], run["workflow_id"], run["event"], run["head_branch"], repository_id)
+    pull_targets = tuple(sorted(
+        (pull.get("number"), (pull.get("base") or {}).get("ref"),
+         ((pull.get("base") or {}).get("repo") or {}).get("id"))
+        for pull in run.get("pull_requests", [])
+    ))
+    identity += (pull_targets,)
     # Dispatches can use different inputs on the very same head.
     if run["event"] not in {"push", "pull_request", "pull_request_target"}:
         identity += (run["id"],)
@@ -850,6 +856,7 @@ def current_workflow_runs(runs: list[dict[str, Any]], head_sha: str) -> dict[str
         groups.setdefault(key, []).append(run)
     superseded = []
     for group in groups.values():
+        group = [candidate for index, candidate in enumerate(group) if candidate not in group[:index]]
         winner = max(group, key=lambda candidate: (candidate["run_number"], candidate["id"], candidate["run_attempt"]))
         current.append(winner)
         superseded.extend(candidate for candidate in group if candidate is not winner)
@@ -871,7 +878,8 @@ def current_check_runs(
     # Resolve current attempts before checking which old gates they replace.
     for check in sorted(checks, key=lambda item: item.get("runId") in old_by_id):
         if (check.get("appSlug") != "github-actions"
-                or check.get("runId") is None or check.get("jobId") is None):
+                or check.get("runId") is None or check.get("jobId") is None
+                or check.get("id") != check.get("jobId")):
             # GITHUB_TOKEN can publish independent reporter checks with custom
             # links. The App slug alone does not make a check an Actions job.
             current.append(check)
@@ -897,8 +905,8 @@ def current_check_runs(
                             and candidate.get("headSha") == head_sha
                             and candidate.get("appSlug") == check.get("appSlug")
                             and candidate.get("name") == check.get("name")]
-                if not matching or (check.get("conclusion") in {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
-                                    and all(candidate.get("conclusion") in {"skipped", "neutral"} for candidate in matching)):
+                if (check.get("conclusion") in {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
+                        and (not matching or all(candidate.get("conclusion") in {"skipped", "neutral"} for candidate in matching))):
                     current.append(check)
                     complete = False
                     continue
@@ -997,6 +1005,12 @@ def pull_request_checks(
     failure_conclusions = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
     failing = [item for item in normalized_checks if item.get("conclusion") in failure_conclusions]
     pending = [item for item in normalized_checks if item.get("status") != "completed"]
+    current_runs = current_workflow_runs(workflow_runs or [], sha)["current"]
+    unfinished_runs = [run for run in current_runs if run.get("status") != "completed"]
+    pending_workflows_without_checks = sum(
+        not any(check.get("runId") == run.get("id") for check in pending)
+        for run in unfinished_runs
+    )
     failed_statuses = [item for item in normalized_statuses if item.get("state") in {"failure", "error"}]
     pending_statuses = [item for item in normalized_statuses if item.get("state") == "pending"]
     combined_state = combined.get("state")
@@ -1010,7 +1024,9 @@ def pull_request_checks(
             "checkRunCount": len(normalized_checks) if availability["checkRuns"] else None,
             "statusCount": len(normalized_statuses) if availability["commitStatuses"] else None,
             "failingCount": len(failing) + len(failed_statuses),
-            "pendingCount": len(pending) + len(pending_statuses),
+            "pendingCount": len(pending) + len(pending_statuses) + pending_workflows_without_checks,
+            "pendingWorkflowRunCount": pending_workflows_without_checks,
+            "unfinishedWorkflowRunCount": len(unfinished_runs),
             "countsComplete": counts_complete,
             "countsAreLowerBounds": not counts_complete,
             "combinedState": combined_state if normalized_statuses and availability["combinedStatus"] else None,

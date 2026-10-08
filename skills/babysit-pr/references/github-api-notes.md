@@ -73,14 +73,17 @@ snapshot does not repeat PR metadata merely to rediscover that SHA.
 
 Used to discover failed workflow runs and rerunnable run IDs.
 The shared check reader selects the current execution by head SHA, workflow ID,
-event, source branch and source repository. Run number orders executions and
+event, source branch, source repository and returned PR target context. Run number orders executions and
 run attempt orders retries; workflow/job names and update times cannot prove
 supersession. Separate dispatches retain their own run IDs because inputs can
 differ. Actions job checks must match the run, head and check suite; reporter
-checks with custom links remain independent. A queued or running replacement
-remains unfinished even before it has checks. A completed replacement must
-produce the old gate; a missing gate or a skipped/neutral replacement for a
-failed gate preserves the failure and incomplete evidence.
+checks with custom links or a check ID distinct from the linked job remain independent. A queued or running replacement
+remains unfinished even before it has checks. The shared summary counts an
+unfinished workflow without pending checks in `pendingWorkflowRunCount` and
+`pendingCount`, so standalone reads also report pending work. A completed
+replacement must cover an old failed gate; a missing gate or a skipped/neutral
+replacement preserves that failure and incomplete evidence. Missing previously
+passed gates remain history.
 
 Superseded executions remain in `superseded_workflow_runs` and
 `superseded_check_runs`, separate from counts, diagnosis and retry candidates.

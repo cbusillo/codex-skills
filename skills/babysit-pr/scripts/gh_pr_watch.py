@@ -655,7 +655,8 @@ def summarize_checks(checks, expected_head_sha):
         for value in (summary.get("pendingCount"), summary.get("failingCount"), check_count, status_count)
     )
     known_total = nonnegative_int(check_count) + nonnegative_int(status_count)
-    passed_count = max(known_total - pending_count - failed_count, 0)
+    pending_workflow_count = nonnegative_int(summary.get("pendingWorkflowRunCount"))
+    passed_count = max(known_total - pending_count - failed_count + pending_workflow_count, 0)
     unavailable = summary.get("unavailableComponents")
     if not isinstance(unavailable, list):
         unavailable = []

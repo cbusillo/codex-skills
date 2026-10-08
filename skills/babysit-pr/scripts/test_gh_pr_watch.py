@@ -3190,5 +3190,59 @@ def test_terminal_replacement_must_cover_the_old_failed_gate(monkeypatch, tmp_pa
     assert "retry_failed_checks" not in snapshot["actions"]
 
 
+
+
+
+@pytest.mark.parametrize("attempt", [1, 2])
+def test_standalone_checks_report_queued_replacement_without_jobs_as_pending(attempt):
+    old = execution(1, "cancelled")
+    new = execution(2, None, status="queued", run_attempt=attempt)
+    reader = ExecutionReader([old, new], [execution_check(old, 11, "failure")], jobs={2: []})
+    payload = gh_pr_watch.github_read.pull_request_checks(reader, "openai/codex", 123, head_sha="abc123")
+    assert payload["summary"]["failingCount"] == 0
+    assert payload["summary"]["pendingCount"] == 1
+    assert payload["summary"]["pendingWorkflowRunCount"] == 1
+    assert gh_pr_watch.summarize_checks(payload, "abc123")["all_terminal"] is False
+
+
+def test_reporter_check_linked_to_an_actions_job_remains_independent(monkeypatch, tmp_path):
+    run = execution(1)
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [run], [
+        execution_check(run, 11, id=99, check_suite={"id": 999}),
+    ])
+    assert snapshot["checks"]["passed_count"] == 1
+    assert snapshot["checks"]["evidence_complete"] is True
+    assert "ready_to_merge" in snapshot["actions"]
+
+
+def test_missing_previously_passed_gate_stays_history(monkeypatch, tmp_path):
+    old, new = execution(1), execution(2)
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [old, new], [
+        execution_check(old, 11, name="matrix (old lane)"), execution_check(new, 21),
+    ])
+    assert snapshot["checks"]["passed_count"] == 1
+    assert snapshot["checks"]["evidence_complete"] is True
+    assert "ready_to_merge" in snapshot["actions"]
+
+
+def test_same_branch_pull_requests_with_different_targets_stay_independent(monkeypatch, tmp_path):
+    target = lambda number, base: [{"number": number, "base": {"ref": base, "repo": {"id": 81}}}]
+    old = execution(1, "failure", pull_requests=target(123, "main"))
+    new = execution(2, pull_requests=target(124, "release"))
+    job = {"id": 11, "run_id": 1, "run_attempt": 1, "status": "completed", "conclusion": "failure"}
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [old, new],
+        [execution_check(old, 11, "failure"), execution_check(new, 21)], jobs={1: [job]})
+    assert snapshot["checks"]["failed_count"] == 1
+    assert snapshot["superseded_workflow_runs"] == []
+    assert "ready_to_merge" not in snapshot["actions"]
+
+
+def test_duplicate_pagination_run_does_not_appear_in_its_own_history(monkeypatch, tmp_path):
+    run = execution(1)
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [run, dict(run)], [execution_check(run, 11)])
+    assert snapshot["superseded_workflow_runs"] == []
+    assert "ready_to_merge" in snapshot["actions"]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
