@@ -1015,6 +1015,19 @@ class TerminalTests(unittest.TestCase):
             for receipt in receipts:
                 self.assertEqual(set(receipt), {"schemaVersion", "provider", "accountID", "launchedAt"})
 
+    def test_manual_account_environment_without_provider_refuses_before_tabs(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "launch.txt"
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=path,
+                                      account_provider=None, account=None, account_config=None)
+            for command in ("env CODEX_HOME=/manual codex brief", "export CLAUDE_CONFIG_DIR=/manual && claude brief"):
+                path.write_text(command)
+                with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), self.assertRaisesRegex(ValueError, "account settings need --account-provider"):
+                    asyncio.run(iterm_tab.operate(app, args))
+            window.async_create_tab.assert_not_awaited()
+
     def test_unwritable_receipt_root_refuses_before_any_tab_and_creates_no_receipt(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

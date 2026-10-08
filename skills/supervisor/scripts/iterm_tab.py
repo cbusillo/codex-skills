@@ -175,6 +175,10 @@ async def operate(app, args):
             command_texts = [with_account(text, choice) for text, choice in zip(command_texts, choices)]
         elif getattr(args, "account", None):
             raise ValueError("--account needs --account-provider")
+        elif any(f"{key}=" in text for key in account_choice.ACCOUNT_VARIABLES.values()
+                 for text in command_texts):
+            raise ValueError("account settings need --account-provider; remove them from the launch file "
+                             "and use --account for an explicit override")
         if choices[0]:
             account_choice.prepare_launch(choices[0])
         results = []

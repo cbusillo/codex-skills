@@ -87,12 +87,12 @@ iTerm hierarchy before launching. A session-wait timeout names the tab for
 inspection. If creation returns no tab identity, run `list` and inspect first;
 the tab may still exist. Do not create another tab or replay the launch without
 checking it. `window` still restores the previous tab after creation.
-Launch files contain the exact
-brief and account/model settings already authorized, without the Discord
-channels flag; `--account-provider` can choose the account instead (see
-below). Run one agent invocation, without restart loops or commands
-that continue after it exits; put required environment settings on that launch
-command (for example with `env`). Read the launched screen once for folder trust or another
+Launch files contain the exact brief and model settings already authorized,
+without the Discord channels flag. For provider launches, supply
+`--account-provider` as below; keep account variables out of launch files.
+Use `--account` for an explicit override through the same mapping and receipt
+path. Run one agent invocation, without restart loops or commands that continue
+after it exits. Read the launched screen once for folder trust or another
 blocking prompt. Record the new native thread and exact transcript in the
 ledger. Prefer `codex queue` for Codex nudges with the verified thread id and
 its configured home; never queue exit commands. The terminal helper suppresses
