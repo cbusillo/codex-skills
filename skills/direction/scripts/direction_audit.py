@@ -628,6 +628,32 @@ def closed_wait_prerequisite(target: dict[str, Any]) -> bool:
     return not re.search(r"(?im)^\s*(?:[-*]\s+)?State:\s*Split\b", str(target.get("body") or ""))
 
 
+def agent_delivery_wait(status: str, repo: str, number: int) -> str | None:
+    """Recognize an agent's delivery step, not a continued person/event wait."""
+    match = re.search(
+        rf"(?ims)^\s*(?:[-*]\s+)?Waiting for:\s*(.*?)(?=^\s*(?:[-*]\s+)?{STATUS_FIELD}:|\Z)", status,
+    )
+    if not match:
+        return None
+    reason = match[1].strip()
+    # A delegated acceptance belongs to its named issue, not this closeout.
+    plain = WAIT_REFERENCE.sub("REF", reason)
+    plain = re.sub(r"\[([^]]+)]\(REF\)", "REF", plain)
+    agent = r"(?:the |a |an )?(?:next )?(?:Supervisor|agent)"
+    step = r"(?:train |delivery )?(?:routing|landing|close[ -]?out)(?:/landing| and confirmed landing)?"
+    delegated = r"; [\w '-]+ acceptance belongs to REF\. No new Director decision is open"
+    if re.fullmatch(rf"{agent} {step}(?:{delegated})?", plain.rstrip(" ."), re.I):
+        if ";" in plain and any(
+            ref.group(2) == "pull" or (
+                (ref.group(1) or ref.group(4) or repo).casefold() == repo.casefold()
+                and int(ref.group(3) or ref.group(5)) == number
+            ) for ref in WAIT_REFERENCE.finditer(reason)
+        ):
+            return None
+        return reason
+    return None
+
+
 def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
                          read: Callable[[str], Any]) -> dict[str, Any] | None:
     """A merge makes an old status suspect, never proves the finish line."""
@@ -637,19 +663,39 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
         rf"(?ims)^\s*(?:[-*]\s+)?Next action:\s*(.*?)(?=^\s*(?:[-*]\s+)?{STATUS_FIELD}:|\Z)", status,
     )
     def references(reference_text: str) -> dict[tuple[str, int], str | None]:
-        return {(ref.group(1) or ref.group(4) or repo, int(ref.group(3) or ref.group(5))): ref.group(2)
-                for ref in WAIT_REFERENCE.finditer(reference_text)}
+        found: dict[tuple[str, int], str | None] = {}
+        for ref in WAIT_REFERENCE.finditer(reference_text):
+            key = ((ref.group(1) or ref.group(4) or repo).casefold(), int(ref.group(3) or ref.group(5)))
+            if found.get(key) != "pull":
+                found[key] = ref.group(2)
+        return found
+
+    def issue_associations(source_pull: dict[str, Any], source_repo: str) -> set[tuple[str, int]]:
+        return {
+            ((ref.group(1) or ref.group(4) or source_repo).casefold(), int(ref.group(3) or ref.group(5)))
+            for line in str(source_pull.get("body") or "").splitlines()
+            if re.match(r"\s*(?:[-*]\s+)?(?:Refs|Fixes|Closes|Resolves|Implements)\b", line, re.I)
+            for ref in WAIT_REFERENCE.finditer(line)
+            if ref.group(2) != "pull"
+        }
+
+    def implements_issue(source_pull: dict[str, Any], source_repo: str) -> bool:
+        return (repo.casefold(), issue["number"]) in issue_associations(source_pull, source_repo)
+
+    agent_wait = agent_delivery_wait(status, repo, issue["number"])
+    if agent_wait and ";" in agent_wait:
+        for (target_repo, number) in references(agent_wait):
+            target = read(f"repos/{target_repo}/issues/{number}")
+            if not isinstance(target, dict) or target.get("state") not in {"open", "closed"}:
+                raise AuditError("unreadable delegated acceptance issue")
+            if "pull_request" in target:
+                return None
     # Delivery targets own the stack guard and implementation association;
     # historical PRs elsewhere in status cannot cancel or authorize selection.
     refs = references(next_action[1]) if next_action else {}
     if not refs:
         refs = references(status)
-    if not refs:
-        return None
-    recorded = _parse_time(issue.get("updated_at"))
-    timestamp_proven = recorded is not None and recorded.tzinfo is not None
-    evidence = []
-    implements = True
+    pulls: dict[tuple[str, int], dict[str, Any]] = {}
     for (target_repo, number), kind in refs.items():
         if kind != "pull":
             target = read(f"repos/{target_repo}/issues/{number}")
@@ -657,7 +703,44 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
                 raise AuditError("unreadable linked issue")
             if "pull_request" not in target:
                 continue
-        pull = read(f"repos/{target_repo}/pulls/{number}")
+        pulls[(target_repo, number)] = read(f"repos/{target_repo}/pulls/{number}")
+    agent_next = bool(next_action and re.match(
+        r"(?:the )?(?:Supervisor|(?:next )?agent)\s+(?:route|land|merge|close|reconcile|verify|retire)\w*\b",
+        next_action[1].strip(), re.I,
+    ))
+    if not pulls and agent_wait and agent_next:
+        # Closeout handoffs may name their source PR only in the discussion.
+        # Read bounded complete history and require the PR's own association;
+        # historical prerequisite PRs cannot establish this issue's delivery.
+        comments, cut = fetch_paginated(
+            f"repos/{repo}/issues/{issue['number']}/comments", fetch=lambda args: read(args[1]), max_pages=2,
+        )
+        if cut:
+            raise AuditError("closeout comment history truncated")
+        text = str(issue.get("body") or "") + "\n" + "\n".join(str(comment.get("body") or "") for comment in comments)
+        for (target_repo, number), kind in references(text).items():
+            if kind != "pull":
+                if target_repo.casefold() == repo.casefold() and number == issue["number"]:
+                    continue
+                target = read(f"repos/{target_repo}/issues/{number}")
+                if not isinstance(target, dict):
+                    raise AuditError("unreadable handoff issue")
+                if "pull_request" not in target:
+                    continue
+            pull = read(f"repos/{target_repo}/pulls/{number}")
+            if not isinstance(pull, dict):
+                raise AuditError("unreadable handoff pull")
+            if implements_issue(pull, target_repo):
+                pulls[(target_repo, number)] = pull
+            elif not pull.get("merged_at") and not issue_associations(pull, target_repo):
+                raise AuditError("unproven handoff stack association")
+    if not pulls:
+        return None
+    recorded = _parse_time(issue.get("updated_at"))
+    timestamp_proven = recorded is not None and recorded.tzinfo is not None
+    evidence = []
+    implements = True
+    for (target_repo, number), pull in pulls.items():
         if not isinstance(pull, dict) or "merged_at" not in pull:
             raise AuditError("unreadable linked pull")
         merged = _parse_time(pull.get("merged_at"))
@@ -673,14 +756,7 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
             raise AuditError("unreadable landing destination")
         if (pull.get("base") or {}).get("ref") != default:
             return None
-        own_implementation = False
-        for line in str(pull.get("body") or "").splitlines():
-            if not re.match(r"\s*(?:Refs|Fixes|Closes|Resolves|Implements)\b", line, re.I):
-                continue
-            own_implementation |= any((ref.group(1) or ref.group(4) or target_repo).casefold() == repo.casefold()
-                              and int(ref.group(3) or ref.group(5)) == issue["number"]
-                              and ref.group(2) != "pull" for ref in WAIT_REFERENCE.finditer(line))
-        implements &= own_implementation
+        implements &= implements_issue(pull, target_repo)
         evidence.append({"kind": "merged_active_pr", "url": f"https://github.com/{target_repo}/pull/{number}",
                          "merged_at": pull["merged_at"], "status_predates_merge": issue.get("updated_at") if predates else None})
     if not evidence:
@@ -695,31 +771,46 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
     bookkeeping = (r"(?:verifies|confirms) (?:the )?(?:final )?landing(?: SHA)?|"
                    r"closes (?:this|the) issue|reconciles (?:the )?(?:runtime(?: checkout)?|closure)")
     delivery = bool(clauses and raw_clauses[-1].strip() and re.fullmatch(first, clauses[0], re.I)
+                    and set(references(next_action[1])).issubset(pulls)
                     and all(re.fullmatch(bookkeeping, clause, re.I) for clause in clauses[1:]))
     hold_pending = False
+    if agent_wait and next_action:
+        hold_pending |= bool(re.search(r"\b(?:after|until|once|when|accept\w*|approv\w*|decision)\b", next_action[1], re.I))
     for match in re.finditer(
         rf"(?ims)^\s*(?:[-*]\s+)?(Waiting for|Blocked by|Parked until):\s*(.*?)(?=^\s*(?:[-*]\s+)?{STATUS_FIELD}:|\Z)", status,
     ):
         reason = match[2].strip()
         hold_pending |= not (github_plan_claim.no_wait_reason(reason, field="Waiting for")
-                             or github_direction_next.non_external_wait(reason))
+                             or github_direction_next.non_external_wait(reason)
+                             or (match[1].casefold() == "waiting for" and reason == agent_wait))
     for match in re.finditer(
         rf"(?ims)^\s*(?:[-*]\s+)?(?:State|Validation):\s*(.*?)(?=^\s*(?:[-*]\s+)?{STATUS_FIELD}:|\Z)", status,
     ):
         text = re.sub(r"\bno (?:failed|pending)(?:[ /]+(?:failed|pending))* (?:checks|workflows)\b", "", match[1], flags=re.I)
         hold_pending |= bool(re.search(r"\b(?:pending|awaiting|remaining|remainder|split|not yet|still required)\b", text, re.I))
-    timestamp_required = delivery and implements and not hold_pending
-    # The implementation is already merged even when later activity prevents
-    # proving the body age. Withhold only delivery-only instructions for review;
-    # this does not prove completion or release a recorded hold.
-    if not timestamp_proven and not timestamp_required:
+    if agent_wait:
+        total = (issue.get("issue_dependencies_summary") or {}).get("total_blocked_by")
+        if type(total) is not int or total != 0:
+            blockers, cut = fetch_paginated(
+                f"repos/{repo}/issues/{issue['number']}/dependencies/blocked_by",
+                fetch=lambda args: read(args[1]), max_pages=2,
+            )
+            if cut:
+                raise AuditError("closeout blockers truncated")
+            hold_pending |= any(not closed_wait_prerequisite(blocker) for blocker in blockers)
+    delivery_only = delivery and implements and not hold_pending
+    obsolete_agent_wait = bool(agent_wait and implements)
+    # Routing a PR already merged into its default branch is obsolete however
+    # recently the issue was edited. This proves the delivery step, not the
+    # finish line; unknown or remaining work still prevents selection exclusion.
+    if not timestamp_proven and not delivery_only and not obsolete_agent_wait:
         return None
     return {"number": issue["number"], "title": issue.get("title"),
             "url": f"https://github.com/{repo}/issues/{issue['number']}", "evidence": evidence,
             "review_required": True, "completion_proven": False,
-            "selection_exclusion": timestamp_required,
+            "selection_exclusion": delivery_only,
             "recorded_hold_pending": hold_pending,
-            "evidence_complete": timestamp_proven or not timestamp_required}
+            "evidence_complete": True}
 
 
 def stale_wait_report(
@@ -762,17 +853,19 @@ def stale_wait_report(
         checked_issues.append(number)
         sections = github_direction_next.section_map(str(issue.get("body") or ""))
         status = next((text for title, text in sections.items() if title.casefold() == "current status"), "")
-        if active and not parked_issue(issue):
+        normalized_status = re.sub(r"\*\*(Waiting for)(:?)\*\*(:?)", r"\1\2\3", status, flags=re.I)
+        if (active and not parked_issue(issue)) or agent_delivery_wait(normalized_status, repo, number):
             try:
                 row = active_merged_status(issue, repo, status, read=read)
+                if row and parked_issue(issue) and row["recorded_hold_pending"]:
+                    row = None
                 if row:
                     rows.append(row)
-                    if not row["evidence_complete"]:
-                        errors.append({"number": number, "source": "active_status_timestamp",
-                                       "reason": "status_revision_unproven"})
             except AuditError:
                 errors.append({"number": number, "source": "active_linked_pr", "reason": "unavailable"})
-            continue
+                continue
+            if (active and not parked_issue(issue)) or row:
+                continue
         evidence: list[dict[str, Any]] = []
         unread = False
         fields: list[tuple[str, str]] = []
