@@ -821,6 +821,12 @@ another session sharing its bot login must not impersonate it. When the source
 session cannot record this, retained-work recovery remains blocked. Preserve
 the original records and use the new comment ID with `--handoff-comment`.
 A release posted after the old handoff does not validate it retroactively.
+An earlier unconditional release does not make a separate deferred handoff
+unconditional. Ownership conditions use the release-prose checks above;
+standalone prerequisites anywhere in a verified handoff qualify its permission.
+Recover with a fresh unconditional source-authored handoff and its new comment
+ID, rather than inferring that a condition resolved.
+Link the earlier handoff instead of quoting its conditional prose in the new one.
 Unmentioned same-bot PRs also refuse.
 The named PR identities bind their current branches to that finished session's
 handoff, including split branches that differ from the original claim branch.
