@@ -111,8 +111,10 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     permission = rf"(?:{actor}\s+(?:(?:can|may|should)\s+)?)?(?:{successor_action}|(?:re)?claims?){task_object}"
     ownership_permission = rf"(?:ownership passes to {actor}|the issue can be claimed)"
     task_permission = rf"(?:{permission}|{ownership_permission})"
-    sequenced_permission = (rf"(?:(?:Then,?|At that point)\s+{task_permission}|"
-                            rf"{task_permission}\s+(?:afterwards|then))[.!?;]?")
+    sequenced_permission = (rf"(?:(?:Then,?|At that point,?)\s+{task_permission}|"
+                            rf"{task_permission}\s+(?:afterwards?|then)|"
+                            rf"{actor}\s+(?:can|may|should)\s+then\s+"
+                            rf"(?:{successor_action}|(?:re)?claims?){task_object})[.!?;]?")
     # Artifact checks belong to retirement unless later ownership/successor
     # prose could make them a prerequisite for the handoff.
     for index, statement in enumerate(statements):
@@ -142,11 +144,13 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     for index, statement in enumerate(statements):
         following = statements[index + 1].strip() if index + 1 < len(statements) else ""
         if (re.search(ownership_effect, statement, re.IGNORECASE)
-                or re.search(r"\b(?:merges|lands) this afternoon\b", statement, re.IGNORECASE)):
+                or re.search(r"\b(?:merges|lands|will (?:merge|land)) this afternoon\b", statement, re.IGNORECASE)):
             # Receipts or other intervening notes do not make deferred
             # successor permission unconditional.
             if any(re.fullmatch(sequenced_permission, later, re.IGNORECASE)
                    for later in statements[index + 1:]):
+                return True
+            if index > 0 and re.fullmatch(sequenced_permission, statements[index - 1], re.IGNORECASE):
                 return True
         if re.search(rf"{handoff_effect}[^.!?;]*\b(?:upon|post-(?:merge|landing)|at (?:merge|landing))\b", statement, re.IGNORECASE):
             return True
