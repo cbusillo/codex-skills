@@ -100,9 +100,87 @@ progress with a failure exit. Transport errors retain intent and stop further
 submissions. Watch and retry processes serialize load/update/save through the
 same state-file lock.
 Saved intents suppress further retries and merge readiness until a later read
-shows a higher `run_attempt`. Missing or unchanged attempt evidence remains
-`check_rerun_outcome`; interrupted or unknown writes also emit
+shows a higher `run_attempt`. Unchanged attempt evidence remains
+`check_rerun_outcome`; a confirmed run absent from the complete head inventory
+also emits `stop_missing_rerun`. Its intent and budget remain saved for direct
+run investigation, rather than polling forever or resetting the state.
+Interrupted or unknown writes also emit
 `stop_unknown_rerun` rather than waiting indefinitely or resetting intent.
+Confirmed "cannot be retried" rejections are saved by head, run and attempt.
+They consume no budget and are skipped on later submissions; when all eligible
+attempts have that rejection, `stop_nonretryable_rerun` asks for a distinct
+supported recovery. A higher observed attempt permits normal selection again.
+Other confirmed rejections remain retryable after correcting their reported
+access/request problem. Neither rejection path infers rejection from an unchanged
+terminal attempt. A later acquisition PR-read failure returns `rerun_read_error`
+with the already confirmed `rerun_run_ids`, retry charge and redacted API error.
+
+## State lifetime and recovery
+
+Default state lives in `$XDG_STATE_HOME/pr-babysit` when configured, otherwise
+`~/.local/state/pr-babysit`, one JSON file per repository and PR. A relative
+`XDG_STATE_HOME` is ignored. `--state-file`
+still selects an explicit location; use a persistent filesystem for restart
+recovery. State has no age-based expiry. Each new head has separate retry,
+pending and rejected-attempt records; old-head evidence remains in the file.
+Watch and retry processes must select the same file. If their `HOME` or
+`XDG_STATE_HOME` settings differ, pass the same persistent `--state-file` to
+each; environment-specific defaults otherwise have independent locks and budgets.
+
+When the new default file is absent, the watcher copies the previous matching
+`/tmp/pr-babysit-OWNER-REPO-prNUMBER.json` under both state locks before collecting
+a snapshot. It leaves that source evidence in place and never overwrites an
+existing new-default file. Stop watchers running older code before switching
+the default; concurrent old and new watchers otherwise use different files.
+To continue an existing watcher during a transition, keep passing its exact
+`--state-file`. If the old temporary file has already disappeared, its evidence
+cannot be reconstructed from an unchanged terminal attempt: do not treat a fresh
+file as permission to repeat an uncertain write.
+An invalid legacy JSON file also stops migration. Preserve it; recover a valid
+backup into a persistent location and use `--state-file <recovered-file>` to
+continue. Without a valid backup, reconcile the writes from authoritative
+evidence first rather than selecting an empty file to bypass lost evidence.
+
+Writes flush and fsync the private temporary file before atomic replacement,
+then fsync its directory. These are filesystem durability requests, with
+process-restart coverage; no kernel crash, reboot or power-loss experiment was
+performed and storage hardware guarantees are not claimed.
+Pre-write sync failure stops before sending a command. A sync failure after a
+confirmed command returns `state_save_error` with its already confirmed run IDs
+and available saved budget. Replacement may already have saved the intent;
+keep that evidence while repairing the filesystem, rather than treating the
+error as permission to rerun.
+
+CLI rerun commands have a 60-second ceiling (shorter under an inherited GitHub
+deadline or a reduced `GITHUB_RETRY_MAX_WAIT_SECONDS`); timeout kills the command group, keeps the pre-write intent and
+budget, and returns `rerun_outcome_unknown`. Lock acquisition has a 60-second
+ceiling too; one-shot contention fails without changing evidence, so resume with
+the same file after its holder exits. Watch mode emits `state_busy` and tries
+the next poll. Reads retain the existing transport's managed cooldown and
+deadline policy; lock holders can therefore wait on a legitimate GitHub cooldown.
+An already-expired inherited command deadline refuses launch and returns the
+unspent budget, since no write was sent. The child wrapper receives a shorter
+deadline so managed preflight reads can report a definite refusal before the
+parent ceiling. Its explicit actor-verification refusal releases only the unsent
+intent and charge. A genuine timeout without that receipt remains unknown,
+including a hung preflight; an unchanged attempt cannot prove no write was sent.
+That process-group ceiling requires the parent to remain alive. Abrupt parent
+termination can leave a child command running; its saved unknown intent still
+blocks replay. Investigate the outstanding command as well as GitHub readback
+before recovery.
+No outer transport retry loop,
+identity fallback, expiry or replay is introduced.
+
+To resume after a missing-run stop, read the run directly through the configured
+automation wrapper (`api repos/OWNER/REPO/actions/runs/RUN_ID`). Resume
+`--watch --state-file <same-file>` when a complete head inventory includes its
+higher attempt; ordinary readback reconciles it. A direct read alone does not
+change the saved state. If the run is gone or GitHub says its attempt cannot be retried,
+the next reviewed task fix commit starts fresh checks on a distinct head, using
+that same state file and retaining the old evidence. Never clear unknown intent
+or treat unchanged terminal evidence as a rejection to force a replay.
+After partial progress, a later invocation is a new retry cycle using the
+remaining per-head budget.
 
 ### Required scans cancelled before runner acquisition
 

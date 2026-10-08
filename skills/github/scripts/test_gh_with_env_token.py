@@ -169,6 +169,95 @@ def test_user_token_write_verifies_actor_before_running_gh() -> None:
                     assert "user-token" not in result.stdout + result.stderr
 
 
+def user_token_fixture(root: Path) -> tuple[Path, Path, Path, Path]:
+    env_file = root / "local.env"
+    env_file.write_text("CODEX_GITHUB_TOKEN=fixture-token\n", encoding="utf-8")
+    identity = root / "identity.py"
+    write(identity, "raise AssertionError('App helper should not run')\n")
+    classifier = root / "classifier.py"
+    write(
+        classifier,
+        f"from pathlib import Path\nPath({str(root / 'probed')!r}).touch()\n"
+        "raise AssertionError('Actor probe should not run')\n",
+    )
+    fake_gh = root / "gh"
+    write(
+        fake_gh,
+        f"#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{root / 'called'}'\n"
+        "[ \"$GH_TOKEN\" = fixture-token ] || exit 41\nprintf 'fixture response\\n'\n",
+    )
+    return env_file, classifier, identity, fake_gh
+
+
+def test_user_token_write_without_expected_login_refuses_before_actor_probe() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        env_file, classifier, identity, fake_gh = user_token_fixture(root)
+        result = run_wrapper(
+            env_file, classifier, identity, "issue", "comment", "1", "--body", "fixture",
+            gh_command=fake_gh,
+        )
+        assert result.returncode == 1, result
+        assert not (root / "called").exists(), result
+        assert not (root / "probed").exists(), result
+        assert "fixture-token" not in result.stdout + result.stderr
+
+
+def test_user_token_expected_login_override_takes_precedence() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        env_file, classifier, identity, fake_gh = user_token_fixture(root)
+        called = root / "called"
+        command = ("issue", "comment", "1", "--body", "fixture")
+        for override_in_file in (False, True):
+            env_file.write_text(
+                "CODEX_GITHUB_TOKEN=fixture-token\nCODEX_AUTOMATION_LOGIN=default-user\n"
+                + ("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN=override-user\n" if override_in_file else ""),
+                encoding="utf-8",
+            )
+            for observed_login in ("override-user", "default-user"):
+                called.unlink(missing_ok=True)
+                write(
+                    classifier,
+                    "import json, os, sys\n"
+                    "assert os.environ['GH_TOKEN'] == 'fixture-token'\n"
+                    "assert '--method' in sys.argv and 'GET' in sys.argv and '/user' in sys.argv\n"
+                    f"print(json.dumps({{'body': {{'login': {observed_login!r}}}}}))\n",
+                )
+                result = run_wrapper(
+                    env_file, classifier, identity, *command, gh_command=fake_gh,
+                    extra_env={} if override_in_file else {"GH_WITH_ENV_TOKEN_EXPECTED_LOGIN": "override-user"},
+                )
+                if observed_login == "override-user":
+                    assert result.returncode == 0, result
+                    assert called.read_text().splitlines() == list(command)
+                else:
+                    assert result.returncode == 1, result
+                    assert not called.exists(), result
+                assert "fixture-token" not in result.stdout + result.stderr
+
+
+def test_user_token_get_and_head_delegate_without_actor_verification() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        env_file, classifier, identity, fake_gh = user_token_fixture(root)
+        called = root / "called"
+        for expected_login in ("", "CODEX_AUTOMATION_LOGIN=default-user\n"):
+            env_file.write_text("CODEX_GITHUB_TOKEN=fixture-token\n" + expected_login, encoding="utf-8")
+            methods: list[tuple[str, ...]] = [()]
+            for method in ("GET", "get", "HEAD", "head"):
+                methods.extend((("--method", method), (f"--method={method}",), ("-X", method), (f"-X{method}",)))
+            for flags in methods:
+                called.unlink(missing_ok=True)
+                command = ("api", *flags, "/repos/example/repo")
+                result = run_wrapper(env_file, classifier, identity, *command, gh_command=fake_gh)
+                assert result.returncode == 0, result
+                assert called.read_text().splitlines() == list(command)
+                assert result.stdout == "fixture response\n", result
+                assert not (root / "probed").exists(), result
+                assert "fixture-token" not in result.stdout + result.stderr
+
+
 def test_no_token_check_fails_explicitly_without_running_gh() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -942,6 +1031,9 @@ def main() -> None:
         test_invalid_probe_does_not_wait_for_open_stdin,
         test_check_preserves_user_token_fallback_when_app_is_absent,
         test_user_token_write_verifies_actor_before_running_gh,
+        test_user_token_write_without_expected_login_refuses_before_actor_probe,
+        test_user_token_expected_login_override_takes_precedence,
+        test_user_token_get_and_head_delegate_without_actor_verification,
         test_no_token_check_fails_explicitly_without_running_gh,
         test_check_rejects_commands_before_active_auth_fallback,
         test_no_token_command_preserves_authorized_active_auth_fallback,
