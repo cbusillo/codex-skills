@@ -1845,6 +1845,8 @@ class ClaimTests(unittest.TestCase):
             "Takes effect with PR #99's merge.",
             "Takes effect on PR #99 merging.",
             "Takes effect later today.",
+            "Fix is effective upon deploy.",
+            "> Config takes effect on restart.",
         ):
             for retained in (False, True):
                 with self.subTest(prose=prose, retained=retained):
@@ -1893,6 +1895,7 @@ class ClaimTests(unittest.TestCase):
             "Source work is finished.\n\nTakes effect immediately.",
             "The next worker can resume on work/issue-42-post-merge-cleanup.",
             "PR #99 is parked at merge-train batch abc, so the next worker can pick this up now.",
+            "Upon resuming, rebase onto main.",
         ):
             with self.subTest(prose=prose):
                 self.setUp()

@@ -94,7 +94,7 @@ def conditional_release_prose(text: str, *, suffix: str, final_paragraph: bool =
     handoff_effect = r"\bhands? off to (?:the )?next (?:worker|session)\b"
     successor = rf"(?:\b(?:{successor_action}|handoff (?:is )?complete[ds]?)\b|{handoff_effect})"
     # An instruction about what to do on resumption does not defer ownership.
-    resumption_instruction = rf"^(?:(?:When|If) you {successor_action}|(?:When|If|After|Once) resuming),(?![^.!?;]*\bdo so\b)\s*"
+    resumption_instruction = rf"^(?:(?:When|If) you {successor_action}|(?:When|If|After|Once|Upon) resuming),(?![^.!?;]*\bdo so\b)\s*"
     instruction_indexes = {index for index, statement in enumerate(statements)
                            if re.match(resumption_instruction, statement, re.IGNORECASE)}
     statements = [re.sub(resumption_instruction, "", statement,
