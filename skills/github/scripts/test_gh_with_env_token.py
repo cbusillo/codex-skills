@@ -1031,9 +1031,9 @@ def test_prewrite_receipt_requires_nonce_and_stops_at_launch() -> None:
               "print(json.dumps({'nonce_inherited': 'GH_WITH_ENV_TOKEN_RECEIPT_NONCE' in os.environ}))\n"
               "sys.exit(1)\n")
         nonce = os.urandom(16).hex()
-        def receipts(result: subprocess.CompletedProcess[str]) -> list[dict]:
+        def receipts(completed: subprocess.CompletedProcess[str]) -> list[dict]:
             found = []
-            for line in result.stderr.splitlines():
+            for line in completed.stderr.splitlines():
                 try:
                     item = json.loads(line)
                 except json.JSONDecodeError:
