@@ -352,7 +352,7 @@ class ClaimTests(unittest.TestCase):
                     self.assertEqual(artifacts, (self.pulls, self.inventory))
 
     def test_separate_handoff_identity_paragraph_layouts_preserve_conditions(self):
-        for layout in ("header_paragraph", "crlf", "spaced_blank"):
+        for layout in ("header_paragraph", "crlf", "spaced_blank", "single_newline"):
             for refresh in (False, True):
                 with self.subTest(layout=layout, refresh=refresh):
                     self.setUp()
@@ -362,8 +362,10 @@ class ClaimTests(unittest.TestCase):
                         body = body.replace("trial-b\nSource", "trial-b\n\nSource")
                     elif layout == "crlf":
                         body = body.replace("\n", "\r\n")
-                    else:
+                    elif layout == "spaced_blank":
                         body = body.replace("\n\n", "\n \n")
+                    else:
+                        body = body.replace("\n\n", ".\n")
                     self.comments[3]["body"] = body
                     with self.assertRaises(PLAN.PlanError):
                         self.run_claim()
@@ -404,6 +406,19 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
                     self.assertEqual(before, (self.pulls, self.inventory))
+
+    def test_handoff_claim_identity_does_not_defer_unconditional_pr_notes(self):
+        for body in (
+            "Released claim 1\nHandoff: PR #99 and #100, both rebased after #98 merged.",
+            "Handoff from trial-b\nSource claim 1, session session-b: PR #99 and #100 pending review",
+        ):
+            for refresh in (False, True):
+                with self.subTest(body=body, refresh=refresh):
+                    self.setUp()
+                    self.separate_handoff_fixture("", refresh=refresh)
+                    self.comments[3]["body"] = body
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_cross_repository_uses_canonical_planning_label_configuration(self):
         self.cross_repository_fixture()

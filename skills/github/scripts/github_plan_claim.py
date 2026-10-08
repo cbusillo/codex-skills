@@ -621,13 +621,20 @@ def retained_handoff(
     # A separate handoff's identity paragraph is not its release prose edge.
     # Still check the full record so conditions inside that paragraph count.
     handoff_prose = ""
+    identity_prose = handoff_text
     if standalone and source_claim_match and source_session_match:
+        identity_prose = (handoff_text[:source_claim_match.start()]
+                          + handoff_text[source_claim_match.end():])
         identity_end = max(source_claim_match.end(), source_session_match.end())
         paragraphs = re.split(r"\r?\n[ \t]*\r?\n", handoff_text[identity_end:], maxsplit=1)
         if len(paragraphs) == 2:
             handoff_prose = paragraphs[1]
-    if (conditional_release_prose(handoff_text, suffix="")
-            or conditional_release_prose(handoff_prose, suffix="")):
+        else:
+            handoff_prose = paragraphs[0].partition("\n")[2]
+    deferred = (released_claim_id(handoff_text) != source_id if first_line_release == source_id
+                else (conditional_release_prose(identity_prose, suffix="")
+                      or conditional_release_prose(handoff_prose, suffix="")))
+    if deferred:
         raise ValueError("Retained handoff must be unconditional; use a fresh source-authored handoff")
     permitted = {source_branch}
     target_found = False
