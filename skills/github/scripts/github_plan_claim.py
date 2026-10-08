@@ -523,7 +523,7 @@ def retained_handoff(
     # Split branches and ordinary successor work still need the explicit
     # session-bearing handoff. Never reinterpret a malformed canonical header.
     source_pr_refresh = (target_number is not None
-                         and not handoff_text.startswith("Handoff from ")
+                         and not re.match(r"(?i)^\s*Handoff\s+from\b", handoff_text)
                          and not records(handoff_text)
                          and any(pull["number"] == target_number
                                  and pull["number"] in named
@@ -536,12 +536,15 @@ def retained_handoff(
         raise ValueError("Refresh handoff must identify the exact released source claim")
     # The exact authored release above owns release state. The separate handoff
     # binds source identity and retained PRs, not natural-language conditions.
+    direct_source_refresh = source_pr_refresh and not (first_line_release == source_id or standalone)
     permitted = {source_branch}
     target_found = False
     attested = False
     for pull in pulls:
         branch = (pull.get("head") or {}).get("ref", "")
         if pull["number"] not in named:
+            continue
+        if direct_source_refresh and branch != source_branch:
             continue
         if pull.get("state") != "open" and not (pull.get("state") == "closed" and pull.get("merged_at")):
             continue

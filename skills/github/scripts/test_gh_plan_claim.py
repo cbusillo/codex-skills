@@ -328,7 +328,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_real_direction_refresh_preserves_release_pr_and_live_ownership_guards(self):
         for change in ("plain", "missing_release", "conditional_release", "foreign_release",
-                       "unnamed_pr", "foreign_pr", "live_peer", "other_claim", "other_pr", "different_branch", "foreign_handoff"):
+                       "unnamed_pr", "foreign_pr", "live_peer", "other_claim", "other_pr", "different_branch", "foreign_handoff", "before_release", "named_split", "malformed_header"):
             with self.subTest(change=change):
                 self.setUp()
                 self.historical_direction_fixture("d4", refresh=True)
@@ -351,7 +351,34 @@ class ClaimTests(unittest.TestCase):
                 if change == "other_claim": self.compete({**OTHER, "session": "other-live"})
                 if change == "other_pr":
                     self.pulls.append({**copy.deepcopy(self.pulls[0]), "number": 47})
-                with self.assertRaises(PLAN.PlanError): self.run_claim()
+                if change == "before_release": self.comments[:] = [source, handoff, release]
+                if change == "named_split":
+                    sibling = {**copy.deepcopy(self.pulls[0]), "number": 47}
+                    sibling["head"]["ref"] = "work/split-43"
+                    self.pulls.append(sibling)
+                    handoff["body"] += "\nAlso retain direction#47."
+                if change == "malformed_header": handoff["body"] = "Handoff from: codex-DIR-43-D4\n\n" + handoff["body"]
+                with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
+                expected = {
+                    "unnamed_pr": "identify the exact released source claim",
+                    "different_branch": "identify the exact released source claim",
+                    "malformed_header": "identify the exact released source claim",
+                    "foreign_handoff": "comment by the source claim author",
+                    "foreign_pr": "attested in the released handoff",
+                    "before_release": "release before or in the handoff",
+                }.get(change, "Another worker or ambiguous ownership")
+                self.assertIn(expected, str(caught.exception))
+                self.assert_no_writes()
+
+    def test_malformed_source_refresh_headers_cannot_bypass_identity_proof(self):
+        for header in ("Handoff from: codex-DIR-43-D4", "handoff from codex-DIR-43-D4",
+                       "  Handoff from codex-DIR-43-D4"):
+            with self.subTest(header=header):
+                self.setUp()
+                self.historical_direction_fixture("d4", refresh=True)
+                self.comments[-1]["body"] = header + "\n\n" + self.comments[-1]["body"]
+                with self.assertRaisesRegex(PLAN.PlanError, "identify the exact released source claim"):
+                    self.run_claim()
                 self.assert_no_writes()
 
     def test_release_directive_is_exact_and_independent_of_handoff_narrative(self):

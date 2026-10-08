@@ -770,7 +770,10 @@ The issue and target PR's recorded waits still require verified resolution.
 
 For a PR-only refresh of the source claim's own branch, a later source-authored
 handoff naming that open PR can bind directly to the released structured source
-record. It need not repeat the source worker/session header. Exact prior release,
+record, admitting only that source branch, not named split siblings. It need not
+repeat the source worker/session header. The caller must verify that the selected
+comment is the actual finished source session's handoff; the shared bot login
+alone cannot prove the native session that wrote it. Exact prior release,
 authorship, chronology, independent issue link, same-repository head/base and
 all ownership checks still apply. A malformed `Handoff from` header or embedded
 claim record cannot use this route. Plain claims remain unsupported for an
@@ -781,7 +784,8 @@ For ordinary successor work or a PR on a split retained branch, the handoff
 must start with the exact-ID release line described above, or with
 `Handoff from <source-worker>` and include the exact claim ID (`Source claim <id>`
 or `Source claim: <id>`) and native source session ID. This source reference
-does not itself release a claim. A generic bot rollup or refresh claim is not a handoff. Authorship
+does not itself release a claim. For this explicit identity route, a generic bot
+rollup or refresh claim is not a handoff. Authorship
 checks are at GitHub identity level; verify the actual finished-session handoff
 before invoking the route because several sessions can share that identity.
 Every open PR on a retained branch must be named in this handoff and authored
