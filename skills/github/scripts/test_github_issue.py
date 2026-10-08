@@ -24,7 +24,7 @@ os.environ["GH_WITH_ENV_TOKEN_EXPECTED_LOGIN"] = "fixture-automation"
 
 import github_api
 import github_issue
-from github_fixture_support import with_call_stub
+from github_fixture_support import api_failure, api_success, with_call_stub
 
 
 def success(
@@ -33,28 +33,11 @@ def success(
     status: int = 200,
     headers: dict[str, str] | None = None,
 ) -> github_api.ApiResult:
-    return github_api.ApiResult(
-        ok=True,
-        status=status,
-        body=body,
-        headers=headers or {},
-        operation="github.issue.test",
-        transport="rest_api",
-        bucket="rest_core",
-    )
+    return api_success(body, operation="github.issue.test", status=status, headers=headers)
 
 
 def failure(status: int, body: Any, *, is_write: bool) -> github_api.ApiResult:
-    detail = github_api.classify_error(status, {}, body, is_write=is_write)
-    return github_api.ApiResult(
-        ok=False,
-        status=status,
-        body=body,
-        failure=detail,
-        operation="github.issue.test",
-        transport="rest_api",
-        bucket="rest_core",
-    )
+    return api_failure(status, body, operation="github.issue.test", is_write=is_write)
 
 
 def issue_body(
