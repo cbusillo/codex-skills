@@ -382,6 +382,82 @@ class CleanupRunnerTests(unittest.TestCase):
         self.assertTrue(any(self.private.rglob("auth.json")))
         self.assertFalse(outcome.exists())
 
+    @unittest.skipUnless(os.name == "posix", "process-group cleanup requires POSIX")
+    def test_invoke_capture_boundary_and_overflow_process_cleanup(self) -> None:
+        spec = importlib.util.spec_from_file_location("cleanup_runner_capture", SCRIPT)
+        assert spec is not None and spec.loader is not None
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        real_popen = subprocess.Popen
+        for stream in ("stdout", "stderr", "combined"):
+            for excess in (0, 1):
+                with self.subTest(stream=stream, excess=excess):
+                    total = runner.CAPTURE_LIMIT + excess
+                    stdout_size = total if stream == "stdout" else total // 2 if stream == "combined" else 0
+                    stderr_size = total - stdout_size
+                    ready = self.workspace / f"capture-{stream}-{excess}.ready"
+                    command = [sys.executable, "-c", textwrap.dedent(f"""\
+                        import os, pathlib, sys, time
+                        prefix, suffix = b'{{"padding":"', b'"}}\\n'
+                        if {stdout_size}:
+                            sys.stdout.buffer.write(prefix + b'x' * ({stdout_size} - len(prefix) - len(suffix)) + suffix)
+                            sys.stdout.buffer.flush()
+                        sys.stderr.buffer.write(b'x' * {stderr_size})
+                        sys.stderr.buffer.flush()
+                        pathlib.Path({str(ready)!r}).write_text(str(os.getpid()), encoding='utf-8')
+                        if {excess}:
+                            time.sleep(20)
+                        """)]
+                    processes = []
+
+                    def witnessed_popen(*args, **kwargs):
+                        owned_process = real_popen(*args, **kwargs)
+                        processes.append(owned_process)
+                        readiness_deadline = time.monotonic() + 5
+                        while not ready.exists() and owned_process.poll() is None and time.monotonic() < readiness_deadline:
+                            time.sleep(0.005)
+                        self.assertTrue(ready.exists(), "output producer never reached readiness")
+                        self.assertEqual(str(owned_process.pid), ready.read_text(encoding="utf-8"))
+                        if excess:
+                            self.assertEqual(owned_process.pid, os.getpgid(owned_process.pid))
+                        return owned_process
+
+                    try:
+                        with mock.patch.object(subprocess, "Popen", side_effect=witnessed_popen):
+                            if excess:
+                                with self.assertRaises(runner.RunnerError) as rejection:
+                                    runner.invoke(command, "capture proof", os.environ.copy(), self.workspace, 1,
+                                                  self.base / f"capture-{stream}-{excess}")
+                                self.assertIs(type(rejection.exception), runner.RunnerError)
+                            else:
+                                returncode, stdout, stderr, _ = runner.invoke(
+                                    command, "capture proof", os.environ.copy(), self.workspace, 1,
+                                    self.base / f"capture-{stream}-{excess}",
+                                )
+                                self.assertEqual(0, returncode)
+                                self.assertEqual(total, len(stdout.encode()) + len(stderr.encode()))
+                                if stdout:
+                                    self.assertEqual(1, len(runner.json_events(stdout)))
+                        self.assertEqual(1, len(processes))
+                        group_absent = False
+                        group_deadline = time.monotonic() + 2
+                        while time.monotonic() < group_deadline:
+                            try:
+                                os.killpg(processes[0].pid, 0)
+                            except ProcessLookupError:
+                                group_absent = True
+                                break
+                            time.sleep(0.005)
+                        self.assertTrue(group_absent, "owned invoke process group remained after capture")
+                    finally:
+                        for owned_process in processes:
+                            try:
+                                if os.getpgid(owned_process.pid) == owned_process.pid:
+                                    os.killpg(owned_process.pid, runner.signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                            owned_process.wait(timeout=2)
+
     def test_oversized_and_malformed_output_leave_no_raw_capture(self) -> None:
         for mode in ("oversized", "oversized-native", "malformed"):
             with self.subTest(mode=mode):
