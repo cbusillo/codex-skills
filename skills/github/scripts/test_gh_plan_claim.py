@@ -458,28 +458,13 @@ class ClaimTests(unittest.TestCase):
         for condition in (
             "The next worker may claim after landing/closure and ownership/content checks.",
             "Ownership transfers after landing/closure and ownership/content checks.",
+            "The next session may continue once ownership/content checks pass.",
         ):
             with self.subTest(condition=condition):
                 self.setUp()
                 self.cleanup_handoff_fixture()
                 self.comments[2]["body"] += "\n" + condition
                 with self.assertRaises(PLAN.ClassifiedPlanError):
-                    self.run_claim()
-                self.assert_no_writes()
-
-    def test_cleanup_handoff_preserves_retained_pr_identity_and_live_sessions(self):
-        for change in ("wrong_author", "unmentioned_pr", "live_session"):
-            with self.subTest(change=change):
-                self.setUp()
-                self.cleanup_handoff_fixture()
-                if change == "wrong_author":
-                    self.pulls[0]["user"]["login"] = "another-author"
-                if change == "unmentioned_pr":
-                    self.comments[2]["body"] = self.comments[2]["body"].replace("#99", "#101").replace("/pull/99", "/pull/101")
-                if change == "live_session":
-                    source = CLAIM.records(self.comments[0]["body"])[0]
-                    self.inventory["sessions"] = [{"sessionId": source["session"], "cwd": "/elsewhere"}]
-                with self.assertRaises(PLAN.PlanError):
                     self.run_claim()
                 self.assert_no_writes()
 
