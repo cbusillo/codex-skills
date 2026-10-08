@@ -597,7 +597,9 @@ It must be the first line or a standalone final paragraph, optionally followed
 by the helper's operation marker. Conditions or other prose on the directive
 line do not release ownership. Put handoff narrative on subsequent lines;
 for a conditional release, post the exact directive only when the condition is
-resolved. A final directive inside a code fence/raw HTML example, or following
+resolved. The former same-line `Released claim <id>. <handoff prose>` form
+no longer releases: the source author posts a new exact directive line, then
+uses a fresh handoff if needed. A final directive inside a code fence/raw HTML example, or following
 a colon introducing an example/instruction, is not a release.
 
 Release state comes from the exact authored directive and its structured source
@@ -766,7 +768,17 @@ a qualified reference. The open PR must independently link the planning issue
 and use a head and base in the PR's repository; fork refreshes are not supported.
 The issue and target PR's recorded waits still require verified resolution.
 
-The handoff must start with the exact-ID release line described above, or with
+For a PR-only refresh of the source claim's own branch, a later source-authored
+handoff naming that open PR can bind directly to the released structured source
+record. It need not repeat the source worker/session header. Exact prior release,
+authorship, chronology, independent issue link, same-repository head/base and
+all ownership checks still apply. A malformed `Handoff from` header or embedded
+claim record cannot use this route. Plain claims remain unsupported for an
+open retained PR; use the canonical issue with `--resume-from`, `--refresh-pr`
+and `--handoff-comment` above, on a new task branch.
+
+For ordinary successor work or a PR on a split retained branch, the handoff
+must start with the exact-ID release line described above, or with
 `Handoff from <source-worker>` and include the exact claim ID (`Source claim <id>`
 or `Source claim: <id>`) and native source session ID. This source reference
 does not itself release a claim. A generic bot rollup or refresh claim is not a handoff. Authorship

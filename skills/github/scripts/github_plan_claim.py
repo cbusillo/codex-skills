@@ -518,16 +518,27 @@ def retained_handoff(
     standalone = (handoff_text.splitlines()[:1] == [f"Handoff from {source_record['worker']}"]
                   and source_claim_match and source_session_match
                   and not records(handoff_text))
-    # An embedded release proves release, not the identity of the handoff.
+    named = handoff_pr_numbers(handoff_text, issue_repo=issue_repo, target_repo=target_repo)
+    # A PR-only refresh can bind directly to the released source's own branch.
+    # Split branches and ordinary successor work still need the explicit
+    # session-bearing handoff. Never reinterpret a malformed canonical header.
+    source_pr_refresh = (target_number is not None
+                         and not handoff_text.startswith("Handoff from ")
+                         and not records(handoff_text)
+                         and any(pull["number"] == target_number
+                                 and pull["number"] in named
+                                 and pull.get("state") == "open"
+                                 and (pull.get("head") or {}).get("ref") == source_branch
+                                 for pull in pulls))
+    # An embedded release proves release, not the identity of a split handoff.
     first_line_release = released_claim_id(handoff_text.splitlines()[0] if handoff_text else "")
-    if not (first_line_release == source_id or standalone):
+    if not (first_line_release == source_id or standalone or source_pr_refresh):
         raise ValueError("Refresh handoff must identify the exact released source claim")
     # The exact authored release above owns release state. The separate handoff
     # binds source identity and retained PRs, not natural-language conditions.
     permitted = {source_branch}
     target_found = False
     attested = False
-    named = handoff_pr_numbers(handoff_text, issue_repo=issue_repo, target_repo=target_repo)
     for pull in pulls:
         branch = (pull.get("head") or {}).get("ref", "")
         if pull["number"] not in named:

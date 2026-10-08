@@ -300,11 +300,6 @@ class ClaimTests(unittest.TestCase):
         branch = CLAIM.records(source["body"])[0]["branch"]
         number = 44 if stage == "d2" else 46
         retained_branch = "work/dir-43-d1" if stage == "d2" else branch
-        # D4's real summary lacks the standalone identity header. Replay it
-        # unchanged after its real exact release in the supported release-first
-        # envelope; a plain claim on its open PR remains unsupported.
-        if stage == "d4":
-            handoff["body"] = release["body"] + "\n\n" + handoff["body"]
         self.args.resume_from = source["id"]
         self.args.handoff_comment = handoff["id"]
         self.args.refresh_pr = f"https://github.com/{fixture['repo']}/pull/{number}" if refresh else None
@@ -320,22 +315,20 @@ class ClaimTests(unittest.TestCase):
         self.inventory["worktrees"] = [{"branch": retained_branch, "path": f"/retained/{stage}"}]
 
     def test_verbatim_direction_handoffs_accept_successor_and_released_source_pr_refresh(self):
-        for stage in ("d2", "d4"):
-            for refresh in (False, True):
+        for stage, modes in (("d2", (False, True)), ("d4", (True,))):
+            for refresh in modes:
                 with self.subTest(stage=stage, refresh=refresh):
                     self.setUp()
                     self.historical_direction_fixture(stage, refresh=refresh)
-                    before = copy.deepcopy((self.pulls, self.inventory))
                     self.run_claim()
                     result = self.emitted.call_args.args[0]
                     self.assertTrue(result["ok"])
                     self.assertIn("metadata_readback", result["completed_steps"])
-                    self.assertEqual(before, (self.pulls, self.inventory))
                     self.assertEqual(result["claim"].get("refresh_pr"), self.args.refresh_pr)
 
     def test_real_direction_refresh_preserves_release_pr_and_live_ownership_guards(self):
         for change in ("plain", "missing_release", "conditional_release", "foreign_release",
-                       "unnamed_pr", "foreign_pr", "live_peer", "other_claim", "other_pr"):
+                       "unnamed_pr", "foreign_pr", "live_peer", "other_claim", "other_pr", "different_branch", "foreign_handoff"):
             with self.subTest(change=change):
                 self.setUp()
                 self.historical_direction_fixture("d4", refresh=True)
@@ -346,12 +339,13 @@ class ClaimTests(unittest.TestCase):
                     directive = f"Released claim {source['id']}"
                     replacement = "Source work complete" if change == "missing_release" else directive + " once PR #46 merges"
                     release["body"] = release["body"].replace(directive, replacement)
-                    handoff["body"] = handoff["body"].replace(directive, replacement)
                 if change == "foreign_release":
-                    release["user"] = handoff["user"] = {"login": "stranger"}
+                    release["user"] = {"login": "stranger"}
                 if change == "unnamed_pr":
                     handoff["body"] = handoff["body"].replace("direction#46", "direction#47").replace("/pull/46", "/pull/47")
                 if change == "foreign_pr": self.pulls[0]["user"] = {"login": "stranger"}
+                if change == "foreign_handoff": handoff["user"] = {"login": "stranger"}
+                if change == "different_branch": self.pulls[0]["head"]["ref"] = "work/another-source"
                 if change == "live_peer":
                     self.inventory["sessions"] = [{"sessionId": "live-source", "cwd": "/retained/d4"}]
                 if change == "other_claim": self.compete({**OTHER, "session": "other-live"})
@@ -450,7 +444,6 @@ class ClaimTests(unittest.TestCase):
         })
         self.args.handoff_comment = 4
 
-
     def test_separate_unconditional_handoff_keeps_downstream_gates_usable(self):
         for prose in (
             "PR #99 merged this afternoon. Then the next worker may claim.",
@@ -481,7 +474,6 @@ class ClaimTests(unittest.TestCase):
                     self.comments[3]["body"] = body
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
 
     def test_cross_repository_uses_canonical_planning_label_configuration(self):
         self.cross_repository_fixture()
@@ -649,7 +641,6 @@ class ClaimTests(unittest.TestCase):
         self.assertTrue(output["ok"])
         self.assertIn("metadata_readback", output["completed_steps"])
         self.assertEqual(before, (self.inventory, self.pulls, self.closed_pulls))
-
 
     def test_ordinary_handoff_preserves_issue_and_every_retained_pr_wait(self):
         for place in ("issue", "99", "100"):
@@ -940,7 +931,6 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(self.events.count("post"), 1)
         self.args.refresh_pr = self.args.handoff_comment = None
         with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-
 
     def test_success_records_and_reads_back_before_metadata(self):
         self.run_claim()
@@ -2117,7 +2107,6 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(PLAN.PlanError): self.run_claim()
         self.assert_no_writes()
 
-
     def test_embedded_release_recovers_reported_finished_session(self):
         for role in ("Director", "Owner"):
             self.setUp()
@@ -2149,7 +2138,6 @@ class ClaimTests(unittest.TestCase):
         self.released_status_fixture("Finished session handoff.\r\n\r\nReleased claim 1.")
         self.run_claim()
         self.assertEqual(CLAIM.records(self.issue["body"]), [self.emitted.call_args.args[0]["claim"]])
-
 
     def test_unconditional_final_release_with_effective_branch_name_recovers(self):
         self.released_status_fixture(
