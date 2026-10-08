@@ -317,6 +317,9 @@ class ClaimTests(unittest.TestCase):
             "Ownership transfers upon merge of PR #99.",
             "The next worker may claim on merging PR #99.",
             "If CI passes, the next worker may claim.",
+            "PR #99 must merge first.",
+            "Wait until PR #99 merges.",
+            "Hold off until PR #99 merges.",
         ):
             for refresh in (False, True):
                 with self.subTest(prose=prose, refresh=refresh):
