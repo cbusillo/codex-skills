@@ -331,12 +331,14 @@ memory/profile/local-config candidates.
    Mounted-volume paths in text and context are redacted, including quoted paths
    with spaces. Repository-relative `media`, `mnt`, `tmp` and `var` paths such as
    `backend/media/uploads/avatar.png` remain readable.
-   Use an explicit `./` prefix for a relative path with a Unicode-leading
+   Use an explicit `./` prefix for a relative path with a first directory containing non-ASCII
    directory, a trailing period, or a prefix resembling a dev-server link.
    Later path fragments on a line with an ambiguous absolute path or redacted URL
    remain masked conservatively; double-quote the absolute filesystem argument
    or use a closed backtick code span to preserve a separate relative one at an
    argument boundary. Single-quote ambiguity remains conservative.
+   Prefixes resembling known private roots stay conservative; approved trusted-local
+   extraction can use `--trusted-originals` to retain the original signal.
    Path redaction preserves public HTTP(S) URL paths except local file/editor and
    dev-server/tunnel file links; literal query/fragment paths and person data are
    still redacted. Known local path roots are masked conservatively inside other

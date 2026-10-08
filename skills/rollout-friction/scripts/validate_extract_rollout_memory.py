@@ -314,6 +314,7 @@ def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
         "./目录/media/uploads/avatar.png",
         "./café/media/uploads/avatar.png",
         "./backend/tunnel/workstation/media/uploads/avatar.png",
+        "./packages/@fs/pkg/mnt/data.json",
         "packages/@org/pkg/mnt/data.json",
         "src/routes/+page/media/upload.png",
     )
@@ -363,6 +364,8 @@ def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
         "done./var/example/fixtures/sample.json",
         "vscode.dev/tunnel/workstation/mnt/example/fixtures/sample.json",
         "myapp.ngrok-free.app/@fs/media/example/uploads/avatar.png",
+        "https://example.com/app/@fs/media/example/uploads/avatar.png",
+        "myhost.app/app/@fs/media/example/uploads/avatar.png",
         "/Users/example/my big project/media/example/uploads/avatar.png",
         "http://localhost:5173/@fs/media/example/uploads/avatar.png",
         "https://vscode.dev/tunnel/workstation/mnt/example/fixtures/sample.json",
@@ -416,6 +419,10 @@ def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
     text = "moved from `/tmp/avatar.png` to `backend/media/uploads/avatar.png`"
     if "backend/media/uploads/avatar.png" not in module.clean_text(text, redact_args):
         raise AssertionError("closed Markdown code spans must preserve the relative destination")
+    for quote in ('"', '`'):
+        text = f"copied {quote}/tmp/avatar.png{quote}. then edited backend/media/uploads/avatar.png"
+        if "backend/media/uploads/avatar.png" not in module.clean_text(text, redact_args):
+            raise AssertionError("sentence punctuation after a closed path must preserve relative evidence")
     text = "Remember /Users/example/private.txt\nRemember backend/media/uploads/avatar.png"
     if "backend/media/uploads/avatar.png" not in module.clean_text(text, redact_args):
         raise AssertionError("a private path on an earlier line must not hide relative evidence")

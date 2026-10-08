@@ -458,7 +458,7 @@ def is_local_host(host: str, *, bare_is_local: bool = True) -> bool:
 
 
 def is_local_dev_path(path: str) -> bool:
-    return path.startswith("/@fs/") or bool(re.match(r"/tunnel/[^/]+/", path))
+    return bool(re.search(r"(?:^|/)@fs/", path) or re.match(r"/tunnel/[^/]+/", path))
 
 
 def redact_paths(text: str, *, embedded_path: bool = False) -> str:
@@ -473,8 +473,11 @@ def redact_paths(text: str, *, embedded_path: bool = False) -> str:
         result = redact_path_match(match, embedded_path=embedded_path, previous_path_end=previous_path_end)
         if result != match.group(0):
             quote = match.group("quoted")
+            following = text[match.end():match.end() + 2]
+            quote_boundary = (not following or following[0] in " \t\r\n,;)]}"
+                              or (following[0] in ".:!?" and (len(following) == 1 or following[1].isspace())))
             quoted_argument = (quote in {'"', '`'} and match.group(0).endswith(quote) and not match.group(0).endswith("\\" + quote)
-                               and (match.end() == len(text) or text[match.end()] in " \t\r\n,;)]}"))
+                               and quote_boundary)
             previous_path_end = None if quoted_argument else match.end()
         return result
 
@@ -500,7 +503,8 @@ def redact_path_match(
             private_prefix = re.fullmatch(LOCAL_PATH_ROOTS, first_named) and first_named not in RELATIVE_PATH_ROOTS
             ambiguous_word = ("/" not in prefix and prefix not in {".", ".."}
                               and (not prefix.isascii() or prefix.endswith(".")))
-            dev_prefix = prefix == "@fs" or is_local_dev_path("/" + prefix.partition("/")[2] + "/")
+            dev_prefix = (not prefix.startswith(("./", "../"))
+                          and (prefix == "@fs" or is_local_dev_path("/" + prefix.partition("/")[2] + "/")))
             if (prefix and re.fullmatch(r"(?:\.{1,2}/)*(?:[\w.@+][\w.@+-]*/)*[\w.@+][\w.@+-]*", prefix)
                     and (all(item in {".", ".."} for item in prefix.split("/")) or re.search(r"[^\W_]", prefix))
                     and not private_prefix
