@@ -96,7 +96,8 @@ def account_settings(command_text, keys, depth=0):
     for words in segments:
         index = 0
         while index < len(words):
-            if Path(words[index]).name in {"exec", "command", "nohup", "time", "builtin", "{"}:
+            if Path(words[index]).name in {"exec", "command", "nohup", "time", "builtin", "{",
+                                          "then", "do", "else", "!", "and", "or", "not", "begin"}:
                 wrapper = Path(words[index]).name
                 index += 1
                 while index < len(words) and words[index].startswith("-"):
@@ -116,11 +117,19 @@ def account_settings(command_text, keys, depth=0):
         args = words[index + 1:]
         if command in {"export", "declare", "typeset", "local", "readonly", "unset", "set"}:
             found.update(arg.split("=", 1)[0].rstrip("+") for arg in args if not arg.startswith("-"))
-        elif command == "eval" or (command in {"sh", "bash", "zsh", "dash", "fish"}
-                                    and any(re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", arg) for arg in args)):
-            body = " ".join(args) if command == "eval" else next(
-                (args[i + 1] for i, arg in enumerate(args[:-1])
-                 if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", arg)), "")
+        elif command in {"eval", "sh", "bash", "zsh", "dash", "fish"}:
+            body = " ".join(args) if command == "eval" else ""
+            if command != "eval":
+                for i, arg in enumerate(args):
+                    if command == "fish" and arg.startswith("--command="):
+                        body = arg.split("=", 1)[1]
+                        break
+                    if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", arg) or (command == "fish" and arg == "--command"):
+                        tail = args[i + 1:]
+                        while tail and tail[0].startswith("-"):
+                            tail = tail[1:]
+                        body = tail[0] if tail else ""
+                        break
             found.update(account_settings(body, keys, depth + 1))
         elif command == "env":
             index = 0
@@ -134,6 +143,10 @@ def account_settings(command_text, keys, depth=0):
                     index += 1
                     if index < len(args):
                         found.update(account_settings(args[index], keys, depth + 1))
+                elif arg.startswith("--split-string="):
+                    found.update(account_settings(arg.split("=", 1)[1], keys, depth + 1))
+                elif arg.startswith("-S"):
+                    found.update(account_settings(arg[2:], keys, depth + 1))
                 elif arg in {"-u", "--unset"}:
                     index += 1
                     if index < len(args):

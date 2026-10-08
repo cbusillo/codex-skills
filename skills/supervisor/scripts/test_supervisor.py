@@ -1039,9 +1039,21 @@ class TerminalTests(unittest.TestCase):
                         "env TERM=xterm-256color zsh -lc 'CLAUDE_CONFIG_DIR=/other claude brief'",
                         "env FOO=1 env CLAUDE_CONFIG_DIR=/other claude brief",
                         "FOO=1 exec env CLAUDE_CONFIG_DIR=/other claude brief",
-                        "fish -c 'set -gx CLAUDE_CONFIG_DIR /other; claude brief'"):
+                        "fish -c 'set -gx CLAUDE_CONFIG_DIR /other; claude brief'",
+                        "sh -c -- 'CLAUDE_CONFIG_DIR=/other claude brief'",
+                        "zsh -c -l 'CLAUDE_CONFIG_DIR=/other claude brief'",
+                        "fish --command 'set -gx CLAUDE_CONFIG_DIR /other; claude brief'",
+                        "fish --command='set -gx CLAUDE_CONFIG_DIR /other; claude brief'",
+                        "cd /x; and set -gx CLAUDE_CONFIG_DIR /other; and claude brief",
+                        "env -S'CLAUDE_CONFIG_DIR=/other claude brief'",
+                        "env --split-string='CLAUDE_CONFIG_DIR=/other claude brief'"):
             with self.subTest(command=command), self.assertRaisesRegex(ValueError, "already sets CLAUDE_CONFIG_DIR"):
                 iterm_tab.with_account(command, choice)
+        for command in ("bash --noprofile --norc -c 'claude brief'",
+                        "env TERM=xterm-256color claude 'Discuss CLAUDE_CONFIG_DIR=/x'",
+                        "fish -c 'set -gx TERM xterm; claude brief'"):
+            with self.subTest(allowed=command):
+                self.assertTrue(iterm_tab.with_account(command, choice).endswith(command))
         with self.assertRaisesRegex(ValueError, "already sets CODEX_HOME"):
             iterm_tab.with_account("CODEX_HOME=/manual codex brief", choice)
         command = "MY_CLAUDE_CONFIG_DIR=example claude 'Discuss CLAUDE_CONFIG_DIR=/example and CODEX_HOME=/example'"
