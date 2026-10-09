@@ -459,10 +459,14 @@ policy:
           purpose: Applies only the exact reviewed inventory payload through the bounded helper.
     - id: prefer-launchplane-write-helper-for-generic-web-deploy-recovery-api
       match:
-        shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/admin/generic-web/deploy-recovery/(dry-run|apply)\\b"
+        shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/admin/generic-web/deploy-recovery/(dry-run|apply|[^/\\s?]+/testing)\\b"
       action: require_preferred
       message: Raw Launchplane generic-web deploy-recovery calls bypass helper-owned private-file, dry-run/apply, idempotency, digest binding, redaction, and trace discipline. Use the write-action helper.
       preferred:
+        - kind: script
+          path: scripts/launchplane-write-action.py
+          example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "generic-web-deploy-recovery-reference-read", "--product", "<product>"]
+          purpose: Reads the exact held testing event reference through the bounded helper.
         - kind: script
           path: scripts/launchplane-write-action.py
           example_argv:
@@ -1135,7 +1139,8 @@ verification.
   testing lane: state, attempt, delivery id, last error, and the plan's
   action, reason, commit, digests and ids. Use `--target-key <exact-target-key>`
   to select a target from the service response before the helper's output bound;
-  a truncated unselected read cannot prove that testing is absent.
+  a truncated unselected read cannot prove that testing is absent. An empty
+  selection describes only the returned service list, not records outside it.
 - `GET /v1/products/{product}/secret-bindings`: Bounded local-extension read
   (`product-secret-bindings-read --product`) of a product's runtime secret
   binding metadata: binding key, name, scope, context, instance, declared

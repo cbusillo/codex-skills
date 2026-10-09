@@ -8587,13 +8587,25 @@ def test_reconcile_target_selection_reaches_testing_after_output_bound() -> None
 
 
 def test_event_recovery_authorization_denial_never_falls_back() -> None:
-    denied = urllib.error.HTTPError("https://example.invalid", 403, "denied", {},
+    denied = urllib.error.HTTPError("https://example.invalid", 403, "denied", Message(),
                                    io.BytesIO(b'{"error":{"code":"authorization_denied","message":"Denied"},"trace_id":"launchplane_req_denied"}'))
     status, receipt, posts, reads = _run_main(
         ["generic-web-deploy-recovery-reference-read", "--product", "example-product"], read=denied)
     assert status == 1 and not posts and len(reads) == 1
     assert receipt["warnings"][0]["code"] == "authorization_denied"
     assert receipt["summary"]["trace_id"] == "launchplane_req_denied"
+
+
+@pytest.mark.parametrize("changes", [{"product": "other"}, {"instance": "prod"}])
+def test_event_recovery_wrong_response_lane_cannot_supply_review(changes: dict[str, object]) -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload = _write_json(directory, "reference.json", _event_recovery_payload())
+        status, receipt, posts, _ = _run_main(
+            ["generic-web-deploy-recovery-dry-run", "--payload-file", payload],
+            post=_event_recovery_response(**changes),
+        )
+    assert status == 1 and len(posts) == 1
+    assert receipt["status"] != "ok" and receipt["result"] == {}
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

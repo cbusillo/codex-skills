@@ -986,8 +986,9 @@ The service rechecks the reservation and provider evidence against the reviewed
 digest on apply. A reference does not grant recovery authority.
 
 Reference recovery also accepts the service's `close_out_observed` plan when
-the outcome is `absent` and `retry_safe` is false: this closes an operation whose
-exact running artifact the service proved, without retrying it. Unknown or
+the outcome is `absent` and `retry_safe` is false: the provider operation's
+deployment record is absent, while separate runtime evidence proves the exact
+running artifact. It closes the reservation without retrying it. Unknown or
 uninspected outcomes stay held. A denied runtime sync remains denied; obtaining
 a recovery reference does not deliver runtime values or enable a deployment.
 For `adopt_observed`, the outcome must be `present`; it need not be retry-safe
