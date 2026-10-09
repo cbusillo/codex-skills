@@ -160,7 +160,7 @@ def test_plan_writes_reviewable_exact_diff(monkeypatch: pytest.MonkeyPatch, tmp_
 
 
 def test_apply_requires_flag_before_any_context_access(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    plan_path, approval_path, plan = approved_plan_files(tmp_path)
+    plan_path, approval_path, _plan = approved_plan_files(tmp_path)
     monkeypatch.setitem(vars(partdb_write.partdb_read), "context", lambda: pytest.fail("context must not be accessed"))
 
     with pytest.raises(partdb_write.WriteError, match="without --apply"):
@@ -229,7 +229,7 @@ def test_apply_refuses_reused_approval(monkeypatch: pytest.MonkeyPatch, tmp_path
 
 
 def test_apply_refuses_same_read_and_write_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    plan_path, approval_path, plan = approved_plan_files(tmp_path)
+    plan_path, approval_path, _plan = approved_plan_files(tmp_path)
     monkeypatch.setitem(vars(partdb_write.partdb_read), "context", lambda: (tmp_path, {}))
     monkeypatch.setitem(vars(partdb_write.partdb_read), "environment", lambda *_args: ("https://private.invalid", "same-token"))
     monkeypatch.setitem(vars(partdb_write), "verify_lot_patch_schema", lambda *_args: None)
