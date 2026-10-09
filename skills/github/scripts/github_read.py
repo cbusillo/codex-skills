@@ -139,7 +139,7 @@ class ConditionalResponseCache:
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.root.chmod(0o700)
         # Both cache modes use the same private, atomic, bounded publisher.
-        github_http_cache._publish(self.root, path, item, max_age_seconds=self.max_age_seconds)
+        github_http_cache.publish(self.root, path, item, max_age_seconds=self.max_age_seconds)
 
     def request(self, reader: "GitHubReader", method: str, path: str, *, step: str) -> github_api_core.ApiResult:
         headers = {"Accept": "application/vnd.github+json"}

@@ -112,7 +112,8 @@ class QuotaCacheTests(unittest.TestCase):
         return subprocess.CompletedProcess([], int(status >= 300), raw.encode(),
                                            f'acting as {actor}'.encode())
 
-    def get(self, path='/repos/example/app/issues/7', **kwargs):
+    @staticmethod
+    def get(path='/repos/example/app/issues/7', **kwargs):
         return api.call_gh('GET', path, actor='fixture-bot', expected_actor='fixture-bot', **kwargs)
 
     def test_304_reuses_body_and_links_only_after_network_response(self):
@@ -159,7 +160,7 @@ class QuotaCacheTests(unittest.TestCase):
 
     def test_cache_storage_failure_does_not_repeat_completed_get(self):
         response = self.response({'id': 7}, headers={'etag': '"e"'})
-        with patch('subprocess.run', return_value=response) as run, patch.object(cache, '_publish', side_effect=OSError):
+        with patch('subprocess.run', return_value=response) as run, patch.object(cache, 'publish', side_effect=OSError):
             self.assertTrue(self.get().ok)
         self.assertEqual(run.call_count, 1)
         self.assertEqual(list((self.root / 'cache').glob('*.json')), [])

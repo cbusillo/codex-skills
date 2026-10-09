@@ -22,7 +22,7 @@ MAX_ENTRY_BYTES = 1024 * 1024
 MAX_TOTAL_BYTES = 16 * 1024 * 1024
 MAX_AGE_SECONDS = 86400
 RESPONSE_HEADERS = frozenset({'etag', 'last-modified', 'link', 'content-type', 'x-poll-interval'})
-TOKEN_PATTERN = re.compile(r'(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|Bearer\s+[A-Za-z0-9._~+/-]{20,})', re.I)
+TOKEN_PATTERN = re.compile(r'gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|Bearer\s+[A-Za-z0-9._~+/-]{20,}', re.I)
 SENSITIVE_KEYS = frozenset({'token', 'access_token', 'refresh_token', 'authorization', 'password', 'secret', 'private_key'})
 
 
@@ -103,7 +103,7 @@ def _cache_entry(path: pathlib.Path) -> dict[str, Any] | None:
     return None
 
 
-def _publish(root: pathlib.Path, path: pathlib.Path, item: dict[str, Any], *,
+def publish(root: pathlib.Path, path: pathlib.Path, item: dict[str, Any], *,
              max_age_seconds: float | None = None) -> None:
     now = time.time()
     age = MAX_AGE_SECONDS if max_age_seconds is None else max_age_seconds
@@ -144,7 +144,7 @@ def _publish(root: pathlib.Path, path: pathlib.Path, item: dict[str, Any], *,
             except FileNotFoundError:
                 continue
         total = sum(size for _, size, _ in entries)
-        entries.sort(key=lambda entry: entry[0])
+        entries.sort(key=lambda record: record[0])
         while entries and (len(entries) > MAX_ENTRIES or total > MAX_TOTAL_BYTES):
             _, size, old = entries.pop(0)
             if _cache_entry(old) is not None:
@@ -211,7 +211,7 @@ def request(
     if not any(result.headers.get(name) for name in ('etag', 'last-modified')):
         return result
     try:
-        _publish(root, entry, {'key': key, 'body': result.body, 'saved_at': time.time(),
+        publish(root, entry, {'key': key, 'body': result.body, 'saved_at': time.time(),
                               'headers': {name: value for name, value in result.headers.items() if name in RESPONSE_HEADERS}})
     except OSError:
         # A completed remote request must not be repeated on a disk failure.

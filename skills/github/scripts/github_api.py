@@ -2307,27 +2307,27 @@ def run_with_retry(
         # The explicit no-wait flag stops locally. Other waits share the parent
         # deadline and cancellation contract, without holding a cooldown lease.
         if os.environ.get("GITHUB_QUOTA_RESERVE_NO_WAIT") == "1":
-            completed, waited, reason = False, 0.0, "quota_reserve"
+            reserve_completed, reserve_waited, reserve_reason = False, 0.0, "quota_reserve"
         else:
-            completed, waited, reason = _wait_until(
+            reserve_completed, reserve_waited, reserve_reason = _wait_until(
                 reset, deadline=effective_deadline, operation=operation,
-                cause=message, attempt=1, policy=policy, runtime=runtime,
+                cause=message, attempt=max(1, attempts + 1), policy=policy, runtime=runtime,
             )
-        elapsed_wait += waited
-        if completed:
+        elapsed_wait += reserve_waited
+        if reserve_completed:
             return None
-        result = _retry_failure_result(
-            last_result, cause=reason or "quota_reserve", message=message, is_write=False,
+        yield_failure = _retry_failure_result(
+            last_result, cause=reserve_reason or "quota_reserve", message=message, is_write=False,
         ) if last_result is not None else _local_retry_failure(
             operation=operation, actor=actor, expected_actor=expected_actor,
             host=resolved_host, bucket=resolved_bucket, is_write=False,
-            cause=reason or "quota_reserve", message=message, retry_at=reset,
+            cause=reserve_reason or "quota_reserve", message=message, retry_at=reset,
         )
         return _attach_retry_summary(
-            result, attempts=attempts, elapsed_wait=elapsed_wait, retry_eligible=eligible,
+            yield_failure, attempts=attempts, elapsed_wait=elapsed_wait, retry_eligible=eligible,
             actor=actor, bucket=resolved_bucket, is_write=False, reconciliation=reconciliation,
             recommended_next_action="retry_after_reported_reset",
-            effective_deadline=effective_deadline, exhausted_reason=reason,
+            effective_deadline=effective_deadline, exhausted_reason=reserve_reason,
         )
 
     reserve_result = reserve_guard()
