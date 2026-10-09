@@ -507,9 +507,9 @@ def tooling_capacity_context(
         refusal = {**result, "reason": "incomplete_milestone_coverage"}
         missing = graph.get("dependency_context", {}).get("missing_tracking_milestones", [])
         if missing:
-            refusal["detail"] = ("Spare-capacity tooling is not admitted: these listed milestones have no Track issue: "
+            refusal["detail"] = ("Spare-capacity tooling is not admitted: no Track issue was found in the read inventory for these listed milestones: "
                                  + ", ".join(f'"{title}"' for title in missing)
-                                 + ". Their work or waits cannot be checked until a Track issue is linked to each milestone.")
+                                 + ". Check the Track issues and their milestone links; their work or waits cannot yet be checked.")
         return refusal
     reviews = {key.casefold(): value for key, value in context.get("issues", {}).items()}
     entries = [*graph.get("candidates", []), *graph.get("excluded", []), *discoveries]

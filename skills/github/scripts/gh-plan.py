@@ -4835,7 +4835,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=positive_limit, default=5,
                    help="How many ranked results to return (default %(default)s); does not widen evaluation")
     p.add_argument("--scan-limit", type=positive_limit, default=50,
-                   help="How many issues to evaluate per scan allowance (default %(default)s); global next reserves separate allowances for the milestone graph, ordinary discoveries, held repositories, and other-agent issues; marked incidents are evaluated separately")
+                   help="How many issues to evaluate per scan allowance (default %(default)s); global next has separate graph and discovery allowances, each with an extra allowance for other-agent issues; discovery also reserves a held-repository allowance and evaluates marked incidents separately")
     p.add_argument("--repo-limit", type=positive_limit, help="Global next: bound accessible repository inventory (default 100)")
     p.add_argument("--repository-issue-limit", type=positive_limit, help="Global next: open issues per repository (default 100)")
     p.add_argument("--comment-limit", type=positive_limit, help="Global next: comments per evaluated issue (default 100)")
