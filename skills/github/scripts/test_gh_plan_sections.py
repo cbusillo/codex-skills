@@ -36,6 +36,11 @@ LITERAL_TEXTS = (
 )
 
 
+class UnreadableStdin(io.StringIO):
+    def read(self, size: int = -1) -> str:
+        raise AssertionError("Implicit stdin must not be read")
+
+
 class SectionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.issue: dict[str, Any] = {
@@ -117,9 +122,7 @@ class SectionTests(unittest.TestCase):
     def test_missing_input_flag_fails_without_reading_stdin_or_writing(self) -> None:
         for content in ("", "New section content", *LITERAL_TEXTS):
             with self.subTest(content=content):
-                stream = io.StringIO(content)
-                with patch.object(stream, "read", side_effect=AssertionError("Implicit stdin must not be read")):
-                    self.assert_prewrite_failure((), "read_body", stdin=stream)
+                self.assert_prewrite_failure((), "read_body", stdin=UnreadableStdin(content))
 
     def test_explicit_empty_input_clears_only_the_selected_section(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
