@@ -1825,7 +1825,14 @@ def cmd_index(args: argparse.Namespace) -> None:
         issue_only=True,
     )
     items = [compact_list_issue(repo, item) for item in data]
-    emit({"ok": True, "actor": actor, "repo": repo, "count": len(items), "plans": items})
+    try:
+        _, metadata = api_json("GET", f"/repos/{repo}", bucket="rest_core", failed_step="inventory_repository")
+        context = github_read.repository_disposition(metadata)
+    except PlanError as exc:
+        next_source_error(exc)
+        context = github_read.repository_disposition(None)
+    emit({"ok": True, "actor": actor, "repo": repo, "repository": context,
+          "count": len(items), "plans": [{**item, "repository": context} for item in items]})
 
 
 def cmd_search(args: argparse.Namespace) -> None:
@@ -3359,15 +3366,27 @@ def next_wait_context(
     references: dict[str, dict[str, Any]] = {}
     checked = 0
     scope_labels = {}
+    repositories = {}
+    frozen_issues = []
+    checked_issue_refs = []
     for repo, items in groups.items():
         config = configs[repo]
         report = direction_audit.stale_wait_report(items, repo, fetch=fetch, inventory_complete=complete,
                                                  active_label=config["labels"]["active"])
         reports.extend({**row, "repo": repo} for row in report["items"])
-        unavailable.extend({**row, "repo": repo} for row in report["unavailable"])
+        for row in report["unavailable"]:
+            if row["source"] == "repository":
+                unavailable.extend({**row, "repo": repo, "number": item["number"]} for item in items)
+            else:
+                unavailable.append({**row, "repo": repo})
         checked += report["checked"]
+        checked_issue_refs.extend({"repo": repo, "number": number} for number in report["checked_issues"])
         scope_labels[repo.casefold()] = [config["labels"][key] for key in ("active", "waiting", "blocked")]
         complete &= report["complete"]
+        repositories[repo] = report["repository"]
+        frozen_issues.extend({**row, "repo": repo} for row in report["frozen_issues"])
+        if report["repository"]["archived"] is True:
+            continue
         for item in items:
             if str(item.get("state", "")).casefold() != "open":
                 continue
@@ -3390,10 +3409,11 @@ def next_wait_context(
                         unavailable.append({"repo": repo, "number": item["number"], "source": "wait_reference", "url": url, "reason": "unavailable"})
                         complete = False
     return {"read_only": True, "complete": complete, "checked": checked, "items": reports,
+            "repositories": repositories, "frozen_issues": frozen_issues,
             "unavailable": unavailable, "references": references,
             "inventory_complete": inventory_complete, "scope": "evaluated_global_next_issues",
             "read_limit": budget, "read_count": len(cache),
-            "checked_issues": [{"repo": item["repo"], "number": item["number"]} for item in selected],
+            "checked_issues": checked_issue_refs,
             "scope_labels": scope_labels}
 
 
