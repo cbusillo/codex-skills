@@ -42,6 +42,7 @@ REQUIRED_FIELDS = {
     "capabilities",
     "permission_mode",
     "permission_note",
+    "request_priority",
 }
 OPTIONAL_FIELDS = {
     "current_endpoint_or_command",
@@ -50,6 +51,7 @@ OPTIONAL_FIELDS = {
 }
 
 ENUMS = {
+    "request_priority": {"essential", "bulk"},
     "current_transport": {
         "composite",
         "delegated_python",
@@ -675,6 +677,7 @@ def minimal_operation(**overrides: Any) -> dict[str, Any]:
         "id": "test.operation",
         "capabilities": ["metadata_read"],
         "permission_mode": "fixed",
+        "request_priority": "essential",
         "permission_note": "Fixture metadata read; failure remains unavailable and needs no additional grant.",
         "entrypoint": "github/scripts/gh-pr.py view",
         "intent": "Fixture operation.",

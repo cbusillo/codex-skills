@@ -593,6 +593,8 @@ def run_raw(
         expected_actor=initial_expected_actor,
         bucket=resolved_bucket,
         attempt_with_timeout=lambda timeout: attempt(timeout),
+        repository=next((github_api_core.github_http_cache.repository_from_path(arg)
+                         for arg in args if github_api_core.github_http_cache.repository_from_path(arg)), None),
     )
     record_retry_fields(retried)
     if last_proc is None:
