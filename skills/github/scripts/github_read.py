@@ -290,6 +290,7 @@ class GitHubReader:
             retry_policy=retry_policy,
             deadline_at=self.deadline_at if deadline_at is None else deadline_at,
             allow_escape_sequences=allow_escape_sequences,
+            conditional_cache=not self.cache_enabled,
         )
 
     def graphql_json(

@@ -173,6 +173,75 @@ class QuotaCacheTests(unittest.TestCase):
             self.get('/repos/example/app/issues/large')
         self.assertLessEqual(len(list((self.root / 'cache').glob('*.json'))), 2)
 
+    def test_reader_cache_keeps_one_request_per_revalidation(self):
+        import github_read
+        headers = {"Accept": "application/vnd.github+json"}
+        def respond(command, **_kwargs):
+            conditional = any(str(arg).startswith("If-None-Match:") for arg in command)
+            return self.response(None if conditional else {"id": 7},
+                                 status=304 if conditional else 200,
+                                 headers={"etag": '\"e\"'})
+        with patch.dict(os.environ, {"GITHUB_READ_CACHE_DIR": str(self.root / "reader-cache")}), patch(
+                "subprocess.run", side_effect=respond) as run:
+            self.get(extra_headers=headers)
+            reader = github_read.GitHubReader(actor="fixture-bot", expected_actor="fixture-bot",
+                                              cache_enabled=True, cache_revalidate=True)
+            initial = reader.request("GET", "/repos/example/app/issues/7", step="initial")
+            repeat = reader.request("GET", "/repos/example/app/issues/7", step="repeat")
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(initial.status, 200)
+        self.assertEqual(repeat.status, 304)
+        self.assertEqual(initial.body, repeat.body)
+
+    def test_retry_then_reserve_preserves_waits_and_attempt_diagnostics(self):
+        self.budget(25)
+        calls = []
+        def attempt():
+            calls.append(self.clock)
+            if len(calls) > 1:
+                return api.ApiResult(ok=True, status=200, body={}, actor="fixture-bot", bucket="rest_core")
+            return api.ApiResult(ok=False, status=503, body={}, actor="fixture-bot",
+                                 expected_actor="fixture-bot", bucket="rest_core", request_id="first-attempt",
+                                 failure=api.FailureDetail(cause="network_provider_failure", message="unavailable",
+                                                          retryable=True, fallback_eligible=False, disposition="retry"))
+        runtime = self.runtime()
+        def sleep_and_observe(seconds):
+            self.sleep(seconds)
+            self.budget(24)
+        runtime.sleep = sleep_and_observe
+        def run(deadline=None):
+            return api.run_with_retry(attempt, operation="github.plan.index", is_write=False,
+                                      actor="fixture-bot", expected_actor="fixture-bot", bucket="rest_core",
+                                      repository="example/app", retry_runtime=runtime,
+                                      retry_policy=api.RetryPolicy(state_dir=self.root, max_wait_seconds=30,
+                                                                   jitter_seconds=0, drain_seconds=0),
+                                      deadline_at=deadline)
+        result = run()
+        self.assertTrue(result.ok)
+        self.assertEqual(result.retry_summary.elapsed_wait, sum(self.waits))
+        self.assertEqual(result.retry_summary.attempts, 2)
+        self.clock, self.waits, calls = 1000.0, [], []
+        # The second scenario starts with fresh fixture cooldown state.
+        for state_file in self.root.glob("*.json"):
+            state_file.unlink()
+        usage._budget_path("github.com", "fixture-bot", "rest_core", "example/app").unlink()
+        self.budget(25)
+        result = run(deadline=1005)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.retry_summary.attempts, 1)
+        self.assertEqual(result.request_id, "first-attempt")
+        self.assertEqual(result.retry_summary.elapsed_wait, sum(self.waits))
+
+    def test_cli_repo_flag_selects_the_installation_reserve(self):
+        self.budget(24)
+        with patch.dict(os.environ, {"GITHUB_QUOTA_RESERVE_NO_WAIT": "1"}):
+            for args in (["issue", "list", "-R", "example/app"],
+                         ["issue", "list", "--repo=example/app"],
+                         ["api", "/repos/example/app/issues"]):
+                result, calls = self.execute("github.plan.index", repository=cache.repository_from_command(args))
+                self.assertFalse(result.ok)
+                self.assertEqual(calls, [])
+
     def test_representative_three_page_sweep_cost(self):
         # Two unchanged passes still contact all three pages. GitHub returns
         # free 304s on pass two, reducing charged requests from six to three.

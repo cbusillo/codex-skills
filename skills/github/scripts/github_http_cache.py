@@ -31,6 +31,23 @@ def repository_from_path(path: str) -> str | None:
     return match[1] if match else None
 
 
+def repository_from_command(args: list[str]) -> str | None:
+    for index, arg in enumerate(args):
+        repository = repository_from_path(arg)
+        if repository:
+            return repository
+        candidate = None
+        if arg in {"--repo", "-R"} and index + 1 < len(args):
+            candidate = args[index + 1]
+        elif arg.startswith("--repo="):
+            candidate = arg.split("=", 1)[1]
+        elif arg.startswith("-R") and len(arg) > 2:
+            candidate = arg[2:]
+        if candidate and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", candidate):
+            return candidate
+    return None
+
+
 def _root() -> pathlib.Path:
     # Share the retry state's isolation in fixtures and across session processes.
     runtime = os.environ.get('CODE_HOME') or os.environ.get('CODEX_HOME')

@@ -2285,10 +2285,13 @@ def run_with_retry(
             exhausted_reason=initial_reason,
         )
 
-    reserve_wait = 0.0
+    attempts = 0
+    elapsed_wait = 0.0
+    last_result: Optional[ApiResult] = None
+    reconciliation: Optional[dict[str, Any]] = None
 
     def reserve_guard() -> Optional[ApiResult]:
-        nonlocal reserve_wait
+        nonlocal elapsed_wait
         if is_write or rule is None or rule.request_priority != "bulk" or resolved_bucket != "rest_core":
             return None
         quota = github_request_usage.quota_snapshot(
@@ -2301,7 +2304,7 @@ def run_with_retry(
         if limit <= 0 or remaining < 0 or remaining >= reserve or reset <= runtime.now():
             return None
         message = f"Bulk GitHub reads yield below reserve {reserve}/{limit}: remaining={remaining}; reset={time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(reset))}"
-        # Zero wait is an explicit no-wait request. Other waits share the parent
+        # The explicit no-wait flag stops locally. Other waits share the parent
         # deadline and cancellation contract, without holding a cooldown lease.
         if os.environ.get("GITHUB_QUOTA_RESERVE_NO_WAIT") == "1":
             completed, waited, reason = False, 0.0, "quota_reserve"
@@ -2310,17 +2313,19 @@ def run_with_retry(
                 reset, deadline=effective_deadline, operation=operation,
                 cause=message, attempt=1, policy=policy, runtime=runtime,
             )
-        reserve_wait += waited
+        elapsed_wait += waited
         if completed:
             return None
-        result = _local_retry_failure(
+        result = _retry_failure_result(
+            last_result, cause=reason or "quota_reserve", message=message, is_write=False,
+        ) if last_result is not None else _local_retry_failure(
             operation=operation, actor=actor, expected_actor=expected_actor,
             host=resolved_host, bucket=resolved_bucket, is_write=False,
             cause=reason or "quota_reserve", message=message, retry_at=reset,
         )
         return _attach_retry_summary(
-            result, attempts=0, elapsed_wait=reserve_wait, retry_eligible=eligible,
-            actor=actor, bucket=resolved_bucket, is_write=False, reconciliation=None,
+            result, attempts=attempts, elapsed_wait=elapsed_wait, retry_eligible=eligible,
+            actor=actor, bucket=resolved_bucket, is_write=False, reconciliation=reconciliation,
             recommended_next_action="retry_after_reported_reset",
             effective_deadline=effective_deadline, exhausted_reason=reason,
         )
@@ -2416,11 +2421,7 @@ def run_with_retry(
         )
 
     store = SharedCooldownStore(policy.state_dir)
-    attempts = 0
-    elapsed_wait = reserve_wait
-    reconciliation: Optional[dict[str, Any]] = None
     context_actor = expected_actor
-    last_result: Optional[ApiResult] = None
     cooldown_error: Optional[str] = None
 
     def finish_cooldown(held: Optional[_CooldownLease]) -> None:
@@ -2439,7 +2440,6 @@ def run_with_retry(
         reserve_result = reserve_guard()
         if reserve_result is not None:
             return reserve_result
-        elapsed_wait = max(elapsed_wait, reserve_wait)
         key_actor = context_actor or actor
         key = _cooldown_key(resolved_host, key_actor, resolved_bucket)
         try:
@@ -2905,6 +2905,7 @@ def call_gh(
     graphql_operation: Optional[GraphQLOperation] = None,
     timeout_seconds: Optional[float] = None,
     allow_escape_sequences: bool = False,
+    conditional_cache: bool = True,
 ) -> ApiResult:
     """Execute a fresh GET, reusing its body only after same-identity HTTP 304."""
     kwargs = dict(
@@ -2922,7 +2923,7 @@ def call_gh(
         headers=extra_headers or {}, api_version=api_version,
         host=host or DEFAULT_HOST, actor=actor, expected_actor=expected_actor,
         identity_scope=json.dumps([gh_cmd, gh_prefix_args or []]),
-        enabled=not allow_escape_sequences and not github_identity.active_auth_fallback_allowed()
+        enabled=conditional_cache and not allow_escape_sequences and not github_identity.active_auth_fallback_allowed()
         and not github_identity.own_user_opted_in(),
     )
 
@@ -3322,6 +3323,7 @@ def call_gh_with_retry(
     deadline_at: Optional[float] = None,
     matrix_path: pathlib.Path = DEFAULT_OPERATION_MATRIX,
     allow_escape_sequences: bool = False,
+    conditional_cache: bool = True,
 ) -> ApiResult:
     resolved_graphql_operation = graphql_operation
     if is_graphql_path(path) and resolved_graphql_operation is None:
@@ -3355,6 +3357,7 @@ def call_gh_with_retry(
             graphql_operation=resolved_graphql_operation,
             timeout_seconds=timeout_seconds,
             allow_escape_sequences=allow_escape_sequences,
+            conditional_cache=conditional_cache,
         )
 
     return run_with_retry(
