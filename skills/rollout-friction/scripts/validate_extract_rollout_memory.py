@@ -297,6 +297,89 @@ def test_redact_mounted_paths_in_text_context_and_prompts() -> None:
             raise AssertionError(f"trusted mode lost mounted path: {path}")
 
 
+def test_unquoted_mounted_whitespace_keeps_prose_and_masks_entire_paths() -> None:
+    redact_args, module = args(redact=True, trusted_originals=False, max_record_chars=2_000)
+    trusted_args, _module = args(max_record_chars=2_000)
+    public_url = "https://example.com/Volumes/Example%20Disk/docs"
+    cases = (
+        ("/Volumes/EXAMPLE and builds go to target/debug.", "and builds go to target/debug.", "EXAMPLE"),
+        ("/Volumes/Example Disk", "", "Disk"),
+        ("/Volumes/a very long volume name", "", "long volume name"),
+        ("/Volumes/X/Task Evidence/y", "", "Evidence/y"),
+        ("/Volumes/Data/Photos and Videos/2024/trip", "", "Videos/2024/trip"),
+        ("/Volumes/Research and Development Disk/y", "", "Development Disk/y"),
+        ("/Volumes/Example. Disk/y", "", "Disk/y"),
+        ("/Volumes/Data/Photos2024:Family/img.jpg", "", "Family/img.jpg"),
+        ("/Volumes/Data/Photos;Family/img.jpg", "", "Family/img.jpg"),
+        ("/Volumes/EXAMPLE/Photos(2024).jpg", "", "jpg"),
+        ("/Volumes/EXAMPLE/Family:.jpg", "", "jpg"),
+        ("/Volumes/EXAMPLE/<repo>/private-folder", "", "private-folder"),
+        ("/Volumes/Photos for Mom/2024/trip.jpg", "", "Mom/2024/trip.jpg"),
+        ("/Volumes/Backup/Documents (old) archive/tax.pdf", "", "archive/tax.pdf"),
+        ("/Volumes/Work in Progress/x", "", "Progress/x"),
+        ("/Volumes/Example Disk <https://example.com/docs>", "https://example.com/docs", "Example Disk"),
+        ("/Volumes/example disk/task evidence/y; keep useful prose.", "keep useful prose.", "evidence/y"),
+        ("/Volumes/Example Disk. Keep useful prose.", "Keep useful prose.", "Disk"),
+        ("/Volumes/EXAMPLE/worktrees. Read skills/github/SKILL.md before landing.",
+         "Read skills/github/SKILL.md before landing.", "EXAMPLE/worktrees"),
+        ("/Volumes/EXAMPLE/worktrees/x so the internal drive stays clean.",
+         "so the internal drive stays clean.", "EXAMPLE/worktrees/x"),
+        ("/Volumes/EXAMPLE/worktrees/x has uncommitted changes in skills/foo.py.",
+         "has uncommitted changes in skills/foo.py.", "EXAMPLE/worktrees/x"),
+        ("/Volumes/EXAMPLE/worktrees/x on branch work/example.", "on branch work/example.", "EXAMPLE/worktrees/x"),
+        ("/Volumes/EXAMPLE/worktrees/x for this repo.", "for this repo.", "EXAMPLE/worktrees/x"),
+        ("/Volumes/EXAMPLE/worktrees/x is 3 commits ahead of main.",
+         "is 3 commits ahead of main.", "EXAMPLE/worktrees/x"),
+        ("/Volumes/EXAMPLE/target to keep the drive clean.", "to keep the drive clean.", "EXAMPLE/target"),
+        ("/Volumes/EXAMPLE/target per DIRECTION.md", "per DIRECTION.md", "EXAMPLE/target"),
+        ("/Volumes/EXAMPLE/worktrees/x must be removed before close-out",
+         "must be removed before close-out", "EXAMPLE/worktrees/x"),
+        ("(/Volumes/EXAMPLE/worktrees/x) holds worktrees", "holds worktrees", "EXAMPLE/worktrees/x"),
+        ("[worktree](/Volumes/EXAMPLE/worktrees/x) before landing", "before landing", "EXAMPLE/worktrees/x"),
+        ("/Volumes/X/Task Evidence/y\nKeep useful prose.", "Keep useful prose.", "Evidence/y"),
+        (f"/Volumes/Example Disk {public_url}", public_url, "Example Disk"),
+        (r"/Volumes/Research\ and\ Development/task\ evidence/y and builds go to target/debug.",
+         "and builds go to target/debug.", "Development"),
+        ('"/Volumes/Research and Development/task evidence/y" and builds go to target/debug.',
+         "and builds go to target/debug.", "Development"),
+    )
+    for fragment, prose, private_tail in cases:
+        text = f"Remember worktrees live under {fragment}"
+        data = json.dumps(response_item("user", text)).encode()
+        with patch.object(Path, "read_bytes", return_value=data):
+            redacted = module.extract([Path("/mnt/example/rollout.jsonl")], redact_args)
+            trusted = module.extract([Path("/mnt/example/rollout.jsonl")], trusted_args)
+        candidate = redacted[0]
+        surfaces = (candidate.text, *(event["text"] for event in candidate.context),
+                    json.dumps(list(module.prompt_batches(redacted, redact_args.batch_chars))))
+        for surface in surfaces:
+            if private_tail in surface or "/Volumes/" in surface.replace(public_url, ""):
+                raise AssertionError(f"unquoted mounted path fragment leaked: {surface}")
+            if " ".join(prose.split()) not in surface:
+                raise AssertionError(f"mounted redaction consumed neighboring evidence: {surface}")
+        if trusted[0].text != " ".join(text.split()):
+            raise AssertionError(f"trusted mode changed mounted whitespace evidence: {text!r} -> {trusted[0].text!r}")
+
+    for tail in ("&& cargo test --workspace", "|| report_failure", "| collect_output", "> output.txt",
+                 "2> errors.txt", "--workspace", "-C src"):
+        text = rf"cd /Volumes/Example\ Disk/worktrees/x {tail}"
+        redacted = module.redact_paths(text)
+        if tail not in redacted or "Disk/worktrees/x" in redacted:
+            raise AssertionError(f"mounted redaction consumed a shell argument boundary: {tail}")
+
+    for prefix, tail in (("CARGO_TARGET_DIR=", "cargo build --release"),
+                         ("uv run --project ", "pytest tests/"), ("cd ", "&& cargo test")):
+        text = f"{prefix}/Volumes/EXAMPLE/worktrees/x {tail}"
+        redacted = module.redact_paths(text)
+        if tail not in redacted or "EXAMPLE/worktrees/x" in redacted:
+            raise AssertionError(f"mounted redaction lost command arguments or leaked its path: {redacted}")
+
+    for adjective in ("read-only", "long-running", "pre-existing", "self-hosted"):
+        text = f"Remember the {adjective} /Volumes/Example Disk/worktrees/x"
+        if "Disk/worktrees/x" in module.clean_text(text, redact_args):
+            raise AssertionError(f"hyphenated prose was mistaken for a shell option: {text}")
+
+
 def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
     redact_args, module = args(redact=True, trusted_originals=False, max_record_chars=2_000)
     trusted_args, _module = args(max_record_chars=2_000)
@@ -679,6 +762,7 @@ def main() -> int:
     test_redact_mode_removes_paths_and_person_data_but_keeps_trusted_originals()
     test_redact_source_metadata_is_independent_of_path_root()
     test_redact_mounted_paths_in_text_context_and_prompts()
+    test_unquoted_mounted_whitespace_keeps_prose_and_masks_entire_paths()
     test_redact_preserves_relative_paths_without_exposing_local_urls()
     test_redacted_bundle_artifact_references_are_portable()
     test_redact_mode_records_person_data_privacy_summary()
