@@ -284,9 +284,30 @@ class QuotaCacheTests(unittest.TestCase):
             old_entry = next(path for path in directory.glob("*.json") if path not in {foreign, hashed_foreign})
             os.utime(old_entry, (old, old))
             reader.request("GET", "/repos/example/app/issues/8", step="second")
+            # Shared and opt-in caches may intentionally use one directory.
+            with patch.dict(os.environ, {"GITHUB_HTTP_CACHE_DIR": str(directory)}):
+                self.get("/repos/example/app/issues/9")
         self.assertTrue(old_entry.exists())
         self.assertEqual(foreign.read_text(), '{"note":"keep"}')
         self.assertEqual(hashed_foreign.read_text(), '{"token":"keep"}')
+
+    def test_eviction_reads_only_candidate_bodies(self):
+        directory = self.root / "cache"
+        entry_limit = 8
+        with patch.object(cache, "MAX_ENTRIES", entry_limit), patch("subprocess.run", return_value=self.response(
+                {"id": 7}, headers={"etag": '\"e\"'})):
+            for number in range(entry_limit):
+                self.get(f"/repos/example/app/issues/{number}")
+            reads = []
+            original = Path.read_text
+            def read_and_count(path, *args, **kwargs):
+                if path.parent == directory and path.is_file():
+                    reads.append(path)
+                return original(path, *args, **kwargs)
+            with patch.object(Path, "read_text", read_and_count):
+                self.get("/repos/example/app/issues/9")
+        self.assertLess(len(reads), entry_limit)
+        self.assertEqual(len(list(directory.glob("*.json"))), entry_limit)
 
     def test_representative_three_page_sweep_cost(self):
         # Two unchanged passes still contact all three pages. GitHub returns
