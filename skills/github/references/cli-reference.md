@@ -201,7 +201,8 @@ that request. Concurrent publication can cause an extra charged 200; it cannot
 serve a body without revalidation.
 
 Existing planning observations always revalidate. Existing watcher readers may
-also coalesce recent replies under their separate opt-in cache; their caller-owned
+also coalesce recent replies under their separate opt-in cache. Both modes use
+the same bounded private publisher; their caller-owned
 validators keep that contract separate from the new shared cache. Explicit
 active-auth routes retain their existing reads and identity authorization.
 Receipts remain lower-bound local measurement: raw CLI calls without headers,

@@ -193,6 +193,19 @@ class QuotaCacheTests(unittest.TestCase):
         self.assertEqual(repeat.status, 304)
         self.assertEqual(initial.body, repeat.body)
 
+    def test_opt_in_reader_cache_uses_the_same_storage_bounds(self):
+        import github_read
+        reader = github_read.GitHubReader(actor="fixture-bot", expected_actor="fixture-bot",
+                                          cache_enabled=True, cache_revalidate=True)
+        directory = self.root / "reader-cache"
+        with patch.dict(os.environ, {"GITHUB_READ_CACHE_DIR": str(directory)}), patch.object(
+                cache, "MAX_ENTRIES", 2), patch("subprocess.run", return_value=self.response(
+                    {"id": 7}, headers={"etag": '\"e\"'})):
+            for number in range(5):
+                reader.request("GET", f"/repos/example/app/issues/{number}", step=str(number))
+        self.assertLessEqual(len(list(directory.glob("*.json"))), 2)
+        self.assertTrue(all(path.stat().st_mode & 0o777 == 0o600 for path in directory.glob("*.json")))
+
     def test_retry_then_reserve_preserves_waits_and_attempt_diagnostics(self):
         self.budget(25)
         calls = []
