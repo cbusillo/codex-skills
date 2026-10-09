@@ -22,7 +22,7 @@ MAX_ENTRY_BYTES = 1024 * 1024
 MAX_TOTAL_BYTES = 16 * 1024 * 1024
 MAX_AGE_SECONDS = 86400
 RESPONSE_HEADERS = frozenset({'etag', 'last-modified', 'link', 'content-type', 'x-poll-interval'})
-TOKEN_PATTERN = re.compile(r'(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|Bearer\s+\S+)', re.I)
+TOKEN_PATTERN = re.compile(r'(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|Bearer\s+[A-Za-z0-9._~+/-]{20,})', re.I)
 SENSITIVE_KEYS = frozenset({'token', 'access_token', 'refresh_token', 'authorization', 'password', 'secret', 'private_key'})
 
 
@@ -88,7 +88,19 @@ def _read(path: pathlib.Path, key: str) -> dict[str, Any] | None:
         return None
 
 
-def _publish(root: pathlib.Path, path: pathlib.Path, item: dict[str, Any]) -> None:
+def _cache_entry(path: pathlib.Path) -> bool:
+    if not re.fullmatch(r"[a-f0-9]{64}\.json", path.name):
+        return False
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return (isinstance(value, dict) and "body" in value and isinstance(value.get("headers"), dict)
+                and (value.get("key") == path.stem or value.get("schema") == 1))
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _publish(root: pathlib.Path, path: pathlib.Path, item: dict[str, Any], *,
+             max_age_seconds: float | None = None) -> None:
     data = json.dumps(item, separators=(',', ':')).encode()
     if len(data) > MAX_ENTRY_BYTES or _sensitive(item):
         path.unlink(missing_ok=True)
@@ -104,9 +116,9 @@ def _publish(root: pathlib.Path, path: pathlib.Path, item: dict[str, Any]) -> No
         entries = []
         for entry in root.glob('*.json'):
             try:
-                if _owned(entry):
+                if _owned(entry) and _cache_entry(entry):
                     info = entry.stat()
-                    if time.time() - info.st_mtime > MAX_AGE_SECONDS:
+                    if time.time() - info.st_mtime > (MAX_AGE_SECONDS if max_age_seconds is None else max_age_seconds):
                         entry.unlink(missing_ok=True)
                     else:
                         entries.append((info.st_mtime, info.st_size, entry))

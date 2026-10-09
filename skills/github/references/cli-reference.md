@@ -192,8 +192,10 @@ request ID and quota diagnostics. Changed 200s replace the entry. Authentication
 permission and actor failures never become cached success.
 
 The cache stores no authentication headers or tokens, uses private directory/file
-modes, expires bodies after a day and limits entries, individual bodies and total
-storage. Sensitive credential surfaces, identity probes, caller-supplied
+modes, expires shared-cache bodies after a day and limits entries, individual bodies
+and total cache-body storage. Existing opt-in readers retain their configured
+max-age override. Eviction selects recognized cache entries and preserves other
+files even when a cache-directory override points at a mixed directory. Sensitive credential surfaces, identity probes, caller-supplied
 validators and explicitly authorized alternate-identity routes bypass it.
 Corrupt/missing bodies cannot turn a 304 into success. Storage failure falls back
 to the same live transport, and failure after a completed request never repeats

@@ -255,6 +255,39 @@ class QuotaCacheTests(unittest.TestCase):
                 self.assertFalse(result.ok)
                 self.assertEqual(calls, [])
 
+    def test_auth_prose_remains_cacheable_but_credential_shapes_do_not(self):
+        with patch("subprocess.run", side_effect=[self.response(
+                {"body": "Use a bearer token for auth"}, headers={"etag": '\"e\"'}),
+                self.response(None, status=304)]):
+            self.get()
+            self.assertTrue(self.get().ok)
+        self.assertTrue(cache._sensitive({"body": "Bearer " + "a" * 40}))
+        self.assertTrue(cache._sensitive({"body": "ghp_" + "a" * 40}))
+
+    def test_eviction_preserves_foreign_files_and_reader_age_override(self):
+        import github_read
+        directory = self.root / "reader-cache"
+        directory.mkdir()
+        foreign = directory / "notes.json"
+        foreign.write_text('{"note":"keep"}')
+        hashed_foreign = directory / ("a" * 64 + ".json")
+        hashed_foreign.write_text('{"token":"keep"}')
+        old = time.time() - cache.MAX_AGE_SECONDS * 1.5
+        os.utime(foreign, (old, old))
+        os.utime(hashed_foreign, (old, old))
+        with patch.dict(os.environ, {"GITHUB_READ_CACHE_DIR": str(directory),
+                                   "GITHUB_READ_CACHE_MAX_AGE_SECONDS": str(cache.MAX_AGE_SECONDS * 2)}), patch(
+                "subprocess.run", return_value=self.response({"id": 7}, headers={"etag": '\"e\"'})):
+            reader = github_read.GitHubReader(actor="fixture-bot", expected_actor="fixture-bot",
+                                              cache_enabled=True, cache_revalidate=True)
+            reader.request("GET", "/repos/example/app/issues/7", step="first")
+            old_entry = next(path for path in directory.glob("*.json") if path not in {foreign, hashed_foreign})
+            os.utime(old_entry, (old, old))
+            reader.request("GET", "/repos/example/app/issues/8", step="second")
+        self.assertTrue(old_entry.exists())
+        self.assertEqual(foreign.read_text(), '{"note":"keep"}')
+        self.assertEqual(hashed_foreign.read_text(), '{"token":"keep"}')
+
     def test_representative_three_page_sweep_cost(self):
         # Two unchanged passes still contact all three pages. GitHub returns
         # free 304s on pass two, reducing charged requests from six to three.
