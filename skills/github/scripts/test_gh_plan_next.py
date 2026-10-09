@@ -684,7 +684,7 @@ def global_fixture(
         parts = path.split("?", 1)[0].strip("/").split("/")
         target = "/".join(parts[1:3])
         if len(parts) == 3:
-            return "automation-gh", {"default_branch": "main"}
+            return "automation-gh", {"default_branch": "main", "archived": False}
         number = int(parts[4])
         key = (target, number)
         if len(parts) == 7 and parts[5:] == ["dependencies", "blocked_by"]:
@@ -2467,7 +2467,10 @@ def test_global_unread_frontier_wait_prevents_capacity_without_unrelated_veto() 
     item = {**shared.compact_list_issue(raw['repo'], raw), "plan_status": "waiting", "exclusion": "waiting", "milestone": raw['milestone'], "discussion": shared.discussion_snapshot(raw, [], complete=True)}
     context = {"issues": {"someone/business#3": reviewed(item, "waiting", waiting_on="person")}}
     graph = {"candidates": [], "excluded": [item], "dependency_context": {"complete": True}}
-    with patch.multiple(module, api_json=Mock(side_effect=AssertionError('unselected wait must not be read')), load_config=lambda *_: module.DEFAULT_CONFIG):
+    def selected_repository(method: str, path: str, **_kwargs: Any) -> Any:
+        assert method == "GET" and path == "/repos/someone/other", "unselected wait must not be read"
+        return "automation-gh", {"archived": False}
+    with patch.multiple(module, api_json=selected_repository, load_config=lambda *_: module.DEFAULT_CONFIG):
         report = module.next_wait_context([global_issue('someone/other', 1), raw], scan_limit=1, inventory_complete=True)
     checked = {(row['repo'], row['number']) for row in report['checked_issues']}
     item['wait_evidence_complete'] = (raw['repo'], raw['number']) in checked
@@ -2532,7 +2535,7 @@ def test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output()
                        updated_at="2026-10-06T12:00:00Z",
                        body="## Current Status\nNext action: Supervisor lands PR https://github.com/someone/product/pull/71 and closes this issue.\n")
     def fetch(_method: str, path: str, **_kwargs: Any) -> Any:
-        return "automation-gh", ({"default_branch": "main"} if path == "/repos/someone/product" else
+        return "automation-gh", ({"default_branch": "main", "archived": False} if path == "/repos/someone/product" else
                                  {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #10"})
     config = {**module.DEFAULT_CONFIG, "labels": {**module.DEFAULT_CONFIG["labels"], "active": "custom-active"}}
     with patch.multiple(module, api_json=fetch, load_config=lambda *_: config):
@@ -2553,7 +2556,7 @@ def test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output()
     assert "post_merge_evidence_complete" not in candidates[0]
     active = {**row, "number": 11, "labels": ["plan", "custom-active"],
               "body": "## Current Status\nNext action: Implement the remaining phone fix.\n"}
-    with patch.multiple(module, api_json=Mock(side_effect=AssertionError("no PR read needed")), load_config=lambda *_: config):
+    with patch.multiple(module, api_json=Mock(return_value=("automation-gh", {"archived": False})), load_config=lambda *_: config):
         report = module.next_wait_context([row, active], scan_limit=1, inventory_complete=True)
     assert report["complete"] and report["checked_issues"] == [{"repo": row["repo"], "number": 11}]
 

@@ -453,6 +453,11 @@ or Project focus state.
   requests and ordering by most recently updated. Supports `--state`, `--label`,
   and an exact positive `--limit`. Compact states remain normalized as uppercase
   `OPEN` or `CLOSED` values.
+  Inventory output includes freshly read `repository.archived` (boolean or
+  null) and `repository.disposition` (`current`, `frozen_historical`, or
+  `unknown`), also attached to each plan row. Archived rows stay in the inventory
+  as frozen history; their active-looking labels do not establish current work.
+  Unavailable or missing archive metadata preserves the rows with unknown context.
 - `search <query>`: Search issues through the REST search endpoint with an
   `is:issue` constraint. Add the current repository only when the query has no
   positive `repo:`, `org:`, or `user:` scope; an explicit global `--repo` always
@@ -860,7 +865,10 @@ competitor's record.
   issue reference, `gh-plan.py --repo OWNER/REPO update-section` with a bare
   issue number, or
   `gh-pr.py --repo OWNER/REPO edit <pr> --body-file FILE` for intended PR edits. Section
-  text from `--body`, `--body-file`, or stdin is literal, including backslashes;
+  text requires `--body TEXT` or `--body-file FILE`; use `--body-file -` to read
+  stdin. Omitting both flags fails before reading stdin or writing, even with
+  a pipe or heredoc. To intentionally clear a section, pass `--body ''` or an
+  explicitly supplied empty file or stdin stream. Input is literal, including backslashes;
   existing surrounding-whitespace normalization still applies. Body-read and
   regex preparation failures return a structured `validation_error` with
   `write_outcome=not_started` before any mutation. Ownership refusals and API

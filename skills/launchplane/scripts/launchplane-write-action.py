@@ -6248,13 +6248,15 @@ def summarize_privileged_policy_proposal(
     expires_at = summary.get("expires_at")
     if not isinstance(expires_at, str):
         raise LaunchplaneSafetyError("invalid_response")
-    try:
-        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-        if expiry.tzinfo is None:
-            raise ValueError("timezone required")
-        normalized_expiry = expiry.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    except ValueError:
-        raise LaunchplaneSafetyError("invalid_response") from None
+    normalized_expiry = ""
+    if expires_at:
+        try:
+            expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            if expiry.tzinfo is None:
+                raise ValueError("timezone required")
+            normalized_expiry = expiry.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        except ValueError:
+            raise LaunchplaneSafetyError("invalid_response") from None
     result_status = summary.get("result_status")
     if result_status not in {"ok", "blocked"}:
         raise LaunchplaneSafetyError("invalid_response")
@@ -6274,7 +6276,7 @@ def summarize_privileged_policy_proposal(
         "state": state,
         "result_status": result_status,
         "review_path": f"/ui/engineering/privileged-operations?operation_id={operation_id}",
-        "expires_at": public_timestamp(normalized_expiry),
+        "expires_at": public_timestamp(normalized_expiry) if normalized_expiry else "",
         "counts": {name: _nonnegative_int(summary.get(name)) for name in counts},
         "authorizes_approval": False,
         "authorizes_execution": False,
