@@ -203,7 +203,7 @@ jobs:
             --state open \
             --json author,baseRefName,body,headRefName,headRefOid,headRepository,number \
             --jq '.[0] // empty')"
-          pr_number="$(jq -r '.number // empty' <<<"${existing_pr:-{}}")"
+          pr_number="$(jq -r '.number // empty' <<<"${existing_pr:-"{}"}")"
           if [[ -n "$pr_number" ]]; then
             jq -er \
               --arg branch "$AUTOMATION_BRANCH" \

@@ -2724,7 +2724,9 @@ def test_parent_termination_cleans_catchable_commands_and_preserves_unknown(monk
     pid_file = tmp_path / "command.pid"
     heartbeat = tmp_path / "heartbeat"
     descendant = tmp_path / "descendant-heartbeat"
-    ticking = "import pathlib,time; p=pathlib.Path({!r}); n=0\nwhile True:\n n+=1; p.write_text(str(n)); time.sleep(0.02)\n"
+    # Publish whole counters so reads cannot land between truncation and write.
+    ticking = ("import pathlib,time; p=pathlib.Path({!r}); q=p.with_suffix('.next'); n=0\n"
+               "while True:\n n+=1; q.write_text(str(n)); q.replace(p); time.sleep(0.02)\n")
     command.write_text(f"#!{sys.executable}\nimport os,subprocess,sys\n"
                        f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
                        f"subprocess.Popen([sys.executable, '-c', {ticking.format(str(descendant))!r}])\n"
@@ -2747,7 +2749,7 @@ def test_parent_termination_cleans_catchable_commands_and_preserves_unknown(monk
     try:
         worker.start()
         deadline = gh_pr_watch.time.monotonic() + 3
-        while not (heartbeat.exists() and descendant.exists() and descendant.stat().st_size):
+        while not (heartbeat.exists() and descendant.exists()):
             assert gh_pr_watch.time.monotonic() < deadline, "offline command did not start"
             gh_pr_watch.time.sleep(0.01)
         first_signal = "SIGTERM" if termination == "SIGTERM_then_SIGHUP" else termination
@@ -2759,11 +2761,20 @@ def test_parent_termination_cleans_catchable_commands_and_preserves_unknown(monk
         assert not worker.is_alive()
         gh_pr_watch.time.sleep(0.1)
         before = (heartbeat.read_text(), descendant.read_text())
-        gh_pr_watch.time.sleep(0.2)
-        after = (heartbeat.read_text(), descendant.read_text())
         if termination == "SIGKILL":
-            assert after != before, "uncatchable termination coverage did not leave a live command"
+            # Require each process to advance, allowing bounded scheduling delay.
+            deadline = gh_pr_watch.time.monotonic() + 2
+            while True:
+                after = (heartbeat.read_text(), descendant.read_text())
+                if all(current != previous for current, previous in zip(after, before)):
+                    break
+                assert gh_pr_watch.time.monotonic() < deadline, (
+                    "uncatchable termination coverage did not leave a live command/descendant"
+                )
+                gh_pr_watch.time.sleep(0.01)
         else:
+            gh_pr_watch.time.sleep(0.2)
+            after = (heartbeat.read_text(), descendant.read_text())
             assert after == before, "catchable termination left a command/descendant alive"
         saved = gh_pr_watch.load_state(path)[0]
         assert saved["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "submitting"
