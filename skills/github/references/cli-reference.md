@@ -865,7 +865,10 @@ competitor's record.
   issue reference, `gh-plan.py --repo OWNER/REPO update-section` with a bare
   issue number, or
   `gh-pr.py --repo OWNER/REPO edit <pr> --body-file FILE` for intended PR edits. Section
-  text from `--body`, `--body-file`, or stdin is literal, including backslashes;
+  text requires `--body TEXT` or `--body-file FILE`; use `--body-file -` to read
+  stdin. Omitting both flags fails before reading stdin or writing, even with
+  a pipe or heredoc. To intentionally clear a section, pass `--body ''` or an
+  explicitly supplied empty file or stdin stream. Input is literal, including backslashes;
   existing surrounding-whitespace normalization still applies. Body-read and
   regex preparation failures return a structured `validation_error` with
   `write_outcome=not_started` before any mutation. Ownership refusals and API
