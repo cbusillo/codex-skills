@@ -151,11 +151,12 @@ def test_consumed_legacy_plan_cannot_receive_new_approval(tmp_path: Path, legacy
     artifact["kind"] = legacy_kind
     if legacy_kind.endswith(".v2"):
         artifact["instance_id"] = "0" * 64
-    artifact["digest"] = partdb_write.digest({key: value for key, value in artifact.items() if key != "digest"})
+    legacy_digest = partdb_write.digest({key: value for key, value in artifact.items() if key != "digest"})
+    artifact["digest"] = legacy_digest
     plan_path = tmp_path / "legacy-plan.json"
     approval_path = tmp_path / "approval.json"
     write_json(plan_path, artifact)
-    legacy_receipt = tmp_path / ".partdb-write-receipts" / f"{artifact['digest']}.json"
+    legacy_receipt = tmp_path / ".partdb-write-receipts" / f"{legacy_digest}.json"
     legacy_receipt.parent.mkdir()
     write_json(legacy_receipt, partdb_write.receipt(artifact["digest"], "verified"))
 
@@ -227,13 +228,13 @@ def test_relocated_approval_cannot_replay_after_stock_returns_to_prior_amount(
     def new_approved_plan(directory: Path) -> tuple[Path, Path, dict[str, object]]:
         directory.mkdir()
         intent = directory / "intent.json"
-        plan_path = directory / "plan.json"
-        approval_path = directory / "approval.json"
+        draft_plan_path = directory / "plan.json"
+        draft_approval_path = directory / "approval.json"
         write_json(intent, {"op": "part-lot-amount-set", "lot_id": 7, "amount": 4})
-        partdb_write.plan(argparse.Namespace(intent=str(intent), output=str(plan_path)))
-        artifact = json.loads(plan_path.read_text())
-        partdb_write.approve(argparse.Namespace(plan=str(plan_path), approve=artifact["digest"], output=str(approval_path)))
-        return plan_path, approval_path, artifact
+        partdb_write.plan(argparse.Namespace(intent=str(intent), output=str(draft_plan_path)))
+        draft_artifact = json.loads(draft_plan_path.read_text())
+        partdb_write.approve(argparse.Namespace(plan=str(draft_plan_path), approve=draft_artifact["digest"], output=str(draft_approval_path)))
+        return draft_plan_path, draft_approval_path, draft_artifact
 
     plan_path, approval_path, artifact = new_approved_plan(tmp_path / "original")
     if uncertain_write:
