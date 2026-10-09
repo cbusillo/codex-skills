@@ -104,9 +104,21 @@ plan, approval, and receipt files in a private ignored directory.
    --output ...`.
 5. Run `uv run scripts/partdb-write.py apply --plan ... --approval ... --apply`.
    It reads again, refuses drift, patches only after those checks, reads back to
-   verify, and records a redacted digest-keyed receipt beside the plan. Each approval is single-use;
+   verify, and records a redacted digest-keyed receipt in the local user's stable
+   private ledger. Each approval is single-use even if its files are moved or copied;
    a failed apply leaves a `needs-reconciliation` receipt instead of retrying a
    possibly completed write.
+
+The ledger is `~/.local/state/codex-skills/partdb-write` on either harness,
+independent of the plan directory, harness account, and private-context pointer.
+Approvals bind its opaque authority ID. Keep the authority file and all receipts
+together; do not delete or fork this consumption history. Apply refuses missing
+or mismatched authority before context or write access. Restore ledger state
+from its private backup when available. If the authority is missing, generating
+and explicitly approving a fresh plan initializes a new authority; old approvals
+remain invalid and retained receipts remain consumed. Preserve and restore
+corrupt ledger state before approval. An approval copied to a different ledger,
+or an older approval without the binding, needs a new plan and explicit approval.
 
 The private context must declare a separate write-token environment variable
 and `allow_mutations = true`; that only enables this helper's exact-plan gates,
