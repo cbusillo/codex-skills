@@ -66,6 +66,7 @@ READ_ONLY_OPERATIONS = {
     "path-check",
     "preview-history-read",
     "reconcile-requests-read",
+    "generic-web-deploy-recovery-reference-read",
     "product-secret-bindings-read",
     "target-replacement-operation-read",
     "target-replacement-plan-read",
@@ -2895,12 +2896,19 @@ def _project_reconcile_request(
     }
 
 
-def _project_reconcile_requests(provider_payload: dict[str, Any]) -> dict[str, object]:
+def _project_reconcile_requests(
+    provider_payload: dict[str, Any], *, target_key: str | None = None
+) -> dict[str, object]:
     """Each target's last reconcile decision, bounded. Odd fields are dropped and unusable
     requests omitted, with counts and field paths; a secret-looking value fails the read."""
     requests = provider_payload.get("requests") or []
     if not isinstance(requests, list):
         raise LaunchplaneSafetyError("invalid_response")
+    if target_key is not None:
+        requests = [
+            item for item in requests
+            if isinstance(item, dict) and item.get("target_key") == target_key
+        ]
     drops = _FieldDrops()
     projected_requests: list[dict[str, object]] = []
     omitted_request_count = 0
@@ -3759,10 +3767,15 @@ def _project_success_output(
         "generic-web-deploy-recovery-dry-run",
         "generic-web-deploy-recovery-apply",
     }:
-        return {}, _project_generic_web_deploy_recovery_result(
+        result = _project_generic_web_deploy_recovery_result(
             provider_payload,
             operation=operation,
         )
+        if request and "recovery_request_sha256" in request and (
+            result["product"] != request["product"] or result["instance"] != request["instance"]
+        ):
+            raise LaunchplaneSafetyError("invalid_response")
+        return {}, result
     if any(str(key) not in SUCCESS_TOP_LEVEL_KEYS for key in provider_payload):
         raise LaunchplaneSafetyError("unsafe_response_shape")
     replayed = provider_payload.get("replayed")
@@ -4496,6 +4509,7 @@ def _require_apply_eligible_recovery_dry_run(
     expected_recovery_digest: str,
     expected_product: str,
     expected_instance: str,
+    expected_request_sha256: str | None = None,
 ) -> None:
     evidence_path = str(getattr(args, "dry_run_evidence_file", "") or "").strip()
     if not evidence_path:
@@ -4507,20 +4521,35 @@ def _require_apply_eligible_recovery_dry_run(
     result = evidence.get("result")
     if not isinstance(result, dict):
         raise ValueError("reviewed_dry_run_not_apply_eligible")
+    action = result.get("proposed_action")
+    outcome = result.get("provider_outcome")
+    retry_safe = result.get("retry_safe")
+    actionable = (
+        action in {"adopt_observed", "retry_original_operation"}
+        and outcome in {"present", "absent"}
+        and retry_safe is True
+    )
+    if expected_request_sha256 is not None:
+        actionable = (
+            (action == "adopt_observed" and outcome == "present" and isinstance(retry_safe, bool))
+            or (action == "retry_original_operation" and outcome == "absent" and retry_safe is True)
+            or (action == "close_out_observed" and outcome == "absent" and retry_safe is False)
+        )
     if (
         evidence.get("operation") != "generic-web-deploy-recovery-dry-run"
         or evidence.get("status") != "ok"
         or result.get("status") != "ok"
         or result.get("mode") != "dry-run"
-        or result.get("proposed_action")
-        not in {"adopt_observed", "retry_original_operation"}
-        or result.get("provider_outcome") not in {"present", "absent"}
-        or result.get("retry_safe") is not True
+        or not actionable
         or result.get("recovery_digest") != expected_recovery_digest
         or result.get("product") != expected_product
         or result.get("instance") != expected_instance
     ):
         raise ValueError("reviewed_dry_run_not_apply_eligible")
+    if expected_request_sha256 is not None:
+        request = evidence.get("request")
+        if not isinstance(request, dict) or request.get("recovery_request_sha256") != expected_request_sha256:
+            raise ValueError("reviewed_dry_run_not_apply_eligible")
 
 
 def _require_apply_eligible_odoo_addon_settings_dry_run(
@@ -4910,7 +4939,10 @@ def summarize_reconcile_requests_read(
         raise LaunchplaneSafetyError("unsafe_response_shape")
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(status=status, operation="reconcile-requests-read", request=request)
-    payload["result"] = _project_reconcile_requests(provider_payload)
+    target_key = request.get("target_key")
+    payload["result"] = _project_reconcile_requests(
+        provider_payload, target_key=public_identifier(target_key) if target_key is not None else None
+    )
     payload["summary"] = {
         "launchplane_status": status,
         "trace_id": public_trace_id(provider_payload.get("trace_id")),
@@ -4920,6 +4952,41 @@ def summarize_reconcile_requests_read(
         ),
     }
     assert_public_safe_shape(payload["summary"])
+    return payload
+
+
+def _recovery_reference(value: object) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"event-deploy-[0-9a-f]{64}", value) is None:
+        raise LaunchplaneSafetyError("invalid_recovery_reference")
+    return value
+
+
+def summarize_recovery_reference_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    fields = {"product", "context", "instance", "recovery_reference", "reservation_state", "reservation_attempt"}
+    if set(provider_payload) != fields:
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    if (
+        provider_payload["product"] != request["product"]
+        or provider_payload["instance"] != "testing"
+        or not isinstance(provider_payload["reservation_state"], str)
+        or provider_payload["reservation_state"] not in {"running", "reconcile_required"}
+        or type(provider_payload["reservation_attempt"]) is not int
+        or provider_payload["reservation_attempt"] < 1
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    payload = base_payload(status="ok", operation="generic-web-deploy-recovery-reference-read", request=request)
+    payload["result"] = {
+        "product": public_identifier(provider_payload["product"]),
+        "context": public_identifier(provider_payload["context"]),
+        "instance": "testing",
+        "recovery_reference": _recovery_reference(provider_payload["recovery_reference"]),
+        "reservation_state": provider_payload["reservation_state"],
+        "reservation_attempt": provider_payload["reservation_attempt"],
+    }
+    payload["summary"] = {"recommendation": "Dry-run this exact service-owned reference; unknown provider outcomes remain held."}
+    assert_public_safe_shape(payload["result"])
     return payload
 
 
@@ -5093,6 +5160,7 @@ def summarize_merge_train_policy_read(
 
 
 PRODUCT_READ_SUMMARIZERS = {
+    "generic-web-deploy-recovery-reference-read": summarize_recovery_reference_read,
     "merge-train-policy-read": summarize_merge_train_policy_read,
     "path-check": summarize_path_check,
     "product-environment-read": summarize_product_environment_read,
@@ -5505,12 +5573,40 @@ def odoo_addon_settings_body(args: argparse.Namespace, *, mode: str) -> dict[str
     return body
 
 
+def _recovery_request_sha256(body: dict[str, object]) -> str:
+    reviewed = {key: value for key, value in body.items() if key != "expected_recovery_digest"}
+    return hashlib.sha256(json.dumps(reviewed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _recovery_request(body: dict[str, object], *, mode: str) -> dict[str, object]:
+    request: dict[str, object] = {"mode": mode, "payload_source": "private_file"}
+    if "recovery_reference" in body:
+        request.update({
+            "product": body["product"], "instance": body["instance"],
+            "recovery_request_sha256": _recovery_request_sha256(body),
+        })
+    return request
+
+
 def generic_web_deploy_recovery_body(
     args: argparse.Namespace, *, mode: str
 ) -> dict[str, object]:
     body = read_payload_file(args.payload_file)
-    _require_idempotency(args)
-    if body.get("schema_version") != 1:
+    reference = "recovery_reference" in body
+    if reference:
+        allowed = {"product", "instance", "recovery_reference", "reason"}
+        if mode == "apply":
+            allowed.add("expected_recovery_digest")
+        if set(body) - allowed:
+            raise ValueError("invalid_recovery_reference_payload")
+        _recovery_reference(body["recovery_reference"])
+        if args.idempotency_key:
+            raise ValueError("reference_uses_service_owned_idempotency")
+        if body.get("instance") != "testing":
+            raise ValueError("recovery_reference_testing_only")
+    else:
+        _require_idempotency(args)
+    if not reference and body.get("schema_version") != 1:
         raise ValueError("schema_version_required")
     product = body.get("product")
     instance = body.get("instance")
@@ -5522,15 +5618,21 @@ def generic_web_deploy_recovery_body(
         raise ValueError("instance_required")
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("reason_required")
-    if not isinstance(original_deploy, dict):
+    if reference and len(reason) > 1000:
+        raise ValueError("invalid_recovery_reason")
+    if not reference and not isinstance(original_deploy, dict):
         raise ValueError("original_deploy_required")
-    deploy_request = original_deploy.get("deploy")
-    if (
-        str(original_deploy.get("product") or "").strip() != product.strip()
-        or not isinstance(deploy_request, dict)
-        or str(deploy_request.get("instance") or "").strip() != instance.strip()
-    ):
-        raise ValueError("original_deploy_identity_mismatch")
+    if not reference:
+        assert isinstance(original_deploy, dict)
+        deploy_request = original_deploy.get("deploy")
+        if (
+            str(original_deploy.get("product") or "").strip() != product.strip()
+            or not isinstance(deploy_request, dict)
+            or str(deploy_request.get("instance") or "").strip() != instance.strip()
+        ):
+            raise ValueError("original_deploy_identity_mismatch")
+    else:
+        public_identifier(product)
     if mode == "apply":
         if not args.reviewed_dry_run:
             raise ValueError("reviewed_dry_run_required")
@@ -5558,6 +5660,7 @@ def generic_web_deploy_recovery_body(
             expected_recovery_digest=expected_recovery_digest,
             expected_product=product.strip(),
             expected_instance=instance.strip(),
+            expected_request_sha256=_recovery_request_sha256(body) if reference else None,
         )
         body["expected_recovery_digest"] = expected_recovery_digest
     return body
@@ -8955,6 +9058,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Read what the event reconciler last decided for each of a product's targets.",
     )
     reconcile_requests_read.add_argument("--product", required=True)
+    reconcile_requests_read.add_argument("--target-key", help="Select an exact target before bounding the output.")
 
     product_secret_bindings_read = subparsers.add_parser(
         "product-secret-bindings-read",
@@ -9175,6 +9279,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             sync.add_argument("--expected-plan-digest", required=True)
             sync.add_argument("--dry-run-evidence-file", required=True)
 
+    recovery_reference_read = subparsers.add_parser(
+        "generic-web-deploy-recovery-reference-read",
+        help="Read the service-owned reference to one exact held testing event deploy.",
+    )
+    recovery_reference_read.add_argument("--product", required=True)
+
     recovery_dry_run = subparsers.add_parser(
         "generic-web-deploy-recovery-dry-run",
         help="Submit a private generic-web deploy-recovery dry-run payload.",
@@ -9182,7 +9292,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     recovery_dry_run.add_argument(
         "--payload-file", required=True, help="Private local JSON payload file."
     )
-    recovery_dry_run.add_argument("--idempotency-key", required=True)
+    recovery_dry_run.add_argument("--idempotency-key", default="", help="Original deploy key for original_deploy payloads; omit for service references.")
 
     recovery_apply = subparsers.add_parser(
         "generic-web-deploy-recovery-apply",
@@ -9191,7 +9301,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     recovery_apply.add_argument(
         "--payload-file", required=True, help="Private local JSON payload file."
     )
-    recovery_apply.add_argument("--idempotency-key", required=True)
+    recovery_apply.add_argument("--idempotency-key", default="", help="Original deploy key for original_deploy payloads; omit for service references.")
     recovery_apply.add_argument("--reviewed-dry-run", action="store_true")
     recovery_apply.add_argument("--expected-recovery-digest", required=True)
     recovery_apply.add_argument(
@@ -9498,12 +9608,14 @@ def main(argv: list[str]) -> int:
             return execute_product_read(
                 args=args, operation=args.command, request=request, path=path
             )
-        if args.command in {"reconcile-requests-read", "product-secret-bindings-read"}:
+        if args.command in {"reconcile-requests-read", "product-secret-bindings-read", "generic-web-deploy-recovery-reference-read"}:
             path = _product_read_path(args.command, product=args.product)
             request = {
                 "product": public_identifier(args.product),
                 "payload_source": "operator_argument",
             }
+            if args.command == "reconcile-requests-read" and args.target_key is not None:
+                request["target_key"] = public_identifier(args.target_key)
             return execute_product_read(
                 args=args, operation=args.command, request=request, path=path
             )
@@ -9760,8 +9872,8 @@ def main(argv: list[str]) -> int:
         if args.command in {"live-target-runtime-sync-dry-run", "live-target-runtime-sync-apply"}:
             return execute_runtime_sync(args)
         if args.command == "generic-web-deploy-recovery-dry-run":
-            request = {"mode": "dry_run", "payload_source": "private_file"}
             body = generic_web_deploy_recovery_body(args, mode="dry_run")
+            request = _recovery_request(body, mode="dry_run")
             return execute_post(
                 args=args,
                 operation=args.command,
@@ -9770,8 +9882,8 @@ def main(argv: list[str]) -> int:
                 body=body,
             )
         if args.command == "generic-web-deploy-recovery-apply":
-            request = {"mode": "apply", "payload_source": "private_file"}
             body = generic_web_deploy_recovery_body(args, mode="apply")
+            request = _recovery_request(body, mode="apply")
             return execute_post(
                 args=args,
                 operation=args.command,

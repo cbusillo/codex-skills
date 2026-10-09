@@ -958,7 +958,43 @@ not add a grant, borrow workflow identity, or use a raw API fallback.
 ## Generic-Web Deploy Recovery
 
 Generic-web deploy recovery is a bounded admin operation for recovering a
-generic-web product instance from a failed deploy. Supply the private payload
+generic-web product instance from a failed deploy. For an event-driven testing
+deploy, first obtain the exact held reservation from the service:
+
+```sh
+uv run scripts/launchplane-write-action.py \
+  generic-web-deploy-recovery-reference-read --product <product>
+```
+
+This read returns only product/context/testing identity, reservation state and
+attempt, and an `event-deploy-<sha256>` reference. Missing, ambiguous, changed,
+cross-lane or unauthorized evidence remains a service refusal. It never returns
+the original deploy request or key.
+
+Keep a private JSON payload outside the repository containing only `product`,
+`instance: "testing"`, `recovery_reference` from that read, and `reason`. Use
+`generic-web-deploy-recovery-dry-run --payload-file <private-file>` and save its
+output privately. Then, only when apply is authorized, use
+`generic-web-deploy-recovery-apply --payload-file <same-private-file>
+--reviewed-dry-run --expected-recovery-digest <digest>
+--dry-run-evidence-file <saved-output>`. Omit `--idempotency-key`: Launchplane
+resolves the stored original key internally. The helper refuses caller keys and
+mixed reference/original-deploy payloads, binds the saved review to the exact
+reference and reason by `recovery_request_sha256`, and verifies response lane
+identity. A changed reference requires a fresh read and review, never guessing.
+The service rechecks the reservation and provider evidence against the reviewed
+digest on apply. A reference does not grant recovery authority.
+
+Reference recovery also accepts the service's `close_out_observed` plan when
+the outcome is `absent` and `retry_safe` is false: this closes an operation whose
+exact running artifact the service proved, without retrying it. Unknown or
+uninspected outcomes stay held. A denied runtime sync remains denied; obtaining
+a recovery reference does not deliver runtime values or enable a deployment.
+For `adopt_observed`, the outcome must be `present`; it need not be retry-safe
+because adoption does not retry. `retry_original_operation` requires `absent`
+and `retry_safe: true`.
+
+For an explicitly supplied original deploy, supply the private payload
 only as explicit admin input in a JSON file outside the active repository or
 worktree. The file contains `schema_version`, `product`, `instance`,
 `original_deploy`, and `reason`. The apply request additionally requires
@@ -966,7 +1002,7 @@ worktree. The file contains `schema_version`, `product`, `instance`,
 flag after verifying it against any value already in the payload and the saved
 redacted dry-run evidence.
 
-Both dry-run and apply require `--idempotency-key`. The idempotency key must be
+With `original_deploy`, both dry-run and apply require `--idempotency-key`. It must be
 the original deploy's idempotency key for both calls — it is sent as the request
 `Idempotency-Key` header exactly as supplied.
 
@@ -996,7 +1032,7 @@ during dry-run. The helper requires:
   `--dry-run-evidence-file` from outside the active repository or worktree.
 - A stable idempotency key (the original deploy key, used for both calls).
 
-The helper refuses to send apply unless the evidence is the successful
+For original-deploy payloads, the helper refuses to send apply unless the evidence is the successful
 generic-web recovery dry-run, its digest exactly matches the supplied digest,
 its product and instance exactly match the private apply payload,
 its proposed action is `adopt_observed` or `retry_original_operation`, its
@@ -1263,12 +1299,10 @@ service trace and error code to resolve the operation outcome before retrying.
 A denied read-back after a successful apply stays `accepted_unverified`; a
 failed read-back never becomes successful persistence evidence.
 
-For event-driven generic-web recovery, `deploy_key_sha256` identifies a key but
-cannot reconstruct it. Obtain the original deploy coordinates/key from a
-service-owned surface or explicit private admin input before using recovery.
-This helper does not invent an opaque recovery reference or clear an unknown
-provider fence. When the service cannot supply that evidence, track the service
-prerequisite and leave recovery held.
+For event-driven generic-web recovery, use the service-owned reference read
+described under [Generic-Web Deploy Recovery](#generic-web-deploy-recovery).
+`deploy_key_sha256` identifies a key but cannot reconstruct it. If the service
+cannot supply exact evidence, leave recovery held.
 
 ## Policy Proposals
 

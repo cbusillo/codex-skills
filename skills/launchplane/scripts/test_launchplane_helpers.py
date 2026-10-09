@@ -8436,5 +8436,164 @@ def test_health_monitoring_malformed_plan_is_rejected(changes: dict[str, object]
     assert "unexpected-private-data" not in json.dumps(receipt)
 
 
+
+EVENT_REFERENCE = "event-deploy-" + "e" * 64
+
+
+def _event_recovery_payload(**changes: object) -> dict[str, object]:
+    return {"product": "example-product", "instance": "testing",
+            "recovery_reference": EVENT_REFERENCE, "reason": "Inspect held testing deploy.", **changes}
+
+
+def _event_recovery_response(**changes: object) -> dict[str, object]:
+    return {"schema_version": 1, "status": "ok", "mode": "dry-run",
+            "product": "example-product", "context": "example", "instance": "testing",
+            "reservation_state": "reconcile_required", "reservation_attempt": 2,
+            "reservation_created_at": "2026-10-04T00:00:00Z",
+            "reservation_updated_at": "2026-10-04T00:01:00Z",
+            "observed_at": "2026-10-09T00:00:00Z", "reconciliation_key_sha256": "b" * 64,
+            "provider_target_key_sha256": "c" * 64, "provider_outcome": "absent",
+            "retry_safe": True, "proposed_action": "retry_original_operation",
+            "recovery_digest": "d" * 64, **changes}
+
+
+def _event_recovery_review(directory: str, **changes: object) -> tuple[str, str, dict[str, Any]]:
+    payload = _write_json(directory, "reference.json", _event_recovery_payload())
+    status, receipt, posts, _ = _run_main(
+        ["generic-web-deploy-recovery-dry-run", "--payload-file", payload],
+        post=_event_recovery_response(**changes),
+    )
+    assert status == 0, receipt
+    assert posts[0]["body"] == _event_recovery_payload()
+    assert posts[0]["idempotency_key"] == ""
+    evidence = _write_json(directory, "review.json", receipt)
+    return payload, evidence, receipt
+
+
+def _event_recovery_apply_argv(payload: str, evidence: str, digest: str) -> list[str]:
+    return ["generic-web-deploy-recovery-apply", "--payload-file", payload,
+            "--reviewed-dry-run", "--expected-recovery-digest", digest,
+            "--dry-run-evidence-file", evidence]
+
+
+def test_event_recovery_reference_read_uses_service_route() -> None:
+    source = {"product": "example-product", "context": "example", "instance": "testing",
+              "recovery_reference": EVENT_REFERENCE, "reservation_state": "reconcile_required",
+              "reservation_attempt": 2}
+    status, receipt, posts, reads = _run_main(
+        ["generic-web-deploy-recovery-reference-read", "--product", "example-product"], read=source,
+    )
+    assert status == 0 and not posts and len(reads) == 1
+    assert reads[0]["path"] == contract.helper_command_path(
+        "generic-web-deploy-recovery-reference-read").format(product="example-product")
+    assert receipt["result"] == source
+
+
+@pytest.mark.parametrize("changes", [
+    {"instance": "prod"}, {"product": "other"}, {"recovery_reference": "not-a-reference"},
+    {"reservation_state": "completed"}, {"reservation_attempt": True},
+    {"original_deploy": "private-request"}, {"idempotency_key": "private-key"},
+])
+def test_event_recovery_reference_read_refuses_unsafe_or_wrong_lane(changes: dict[str, object]) -> None:
+    source = {"product": "example-product", "context": "example", "instance": "testing",
+              "recovery_reference": EVENT_REFERENCE, "reservation_state": "reconcile_required",
+              "reservation_attempt": 2, **changes}
+    status, receipt, posts, _ = _run_main(
+        ["generic-web-deploy-recovery-reference-read", "--product", "example-product"], read=source,
+    )
+    assert status == 1 and not posts and receipt["status"] != "ok"
+    assert "private-request" not in json.dumps(receipt) and "private-key" not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize("action,outcome,retry", [
+    ("retry_original_operation", "absent", True), ("adopt_observed", "present", True),
+    ("adopt_observed", "present", False),
+    ("close_out_observed", "absent", False),
+])
+def test_event_recovery_apply_binds_review_without_caller_key(action: str, outcome: str, retry: bool) -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload, evidence, receipt = _event_recovery_review(
+            directory, proposed_action=action, provider_outcome=outcome, retry_safe=retry)
+        result = {"schema_version": 1, "status": "accepted", "mode": "apply",
+                  "trace_id": "launchplane_req_event_apply", "product": "example-product",
+                  "context": "example", "instance": "testing", "reservation_state": "completed",
+                  "reservation_attempt": 2, "recovery_action": action, "provider_outcome": outcome,
+                  "retry_safe": retry, "recovery_digest": receipt["result"]["recovery_digest"]}
+        status, applied, posts, _ = _run_main(
+            _event_recovery_apply_argv(payload, evidence, result["recovery_digest"]), post=result)
+    assert status == 0, applied
+    assert len(posts) == 1 and posts[0]["idempotency_key"] == ""
+    assert posts[0]["body"]["recovery_reference"] == EVENT_REFERENCE
+    assert posts[0]["body"]["expected_recovery_digest"] == result["recovery_digest"]
+    assert "Inspect held testing deploy." not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize("changes", [
+    {"recovery_reference": "event-deploy-" + "f" * 64}, {"reason": "Changed review reason."},
+    {"product": "other"}, {"instance": "prod"}, {"original_deploy": {}},
+])
+def test_event_recovery_changed_review_sends_no_request(changes: dict[str, object]) -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload, evidence, receipt = _event_recovery_review(directory)
+        Path(payload).write_text(json.dumps(_event_recovery_payload(**changes)))
+        status, _, posts, reads = _run_main(
+            _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"]))
+    assert status == 2 and not posts and not reads
+
+
+@pytest.mark.parametrize("changes", [
+    {"proposed_action": "hold_unknown", "provider_outcome": "unknown", "retry_safe": False},
+    {"provider_outcome": "not_inspected"}, {"retry_safe": False},
+    {"proposed_action": "wait_for_active_lease"}, {"proposed_action": "replay_completed"},
+    {"proposed_action": "close_out_observed", "provider_outcome": "unknown", "retry_safe": False},
+    {"proposed_action": "adopt_observed", "provider_outcome": "absent"},
+    {"proposed_action": "retry_original_operation", "provider_outcome": "present"},
+])
+def test_event_recovery_held_or_uninspected_review_sends_no_apply(changes: dict[str, object]) -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload, evidence, receipt = _event_recovery_review(directory, **changes)
+        status, failed, posts, reads = _run_main(
+            _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"]))
+    assert status == 2 and not posts and not reads
+    assert failed["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
+
+
+def test_event_recovery_rejects_guessed_key_and_unbound_review() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload, evidence, receipt = _event_recovery_review(directory)
+        argv = _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"])
+        status, _, posts, reads = _run_main(argv + ["--idempotency-key", "guessed-key"])
+        assert status == 2 and not posts and not reads
+        receipt["request"].pop("recovery_request_sha256")
+        Path(evidence).write_text(json.dumps(receipt))
+        status, _, posts, reads = _run_main(argv)
+        assert status == 2 and not posts and not reads
+
+
+def test_reconcile_target_selection_reaches_testing_after_output_bound() -> None:
+    requests = [{"target_key": f"example-product:preview:{i}", "state": "done"}
+                for i in range(write_action.RECONCILE_MAX_REQUESTS + 1)]
+    testing = {"target_key": "example-product:testing", "state": "failed",
+               "last_plan": {"deploy_operation_status": "reconcile_required"}}
+    source = {"status": "ok", "product": "example-product", "requests": requests + [testing]}
+    argv = ["reconcile-requests-read", "--product", "example-product"]
+    status, default, _, _ = _run_main(argv, read=source)
+    assert status == 0 and default["result"]["requests_truncated"] is True
+    status, selected, posts, reads = _run_main(argv + ["--target-key", testing["target_key"]], read=source)
+    assert status == 0 and not posts and len(reads) == 1
+    assert selected["result"]["requests_truncated"] is False
+    assert [item["target_key"] for item in selected["result"]["requests"]] == [testing["target_key"]]
+    assert selected["result"]["requests"][0]["last_plan"] == testing["last_plan"]
+
+
+def test_event_recovery_authorization_denial_never_falls_back() -> None:
+    denied = urllib.error.HTTPError("https://example.invalid", 403, "denied", {},
+                                   io.BytesIO(b'{"error":{"code":"authorization_denied","message":"Denied"},"trace_id":"launchplane_req_denied"}'))
+    status, receipt, posts, reads = _run_main(
+        ["generic-web-deploy-recovery-reference-read", "--product", "example-product"], read=denied)
+    assert status == 1 and not posts and len(reads) == 1
+    assert receipt["warnings"][0]["code"] == "authorization_denied"
+    assert receipt["summary"]["trace_id"] == "launchplane_req_denied"
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

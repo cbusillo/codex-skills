@@ -477,6 +477,11 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/admin/generic-web/deploy-recovery/dry-run",
         "mode": "dry-run",
     },
+    "generic-web-deploy-recovery-reference-read": {
+        "method": "GET",
+        "path": "/v1/admin/generic-web/deploy-recovery/{product}/testing",
+        "mode": "read",
+    },
     "generic-web-deploy-recovery-apply": {
         "method": "POST",
         "path": "/v1/admin/generic-web/deploy-recovery/apply",
