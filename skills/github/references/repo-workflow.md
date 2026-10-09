@@ -249,6 +249,9 @@ repository code runs. Existing automation branches and PRs must retain the bot
 commit trailer, same-repository head/base identity, marker, and validated SHA
 before the workflow will replace or edit them.
 
+`uv run scripts/test_pep723_publication.py` exercises the publication step
+offline with real Bash/jq and fixture GitHub/Git responses.
+
 If automation fails, inspect the resolver or validation error before rerunning
 it. Unsupported extras, markers, URLs, or compound constraints require a
 deliberate policy change rather than an automatic rewrite. A failed run can
