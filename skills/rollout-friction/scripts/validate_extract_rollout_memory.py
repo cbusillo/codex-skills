@@ -314,6 +314,10 @@ def test_unquoted_mounted_whitespace_keeps_prose_and_masks_entire_paths() -> Non
         ("/Volumes/EXAMPLE/Photos(2024).jpg", "", "jpg"),
         ("/Volumes/EXAMPLE/Family:.jpg", "", "jpg"),
         ("/Volumes/EXAMPLE/<repo>/private-folder", "", "private-folder"),
+        ("/Volumes/Photos for Mom/2024/trip.jpg", "", "Mom/2024/trip.jpg"),
+        ("/Volumes/Backup/Documents (old) archive/tax.pdf", "", "archive/tax.pdf"),
+        ("/Volumes/Work in Progress/x", "", "Progress/x"),
+        ("/Volumes/Example Disk <https://example.com/docs>", "https://example.com/docs", "Example Disk"),
         ("/Volumes/example disk/task evidence/y; keep useful prose.", "keep useful prose.", "evidence/y"),
         ("/Volumes/Example Disk. Keep useful prose.", "Keep useful prose.", "Disk"),
         ("/Volumes/EXAMPLE/worktrees. Read skills/github/SKILL.md before landing.",
@@ -324,6 +328,9 @@ def test_unquoted_mounted_whitespace_keeps_prose_and_masks_entire_paths() -> Non
          "has uncommitted changes in skills/foo.py.", "EXAMPLE/worktrees/x"),
         ("/Volumes/EXAMPLE/worktrees/x on branch work/example.", "on branch work/example.", "EXAMPLE/worktrees/x"),
         ("/Volumes/EXAMPLE/worktrees/x for this repo.", "for this repo.", "EXAMPLE/worktrees/x"),
+        ("/Volumes/EXAMPLE/worktrees/x is 3 commits ahead of main.",
+         "is 3 commits ahead of main.", "EXAMPLE/worktrees/x"),
+        ("/Volumes/EXAMPLE/target to keep the drive clean.", "to keep the drive clean.", "EXAMPLE/target"),
         ("(/Volumes/EXAMPLE/worktrees/x) holds worktrees", "holds worktrees", "EXAMPLE/worktrees/x"),
         ("[worktree](/Volumes/EXAMPLE/worktrees/x) before landing", "before landing", "EXAMPLE/worktrees/x"),
         ("/Volumes/X/Task Evidence/y\nKeep useful prose.", "Keep useful prose.", "Evidence/y"),
@@ -363,6 +370,11 @@ def test_unquoted_mounted_whitespace_keeps_prose_and_masks_entire_paths() -> Non
         redacted = module.redact_paths(text)
         if tail not in redacted or "EXAMPLE/worktrees/x" in redacted:
             raise AssertionError(f"mounted redaction lost command arguments or leaked its path: {redacted}")
+
+    for adjective in ("read-only", "long-running", "pre-existing", "self-hosted"):
+        text = f"Remember the {adjective} /Volumes/Example Disk/worktrees/x"
+        if "Disk/worktrees/x" in module.clean_text(text, redact_args):
+            raise AssertionError(f"hyphenated prose was mistaken for a shell option: {text}")
 
 
 def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:

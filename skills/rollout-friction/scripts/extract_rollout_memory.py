@@ -44,6 +44,10 @@ SECRET_RE = re.compile(
 )
 LOCAL_PATH_ROOTS = r"(?:Users|home|workspace|workspaces|tmp|var|private|Volumes|mnt|media)"
 RELATIVE_PATH_ROOTS = {"media", "mnt", "tmp", "var"}
+MOUNTED_PROSE_WORDS = (
+    r"(?:so|because|before|after|has|have|holds|for|on|is|are|was|were|with|to|in|at|from|as|"
+    r"that|which|using|via|into|under|stays|remains|contains|needs)"
+)
 PATH_RE = re.compile(
     # Public URLs may contain the same root names as local paths. Match them
     # first so those components remain useful evidence rather than local paths.
@@ -53,9 +57,9 @@ PATH_RE = re.compile(
     # Stop at recognizable workflow clauses and shell argument boundaries;
     # a bare conjunction can also belong to a directory name.
     r"(?P<mounted>/Volumes/(?:\\[^\n]|"
-    r"(?![ \t]+(?:and|but|then)[ \t]+(?:[\w-]+[ \t]+)?(?:go|goes|is|are|keep|run|use)\b|"
-    r"[ \t]+(?:(?:so|because|before|after|has|have|holds|for|on)\b|&&|\|\||\||[0-9]*>|--?\w|(?i:https?)://)|"
-    r"[;:](?=\s|$)|[)\]](?=\s|$|[)\]]|[.!?](?=\s|$))|"
+    r"(?![ \t]+(?:and|but|then)[ \t]+(?:[\w-]+[ \t]+)?(?:go|goes|is|are|keep|run|use)\b(?!/)|"
+    rf"[ \t]+(?:{MOUNTED_PROSE_WORDS}\b(?!/|[ \t]+[^/\s,;:'\"`<>]*/)|&&|\|\||\||[0-9]*>|--?\w|<?(?i:https?)://)|"
+    r"[;:](?=\s|$)|[)\]](?=\s|$|[)\]]|[.!?](?=\s|$))(?![ \t]+[^/\s,;:'\"`<>]*/)|"
     r"[.!?](?=\s|$)(?![ \t]+[^/\s,;:'\"`<>]*/))[^\n,'\"`])+)|"
     rf"/{LOCAL_PATH_ROOTS}/(?:\\ |[^\s,'\"`])+"
 )
@@ -571,13 +575,13 @@ def redact_path_match(
         if mounted:
             # In a shell assignment, cd argument or CLI option, unquoted
             # whitespace separates arguments. Escaped spaces stay in the token.
-            prefix = match.string[:match.start()].rsplit("\n", 1)[-1]
+            prefix = match.string[match.string.rfind("\n", 0, match.start()) + 1:match.start()]
             shell_argument = re.search(
-                r"(?:^|[;&|][ \t]*)cd[ \t]+$|(?:^|[ \t])[A-Za-z_]\w*=$|--?[\w-]+(?:=|[ \t]+)$",
+                r"(?:^|[;&|][ \t]*)cd[ \t]+$|(?:^|[ \t])[A-Za-z_]\w*=$|(?:^|[ \t])--?[\w-]+(?:=|[ \t]+)$",
                 prefix,
             )
             if shell_argument:
-                token = re.match(r"(?:\\[^\n]|[^\s])+", mounted)
+                token = re.match(r"(?:\\[^\n]|\S)+", mounted)
                 if token is not None:
                     return "<path-redacted>" + redact_paths(mounted[token.end():], embedded_path=embedded_path)
             # Retain the separator before a clause or line boundary. Spaces

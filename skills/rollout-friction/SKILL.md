@@ -349,6 +349,8 @@ memory/profile/local-config candidates.
    ending at a line, quote, comma, punctuation followed by whitespace, recognized
    workflow clauses such as `and builds go to` or `so`, closing Markdown/parenthesis
    delimiters, shell separators/options or a following HTTP(S) URL.
+   The [extractor](scripts/extract_rollout_memory.py) owns the recognized prose
+   words and continuation rules.
    Periods and conjunctions inside path components remain masked when a path
    continuation is recognizable.
    Quote or shell-escape mounted names containing those boundaries. Other prose
