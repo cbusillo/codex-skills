@@ -13,6 +13,7 @@ import importlib.util
 import json
 import shutil
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -127,7 +128,7 @@ def test_apply_refuses_unbound_or_unavailable_receipt_authority_before_context(
     if authority_failure == "legacy":
         del authorization["receipt_authority"]
     elif authority_failure == "missing":
-        (partdb_write.receipt_root() / "authority-id").unlink()
+        (partdb_write.receipt_root() / partdb_write.AUTHORITY_FILE_NAME).unlink()
     else:
         monkeypatch.setattr(Path, "home", lambda: tmp_path / "other-user-home")
         partdb_write.receipt_authority(partdb_write.receipt_root(), create=True)
@@ -137,6 +138,62 @@ def test_apply_refuses_unbound_or_unavailable_receipt_authority_before_context(
     with pytest.raises(partdb_write.WriteError, match="receipt authority"):
         partdb_write.apply(apply_args(plan_path, approval_path))
     assert not partdb_write.receipt_path(artifact["digest"]).exists()
+
+
+@pytest.mark.parametrize("legacy_kind", ["partdb-write-plan.v1", "partdb-write-plan.v2"])
+def test_consumed_legacy_plan_cannot_receive_new_approval(tmp_path: Path, legacy_kind: str) -> None:
+    artifact = artifact_plan()
+    artifact["kind"] = legacy_kind
+    if legacy_kind.endswith(".v2"):
+        artifact["instance_id"] = "0" * 64
+    artifact["digest"] = partdb_write.digest({key: value for key, value in artifact.items() if key != "digest"})
+    plan_path = tmp_path / "legacy-plan.json"
+    approval_path = tmp_path / "approval.json"
+    write_json(plan_path, artifact)
+    legacy_receipt = tmp_path / ".partdb-write-receipts" / f"{artifact['digest']}.json"
+    legacy_receipt.parent.mkdir()
+    write_json(legacy_receipt, partdb_write.receipt(artifact["digest"], "verified"))
+
+    with pytest.raises(partdb_write.WriteError, match="create and approve a new plan"):
+        partdb_write.approve(argparse.Namespace(plan=str(plan_path), approve=artifact["digest"], output=str(approval_path)))
+    assert not approval_path.exists()
+    assert not partdb_write.receipt_root().exists()
+
+
+def test_concurrent_authority_initialization_publishes_complete_identity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    results: list[str] = []
+    errors: list[Exception] = []
+    original_nonce = partdb_write.secrets.token_hex
+
+    def delayed_nonce(size: int) -> str:
+        if threading.current_thread() is first:
+            started.set()
+            if not release.wait(5):
+                raise RuntimeError("fixture synchronization timed out")
+        return original_nonce(size)
+
+    def initialize() -> None:
+        try:
+            results.append(partdb_write.receipt_authority(tmp_path / "ledger", create=True))
+        except Exception as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=initialize)
+    monkeypatch.setitem(vars(partdb_write.secrets), "token_hex", delayed_nonce)
+    first.start()
+    try:
+        assert started.wait(5)
+        second = partdb_write.receipt_authority(tmp_path / "ledger", create=True)
+    finally:
+        release.set()
+        first.join(5)
+    assert not first.is_alive()
+    assert errors == []
+    assert results == [second]
 
 
 @pytest.mark.parametrize("relocation", ["copy", "move"])

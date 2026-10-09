@@ -15,6 +15,7 @@ import math
 import os
 import secrets
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,9 +30,10 @@ partdb_read = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = partdb_read
 SPEC.loader.exec_module(partdb_read)
 
-PLAN_KIND = "partdb-write-plan.v1"
+PLAN_KIND = "partdb-write-plan.v3"
 APPROVAL_KIND = "partdb-write-approval.v2"
 RECEIPT_KIND = "partdb-write-receipt.v1"
+AUTHORITY_FILE_NAME = "authority-id"
 LOT_PATH = "/api/part_lots/{id}"
 
 
@@ -173,6 +175,8 @@ def validate_intent(intent: Any) -> dict[str, int | float | str]:
 
 
 def validate_plan(artifact: Any) -> dict[str, Any]:
+    if isinstance(artifact, dict) and artifact.get("kind") != PLAN_KIND:
+        raise WriteError("plan format is outdated or invalid; create and approve a new plan")
     if not isinstance(artifact, dict) or set(artifact) != {"digest", "kind", "nonce", "operation"} or artifact.get("kind") != PLAN_KIND:
         raise WriteError("plan artifact is invalid")
     expected = artifact.get("digest")
@@ -197,18 +201,27 @@ def receipt_root() -> Path:
 
 
 def receipt_authority(root: Path, *, create: bool = False) -> str:
-    authority_file = root / "authority-id"
+    authority_file = root / AUTHORITY_FILE_NAME
+    temporary: Path | None = None
     try:
         if create:
             root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(mode="w", dir=root, prefix=".authority-", delete=False) as handle:
+                temporary = Path(handle.name)
+                handle.write(secrets.token_hex(16) + "\n")
             try:
-                with authority_file.open("x") as handle:
-                    handle.write(secrets.token_hex(16) + "\n")
+                os.link(temporary, authority_file)
             except FileExistsError:
                 pass
         authority = authority_file.read_text().strip()
     except (OSError, UnicodeDecodeError):
         raise WriteError("receipt authority is unavailable; restore its private state before applying") from None
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                raise WriteError("receipt authority cleanup failed; preserve its private state") from None
     if len(authority) != 32 or any(char not in "0123456789abcdef" for char in authority):
         raise WriteError("receipt authority is invalid; restore its private state before applying")
     return authority

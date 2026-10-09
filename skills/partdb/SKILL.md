@@ -113,12 +113,14 @@ The ledger is `~/.local/state/codex-skills/partdb-write` on either harness,
 independent of the plan directory, harness account, and private-context pointer.
 Approvals bind its opaque authority ID. Keep the authority file and all receipts
 together; do not delete or fork this consumption history. Apply refuses missing
-or mismatched authority before context or write access. Restore ledger state
-from its private backup when available. If the authority is missing, generating
-and explicitly approving a fresh plan initializes a new authority; old approvals
-remain invalid and retained receipts remain consumed. Preserve and restore
-corrupt ledger state before approval. An approval copied to a different ledger,
-or an older approval without the binding, needs a new plan and explicit approval.
+or mismatched authority before context or write access. If the ledger is lost,
+corrupt, or its consumption history is uncertain, preserve any remaining ledger
+outside its active location as private reconciliation evidence. Generate and
+explicitly approve a fresh plan to initialize a new authority; older approvals
+remain invalid. Never restore stale consumption history into the active ledger.
+The helper cannot detect a manual rollback of both its authority and receipts.
+Plans and approvals from the older formats require fresh planning and approval;
+this also applies when moving work to a different ledger or local user.
 
 The private context must declare a separate write-token environment variable
 and `allow_mutations = true`; that only enables this helper's exact-plan gates,
