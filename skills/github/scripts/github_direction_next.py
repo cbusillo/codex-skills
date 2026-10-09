@@ -504,7 +504,13 @@ def tooling_capacity_context(
     """Only current caller evidence can distinguish a person from an event wait."""
     result: dict[str, Any] = {"admitted": False, "reason": "milestone_waits_not_proven"}
     if not coverage_complete or not graph.get("dependency_context", {}).get("complete"):
-        return {**result, "reason": "incomplete_milestone_coverage"}
+        refusal = {**result, "reason": "incomplete_milestone_coverage"}
+        missing = graph.get("dependency_context", {}).get("missing_tracking_milestones", [])
+        if missing:
+            refusal["detail"] = ("Spare-capacity tooling is not admitted: no Track issue was found in the read inventory for these listed milestones: "
+                                 + ", ".join(f'"{title}"' for title in missing)
+                                 + ". Check the Track issues and their milestone links; their work or waits cannot yet be checked.")
+        return refusal
     reviews = {key.casefold(): value for key, value in context.get("issues", {}).items()}
     entries = [*graph.get("candidates", []), *graph.get("excluded", []), *discoveries]
     by_key = {(entry["repo"].casefold(), entry["number"]): entry for entry in entries}

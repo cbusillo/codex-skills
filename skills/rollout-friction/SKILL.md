@@ -345,9 +345,23 @@ memory/profile/local-config candidates.
    dev-server/tunnel file links; literal query/fragment paths and person data are
    still redacted. Known local path roots are masked conservatively inside other
    URI schemes and query/fragment values; arbitrary URI paths can remain readable.
-   Unquoted whitespace is ambiguous with neighboring prose and
-   can leave path fragments or consume prose; percent-encoded paths are not
-   decoded by this redactor. Under `--redact`, diagnostic
+   Unquoted `/Volumes/` spans include spaces in the volume and descendant names,
+   ending at a line, quote, comma, punctuation followed by whitespace, recognized
+   workflow clauses such as `and builds go to` or `so`, closing Markdown/parenthesis
+   delimiters, shell separators/options or a following HTTP(S) URL.
+   The [extractor](scripts/extract_rollout_memory.py) owns the recognized prose
+   words and continuation rules.
+   Periods and conjunctions inside path components remain masked when a path
+   continuation is recognizable.
+   That continuation is one whitespace-free word immediately followed by a slash;
+   quote multiword descendants after a prose word or closing delimiter, such as
+   `"/Volumes/Backup/Notes for Tax Year/2024.pdf"`.
+   Quote or shell-escape mounted names containing those boundaries. Other prose
+   following an unquoted mounted path is masked up to the next boundary; quote
+   the path to retain it. Unquoted whitespace under other roots remains ambiguous.
+   In shell assignments, `cd` arguments and CLI options, unescaped whitespace
+   separates arguments, so quote or escape space-bearing paths there.
+   Percent-encoded paths are not decoded by this redactor. Under `--redact`, diagnostic
    artifact references are filenames relative to the output bundle, so its local
    directory is not exposed. Trusted mode retains the original artifact paths.
 2. Prefer destination-filtered passes when applying memory. Review `people`,
