@@ -199,9 +199,14 @@ local extensions until the vendored artifact is refreshed.
   is not a complete registry-cleanup retention set when truncated.
 - `product-profile-read --product` calls `GET /v1/product-profiles/{product}`
   and returns the product's Client GitHub login and review label, `production_use`,
-  lifecycle state, display name, driver, repository and lanes (context and
-  instance only). `prelaunch` is the only value that skips Client release
-  review. A malformed or secret-looking value fails the whole read.
+  `release_on_acceptance`, lifecycle state, display name, driver, repository and
+  lanes (context and instance only). `prelaunch` is the only value that skips Client release
+  review. `release_on_acceptance` is `held`, `promote`,
+  `promote_with_rollback_drill` or `director_standing`, as defined in
+  [Launchplane's release review](https://github.com/cbusillo/launchplane/blob/main/docs/release-review.md#acceptance-starts-the-release).
+  An omitted field reads as `held`; any other value or type fails the whole
+  read with `invalid_response`. A malformed or secret-looking value fails the
+  whole read.
 - An odd value in an optional field (for example a status Launchplane added
   later) is dropped to `""` and listed by path in `dropped_field_paths`, with
   `dropped_field_count`; an event without a usable id or type is left out and

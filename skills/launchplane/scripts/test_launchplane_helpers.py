@@ -3202,6 +3202,7 @@ def test_product_profile_read_returns_owner_and_production_use_only() -> None:
         "driver_id": "odoo",
         "repository": "example/site",
         "production_use": "unknown",
+        "release_on_acceptance": "held",
         "lifecycle_state": "active",
         "owner_github_login": "example-owner",
         "owner_review_label": "owner-review",
@@ -3232,6 +3233,32 @@ def test_product_profile_read_returns_owner_and_production_use_only() -> None:
         assert status == 1
         assert payload["status"] == "invalid"
         assert not payload["result"]
+
+
+@pytest.mark.parametrize(
+    "mode", ["held", "promote", "promote_with_rollback_drill", "director_standing"]
+)
+def test_product_profile_read_reports_release_on_acceptance(mode: str) -> None:
+    response = _product_profile_response()
+    cast(dict[str, Any], response["profile"])["release_on_acceptance"] = mode
+    status, payload, _calls = _run_product_read(
+        ["product-profile-read", "--product", "example-product"], response
+    )
+    assert status == 0
+    assert payload["result"]["release_on_acceptance"] == mode
+
+
+@pytest.mark.parametrize("mode", ["invalid", "", None, False, 1, [], {}])
+def test_product_profile_read_refuses_invalid_release_on_acceptance(mode: object) -> None:
+    response = _product_profile_response()
+    cast(dict[str, Any], response["profile"])["release_on_acceptance"] = mode
+    status, payload, _calls = _run_product_read(
+        ["product-profile-read", "--product", "example-product"], response
+    )
+    assert status == 1
+    assert payload["status"] == "invalid"
+    assert payload["warnings"][0]["code"] == "invalid_response"
+    assert not payload["result"]
 
 
 def test_product_environment_read_refuses_bad_segments_and_unsafe_values() -> None:

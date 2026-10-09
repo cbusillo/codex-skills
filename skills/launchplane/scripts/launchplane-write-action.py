@@ -2503,6 +2503,9 @@ def _project_product_environment(value: object) -> dict[str, object]:
 
 PRODUCT_PROFILE_MAX_LANES = 20
 PRODUCT_PRODUCTION_USES = {"unknown", "prelaunch", "live"}
+PRODUCT_RELEASE_ON_ACCEPTANCE_MODES = {
+    "held", "promote", "promote_with_rollback_drill", "director_standing"
+}
 GITHUB_LOGIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$")
 
 
@@ -2532,6 +2535,12 @@ def _project_product_profile(value: object) -> dict[str, object]:
     if production_use not in PRODUCT_PRODUCTION_USES:
         # Only prelaunch skips Owner review; an unknown class must not read as either.
         raise LaunchplaneSafetyError("invalid_response")
+    release_on_acceptance = source.get("release_on_acceptance", "held")
+    if (
+        not isinstance(release_on_acceptance, str)
+        or release_on_acceptance not in PRODUCT_RELEASE_ON_ACCEPTANCE_MODES
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
     owner_login = owner.get("github_login") or ""
     if owner_login and (
         not isinstance(owner_login, str) or not GITHUB_LOGIN_RE.fullmatch(owner_login)
@@ -2543,6 +2552,7 @@ def _project_product_profile(value: object) -> dict[str, object]:
         "driver_id": _optional_identifier(source.get("driver_id")),
         "repository": _optional_identifier(source.get("repository")),
         "production_use": production_use,
+        "release_on_acceptance": release_on_acceptance,
         "lifecycle_state": _optional_code(source.get("lifecycle_state")),
         "owner_github_login": owner_login,
         "owner_review_label": _optional_code(owner.get("review_label")),
