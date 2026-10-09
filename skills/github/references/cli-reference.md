@@ -1051,9 +1051,10 @@ comments/inventories, and inaccessible sources remain explicit. `--milestone`
 retains its narrow graph scope and reports portfolio discovery as excluded.
 When a scan allowance leaves issues unchecked, `graph_context.evaluation_note`
 or `discovery_context.evaluation_note` says evaluation stopped early and names
-`--scan-limit` as the way to check more. Discovery counts cover inventoried issues
-outside the evaluated graph, including held and other-agent issues; they do not
-claim a complete portfolio inventory. A tooling refusal caused by a listed
+`--scan-limit` as the way to check more. The discovery note counts inventoried
+issues outside the evaluated graph, including held and other-agent issues;
+`unevaluated_count` and `unevaluated_repositories` still omit held repositories.
+These counts do not claim a complete portfolio inventory. A tooling refusal caused by a listed
 milestone without a Track issue names that milestone in
 `tooling_capacity_context.detail`; the admission rule is unchanged.
 For a discovered leaf, up to ten native parent links are read using GitHub's

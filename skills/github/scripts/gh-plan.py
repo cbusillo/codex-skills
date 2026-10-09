@@ -3090,7 +3090,7 @@ def cmd_next(args: argparse.Namespace) -> None:
         notes.append("plan_inventory_truncated")
     if scan_truncated:
         notes.append("scan_limit_truncated_prioritized_plans")
-        notes.append(f"Checked {len(issues)} of {len(routed_issues)} eligible open plans. Evaluation stopped early; raise --scan-limit to check more.")
+        notes.append(f"Checked {len(issues)} of {len(routed_issues)} inventoried plans eligible for this agent. Evaluation stopped early; raise --scan-limit to check more.")
     if not focus_context.get("available"):
         notes.append("project_focus_unavailable")
     if focus_context.get("truncated"):
@@ -3547,8 +3547,8 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         ranked["truncated"] = True
         ranked["dependency_context"]["complete"] = False
     ranked["dependency_context"]["milestone_inventory_truncated"] = milestones_truncated
-    graph_coverage = {"complete": ranked["dependency_context"]["complete"], "evaluated": ranked["evaluated"], "truncated": ranked["truncated"]}
-    graph_coverage["evaluation_note"] = graph_evaluation_note
+    graph_coverage = {"complete": ranked["dependency_context"]["complete"], "evaluated": ranked["evaluated"],
+                      "truncated": ranked["truncated"], "evaluation_note": graph_evaluation_note}
     discoveries: list[dict[str, Any]] = []
     unevaluated_milestones: list[dict[str, Any]] = []
     discovery: dict[str, Any] = {"complete": False, "exclusion": "explicit_milestone_scope"}
@@ -4833,9 +4833,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--agent", choices=github_agent.FAMILIES, help="Running family; defaults to harness detection")
     p.add_argument("--milestone", help="Limit selection to one milestone by number or title")
     p.add_argument("--limit", type=positive_limit, default=5,
-                   help="How many ranked results to return (default 5); does not widen evaluation")
+                   help="How many ranked results to return (default %(default)s); does not widen evaluation")
     p.add_argument("--scan-limit", type=positive_limit, default=50,
-                   help="How many issues to evaluate per scan allowance (default 50); global next reserves separate allowances for the milestone graph, ordinary discoveries, held repositories, and other-agent issues; marked incidents are evaluated separately")
+                   help="How many issues to evaluate per scan allowance (default %(default)s); global next reserves separate allowances for the milestone graph, ordinary discoveries, held repositories, and other-agent issues; marked incidents are evaluated separately")
     p.add_argument("--repo-limit", type=positive_limit, help="Global next: bound accessible repository inventory (default 100)")
     p.add_argument("--repository-issue-limit", type=positive_limit, help="Global next: open issues per repository (default 100)")
     p.add_argument("--comment-limit", type=positive_limit, help="Global next: comments per evaluated issue (default 100)")

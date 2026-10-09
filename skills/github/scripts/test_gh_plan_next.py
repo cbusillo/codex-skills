@@ -410,6 +410,7 @@ def test_cmd_next_is_bounded_read_only_and_explainable() -> None:
     assert captured["excluded"][0]["exclusion"] == "blocked_by_open_dependency"
     assert captured["excluded"][0]["number"] == 1
     assert "scan_limit_truncated_prioritized_plans" in captured["notes"]
+    assert any("--scan-limit" in note for note in captured["notes"])
     assert captured["dependency_context"]["complete"] is True
 
 
@@ -2119,9 +2120,9 @@ def test_global_scan_diagnostic_counts_all_allowances_and_limit_only_caps_result
     incident = global_issue("someone/product", 12, labels=["live-breakage"])
     inventory = [*ordinary, *held, *other_family, incident]
     with global_fixture(roots, [], {}, discovered=inventory) as (module, result, _reads):
-        module.github_agent.running_agent = lambda *_: "codex"
         module.next_selection_context = lambda *_: {"repository_holds": {"someone/held": {"reason": "Director hold", "evidence": ["owner instruction"]}}}
         args = next_args(scan_limit=1)
+        args.agent = "codex"
         args.limit = 1
         module.cmd_next(args)
         bounded = result["discovery_context"].copy()
