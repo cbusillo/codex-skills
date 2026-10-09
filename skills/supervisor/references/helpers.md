@@ -150,8 +150,10 @@ uv run skills/supervisor/scripts/iterm_tab.py new --window-id <id> --command-fil
 uv run skills/supervisor/scripts/iterm_tab.py new --window-id <id> --command-file <first-launch> --command-file <second-launch> --account-provider openai
 ```
 
-Read the returned account, source and reason before recording the session. Each
-launch reports environment variable names, without their private path values.
+Read the returned account, source and reason before recording the session.
+Successful launch output reports environment variable names, without their
+private path values. A daemon refusal includes the selected home in its recovery
+diagnostic; keep that diagnostic out of public comments.
 
 For Codex's shared app server, launch with `codex --remote unix://`: the empty
 Unix endpoint resolves through the selected `CODEX_HOME`, so each account uses
