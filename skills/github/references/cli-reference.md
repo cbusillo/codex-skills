@@ -489,6 +489,11 @@ or Project focus state.
   requests and ordering by most recently updated. Supports `--state`, `--label`,
   and an exact positive `--limit`. Compact states remain normalized as uppercase
   `OPEN` or `CLOSED` values.
+  Inventory output includes freshly read `repository.archived` (boolean or
+  null) and `repository.disposition` (`current`, `frozen_historical`, or
+  `unknown`), also attached to each plan row. Archived rows stay in the inventory
+  as frozen history; their active-looking labels do not establish current work.
+  Unavailable or missing archive metadata preserves the rows with unknown context.
 - `search <query>`: Search issues through the REST search endpoint with an
   `is:issue` constraint. Add the current repository only when the query has no
   positive `repo:`, `org:`, or `user:` scope; an explicit global `--repo` always

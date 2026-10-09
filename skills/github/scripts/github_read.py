@@ -778,6 +778,16 @@ def normalize_workflow_job(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def repository_disposition(item: Any) -> dict[str, Any]:
+    """Classify only GitHub's boolean archive field; absence is unknown."""
+    archived = item.get("archived") if isinstance(item, dict) else None
+    if not isinstance(archived, bool):
+        archived = None
+    return {"archived": archived,
+            "disposition": "frozen_historical" if archived is True else
+                           "current" if archived is False else "unknown"}
+
+
 def normalize_repository(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "nameWithOwner": item.get("full_name"),

@@ -31,7 +31,7 @@ if str(GITHUB_SCRIPTS) not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim
+from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_read
 from skills.direction.scripts import direction_mark
 
 REQUIRED_HEADINGS = ("Purpose", "Stop Boundaries", "Journey", "Retired", "Milestones")
@@ -830,6 +830,20 @@ def stale_wait_report(
 
     checked = 0
     checked_issues = []
+    try:
+        repository = github_read.repository_disposition(read(f"repos/{repo}"))
+    except AuditError:
+        repository = github_read.repository_disposition(None)
+    if repository["archived"] is None:
+        errors.append({"source": "repository", "reason": "unavailable"})
+    if repository["archived"] is True:
+        frozen = [{"number": issue["number"], "title": issue.get("title"),
+                   "url": f"https://github.com/{repo}/issues/{issue['number']}"}
+                  for issue in issues if "pull_request" not in issue and issue.get("state", "open") == "open"]
+        return {"read_only": True, "complete": inventory_complete,
+                "repository": repository, "frozen_issues": frozen,
+                "checked": 0, "checked_issues": [], "items": [], "unavailable": [],
+                "inventory_complete": inventory_complete}
     for issue in issues:
         labels = {label.casefold() for label in github_direction_next.normalize_labels(issue.get("labels"))}
         active = (active_label.casefold() in labels and "pull_request" not in issue
@@ -970,6 +984,7 @@ def stale_wait_report(
                          "url": f"https://github.com/{repo}/issues/{number}", "evidence": evidence,
                          "review_required": True})
     return {"read_only": True, "complete": inventory_complete and not errors,
+            "repository": repository, "frozen_issues": [],
             "checked": checked, "checked_issues": checked_issues, "items": rows, "unavailable": errors,
             "inventory_complete": inventory_complete}
 
@@ -1417,6 +1432,7 @@ def main(argv: list[str] | None = None) -> int:
             report = stale_wait_report(issues, repo, fetch=fetch, inventory_complete=not cut)
         except AuditError:
             report = {"read_only": True, "complete": False, "inventory_complete": False,
+                      "repository": github_read.repository_disposition(None), "frozen_issues": [],
                       "checked": 0, "items": [], "unavailable": [{"source": "issues", "reason": "unavailable"}]}
         print(json.dumps({"repo": repo, "read_only": True, "stale_wait_report": report}, indent=2, sort_keys=True))
         return 0
