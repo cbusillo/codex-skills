@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import socket
 from pathlib import Path
 
 import account_choice
@@ -164,6 +165,24 @@ def account_settings(command_text, keys, depth=0):
     return found.intersection(keys)
 
 
+def check_codex_daemon(choice):
+    """Refuse before launch unless the selected home's Unix daemon accepts connections."""
+    if choice["provider"] != "openai":
+        return
+    home = Path(choice["env"]["CODEX_HOME"]).expanduser()
+    endpoint = home / "app-server-control" / "app-server-control.sock"
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(1.0)
+            probe.connect(str(endpoint))
+    except OSError as error:
+        command = f"CODEX_HOME={shlex.quote(str(home))} codex app-server daemon start"
+        raise ValueError(
+            f"Codex daemon unavailable for CODEX_HOME={home} ({type(error).__name__}); "
+            f"run {command}, then retry the launch"
+        ) from error
+
+
 def with_account(command_text, choice):
     """Prefix one agent invocation with the chosen account's environment."""
     if "\n" in command_text:
@@ -268,6 +287,8 @@ async def operate(app, args):
             raise ValueError("account settings need --account-provider; remove them from the launch file "
                              "and use --account for an explicit override")
         if choices[0]:
+            for choice in choices:
+                check_codex_daemon(choice)
             account_choice.prepare_launch(choices[0])
         results = []
         for command_text, choice in zip(command_texts, choices):

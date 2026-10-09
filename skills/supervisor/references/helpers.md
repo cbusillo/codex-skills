@@ -156,9 +156,15 @@ launch reports environment variable names, without their private path values.
 For Codex's shared app server, launch with `codex --remote unix://`: the empty
 Unix endpoint resolves through the selected `CODEX_HOME`, so each account uses
 its own daemon. A fixed socket or WebSocket endpoint attaches to that server's
-account regardless of the exported home. The chosen home must already have its
-daemon running when using `--remote`; use Codex's built-in daemon start command
-for that home when needed.
+account regardless of the exported home. Before creating any tab or launch
+receipt, `iterm_tab.py new --account-provider openai` checks each selected home's
+`app-server-control/app-server-control.sock` with a one-second connection timeout.
+If any connection fails (including a missing or stale socket), the whole launch
+refuses, naming that home and its shell-quoted recovery command:
+`CODEX_HOME=<selected-home> codex app-server daemon start`. Run that command and
+retry. The launcher does not start daemons itself, read tokens or change account
+configuration. The check proves the socket accepts connections; it cannot
+guarantee that the daemon stays running until the launch command executes.
 
 Accounts live only in private config, the first `[accounts]` table in
 `$CODE_HOME`, then `$CODEX_HOME`, then `~/.code`, under
