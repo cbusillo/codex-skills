@@ -44,6 +44,15 @@ One change lands end to end.
 """
 
 
+def current_repository_fetch(fetch: Any) -> Any:
+    """Supply live-repository metadata for fixtures testing wait evidence."""
+    def read(args: list[str]) -> Any:
+        if args[1] == "repos/owner/catalog":
+            return {"archived": False, "default_branch": "main"}
+        return fetch(args)
+    return read
+
+
 def load() -> Any:
     spec = importlib.util.spec_from_file_location("direction_audit_under_test", SCRIPT)
     assert spec and spec.loader
@@ -127,6 +136,8 @@ def test_owner_only_cli_audit_uses_explicit_reader_and_returns_known_limit() -> 
                     for name in module.github_rulesets.required_ruleset_names()]
         if "/issues?" in endpoint or "/pulls?" in endpoint:
             return []
+        if endpoint == "repos/owner/repo":
+            return {"archived": False}
         raise AssertionError(endpoint)
 
     for reader, login in (("gh", "owner"), ("gh", "other"), (str(module.WRAPPER), "owner"),
@@ -1350,7 +1361,7 @@ def test_stale_wait_report_checks_realistic_parked_records_without_writes() -> N
         raise AssertionError(path)
 
     before = json.dumps(rows, sort_keys=True)
-    report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=current_repository_fetch(fetch))
     assert json.dumps(rows, sort_keys=True) == before
     assert report["read_only"] and report["complete"]
     assert report["checked"] == 8
@@ -1394,7 +1405,7 @@ def test_stale_wait_report_preserves_open_closed_unmerged_and_unknown_conditions
             return {"state": "closed", "state_reason": "not_planned"}
         raise AssertionError(path)
 
-    report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=current_repository_fetch(fetch))
     assert report["complete"] and report["items"] == [], report
 
 
@@ -1411,7 +1422,7 @@ def test_stale_wait_report_exposes_unread_coverage_and_caches_wait_targets() -> 
             return [{"number": 90, "state": "open"}] * 100
         raise module.AuditError("HTTP 403: permission denied")
 
-    report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch, inventory_complete=False)
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=current_repository_fetch(fetch), inventory_complete=False)
     assert not report["complete"] and not report["inventory_complete"]
     assert report["items"] == []
     assert {item["reason"] for item in report["unavailable"]} == {"page_limit", "unavailable"}
@@ -1486,7 +1497,7 @@ def test_stale_wait_report_requires_all_holds_and_all_references_to_be_met() -> 
         if path == "repos/owner/product/issues/90":
             return {"state": "open"}
         raise AssertionError(path)
-    report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=current_repository_fetch(fetch))
     assert report["complete"] and report["items"] == [], report
 
 
@@ -1510,7 +1521,7 @@ def test_stale_wait_report_covers_passive_completion_and_text_only_blockers() ->
         if "/issues/14" in path:
             return {"state": "closed", "state_reason": "completed"}
         raise AssertionError(path)
-    report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=current_repository_fetch(fetch))
     assert report["complete"] and {item["number"] for item in report["items"]} == {1, 2, 3, 4}, report
 
 
@@ -1521,7 +1532,7 @@ def test_stale_wait_report_bounds_reads_and_skips_native_zero_summary() -> None:
              "issue_dependencies_summary": {"blocked_by": 0, "total_blocked_by": 0}} for n in (1, 2)]
     def unexpected(_args: list[str]) -> Any:
         raise AssertionError("a known empty native relationship needs no API call")
-    report = module.stale_wait_report(rows, "owner/catalog", fetch=unexpected, max_issues=1)
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=current_repository_fetch(unexpected), max_issues=1)
     assert report["checked"] == 1 and not report["complete"]
     assert report["unavailable"] == [{"number": 2, "source": "issue", "reason": "issue_limit"}]
     assert [item["number"] for item in report["items"]] == [1]
@@ -1540,6 +1551,8 @@ def test_stale_wait_report_only_cli_never_reads_or_advances_audit_marker() -> No
             raise AssertionError("report-only mode must not consume direction-audit records")
         def fetch(args: list[str], **_kwargs: Any) -> Any:
             assert args[0] == "api" and args[-2:] == ["--method", "GET"]
+            if args[1] == "repos/owner/catalog":
+                return {"archived": False}
             assert args[1].startswith("repos/owner/catalog/issues?state=open&")
             return [row]
         with (patch.dict("os.environ", {"DIRECTION_MARKER": str(marker)}),
@@ -1563,7 +1576,7 @@ def test_stale_wait_report_reads_closed_native_history_despite_zero_open_count()
         calls.append(args[1])
         return [{"number": 13, "state": "closed", "state_reason": "completed",
                  "html_url": "https://github.com/owner/product/issues/13"}]
-    report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
+    report = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(fetch))
     assert report["complete"] and len(calls) == 1
     evidence = report["items"][0]["evidence"]
     assert any(item["kind"] == "closed_native_blocker" and item["state_reason"] == "completed" for item in evidence)
@@ -1584,9 +1597,9 @@ def test_stale_wait_report_preserves_unparsed_waits_and_continued_notes() -> Non
     rows = [{**issue(n, "Genuine acceptance wait", labels=("plan:waiting",), body=body),
              "issue_dependencies_summary": {"blocked_by": 0, "total_blocked_by": 1}}
             for n, body in enumerate(bodies, 1)]
-    report = module.stale_wait_report(rows, "owner/catalog", fetch=lambda _: [
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=current_repository_fetch(lambda _: [
         {"number": 13, "state": "closed", "state_reason": "completed"},
-    ])
+    ]))
     assert report["complete"] and report["items"] == [], report
 
 
@@ -1595,10 +1608,10 @@ def test_stale_wait_report_does_not_treat_abandoned_or_duplicate_work_as_complet
     for reason in ("not_planned", "duplicate"):
         row = issue(41, "Abandoned prerequisite", labels=("plan:blocked",),
                     body="## Current Status\nBlocked by: #13\nWaiting for: None.\n")
-        report = module.stale_wait_report([row], "owner/catalog", fetch=lambda _: (
+        report = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(lambda _: (
             [{"number": 13, "state": "closed", "state_reason": reason}]
             if "/dependencies/" in _[1] else {"state": "closed", "state_reason": reason}
-        ))
+        )))
         assert report["complete"] and report["items"] == [], report
 
 
@@ -1621,14 +1634,14 @@ def test_stale_wait_report_preserves_contradictory_status_and_split_prerequisite
             return []
         return {"state": "closed", "state_reason": "completed",
                 "body": "## Current Status\nState: Split. Live testing moved to #20.\n"}
-    report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=current_repository_fetch(fetch))
     assert report["complete"] and not report["items"], report
     parent = {"state": "closed", "sub_issues_summary": {"total": 2, "completed": 1}}
     assert not module.closed_wait_prerequisite(parent)
     assert not module.closed_wait_prerequisite({"state": "closed", "body": "## Current Status\n- State: Split. Live test moved to #20.\n"})
     guarded = issue(99, "Unfinished parent", labels=("plan:blocked",),
                     body="## Current Status\nWaiting for: None.\n")
-    assert not module.stale_wait_report([guarded], "owner/catalog", fetch=lambda _: [parent])["items"]
+    assert not module.stale_wait_report([guarded], "owner/catalog", fetch=current_repository_fetch(lambda _: [parent]))["items"]
 
 
 def test_stale_wait_report_landing_requires_default_branch_but_merge_means_merge() -> None:
@@ -1647,12 +1660,12 @@ def test_stale_wait_report_landing_requires_default_branch_but_merge_means_merge
         if path == "repos/owner/catalog":
             return {"default_branch": "main"}
         raise AssertionError(path)
-    report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=current_repository_fetch(fetch))
     assert report["complete"] and [item["number"] for item in report["items"]] == [2], report
     def default_landing(args: list[str]) -> Any:
         value = fetch(args)
         return {**value, "base": {"ref": "main"}} if "/pulls/71" in args[1] else value
-    landed = module.stale_wait_report(rows, "owner/catalog", fetch=default_landing)
+    landed = module.stale_wait_report(rows, "owner/catalog", fetch=current_repository_fetch(default_landing))
     assert landed["complete"] and [item["number"] for item in landed["items"]] == [1, 2], landed
 
 
@@ -1661,7 +1674,7 @@ def test_stale_wait_report_reports_explicit_absence_of_all_waits() -> None:
     row = {**issue(41, "Parked on nobody", labels=("plan:waiting",),
                    body="## Current Status\nWaiting for: None.\nBlocked by: None.\n"),
            "issue_dependencies_summary": {"total_blocked_by": 0}}
-    report = module.stale_wait_report([row], "owner/catalog", fetch=lambda _: [])
+    report = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(lambda _: []))
     assert report["complete"] and report["items"][0]["number"] == 41, report
 
 
@@ -1691,7 +1704,7 @@ def test_active_merged_status_preserves_split_remainders_and_unproven_delivery()
             return {"merged_at": None if path.endswith("72") else "2026-10-06T04:36:00Z", "base": {"ref": "main"}, "body": "Refs " + " ".join(f"#{n}" for n in range(1, 7))}
         raise AssertionError(path)
     before = json.dumps(rows, sort_keys=True)
-    report = module.stale_wait_report(rows, "owner/catalog", fetch=fetch)
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=current_repository_fetch(fetch))
     assert report["complete"] and json.dumps(rows, sort_keys=True) == before
     found = {row["number"]: row for row in report["items"]}
     assert set(found) == {1, 2, 3, 4}
@@ -1706,14 +1719,14 @@ def test_active_merged_status_preserves_split_remainders_and_unproven_delivery()
         def unproven(args: list[str]) -> Any:
             value = fetch(args)
             return {**value, "merged_at": merged, "base": {"ref": base}} if "/pulls/" in args[1] else value
-        report = module.stale_wait_report([row], "owner/catalog", fetch=unproven)
+        report = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(unproven))
         if base == "main" and merged is not None:
             assert report["complete"] and report["items"][0]["selection_exclusion"]
         else:
             assert not report["items"]
     def unavailable(_args: list[str]) -> Any:
         raise module.AuditError("missing record")
-    partial = module.stale_wait_report([rows[0]], "owner/catalog", fetch=unavailable)
+    partial = module.stale_wait_report([rows[0]], "owner/catalog", fetch=current_repository_fetch(unavailable))
     assert not partial["complete"] and not partial["items"] and partial["unavailable"]
 
 
@@ -1744,7 +1757,7 @@ def test_active_delivery_grammar_preserves_wrapped_and_inflected_remaining_steps
     for action in actions:
         row["body"] = f"## Current Status\nNext action: {action}\nWaiting for: None.\n"
         # The prerequisite uses its own repository and does not implement this issue.
-        report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
+        report = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(fetch))
         assert not any(item["selection_exclusion"] for item in report["items"]), action
     row["body"] = "## Current Status\nNext action: Supervisor lands PR #71 and closes this issue.\nWaiting for: None.\n"
     def prerequisite(args: list[str]) -> Any:
@@ -1752,11 +1765,11 @@ def test_active_delivery_grammar_preserves_wrapped_and_inflected_remaining_steps
         if "/pulls/" in args[1]:
             value["body"] = "Refs #2"
         return value
-    assert not module.stale_wait_report([row], "owner/catalog", fetch=prerequisite)["items"][0]["selection_exclusion"]
+    assert not module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(prerequisite))["items"][0]["selection_exclusion"]
     row["body"] = "## Current Status\nNext action: Supervisor routes PR #71 through the merge train,\n  verifies final landing SHA and closes this issue.\nWaiting for: None.\n"
-    assert module.stale_wait_report([row], "owner/catalog", fetch=fetch)["items"][0]["selection_exclusion"]
+    assert module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(fetch))["items"][0]["selection_exclusion"]
     row["body"] = "## Current Status\nNext action: Implement after #3.\n"
-    assert not module.stale_wait_report([row], "owner/catalog", fetch=lambda _: {"state": "closed"})["items"]
+    assert not module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(lambda _: {"state": "closed"}))["items"]
 
 
 def test_active_landing_ignores_history_and_uses_the_named_prs_own_association() -> None:
@@ -1775,18 +1788,18 @@ def test_active_landing_ignores_history_and_uses_the_named_prs_own_association()
         if args[1].endswith("/issues/71"):
             return {"state": "closed", "pull_request": {}}
         raise AssertionError("unrelated historical PR must not control selection: " + args[1])
-    report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
+    report = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(fetch))
     assert report["complete"] and report["items"][0]["selection_exclusion"]
     row["body"] = row["body"].replace("PR #71 and closes", "PR #40 and closes").replace("First slice PR #65 landed", "Own source PR #71 landed")
     def prerequisite(args: list[str]) -> Any:
         return {"default_branch": "main"} if args[1] == "repos/owner/catalog" else (
             {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #2"}
             if "/pulls/" in args[1] else {"state": "closed", "pull_request": {}})
-    assert not module.stale_wait_report([row], "owner/catalog", fetch=prerequisite)["items"][0]["selection_exclusion"]
+    assert not module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(prerequisite))["items"][0]["selection_exclusion"]
     row = {**row, "labels": [{"name": "custom-active"}], "body": "## Current Status\nNext action: Supervisor lands PR #71 and closes this issue.\n"}
-    report = module.stale_wait_report([row], "owner/catalog", fetch=fetch, active_label="custom-active")
+    report = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(fetch), active_label="custom-active")
     assert report["checked_issues"] == [1] and report["items"][0]["selection_exclusion"]
-    assert not module.stale_wait_report([row], "owner/catalog", fetch=fetch)["checked_issues"]
+    assert not module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(fetch))["checked_issues"]
 
 
 def test_healthy_remainders_and_person_holds_do_not_create_false_coverage_gaps() -> None:
@@ -1805,7 +1818,7 @@ def test_healthy_remainders_and_person_holds_do_not_create_false_coverage_gaps()
                     return {"default_branch": "main"}
                 return ({"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #1"}
                         if "/pulls/" in args[1] else {"state": "closed", "pull_request": {}})
-            report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
+            report = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(fetch))
             needs_proof = action.startswith("Supervisor") and waiting == "None."
             assert report["complete"]
             if needs_proof:
@@ -1814,7 +1827,7 @@ def test_healthy_remainders_and_person_holds_do_not_create_false_coverage_gaps()
             else:
                 assert not report["items"]
             row["updated_at"] = "2026-10-04T12:00:00Z"
-            report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
+            report = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(fetch))
             assert report["complete"]
             assert report["items"][0]["selection_exclusion"] is needs_proof
 
@@ -1893,10 +1906,10 @@ def test_stale_reference_waits_preserve_start_metadata_and_real_holds() -> None:
     for body in bodies:
         row: dict[str, Any] = {**issue(41, "Parked on a merged PR", labels=("plan:waiting",), body="## Current Status\n" + body),
                "issue_dependencies_summary": {"total_blocked_by": 0}}
-        report = module.stale_wait_report([row], "owner/catalog", fetch=fetch)
+        report = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(fetch))
         assert report["complete"] and [entry["number"] for entry in report["items"]] == [41]
         held = {**row, "body": row["body"] + "\nBlocked by: Chris's contract signature."}
-        assert not module.stale_wait_report([held], "owner/catalog", fetch=fetch)["items"]
+        assert not module.stale_wait_report([held], "owner/catalog", fetch=current_repository_fetch(fetch))["items"]
 
 
 def test_active_pending_and_bold_person_holds_preserve_remaining_work() -> None:
@@ -1914,7 +1927,7 @@ def test_active_pending_and_bold_person_holds_preserve_remaining_work() -> None:
                 return {"default_branch": "main"}
             return ({"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #1"}
                     if "/pulls/" in args[1] else {"state": "closed", "pull_request": {}})
-        found = module.stale_wait_report([row], "owner/catalog", fetch=fetch)["items"][0]
+        found = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(fetch))["items"][0]
         assert found["recorded_hold_pending"] and not found["selection_exclusion"] and not found["completion_proven"]
 
 
@@ -1962,7 +1975,7 @@ def test_edited_supervisor_closeout_waits_find_their_own_landed_source() -> None
     before = json.dumps(rows, sort_keys=True)
     for label in ("plan:active", "plan:waiting"):
         selected = [{**row, "labels": [{"name": label}]} for row in rows]
-        report = module.stale_wait_report(selected, "owner/catalog", fetch=fetch)
+        report = module.stale_wait_report(selected, "owner/catalog", fetch=current_repository_fetch(fetch))
         assert report["complete"] and not report["unavailable"]
         found = {row["number"]: row for row in report["items"]}
         # The historical #3073 blocker prose is not a proven no-hold clause;
@@ -2004,12 +2017,12 @@ def test_closeout_wait_preserves_real_holds_partial_stacks_and_unknown_history()
         "Waiting for: Supervisor delivery closeout; Justin's acceptance belongs to #3. No new Director decision is open.",
     ):
         held = {**row, "body": row["body"].replace("Waiting for: Supervisor delivery closeout.", patch_field)}
-        assert not module.stale_wait_report([held], "owner/catalog", fetch=fetch)["items"]
+        assert not module.stale_wait_report([held], "owner/catalog", fetch=current_repository_fetch(fetch))["items"]
     for change in ({"merged_at": None}, {"base": {"ref": "work/root"}}, {"body": "Refs #4"}):
         def incomplete(args: list[str]) -> Any:
             value = fetch(args)
             return {**value, **change} if "/pulls/" in args[1] else value
-        assert not module.stale_wait_report([row], "owner/catalog", fetch=incomplete)["items"]
+        assert not module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(incomplete))["items"]
     for second_slice in ("https://github.com/owner/catalog/pull/72", "PR #72", "#72"):
         for association in ("Refs #3", "- Refs #3", "Part of #3", "Stack 2/2 for #3", ""):
             def partial_stack(args: list[str]) -> Any:
@@ -2017,7 +2030,7 @@ def test_closeout_wait_preserves_real_holds_partial_stacks_and_unknown_history()
                 if "/comments?" in args[1]:
                     return value + [{"body": "Second slice " + second_slice}]
                 return {**value, "merged_at": None, "body": association} if args[1].endswith("/pulls/72") else value
-            assert not module.stale_wait_report([row], "owner/catalog", fetch=partial_stack)["items"]
+            assert not module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(partial_stack))["items"]
     def repeated_reference(args: list[str]) -> Any:
         value = fetch(args)
         if "/comments?" in args[1]:
@@ -2025,20 +2038,20 @@ def test_closeout_wait_preserves_real_holds_partial_stacks_and_unknown_history()
         # A later shorthand mention must not erase the earlier explicit pull link.
         assert not args[1].endswith("/issues/71")
         return value
-    assert module.stale_wait_report([row], "owner/catalog", fetch=repeated_reference)["items"]
+    assert module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(repeated_reference))["items"]
     delegated = {**row, "body": row["body"].replace(
         "Waiting for: Supervisor delivery closeout.",
         "Waiting for: Supervisor delivery closeout; Justin's acceptance belongs to #72. No new Director decision is open.",
     )}
-    assert not module.stale_wait_report([delegated], "owner/catalog", fetch=fetch)["items"]
+    assert not module.stale_wait_report([delegated], "owner/catalog", fetch=current_repository_fetch(fetch))["items"]
     def unavailable_delegate(args: list[str]) -> Any:
         if args[1].endswith("/issues/72"):
             raise module.AuditError("delegation unavailable")
         return fetch(args)
-    report = module.stale_wait_report([delegated], "owner/catalog", fetch=unavailable_delegate)
+    report = module.stale_wait_report([delegated], "owner/catalog", fetch=current_repository_fetch(unavailable_delegate))
     assert not report["complete"] and not report["items"]
     routed_issue = {**row, "body": row["body"].replace("closes this issue", "routes #3 and closes this issue")}
-    assert not module.stale_wait_report([routed_issue], "owner/catalog", fetch=fetch)["items"][0]["selection_exclusion"]
+    assert not module.stale_wait_report([routed_issue], "owner/catalog", fetch=current_repository_fetch(fetch))["items"][0]["selection_exclusion"]
     for unavailable in (False, True):
         def unread(args: list[str]) -> Any:
             if "/comments?" in args[1]:
@@ -2046,33 +2059,33 @@ def test_closeout_wait_preserves_real_holds_partial_stacks_and_unknown_history()
                     raise module.AuditError("discussion unavailable")
                 return [{"body": "historical comment"}] * 100
             return fetch(args)
-        report = module.stale_wait_report([row], "owner/catalog", fetch=unread)
+        report = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(unread))
         assert not report["complete"] and report["unavailable"] and not report["items"]
     # A stale agent step is review evidence; a remaining deployment stays work.
     remainder = {**row, "body": row["body"].replace("closes this issue", "routes PR #71, then deploys to staging")}
     def with_issue(args: list[str]) -> Any:
         return {"state": "closed", "pull_request": {}} if args[1].endswith("/issues/71") else fetch(args)
-    result = module.stale_wait_report([remainder], "owner/catalog", fetch=with_issue)["items"][0]
+    result = module.stale_wait_report([remainder], "owner/catalog", fetch=current_repository_fetch(with_issue))["items"][0]
     assert not result["selection_exclusion"] and not result["completion_proven"]
     blocked = {**remainder, "issue_dependencies_summary": {"total_blocked_by": 1}}
     def native_blocker(args: list[str]) -> Any:
         return [{"state": "open"}] if "/dependencies/" in args[1] else with_issue(args)
-    result = module.stale_wait_report([blocked], "owner/catalog", fetch=native_blocker)["items"][0]
+    result = module.stale_wait_report([blocked], "owner/catalog", fetch=current_repository_fetch(native_blocker))["items"][0]
     assert result["recorded_hold_pending"] and not result["selection_exclusion"]
     parked = {**blocked, "labels": [{"name": "plan:waiting"}]}
-    assert not module.stale_wait_report([parked], "owner/catalog", fetch=native_blocker)["items"]
+    assert not module.stale_wait_report([parked], "owner/catalog", fetch=current_repository_fetch(native_blocker))["items"]
     person_next = {**row, "body": row["body"].replace(
         "closes this issue", "closes this issue once Justin accepts the staging build",
     )}
-    result = module.stale_wait_report([person_next], "owner/catalog", fetch=fetch)["items"][0]
+    result = module.stale_wait_report([person_next], "owner/catalog", fetch=current_repository_fetch(fetch))["items"][0]
     assert result["recorded_hold_pending"] and not result["selection_exclusion"]
     assert not module.stale_wait_report([{**person_next, "labels": parked["labels"]}],
-                                        "owner/catalog", fetch=fetch)["items"]
+                                        "owner/catalog", fetch=current_repository_fetch(fetch))["items"]
     def unread_parked(args: list[str]) -> Any:
         if "/comments?" in args[1]:
             raise module.AuditError("history unavailable")
         return fetch(args)
-    report = module.stale_wait_report([{**row, "labels": parked["labels"]}], "owner/catalog", fetch=unread_parked)
+    report = module.stale_wait_report([{**row, "labels": parked["labels"]}], "owner/catalog", fetch=current_repository_fetch(unread_parked))
     assert not report["complete"] and not report["items"]
 
 

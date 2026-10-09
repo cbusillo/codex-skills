@@ -410,6 +410,7 @@ def test_cmd_next_is_bounded_read_only_and_explainable() -> None:
     assert captured["excluded"][0]["exclusion"] == "blocked_by_open_dependency"
     assert captured["excluded"][0]["number"] == 1
     assert "scan_limit_truncated_prioritized_plans" in captured["notes"]
+    assert any("--scan-limit" in note for note in captured["notes"])
     assert captured["dependency_context"]["complete"] is True
 
 
@@ -683,7 +684,7 @@ def global_fixture(
         parts = path.split("?", 1)[0].strip("/").split("/")
         target = "/".join(parts[1:3])
         if len(parts) == 3:
-            return "automation-gh", {"default_branch": "main"}
+            return "automation-gh", {"default_branch": "main", "archived": False}
         number = int(parts[4])
         key = (target, number)
         if len(parts) == 7 and parts[5:] == ["dependencies", "blocked_by"]:
@@ -800,6 +801,7 @@ def test_global_cycles_unreadable_edges_and_scan_limits_are_incomplete() -> None
         assert result["truncated"] is True
         assert result["evaluated"] == 2
         assert result["dependency_context"]["complete"] is False
+        assert "--scan-limit" in result["graph_context"]["evaluation_note"]
 
 
 def test_global_shared_leaf_is_read_once_and_keeps_earliest_milestone() -> None:
@@ -836,6 +838,12 @@ def test_global_missing_tracks_and_inventory_truncation_remain_visible() -> None
         assert result["dependency_context"]["complete"] is False
         assert result["dependency_context"]["missing_tracking_milestones"] == ["Second"]
         assert result["candidates"] == []
+        refusal = result["tooling_capacity_context"]
+        assert refusal["admitted"] is False
+        assert refusal["reason"] == "incomplete_milestone_coverage"
+        assert "Track" in refusal["detail"]
+        for title in result["dependency_context"]["missing_tracking_milestones"]:
+            assert title in refusal["detail"]
 
 
 def test_global_relationship_truncation_and_permissions_do_not_create_candidates() -> None:
@@ -2092,6 +2100,7 @@ def test_skipped_repository_counts_exclude_graph_overlap_and_marked_incidents() 
         module.cmd_next(next_args(scan_limit=2))
         # Two graph reads; ordinary discovery gets its own allowance of two.
         assert result["discovery_context"]["unevaluated_repositories"] == []
+        assert result["discovery_context"]["evaluation_note"] is None
         module.cmd_next(next_args(scan_limit=1))
         # The graph bound leaves linked work to discovery; the incident is
         # still evaluated outside the one ordinary slot.
@@ -2100,6 +2109,36 @@ def test_skipped_repository_counts_exclude_graph_overlap_and_marked_incidents() 
         assert sum(item["issue_count"] for item in counts) == result["discovery_context"]["unevaluated_count"]
         assert not result["candidate_coverage"]["complete"]
         assert all(item["number"] != incident["number"] for item in result["excluded"] if item.get("exclusion") == "outside_direction_tracks")
+        assert "--scan-limit" in result["discovery_context"]["evaluation_note"]
+
+
+def test_global_scan_diagnostic_counts_all_allowances_and_limit_only_caps_results() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    ordinary = [global_issue("someone/product", number) for number in range(3, 6)]
+    held = [global_issue("someone/held", number) for number in range(6, 9)]
+    other_family = [global_issue("someone/other", number, labels=["agent:claude"]) for number in range(9, 12)]
+    incident = global_issue("someone/product", 12, labels=["live-breakage"])
+    inventory = [*ordinary, *held, *other_family, incident]
+    with global_fixture(roots, [], {}, discovered=inventory) as (module, result, _reads):
+        module.next_selection_context = lambda *_: {"repository_holds": {"someone/held": {"reason": "Director hold", "evidence": ["owner instruction"]}}}
+        args = next_args(scan_limit=1)
+        args.agent = "codex"
+        args.limit = 1
+        module.cmd_next(args)
+        bounded = result["discovery_context"].copy()
+        assert bounded["evaluated"] == 4  # Three allowances plus a marked incident.
+        assert bounded["capacity_unevaluated_count"] == len(inventory) - bounded["evaluated"]
+        assert "--scan-limit" in bounded["evaluation_note"]
+        assert str(bounded["evaluated"]) in bounded["evaluation_note"]
+        assert str(len(inventory)) in bounded["evaluation_note"]
+        args.limit = 100
+        module.cmd_next(args)
+        assert result["discovery_context"] == bounded
+        args.scan_limit = len(inventory)
+        module.cmd_next(args)
+        assert result["discovery_context"]["evaluated"] == len(inventory)
+        assert result["discovery_context"]["evaluation_note"] is None
+        assert result["discovery_context"]["capacity_unevaluated_count"] == 0
 
 
 def test_client_requests_rank_with_product_without_changing_order_or_authority() -> None:
@@ -2428,7 +2467,10 @@ def test_global_unread_frontier_wait_prevents_capacity_without_unrelated_veto() 
     item = {**shared.compact_list_issue(raw['repo'], raw), "plan_status": "waiting", "exclusion": "waiting", "milestone": raw['milestone'], "discussion": shared.discussion_snapshot(raw, [], complete=True)}
     context = {"issues": {"someone/business#3": reviewed(item, "waiting", waiting_on="person")}}
     graph = {"candidates": [], "excluded": [item], "dependency_context": {"complete": True}}
-    with patch.multiple(module, api_json=Mock(side_effect=AssertionError('unselected wait must not be read')), load_config=lambda *_: module.DEFAULT_CONFIG):
+    def selected_repository(method: str, path: str, **_kwargs: Any) -> Any:
+        assert method == "GET" and path == "/repos/someone/other", "unselected wait must not be read"
+        return "automation-gh", {"archived": False}
+    with patch.multiple(module, api_json=selected_repository, load_config=lambda *_: module.DEFAULT_CONFIG):
         report = module.next_wait_context([global_issue('someone/other', 1), raw], scan_limit=1, inventory_complete=True)
     checked = {(row['repo'], row['number']) for row in report['checked_issues']}
     item['wait_evidence_complete'] = (raw['repo'], raw['number']) in checked
@@ -2493,7 +2535,7 @@ def test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output()
                        updated_at="2026-10-06T12:00:00Z",
                        body="## Current Status\nNext action: Supervisor lands PR https://github.com/someone/product/pull/71 and closes this issue.\n")
     def fetch(_method: str, path: str, **_kwargs: Any) -> Any:
-        return "automation-gh", ({"default_branch": "main"} if path == "/repos/someone/product" else
+        return "automation-gh", ({"default_branch": "main", "archived": False} if path == "/repos/someone/product" else
                                  {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #10"})
     config = {**module.DEFAULT_CONFIG, "labels": {**module.DEFAULT_CONFIG["labels"], "active": "custom-active"}}
     with patch.multiple(module, api_json=fetch, load_config=lambda *_: config):
@@ -2514,7 +2556,7 @@ def test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output()
     assert "post_merge_evidence_complete" not in candidates[0]
     active = {**row, "number": 11, "labels": ["plan", "custom-active"],
               "body": "## Current Status\nNext action: Implement the remaining phone fix.\n"}
-    with patch.multiple(module, api_json=Mock(side_effect=AssertionError("no PR read needed")), load_config=lambda *_: config):
+    with patch.multiple(module, api_json=Mock(return_value=("automation-gh", {"archived": False})), load_config=lambda *_: config):
         report = module.next_wait_context([row, active], scan_limit=1, inventory_complete=True)
     assert report["complete"] and report["checked_issues"] == [{"repo": row["repo"], "number": 11}]
 
@@ -3021,6 +3063,7 @@ def test_named_next_actor_or_absence_keeps_a_stated_precondition() -> None:
 
 
 TESTS.extend([test_milestone_agent_work_behind_bookkeeping_blocker_ranks_first,
+              test_global_scan_diagnostic_counts_all_allowances_and_limit_only_caps_results,
               test_milestone_summary_names_each_wait_when_no_milestone_work_is_listed,
               test_named_next_actor_or_absence_keeps_a_stated_precondition,
               test_track_whose_next_action_belongs_to_a_person_is_not_agent_work])

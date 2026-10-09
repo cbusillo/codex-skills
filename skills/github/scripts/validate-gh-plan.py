@@ -1117,6 +1117,8 @@ def test_plan_index_paginates_filters_prs_and_honors_limit() -> None:
     assert len(page_one) == 100
 
     def fake_api_json(method: str, path: str, _payload: Any = None, **kwargs: Any) -> tuple[str, Any]:
+        if path == "/repos/owner/repo":
+            return "automation-gh", {"archived": False}
         query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
         calls.append({"method": method, "path": path, "query": query, "kwargs": kwargs})
         assert method == "GET"

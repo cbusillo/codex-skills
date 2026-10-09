@@ -1290,11 +1290,12 @@ On a timeout or response-verification failure, retain the same envelope and
 source event for reconciliation/replay. Never substitute a new identity or a new
 source event to force a duplicate proposal. A denial is not a missing token:
 report the refused action and trace and follow Launchplane denial handling.
+The helper preserves an empty `expires_at` and normalizes valid legacy timestamps
+for display. Review validity belongs to
+[Launchplane's approval and execution contract](https://github.com/cbusillo/launchplane/blob/main/docs/privileged-operations.md#approval-and-execution-boundary).
 An accepted replay can report an already approved or terminal plan; it does not
-renew the approval deadline or perform execution. Check the persisted expiry and
-blockers in the UI before requesting approval; a stored `planned` status can lag
-expiry reconciliation. Approved or executing plans
-need observation, not another approval. Inspect terminal outcomes before an
-intentional replacement; an expired, cancelled or revoked proposal needs a fresh
+perform execution. Check the persisted review and blockers in the UI before
+requesting approval. Approved or executing plans need observation, not another
+approval. Inspect terminal outcomes before an intentional replacement; an expired, cancelled or revoked proposal needs a fresh
 source event for a replacement. The signed-in Director reviews
 and approves pending plans in the UI; no helper approval or apply path is added.

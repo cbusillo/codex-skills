@@ -453,6 +453,11 @@ or Project focus state.
   requests and ordering by most recently updated. Supports `--state`, `--label`,
   and an exact positive `--limit`. Compact states remain normalized as uppercase
   `OPEN` or `CLOSED` values.
+  Inventory output includes freshly read `repository.archived` (boolean or
+  null) and `repository.disposition` (`current`, `frozen_historical`, or
+  `unknown`), also attached to each plan row. Archived rows stay in the inventory
+  as frozen history; their active-looking labels do not establish current work.
+  Unavailable or missing archive metadata preserves the rows with unknown context.
 - `search <query>`: Search issues through the REST search endpoint with an
   `is:issue` constraint. Add the current repository only when the query has no
   positive `repo:`, `org:`, or `user:` scope; an explicit global `--repo` always
@@ -860,7 +865,10 @@ competitor's record.
   issue reference, `gh-plan.py --repo OWNER/REPO update-section` with a bare
   issue number, or
   `gh-pr.py --repo OWNER/REPO edit <pr> --body-file FILE` for intended PR edits. Section
-  text from `--body`, `--body-file`, or stdin is literal, including backslashes;
+  text requires `--body TEXT` or `--body-file FILE`; use `--body-file -` to read
+  stdin. Omitting both flags fails before reading stdin or writing, even with
+  a pipe or heredoc. To intentionally clear a section, pass `--body ''` or an
+  explicitly supplied empty file or stdin stream. Input is literal, including backslashes;
   existing surrounding-whitespace normalization still applies. Body-read and
   regex preparation failures return a structured `validation_error` with
   `write_outcome=not_started` before any mutation. Ownership refusals and API
@@ -1049,6 +1057,14 @@ ordering, so one large backlog does not consume the entire evaluation budget.
 `--limit` caps displayed candidates, not coverage. Unevaluated issues, truncated
 comments/inventories, and inaccessible sources remain explicit. `--milestone`
 retains its narrow graph scope and reports portfolio discovery as excluded.
+When a scan allowance leaves issues unchecked, `graph_context.evaluation_note`
+or `discovery_context.evaluation_note` says evaluation stopped early and names
+`--scan-limit` as the way to check more. The discovery note counts inventoried
+issues outside the evaluated graph, including held and other-agent issues;
+`unevaluated_count` and `unevaluated_repositories` still omit held repositories.
+These counts do not claim a complete portfolio inventory. A tooling refusal caused by a listed
+milestone without a Track issue names that milestone in
+`tooling_capacity_context.detail`; the admission rule is unchanged.
 For a discovered leaf, up to ten native parent links are read using GitHub's
 [parent issue endpoint](https://docs.github.com/en/rest/issues/sub-issues#get-parent-issue).
 Parent discussions accompany the child, whole-plan waits remain excluded, and

@@ -36,6 +36,11 @@ LITERAL_TEXTS = (
 )
 
 
+class UnreadableStdin(io.StringIO):
+    def read(self, size: int = -1) -> str:
+        raise AssertionError("Implicit stdin must not be read")
+
+
 class SectionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.issue: dict[str, Any] = {
@@ -113,6 +118,26 @@ class SectionTests(unittest.TestCase):
             for path in (Path(directory) / "missing.md", Path(directory)):
                 with self.subTest(path=path):
                     self.assert_prewrite_failure(("--body-file", str(path)), "read_body")
+
+    def test_missing_input_flag_fails_without_reading_stdin_or_writing(self) -> None:
+        for content in ("", "New section content", *LITERAL_TEXTS):
+            with self.subTest(content=content):
+                self.assert_prewrite_failure((), "read_body", stdin=UnreadableStdin(content))
+
+    def test_explicit_empty_input_clears_only_the_selected_section(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            body_file = Path(directory) / "empty.md"
+            body_file.write_text("", encoding="utf-8")
+            for args in (("--body", ""), ("--body-file", str(body_file)), ("--body-file", "-")):
+                with self.subTest(args=args):
+                    code, result, edit, errors = self.run_update(*args)
+                    self.assertEqual(code, 0, errors)
+                    self.assertTrue(result["ok"])
+                    edit.assert_called_once()
+                    sections = PLAN.section_map(edit.call_args.kwargs["body"])
+                    self.assertEqual(sections["Finish Line"], "")
+                    self.assertEqual(sections["Objective"], "Keep this.")
+                    self.assertEqual(sections["Scope"], "Keep that.")
 
     def test_undecodable_stdin_fails_before_mutation(self) -> None:
         with io.TextIOWrapper(io.BytesIO(b"\xff"), encoding="utf-8") as stream:
