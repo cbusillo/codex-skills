@@ -1828,7 +1828,8 @@ def cmd_index(args: argparse.Namespace) -> None:
     try:
         _, metadata = api_json("GET", f"/repos/{repo}", bucket="rest_core", failed_step="inventory_repository")
         context = github_read.repository_disposition(metadata)
-    except PlanError:
+    except PlanError as exc:
+        next_source_error(exc)
         context = github_read.repository_disposition(None)
     emit({"ok": True, "actor": actor, "repo": repo, "repository": context,
           "count": len(items), "plans": [{**item, "repository": context} for item in items]})
@@ -3362,6 +3363,7 @@ def next_wait_context(
     scope_labels = {}
     repositories = {}
     frozen_issues = []
+    checked_issue_refs = []
     for repo, items in groups.items():
         config = configs[repo]
         report = direction_audit.stale_wait_report(items, repo, fetch=fetch, inventory_complete=complete,
@@ -3373,6 +3375,7 @@ def next_wait_context(
             else:
                 unavailable.append({**row, "repo": repo})
         checked += report["checked"]
+        checked_issue_refs.extend({"repo": repo, "number": number} for number in report["checked_issues"])
         scope_labels[repo.casefold()] = [config["labels"][key] for key in ("active", "waiting", "blocked")]
         complete &= report["complete"]
         repositories[repo] = report["repository"]
@@ -3405,7 +3408,7 @@ def next_wait_context(
             "unavailable": unavailable, "references": references,
             "inventory_complete": inventory_complete, "scope": "evaluated_global_next_issues",
             "read_limit": budget, "read_count": len(cache),
-            "checked_issues": [{"repo": item["repo"], "number": item["number"]} for item in selected],
+            "checked_issues": checked_issue_refs,
             "scope_labels": scope_labels}
 
 

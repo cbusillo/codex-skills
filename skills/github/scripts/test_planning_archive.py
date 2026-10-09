@@ -65,6 +65,20 @@ class ArchiveTests(unittest.TestCase):
             self.assertIsNone(output["repository"]["archived"])
             self.assertEqual(output["repository"]["disposition"], "unknown")
 
+    def test_index_preserves_terminal_auth_and_quota_stops(self) -> None:
+        args = PLAN.build_parser().parse_args(["--repo", "owner/history", "index"])
+        for cause in ("rest_primary_rate_limited", "authentication_failed", "actor_mismatch"):
+            failure = PLAN.PlanError("terminal metadata failure", failure=PLAN.github_api_core.FailureDetail(
+                cause=cause, message="terminal metadata failure", retryable=False,
+                fallback_eligible=False, disposition="stop"))
+            emit = Mock()
+            with patch.multiple(PLAN, collect_paged_rest_items=Mock(return_value=("automation-gh", [issue(1)])),
+                                load_config=lambda _: PLAN.DEFAULT_CONFIG,
+                                api_json=Mock(side_effect=failure), emit=emit):
+                with self.assertRaises(PLAN.PlanError):
+                    PLAN.cmd_index(args)
+            emit.assert_not_called()
+
     def test_archived_stale_report_accounts_for_all_open_rows_without_reconciliation_reads(self) -> None:
         rows = [issue(1), issue(2, labels=["plan", "plan:blocked"]),
                 issue(3, labels=["plan", "plan:waiting"]), issue(4, labels=["plan"]),
@@ -103,6 +117,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertTrue(report["complete"])
         self.assertEqual(report["items"], [])
         self.assertEqual(report["references"], {})
+        self.assertEqual(report["checked_issues"], [])
         self.assertEqual(report["frozen_issues"][0]["repo"], "owner/history")
         self.assertTrue(report["repositories"]["owner/history"]["archived"])
         self.assertEqual(read.call_count, 1)

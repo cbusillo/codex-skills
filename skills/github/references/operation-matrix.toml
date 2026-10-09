@@ -720,7 +720,7 @@ test_refs = ["github/scripts/test_github_read.py:test_secret_scanning_status_pub
 id = "github.plan.index"
 capabilities = ["issues_read", "metadata_read"]
 permission_mode = "fixed"
-permission_note = "Read-only repository metadata uses the existing metadata capability and safe repository GET probe; unavailable archive metadata preserves the issue inventory with unknown disposition. No new grant, actor, or mutation. Issue inventory failures retain their existing terminal policy."
+permission_note = "Read-only repository metadata uses the existing metadata capability and safe repository GET probe; unavailable archive metadata preserves the issue inventory with unknown disposition. No new grant, actor, or mutation. Issue inventory and classified auth, actor, quota or provider failures retain their existing terminal policy."
 entrypoint = "github/scripts/gh-plan.py index"
 intent = "List compact durable planning issues by label and state."
 current_transport = "rest_api"
@@ -732,7 +732,7 @@ mutation_class = "read"
 idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "paged_read"
-retained_graphql_rationale = "No retained GraphQL transport; the REST issues endpoint supplies the planning index fields and avoids routine GraphQL pressure. REST observations conditionally revalidate with GitHub on every read; no coalesced body-only return, new permission, or mutation-read cache. Issue inventory permission and actor failures remain terminal; an unavailable metadata-only read returns unknown archive context."
+retained_graphql_rationale = "No retained GraphQL transport; the REST issues endpoint supplies the planning index fields and avoids routine GraphQL pressure. REST observations conditionally revalidate with GitHub on every read; no coalesced body-only return, new permission, or mutation-read cache. Issue inventory permission and actor failures remain terminal; an unavailable metadata-only record returns unknown archive context; classified auth, actor, quota and provider failures remain terminal."
 source_refs = ["github/scripts/gh-plan.py:cmd_index", "github/scripts/gh-plan.py:collect_paged_rest_items", "github/scripts/github_read.py:request"]
 test_refs = ["github/scripts/test_planning_archive.py:ArchiveTests", "github/scripts/validate-gh-plan.py:test_plan_index_paginates_filters_prs_and_honors_limit", "github/scripts/validate-gh-plan.py:test_plan_rest_command_context_and_limit_validation", "skill-creator/evaluations/exec-harness/fake-gh-plan-index.json", "github/scripts/validate-operation-matrix.py:self-test", "github/scripts/validate-gh-plan.py:test_read_only_planning_revalidates_cache_and_keeps_write_preflights_fresh", "github/scripts/validate-gh-plan.py:test_planning_conditional_reads_do_not_hide_permission_or_actor_failures", "github/scripts/validate-gh-plan.py:test_authorized_planning_fallback_retains_uncached_actor_route", "github/scripts/test_github_read.py:test_revalidation_readers_do_not_hold_cache_lock_during_transport_wait"]
 

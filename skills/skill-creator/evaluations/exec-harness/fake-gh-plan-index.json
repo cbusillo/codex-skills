@@ -24,6 +24,15 @@
           ]
         },
         "stdout": "[{\"number\":900,\"title\":\"Existing plan\",\"state\":\"open\",\"updated_at\":\"2026-07-17T00:00:00Z\",\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/900\",\"labels\":[{\"name\":\"plan\"}],\"milestone\":null}]"
+      },
+      {
+        "match": {
+          "contains": [
+            "api",
+            "repos/cbusillo/codex-skills"
+          ]
+        },
+        "stdout": "{\"archived\": false}"
       }
     ]
   },
