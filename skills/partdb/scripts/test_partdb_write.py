@@ -13,6 +13,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -20,7 +21,7 @@ import pytest
 MODULE_PATH = Path(__file__).with_name("partdb-write.py")
 MODULE_SPEC = importlib.util.spec_from_file_location("partdb_write", MODULE_PATH)
 assert MODULE_SPEC is not None
-partdb_write = importlib.util.module_from_spec(MODULE_SPEC)
+partdb_write: Any = importlib.util.module_from_spec(MODULE_SPEC)
 assert MODULE_SPEC.loader is not None
 sys.modules[MODULE_SPEC.name] = partdb_write
 MODULE_SPEC.loader.exec_module(partdb_write)
