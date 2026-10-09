@@ -353,6 +353,9 @@ memory/profile/local-config candidates.
    words and continuation rules.
    Periods and conjunctions inside path components remain masked when a path
    continuation is recognizable.
+   That continuation is one whitespace-free word immediately followed by a slash;
+   quote multiword descendants after a prose word or closing delimiter, such as
+   `"/Volumes/Backup/Notes for Tax Year/2024.pdf"`.
    Quote or shell-escape mounted names containing those boundaries. Other prose
    following an unquoted mounted path is masked up to the next boundary; quote
    the path to retain it. Unquoted whitespace under other roots remains ambiguous.

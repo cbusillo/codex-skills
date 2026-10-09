@@ -46,7 +46,7 @@ LOCAL_PATH_ROOTS = r"(?:Users|home|workspace|workspaces|tmp|var|private|Volumes|
 RELATIVE_PATH_ROOTS = {"media", "mnt", "tmp", "var"}
 MOUNTED_PROSE_WORDS = (
     r"(?:so|because|before|after|has|have|holds|for|on|is|are|was|were|with|to|in|at|from|as|"
-    r"that|which|using|via|into|under|stays|remains|contains|needs)"
+    r"that|which|using|via|into|under|stays|remains|contains|needs|must|per)"
 )
 PATH_RE = re.compile(
     # Public URLs may contain the same root names as local paths. Match them
