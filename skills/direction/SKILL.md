@@ -319,7 +319,14 @@ It reports closed native blockers, merged PRs or completed issues that the
 Current Status waits on, and explicit waits on agents or capacity instead of
 people or events, only when no recorded hold or open native blocker remains.
 `complete`, `inventory_complete`, and `unavailable` expose
-missing coverage. Unknown prose, elapsed time, unrelated merged PRs, and
+missing coverage. The report reads GitHub's repository archive state into
+`repository.archived` and `repository.disposition`. Archived repositories return
+all inventoried open issue rows under `frozen_issues`, with no stale-reconciliation
+`items` or prerequisite reads; historical labels and waits remain untouched.
+Missing or unavailable archive metadata is `unknown` and keeps `complete` false,
+while any independently established wait evidence remains visible. Global next's
+stale report carries these contexts in `repositories` and retains `frozen_issues`.
+Unknown prose, elapsed time, unrelated merged PRs, and
 acceptance or live-test waits do not establish completion. These are review
 prompts, separate from audit findings and exit status: read the full issue and
 current evidence before correcting a status through `github-plan`. Nothing is
