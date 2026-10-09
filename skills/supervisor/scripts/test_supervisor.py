@@ -10,6 +10,7 @@ import asyncio
 import json
 import subprocess
 import shlex
+import socket
 import os
 import tempfile
 import unittest
@@ -763,6 +764,101 @@ class AccountChoiceTests(unittest.TestCase):
 
 
 class TerminalTests(unittest.TestCase):
+    def test_codex_daemon_preflight_checks_selected_home_before_tabs_and_receipts(self):
+        # Short disposable paths fit macOS's Unix socket path limit.
+        with tempfile.TemporaryDirectory(dir="/tmp") as folder:
+            root = Path(folder)
+            home = root / "selected home's"
+            endpoint = home / "app-server-control" / "app-server-control.sock"
+            endpoint.parent.mkdir(parents=True)
+            choice = {"provider": "openai", "name": "selected", "source": "context-panel",
+                      "reason": "use next", "env": {"CODEX_HOME": str(home)}}
+            launch = root / "launch.txt"
+            launch.write_text("codex --remote unix://")
+            terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
+            tab = SimpleNamespace(tab_id="tab", current_session=terminal)
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(return_value=tab))
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=launch,
+                                      account_provider="openai", account=None, account_config=None)
+            with (
+                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
+                patch.dict(os.environ, {"CODEX_HOME": str(root / "inherited")}),
+                patch.object(account_choice, "select", return_value=choice),
+                patch.object(account_choice, "prepare_launch") as prepare,
+                patch.object(account_choice, "record_launch") as receipt,
+            ):
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as daemon:
+                    daemon.bind(str(endpoint))
+                    daemon.listen()
+                    result = asyncio.run(iterm_tab.operate(app, args))
+                    self.assertEqual(result["session_id"], "new")
+                    window.async_create_tab.assert_awaited_once_with(select=False)
+                    receipt.assert_called_once_with(choice)
+                    sent = terminal.async_send_text.await_args_list[0].args[0]
+                    self.assertIn(f"export CODEX_HOME={shlex.quote(str(home))}", sent)
+                # A closed listener leaves a stale socket, then remove it for the reboot case.
+                for state in ("stale", "missing"):
+                    if state == "missing":
+                        endpoint.unlink()
+                    window.async_create_tab.reset_mock()
+                    terminal.async_send_text.reset_mock()
+                    receipt.reset_mock()
+                    prepare.reset_mock()
+                    with self.subTest(state=state), self.assertRaises(ValueError) as refused:
+                        asyncio.run(iterm_tab.operate(app, args))
+                    reason = str(refused.exception)
+                    self.assertIn(str(home), reason)
+                    recovery = reason.split("run ", 1)[1].split(", then retry", 1)[0]
+                    self.assertEqual(shlex.split(recovery), [f"CODEX_HOME={home}", "codex",
+                                                           "app-server", "daemon", "start"])
+                    window.async_create_tab.assert_not_awaited()
+                    terminal.async_send_text.assert_not_awaited()
+                    receipt.assert_not_called()
+                    prepare.assert_not_called()
+
+    def test_codex_batch_checks_all_homes_before_first_launch(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as folder:
+            root = Path(folder)
+            home = root / "ready"
+            endpoint = home / "app-server-control" / "app-server-control.sock"
+            endpoint.parent.mkdir(parents=True)
+            choices = [{"provider": "openai", "env": {"CODEX_HOME": str(h)}}
+                       for h in (home, root / "down")]
+            files = [root / "first.txt", root / "second.txt"]
+            for path in files:
+                path.write_text("codex --remote unix://")
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=files,
+                                      account_provider="openai", account=None, account_config=None)
+            with (
+                socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as daemon,
+                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
+                patch.object(account_choice, "select_batch", return_value=choices),
+                patch.object(account_choice, "prepare_launch") as prepare,
+                patch.object(account_choice, "record_launch") as receipt,
+            ):
+                daemon.bind(str(endpoint))
+                daemon.listen()
+                with self.assertRaisesRegex(ValueError, str(root / "down")):
+                    asyncio.run(iterm_tab.operate(app, args))
+                window.async_create_tab.assert_not_awaited()
+                prepare.assert_not_called()
+                receipt.assert_not_called()
+
+    def test_codex_daemon_timeout_refuses_and_closes_probe(self):
+        probe = Mock()
+        probe.connect.side_effect = TimeoutError()
+        adapter = Mock()
+        adapter.__enter__ = Mock(return_value=probe)
+        adapter.__exit__ = Mock(return_value=False)
+        with patch.object(iterm_tab.socket, "socket", return_value=adapter):
+            with self.assertRaisesRegex(ValueError, "TimeoutError"):
+                iterm_tab.check_codex_daemon({"provider": "openai", "env": {"CODEX_HOME": "/selected"}})
+        self.assertGreater(probe.settimeout.call_args.args[0], 0)
+        adapter.__exit__.assert_called_once()
+
     def test_default_claude_launch_clears_inherited_profile_after_cd(self):
         config = accounts_config(ACCOUNTS_TOML.replace(
             'env = { CLAUDE_CONFIG_DIR = "~/claude-main" }', 'env = {}'
