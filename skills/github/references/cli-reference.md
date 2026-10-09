@@ -156,25 +156,61 @@ headers and Launchplane's server-side GitHub calls are outside this ledger;
 the result is a lower bound, not an installation-wide audit. Offline tests must
 set a temporary `GITHUB_RETRY_STATE_DIR`, which also isolates these receipts.
 
-Read-only planning `show`, `index` and `next` REST observations use conditional
-validators but always contact GitHub, including immediately repeated reads.
-Their cache namespace is separate from observers that coalesce recent replies.
-Write preflights/readbacks and explicit active-auth routes retain uncached reads.
-Permission and actor failures never reuse a cached success.
+### Quota reserve and conditional GETs
 
-PR watchers back off unchanged pending snapshots to their quiet interval,
-returning to the active interval when evidence changes. Shared core-budget
-evidence at or below 20% remaining adds a five-minute polling floor until reset.
-Budget evidence is scoped by host, App actor, repository owner (installation)
-and quota bucket, so one installation cannot overwrite another's evidence.
-The existing retry cooldown still coordinates by host, actor and bucket across
-installations; a throttled installation can therefore delay another's reads.
-This change preserves that retry contract and scopes only the new polling floor.
-This slows PR/workflow/train polls without delaying writes or changing identity,
-permission checks, write reconciliation or the existing bounded reset waits.
-Receipts are retained for retrospective measurement; the pilot's closeout must
-decide retention after preserving its acceptance evidence.
-See [GitHub's conditional-request guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests).
+Each operation's `request_priority` in
+[`operation-matrix.toml`](operation-matrix.toml) is its shared admission default.
+Bulk REST/core operations include issue listings/searches, global next, audits,
+inventories, repository snapshots and PR/workflow watchers. Essential operations
+include writes, their preflights/readbacks, train/landing reads and targeted
+issue/PR/check reads. Writes always remain essential even inside a bulk operation.
+Search and GraphQL have separate budgets and retain their existing retry policy.
+
+Bulk reads yield when the latest observed remaining core quota is **below 25%**
+of the installation's hourly limit, rounded up. The shared response-header
+receipts supply that observation without another quota probe; they are scoped by
+host, authenticated actor and repository owner. Unknown or expired observations
+permit a read to establish fresh evidence. Essential operations are unaffected
+by this reserve, while actual provider throttling still applies to every caller.
+
+The reset wait uses the existing parent deadline, cancellation and progress
+reporting, without holding a cooldown lock. With
+`GITHUB_QUOTA_RESERVE_NO_WAIT=1`, or a deadline shorter than the reset, bulk reads
+stop before contacting GitHub and name the reserve and reset in the terminal
+failure. Retry after that reset under the same identity. PR watchers' separate
+adaptive polling schedule remains unchanged; its implementation is in
+`github_request_usage.polling_floor` and `github_pr_babysit.py`.
+
+The shared `github_api.call_gh` transport automatically caches validator-backed
+repository GET bodies in private `GITHUB_RETRY_STATE_DIR/http-cache` (or
+`GITHUB_HTTP_CACHE_DIR`). Entries are keyed by host, expected authenticated actor,
+transport identity context, full URL including page/filter and representation
+headers/API version. Every read still contacts GitHub: an ETag is sent as
+`If-None-Match`, or Last-Modified as `If-Modified-Since`. A matching 304 supplies
+the stored body and pagination headers while preserving the fresh HTTP status,
+request ID and quota diagnostics. Changed 200s replace the entry. Authentication,
+permission and actor failures never become cached success.
+
+The cache stores no authentication headers or tokens, uses private directory/file
+modes, expires shared-cache bodies after a day and limits entries, individual bodies
+and total cache-body storage. Existing opt-in readers retain their configured
+max-age override. Eviction selects recognized cache entries and preserves other
+files even when a cache-directory override points at a mixed directory. Sensitive credential surfaces, identity probes, caller-supplied
+validators and explicitly authorized alternate-identity routes bypass it.
+Corrupt/missing bodies cannot turn a 304 into success. Storage failure falls back
+to the same live transport, and failure after a completed request never repeats
+that request. Concurrent publication can cause an extra charged 200; it cannot
+serve a body without revalidation.
+
+Existing planning observations always revalidate. Existing watcher readers may
+also coalesce recent replies under their separate opt-in cache. Both modes use
+the same bounded private publisher; their caller-owned
+validators keep that contract separate from the new shared cache. Explicit
+active-auth routes retain their existing reads and identity authorization.
+Receipts remain lower-bound local measurement: raw CLI calls without headers,
+other hosts and server-side controller calls are outside their coverage. A
+representative repeated-read proof is not full working-fleet acceptance.
+[GitHub documents authenticated 304 responses as free of primary quota cost](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests).
 
 Ordinary comment appends limit their pre-existing-ID scan and unknown-write
 reconciliation to the existing creation/clock-skew window, using GitHub's

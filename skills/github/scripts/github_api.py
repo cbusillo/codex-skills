@@ -46,6 +46,7 @@ from typing import Any, Callable, Literal, NoReturn, Optional
 
 import github_identity
 import github_request_usage
+import github_http_cache
 
 SCHEMA_VERSION = 1
 DEFAULT_API_VERSION = "2022-11-28"
@@ -121,6 +122,7 @@ class OperationRetryRule:
     retry_eligibility: str
     reconciliation_strategy: str
     quota_bucket: str
+    request_priority: str = "essential"
 
 
 @dataclass(frozen=True)
@@ -1666,6 +1668,7 @@ def operation_retry_rule(
                     retry_eligibility=str(item.get("retry_eligibility") or "manual"),
                     reconciliation_strategy=str(item.get("reconciliation_strategy") or "fail_closed_write"),
                     quota_bucket=str(item.get("quota_bucket") or "unknown"),
+                    request_priority=str(item.get("request_priority") or "essential"),
                 )
             _operation_rule_cache[resolved] = (modified, rules)
         rule = _operation_rule_cache[resolved][1].get(operation)
@@ -2230,6 +2233,7 @@ def run_with_retry(
     deadline_at: Optional[float] = None,
     matrix_path: pathlib.Path = DEFAULT_OPERATION_MATRIX,
     attempt_with_timeout: Optional[Callable[[float], ApiResult]] = None,
+    repository: Optional[str] = None,
 ) -> ApiResult:
     policy = retry_policy or default_retry_policy()
     runtime = retry_runtime or default_retry_runtime()
@@ -2280,6 +2284,55 @@ def run_with_retry(
             effective_deadline=effective_deadline,
             exhausted_reason=initial_reason,
         )
+
+    attempts = 0
+    elapsed_wait = 0.0
+    last_result: Optional[ApiResult] = None
+    reconciliation: Optional[dict[str, Any]] = None
+
+    def reserve_guard() -> Optional[ApiResult]:
+        nonlocal elapsed_wait
+        if is_write or rule is None or rule.request_priority != "bulk" or resolved_bucket != "rest_core":
+            return None
+        quota = github_request_usage.quota_snapshot(
+            host=resolved_host, actor=expected_actor or actor, repository=repository,
+        )
+        limit, remaining, reset = (quota.get(name) for name in ("limit", "remaining", "reset"))
+        if not all(isinstance(value, int) and not isinstance(value, bool) for value in (limit, remaining, reset)):
+            return None
+        reserve = math.ceil(limit * 0.25)
+        if limit <= 0 or remaining < 0 or remaining >= reserve or reset <= runtime.now():
+            return None
+        message = f"Bulk GitHub reads yield below reserve {reserve}/{limit}: remaining={remaining}; reset={time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(reset))}"
+        # The explicit no-wait flag stops locally. Other waits share the parent
+        # deadline and cancellation contract, without holding a cooldown lease.
+        if os.environ.get("GITHUB_QUOTA_RESERVE_NO_WAIT") == "1":
+            reserve_completed, reserve_waited, reserve_reason = False, 0.0, "quota_reserve"
+        else:
+            reserve_completed, reserve_waited, reserve_reason = _wait_until(
+                reset, deadline=effective_deadline, operation=operation,
+                cause=message, attempt=max(1, attempts + 1), policy=policy, runtime=runtime,
+            )
+        elapsed_wait += reserve_waited
+        if reserve_completed:
+            return None
+        yield_failure = _retry_failure_result(
+            last_result, cause=reserve_reason or "quota_reserve", message=message, is_write=False,
+        ) if last_result is not None else _local_retry_failure(
+            operation=operation, actor=actor, expected_actor=expected_actor,
+            host=resolved_host, bucket=resolved_bucket, is_write=False,
+            cause=reserve_reason or "quota_reserve", message=message, retry_at=reset,
+        )
+        return _attach_retry_summary(
+            yield_failure, attempts=attempts, elapsed_wait=elapsed_wait, retry_eligible=eligible,
+            actor=actor, bucket=resolved_bucket, is_write=False, reconciliation=reconciliation,
+            recommended_next_action="retry_after_reported_reset",
+            effective_deadline=effective_deadline, exhausted_reason=reserve_reason,
+        )
+
+    reserve_result = reserve_guard()
+    if reserve_result is not None:
+        return reserve_result
 
     def execute_attempt() -> ApiResult:
         if attempt_with_timeout is None:
@@ -2368,11 +2421,7 @@ def run_with_retry(
         )
 
     store = SharedCooldownStore(policy.state_dir)
-    attempts = 0
-    elapsed_wait = 0.0
-    reconciliation: Optional[dict[str, Any]] = None
     context_actor = expected_actor
-    last_result: Optional[ApiResult] = None
     cooldown_error: Optional[str] = None
 
     def finish_cooldown(held: Optional[_CooldownLease]) -> None:
@@ -2388,6 +2437,9 @@ def run_with_retry(
             pass
 
     while True:
+        reserve_result = reserve_guard()
+        if reserve_result is not None:
+            return reserve_result
         key_actor = context_actor or actor
         key = _cooldown_key(resolved_host, key_actor, resolved_bucket)
         try:
@@ -2853,6 +2905,49 @@ def call_gh(
     graphql_operation: Optional[GraphQLOperation] = None,
     timeout_seconds: Optional[float] = None,
     allow_escape_sequences: bool = False,
+    conditional_cache: bool = True,
+) -> ApiResult:
+    """Execute a fresh GET, reusing its body only after same-identity HTTP 304."""
+    kwargs = dict(
+        gh_cmd=gh_cmd, gh_prefix_args=gh_prefix_args, api_version=api_version,
+        extra_headers=extra_headers, completed_steps=completed_steps,
+        failed_step=failed_step, is_write=is_write, operation=operation,
+        actor=actor, expected_actor=expected_actor, host=host, bucket=bucket,
+        graphql_operation=graphql_operation, timeout_seconds=timeout_seconds,
+        allow_escape_sequences=allow_escape_sequences,
+    )
+    def transport(headers: dict[str, str]) -> ApiResult:
+        return _call_gh_uncached(method, path, body, **{**kwargs, "extra_headers": headers})
+    return github_http_cache.request(
+        transport, method=method, path=path, body=body,
+        headers=extra_headers or {}, api_version=api_version,
+        host=host or DEFAULT_HOST, actor=actor, expected_actor=expected_actor,
+        identity_scope=json.dumps([gh_cmd, gh_prefix_args or []]),
+        enabled=conditional_cache and not allow_escape_sequences and not github_identity.active_auth_fallback_allowed()
+        and not github_identity.own_user_opted_in(),
+    )
+
+
+def _call_gh_uncached(
+    method: str,
+    path: str,
+    body: Any = None,
+    *,
+    gh_cmd: str = DEFAULT_GH,
+    gh_prefix_args: Optional[list[str]] = None,
+    api_version: str = DEFAULT_API_VERSION,
+    extra_headers: Optional[dict[str, str]] = None,
+    completed_steps: Optional[list[str]] = None,
+    failed_step: Optional[str] = None,
+    is_write: Optional[bool] = None,
+    operation: Optional[str] = None,
+    actor: Optional[str] = None,
+    expected_actor: Optional[str] = None,
+    host: Optional[str] = None,
+    bucket: Optional[str] = None,
+    graphql_operation: Optional[GraphQLOperation] = None,
+    timeout_seconds: Optional[float] = None,
+    allow_escape_sequences: bool = False,
 ) -> ApiResult:
     """
     Execute a single GitHub REST API call via gh CLI.
@@ -3228,6 +3323,7 @@ def call_gh_with_retry(
     deadline_at: Optional[float] = None,
     matrix_path: pathlib.Path = DEFAULT_OPERATION_MATRIX,
     allow_escape_sequences: bool = False,
+    conditional_cache: bool = True,
 ) -> ApiResult:
     resolved_graphql_operation = graphql_operation
     if is_graphql_path(path) and resolved_graphql_operation is None:
@@ -3261,6 +3357,7 @@ def call_gh_with_retry(
             graphql_operation=resolved_graphql_operation,
             timeout_seconds=timeout_seconds,
             allow_escape_sequences=allow_escape_sequences,
+            conditional_cache=conditional_cache,
         )
 
     return run_with_retry(
@@ -3277,6 +3374,7 @@ def call_gh_with_retry(
         deadline_at=deadline_at,
         matrix_path=matrix_path,
         attempt_with_timeout=lambda timeout: attempt(timeout),
+        repository=github_http_cache.repository_from_path(path),
     )
 
 

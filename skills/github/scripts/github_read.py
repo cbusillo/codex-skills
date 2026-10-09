@@ -17,13 +17,13 @@ import pathlib
 import random
 import re
 import subprocess
-import tempfile
 import time
 import urllib.parse
 from collections.abc import Callable
 from typing import Any, NoReturn, Optional
 
 import github_api as github_api_core
+import github_http_cache
 import github_identity
 import github_request_usage
 
@@ -122,6 +122,8 @@ class ConditionalResponseCache:
 
     def _read(self, path: pathlib.Path) -> Optional[dict[str, Any]]:
         try:
+            if path.stat().st_size > github_http_cache.MAX_ENTRY_BYTES:
+                return None
             item = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
@@ -135,21 +137,9 @@ class ConditionalResponseCache:
 
     def _write(self, path: pathlib.Path, item: dict[str, Any]) -> None:
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        try:
-            os.chmod(self.root, 0o700)
-        except OSError:
-            pass
-        fd, name = tempfile.mkstemp(prefix=f".{path.stem}.", suffix=".tmp", dir=self.root)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                os.fchmod(stream.fileno(), 0o600)
-                json.dump(item, stream, separators=(",", ":"), sort_keys=True)
-            os.replace(name, path)
-        finally:
-            try:
-                pathlib.Path(name).unlink(missing_ok=True)
-            except OSError:
-                pass
+        self.root.chmod(0o700)
+        # Both cache modes use the same private, atomic, bounded publisher.
+        github_http_cache.publish(self.root, path, item, max_age_seconds=self.max_age_seconds)
 
     def request(self, reader: "GitHubReader", method: str, path: str, *, step: str) -> github_api_core.ApiResult:
         headers = {"Accept": "application/vnd.github+json"}
@@ -290,6 +280,7 @@ class GitHubReader:
             retry_policy=retry_policy,
             deadline_at=self.deadline_at if deadline_at is None else deadline_at,
             allow_escape_sequences=allow_escape_sequences,
+            conditional_cache=not self.cache_enabled,
         )
 
     def graphql_json(

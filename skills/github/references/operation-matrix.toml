@@ -12,10 +12,12 @@ graphql_operation_context_semantics = "GraphQL POST requests are classified expl
 retry_policy_semantics = "Runtime retries are fail-closed and matrix-gated; safe reads may retry provider-classified transient failures, while writes also require confirmed not-started/rejected outcomes or operation-specific reconciliation."
 retry_deadline_semantics = "The effective retry deadline is the earlier of GITHUB_RETRY_MAX_WAIT_SECONDS and an inherited absolute GITHUB_RETRY_DEADLINE_AT request deadline; subprocess execution, cooldown coordination, and reconciliation reads share that deadline."
 shared_cooldown_semantics = "Cross-process cooldowns are keyed by GitHub host, actor, and quota bucket under CODE_HOME/state/github-retry with advisory locking, atomic state replacement, stale expiry, and post-reset drain spacing."
+request_priority_semantics = "Essential operations retain quota access; bulk REST core reads yield below 25 percent of the observed installation limit until reset. Writes always remain essential, including mixed-operation writes."
 actor_policy_semantics = "Automation-required operations use the configured bot token, active-human-required operations explicitly clear token environment variables and use the active local gh account, and split-identity operations verify both roles before protected workflow mutation."
 
 [[operations]]
 id = "github.app.setup"
+request_priority = "essential"
 capabilities = ["app_registration"]
 permission_mode = "delegated"
 permission_note = "Owner browser creates and installs a private App; setup derives the existing full-operation repository profile. App JWT verifies the newly selected installation, public user metadata supplies its commit identity and detects the registration account type before browser creation. Explicit previous-bot options use the existing owner-controlled provenance list; no personal owner is auto-trusted. The resolved configuration path and replaced primary login are reported, and private local configuration is written only after verification. No added default repository grant or protection write."
@@ -36,6 +38,7 @@ test_refs = ["github/scripts/test_github_app_setup.py:test_manifest_callback_and
 
 [[operations]]
 id = "github.api.call"
+request_priority = "essential"
 capabilities = ["contents_read", "contents_write", "issues_read", "issues_write", "pull_requests_read", "pull_requests_write", "actions_read", "actions_write", "metadata_read", "checks_read", "statuses_read", "security_events_read", "vulnerability_alerts_read", "secret_scanning_alerts_read", "administration_read", "deployments_read", "workflows_write", "discussions_read", "discussions_write", "operator_session", "operator_actions_read", "environment_approve", "protection_write", "checks_publish", "statuses_publish", "deployments_publish", "projects_read", "packages_read", "projects_write", "packages_write"]
 permission_mode = "input_dependent"
 permission_note = "The credential check fails explicitly without a configured token, even with active-auth fallback enabled; it accepts no delegated command. The read-only --write-actor-for OWNER/REPO prefix accepts only a GET /user actor probe and applies write identity selection and authorization before comment selection. Malformed probe inputs emit a non-retryable local validation envelope before stdin capture or authentication; the API transport preserves delegated failures. No new API probes or grants. Passthrough permissions depend on the exact endpoint, method, owner and token type. These are intentionally supported operation families, not grants required for every invocation. Consult the linked capability before a new caller; unknown APIs are not covered by this profile."
@@ -56,6 +59,7 @@ test_refs = ["github/scripts/test_github_api.py:test_retry_waits_until_primary_r
 
 [[operations]]
 id = "github.api.rate_limit"
+request_priority = "essential"
 capabilities = ["metadata_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -76,6 +80,7 @@ test_refs = ["github/scripts/test_github_api.py"]
 
 [[operations]]
 id = "github.api.classify_legacy"
+request_priority = "essential"
 capabilities = ["metadata_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -96,6 +101,7 @@ test_refs = ["github/scripts/test_github_api.py", "github/scripts/validate-gh-is
 
 [[operations]]
 id = "github.api.terminal_error"
+request_priority = "essential"
 capabilities = []
 permission_mode = "local"
 permission_note = "Local classification or commit identity only; no GitHub API permission or profile impact."
@@ -116,6 +122,7 @@ test_refs = ["github/scripts/test_github_api.py", "github/scripts/validate-gh-is
 
 [[operations]]
 id = "github.workflow.actor.read"
+request_priority = "essential"
 capabilities = ["metadata_read", "operator_session"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -136,6 +143,7 @@ test_refs = ["github/scripts/test_github_workflow_babysit.py:GitHubWorkflowClien
 
 [[operations]]
 id = "github.workflow.dispatch"
+request_priority = "essential"
 capabilities = ["actions_write"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -156,6 +164,7 @@ test_refs = ["github/scripts/test_github_workflow_babysit.py:GitHubWorkflowClien
 
 [[operations]]
 id = "github.workflow.run.read"
+request_priority = "bulk"
 capabilities = ["actions_read"]
 permission_mode = "fixed"
 permission_note = "Existing Actions read grant and safe probe suffice. Automation-only conditional GETs reuse validator-backed private bodies, preserve same actor and bounded deadlines, and propagate read/permission failures; identity and protected-environment reads are uncached. No profile grant changes."
@@ -176,6 +185,7 @@ test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterT
 
 [[operations]]
 id = "github.workflow.jobs.read"
+request_priority = "bulk"
 capabilities = ["actions_read"]
 permission_mode = "fixed"
 permission_note = "Existing Actions read grant and safe probe suffice. Automation-only conditional GETs reuse validator-backed private bodies, preserve same actor and bounded deadlines, and propagate read/permission failures; identity and protected-environment reads are uncached. No profile grant changes."
@@ -196,6 +206,7 @@ test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterT
 
 [[operations]]
 id = "github.workflow.pending_deployments.read"
+request_priority = "essential"
 capabilities = ["operator_actions_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -216,6 +227,7 @@ test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterT
 
 [[operations]]
 id = "github.workflow.approvals.read"
+request_priority = "essential"
 capabilities = ["operator_actions_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -236,6 +248,7 @@ test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterT
 
 [[operations]]
 id = "github.workflow.pending_deployments.approve"
+request_priority = "essential"
 capabilities = ["environment_approve"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -256,6 +269,7 @@ test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterT
 
 [[operations]]
 id = "github.pr.view"
+request_priority = "essential"
 capabilities = ["pull_requests_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -276,6 +290,7 @@ test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/g
 
 [[operations]]
 id = "github.pr.list"
+request_priority = "bulk"
 capabilities = ["pull_requests_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -296,6 +311,7 @@ test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/g
 
 [[operations]]
 id = "github.pr.review_readiness"
+request_priority = "essential"
 capabilities = ["pull_requests_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -316,6 +332,7 @@ test_refs = ["babysit-pr/scripts/test_gh_pr_watch.py:test_review_readiness_query
 
 [[operations]]
 id = "github.pr.review_threads"
+request_priority = "essential"
 capabilities = ["pull_requests_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -336,6 +353,7 @@ test_refs = ["babysit-pr/scripts/test_gh_pr_watch.py:test_security_threads_survi
 
 [[operations]]
 id = "github.pr.create"
+request_priority = "essential"
 capabilities = ["pull_requests_write", "issues_write", "projects_write"]
 permission_mode = "input_dependent"
 permission_note = "PR writes require Pull requests write. Requested labels or milestones may additionally require Issues write; Project options use the separate Project actor. No default access beyond the declared families."
@@ -356,6 +374,7 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_pr_write_retries_idempoten
 
 [[operations]]
 id = "github.pr.edit"
+request_priority = "essential"
 capabilities = ["pull_requests_write", "issues_write", "projects_write"]
 permission_mode = "input_dependent"
 permission_note = "PR writes require Pull requests write. Requested labels or milestones may additionally require Issues write; Project options use the separate Project actor. No default access beyond the declared families."
@@ -376,6 +395,7 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_pr_write_retries_idempoten
 
 [[operations]]
 id = "github.pr.comment"
+request_priority = "essential"
 capabilities = ["pull_requests_write"]
 permission_mode = "input_dependent"
 permission_note = "Uses the existing Pull requests write grant and safe probe; no profile expansion. Exact edits validate thread, authenticated author and optional expected body/version, fail closed on missing or stale targets, and never replay PATCH. Preflight comparisons are not atomic compare-and-swap."
@@ -398,6 +418,7 @@ test_refs = ["github/scripts/test_github_comment.py:test_append_filters_old_page
 
 [[operations]]
 id = "github.pr.checks"
+request_priority = "essential"
 capabilities = ["pull_requests_read", "checks_read", "statuses_read", "actions_read"]
 permission_mode = "fixed"
 permission_note = "Actions read selects current head workflow executions and latest jobs for repeated attempts. It uses the existing Actions safe probe and default grant; unavailable reads preserve check failures and incomplete selection blocks readiness and retries. No new grant or writer role."
@@ -418,6 +439,7 @@ test_refs = ["babysit-pr/scripts/test_gh_pr_watch.py:test_standalone_checks_sele
 
 [[operations]]
 id = "github.pr.update_branch"
+request_priority = "essential"
 capabilities = ["pull_requests_write", "contents_write"]
 permission_mode = "input_dependent"
 permission_note = "PR write on the base repository and Contents write on the head repository are required for App branch updates."
@@ -438,6 +460,7 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_update_branch_guards_head_
 
 [[operations]]
 id = "github.pr.merge"
+request_priority = "essential"
 capabilities = ["contents_write", "pull_requests_read", "workflows_write"]
 permission_mode = "input_dependent"
 permission_note = "Merge and optional ref deletion use Contents write, with PR read for preflight. Workflows write is additionally needed when workflow files differ. Repository direction and protection still decide who may merge."
@@ -458,6 +481,7 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_merge_reconciles_accepted_
 
 [[operations]]
 id = "github.pr.delete_ref"
+request_priority = "essential"
 capabilities = ["contents_write"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -478,6 +502,7 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_pr_helper_delete_branch_us
 
 [[operations]]
 id = "github.pr.supersede"
+request_priority = "essential"
 capabilities = ["pull_requests_write", "contents_write"]
 permission_mode = "input_dependent"
 permission_note = "Closing and commenting use Pull requests write; the optional branch deletion needs Contents write. Preserve partial-success evidence."
@@ -498,6 +523,7 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_pr_helper_supersede_commen
 
 [[operations]]
 id = "github.pr.rate_limit"
+request_priority = "essential"
 capabilities = ["metadata_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -518,6 +544,7 @@ test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/g
 
 [[operations]]
 id = "github.read"
+request_priority = "essential"
 capabilities = ["contents_read", "issues_read", "pull_requests_read", "actions_read", "metadata_read", "checks_read", "statuses_read", "security_events_read", "vulnerability_alerts_read", "secret_scanning_alerts_read", "administration_read", "deployments_read", "discussions_read"]
 permission_mode = "input_dependent"
 permission_note = "Read-only endpoint selection determines the required capability. Security reads preserve unavailable evidence and secret scanning uses only the redacted reader. No arbitrary endpoint is automatically supported."
@@ -538,6 +565,7 @@ test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_
 
 [[operations]]
 id = "github.read.pulls"
+request_priority = "bulk"
 capabilities = ["pull_requests_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -558,6 +586,7 @@ test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_
 
 [[operations]]
 id = "github.read.pull_checks"
+request_priority = "essential"
 capabilities = ["pull_requests_read", "checks_read", "statuses_read", "actions_read"]
 permission_mode = "fixed"
 permission_note = "Actions read selects current head workflow executions and latest jobs for repeated attempts. It uses the existing Actions safe probe and default grant; unavailable reads preserve check failures and incomplete selection blocks readiness and retries. No new grant or writer role."
@@ -578,6 +607,7 @@ test_refs = ["babysit-pr/scripts/test_gh_pr_watch.py:test_standalone_checks_sele
 
 [[operations]]
 id = "github.read.issues"
+request_priority = "bulk"
 capabilities = ["issues_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -598,6 +628,7 @@ test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_
 
 [[operations]]
 id = "github.read.workflow_runs"
+request_priority = "bulk"
 capabilities = ["actions_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -618,6 +649,7 @@ test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_
 
 [[operations]]
 id = "github.read.workflow_run"
+request_priority = "essential"
 capabilities = ["actions_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -638,6 +670,7 @@ test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_
 
 [[operations]]
 id = "github.read.workflow_jobs"
+request_priority = "essential"
 capabilities = ["actions_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -658,6 +691,7 @@ test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_
 
 [[operations]]
 id = "github.read.job_log"
+request_priority = "essential"
 capabilities = ["actions_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -678,6 +712,7 @@ test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_
 
 [[operations]]
 id = "github.read.repository"
+request_priority = "essential"
 capabilities = ["metadata_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -698,6 +733,7 @@ test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_
 
 [[operations]]
 id = "github.read.redacted_secret_scanning_status"
+request_priority = "essential"
 capabilities = ["metadata_read", "secret_scanning_alerts_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -718,6 +754,7 @@ test_refs = ["github/scripts/test_github_read.py:test_secret_scanning_status_pub
 
 [[operations]]
 id = "github.plan.index"
+request_priority = "bulk"
 capabilities = ["issues_read", "metadata_read"]
 permission_mode = "fixed"
 permission_note = "Read-only repository metadata uses the existing metadata capability and safe repository GET probe; unavailable archive metadata preserves the issue inventory with unknown disposition. No new grant, actor, or mutation. Issue inventory and classified auth, actor, quota or provider failures retain their existing terminal policy."
@@ -738,6 +775,7 @@ test_refs = ["github/scripts/test_planning_archive.py:ArchiveTests", "github/scr
 
 [[operations]]
 id = "github.plan.search"
+request_priority = "bulk"
 capabilities = ["issues_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -758,6 +796,7 @@ test_refs = ["github/scripts/test_gh_plan_search.py:SearchTests", "github/script
 
 [[operations]]
 id = "github.plan.show"
+request_priority = "essential"
 capabilities = ["issues_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -778,6 +817,7 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_cmd_show_reads_unmarked_hu
 
 [[operations]]
 id = "github.plan.create"
+request_priority = "essential"
 capabilities = ["issues_write", "projects_write", "contents_read"]
 permission_mode = "input_dependent"
 permission_note = "Issues and labels use Issues write. Optional Project enrollment uses the separate Project actor and retains recoverable issue-first behavior."
@@ -798,6 +838,7 @@ test_refs = ["github/scripts/test_github_agent.py", "github/scripts/validate-gh-
 
 [[operations]]
 id = "github.plan.claim"
+request_priority = "essential"
 capabilities = ["issues_write", "pull_requests_read", "contents_read"]
 permission_mode = "fixed"
 permission_note = "Claim comments, status and labels use automation Issues write; inventory uses read-only Git, PR and local session surfaces. Resume accepts an identical released status marker only with same-author exact-ID release and newer timestamp evidence from existing comment reads; uncertain or competing ownership still refuses. An ordinary successor with an exact retained handoff reads every named open/merged same-repository PR discussion and preserves waits, native blockers and artifact/peer checks on readback. Conflict-only refresh also covers both repository inventories for a cross-repository canonical issue. No new endpoint, grant or writer role; existing profile grants suffice."
@@ -818,6 +859,7 @@ test_refs = ["github/scripts/test_github_agent.py", "github/scripts/test_gh_plan
 
 [[operations]]
 id = "github.plan.release_claim"
+request_priority = "essential"
 capabilities = ["issues_write", "pull_requests_read", "contents_read"]
 permission_mode = "fixed"
 permission_note = "Same configured automation identity as source claim; existing issue/comment and retained PR/commit reads suffice. No new grants or identity changes."
@@ -838,6 +880,7 @@ test_refs = ["github/scripts/test_gh_plan_release.py"]
 
 [[operations]]
 id = "github.plan.update_section"
+request_priority = "essential"
 capabilities = ["issues_write"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -867,6 +910,7 @@ test_refs = [
 
 [[operations]]
 id = "github.plan.link"
+request_priority = "essential"
 capabilities = ["issues_write"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -887,6 +931,7 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_native_link_and_unlink_all
 
 [[operations]]
 id = "github.plan.unlink"
+request_priority = "essential"
 capabilities = ["issues_write"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -907,6 +952,7 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_native_link_and_unlink_all
 
 [[operations]]
 id = "github.plan.deps"
+request_priority = "essential"
 capabilities = ["issues_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -927,6 +973,7 @@ test_refs = ["github/scripts/validate-gh-plan.py", "github/scripts/validate-oper
 
 [[operations]]
 id = "github.direction.audit_issues"
+request_priority = "bulk"
 capabilities = ["issues_read", "pull_requests_read", "metadata_read"]
 permission_mode = "fixed"
 permission_note = "Audit issue collection and stale-wait reporting use existing Issues, Pull requests and Metadata read grants and their safe probes; no default-profile expansion. Report-only mode does not stamp the direction marker. Failed prerequisite reads and input/page bounds expose incomplete report coverage without changing audit findings or exit status. Required issue-list read failures abort the audit. Overall Track milestone-wait validation adds bounded native-path reads under the same Issues grant; local wait findings use already-read bodies. Agent closeout may read up to two complete comment pages to recover an implementation PR absent from status; the PR must name this issue and land into its default branch. Later status edits do not invalidate mechanical delivery proof; remaining work and native holds stay visible and no issue closes automatically. These comment reads use the existing Issues read capability and safe probe, with no grant/profile change. Bounded inbound dependency read failures and capped listings report incomplete coverage; an incomplete closed-audit listing preserves the prior marker."
@@ -947,6 +994,7 @@ test_refs = ["direction/scripts/test_direction_audit.py:test_edited_supervisor_c
 
 [[operations]]
 id = "github.direction.turn_record"
+request_priority = "essential"
 capabilities = ["issues_read", "issues_write"]
 permission_mode = "fixed"
 permission_note = "Uses the existing Issues read and write grants through gh-with-env-token and gh-issue; no profile expansion. The local marker is written first; a failed list or write is reported as shared.ok false with exit 2 and leaves other machines reminding, never a silent success."
@@ -967,6 +1015,7 @@ test_refs = ["direction/scripts/test_direction_mark.py:test_two_machines_one_tur
 
 [[operations]]
 id = "github.direction.audit_rulesets"
+request_priority = "bulk"
 capabilities = ["metadata_read"]
 permission_mode = "fixed"
 permission_note = "Reads repository-owned branch ruleset summaries with the existing metadata read grant; no profile expansion. GitHub's plan-limit 403 for a private repository on GitHub Free becomes a ruleset_unavailable finding for an adopted repository and nothing for an unadopted one; every other read failure aborts the audit."
@@ -987,6 +1036,7 @@ test_refs = ["direction/scripts/test_direction_audit.py:test_ruleset_plan_limit_
 
 [[operations]]
 id = "github.direction.audit_capacity"
+request_priority = "bulk"
 capabilities = ["metadata_read", "contents_read", "pull_requests_read", "issues_read"]
 permission_mode = "fixed"
 permission_note = "Runs only for OWNER/direction and uses existing metadata, Contents, Pull requests and Issues read grants with their safe probes; no profile expansion. The automation reader lists its installation's repositories; the Director's own reader lists the repositories that login owns. A failed per-repository read or a capped listing reports incomplete coverage under capacity_* listings; a failed repository listing aborts the audit. Missing Order or graph/native-link evidence keeps the share unknown and the audit window open. Never uses the search API."
@@ -1007,6 +1057,7 @@ test_refs = ["direction/scripts/test_direction_audit.py:test_capacity_fetch_attr
 
 [[operations]]
 id = "github.plan.direction_read"
+request_priority = "essential"
 capabilities = ["contents_read"]
 permission_mode = "fixed"
 permission_note = "Read the merged remote DIRECTION.md through Contents read. Denied reads fail closed; a local checkout does not replace the remote authority."
@@ -1027,6 +1078,7 @@ test_refs = ["github/scripts/test_gh_plan_direction.py:test_gate_reads_the_targe
 
 [[operations]]
 id = "github.direction.prune_unadopted"
+request_priority = "essential"
 capabilities = ["metadata_read", "contents_read"]
 permission_mode = "fixed"
 permission_note = "Uses existing repository metadata and Contents read grants and their safe probes; no profile expansion. Repository visibility must be confirmed before a contents HTTP 404 permits local removal. Denied or ambiguous reads retain entries and report unknown. The documented owner-only reader is read-only; this operation never writes GitHub."
@@ -1047,6 +1099,7 @@ test_refs = ["direction/scripts/test_direction_audit.py:test_prune_preserves_ado
 
 [[operations]]
 id = "github.plan.next"
+request_priority = "bulk"
 capabilities = ["issues_read", "contents_read", "projects_read", "metadata_read", "pull_requests_read"]
 permission_mode = "input_dependent"
 permission_note = "Read issues and merged direction, including native graph nodes across repositories and owners for owner/direction. Local and global stale reports share a bounded read budget between active linked PRs and parked waits; unavailable or unscanned candidate evidence stays explicit. Existing Issues/Contents read capabilities suffice; inaccessible nodes remain unknown without auth fallback or grant changes. Client resolution uses the existing read-only Launchplane context and product-profile helpers, with no new GitHub grant; unavailable service reads may use a verified private repository people overlay, while readable empty or ambiguous records cannot invent a Client. Client ranking is restricted to the Director owner and never grants mutation authority. Old Dependabot discovery uses existing Pull requests read and the existing Launchplane merge-train-policy-read helper; unknown enrollment and bounded PR reads remain explicit, with no profile expansion, grant or discovery write. Repository archive context uses the existing Metadata read capability and repository GET probe; archived inventories remain frozen history, while missing metadata degrades report coverage. Standalone stale-waits-only performs the same read without marker writes. Optional Project focus reads use the owner-compatible Project actor and degrade to project_focus_unavailable."
@@ -1067,6 +1120,7 @@ test_refs = ["github/scripts/test_planning_archive.py:ArchiveTests", "github/scr
 
 [[operations]]
 id = "github.plan.close"
+request_priority = "essential"
 capabilities = ["issues_write", "projects_write"]
 permission_mode = "input_dependent"
 permission_note = "Issue close and relationship reconciliation use Issues write. Configured Project synchronization needs the separate Project role; record partial outcomes without losing a completed step."
@@ -1087,6 +1141,7 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_close_not_planned_accepts_
 
 [[operations]]
 id = "github.plan.project_add"
+request_priority = "essential"
 capabilities = ["issues_read", "projects_write"]
 permission_mode = "delegated"
 permission_note = "Read the issue before the owner-compatible Project mutation. Retain explicit Project actor selection and recoverable issue-first behavior."
@@ -1107,6 +1162,7 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_project_commands_are_recov
 
 [[operations]]
 id = "github.plan.project_set"
+request_priority = "essential"
 capabilities = ["issues_read", "projects_write"]
 permission_mode = "delegated"
 permission_note = "Read the issue before the owner-compatible Project mutation. Retain explicit Project actor selection and recoverable issue-first behavior."
@@ -1127,6 +1183,7 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_project_commands_are_recov
 
 [[operations]]
 id = "github.plan.project_list"
+request_priority = "bulk"
 capabilities = ["projects_read"]
 permission_mode = "delegated"
 permission_note = "Project reads require owner-compatible Project credentials; retain explicit actor selection and report unsupported or unavailable owner/token combinations."
@@ -1147,6 +1204,7 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_project_commands_are_recov
 
 [[operations]]
 id = "github.plan.ensure_labels"
+request_priority = "essential"
 capabilities = ["issues_write"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -1167,6 +1225,7 @@ test_refs = ["github/scripts/test_github_agent.py", "github/scripts/validate-gh-
 
 [[operations]]
 id = "github.issue.create"
+request_priority = "essential"
 capabilities = ["issues_write"]
 permission_mode = "fixed"
 permission_note = "Issues write also covers optional agent-label creation; the existing issues capability safe probe and degraded behavior apply. Label setup failures stop before issue creation. No new permission or profile grant."
@@ -1187,6 +1246,7 @@ test_refs = ["github/scripts/test_github_issue.py:test_create_preserves_fields_a
 
 [[operations]]
 id = "github.issue.edit"
+request_priority = "essential"
 capabilities = ["issues_write"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -1207,6 +1267,7 @@ test_refs = ["github/scripts/test_github_api.py:test_retry_idempotent_write_reco
 
 [[operations]]
 id = "github.issue.close"
+request_priority = "essential"
 capabilities = ["issues_write"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -1227,6 +1288,7 @@ test_refs = ["github/scripts/test_github_issue.py:test_close_partial_failure_pre
 
 [[operations]]
 id = "github.issue.reopen"
+request_priority = "essential"
 capabilities = ["issues_write"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -1247,6 +1309,7 @@ test_refs = ["github/scripts/test_github_issue.py:test_reopen_comment_uses_non_i
 
 [[operations]]
 id = "github.comment.issue"
+request_priority = "essential"
 capabilities = ["issues_write"]
 permission_mode = "fixed"
 permission_note = "Uses the existing Issues write grant and safe probe; no profile expansion. Exact edits validate thread, authenticated author and optional expected body/version, fail closed on missing or stale targets, and never replay PATCH. Preflight comparisons are not atomic compare-and-swap."
@@ -1269,6 +1332,7 @@ test_refs = ["github/scripts/test_github_comment.py:test_append_filters_old_page
 
 [[operations]]
 id = "github.comment.pr"
+request_priority = "essential"
 capabilities = ["pull_requests_write"]
 permission_mode = "input_dependent"
 permission_note = "Uses the existing Pull requests write grant and safe probe; no profile expansion. Exact edits validate thread, authenticated author and optional expected body/version, fail closed on missing or stale targets, and never replay PATCH. Preflight comparisons are not atomic compare-and-swap."
@@ -1291,6 +1355,7 @@ test_refs = ["github/scripts/test_github_comment.py:test_append_filters_old_page
 
 [[operations]]
 id = "github.gh_with_env_token"
+request_priority = "essential"
 capabilities = ["contents_read", "contents_write", "issues_read", "issues_write", "pull_requests_read", "pull_requests_write", "actions_read", "actions_write", "metadata_read", "checks_read", "statuses_read", "security_events_read", "vulnerability_alerts_read", "secret_scanning_alerts_read", "administration_read", "deployments_read", "workflows_write", "discussions_read", "discussions_write", "operator_session", "operator_actions_read", "environment_approve", "protection_write", "checks_publish", "statuses_publish", "deployments_publish", "projects_read", "packages_read", "projects_write", "packages_write"]
 permission_mode = "input_dependent"
 permission_note = "The credential check fails explicitly without a configured token, even with active-auth fallback enabled; it accepts no delegated command. No new API probes or grants. Passthrough permissions depend on the exact endpoint, method, owner and token type. These are intentionally supported operation families, not grants required for every invocation. Consult the linked capability before a new caller; unknown APIs are not covered by this profile."
@@ -1311,6 +1376,7 @@ test_refs = ["github/scripts/test_gh_with_env_token.py", "github/scripts/validat
 
 [[operations]]
 id = "github.git_commit_as_bot"
+request_priority = "essential"
 capabilities = []
 permission_mode = "local"
 permission_note = "Local commit identity. With a configured App and a github.com origin, App JWT reads (no installation grant) decide whether the person commits as themselves in another owner's repository; no profile impact."
@@ -1331,6 +1397,7 @@ test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/validate-ope
 
 [[operations]]
 id = "github.git_push_as_bot"
+request_priority = "essential"
 capabilities = ["contents_write", "workflows_write"]
 permission_mode = "input_dependent"
 permission_note = "Ordinary pushes require Contents write; pushes changing workflow files also require Workflows write. Authorization and protected-branch discipline remain independent."
@@ -1351,6 +1418,7 @@ test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/validate-ope
 
 [[operations]]
 id = "github.ci_diagnose"
+request_priority = "essential"
 capabilities = ["pull_requests_read", "checks_read", "statuses_read", "actions_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -1371,6 +1439,7 @@ test_refs = ["github/scripts/test_github_api.py", "github/scripts/test_github_ci
 
 [[operations]]
 id = "github.repo_snapshot"
+request_priority = "bulk"
 capabilities = ["metadata_read", "contents_read", "issues_read", "pull_requests_read", "checks_read", "statuses_read", "actions_read"]
 permission_mode = "delegated"
 permission_note = "GitHub reads use automation identity and rest_core quota. The bounded Launchplane policy GET uses existing private admin configuration and its standing policy-read grant, independently of GitHub auth/quota. Report each degraded component without treating unavailable evidence as clean."
@@ -1391,6 +1460,7 @@ test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/test_github_
 
 [[operations]]
 id = "github.work_evidence"
+request_priority = "bulk"
 capabilities = ["metadata_read", "contents_read", "issues_read", "pull_requests_read", "checks_read", "statuses_read", "actions_read"]
 permission_mode = "delegated"
 permission_note = "Composite read-only evidence uses these capability families. Collector preflight delegates actor verification to gh-with-env-token --check (App installation or configured user token), then checks repository metadata, owner listing, or subject issue search. Existing read grants suffice; failed authentication or scoped access stops collection rather than falling back or reporting clean evidence."
@@ -1411,6 +1481,7 @@ test_refs = ["github/scripts/test_github_work_evidence.py:test_evidence_payload_
 
 [[operations]]
 id = "github.plan.milestone_list"
+request_priority = "bulk"
 capabilities = ["issues_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -1431,6 +1502,7 @@ test_refs = ["github/scripts/test_github_milestone.py:test_list_milestones_pagin
 
 [[operations]]
 id = "github.plan.milestone_show"
+request_priority = "essential"
 capabilities = ["issues_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -1451,6 +1523,7 @@ test_refs = ["github/scripts/test_github_milestone.py:test_show_milestone_resolv
 
 [[operations]]
 id = "github.plan.milestone_create"
+request_priority = "essential"
 capabilities = ["issues_write", "contents_read"]
 permission_mode = "fixed"
 permission_note = "Milestone writes require Issues write and Contents read to validate the merged DIRECTION milestone list; unreadable direction fails closed."
@@ -1471,6 +1544,7 @@ test_refs = ["github/scripts/test_github_milestone.py:test_create_is_exact_title
 
 [[operations]]
 id = "github.plan.milestone_update"
+request_priority = "essential"
 capabilities = ["issues_write", "contents_read"]
 permission_mode = "fixed"
 permission_note = "Milestone writes require Issues write and Contents read to validate the merged DIRECTION milestone list; unreadable direction fails closed."
@@ -1491,6 +1565,7 @@ test_refs = ["github/scripts/test_github_milestone.py:test_update_no_op_skips_pa
 
 [[operations]]
 id = "github.plan.milestone_close"
+request_priority = "essential"
 capabilities = ["issues_write"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -1511,6 +1586,7 @@ test_refs = ["github/scripts/test_github_milestone.py:test_close_refuses_open_is
 
 [[operations]]
 id = "github.rulesets.actor.read"
+request_priority = "essential"
 capabilities = ["operator_session"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -1531,6 +1607,7 @@ test_refs = ["github/scripts/test_github_rulesets.py:test_client_uses_active_hum
 
 [[operations]]
 id = "github.rulesets.repository.list"
+request_priority = "bulk"
 capabilities = ["operator_session"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -1551,6 +1628,7 @@ test_refs = ["github/scripts/test_github_rulesets.py:test_cli_all_owned_uses_own
 
 [[operations]]
 id = "github.rulesets.list"
+request_priority = "bulk"
 capabilities = ["operator_session", "metadata_read"]
 permission_mode = "delegated"
 permission_note = "The ruleset helper deliberately keeps inspection under its verified active owner even where summary metadata is readable by an App."
@@ -1571,6 +1649,7 @@ test_refs = ["github/scripts/test_github_rulesets.py:test_plan_is_idempotent_and
 
 [[operations]]
 id = "github.rulesets.detail"
+request_priority = "essential"
 capabilities = ["protection_write"]
 permission_mode = "delegated"
 permission_note = "Full bypass-actor inspection and protected ruleset mutations retain the verified owner path. Administration read for ordinary diagnostics is not full ruleset-writer evidence."
@@ -1591,6 +1670,7 @@ test_refs = ["github/scripts/test_github_rulesets.py:test_plan_is_idempotent_and
 
 [[operations]]
 id = "github.rulesets.create"
+request_priority = "essential"
 capabilities = ["protection_write"]
 permission_mode = "delegated"
 permission_note = "Full bypass-actor inspection and protected ruleset mutations retain the verified owner path. Administration read for ordinary diagnostics is not full ruleset-writer evidence."
@@ -1611,6 +1691,7 @@ test_refs = ["github/scripts/test_github_rulesets.py:test_apply_converges_and_se
 
 [[operations]]
 id = "github.rulesets.update"
+request_priority = "essential"
 capabilities = ["protection_write"]
 permission_mode = "delegated"
 permission_note = "Full bypass-actor inspection and protected ruleset mutations retain the verified owner path. Administration read for ordinary diagnostics is not full ruleset-writer evidence."
@@ -1631,6 +1712,7 @@ test_refs = ["github/scripts/test_github_rulesets.py:test_plan_creates_missing_a
 
 [[operations]]
 id = "github.capabilities.profile"
+request_priority = "essential"
 capabilities = []
 permission_mode = "local"
 permission_note = "Derive local catalog output; no credentials, API access, or profile mutation."
@@ -1651,6 +1733,7 @@ test_refs = ["github/scripts/test_github_capabilities.py"]
 
 [[operations]]
 id = "github.capabilities.audit"
+request_priority = "bulk"
 capabilities = ["contents_read", "contents_write", "issues_read", "issues_write", "pull_requests_read", "pull_requests_write", "actions_read", "actions_write", "metadata_read", "checks_read", "statuses_read", "security_events_read", "vulnerability_alerts_read", "secret_scanning_alerts_read", "administration_read", "deployments_read", "workflows_write", "discussions_read", "discussions_write", "operator_session", "operator_actions_read", "environment_approve", "protection_write", "checks_publish", "statuses_publish", "deployments_publish", "projects_read", "packages_read", "projects_write", "packages_write"]
 permission_mode = "input_dependent"
 permission_note = "Audit only the configured App with safe probes and explicit separate-actor results; no permission mutation or actor fallback."
@@ -1671,6 +1754,7 @@ test_refs = ["github/scripts/test_github_capabilities.py"]
 
 [[operations]]
 id = "github.capabilities.fingerprints"
+request_priority = "essential"
 capabilities = []
 permission_mode = "local"
 permission_note = "Derive local catalog output; no credentials, API access, or profile mutation."
@@ -1691,6 +1775,7 @@ test_refs = ["github/scripts/test_github_capabilities.py"]
 
 [[operations]]
 id = "github.supported.code_scanning"
+request_priority = "bulk"
 capabilities = ["security_events_read"]
 permission_mode = "fixed"
 permission_note = "Intentionally supported API family through the maintained wrapper. The capability declares its safe probe, degraded behavior and default-profile contribution. Removing this family removes its grant when no other supported operation needs it."
@@ -1711,6 +1796,7 @@ test_refs = ["github/scripts/test_github_capabilities.py"]
 
 [[operations]]
 id = "github.supported.dependabot"
+request_priority = "bulk"
 capabilities = ["vulnerability_alerts_read"]
 permission_mode = "fixed"
 permission_note = "Intentionally supported API family through the maintained wrapper. The capability declares its safe probe, degraded behavior and default-profile contribution. Removing this family removes its grant when no other supported operation needs it."
@@ -1731,6 +1817,7 @@ test_refs = ["github/scripts/test_github_capabilities.py"]
 
 [[operations]]
 id = "github.supported.runners"
+request_priority = "bulk"
 capabilities = ["administration_read"]
 permission_mode = "fixed"
 permission_note = "Intentionally supported API family through the maintained wrapper. The capability declares its safe probe, degraded behavior and default-profile contribution. Removing this family removes its grant when no other supported operation needs it."
@@ -1751,6 +1838,7 @@ test_refs = ["github/scripts/test_github_capabilities.py"]
 
 [[operations]]
 id = "github.supported.deployments"
+request_priority = "bulk"
 capabilities = ["deployments_read"]
 permission_mode = "fixed"
 permission_note = "Intentionally supported API family through the maintained wrapper. The capability declares its safe probe, degraded behavior and default-profile contribution. Removing this family removes its grant when no other supported operation needs it."
@@ -1771,6 +1859,7 @@ test_refs = ["github/scripts/test_github_capabilities.py"]
 
 [[operations]]
 id = "github.supported.discussions_read"
+request_priority = "bulk"
 capabilities = ["discussions_read"]
 permission_mode = "fixed"
 permission_note = "Intentionally supported API family through the maintained wrapper. The capability declares its safe probe, degraded behavior and default-profile contribution. Removing this family removes its grant when no other supported operation needs it."
@@ -1791,6 +1880,7 @@ test_refs = ["github/scripts/test_github_capabilities.py"]
 
 [[operations]]
 id = "github.supported.discussions_write"
+request_priority = "essential"
 capabilities = ["discussions_write"]
 permission_mode = "fixed"
 permission_note = "Intentionally supported API family through the maintained wrapper. The capability declares its safe probe, degraded behavior and default-profile contribution. Removing this family removes its grant when no other supported operation needs it."
@@ -1812,6 +1902,7 @@ test_refs = ["github/scripts/test_github_capabilities.py"]
 
 [[operations]]
 id = "github.pr.runner_acquisition_evidence"
+request_priority = "essential"
 entrypoint = "babysit-pr/scripts/gh_pr_watch.py runner acquisition recovery"
 intent = "Verify exact-attempt unexecuted cancelled jobs, acquisition annotations and PR-required checks; unavailable evidence excludes recovery."
 current_transport = "composite"
@@ -1832,6 +1923,7 @@ permission_note = "Existing repository read grants and safe probes only; failed 
 
 [[operations]]
 id = "github.pr.retry_checks"
+request_priority = "essential"
 entrypoint = "babysit-pr/scripts/gh_pr_watch.py --retry-failed-now"
 intent = "Submit failed-job retries or verified unexecuted required acquisition-failure full retries within persisted per-head cycle accounting."
 current_transport = "gh_cli"
@@ -1852,6 +1944,7 @@ permission_note = "Existing Actions write grant with read-only Actions safe prob
 
 [[operations]]
 id = "github.pr.watch"
+request_priority = "bulk"
 entrypoint = "babysit-pr/scripts/gh_pr_watch.py --watch"
 intent = "Read PR review, check and workflow evidence through the existing conditional reader."
 current_transport = "rest_api"
@@ -1872,6 +1965,7 @@ permission_note = "Existing read grants only; no identity, permission or control
 
 [[operations]]
 id = "github.train.drive"
+request_priority = "essential"
 entrypoint = "launchplane/scripts/launchplane-train-drive.py --repo OWNER/REPO --pr N"
 intent = "Read train PR and candidate-check state with conditional caching and bounded primary-reset waits. Controller mutations remain delegated to the Launchplane helper."
 current_transport = "rest_api"
@@ -2215,7 +2309,7 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github/scripts/github-ci-diagnose.py" = "aa0acdfc3dfe28caa16b4fff851341eb34e65c4264ff3c1402b8e96d2116f27a"
 "github/scripts/github-repo-snapshot.sh" = "16162c41247a610e5d7093fd649053c79f6a4708b14d812368dee8753fd1a9fd"
 "github/scripts/github-work-evidence.py" = "eef884893d5bedce8a539587e7f7fd93e109ef1a17aedf887575a144340977a6"
-"github/scripts/github_api.py" = "a09cfb7454d707e5305fd8711e0861c3fa2b030af464dc87dcc3a6354d2ae04b"
+"github/scripts/github_api.py" = "027b2f40738eda08a7d79f3f5025a575468996b89e7a70802b7a14da7b59bb48"
 "github/scripts/github_capabilities.py" = "bfd1a0a155a783feca5735b870a78709032e878a9011a07034b000e41be97901"
 "github/scripts/github_comment.py" = "7fb0f858d6ecac46fd095ee5c6fa867a69e6cba90ed50f08fb8a5c8ec065d84e"
 "github/scripts/github_direction_next.py" = "7a6f83bd0a764962486fb720f9dc9eca2febb77524565afcba95540711de5eb4"
