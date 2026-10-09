@@ -90,6 +90,15 @@ def approval(plan: dict[str, object]) -> dict[str, object]:
     return {"kind": partdb_write.APPROVAL_KIND, "plan_digest": plan["digest"]}
 
 
+def approved_plan_files(tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
+    plan_path = tmp_path / "plan.json"
+    approval_path = tmp_path / "approval.json"
+    plan = artifact_plan()
+    write_json(plan_path, plan)
+    write_json(approval_path, approval(plan))
+    return plan_path, approval_path, plan
+
+
 def apply_args(plan_path: Path, approval_path: Path, *, apply: bool = True) -> argparse.Namespace:
     return argparse.Namespace(plan=str(plan_path), approval=str(approval_path), apply=apply)
 
@@ -151,11 +160,7 @@ def test_plan_writes_reviewable_exact_diff(monkeypatch: pytest.MonkeyPatch, tmp_
 
 
 def test_apply_requires_flag_before_any_context_access(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    plan_path = tmp_path / "plan.json"
-    approval_path = tmp_path / "approval.json"
-    plan = artifact_plan()
-    write_json(plan_path, plan)
-    write_json(approval_path, approval(plan))
+    plan_path, approval_path, plan = approved_plan_files(tmp_path)
     monkeypatch.setitem(vars(partdb_write.partdb_read), "context", lambda: pytest.fail("context must not be accessed"))
 
     with pytest.raises(partdb_write.WriteError, match="without --apply"):
@@ -180,11 +185,7 @@ def test_unbound_plan_requires_new_approval_before_context_access(monkeypatch: p
 def test_apply_drift_and_noop_do_not_obtain_write_authority(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, current_amount: int, expected_outcome: str,
 ) -> None:
-    plan_path = tmp_path / "plan.json"
-    approval_path = tmp_path / "approval.json"
-    plan = artifact_plan()
-    write_json(plan_path, plan)
-    write_json(approval_path, approval(plan))
+    plan_path, approval_path, plan = approved_plan_files(tmp_path)
     monkeypatch.setitem(vars(partdb_write.partdb_read), "context", lambda: (tmp_path, {}))
     monkeypatch.setitem(vars(partdb_write.partdb_read), "environment", lambda *_args: ("https://private.invalid", "read-token"))
     monkeypatch.setitem(vars(partdb_write), "verify_lot_patch_schema", lambda *_args: None)
@@ -201,11 +202,7 @@ def test_apply_drift_and_noop_do_not_obtain_write_authority(
 
 
 def test_apply_writes_then_read_back_verifies(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    plan_path = tmp_path / "plan.json"
-    approval_path = tmp_path / "approval.json"
-    plan = artifact_plan()
-    write_json(plan_path, plan)
-    write_json(approval_path, approval(plan))
+    plan_path, approval_path, plan = approved_plan_files(tmp_path)
     reads = iter(({"amount": 1}, {"amount": 2}))
     patched: list[tuple[object, ...]] = []
     monkeypatch.setitem(vars(partdb_write.partdb_read), "context", lambda: (tmp_path, {}))
@@ -222,11 +219,7 @@ def test_apply_writes_then_read_back_verifies(monkeypatch: pytest.MonkeyPatch, t
 
 
 def test_apply_refuses_reused_approval(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    plan_path = tmp_path / "plan.json"
-    approval_path = tmp_path / "approval.json"
-    plan = artifact_plan()
-    write_json(plan_path, plan)
-    write_json(approval_path, approval(plan))
+    plan_path, approval_path, plan = approved_plan_files(tmp_path)
     partdb_write.receipt_path(plan_path, plan["digest"]).parent.mkdir()
     partdb_write.receipt_path(plan_path, plan["digest"]).write_text(json.dumps(partdb_write.receipt(plan["digest"], "verified")))
     monkeypatch.setitem(vars(partdb_write.partdb_read), "context", lambda: pytest.fail("context must not be accessed"))
@@ -236,11 +229,7 @@ def test_apply_refuses_reused_approval(monkeypatch: pytest.MonkeyPatch, tmp_path
 
 
 def test_apply_refuses_same_read_and_write_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    plan_path = tmp_path / "plan.json"
-    approval_path = tmp_path / "approval.json"
-    plan = artifact_plan()
-    write_json(plan_path, plan)
-    write_json(approval_path, approval(plan))
+    plan_path, approval_path, plan = approved_plan_files(tmp_path)
     monkeypatch.setitem(vars(partdb_write.partdb_read), "context", lambda: (tmp_path, {}))
     monkeypatch.setitem(vars(partdb_write.partdb_read), "environment", lambda *_args: ("https://private.invalid", "same-token"))
     monkeypatch.setitem(vars(partdb_write), "verify_lot_patch_schema", lambda *_args: None)
