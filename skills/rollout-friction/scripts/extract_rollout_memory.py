@@ -55,7 +55,8 @@ PATH_RE = re.compile(
     r"(?P<mounted>/Volumes/(?:\\[^\n]|"
     r"(?![ \t]+(?:and|but|then)[ \t]+(?:[\w-]+[ \t]+)?(?:go|goes|is|are|keep|run|use)\b|"
     r"[ \t]+(?:(?:so|because|before|after|has|have|holds)\b|&&|\|\||\||[0-9]*>|--?\w|(?i:https?)://)|"
-    r"[;)\]:](?=\s|$|[.)\]])|[.!?](?=\s|$)(?![ \t]+[^/\s,;:'\"`<>]*/))[^\n,'\"`<>])+)|"
+    r"[;:](?=\s|$)|[)\]](?=\s|$|[)\]]|[.!?](?=\s|$))|"
+    r"[.!?](?=\s|$)(?![ \t]+[^/\s,;:'\"`<>]*/))[^\n,'\"`<>])+)|"
     rf"/{LOCAL_PATH_ROOTS}/(?:\\ |[^\s,'\"`])+"
 )
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")

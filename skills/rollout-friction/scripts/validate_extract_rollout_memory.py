@@ -311,6 +311,8 @@ def test_unquoted_mounted_whitespace_keeps_prose_and_masks_entire_paths() -> Non
         ("/Volumes/Example. Disk/y", "", "Disk/y"),
         ("/Volumes/Data/Photos2024:Family/img.jpg", "", "Family/img.jpg"),
         ("/Volumes/Data/Photos;Family/img.jpg", "", "Family/img.jpg"),
+        ("/Volumes/EXAMPLE/Photos(2024).jpg", "", "jpg"),
+        ("/Volumes/EXAMPLE/Family:.jpg", "", "jpg"),
         ("/Volumes/example disk/task evidence/y; keep useful prose.", "keep useful prose.", "evidence/y"),
         ("/Volumes/Example Disk. Keep useful prose.", "Keep useful prose.", "Disk"),
         ("/Volumes/EXAMPLE/worktrees. Read skills/github/SKILL.md before landing.",
