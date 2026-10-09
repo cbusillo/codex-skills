@@ -1,7 +1,9 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["iterm2==2.25"]
+# dependencies = [
+#     "iterm2==2.25",
+# ]
 # ///
 """Target iTerm sessions by exact identity, with separate text and Return sends."""
 

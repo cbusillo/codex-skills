@@ -1,7 +1,9 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["iterm2==2.25"]
+# dependencies = [
+#     "iterm2==2.25",
+# ]
 # ///
 """Close an exact iTerm session only after its verified agent process has exited.
 
