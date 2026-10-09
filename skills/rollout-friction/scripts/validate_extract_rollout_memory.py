@@ -313,6 +313,7 @@ def test_unquoted_mounted_whitespace_keeps_prose_and_masks_entire_paths() -> Non
         ("/Volumes/Data/Photos;Family/img.jpg", "", "Family/img.jpg"),
         ("/Volumes/EXAMPLE/Photos(2024).jpg", "", "jpg"),
         ("/Volumes/EXAMPLE/Family:.jpg", "", "jpg"),
+        ("/Volumes/EXAMPLE/<repo>/private-folder", "", "private-folder"),
         ("/Volumes/example disk/task evidence/y; keep useful prose.", "keep useful prose.", "evidence/y"),
         ("/Volumes/Example Disk. Keep useful prose.", "Keep useful prose.", "Disk"),
         ("/Volumes/EXAMPLE/worktrees. Read skills/github/SKILL.md before landing.",
@@ -321,6 +322,8 @@ def test_unquoted_mounted_whitespace_keeps_prose_and_masks_entire_paths() -> Non
          "so the internal drive stays clean.", "EXAMPLE/worktrees/x"),
         ("/Volumes/EXAMPLE/worktrees/x has uncommitted changes in skills/foo.py.",
          "has uncommitted changes in skills/foo.py.", "EXAMPLE/worktrees/x"),
+        ("/Volumes/EXAMPLE/worktrees/x on branch work/example.", "on branch work/example.", "EXAMPLE/worktrees/x"),
+        ("/Volumes/EXAMPLE/worktrees/x for this repo.", "for this repo.", "EXAMPLE/worktrees/x"),
         ("(/Volumes/EXAMPLE/worktrees/x) holds worktrees", "holds worktrees", "EXAMPLE/worktrees/x"),
         ("[worktree](/Volumes/EXAMPLE/worktrees/x) before landing", "before landing", "EXAMPLE/worktrees/x"),
         ("/Volumes/X/Task Evidence/y\nKeep useful prose.", "Keep useful prose.", "Evidence/y"),
@@ -345,14 +348,21 @@ def test_unquoted_mounted_whitespace_keeps_prose_and_masks_entire_paths() -> Non
             if " ".join(prose.split()) not in surface:
                 raise AssertionError(f"mounted redaction consumed neighboring evidence: {surface}")
         if trusted[0].text != " ".join(text.split()):
-            raise AssertionError("trusted mode changed mounted whitespace evidence")
+            raise AssertionError(f"trusted mode changed mounted whitespace evidence: {text!r} -> {trusted[0].text!r}")
 
     for tail in ("&& cargo test --workspace", "|| report_failure", "| collect_output", "> output.txt",
                  "2> errors.txt", "--workspace", "-C src"):
-        text = f"cd /Volumes/Example Disk/worktrees/x {tail}"
+        text = rf"cd /Volumes/Example\ Disk/worktrees/x {tail}"
         redacted = module.redact_paths(text)
         if tail not in redacted or "Disk/worktrees/x" in redacted:
             raise AssertionError(f"mounted redaction consumed a shell argument boundary: {tail}")
+
+    for prefix, tail in (("CARGO_TARGET_DIR=", "cargo build --release"),
+                         ("uv run --project ", "pytest tests/"), ("cd ", "&& cargo test")):
+        text = f"{prefix}/Volumes/EXAMPLE/worktrees/x {tail}"
+        redacted = module.redact_paths(text)
+        if tail not in redacted or "EXAMPLE/worktrees/x" in redacted:
+            raise AssertionError(f"mounted redaction lost command arguments or leaked its path: {redacted}")
 
 
 def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:

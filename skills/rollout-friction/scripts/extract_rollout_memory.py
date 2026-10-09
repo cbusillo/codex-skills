@@ -54,9 +54,9 @@ PATH_RE = re.compile(
     # a bare conjunction can also belong to a directory name.
     r"(?P<mounted>/Volumes/(?:\\[^\n]|"
     r"(?![ \t]+(?:and|but|then)[ \t]+(?:[\w-]+[ \t]+)?(?:go|goes|is|are|keep|run|use)\b|"
-    r"[ \t]+(?:(?:so|because|before|after|has|have|holds)\b|&&|\|\||\||[0-9]*>|--?\w|(?i:https?)://)|"
+    r"[ \t]+(?:(?:so|because|before|after|has|have|holds|for|on)\b|&&|\|\||\||[0-9]*>|--?\w|(?i:https?)://)|"
     r"[;:](?=\s|$)|[)\]](?=\s|$|[)\]]|[.!?](?=\s|$))|"
-    r"[.!?](?=\s|$)(?![ \t]+[^/\s,;:'\"`<>]*/))[^\n,'\"`<>])+)|"
+    r"[.!?](?=\s|$)(?![ \t]+[^/\s,;:'\"`<>]*/))[^\n,'\"`])+)|"
     rf"/{LOCAL_PATH_ROOTS}/(?:\\ |[^\s,'\"`])+"
 )
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
@@ -569,6 +569,17 @@ def redact_path_match(
                 return path
         mounted = match.group("mounted")
         if mounted:
+            # In a shell assignment, cd argument or CLI option, unquoted
+            # whitespace separates arguments. Escaped spaces stay in the token.
+            prefix = match.string[:match.start()].rsplit("\n", 1)[-1]
+            shell_argument = re.search(
+                r"(?:^|[;&|][ \t]*)cd[ \t]+$|(?:^|[ \t])[A-Za-z_]\w*=$|--?[\w-]+(?:=|[ \t]+)$",
+                prefix,
+            )
+            if shell_argument:
+                token = re.match(r"(?:\\[^\n]|[^\s])+", mounted)
+                if token is not None:
+                    return "<path-redacted>" + redact_paths(mounted[token.end():], embedded_path=embedded_path)
             # Retain the separator before a clause or line boundary. Spaces
             # inside the span belong to the ambiguous filesystem argument.
             return "<path-redacted>" + mounted[len(mounted.rstrip()):]

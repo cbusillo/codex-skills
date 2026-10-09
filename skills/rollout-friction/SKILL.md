@@ -349,12 +349,14 @@ memory/profile/local-config candidates.
    ending at a line, quote, comma, punctuation followed by whitespace, recognized
    workflow clauses such as `and builds go to` or `so`, closing Markdown/parenthesis
    delimiters, shell separators/options or a following HTTP(S) URL.
-   Punctuation and conjunctions inside path components
-   remain masked when a path continuation is recognizable.
+   Periods and conjunctions inside path components remain masked when a path
+   continuation is recognizable.
    Quote or shell-escape mounted names containing those boundaries. Other prose
    following an unquoted mounted path is masked up to the next boundary; quote
-   the path to retain it. Unquoted whitespace under other roots remains ambiguous;
-   percent-encoded paths are not decoded by this redactor. Under `--redact`, diagnostic
+   the path to retain it. Unquoted whitespace under other roots remains ambiguous.
+   In shell assignments, `cd` arguments and CLI options, unescaped whitespace
+   separates arguments, so quote or escape space-bearing paths there.
+   Percent-encoded paths are not decoded by this redactor. Under `--redact`, diagnostic
    artifact references are filenames relative to the output bundle, so its local
    directory is not exposed. Trusted mode retains the original artifact paths.
 2. Prefer destination-filtered passes when applying memory. Review `people`,
