@@ -111,7 +111,6 @@ esac
             text=True,
             capture_output=True,
             timeout=15,
-            check=False,
         )
 
     def test_refresh_and_create_read_back_validated_head_and_new_body(self) -> None:
