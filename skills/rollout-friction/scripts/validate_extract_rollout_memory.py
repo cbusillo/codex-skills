@@ -297,6 +297,41 @@ def test_redact_mounted_paths_in_text_context_and_prompts() -> None:
             raise AssertionError(f"trusted mode lost mounted path: {path}")
 
 
+def test_unquoted_mounted_whitespace_keeps_prose_and_masks_entire_paths() -> None:
+    redact_args, module = args(redact=True, trusted_originals=False, max_record_chars=2_000)
+    trusted_args, _module = args(max_record_chars=2_000)
+    public_url = "https://example.com/Volumes/Example%20Disk/docs"
+    cases = (
+        ("/Volumes/EXAMPLE and builds go to target/debug.", "and builds go to target/debug.", "EXAMPLE"),
+        ("/Volumes/Example Disk", "", "Disk"),
+        ("/Volumes/X/Task Evidence/y", "", "Evidence/y"),
+        ("/Volumes/example disk/task evidence/y; keep useful prose.", "keep useful prose.", "evidence/y"),
+        ("/Volumes/Example Disk. Keep useful prose.", "Keep useful prose.", "Disk"),
+        ("/Volumes/X/Task Evidence/y\nKeep useful prose.", "Keep useful prose.", "Evidence/y"),
+        (f"/Volumes/Example Disk {public_url}", public_url, "Example Disk"),
+        (r"/Volumes/Research\ and\ Development/task\ evidence/y and builds go to target/debug.",
+         "and builds go to target/debug.", "Development"),
+        ('"/Volumes/Research and Development/task evidence/y" and builds go to target/debug.',
+         "and builds go to target/debug.", "Development"),
+    )
+    for fragment, prose, private_tail in cases:
+        text = f"Remember worktrees live under {fragment}"
+        data = json.dumps(response_item("user", text)).encode()
+        with patch.object(Path, "read_bytes", return_value=data):
+            redacted = module.extract([Path("/mnt/example/rollout.jsonl")], redact_args)
+            trusted = module.extract([Path("/mnt/example/rollout.jsonl")], trusted_args)
+        candidate = redacted[0]
+        surfaces = (candidate.text, *(event["text"] for event in candidate.context),
+                    json.dumps(list(module.prompt_batches(redacted, redact_args.batch_chars))))
+        for surface in surfaces:
+            if private_tail in surface or "/Volumes/" in surface.replace(public_url, ""):
+                raise AssertionError(f"unquoted mounted path fragment leaked: {surface}")
+            if " ".join(prose.split()) not in surface:
+                raise AssertionError(f"mounted redaction consumed neighboring evidence: {surface}")
+        if trusted[0].text != " ".join(text.split()):
+            raise AssertionError("trusted mode changed mounted whitespace evidence")
+
+
 def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
     redact_args, module = args(redact=True, trusted_originals=False, max_record_chars=2_000)
     trusted_args, _module = args(max_record_chars=2_000)
@@ -679,6 +714,7 @@ def main() -> int:
     test_redact_mode_removes_paths_and_person_data_but_keeps_trusted_originals()
     test_redact_source_metadata_is_independent_of_path_root()
     test_redact_mounted_paths_in_text_context_and_prompts()
+    test_unquoted_mounted_whitespace_keeps_prose_and_masks_entire_paths()
     test_redact_preserves_relative_paths_without_exposing_local_urls()
     test_redacted_bundle_artifact_references_are_portable()
     test_redact_mode_records_person_data_privacy_summary()

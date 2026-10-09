@@ -345,9 +345,13 @@ memory/profile/local-config candidates.
    dev-server/tunnel file links; literal query/fragment paths and person data are
    still redacted. Known local path roots are masked conservatively inside other
    URI schemes and query/fragment values; arbitrary URI paths can remain readable.
-   Unquoted whitespace is ambiguous with neighboring prose and
-   can leave path fragments or consume prose; percent-encoded paths are not
-   decoded by this redactor. Under `--redact`, diagnostic
+   Unquoted `/Volumes/` spans include spaces in the volume and descendant names,
+   ending at a line, quote, comma, semicolon, colon, sentence punctuation or an
+   `and`, `but` or `then` clause; a following HTTP(S) URL also ends the span.
+   Quote or shell-escape mounted names containing those boundaries. Other prose
+   following an unquoted mounted path can be masked conservatively; quote the
+   path to retain it. Unquoted whitespace under other roots remains ambiguous;
+   percent-encoded paths are not decoded by this redactor. Under `--redact`, diagnostic
    artifact references are filenames relative to the output bundle, so its local
    directory is not exposed. Trusted mode retains the original artifact paths.
 2. Prefer destination-filtered passes when applying memory. Review `people`,

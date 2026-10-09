@@ -49,7 +49,11 @@ PATH_RE = re.compile(
     # first so those components remain useful evidence rather than local paths.
     r"(?P<url>(?i:https?)://[^\s<>\"'`]+)|"
     rf"(?P<quoted>[\"'`])/{LOCAL_PATH_ROOTS}/[^\n]*?(?:(?P=quoted)|(?=\n|$))|"
-    rf"(?:/Volumes/[^/\n,;:'\"`<>]+/|/{LOCAL_PATH_ROOTS}/)(?:\\ |[^\s,'\"`])+"
+    # Mounted names and descendant components can contain unescaped spaces.
+    # Do not search across a prose clause for a later slash.
+    r"(?P<mounted>/Volumes/(?:\\[^\n]|"
+    r"(?![ \t]+(?:and|but|then)\b|[ \t]+(?i:https?)://|[.!?](?=\s|$))[^\n,;:'\"`<>])+)|"
+    rf"/{LOCAL_PATH_ROOTS}/(?:\\ |[^\s,'\"`])+"
 )
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 MENTION_RE = re.compile(
@@ -559,6 +563,11 @@ def redact_path_match(
                 if end < len(path):
                     return path[:end] + redact_paths(path[end:], embedded_path=True)
                 return path
+        mounted = match.group("mounted")
+        if mounted:
+            # Retain the separator before a clause or line boundary. Spaces
+            # inside the span belong to the ambiguous filesystem argument.
+            return "<path-redacted>" + mounted[len(mounted.rstrip()):]
         return "<path-redacted>"
     try:
         parsed = urlsplit(url)
