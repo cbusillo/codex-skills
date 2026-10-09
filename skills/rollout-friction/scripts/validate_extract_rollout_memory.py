@@ -304,6 +304,7 @@ def test_unquoted_mounted_whitespace_keeps_prose_and_masks_entire_paths() -> Non
     cases = (
         ("/Volumes/EXAMPLE and builds go to target/debug.", "and builds go to target/debug.", "EXAMPLE"),
         ("/Volumes/Example Disk", "", "Disk"),
+        ("/Volumes/a very long volume name", "", "long volume name"),
         ("/Volumes/X/Task Evidence/y", "", "Evidence/y"),
         ("/Volumes/Data/Photos and Videos/2024/trip", "", "Videos/2024/trip"),
         ("/Volumes/Research and Development Disk/y", "", "Development Disk/y"),
@@ -312,6 +313,14 @@ def test_unquoted_mounted_whitespace_keeps_prose_and_masks_entire_paths() -> Non
         ("/Volumes/Data/Photos;Family/img.jpg", "", "Family/img.jpg"),
         ("/Volumes/example disk/task evidence/y; keep useful prose.", "keep useful prose.", "evidence/y"),
         ("/Volumes/Example Disk. Keep useful prose.", "Keep useful prose.", "Disk"),
+        ("/Volumes/EXAMPLE/worktrees. Read skills/github/SKILL.md before landing.",
+         "Read skills/github/SKILL.md before landing.", "EXAMPLE/worktrees"),
+        ("/Volumes/EXAMPLE/worktrees/x so the internal drive stays clean.",
+         "so the internal drive stays clean.", "EXAMPLE/worktrees/x"),
+        ("/Volumes/EXAMPLE/worktrees/x has uncommitted changes in skills/foo.py.",
+         "has uncommitted changes in skills/foo.py.", "EXAMPLE/worktrees/x"),
+        ("(/Volumes/EXAMPLE/worktrees/x) holds worktrees", "holds worktrees", "EXAMPLE/worktrees/x"),
+        ("[worktree](/Volumes/EXAMPLE/worktrees/x) before landing", "before landing", "EXAMPLE/worktrees/x"),
         ("/Volumes/X/Task Evidence/y\nKeep useful prose.", "Keep useful prose.", "Evidence/y"),
         (f"/Volumes/Example Disk {public_url}", public_url, "Example Disk"),
         (r"/Volumes/Research\ and\ Development/task\ evidence/y and builds go to target/debug.",
@@ -339,7 +348,8 @@ def test_unquoted_mounted_whitespace_keeps_prose_and_masks_entire_paths() -> Non
     for tail in ("&& cargo test --workspace", "|| report_failure", "| collect_output", "> output.txt",
                  "2> errors.txt", "--workspace", "-C src"):
         text = f"cd /Volumes/Example Disk/worktrees/x {tail}"
-        if tail not in module.redact_paths(text):
+        redacted = module.redact_paths(text)
+        if tail not in redacted or "Disk/worktrees/x" in redacted:
             raise AssertionError(f"mounted redaction consumed a shell argument boundary: {tail}")
 
 

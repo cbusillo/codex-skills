@@ -347,8 +347,9 @@ memory/profile/local-config candidates.
    URI schemes and query/fragment values; arbitrary URI paths can remain readable.
    Unquoted `/Volumes/` spans include spaces in the volume and descendant names,
    ending at a line, quote, comma, punctuation followed by whitespace, recognized
-   workflow clauses such as `and builds go to`, shell operators/options or a
-   following HTTP(S) URL. Punctuation and conjunctions inside path components
+   workflow clauses such as `and builds go to` or `so`, closing Markdown/parenthesis
+   delimiters, shell separators/options or a following HTTP(S) URL.
+   Punctuation and conjunctions inside path components
    remain masked when a path continuation is recognizable.
    Quote or shell-escape mounted names containing those boundaries. Other prose
    following an unquoted mounted path is masked up to the next boundary; quote
