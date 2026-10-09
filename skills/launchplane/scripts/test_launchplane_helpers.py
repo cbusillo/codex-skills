@@ -8607,5 +8607,16 @@ def test_event_recovery_wrong_response_lane_cannot_supply_review(changes: dict[s
     assert status == 1 and len(posts) == 1
     assert receipt["status"] != "ok" and receipt["result"] == {}
 
+
+def test_event_recovery_product_whitespace_is_normalized_before_review() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload = _write_json(directory, "reference.json", _event_recovery_payload(product=" example-product "))
+        status, receipt, posts, _ = _run_main(
+            ["generic-web-deploy-recovery-dry-run", "--payload-file", payload],
+            post=_event_recovery_response(),
+        )
+    assert status == 0
+    assert posts[0]["body"]["product"] == receipt["request"]["product"] == "example-product"
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

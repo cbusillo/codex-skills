@@ -1022,7 +1022,7 @@ uv run scripts/launchplane-write-action.py \
   --dry-run-evidence-file /private/path/recovery-dry-run-output.json
 ```
 
-For apply, the admin asserts that the private payload is the one reviewed
+For original-deploy apply, the admin asserts that the private payload is the one reviewed
 during dry-run. The helper requires:
 
 - A non-empty `reason` embedded in the payload.

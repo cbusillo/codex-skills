@@ -5632,7 +5632,7 @@ def generic_web_deploy_recovery_body(
         ):
             raise ValueError("original_deploy_identity_mismatch")
     else:
-        public_identifier(product)
+        body["product"] = public_identifier(product)
     if mode == "apply":
         if not args.reviewed_dry_run:
             raise ValueError("reviewed_dry_run_required")
