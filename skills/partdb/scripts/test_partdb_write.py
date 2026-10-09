@@ -100,12 +100,17 @@ def approval(plan: dict[str, object]) -> dict[str, object]:
     }
 
 
-def approved_plan_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
+def approved_plan_files(tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
     plan_path = tmp_path / "plan.json"
     approval_path = tmp_path / "approval.json"
     plan = artifact_plan()
     write_json(plan_path, plan)
     write_json(approval_path, approval(plan))
+    return plan_path, approval_path, plan
+
+
+def apply_fixture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
+    plan_path, approval_path, plan = approved_plan_files(tmp_path)
     monkeypatch.setitem(vars(partdb_write.partdb_read), "context", lambda: (tmp_path, {}))
     monkeypatch.setitem(vars(partdb_write.partdb_read), "environment", lambda *_args: ("https://private.invalid", "read-token"))
     monkeypatch.setitem(vars(partdb_write), "verify_lot_patch_schema", lambda *_args: None)
@@ -137,7 +142,7 @@ def test_apply_refuses_unbound_or_unavailable_receipt_authority_before_context(
 
     with pytest.raises(partdb_write.WriteError, match="receipt authority"):
         partdb_write.apply(apply_args(plan_path, approval_path))
-    assert not partdb_write.receipt_path(artifact["digest"]).exists()
+    assert not partdb_write.receipt_path(plan_path, artifact["digest"]).exists()
 
 
 @pytest.mark.parametrize("legacy_kind", ["partdb-write-plan.v1", "partdb-write-plan.v2"])
@@ -247,7 +252,7 @@ def test_relocated_approval_cannot_replay_after_stock_returns_to_prior_amount(
     with pytest.raises(partdb_write.WriteError, match="already used"):
         partdb_write.apply(apply_args(relocated / "plan.json", relocated / "approval.json"))
     assert len(patches) == 1
-    assert json.loads(partdb_write.receipt_path(artifact["digest"]).read_text())["outcome"] == (
+    assert json.loads(partdb_write.receipt_path(plan_path, artifact["digest"]).read_text())["outcome"] == (
         "needs-reconciliation" if uncertain_write else "verified"
     )
     fail_write = False
@@ -274,7 +279,7 @@ def test_plan_writes_reviewable_exact_diff(monkeypatch: pytest.MonkeyPatch, tmp_
 
 
 def test_apply_requires_flag_before_any_context_access(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    plan_path, approval_path, _plan = approved_plan_files(monkeypatch, tmp_path)
+    plan_path, approval_path, _plan = apply_fixture(monkeypatch, tmp_path)
     monkeypatch.setitem(vars(partdb_write.partdb_read), "context", lambda: pytest.fail("context must not be accessed"))
 
     with pytest.raises(partdb_write.WriteError, match="without --apply"):
@@ -282,28 +287,28 @@ def test_apply_requires_flag_before_any_context_access(monkeypatch: pytest.Monke
 
 
 def test_apply_refuses_drift_before_write_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    plan_path, approval_path, plan = approved_plan_files(monkeypatch, tmp_path)
+    plan_path, approval_path, plan = apply_fixture(monkeypatch, tmp_path)
     monkeypatch.setitem(vars(partdb_write), "read_lot", lambda *_args: {"amount": 3})
     monkeypatch.setitem(vars(partdb_write), "write_environment", lambda *_args: pytest.fail("write token must not be read"))
 
     with pytest.raises(partdb_write.WriteError, match="changed after planning"):
         partdb_write.apply(apply_args(plan_path, approval_path))
-    receipt = json.loads(partdb_write.receipt_path(plan["digest"]).read_text())
+    receipt = json.loads(partdb_write.receipt_path(plan_path, plan["digest"]).read_text())
     assert receipt["outcome"] == "needs-reconciliation"
 
 
 def test_apply_already_target_is_idempotent_without_write_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    plan_path, approval_path, plan = approved_plan_files(monkeypatch, tmp_path)
+    plan_path, approval_path, plan = apply_fixture(monkeypatch, tmp_path)
     monkeypatch.setitem(vars(partdb_write), "read_lot", lambda *_args: {"amount": 2})
     monkeypatch.setitem(vars(partdb_write), "write_environment", lambda *_args: pytest.fail("write token must not be read"))
 
     partdb_write.apply(apply_args(plan_path, approval_path))
 
-    assert json.loads(partdb_write.receipt_path(plan["digest"]).read_text())["outcome"] == "already-target"
+    assert json.loads(partdb_write.receipt_path(plan_path, plan["digest"]).read_text())["outcome"] == "already-target"
 
 
 def test_apply_writes_then_read_back_verifies(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    plan_path, approval_path, plan = approved_plan_files(monkeypatch, tmp_path)
+    plan_path, approval_path, plan = apply_fixture(monkeypatch, tmp_path)
     reads = iter(({"amount": 1}, {"amount": 2}))
     patched: list[tuple[object, ...]] = []
     monkeypatch.setitem(vars(partdb_write), "read_lot", lambda *_args: next(reads))
@@ -313,13 +318,13 @@ def test_apply_writes_then_read_back_verifies(monkeypatch: pytest.MonkeyPatch, t
     partdb_write.apply(apply_args(plan_path, approval_path))
 
     assert patched == [("https://private.invalid", "write-token", 7, 2)]
-    assert json.loads(partdb_write.receipt_path(plan["digest"]).read_text())["outcome"] == "verified"
+    assert json.loads(partdb_write.receipt_path(plan_path, plan["digest"]).read_text())["outcome"] == "verified"
 
 
 def test_apply_refuses_reused_approval(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    plan_path, approval_path, plan = approved_plan_files(monkeypatch, tmp_path)
-    partdb_write.receipt_path(plan["digest"]).parent.mkdir(parents=True, exist_ok=True)
-    partdb_write.receipt_path(plan["digest"]).write_text(json.dumps(partdb_write.receipt(plan["digest"], "verified")))
+    plan_path, approval_path, plan = apply_fixture(monkeypatch, tmp_path)
+    partdb_write.receipt_path(plan_path, plan["digest"]).parent.mkdir(parents=True, exist_ok=True)
+    partdb_write.receipt_path(plan_path, plan["digest"]).write_text(json.dumps(partdb_write.receipt(plan["digest"], "verified")))
     monkeypatch.setitem(vars(partdb_write.partdb_read), "context", lambda: pytest.fail("context must not be accessed"))
 
     with pytest.raises(partdb_write.WriteError, match="already used"):
@@ -327,7 +332,7 @@ def test_apply_refuses_reused_approval(monkeypatch: pytest.MonkeyPatch, tmp_path
 
 
 def test_apply_refuses_same_read_and_write_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    plan_path, approval_path, _plan = approved_plan_files(monkeypatch, tmp_path)
+    plan_path, approval_path, _plan = apply_fixture(monkeypatch, tmp_path)
     monkeypatch.setitem(vars(partdb_write.partdb_read), "context", lambda: (tmp_path, {}))
     monkeypatch.setitem(vars(partdb_write.partdb_read), "environment", lambda *_args: ("https://private.invalid", "same-token"))
     monkeypatch.setitem(vars(partdb_write), "verify_lot_patch_schema", lambda *_args: None)

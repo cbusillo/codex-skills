@@ -241,7 +241,7 @@ def receipt(plan_digest: str, outcome: str) -> dict[str, str]:
     return {"kind": RECEIPT_KIND, "outcome": outcome, "plan_digest": plan_digest}
 
 
-def receipt_path(plan_digest: str, root: Path | None = None) -> Path:
+def receipt_path(_plan_path: Path, plan_digest: str, root: Path | None = None) -> Path:
     return (root if root is not None else receipt_root()) / f"{plan_digest}.json"
 
 
@@ -299,7 +299,7 @@ def apply(args: argparse.Namespace) -> None:
     plan_digest = artifact["digest"]
     ledger_root = validate_approval(load_json(Path(args.approval), "approval artifact"), plan_digest)
     operation = artifact["operation"]
-    receipt_file = receipt_path(plan_digest, ledger_root)
+    receipt_file = receipt_path(Path(args.plan), plan_digest, ledger_root)
     reserve_receipt(receipt_file, plan_digest)
     private_repo, config = partdb_read.context()
     try:
