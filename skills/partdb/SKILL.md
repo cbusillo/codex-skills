@@ -106,7 +106,8 @@ plan, approval, and receipt files in a private ignored directory.
    It reads again, refuses drift, patches only after those checks, reads back to
    verify, and records a redacted digest-keyed receipt beside the plan. Each approval is single-use;
    a failed apply leaves a `needs-reconciliation` receipt instead of retrying a
-   possibly completed write.
+   possibly completed write. This includes handled context-provider failures
+   after an approval is reserved.
 
 The private context must declare a separate write-token environment variable
 and `allow_mutations = true`; that only enables this helper's exact-plan gates,
