@@ -50,9 +50,12 @@ PATH_RE = re.compile(
     r"(?P<url>(?i:https?)://[^\s<>\"'`]+)|"
     rf"(?P<quoted>[\"'`])/{LOCAL_PATH_ROOTS}/[^\n]*?(?:(?P=quoted)|(?=\n|$))|"
     # Mounted names and descendant components can contain unescaped spaces.
-    # Do not search across a prose clause for a later slash.
+    # Stop at recognizable workflow clauses and shell argument boundaries;
+    # a bare conjunction can also belong to a directory name.
     r"(?P<mounted>/Volumes/(?:\\[^\n]|"
-    r"(?![ \t]+(?:and|but|then)\b|[ \t]+(?i:https?)://|[.!?](?=\s|$))[^\n,;:'\"`<>])+)|"
+    r"(?![ \t]+(?:and|but|then)[ \t]+(?:[\w-]+[ \t]+)?(?:go|goes|is|are|keep|run|use)\b|"
+    r"[ \t]+(?:&&|\|\||\||[0-9]*>|--?[\w]|(?i:https?)://)|"
+    r"[;:](?=\s|$)|[.!?](?=\s|$)(?![ \t]+[^/\n,;:'\"`<>]*/))[^\n,'\"`<>])+)|"
     rf"/{LOCAL_PATH_ROOTS}/(?:\\ |[^\s,'\"`])+"
 )
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")

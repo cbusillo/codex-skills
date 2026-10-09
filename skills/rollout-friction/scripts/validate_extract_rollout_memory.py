@@ -305,6 +305,11 @@ def test_unquoted_mounted_whitespace_keeps_prose_and_masks_entire_paths() -> Non
         ("/Volumes/EXAMPLE and builds go to target/debug.", "and builds go to target/debug.", "EXAMPLE"),
         ("/Volumes/Example Disk", "", "Disk"),
         ("/Volumes/X/Task Evidence/y", "", "Evidence/y"),
+        ("/Volumes/Data/Photos and Videos/2024/trip", "", "Videos/2024/trip"),
+        ("/Volumes/Research and Development Disk/y", "", "Development Disk/y"),
+        ("/Volumes/Example. Disk/y", "", "Disk/y"),
+        ("/Volumes/Data/Photos2024:Family/img.jpg", "", "Family/img.jpg"),
+        ("/Volumes/Data/Photos;Family/img.jpg", "", "Family/img.jpg"),
         ("/Volumes/example disk/task evidence/y; keep useful prose.", "keep useful prose.", "evidence/y"),
         ("/Volumes/Example Disk. Keep useful prose.", "Keep useful prose.", "Disk"),
         ("/Volumes/X/Task Evidence/y\nKeep useful prose.", "Keep useful prose.", "Evidence/y"),
@@ -330,6 +335,12 @@ def test_unquoted_mounted_whitespace_keeps_prose_and_masks_entire_paths() -> Non
                 raise AssertionError(f"mounted redaction consumed neighboring evidence: {surface}")
         if trusted[0].text != " ".join(text.split()):
             raise AssertionError("trusted mode changed mounted whitespace evidence")
+
+    for tail in ("&& cargo test --workspace", "|| report_failure", "| collect_output", "> output.txt",
+                 "2> errors.txt", "--workspace", "-C src"):
+        text = f"cd /Volumes/Example Disk/worktrees/x {tail}"
+        if tail not in module.redact_paths(text):
+            raise AssertionError(f"mounted redaction consumed a shell argument boundary: {tail}")
 
 
 def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
