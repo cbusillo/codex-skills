@@ -7873,8 +7873,13 @@ def test_client_named_fields_read_like_their_legacy_owner_names() -> None:
         ),
     ],
 )
+@pytest.mark.parametrize(
+    "expires_at,expected_expiry",
+    [("", ""), ("2026-10-05T18:00:00+02:00", "2026-10-05T16:00:00Z")],
+)
 def test_privileged_policy_propose_sends_private_envelope_and_only_returns_review_metadata(
-    descriptor: str, request_body: dict[str, object], counts: dict[str, int]
+    descriptor: str, request_body: dict[str, object], counts: dict[str, int],
+    expires_at: str, expected_expiry: str,
 ) -> None:
     envelope = {
         "descriptor_id": descriptor,
@@ -7893,7 +7898,7 @@ def test_privileged_policy_propose_sends_private_envelope_and_only_returns_revie
             "result_status": "ok",
             "changed": True,
             **counts,
-            "expires_at": "2026-10-05T16:00:00+00:00",
+            "expires_at": expires_at,
             "private_selectors": "never-emit-this",
         },
     }
@@ -7944,7 +7949,10 @@ def test_privileged_policy_propose_sends_private_envelope_and_only_returns_revie
                     )
                     == 0
                 )
-            result = json.loads(output.getvalue())["result"]
+            payload = json.loads(output.getvalue())
+            assert payload["status"] == "accepted"
+            result = payload["result"]
+            assert result["expires_at"] == expected_expiry
             assert result["state"] == state
             assert result["operation_id"] == operation_id
             assert result["review_path"].endswith(operation_id)
@@ -7959,6 +7967,29 @@ def test_privileged_policy_propose_sends_private_envelope_and_only_returns_revie
             ):
                 assert private not in output.getvalue()
     assert calls[0]["body"] == calls[1]["body"]
+
+
+@pytest.mark.parametrize("expires_at", [None, 0, False, " ", "invalid", "2026-10-05T16:00:00"])
+def test_privileged_policy_propose_rejects_invalid_review_deadlines(expires_at: object) -> None:
+    response = {
+        "status": "ok",
+        "write_status": "written",
+        "summary": {
+            "operation_id": "privileged-operation-" + "a" * 32,
+            "descriptor_id": "managed-merge-train-policy-import",
+            "status": "planned",
+            "result_status": "ok",
+            "active_target_count": 1,
+            "candidate_target_count": 1,
+            "unchanged_policy_key_count": 1,
+            "expires_at": expires_at,
+        },
+    }
+    with pytest.raises(safety.LaunchplaneSafetyError, match="invalid_response"):
+        write_action.summarize_privileged_policy_proposal(
+            request={"descriptor_id": "managed-merge-train-policy-import"},
+            provider_payload=response,
+        )
 
 
 def test_privileged_policy_propose_refuses_unsupported_fields_and_descriptors_before_network() -> (

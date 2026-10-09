@@ -2560,10 +2560,15 @@ def cmd_update_section(args: argparse.Namespace) -> None:
         raise PlanError(message, failure=failure)
     preparation_step = "read_body"
     try:
+        if args.body is None and not args.body_file:
+            raise ValueError(
+                "Section text requires --body TEXT or --body-file FILE; use --body-file - for stdin. "
+                "To intentionally clear the section, pass --body ''."
+            )
         new_text = read_body(args)
         preparation_step = "section_replacement"
         updated = replace_issue_plan_section(issue, args.section, new_text)
-    except (OSError, UnicodeError, re.error) as exc:
+    except (OSError, ValueError, re.error) as exc:
         message = f"Cannot prepare plan section update: {exc}"
         failure = github_api_core.FailureDetail(
             cause="validation_error",
@@ -4803,8 +4808,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("update-section", help="Patch one markdown section")
     p.add_argument("issue")
     p.add_argument("section")
-    p.add_argument("--body")
-    p.add_argument("--body-file")
+    p.add_argument("--body", help="Section text; an empty string intentionally clears the section")
+    p.add_argument("--body-file", help="Read section text from a file, or '-' for stdin; empty input clears the section")
     p.set_defaults(func=cmd_update_section)
 
     p = sub.add_parser("link", help="Create native issue relationships")
