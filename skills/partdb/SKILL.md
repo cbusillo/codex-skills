@@ -97,16 +97,22 @@ plan, approval, and receipt files in a private ignored directory.
    `part-lot-amount-set`.
 2. Run `uv run scripts/partdb-write.py plan --intent ... --output ...`. It
    validates the installed OpenAPI schema, reads the current amount, and emits a
-   plan with an exact digest.
+   plan with an exact digest binding an opaque fingerprint of the configured
+   instance URL as well as the quantities.
 3. Show the plan's `prior_amount` and `target_amount` to the user. Do not run
    the next step until the user explicitly approves that exact digest.
 4. Run `uv run scripts/partdb-write.py approve --plan ... --approve <digest>
    --output ...`.
 5. Run `uv run scripts/partdb-write.py apply --plan ... --approval ... --apply`.
-   It reads again, refuses drift, patches only after those checks, reads back to
+   It refuses a changed instance before querying it or obtaining write authority,
+   reads again, refuses quantity drift, patches only after those checks, reads back to
    verify, and records a redacted digest-keyed receipt beside the plan. Each approval is single-use;
    a failed apply leaves a `needs-reconciliation` receipt instead of retrying a
    possibly completed write.
+
+If the instance changes or an older plan lacks its binding, create a new plan,
+show its diff, and obtain approval of its new digest. The fingerprint binds the
+configured URL; it does not detect a replacement server behind the same URL.
 
 The private context must declare a separate write-token environment variable
 and `allow_mutations = true`; that only enables this helper's exact-plan gates,
