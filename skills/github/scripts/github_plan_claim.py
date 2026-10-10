@@ -318,8 +318,117 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
     return False
 
 
+def exact_released_sources(comments: list[dict[str, Any]]) -> list[tuple[int, dict[str, str], int]]:
+    """Bind history to one authored, timestamp-proved structured release."""
+    from github_plan_release import stamp
+    found = []
+    for index, source in enumerate(comments):
+        parsed = records(source.get("body") or "")
+        author = (source.get("user") or {}).get("login")
+        if len(parsed) != 1 or not author or not isinstance(source.get("id"), int):
+            continue
+        for release_index in range(index + 1, len(comments)):
+            release = comments[release_index]
+            if ((release.get("user") or {}).get("login") != author
+                    or released_claim_id(release.get("body") or "") != source["id"]):
+                continue
+            try:
+                if stamp(release.get("created_at")) <= max(
+                    stamp(parsed[0]["claimed_at"]), stamp(source.get("updated_at") or source.get("created_at")),
+                ):
+                    continue
+            except (ValueError, TypeError):
+                continue
+            found.append((index, parsed[0], release_index))
+            break
+    return found
+
+
+def released_status_lines(status: str, comments: list[dict[str, Any]]) -> dict[str, str]:
+    """Share the exact historical-field match with live-session checks."""
+    return {
+        line: record["session"]
+        for _, record, _ in exact_released_sources(comments)
+        for line in status.splitlines()
+        if line.rstrip(" \t") == (
+            f"Session: {record['worker']} / {record['session']}; "
+            "executing claim released in the closeout comment."
+        )
+    }
+
+
+def current_ownership_text(
+    status: str, comments: list[dict[str, Any]], *, repo: str | None, number: int | None,
+    issue_url: str | None = None,
+) -> str:
+    """Remove only the demonstrated historical and other-issue assertions."""
+    if repo is None or number is None:
+        return status
+    # This sentence quotes a replaced field, not a present Session field.
+    status = re.sub(
+        r'(The previous )"Session: [\w.-]+"'
+        r'( line was stale and made the next claim refuse as ambiguous ownership '
+        r'\([^\n]+\); this status replaces it\.)', r'\1previous holder\2', status,
+    )
+    released_lines = released_status_lines(status, comments)
+    status = "\n".join(line for line in status.splitlines() if line not in released_lines)
+    identities = {(repo.casefold(), number)}
+    canonical = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)", issue_url or "")
+    if canonical:
+        identities.add((canonical.group(1).casefold(), int(canonical.group(2))))
+
+    def other_issue(match: re.Match[str]) -> str:
+        if (match.group(1).casefold(), int(match.group(2))) in identities:
+            return match.group()
+        return match.group().replace(match.group(3), "")
+
+    status = re.sub(
+        r"(?m)^Blocked by: https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+) "
+        r"\((actively owned by [\w.-]+)\)(?=\.(?:\s|$)|\s*$)", other_issue, status,
+    )
+    return status
+
+
+def released_explanatory_note(
+    text: str, index: int, comments: list[dict[str, Any]],
+) -> bool:
+    """An exact source reference accounts for that session's earlier note only."""
+    from github_plan_release import receipt_for, related_sessions_match, stamp
+    header = re.match(r"Claimed by (\S+); structured claim #(\d+) was confirmed and read back\.", text)
+    if not header:
+        return False
+    for source_index, record, release_index in exact_released_sources(comments):
+        source, note, release = comments[source_index], comments[index], comments[release_index]
+        if (not source_index < index < release_index or source["id"] != int(header.group(2))
+                or record["worker"] != header.group(1)
+                or (note.get("user") or {}).get("login") != (source.get("user") or {}).get("login")
+                or not related_sessions_match(text, record["session"])):
+            continue
+        try:
+            receipt = receipt_for(release)
+            cutoff = stamp(release.get("created_at"))
+            if receipt is not None:
+                cutoff = min(cutoff, stamp(receipt["evidence_at"]))
+            if not max(stamp(source.get("created_at")), stamp(source.get("updated_at") or source.get("created_at")),
+                       stamp(record["claimed_at"])) < stamp(note.get("created_at")) <= stamp(
+                note.get("updated_at") or note.get("created_at")
+            ) < cutoff:
+                continue
+        except (ValueError, TypeError):
+            continue
+        # A shared bot and worker alias cannot attribute a note across sessions.
+        same_worker = [r for c in comments[:release_index] for r in records(c.get("body") or "")
+                       if r["worker"] == record["worker"]]
+        if any(r["session"] != record["session"] for r in same_worker):
+            continue
+        if not has_ownership_assertion(text[header.end():], own_claim=record):
+            return True
+    return False
+
+
 def discussion_evidence(
     status: str, comments: list[dict[str, Any]], claim: dict[str, str], *, resume_from: int | None = None,
+    repo: str | None = None, number: int | None = None, issue_url: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     """Old claims remain ambiguous until explicitly released; age is never a lease."""
     from github_plan_release import effective_comments
@@ -333,7 +442,7 @@ def discussion_evidence(
             owned.append(record)
         else:
             conflicts.append({"source": "current_status", "record": record})
-    ownership_status = status
+    ownership_status = current_ownership_text(status, comments, repo=repo, number=number, issue_url=issue_url)
     # A matching marker or complete legacy identity accounts only for that
     # owner's assertions; it must not hide a second holder in the same status.
     own_claim = claim if owned or all(claim[key] in status for key in ("worker", "session", "branch")) else None
@@ -400,6 +509,8 @@ def discussion_evidence(
         prose = ownership_text(text, strip_quotes=False)
         legacy = re.match(r"Claimed by:?\s+(\S+)", prose, re.IGNORECASE)
         if legacy and not parsed and has_ownership_assertion(text):
+            if released_explanatory_note(text, index, comments):
+                continue
             worker = legacy.group(1)
             if legacy_released.get((worker, author), -1) > index:
                 continue
@@ -618,6 +729,7 @@ def artifact_evidence(
     retained_branches: set[str] | None = None, retained_repo: str | None = None,
     inventory_repo: str | None = None,
     recorded_branches: set[str] | None = None,
+    status_sessions: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     conflicts = []
     local_references = inventory_repo is None or inventory_repo.casefold() == repo.casefold()
@@ -639,7 +751,9 @@ def artifact_evidence(
         if session.get("sessionId") == claim["session"]:
             continue
         cwd = str(pathlib.Path(session.get("cwd") or "/").resolve())
-        if any(cwd == path or pathlib.Path(cwd).is_relative_to(path) for path in retained_paths) or (local_references and cwd in paths and references_issue((session.get("name") or "") + "/" + pathlib.Path(cwd).name, number)):
+        if (session.get("sessionId") in (status_sessions or set())
+                or any(cwd == path or pathlib.Path(cwd).is_relative_to(path) for path in retained_paths)
+                or (local_references and cwd in paths and references_issue((session.get("name") or "") + "/" + pathlib.Path(cwd).name, number))):
             conflicts.append({"source": "claude_session", "session": session.get("sessionId"),
                               "state": session.get("state") or session.get("status")})
     for pull in pulls:

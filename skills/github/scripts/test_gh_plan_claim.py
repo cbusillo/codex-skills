@@ -1899,6 +1899,242 @@ class ClaimTests(unittest.TestCase):
             self.run_claim()
         self.assert_no_writes()
 
+    def released_note_fixture(self):
+        self.comments = [
+            {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT},
+             "created_at": "2026-10-01T00:00:00Z"},
+            {"id": 2, "body": "Claimed by trial-b; structured claim #1 was confirmed and read back. "
+             "Scope check: skipping the entire item; no repository or host files changed.",
+             "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:01:00Z"},
+            {"id": 3, "body": "Released claim 1", "user": {"login": TEST_BOT},
+             "created_at": "2026-10-01T00:02:00Z"},
+        ]
+
+    def test_exact_released_source_accounts_for_its_explanatory_note(self):
+        # shiny-infra-ops#338 comments 5943974336, 5943979826, 5943980314.
+        self.released_note_fixture()
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_released_note_requires_exact_identity_author_and_chronology(self):
+        for change in ("foreign_note", "foreign_release", "wrong_id", "wrong_worker", "different_session",
+                       "reused_worker", "unreleased", "early_release", "edited_source", "edited_note",
+                       "edited_source_before_release", "missing_time", "naive_time", "second_holder", "later_claim"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.released_note_fixture()
+                source, note, release = self.comments
+                if change == "foreign_note": note["user"]["login"] = "other"
+                if change == "foreign_release": release["user"]["login"] = "other"
+                if change == "wrong_id": note["body"] = note["body"].replace("#1", "#99")
+                if change == "wrong_worker": note["body"] = note["body"].replace("trial-b", "trial-c")
+                if change == "different_session": note["body"] += "\nSession: another-session"
+                if change == "reused_worker":
+                    self.comments[1:1] = [
+                        {**source, "id": 4, "body": CLAIM.marker({**OTHER, "session": "reused-session"}),
+                         "created_at": "2026-10-01T00:00:05Z"},
+                        {**release, "id": 5, "body": "Released claim 4", "created_at": "2026-10-01T00:00:10Z"},
+                    ]
+                if change == "unreleased": self.comments.pop()
+                if change == "early_release": release["created_at"] = "2026-09-30T23:59:00Z"
+                if change == "edited_source": source["updated_at"] = "2026-10-01T00:03:00Z"
+                if change == "edited_source_before_release":
+                    source["updated_at"] = "2026-10-01T00:01:30Z"
+                    source["body"] = CLAIM.marker({**OTHER, "session": "edited-session"})
+                if change == "edited_note": note["updated_at"] = "2026-10-01T00:03:00Z"
+                if change == "missing_time": note.pop("created_at")
+                if change == "naive_time": note["created_at"] = "2026-10-01T00:01:00"
+                if change == "second_holder": note["body"] += "\nOwned by another-worker."
+                if change == "later_claim": self.comments.append({**source, "id": 4})
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assert_no_writes()
+
+    def test_closed_session_release_does_not_account_for_post_closure_notes(self):
+        import github_plan_release as release_helper
+        for note_time in ("2026-10-01T00:00:30Z", "2026-10-01T00:01:30Z"):
+            with self.subTest(note_time=note_time):
+                self.setUp()
+                self.released_note_fixture()
+                source, note, release = self.comments
+                note["created_at"] = note_time
+                evidence = {"id": 88, "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:01:40Z",
+                            "body": "Closed session session-b\nEnded at: 2026-10-01T00:01:00Z\nSafe to exit: yes",
+                            "issue_url": "https://api.github.com/repos/owner/control/issues/884"}
+                self.closed_pulls[88] = evidence
+                release["body"] = release_helper.prepare_release(
+                    source, evidence, self.comments[:2], self.inventory, actor=TEST_BOT, role="supervisor",
+                    releaser_session="supervisor-native", evidence_url="https://github.com/owner/control/issues/884#issuecomment-88",
+                    retained_prs=[], related=[],
+                )
+                if note_time > "2026-10-01T00:01:00Z":
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                    self.assertEqual(caught.exception.code, "claim_conflict")
+                    self.assert_no_writes()
+                else:
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_compound_status_classification_requires_release_proof_independently(self):
+        status = "Session: trial-b / session-b; executing claim released in the closeout comment."
+        for change in ("valid", "foreign", "missing_time", "edited_source"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.released_note_fixture()
+                self.comments.pop(1)
+                if change == "foreign": self.comments[-1]["user"]["login"] = "other"
+                if change == "missing_time": self.comments[-1].pop("created_at")
+                if change == "edited_source": self.comments[0]["updated_at"] = "2026-10-01T00:03:00Z"
+                classified = CLAIM.current_ownership_text(status, self.comments, repo="owner/repo", number=42)
+                self.assertEqual(CLAIM.has_ownership_assertion(classified), change != "valid")
+
+    def test_readback_rechecks_live_released_status_sessions(self):
+        for phase in ("after_post", "after_status"):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.released_note_fixture()
+                self.inventory["sessions"] = [{"sessionId": "session-b", "cwd": "/unrelated"}]
+                def add_status_holder():
+                    self.issue["body"] += "\nSession: trial-b / session-b; executing claim released in the closeout comment."
+                setattr(self, phase, add_status_holder)
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assertIn("post", self.events)
+                if phase == "after_post": self.assertNotIn("status", self.events)
+                self.assertTrue(caught.exception.payload["claim_recovery"])
+
+    def test_retained_pr_history_cannot_hide_live_source_session(self):
+        self.refresh_fixture()
+        pr_owner = {**OTHER, "worker": "pr-worker", "session": "pr-session"}
+        self.target_comments["/repos/owner/repo/issues/99/comments"] = [
+            {"id": 71, "body": CLAIM.marker(pr_owner), "user": {"login": TEST_BOT},
+             "created_at": "2026-10-01T00:00:00Z"},
+            {"id": 72, "body": "Released claim 71", "user": {"login": TEST_BOT},
+             "created_at": "2026-10-01T00:02:00Z"},
+        ]
+        self.targets["99"]["body"] += ("\n\n## Current Status\n\n"
+            "Session: pr-worker / pr-session; executing claim released in the closeout comment.")
+        self.inventory["sessions"] = [{"sessionId": "pr-session", "cwd": "/unrelated"}]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        self.assert_no_writes()
+
+    def test_canonical_issue_url_preserves_ownership_after_alias_or_transfer(self):
+        for canonical in ("owner/renamed/issues/42", "owner/transferred/issues/198"):
+            for holder in (canonical, "owner/repo/issues/42"):
+                with self.subTest(canonical=canonical, holder=holder):
+                    self.setUp()
+                    self.issue["html_url"] = f"https://github.com/{canonical}"
+                    self.issue["body"] += f"Blocked by: https://github.com/{holder} (actively owned by another-worker)."
+                    self.args.wait_resolved = "Wait resolved; ownership still needs independent proof."
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                    self.assertEqual(caught.exception.code, "claim_conflict")
+                    self.assert_no_writes()
+
+    def test_pr_refresh_preserves_holder_of_the_claimed_issue(self):
+        for holder_issue in (42, 99):
+            with self.subTest(holder_issue=holder_issue):
+                self.setUp()
+                self.refresh_fixture()
+                self.targets["99"]["body"] += ("\n\n## Current Status\n\n"
+                    f"Blocked by: https://github.com/owner/repo/issues/{holder_issue} (actively owned by another-worker).")
+                self.args.wait_resolved = "The upstream prerequisite landed; ownership must be checked separately."
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assert_no_writes()
+
+    def test_compound_status_identity_is_history_only_after_exact_release(self):
+        # launchplane#3145, LP-3145-D2 refusal reported on #1529.
+        self.released_note_fixture()
+        self.issue["body"] += ("Session: trial-b / session-b; executing claim released in the closeout comment.\n"
+                               "Branch: work/other-42\n")
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_compound_status_preserves_unproved_or_live_holders(self):
+        for change in ("unreleased", "foreign_release", "edited_source", "missing_time", "other_session",
+                       "second_holder", "live_session", "unreleased_comment", "marker"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.released_note_fixture()
+                self.comments.pop(1)  # Isolate the status guard from explanatory-note refusal.
+                self.issue["body"] += "Session: trial-b / session-b; executing claim released in the closeout comment.\n"
+                if change == "unreleased": self.comments.pop()
+                if change == "foreign_release": self.comments[-1]["user"]["login"] = "other"
+                if change == "edited_source": self.comments[0]["updated_at"] = "2026-10-01T00:03:00Z"
+                if change == "missing_time": self.comments[-1].pop("created_at")
+                if change == "other_session": self.issue["body"] = self.issue["body"].replace("/ session-b;", "/ other-session;")
+                if change == "second_holder": self.issue["body"] += "Owned by another-worker."
+                if change == "live_session": self.inventory["sessions"] = [{"sessionId": "session-b", "cwd": "/unrelated"}]
+                if change == "unreleased_comment": self.comments.append({"id": 4, "body": "Claimed by another-worker", "user": {"login": TEST_BOT}})
+                if change == "marker": self.issue["body"] += CLAIM.marker(OTHER)
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assert_no_writes()
+
+    def test_quoted_replaced_session_field_does_not_claim_current_issue(self):
+        # launchplane#3145, LP-3145-D3: unassigned field plus quoted old field.
+        history = ('The previous "Session: trial-b" line was stale and made the next claim refuse as ambiguous '
+                   'ownership ([prior record](https://github.com/owner/repo/issues/42#issuecomment-1), '
+                   'catalog#1529); this status replaces it.')
+        for competing in ("", "\nSession: another-session", "\nOwned by another-worker", "\n" + CLAIM.marker(OTHER)):
+            with self.subTest(competing=competing):
+                self.setUp()
+                self.issue["body"] += "Session: unassigned\nLast verified: " + history + competing
+                if competing:
+                    with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                    self.assert_no_writes()
+                else:
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_incomplete_or_uncertain_historical_session_prose_still_refuses(self):
+        for status in ('The previous "Session: trial-b" line was stale but ownership is unresolved.',
+                       'Last verified: "Session: trial-b"',
+                       'The previous "Session: trial-b" line may be stale.',
+                       'Session: trial-b; previously released.'):
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["body"] += status
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_upstream_holder_and_failed_claim_history_do_not_claim_this_issue(self):
+        # launchplane#3266 names upstream odoo-devkit#198, not a local holder.
+        for upstream in ("owner/upstream/issues/198", "owner/upstream/issues/42", "owner/repo/issues/198"):
+            with self.subTest(upstream=upstream):
+                self.setUp()
+                self.issue["body"] += (
+                    "State: Blocked; implementation unstarted and unclaimed. LP-D1 prerequisite reconciliation "
+                    "completed; claim attempt refused with claim_wait_unresolved and write_outcome=not_started.\n"
+                    f"Blocked by: https://github.com/{upstream} (actively owned by UPSTREAM-D1). "
+                    "This is the sole remaining native execution prerequisite.\nWaiting for: None.\n"
+                )
+                self.args.wait_resolved = "Verified upstream prerequisite landed; no native blocker remains."
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_other_issue_prose_does_not_hide_local_or_uncertain_ownership(self):
+        for status in (
+            "Blocked by: https://github.com/owner/repo/issues/42 (actively owned by trial-b).",
+            "Blocked by: #198 (actively owned by trial-b).",
+            "Blocked by: https://github.com/owner/upstream/issues/198 (actively owned by trial-b and another-worker).",
+            "Blocked by: https://github.com/owner/upstream/issues/198 (actively owned by trial-b).\nSession: unknown",
+            "Blocked by: https://github.com/owner/upstream/issues/198 (actively owned by trial-b). This issue is owned by trial-c.",
+        ):
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["body"] += status
+                self.args.wait_resolved = "The upstream prerequisite landed."
+                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assert_no_writes()
+        self.setUp()
+        self.issue["body"] += "Blocked by: https://github.com/owner/upstream/issues/198 (actively owned by trial-b)."
+        self.args.wait_resolved = "The upstream prerequisite landed."
+        self.compete()
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+        self.assert_no_writes()
+
     def test_released_claim_does_not_hold_issue(self):
         self.compete()
         self.comments.append({"body": "Released by trial-b"})
