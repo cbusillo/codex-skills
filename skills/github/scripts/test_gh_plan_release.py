@@ -87,7 +87,7 @@ class ReleaseTests(unittest.TestCase):
         self.successor()
 
     def test_related_followup_session_must_match_source_closure(self):
-        for field in ("Session: {}", "**Session:** `{}`", "> Session: {}", "Session: {}.", "Session: {} (capacity work)", "Session ID: {}", "Native session ID: {}", "session={}"):
+        for field in ("Session: {}", "**Session:** `{}`", "> Session: {}", "Session: {}.", "Session: {} (capacity work)", "Session ID: {}", "Native session ID: {}", "session={}", "session_id: {}", "sessionId: {}", "Session-ID: {}", "Thread ID: {}", "Session — {}", "| Session | {} |", "Session: {}; PR #99"):
             for session in ("session-b", "different-native-session"):
                 with self.subTest(field=field, session=session):
                     self.setUp()
