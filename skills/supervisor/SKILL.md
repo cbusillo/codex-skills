@@ -141,9 +141,9 @@ Post each handoff on that issue, and say in it whether any lesson was new.
 ## Harnesses
 
 Verified on Claude Code as the Supervisor. From there it reaches Codex sessions
-with `codex queue --thread <id> --message "<text>"`, run with `CODEX_HOME` set
-to the account home in the session's launch receipt (another home silently
-drops the message), and Claude Code sessions in
+with `codex queue --thread <id> --message "<text>"`, run under the account
+home the session launched with, as [helper setup](references/helpers.md)
+says (another home silently drops the message), and Claude Code sessions in
 terminal tabs with `skills/supervisor/scripts/iterm_tab.py`, using an exact
 `--session-id` from its `list` output. Launch Codex sessions with "keep working
 through compaction" and Keep instructions naming the brief, issue and current
@@ -247,6 +247,9 @@ for products a Client runs business on.
 - A release always needs the Client's acceptance (Q124 on
   [launchplane#3192](https://github.com/cbusillo/launchplane/issues/3192)).
   Never propose a scheduled, quiet, admin or engineering-only release path.
+  The overall `DIRECTION.md` owns release authority, including its one
+  exception: a temporary hotfix in an outage, which only the Director starts
+  and the Client still reviews afterward.
 - Open a Client-visible PR as soon as its work is ready; it gets one preview
   request whenever it opens, so holding it only delays the Client. Batch the
   landings, not the PRs.
@@ -256,9 +259,10 @@ for products a Client runs business on.
   Engineering-only PRs for the product ride with its next visible change.
   [codex-skills#1612](https://github.com/cbusillo/codex-skills/issues/1612)
   replaces this hand ordering once Launchplane's automatic batch flow ships.
-- From the moment a Client release is ready until it finishes, land nothing
-  on that product or on Launchplane, and ask any session running its own
-  Launchplane drivers to pause them.
+- Once a product's release batch has landed, its release is ready even
+  before the invitation posts. From then until the release finishes, land
+  nothing else on that product or on Launchplane, and ask any session running
+  its own Launchplane drivers to pause them.
 - Every PR in a repository that feeds a Client release (shared add-ons,
   devkit, images, tenants and the live sites) carries a `## Client test notes`
   section. One missing section, even on a housekeeping PR, blocks the release
