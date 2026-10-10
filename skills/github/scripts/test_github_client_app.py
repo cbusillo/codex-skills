@@ -281,6 +281,17 @@ class ClientAppTests(unittest.TestCase):
         state = github_milestone._command_state("client/product", operation="github.plan.milestone_create",
             actor="app-1[bot]", expected_actor="app-1[bot]", gh_cmd=wrapper, verify_actor=True)
         self.assertEqual(state[1:3], ("app-1[bot]", "app-1[bot]"))
+        with patch.dict(os.environ, {identity.OWN_USER_OPT_IN: "1"}):
+            own = github_issue.create_issue("fixture", "fixture body", repo="upstream/missing",
+                gh_cmd=wrapper, expected_actor="app-1[bot]")
+            self.assertEqual(own["actor"], "own-user")
+            # The primary route's ordinary reads retain their legacy default installation.
+            read = self.wrapper("api", "/repos/upstream/missing")
+            self.assertEqual(json.loads(read.stdout)["token"], "fake-token-1")
+            with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "1"}):
+                with self.assertRaises(github_issue.IssueError):
+                    github_issue.create_issue("fixture", "fixture body", repo="upstream/missing",
+                        gh_cmd=wrapper, expected_actor="app-1[bot]")
 
     def test_configured_client_login_trusts_its_managed_plan_body(self) -> None:
         _, login = self.auth("host/product", write=True)

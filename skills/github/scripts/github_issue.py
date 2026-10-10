@@ -669,7 +669,7 @@ def create_issue(
         write_repository=resolved_repo if github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS") else None,
         retry_summaries=retry_summaries,
     )
-    if github_identity.github_app_prefix(resolved_repo) == "GITHUB_CLIENT_APP":
+    if expected_actor and github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS"):
         expected_actor = actor
     steps = ["resolve_actor"]
     for label in github_agent.assignment_labels(normalized_labels):
@@ -969,7 +969,7 @@ def _edit_issue_impl(
         write_repository=resolved_repo if github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS") else None,
         retry_summaries=retry_summaries,
     )
-    if github_identity.github_app_prefix(resolved_repo) == "GITHUB_CLIENT_APP":
+    if expected_actor and github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS"):
         expected_actor = actor
     steps = ["resolve_actor"]
     normalized_add_labels = _split_values(add_labels)
@@ -1312,7 +1312,7 @@ def _set_issue_state_impl(
         write_repository=resolved_repo if github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS") else None,
         retry_summaries=retry_summaries,
     )
-    if github_identity.github_app_prefix(resolved_repo) == "GITHUB_CLIENT_APP":
+    if expected_actor and github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS"):
         expected_actor = actor
     request: dict[str, Any] = {"state": state, "state_reason": state_reason}
     if duplicate_of is not None:

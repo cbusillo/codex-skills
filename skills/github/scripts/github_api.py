@@ -2937,14 +2937,18 @@ def request_identity(
         repository = github_identity.repository_context()
 
     def repository_identity() -> tuple[Optional[str], Optional[str], list[str]]:
+        read_for_writer = (not is_write and actor and expected_actor
+                           and actor.casefold() == expected_actor.casefold()
+                           and (not main_actor or actor.casefold() != main_actor.casefold())
+                           and github_identity.own_user_opted_in())
+        if (read_for_writer and not reader and pathlib.Path(gh_cmd).name == "gh-with-env-token"
+                and github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS")
+                and "--require-installation" not in prefix):
+            prefix.append("--require-installation")
         if (pathlib.Path(gh_cmd).name == "gh-with-env-token"
                 and github_identity.github_app_prefix(repository) == "GITHUB_CLIENT_APP"):
             client_config = github_identity.github_app_config(repository=repository)
             assert client_config is not None
-            read_for_writer = (not is_write and actor and expected_actor
-                               and actor.casefold() == expected_actor.casefold()
-                               and (not main_actor or actor.casefold() != main_actor.casefold())
-                               and github_identity.own_user_opted_in())
             try:
                 _, client_login = github_identity.github_app_auth(
                     client_config, repository=repository,
