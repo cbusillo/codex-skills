@@ -154,7 +154,10 @@ with the handoff before rearming. Do not maintain another per-session copy.
 Record a release hold **before** its batch lands and becomes ready, including
 before its invitation posts. Ready/open Client release entries pause both that
 product and the explicitly supplied control-plane repository. The hold command
-waits for the current local enqueue pass before acknowledging the update.
+waits for the current repository's enqueue section before acknowledging the
+update. Between repositories, a pause update can win the lock and make the
+watcher's next nonblocking acquisition stop safely. Finish the hold update and
+reconcile any already emitted enqueue events before rearming the watcher.
 After the release finishes, clear that entry; ordinary pauses remain independent.
 
 ```sh
