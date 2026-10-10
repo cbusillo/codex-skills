@@ -117,6 +117,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "stale": "plan:stale",
         "done": "plan:done",
         "audit": "audit",
+        "own_project": "own-project",
     },
     "label_defs": {
         **github_agent.LABEL_DEFS,
@@ -127,6 +128,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "plan:stale": {"color": "bfbfbf", "description": "See https://github.com/cbusillo/codex-skills/blob/main/skills/github-plan/SKILL.md#status-labels"},
         "plan:done": {"color": "006b75", "description": "See https://github.com/cbusillo/codex-skills/blob/main/skills/github-plan/SKILL.md#status-labels"},
         "audit": {"color": "d4c5f9", "description": "Question or completed work for the weekly direction audit"},
+        "own-project": {"color": "c2e0c6", "description": "Own-project work in a mixed repository; counted as own by the weekly direction audit"},
     },
     "default_sections": [
         "Finish Line",

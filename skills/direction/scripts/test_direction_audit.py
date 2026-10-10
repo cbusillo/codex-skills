@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import importlib.util
 import json
+import re
 import os
 import subprocess
 import sys
@@ -59,7 +60,8 @@ def load() -> Any:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.planning_config = lambda _: {"labels": {"waiting": "plan:waiting", "blocked": "plan:blocked",
-                                                   "stale": "plan:stale", "done": "plan:done"}}
+                                                   "stale": "plan:stale", "done": "plan:done",
+                                                   "own_project": "own-project"}}
     return module
 
 
@@ -1185,6 +1187,8 @@ def test_capacity_fetch_attribution_and_retired_milestone_window() -> None:
             return [merged_pull(1, NOW), merged_pull(2, NOW),
                     merged_pull(3, NOW, body="Refs: \n- [tracked](https://github.com/o/live/issues/10)\n- #99"),
                     merged_pull(4, NOW, body="Doesn't fix o/live#10")]
+        if path == "graphql" and any("REOPENED_EVENT" in arg for arg in args):
+            return reopened_page([])
         if path == "graphql":
             number = int(next(arg.split("=",1)[1] for arg in args if arg.startswith("number=")))
             native_calls.append(number)
@@ -1228,6 +1232,100 @@ def test_native_pull_links_are_paged_and_partial_errors_refuse() -> None:
         raise AssertionError("unavailable links were accepted")
 
 
+def reopened_page(nodes: list[dict[str, Any]], cursor: str | None = None) -> dict[str, Any]:
+    return {"data": {"repository": {"issues": {
+        "nodes": nodes, "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor},
+    }}}}
+
+
+def test_reopens_come_from_issues_updated_in_a_window_busier_than_the_event_cap() -> None:
+    module = load()
+    calls: list[list[str]] = []
+    pages = 3
+
+    def fetch(args: list[str]) -> Any:
+        calls.append(args)
+        assert args[1] == "graphql", "the busy event feed is never paged"
+        page = int(next((arg.split("=", 1)[1] for arg in args if arg.startswith("cursor=")), "0"))
+        # Each page stands for 100 issues whose label and claim traffic alone
+        # filled more than the old 2,000-event cap.
+        nodes = [{"number": page * 100 + n, "title": f"Issue {page * 100 + n}", "timelineItems": {"nodes": []}}
+                 for n in range(100)]
+        nodes[7]["timelineItems"]["nodes"] = [{"createdAt": stamp(NOW)}]
+        return reopened_page(nodes, str(page + 1) if page + 1 < pages else None)
+
+    events, cut = module.reopened_issue_events("o/live", SINCE, fetch=fetch)
+    assert not cut and len(calls) == pages
+    assert all(f"since={stamp(SINCE)}" in args for args in calls)
+    result = summary(module, events={"o/live": events})
+    assert {item["number"] for item in result["issues_reopened"]} == {7, 107, 207}
+
+    events, cut = module.reopened_issue_events("o/live", SINCE, fetch=fetch, max_pages=2)
+    assert cut and len(events) == 2
+    for response in ({"data": {"repository": None}}, {**reopened_page([]), "errors": [{"message": "denied"}]},
+                     reopened_page([], cursor="")):
+        try:
+            module.reopened_issue_events("o/live", SINCE, fetch=lambda _args, body=json.dumps(response): json.loads(body))
+        except module.AuditError:
+            continue
+        raise AssertionError("an unreadable reopen listing was accepted")
+
+
+def test_mixed_repository_counts_labeled_or_linked_own_work_as_own() -> None:
+    import base64
+
+    module = load()
+    calls: list[str] = []
+    issue_labels = {5: ["Own-Project"], 8: ["bug"], 10: []}
+
+    def fetch(args: list[str]) -> Any:
+        path = args[1]
+        calls.append(path)
+        if "/contents/" in path:
+            return {"content": base64.b64encode(OWN_DIRECTION.encode()).decode()}
+        if path.startswith("repos/o/direction/milestones"):
+            return [{"number": 1, "title": "Dogfood week", "state": "open"}]
+        if path.startswith("repos/o/direction/issues?state=all&milestone=1"):
+            return [{"number": 1, "title": "Track: dogfood", "state": "open"}]
+        if path.startswith("repos/o/direction/issues/1/sub_issues"):
+            return [{"html_url": "https://github.com/o/infra/issues/10", "state": "open"}]
+        if path.startswith("installation/repositories"):
+            return {"repositories": [{"full_name": "o/infra", "owner": {"login": "o"}, "pushed_at": stamp(NOW)}]}
+        if path.startswith("repos/o/infra/pulls"):
+            return [
+                {**merged_pull(1, NOW, title="Record the garage fix"), "labels": [{"name": "own-project"}]},
+                merged_pull(2, NOW, body="Refs #5"),
+                merged_pull(3, NOW, body="Fixes #5"),
+                merged_pull(4, NOW, body="Refs o/house-tools#3"),
+                merged_pull(5, NOW, body="Refs #8"),
+                merged_pull(6, NOW, body="Refs #6"),
+                {**merged_pull(7, NOW, body="Refs #10"), "labels": [{"name": "own-project"}]},
+                merged_pull(8, NOW, title="Runner cleanup"),
+            ]
+        if match := re.fullmatch(r"repos/o/infra/issues/(\d+)", path):
+            number = int(match[1])
+            if number not in issue_labels:
+                raise module.AuditError("HTTP 404")
+            return {"labels": [{"name": name} for name in issue_labels[number]]}
+        if path == "graphql" and any("REOPENED_EVENT" in arg for arg in args):
+            return reopened_page([])
+        if path == "graphql":
+            return {"data": {"repository": {"pullRequest": {"closingIssuesReferences": {
+                "nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }}}}}
+        return []
+
+    result, truncated = module.fetch_capacity("o/direction", SINCE, NOW, fetch=fetch)
+    # Milestone links win over the label; a labeled pull request or one linked to
+    # labeled work or an own-project repository counts as own; the rest is tooling.
+    assert result["merged_by_rank"] == {"milestone": 1, "own": 4, "tooling": 3}
+    assert result["own_project_label"] == "own-project"
+    assert calls.count("repos/o/infra/issues/5") == 1, "each linked issue is read once"
+    assert "repos/o/house-tools/issues/3" not in calls and "repos/o/infra/issues/10" not in calls
+    assert truncated == ["capacity_issue_labels:o/infra#6"]
+    assert result["own_share_floor"] == "unknown"
+
+
 def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
     import base64
 
@@ -1254,6 +1352,9 @@ def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
         if path.startswith("repos/o/live/pulls"):
             # A full page that reaches past the window ends the read.
             return [merged_pull(n, NOW) for n in range(99)] + [{**merged_pull(99, None), "updated_at": old}]
+        if path == "graphql" and any("REOPENED_EVENT" in arg for arg in args):
+            calls.append("graphql:reopened:" + next(arg for arg in args if arg.startswith("name=")))
+            return reopened_page([])
         if path == "graphql":
             return {"data": {"repository": {"pullRequest": {"closingIssuesReferences": {
                 "nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None},
@@ -1265,7 +1366,7 @@ def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
     assert truncated == []
     assert not any("page=2" in path for path in calls if "/pulls" in path)
     assert not any(path.startswith(("repos/o/quiet/pulls", "repos/o/attic/", "repos/x/")) for path in calls)
-    assert any(path.startswith("repos/o/quiet/issues/events") for path in calls)
+    assert "graphql:reopened:name=quiet" in calls
     assert any(path.startswith("repos/o/shut/milestones") for path in calls)
     assert result["own_share_floor"] == "below"
     def missing_links(args: list[str]) -> Any:

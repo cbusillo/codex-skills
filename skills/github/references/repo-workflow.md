@@ -391,6 +391,10 @@ Keep planning state separate from PR execution state:
   repo-local workflow evidence, not approval and not a QA result.
 - `awaiting-qa` is an optional repo-local manual QA handoff label. Use it only
   when the repo documents a manual tester workflow, usually in `qaLabels`.
+- `own-project` marks a PR, or the issue it links, as work for one of the
+  own projects in the overall direction's Order when its repository is not on
+  that list, such as garage or lab work in an infrastructure repository. The
+  weekly direction audit counts it as own; `gh-plan.py ensure-labels` creates it.
 - A merge-train enqueue label is the readiness signal recorded in Launchplane's
   active policy (often `ready-to-merge`). It does not replace a fresh PR read, passing required checks,
   review accounting, and merge authorization as defined in

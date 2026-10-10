@@ -1060,21 +1060,21 @@ id = "github.direction.audit_capacity"
 request_priority = "bulk"
 capabilities = ["metadata_read", "contents_read", "pull_requests_read", "issues_read"]
 permission_mode = "fixed"
-permission_note = "Runs only for OWNER/direction and uses existing metadata, Contents, Pull requests and Issues read grants with their safe probes; no profile expansion. The automation reader lists its installation's repositories; the Director's own reader lists the repositories that login owns. A failed per-repository read or a capped listing reports incomplete coverage under capacity_* listings; a failed repository listing aborts the audit. Missing Order or graph/native-link evidence keeps the share unknown and the audit window open. Never uses the search API."
+permission_note = "Runs only for OWNER/direction and uses existing metadata, Contents, Pull requests and Issues read grants with their safe probes; no profile expansion. The automation reader lists its installation's repositories; the Director's own reader lists the repositories that login owns. A failed per-repository read or a capped listing reports incomplete coverage under capacity_* listings; a failed repository listing aborts the audit. Missing Order or graph/native-link evidence, or an unreadable linked issue's labels, keeps the share unknown and the audit window open. Never uses the search API."
 entrypoint = "direction/scripts/direction_audit.py --repo OWNER/direction (capacity)"
-intent = "Count merged pull requests by tracked-issue graph attribution, own-project names from the merged overall Order and tooling fallback, the own-projects share, milestones closed, issues reopened and revert pull requests since the prior audit."
+intent = "Count merged pull requests by tracked-issue graph attribution, own-project names from the merged overall Order or the own-project label on a pull request or its linked issue, and tooling fallback, the own-projects share, milestones closed, issues reopened and revert pull requests since the prior audit."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "GET /repos/{repo}/contents/DIRECTION.md; paged milestone-filtered Track issue inventory (listed or closed since window start) and native blocked_by/sub_issues graph; GraphQL pullRequest.closingIssuesReferences; paged GET /installation/repositories or /user/repos?affiliation=owner; per repository paged GET /repos/{repo}/pulls?state=closed&sort=updated&direction=desc and /repos/{repo}/issues/events, both stopping at the window start, and up to 2 pages of /repos/{repo}/milestones?state=closed"
+endpoint_or_command = "GET /repos/{repo}/contents/DIRECTION.md; paged milestone-filtered Track issue inventory (listed or closed since window start) and native blocked_by/sub_issues graph; GraphQL pullRequest.closingIssuesReferences; paged GET /installation/repositories or /user/repos?affiliation=owner; per repository paged GET /repos/{repo}/pulls?state=closed&sort=updated&direction=desc stopping at the window start, paged GraphQL repository.issues(filterBy.since) with each issue's latest REOPENED_EVENT since the window start, up to 2 pages of /repos/{repo}/milestones?state=closed, and one cached GET /repos/{repo}/issues/{number} per distinct issue linked from an otherwise unattributed pull request outside own-project repositories"
 quota_bucket = "mixed"
 actor_policy = "automation_required"
 mutation_class = "read"
 idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "fresh_read"
-retained_graphql_rationale = "GraphQL closingIssuesReferences supplies native PR issue links omitted by REST pull listings. Repository, graph and activity inventories use paged REST, never search."
-source_refs = ["direction/scripts/direction_audit.py:tracked_capacity_issues", "direction/scripts/direction_audit.py:native_pull_issue_refs", "direction/scripts/direction_audit.py:fetch_capacity", "direction/scripts/direction_audit.py:merged_file", "direction/scripts/direction_audit.py:fetch_paginated"]
-test_refs = ["direction/scripts/test_direction_audit.py:test_capacity_fetch_attribution_and_retired_milestone_window", "direction/scripts/test_direction_audit.py:test_native_pull_links_are_paged_and_partial_errors_refuse", "direction/scripts/test_direction_audit.py:test_capacity_reads_each_repository_and_stops_at_the_window", "direction/scripts/test_direction_audit.py:test_only_the_direction_repository_audit_counts_capacity", "direction/scripts/test_direction_audit.py:test_capacity_counts_merges_inside_the_window_by_rank"]
+retained_graphql_rationale = "GraphQL closingIssuesReferences supplies native PR issue links omitted by REST pull listings. GraphQL issues filtered by update time read reopens without paging the repository event feed, which label and claim traffic pushes past any page cap in a busy repository. Repository and graph inventories use paged REST, never search."
+source_refs = ["direction/scripts/direction_audit.py:tracked_capacity_issues", "direction/scripts/direction_audit.py:native_pull_issue_refs", "direction/scripts/direction_audit.py:fetch_capacity", "direction/scripts/direction_audit.py:reopened_issue_events", "direction/scripts/direction_audit.py:merged_file", "direction/scripts/direction_audit.py:fetch_paginated"]
+test_refs = ["direction/scripts/test_direction_audit.py:test_capacity_fetch_attribution_and_retired_milestone_window", "direction/scripts/test_direction_audit.py:test_native_pull_links_are_paged_and_partial_errors_refuse", "direction/scripts/test_direction_audit.py:test_capacity_reads_each_repository_and_stops_at_the_window", "direction/scripts/test_direction_audit.py:test_only_the_direction_repository_audit_counts_capacity", "direction/scripts/test_direction_audit.py:test_capacity_counts_merges_inside_the_window_by_rank", "direction/scripts/test_direction_audit.py:test_reopens_come_from_issues_updated_in_a_window_busier_than_the_event_cap", "direction/scripts/test_direction_audit.py:test_mixed_repository_counts_labeled_or_linked_own_work_as_own"]
 
 [[operations]]
 id = "github.plan.direction_read"
@@ -2345,7 +2345,7 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github-work-rollup/scripts/github_work_rollup.py" = "cd77d9191d131d4514826aacb8259c059d69ea8a0ce097bb1bd1b109216b57af"
 "github-work-rollup/scripts/verify_work_brief.py" = "379cfec37182c96c01ac5ae2b930ca7cdd9fc34a1bacba5f5f3510d918f9074c"
 "babysit-pr/scripts/gh_pr_watch.py" = "525c8e788ce94396d37512b98e2ea1122a7d9c037c72c7bdd939d0e28f38512c"
-"direction/scripts/direction_audit.py" = "6aa861df100af71feb6ab13414ed79194c70f43d16ad751043136670a827a734"
+"direction/scripts/direction_audit.py" = "60df8826fed4548e59fba60325a45868971d18bbe567415ca97163c008d0e8d7"
 "github/scripts/github_plan_claim.py" = "fa2625a067c6e679f6d5bef572690505219aa8e3fec873389e3d212a5a1ecb9d"
 "github/scripts/github_plan_release.py" = "23e334369bd1caebfbad012fa913cdaa5604aa52727c6d8b8a6d857e821d47d8"
 "github/scripts/github_request_usage.py" = "e79e4658e4f37c954d45aec6bb41d84bd0a582a076a924bf0057adc5c5e4eeca"
