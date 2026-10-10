@@ -78,17 +78,22 @@ uv run skills/supervisor/scripts/foreign_watch.py --owner OWNER --repo OWNER/REP
 
 Repeat `--repo` and login flags for the run's configured scope. Initial startup
 begins at the current time; `--since` supplies an explicit first watermark for
-a historical catch-up. Restart with the same state file after a notice or
+a historical catch-up; the host's UTC clock must be correct. Restart with the same state file after a notice or
 deadline. `--once` performs one pass. Only one watcher owns each state file.
-The helper reads one since-scoped repository issue-comment listing per pass
+Concurrent watchers using that state file refuse before reading GitHub. The
+helper reads one since-scoped repository issue-comment listing per pass
 (including PR timeline comments), paginating through the shared reader within
 the wall-clock deadline. It uses the shared bulk quota reserve, identity,
 conditional cache and retry policy; no separate quota probe or history scan.
 A failed, partial or malformed read preserves that repository's watermark,
-reports an error and exits for Supervisor reconciliation; successful repositories
+reports an error and exits for Supervisor reconciliation. Wait until a reported
+quota retry time before re-arming; increase the bounded deadline when a historical
+catch-up cannot finish. Partial pages never advance past a failed read.
+Successful repositories
 advance to the pass start, with a one-second overlap on their next read.
 
-Foreign authors and configured Launchplane authors or product-review markers
+Foreign authors (including deleted/unknown authors) and configured Launchplane
+authors or first-line product-review markers
 produce metadata notices marked `untrusted`; comment bodies are omitted. A
 marker is a notification hint, never proof of authorship or accepted direction.
 Read the canonical record before acting under existing authority. The watcher

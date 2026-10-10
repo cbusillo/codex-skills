@@ -6,10 +6,12 @@
 """Offline notification filtering and failure-safe watermark tests."""
 
 import json
+from contextlib import redirect_stdout
+import io
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import foreign_watch
 
@@ -33,7 +35,7 @@ class WatchTests(unittest.TestCase):
         reader.paged_json.return_value = [comment("Director"), comment("agent[bot]"),
             comment(), comment("delivery[bot]"),
             comment("agent[bot]", "<!-- launchplane:owner-review -->"),
-            comment("agent[bot]", "<!-- launchplane:product-review -->")]
+            comment("agent[bot]", "<!-- launchplane:product-review:decision-1 -->")]
         notices, errors, watermarks = self.scan(reader)
         self.assertEqual([n["kind"] for n in notices], ["foreign"] + ["launchplane"] * 3)
         self.assertTrue(all(n["untrusted"] and "body" not in n for n in notices))
@@ -82,6 +84,60 @@ class WatchTests(unittest.TestCase):
                 path.write_text(json.dumps(data))
                 with self.assertRaises((ValueError, TypeError)):
                     foreign_watch.load_state(path, [REPO], SINCE)
+
+    def test_deleted_author_is_untrusted_and_marker_quote_does_not_reclassify(self):
+        reader = Mock()
+        reader.paged_json.return_value = [{**comment(), "user": None},
+            comment(body='Quoted: <!-- launchplane:product-review:id -->')]
+        notices, errors, watermarks = self.scan(reader)
+        self.assertEqual(errors, [])
+        self.assertIsNone(notices[0]["author"])
+        self.assertEqual([n["kind"] for n in notices], ["foreign", "foreign"])
+        self.assertEqual(watermarks[REPO], STARTED)
+
+    def test_quota_retry_time_and_failed_read_retention(self):
+        reader = Mock()
+        failure = foreign_watch.GitHubReadShapeError("quota")
+        failure.diagnostics = {"requests": [{"retryAt": 12345}]}
+        reader.paged_json.side_effect = failure
+        notices, errors, watermarks = self.scan(reader)
+        self.assertEqual(errors[0]["retry_at"], 12345)
+        self.assertEqual(watermarks[REPO], SINCE)
+        self.assertEqual(notices, [])
+
+    def test_state_file_has_one_active_watcher(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "watch.json"
+            with foreign_watch.watch_lock(path):
+                with self.assertRaises(ValueError):
+                    with foreign_watch.watch_lock(path):
+                        self.fail("second watcher acquired the same state")
+            with foreign_watch.watch_lock(path):
+                pass
+
+    def test_once_cli_reads_one_feed_and_persists_private_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "watch.json"
+            reader = Mock()
+            reader.paged_json.return_value = [comment()]
+            output = io.StringIO()
+            with patch.object(foreign_watch.sys, "argv", ["foreign_watch.py", "--owner", "director",
+                    "--repo", REPO, "--own-login", "director", "--state", str(path), "--since", SINCE, "--once"]), \
+                 patch.object(foreign_watch, "GitHubReader", return_value=reader) as factory, \
+                 redirect_stdout(output):
+                self.assertEqual(foreign_watch.main(), 0)
+            self.assertEqual(len(json.loads(output.getvalue())["notices"]), 1)
+            self.assertEqual(factory.call_args.kwargs["operation"], "github.supervisor.foreign_watch")
+            self.assertGreater(factory.call_args.kwargs["deadline_at"], 0)
+            self.assertIn(REPO, json.loads(path.read_text())["watermarks"])
+
+    def test_expired_deadline_starts_no_read(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(foreign_watch.time, "monotonic", side_effect=[0, 1801]), \
+             patch.object(foreign_watch, "GitHubReader") as factory, patch.object(foreign_watch.sys, "argv", [
+                 "foreign_watch.py", "--owner", "director", "--repo", REPO, "--own-login", "director",
+                 "--state", str(Path(directory) / "watch.json")]):
+            self.assertEqual(foreign_watch.main(), 0)
+            factory.assert_not_called()
 
 
 if __name__ == "__main__":

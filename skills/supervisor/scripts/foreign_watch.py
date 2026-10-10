@@ -8,19 +8,24 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+import fcntl
 import json
 import math
 from pathlib import Path
 import re
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError
 
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
-REVIEW_MARKERS = ("launchplane:owner-review", "launchplane:product-review")
+REVIEW_MARKER = re.compile(
+    r"<!-- launchplane:(?:product-review:[A-Za-z0-9_.:-]+|owner-review(?: [^\n]+)?) -->"
+)
 
 
 def timestamp(value: str) -> datetime:
@@ -56,18 +61,22 @@ def scan(repos, watermarks, own_logins, launchplane_logins, started, reader):
         pending = []
         try:
             for comment in read_comments(reader, repo, since):
-                login = comment["user"]["login"]
+                user = comment["user"]
+                login = user["login"] if user is not None else None
                 body = comment.get("body") or ""
                 updated = comment["updated_at"]
                 url = comment["html_url"]
-                if not all(isinstance(value, str) for value in (login, body, updated, url)):
+                if (login is not None and not isinstance(login, str)) or not all(
+                    isinstance(value, str) for value in (body, updated, url)
+                ):
                     raise ValueError("comment metadata must be text")
                 if timestamp(updated) < timestamp(since):
                     continue
-                is_launchplane = login.casefold() in launchplane or any(
-                    marker in body for marker in REVIEW_MARKERS
+                lines = body.splitlines()
+                is_launchplane = (login or "").casefold() in launchplane or bool(
+                    lines and REVIEW_MARKER.fullmatch(lines[0])
                 )
-                if is_launchplane or login.casefold() not in own:
+                if is_launchplane or (login or "").casefold() not in own:
                     pending.append({
                         "repository": repo, "author": login, "url": url,
                         "updated_at": updated,
@@ -77,7 +86,9 @@ def scan(repos, watermarks, own_logins, launchplane_logins, started, reader):
         except (GitHubReadError, GitHubReadShapeError, OSError, ValueError, TypeError, KeyError) as error:
             diagnostics = getattr(error, "diagnostics", {})
             errors.append({"repository": repo, "error": "comment read incomplete",
-                           "retry_at": diagnostics.get("retry_at")})
+                           "retry_at": next((r.get("retryAt") for r in reversed(
+                               diagnostics.get("requests", [])
+                           ) if r.get("retryAt") is not None), None)})
             continue
         notices.extend(pending)
         next_watermarks[repo] = started
@@ -98,10 +109,27 @@ def load_state(path: Path, repos, initial: str) -> dict[str, str]:
 
 def save_state(path: Path, watermarks):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps({"watermarks": watermarks}) + "\n")
-    temporary.chmod(0o600)
-    temporary.replace(path)
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(json.dumps({"watermarks": watermarks}) + "\n")
+    try:
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+@contextmanager
+def watch_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with path.with_name(path.name + ".lock").open("a+") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ValueError("another watcher owns this state file") from error
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def main() -> int:
@@ -126,21 +154,26 @@ def main() -> int:
     initial = args.since or utc_now()
     try:
         timestamp(initial)
-        watermarks = load_state(args.state, repos, initial)
-        while time.monotonic() < deadline:
-            started = utc_now()
-            reader = GitHubReader(operation="github.read.issues", strict_actor=True,
-                                  deadline_at=time.time() + max(0, deadline - time.monotonic()))
-            notices, errors, watermarks = scan(repos, watermarks, args.own_login,
-                                              args.launchplane_login, started, reader)
-            print(json.dumps({"notices": notices, "errors": errors, "untrusted": True}), flush=True)
-            save_state(args.state, watermarks)
-            if notices or errors or args.once:
-                return int(bool(errors))
-            time.sleep(min(args.interval, max(0, deadline - time.monotonic())))
+        with watch_lock(args.state):
+            return watch(args, repos, initial, deadline)
     except (OSError, ValueError, TypeError) as error:
         print(json.dumps({"error": str(error)}), flush=True)
         return 1
+
+
+def watch(args, repos, initial, deadline):
+    watermarks = load_state(args.state, repos, initial)
+    while time.monotonic() < deadline:
+        started = utc_now()
+        reader = GitHubReader(operation="github.supervisor.foreign_watch", strict_actor=True,
+                              deadline_at=time.time() + max(0, deadline - time.monotonic()))
+        notices, errors, watermarks = scan(repos, watermarks, args.own_login,
+                                          args.launchplane_login, started, reader)
+        print(json.dumps({"notices": notices, "errors": errors, "untrusted": True}), flush=True)
+        save_state(args.state, watermarks)
+        if notices or errors or args.once:
+            return int(bool(errors))
+        time.sleep(min(args.interval, max(0, deadline - time.monotonic())))
     return 0
 
 
