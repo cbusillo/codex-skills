@@ -294,6 +294,45 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(notices[1]["turn_end"], "task_complete")
         self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1200), [])
 
+    def test_malformed_nested_transcripts_are_isolated(self):
+        bad_path = self.root / "bad.jsonl"
+        for malformed in (
+            {"type": "event_msg", "payload": ["unexpected"]},
+            {"type": "event_msg", "payload": []},
+            {"type": "assistant", "message": "unexpected"},
+            {"type": "assistant", "message": {"content": ["unexpected"]}},
+            {"type": "assistant", "message": {"content": [{"text": []}]}},
+            {"type": "assistant", "message": {"usage": []}},
+            {"type": "event_msg", "payload": {"type": "token_count", "info": []}},
+            {"type": "event_msg", "payload": {"type": "token_count", "info": {
+                "last_token_usage": ["unexpected"]}}},
+            {"type": "event_msg", "payload": {"type": "agent_message", "message": []}},
+            {"type": "session_meta", "payload": {"id": []}},
+            {"type": "assistant", "sessionId": []},
+        ):
+            with self.subTest(malformed=malformed):
+                bad_path.write_text("\n".join(json.dumps(r) for r in (
+                    {"type": "session_meta", "payload": {"id": "bad"}}, malformed,
+                    event("agent_message", message="Safe to exit: yes"),
+                    event("task_complete"))) + "\n")
+                bad = {**self.entry, "session_id": "bad", "transcript": "bad.jsonl"}
+                self.ledger.write_text(json.dumps([bad, self.entry]))
+                for consumer in (status.snapshot, finished_map.candidates,
+                                 lambda ledger: codex_idle_watch.poll(ledger, {}, 90, 1200)):
+                    results = consumer(self.ledger)
+                    self.assertIn("error", results[0])
+                    self.assertFalse(results[0].get("safe_verdict", False))
+                    self.assertFalse(results[0].get("candidate", False))
+                    self.assertEqual(results[1]["session_id"], self.entry["session_id"])
+                    self.assertEqual(results[1]["turn_end"], "task_complete")
+
+    def test_malformed_ledger_remains_a_top_level_error(self):
+        self.ledger.write_text(json.dumps({"sessions": [self.entry]}))
+        for consumer in (status.snapshot, finished_map.candidates,
+                         lambda ledger: codex_idle_watch.poll(ledger, {}, 90, 1200)):
+            with self.assertRaises(TypeError):
+                consumer(self.ledger)
+
     def test_relative_path_and_duplicate_identity(self):
         self.assertEqual(
             session_record.load_ledger(self.ledger)[0]["transcript"],

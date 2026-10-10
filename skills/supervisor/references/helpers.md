@@ -37,7 +37,10 @@ Exclude the Director's sessions or set `supervisor_owned` to false.
 Each native session id is unique. Codex UUIDs have no date-prefix restriction.
 Missing/malformed or changing transcripts are errors, never idle/finished
 proof. The watcher reports an error for that session and keeps watching the
-other sessions; a malformed ledger itself ends the watch. Status output includes the latest response and can be private; keep it
+other sessions; a malformed ledger itself ends the watch. Transcript errors
+include malformed nested payload, message, content and identity fields; they
+supply no completion proof for that session.
+Status output includes the latest response and can be private; keep it
 out of public comments. Context counts may be absent and are not a reason to
 hand off. For Claude, the count includes cached input.
 

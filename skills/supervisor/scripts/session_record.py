@@ -19,6 +19,38 @@ MEMORY_CITATION_TAIL = re.compile(
 SAFE = re.compile(r"^(?:\*\*)?Safe to exit: yes\.?(?:\*\*)?$")
 
 
+def validate_record(record: dict) -> None:
+    """Validate the shapes consumed by identity and completion readers."""
+    for key in ("payload", "message"):
+        if key in record and not isinstance(record[key], dict):
+            raise TypeError(f"{key} must be an object")
+    if "sessionId" in record and not isinstance(record["sessionId"], str):
+        raise TypeError("sessionId must be a string")
+    payload = record.get("payload", {})
+    if record.get("type") == "session_meta" and not isinstance(payload.get("id"), str):
+        raise TypeError("session_meta payload.id must be a string")
+    if payload.get("type") == "agent_message" and not isinstance(payload.get("message"), str):
+        raise TypeError("agent_message message must be a string")
+    for container, key in ((record.get("message", {}), "usage"), (payload, "info")):
+        value = container.get(key)
+        if value is not None and not isinstance(value, dict):
+            raise TypeError(f"{key} must be an object")
+    info = payload.get("info") or {}
+    for key in ("last_token_usage", "total_token_usage"):
+        if info.get(key) is not None and not isinstance(info[key], dict):
+            raise TypeError(f"info.{key} must be an object")
+    for container in (record.get("message", {}), payload):
+        content = container.get("content")
+        if content is not None and not isinstance(content, (str, list)):
+            raise TypeError("content must be text or an array of objects")
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    raise TypeError("content block must be an object")
+                if "text" in block and not isinstance(block["text"], str):
+                    raise TypeError("content block text must be a string")
+
+
 def read_jsonl(path: Path) -> list[dict]:
     records = []
     with path.open(encoding="utf-8") as stream:
@@ -33,6 +65,10 @@ def read_jsonl(path: Path) -> list[dict]:
                 ) from error
             if not isinstance(record, dict):
                 raise TypeError(f"{path.name}:{number}: record is not an object")
+            try:
+                validate_record(record)
+            except TypeError as error:
+                raise TypeError(f"{path.name}:{number}: {error}") from error
             records.append(record)
     return records
 
