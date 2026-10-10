@@ -3887,7 +3887,7 @@ def test_reconcile_requests_read_keeps_testing_operation_ids() -> None:
         "last_failed_error_code": "health_check_failed",
         "last_failed_error_summary": "Health check did not pass within the wait window.",
         "missing_keys": ["EXAMPLE_ODOO_ADMIN_LOGIN"],
-        "rejected_builds": [{"commit": "abc123", "error": "Private build failure text"}],
+        "rejected_builds": [{"commit": "abc123" * 6 + "abcd", "error": "Private build failure text"}],
         "pr_feedback": {"error": "Private feedback text"},
     }
     response = {
@@ -3913,7 +3913,7 @@ def test_reconcile_requests_read_keeps_testing_operation_ids() -> None:
         "missing_keys",
     ):
         assert kept[name] == plan[name], name
-    assert kept["rejected_builds"] == [{"commit": "abc123"}]
+    assert kept["rejected_builds"] == [{"commit": "abc123" * 6 + "abcd"}]
     assert "pr_feedback" not in kept
     assert payload["result"]["dropped_field_paths"] == [
         "requests[].last_plan.<unlisted field>",
@@ -3946,10 +3946,11 @@ def test_reconcile_requests_read_shows_why_testing_skipped_a_newer_build() -> No
                 "commit": new_commit,
                 "error": "GitHub read failed for /repos/example/private-path: HTTP Error 404",
             },
-            {"commit": "not a commit; rm -rf", "error": "Private text"},
+            {"commit": "https://private-host.example.invalid/path#frag", "error": "Private text"},
             "Private entry text",
         ],
         "preview_recovery_plan": {"provider_target": "private-host"},
+        "destroy_retry_stop_reason": "Delivery failed: ssh://admin@private-host.example.invalid/data",
     }
     response = {
         "status": "ok",
@@ -3974,7 +3975,9 @@ def test_reconcile_requests_read_shows_why_testing_skipped_a_newer_build() -> No
     ):
         assert kept[name] == plan[name], name
     assert "preview_recovery_plan" not in kept
+    assert "destroy_retry_stop_reason" not in kept
     assert payload["result"]["dropped_field_paths"] == [
+        "requests[].last_plan.destroy_retry_stop_reason",
         "requests[].last_plan.preview_recovery_plan",
         "requests[].last_plan.rejected_builds[]",
         "requests[].last_plan.rejected_builds[].commit",
@@ -3987,11 +3990,15 @@ def test_reconcile_requests_read_shows_why_testing_skipped_a_newer_build() -> No
 
     plan["build_runs_seen"] = "30"
     plan["current_commit_seen"] = "yes"
+    plan["current_commit"] = "https://private-host.example.invalid/path#frag"
     status, payload, _calls = _run_product_read(argv, response)
     assert status == 0
     kept = payload["result"]["requests"][0]["last_plan"]
     assert kept["build_runs_seen"] is None
     assert kept["current_commit_seen"] is None
+    assert kept["current_commit"] == ""
+    assert "requests[].last_plan.current_commit" in payload["result"]["dropped_field_paths"]
+    assert "private-host" not in json.dumps(payload)
 
 
 def test_reconcile_requests_read_keeps_generic_web_testing_outcome() -> None:

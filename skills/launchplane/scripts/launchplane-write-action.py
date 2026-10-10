@@ -2346,6 +2346,7 @@ PREVIEW_MAX_GENERATIONS = 20
 PREVIEW_MAX_SOURCES = 10
 RECONCILE_MAX_REQUESTS = 50
 RECONCILE_MAX_PLAN_LIST_ITEMS = 20
+COMMIT_SHA_RE = re.compile(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}")
 
 
 def _product_read_path(command: str, **segments: str) -> str:
@@ -2784,6 +2785,13 @@ def _public_origin_url(value: object) -> str:
     return f"{parts.scheme}://{parts.netloc}"
 
 
+def _public_commit_sha(value: object) -> str:
+    """A full Git commit id; anything else, such as a URL in a malformed record, fails."""
+    if not isinstance(value, str) or not COMMIT_SHA_RE.fullmatch(value):
+        raise LaunchplaneSafetyError("invalid_response")
+    return value
+
+
 def _reconcile_plan_validators() -> dict[str, Any]:
     """The plan fields the reconciler writes, each with its validator; others are dropped."""
     fields: dict[str, Any] = dict.fromkeys(
@@ -2809,9 +2817,6 @@ def _reconcile_plan_validators() -> dict[str, Any]:
         dict.fromkeys(
             (
                 "context",
-                "head_sha",
-                "current_head_sha",
-                "desired_commit",
                 "desired_artifact_id",
                 "current_artifact_id",
                 "desired_image_digest",
@@ -2826,11 +2831,16 @@ def _reconcile_plan_validators() -> dict[str, Any]:
                 "deployment_record_id",
                 "last_failed_operation_id",
                 "hold_recorded_by",
-                "current_commit",
                 "preview_build_run",
                 "feedback_recovery_delivery_id",
             ),
             public_identifier,
+        )
+    )
+    fields.update(
+        dict.fromkeys(
+            ("head_sha", "current_head_sha", "desired_commit", "current_commit"),
+            _public_commit_sha,
         )
     )
     fields.update(
@@ -2839,9 +2849,6 @@ def _reconcile_plan_validators() -> dict[str, Any]:
         # (launchplane#2717); the helper's own summary redaction still applies.
         last_failed_error_summary=lambda value: public_summary_string(value, max_length=1500),
         hold_reason=lambda value: public_operator_text(value, max_length=300),
-        # Launchplane's fixed sentences for why it stopped retrying.
-        destroy_retry_stop_reason=lambda value: public_summary_string(value, max_length=400),
-        feedback_recovery_stop_reason=lambda value: public_summary_string(value, max_length=400),
         hold_recorded_at=lambda value: public_summary_string(value, max_length=64),
         preview_url=_public_origin_url,
     )
@@ -2870,8 +2877,15 @@ RECONCILE_PLAN_COUNTS = frozenset({
     "feedback_recovery_failed_attempts",
 })
 # Written by the reconciler but deliberately left out, and counted under their own
-# name: a retry fingerprint is no evidence, and a recovery plan carries provider topology.
-RECONCILE_PLAN_WITHHELD = frozenset({"destroy_retry_key", "preview_recovery_plan"})
+# name: a retry fingerprint is no evidence, a recovery plan carries provider topology,
+# and the stop-reason sentences are prose whose facts `reason` and the attempt counts
+# already carry.
+RECONCILE_PLAN_WITHHELD = frozenset({
+    "destroy_retry_key",
+    "preview_recovery_plan",
+    "destroy_retry_stop_reason",
+    "feedback_recovery_stop_reason",
+})
 # Plan lists of setting key names (never values), by the name they are output under.
 RECONCILE_PLAN_KEY_NAME_LISTS = {
     "omitted_integration_credential_keys": "omitted_integration_keys",
@@ -2895,7 +2909,7 @@ def _project_rejected_builds(entries: list[object], drops: _FieldDrops) -> list[
             drops.drop("requests[].last_plan.rejected_builds[]")
             continue
         commit = drops.keep(
-            "requests[].last_plan.rejected_builds[].commit", public_identifier, entry.get("commit")
+            "requests[].last_plan.rejected_builds[].commit", _public_commit_sha, entry.get("commit")
         )
         for key in entry:
             if key != "commit":

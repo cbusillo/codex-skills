@@ -241,8 +241,9 @@ local extensions until the vendored artifact is refreshed.
   each newer build that failed verification and was skipped, by `commit` only.
   Launchplane records the reason only as free text, which is dropped and counted
   under `requests[].last_plan.rejected_builds[].error` (launchplane#3322 adds a
-  fixed code and run id). `destroy_retry_key` and `preview_recovery_plan` are
-  withheld and counted under their own names. Any other plan field, such as PR
+  fixed code and run id). Commit fields must be full Git commit ids.
+  `destroy_retry_key`, `preview_recovery_plan`, `destroy_retry_stop_reason` and
+  `feedback_recovery_stop_reason` are withheld and counted under their own names. Any other plan field, such as PR
   feedback, is dropped and counted under `requests[].last_plan.<unlisted field>`;
   the same drop and omit rules apply.
 - `product-secret-bindings-read --product` calls
