@@ -16,6 +16,25 @@ import github_plan_claim as claim
 RELEASE_MARKER = "github-plan:abandoned-release "
 
 
+def related_sessions_match(text: str, session: str) -> bool:
+    """Compare authored fields, not quoted code examples or a reused alias."""
+    prose = claim.ownership_text(text, strip_quotes=False)
+    fence = None
+    for line in prose.splitlines():
+        opener = re.match(r" {0,3}(`{3,}|~{3,})", line)
+        if fence:
+            if re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*", line):
+                fence = None
+            continue
+        if opener:
+            fence = opener.group(1)
+            continue
+        for field in re.finditer(r"\bSession:[ \t]*([^\n]+)", line, re.IGNORECASE):
+            if not re.fullmatch(rf"{re.escape(session)}\.?(?:[ \t]+\([^()]*\))?", field.group(1).strip()):
+                return False
+    return True
+
+
 def stamp(value: Any) -> datetime:
     parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
@@ -80,9 +99,7 @@ def prepare_release(
         if ((comment.get("user") or {}).get("login") != actor or claim.records(comment.get("body") or "")
                 or not re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", comment.get("body") or "")):
             raise ValueError("Related release must name an unstructured ownership follow-up of this exact source worker")
-        prose = claim.ownership_text(comment.get("body") or "", strip_quotes=False)
-        sessions = re.findall(r"(?im)\bSession:[ \t]*([^\n]+)", prose)
-        if any(session.strip() != record["session"] for session in sessions):
+        if not related_sessions_match(comment.get("body") or "", record["session"]):
             raise ValueError("Related ownership follow-up names a different native session; obtain that session's own closure evidence")
         if stamp(comment.get("updated_at") or comment.get("created_at")) >= cutoff:
             raise ValueError("Related ownership follow-up is newer than the session-ended evidence")
