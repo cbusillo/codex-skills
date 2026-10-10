@@ -40,7 +40,7 @@ def normalize_labels(items: Any) -> list[str]:
 
 
 def is_live_breakage(issue: dict[str, Any]) -> bool:
-    return LIVE_BREAKAGE_LABEL in {name.casefold() for name in normalize_labels(issue.get("labels"))}
+    return bool(issue.get("incident_via")) or LIVE_BREAKAGE_LABEL in {name.casefold() for name in normalize_labels(issue.get("labels"))}
 
 
 def discovery_scan(inventory: list[dict[str, Any]], scan_limit: int, selection_context: dict[str, Any] | None = None, *, agent: str | None = None) -> list[dict[str, Any]]:
@@ -1094,6 +1094,58 @@ def evaluate_direction_node(
         "waiting": reports,
         "status_text": status_text,
     }
+
+
+def incident_work_paths(
+    roots: list[dict[str, Any]], *, read_node: Callable[[str, int], dict[str, Any]], scan_limit: int,
+) -> dict[str, Any]:
+    """Follow native incident prerequisites/children with a separate bounded allowance.
+
+    Priority is provenance only. Node exclusions and caller ownership review still
+    decide availability; whole-parent waits stop traversal. Each unique descendant
+    is read once, and the first current marked root supplies its native path.
+    """
+    root_keys = {(root["repo"].casefold(), root["number"]) for root in roots}
+    pending: list[tuple[dict[str, Any], list[dict[str, Any]]]] = [(root, []) for root in reversed(roots)]
+    seen: set[tuple[str, int]] = set()
+    items = []
+    evaluated = 0
+    cycles = []
+    truncated = False
+    degraded = False
+    while pending:
+        ref, path = pending.pop()
+        key = (ref["repo"].casefold(), ref["number"])
+        step = {"repo": ref["repo"], "number": ref["number"], "url": ref["url"]}
+        if ref.get("relationship"):
+            step["relationship"] = ref["relationship"]
+        via = [*path, step]
+        if any((entry["repo"].casefold(), entry["number"]) == key for entry in path):
+            cycles.append(via)
+            continue
+        if key in seen:
+            continue
+        if key not in root_keys:
+            if evaluated >= scan_limit:
+                truncated = True
+                continue
+            evaluated += 1
+        seen.add(key)
+        node = read_node(ref["repo"], ref["number"])
+        item: dict[str, Any] = {**node["item"], "incident_via": via}
+        items.append(item)
+        reason = item.get("exclusion")
+        if reason in {"unknown_dependencies", "unknown_ancestry"}:
+            degraded = True
+        if reason not in {None, "blocked_by_open_dependency", "delegated_to_open_sub_issues"}:
+            continue
+        edges = [(edge, "blocked_by") for edge in node.get("blockers", [])]
+        edges += [(edge, "sub_issue") for edge in node.get("children", [])]
+        for edge, relationship in reversed(edges):
+            pending.append(({**edge, "relationship": relationship}, via))
+    return {"items": items, "context": {"complete": not (truncated or cycles or degraded),
+            "descendants_evaluated": evaluated, "descendant_scan_limit": scan_limit,
+            "truncated": truncated, "cycles": cycles, "degraded": degraded}}
 
 
 def rank_direction_work(

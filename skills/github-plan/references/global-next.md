@@ -80,7 +80,15 @@ possible work; it never establishes ownership, lifts holds, or overrides blocker
 
 Director-marked issues are evaluated outside the ordinary discovery scan allowance.
 A separate label inventory covers marked issues beyond a repository's ordinary
-issue-list bound. Repository access/inventory limits and failed reads remain
+issue-list bound. Native `blocked-by` and sub-issue leaves also inherit priority through
+`incident_via`, an issue URL path with the relationship of each step. A separate
+`--scan-limit` allowance bounds unique descendant evaluations beyond the ordinary scan.
+Eligible incident nodes also reuse the existing ancestor check, bounded to ten
+parents per node; the descendant allowance is not an API-request count.
+`discovery_context.incident_context` reports truncation, cycles and unavailable
+reads. Whole-parent waits stop the traversal; leaf holds, dependencies, ancestor
+waits and current ownership review still apply. Provenance never sets a label,
+clears a wait or grants availability. Repository access/inventory limits and failed reads remain
 explicit coverage limits. Inspect `candidate_coverage` beside the ranked list:
 a partial list cannot establish that no higher-priority work exists.
 
