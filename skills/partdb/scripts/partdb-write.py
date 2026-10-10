@@ -268,8 +268,8 @@ def apply(args: argparse.Namespace) -> None:
     plan_path = Path(args.plan)
     receipt_file = receipt_path(plan_path, plan_digest)
     reserve_receipt(receipt_file, plan_digest)
-    private_repo, config = partdb_read.context()
     try:
+        private_repo, config = partdb_read.context()
         base_url, read_token = partdb_read.environment(private_repo, config)
         if instance_identity(base_url) != artifact["instance_id"]:
             raise WriteError("Part-DB instance changed after planning; create and approve a new plan")
