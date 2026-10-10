@@ -160,10 +160,11 @@ set a temporary `GITHUB_RETRY_STATE_DIR`, which also isolates these receipts.
 
 Each operation's `request_priority` in
 [`operation-matrix.toml`](operation-matrix.toml) is its shared admission default.
-Bulk REST/core operations include issue listings/searches, global next, audits,
-inventories, repository snapshots and PR/workflow watchers. Essential operations
-include writes, their preflights/readbacks, train/landing reads and targeted
-issue/PR/check reads. Writes always remain essential even inside a bulk operation.
+Bulk REST/core operations include issue listings/searches, global next, read-only
+planning views (show, dependencies, milestones, direction), audits, inventories,
+repository snapshots and PR/workflow watchers. Essential operations include
+writes, their preflights/readbacks, train/landing reads and targeted PR/check
+reads. Writes always remain essential even inside a bulk operation.
 Search and GraphQL have separate budgets and retain their existing retry policy.
 
 When `GITHUB_READER_APP_ID`, `GITHUB_READER_APP_INSTALLATION_ID` and

@@ -58,6 +58,7 @@ class FakeTrain:
         self.failing: list[dict[str, str]] = []
         self.companions: list[int] = []
         self.clock = 0.0
+        self.sleeps: list[float] = []
         self.reconciled: list[str] = []
         self.reconcile_receipt: dict[str, Any] | None = None
 
@@ -84,6 +85,7 @@ class FakeTrain:
 
     def sleep(self, seconds: float) -> None:
         self.clock += seconds
+        self.sleeps.append(seconds)
 
     def reconcile(self, _repository: str, landing_sha: str) -> dict[str, Any] | None:
         self.reconciled.append(landing_sha)
@@ -635,6 +637,29 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         self.assertEqual(outcome, "landed")
         held = events[0][1]
         self.assertEqual((held["controller_action"], held["error_code"], held["http_status"]), ("controller_lease_held", train_drive.LEASE_HELD_CODE, 409))
+
+    def test_an_unchanged_wait_backs_off_to_the_longest_pause(self) -> None:
+        # Each controller call re-reads the whole train from GitHub, so a long CI wait must not call it every few minutes.
+        train = FakeTrain([_response("wait_for_checks")])
+        _drive(train, deadline=3_600, max_wait_seconds=900)
+        self.assertLessEqual(train.calls, 8)
+        # Pauses carry up to three seconds of jitter; the last sleep is cut short by the deadline.
+        self.assertEqual([int(pause) // 10 * 10 for pause in train.sleeps[:-1]][:6], [60, 120, 240, 480, 900, 900])
+        self.assertLess(max(train.sleeps), 904)
+
+    def test_a_held_lease_backs_off_instead_of_polling_every_minute(self) -> None:
+        train = FakeTrain([_refusal(train_drive.LEASE_HELD_CODE)])
+        _drive(train, deadline=3_600, max_wait_seconds=900)
+        self.assertLessEqual(train.calls, 8)
+        self.assertGreater(train.sleeps[3], train.sleeps[0] * 4)
+
+    def test_progress_resets_the_pause_to_the_poll_interval(self) -> None:
+        train = FakeTrain([_response("wait_for_checks")] * 4 + [_response("plan_landing"), _response("land_batch")],
+                          merge_after={7: 6})
+        outcome, _ = _drive(train)
+        self.assertEqual(outcome, "landed")
+        self.assertGreater(train.sleeps[3], 400)
+        self.assertLess(train.sleeps[4], 64)
 
     def test_a_lease_still_held_at_the_deadline_needs_the_owner(self) -> None:
         outcome, events = _drive(FakeTrain([_refusal(train_drive.LEASE_HELD_CODE)]), deadline=1_000)

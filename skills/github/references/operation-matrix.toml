@@ -796,7 +796,7 @@ test_refs = ["github/scripts/test_gh_plan_search.py:SearchTests", "github/script
 
 [[operations]]
 id = "github.plan.show"
-request_priority = "essential"
+request_priority = "bulk"
 capabilities = ["issues_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -952,7 +952,7 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_native_link_and_unlink_all
 
 [[operations]]
 id = "github.plan.deps"
-request_priority = "essential"
+request_priority = "bulk"
 capabilities = ["issues_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -1057,7 +1057,7 @@ test_refs = ["direction/scripts/test_direction_audit.py:test_capacity_fetch_attr
 
 [[operations]]
 id = "github.plan.direction_read"
-request_priority = "essential"
+request_priority = "bulk"
 capabilities = ["contents_read"]
 permission_mode = "fixed"
 permission_note = "Read the merged remote DIRECTION.md through Contents read. Denied reads fail closed; a local checkout does not replace the remote authority."
@@ -1502,7 +1502,7 @@ test_refs = ["github/scripts/test_github_milestone.py:test_list_milestones_pagin
 
 [[operations]]
 id = "github.plan.milestone_show"
-request_priority = "essential"
+request_priority = "bulk"
 capabilities = ["issues_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
