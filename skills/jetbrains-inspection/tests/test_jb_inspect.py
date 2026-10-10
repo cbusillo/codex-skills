@@ -2435,6 +2435,99 @@ class LaneIdeAdviceTest(unittest.TestCase):
                 open_project.assert_not_called()
             self.assertEqual(json.loads((root / ".github" / "github.json").read_text()), metadata)
 
+    def test_missing_configured_ide_keeps_repair_advice_in_all_outputs(self):
+        for installed in (None, "IntelliJIdea2026.1"):
+            with self.subTest(installed=installed), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp).resolve()
+                root = home / "repo"
+                metadata = self.make_repo(root)
+                del metadata["qualityGate"]["inspection"]["lanes"]
+                metadata["qualityGate"]["inspection"]["ide"] = "PyCharm"
+                write_json(root / ".github" / "github.json", metadata)
+                if installed:
+                    make_config_dir(home, installed)
+                output = io.StringIO()
+                with (
+                    patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "",
+                                           "JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(home / "absent.json"),
+                                           "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root)}),
+                    patch.object(jb_inspect.sys, "platform", "darwin"),
+                    patch.object(jb_inspect.Path, "home", return_value=home),
+                    patch.object(jb_inspect, "find_exact_route", return_value=None),
+                    patch.object(jb_inspect, "open_project_for_lifecycle") as opened,
+                    patch.object(sys, "argv", [str(SCRIPT_PATH), "open-worktree", "--repo", str(root), "--json"]),
+                    redirect_stdout(output),
+                ):
+                    code = jb_inspect.main()
+                self.assertEqual(code, 3)
+                opened.assert_not_called()
+                payload = json.loads(output.getvalue())
+                self.assertEqual(payload["error_reason"], "ide_config_missing")
+                advice = payload["next_action"]
+                self.assertIn("launch", advice)
+                for actual in (payload["hint"], payload["verdict_next_action"], payload["agent_result"]["next_action"]):
+                    self.assertEqual(actual, advice)
+                human = io.StringIO()
+                with redirect_stdout(human):
+                    jb_inspect.emit(dict(payload), False, code, command="open-worktree")
+                self.assertIn(advice, human.getvalue())
+                self.assertEqual(json.loads((root / ".github" / "github.json").read_text()), metadata)
+
+    def test_zero_installed_lane_configs_report_install_prerequisite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            root = home / "repo"
+            metadata = self.make_repo(root)
+            output = io.StringIO()
+            with (
+                patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "",
+                                       "JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(home / "absent.json"),
+                                       "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root)}),
+                patch.object(jb_inspect.sys, "platform", "darwin"),
+                patch.object(jb_inspect.Path, "home", return_value=home),
+                patch.object(jb_inspect, "find_exact_route", return_value=None),
+                patch.object(jb_inspect, "open_project_for_lifecycle") as opened,
+                patch.object(sys, "argv", [str(SCRIPT_PATH), "open-worktree", "--repo", str(root), "--json"]),
+                redirect_stdout(output),
+            ):
+                self.assertEqual(jb_inspect.main(), 3)
+            opened.assert_not_called()
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["error_reason"], "ide_config_missing")
+            self.assertEqual(payload["available_config_dirs"], [])
+            self.assertIn("no installed", payload["error"])
+            advice = payload["agent_result"]["next_action"]
+            self.assertIn("install", advice)
+            self.assertIn("launch", advice)
+            self.assertNotIn("open-worktree --ide", advice)
+            self.assertEqual(payload["hint"], advice)
+            self.assertEqual(payload["next_action"], advice)
+            self.assertEqual(json.loads((root / ".github" / "github.json").read_text()), metadata)
+
+    def test_fresh_install_without_selection_and_missing_explicit_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            for context in ({}, {"ide_config_dir": str(home / "missing-config")}):
+                with (
+                    self.subTest(context=context),
+                    patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}),
+                    patch.object(jb_inspect.sys, "platform", "darwin"),
+                    patch.object(jb_inspect.Path, "home", return_value=home),
+                ):
+                    with self.assertRaises(jb_inspect.InspectError) as raised:
+                        jb_inspect.jetbrains_config_dirs(context)
+                payload = jb_inspect.error_payload(raised.exception)
+                jb_inspect.apply_verdict(payload)
+                self.assertEqual(payload["error_reason"], "ide_config_missing")
+                advice = payload["next_action"]
+                self.assertIn("launch", advice)
+                self.assertEqual(payload["hint"], advice)
+                self.assertEqual(payload["agent_result"]["next_action"], advice)
+                if not context:
+                    self.assertIn("qualityGate.inspection", advice)
+                    self.assertIn("ask before writing", advice)
+                self.assertFalse((home / "missing-config").exists())
+
     def test_supported_assessments_prepare_and_dispatch_each_configured_lane(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve() / "repo"
@@ -8326,6 +8419,30 @@ class LifecycleTest(unittest.TestCase):
 
 
 class AgentInspectContractTest(unittest.TestCase):
+    def test_lifecycle_lock_timeout_reports_contention_without_native_inspection(self):
+        output = io.StringIO()
+
+        def locked_operation(_args, _context):
+            with jb_inspect.lifecycle_lock(0):
+                self.fail("contended lifecycle must not start inspection")
+
+        with (
+            patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect"]),
+            patch.object(jb_inspect, "build_context", return_value={"scope": "files"}),
+            patch.object(jb_inspect.fcntl, "flock", side_effect=BlockingIOError),
+            patch.object(jb_inspect, "command_run", side_effect=locked_operation),
+            patch.object(jb_inspect, "log_assessment_records"),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(jb_inspect.main(), 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(result["agent_result"]["bucket"], "lifecycle_lock_busy")
+        self.assertFalse(result["agent_result"]["retry_policy"]["retry"])
+        self.assertIn("sequentially", result["agent_result"]["next_action"])
+        self.assertNotIn("indexing", result["agent_result"]["next_action"])
+        self.assertIsNone(result["diagnostic"].get("inspection_run_id"))
+
     def test_documented_repeatable_files_selectors_reach_inspection(self):
         paths = ["src/first.py", "src/file with spaces.py"]
         output = io.StringIO()

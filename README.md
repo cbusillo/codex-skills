@@ -778,6 +778,11 @@ App's quota for essential reads and writes. See the
 for configuration, fallback, write refusal and per-identity reporting.
 Install the reader App on every repository whose bulk reads it will serve.
 
+Client fleets with two Apps keep their own write App in `GITHUB_APP_*` and
+configure the narrow product-repository App in `GITHUB_CLIENT_APP_*`.
+See [Client fleet configuration](skills/github/references/cli-reference.md#client-fleets-with-two-apps)
+for routing by GitHub account and the setup values. Existing fleets need no new settings.
+
 The GitHub workflow skill includes `skills/github/scripts/gh-with-env-token`,
 a small wrapper around `gh` that reads the user's ignored `local.env` file under
 `$CODE_HOME`, `$CODEX_HOME`, or `~/.code` and exports a token only for the
@@ -970,7 +975,7 @@ uv run skills/github/scripts/github-capabilities.py audit --repo OWNER/REPO
 The reported actor must be your App's `APP-SLUG[bot]`, distinct from the Director's
 login. Audit each selected adopted repository; permission declarations and a
 successful identity check alone do not prove private repository access. On an
-already adopted repository, the agent opens a normal direction PR using the
+already adopted repository, the direction session opens a normal direction PR using the
 bot commit/push and PR helpers, the Director reviews and approves it as the eligible
 code owner, then the authorized merge follows green CI. A self-approval or
 unreviewed direction merge remains refused. Owner-only ruleset plan/apply stays

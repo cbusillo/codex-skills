@@ -1984,6 +1984,17 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         raise PlanError("Release requires configured automation auth and --confirm-session-ended after verifying closure")
     if not args.session or any(c in args.session for c in "\n\r"):
         raise PlanError("Releaser must name its native session ID")
+    if pathlib.Path(gh_cmd).name == "gh-with-env-token" and github_identity.github_app_prefix(repo) == "GITHUB_CLIENT_APP":
+        try:
+            config = github_identity.github_app_config(repository=repo)
+            assert config is not None
+            _, selected_actor = github_identity.github_app_auth(config, repository=repo, require_installation=True)
+        except github_identity.GitHubAppError as error:
+            raise PlanError(str(error)) from error
+        override = github_identity.configured_value("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN")
+        if override and override.casefold() != selected_actor.casefold():
+            raise PlanError(f"Release would run as '{selected_actor}', expected '{override}'")
+        expected_actor = selected_actor
     evidence_match = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/issues/([1-9]\d*)#issuecomment-([1-9]\d*)", args.evidence_comment)
     if not evidence_match:
         raise PlanError("Evidence must be an exact GitHub issue-comment URL")
@@ -2215,6 +2226,8 @@ def cmd_claim(args: argparse.Namespace) -> None:
                 f"/repos/{target_repo}/issues/{pull['number']}/comments", query={},
                 bucket="rest_core", step_prefix="refresh_comments",
             )
+            # PR status may name the canonical issue being claimed. Keep its
+            # holder prose conservative rather than applying issue exclusions.
             competing, _ = github_plan_claim.discussion_evidence(sections.get("Current Status", ""), target_comments, claim)
             if competing:
                 refuse(competing)
@@ -2288,6 +2301,18 @@ def cmd_claim(args: argparse.Namespace) -> None:
             payload={"competing_evidence": competing_claims, "claim_recovery": claim_recovery()},
         )
 
+    def check_status_peers(status_to_check: str, status_comments: list[dict[str, Any]]) -> None:
+        sessions = set(github_plan_claim.released_status_lines(status_to_check, status_comments).values())
+        if not sessions:
+            return
+        fresh_inventory = github_plan_claim.local_inventory(target_repo, number)
+        peers = [{"source": "claude_session", "session": peer.get("sessionId"),
+                  "certainty": "visible_in_native_inventory"}
+                 for peer in fresh_inventory["sessions"]
+                 if peer.get("sessionId") in sessions and peer.get("sessionId") != claim["session"]]
+        if peers:
+            refuse(peers)
+
     def check_native_blockers() -> None:
         _, blockers = collect_paged_rest_items(
             f"/repos/{issue_repo}/issues/{number}/dependencies/blocked_by",
@@ -2301,7 +2326,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         previous_status = status
         previous_wait_labels = set(normalize_labels(issue.get("labels"))) & {config["labels"][key] for key in ("waiting", "blocked")}
         check_agent(issue)
-        conflicts, owned = github_plan_claim.discussion_evidence(status, comments, claim, resume_from=args.resume_from)
+        conflicts, owned = github_plan_claim.discussion_evidence(status, comments, claim, resume_from=args.resume_from, repo=issue_repo, number=number, issue_url=issue.get("html_url"))
         if conflicts:
             refuse(conflicts)
         check_wait(issue, status)
@@ -2320,7 +2345,8 @@ def cmd_claim(args: argparse.Namespace) -> None:
                                                        retained_branches=retained_branches,
                                                        retained_repo=target_repo if handoff_id else None,
                                                        inventory_repo=target_repo,
-                                                       recorded_branches=github_plan_claim.recorded_claim_branches(status, comments))
+                                                       recorded_branches=github_plan_claim.recorded_claim_branches(status, comments),
+                                                       status_sessions=set(github_plan_claim.released_status_lines(status, comments).values()))
         if conflicts:
             refuse(conflicts)
         completed.append("ownership_preflight")
@@ -2351,9 +2377,10 @@ def cmd_claim(args: argparse.Namespace) -> None:
         # Check the discussion again before touching status or labels.
         issue, status, comments, can_update = claim_snapshot(args.issue, repo)
         check_agent(issue)
-        conflicts, observed = github_plan_claim.discussion_evidence(status, comments, claim, resume_from=args.resume_from)
+        conflicts, observed = github_plan_claim.discussion_evidence(status, comments, claim, resume_from=args.resume_from, repo=issue_repo, number=number, issue_url=issue.get("html_url"))
         if conflicts:
             refuse(conflicts)
+        check_status_peers(status, comments)
         check_wait(issue, status)
         check_issue_holds(issue, status)
         check_native_blockers()
@@ -2391,9 +2418,10 @@ def cmd_claim(args: argparse.Namespace) -> None:
         actor = label_result.get("actor") or actor
         final, final_status, final_comments, _ = claim_snapshot(args.issue, repo)
         check_agent(final)
-        conflicts, observed = github_plan_claim.discussion_evidence(final_status, final_comments, claim, resume_from=args.resume_from)
+        conflicts, observed = github_plan_claim.discussion_evidence(final_status, final_comments, claim, resume_from=args.resume_from, repo=issue_repo, number=number, issue_url=final.get("html_url"))
         if conflicts:
             refuse(conflicts)
+        check_status_peers(final_status, final_comments)
         check_issue_holds(final, final_status)
         check_native_blockers()
         handoff_preflight(final_comments, final_status)
@@ -4557,7 +4585,8 @@ def check_direction_lists_milestone(title: str, direction_text: str | None, *, r
         return {"direction": "listed", "direction_source": f"{repo}:{DIRECTION_FILE}"}
     raise PlanError(
         f"milestone title is not listed under '## Milestones' in {repo}:{DIRECTION_FILE}: {title!r}. "
-        "Add the line by a direction pull request first (see the direction skill).",
+        "List the title in DIRECTION.md first: a direction session drafts that pull request; "
+        "executing agents escalate under the direction skill.",
         failure=github_api_core.FailureDetail(
             cause="validation_error",
             message="milestone not listed in DIRECTION.md",

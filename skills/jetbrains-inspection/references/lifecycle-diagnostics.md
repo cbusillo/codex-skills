@@ -26,6 +26,11 @@ the IDE. Older plugins and unavailable or session-mismatched memory diagnostics
 preserve the original routing/transport result; an unreachable IDE is not
 proof of memory exhaustion.
 
+A host lifecycle-lock timeout reports `UNKNOWN/lifecycle_lock_busy`, before
+any project or native inspection starts. Wait for the owning lifecycle operation
+to finish and run assessments sequentially; indexing repair does not resolve
+this contention. The helper does not automatically retry or clear the lock.
+
 `open-worktree`, `agent-inspect`, `inspect`, and `inspect-closeout` create a
 local lease, serialize helper-owned IDE
 opens, open the exact current worktree only when no exact route exists, wait for

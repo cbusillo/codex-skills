@@ -57,6 +57,8 @@ Before editing a manifest or generating/editing marketplace entries, read
 
    `--path` names the parent, not the plugin folder. Component flags create
    `skills/`, `hooks/`, `scripts/`, `assets/`, `.mcp.json` and `.app.json`.
+   Marketplace shape and duplicate-entry checks run before scaffold writes;
+   correct a rejected marketplace input and retry at the same destination.
    Select only the components needed. For a home-local plugin, use:
 
    ```bash
