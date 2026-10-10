@@ -80,11 +80,12 @@ out. This is an after-the-fact reading, not a preapproval gate. An issue added
 during close-out waits for a later `go <milestone>` run. Adding a milestone or
 changing what it proves remains Director direction.
 
-Global `next` and audits report milestone waits that name another milestone or
-no person or event, keep independent work selectable after normal ownership
-review and native dependency checks, and admit capacity tooling only with a
-reviewed named person wait for every listed open milestone, reporting each
-wait's start or explicitly marking it unknown.
+Global `next` and audits report invalid milestone waits under
+[global selection](../github-plan/references/global-next.md); use its
+[supported correction procedure](../github-plan/references/global-next.md#correct-an-invalid-wait-before-claiming)
+before a claim. Repo-local selection still preserves recorded waiting state.
+Capacity admission follows the current overall Order and global selection's evidence
+contract; wait output explicitly reports an unknown start when none was recorded.
 
 A proposal that adds a fourth container or a second human gate is the signal
 that the design is getting too complicated. Prefer deleting a concept to adding
@@ -259,8 +260,9 @@ reads, pass `--automation BOT-LOGIN` to retain that bot's attribution.
 not establish the Director's login; check the active account and token overrides.
 For each finding:
 
-- `milestone_wait_invalid`: apply the milestone-wait rule under
-  [Three Containers, One Gate](#three-containers-one-gate) to the reported issue.
+- `milestone_wait_invalid`: verify the reported condition and follow the
+  [supported wait correction procedure](../github-plan/references/global-next.md#correct-an-invalid-wait-before-claiming)
+  before correcting or claiming the reported issue.
 
 - `coverage_incomplete`: a bounded read was truncated or unavailable, or
   actor classification was unavailable. Name the affected listings and the
