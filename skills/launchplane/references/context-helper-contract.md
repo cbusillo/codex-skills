@@ -124,7 +124,10 @@ provider payloads.
 The current service response nests typed sections under
 `context.sections.<name>.payload`. The helper also accepts the earlier flattened
 section form while projecting both forms into the stable public `sections`
-envelope. Only documented repository, state, URL, readiness, and summary fields
+envelope. Both `result.context` and top-level `context` containers are supported.
+A non-object optional `result` falls back to top-level `context`; without a valid
+context object, the helper emits `invalid` JSON and exits `0`.
+Only documented repository, state, URL, readiness, and summary fields
 are copied; service-model provenance, host labels, internal target details, and
 unknown payload fields remain private.
 
