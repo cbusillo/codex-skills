@@ -4133,10 +4133,13 @@ def test_pr_checks_aggregates_retry_fields_across_reads() -> None:
             stderr=subprocess.PIPE,
             env=env,
         )
+        pr_attempts = int(counter_path.read_text())
     assert result.returncode == 0, result
     payload = json.loads(result.stdout)
     assert payload["operation"] == "github.pr.checks", payload
     attempts = sum(request["attempts"] for request in payload["diagnostics"]["requests"])
+    assert pr_attempts > 1
+    assert payload["diagnostics"]["requests"][0]["attempts"] == pr_attempts
     assert payload["attempts"] == attempts, payload
     assert payload["retry_eligible"] is True, payload
     assert payload["diagnostics"]["retry"]["attempts"] == attempts, payload
