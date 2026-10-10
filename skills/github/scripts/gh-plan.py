@@ -2290,8 +2290,8 @@ def cmd_claim(args: argparse.Namespace) -> None:
             payload={"competing_evidence": competing_claims, "claim_recovery": claim_recovery()},
         )
 
-    def check_status_peers(status_text: str, status_comments: list[dict[str, Any]]) -> None:
-        sessions = set(github_plan_claim.released_status_lines(status_text, status_comments).values())
+    def check_status_peers(status_to_check: str, status_comments: list[dict[str, Any]]) -> None:
+        sessions = set(github_plan_claim.released_status_lines(status_to_check, status_comments).values())
         if not sessions:
             return
         fresh_inventory = github_plan_claim.local_inventory(target_repo, number)
