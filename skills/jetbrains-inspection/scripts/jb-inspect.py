@@ -699,7 +699,9 @@ def ide_selection_advice(reason: str, context: Any) -> str | None:
     if not isinstance(context, dict) or reason not in IDE_ROUTE_CONFIGURATION_REASONS:
         return None
     if reason == "ide_config_missing" and not (context.get("inspection_lane") or context.get("inspection_lanes")):
-        return "Install the selected JetBrains IDE if needed and launch it once to create its configuration before retrying. Keep the existing IDE selection in .github/github.json."
+        if context.get("ide") or context.get("ide_config_dir"):
+            return "Install the selected JetBrains IDE if needed and launch it once to create its configuration before retrying; repair the selected installation rather than changing repository IDE policy."
+        return "Install and launch a JetBrains IDE appropriate for this repository. " + IDE_ROUTE_CONFIGURATION_NEXT_ACTION
     if context.get("inspection_lane") or (context.get("inspection_lanes") and reason != "ide_selection_required"):
         return (
             "Check that the selected IDE matches the intended configured lane and installed IDE/version; install if needed and launch that IDE once "
@@ -6933,7 +6935,7 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
         diagnostic.get("execution_proof_block_reason") or diagnostic.get("execution_proof_skipped_reason")
     )
     if reason in IDE_ROUTE_CONFIGURATION_REASONS:
-        return ide_selection_advice(reason, payload.get("context")) or hint_for_error_reason(reason) or IDE_ROUTE_CONFIGURATION_NEXT_ACTION
+        return ide_selection_advice(reason, payload.get("context")) or IDE_ROUTE_CONFIGURATION_NEXT_ACTION
     if reason == "plugin_deployment_mismatch":
         return "Install a plugin with native broad-scope execution proof, restart the IDE, resolve the route again, and rerun inspection."
     if reason == "execution_not_proven":
@@ -10670,7 +10672,15 @@ def jetbrains_config_dirs(context: dict[str, Any]) -> list[Path]:
     configured_dir = context.get("ide_config_dir")
     if configured_dir:
         path = Path(str(configured_dir)).expanduser().resolve()
-        return [path] if path.exists() else []
+        if path.exists():
+            return [path]
+        advice = ide_selection_advice("ide_config_missing", context)
+        raise InspectError(
+            "Cannot seed JetBrains trusted locations because the configured IDE directory is unavailable.",
+            3,
+            {"available_config_dirs": [], "error_reason": "ide_config_missing",
+             "context": public_context(context), "next_action": advice, "hint": advice},
+        )
     selection = resolve_ide_selection(context)
     if selection and selection.config_dir:
         return [selection.config_dir]

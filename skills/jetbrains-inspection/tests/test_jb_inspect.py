@@ -2504,6 +2504,30 @@ class LaneIdeAdviceTest(unittest.TestCase):
             self.assertEqual(payload["next_action"], advice)
             self.assertEqual(json.loads((root / ".github" / "github.json").read_text()), metadata)
 
+    def test_fresh_install_without_selection_and_missing_explicit_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            for context in ({}, {"ide_config_dir": str(home / "missing-config")}):
+                with (
+                    self.subTest(context=context),
+                    patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}),
+                    patch.object(jb_inspect.sys, "platform", "darwin"),
+                    patch.object(jb_inspect.Path, "home", return_value=home),
+                ):
+                    with self.assertRaises(jb_inspect.InspectError) as raised:
+                        jb_inspect.jetbrains_config_dirs(context)
+                payload = jb_inspect.error_payload(raised.exception)
+                jb_inspect.apply_verdict(payload)
+                self.assertEqual(payload["error_reason"], "ide_config_missing")
+                advice = payload["next_action"]
+                self.assertIn("launch", advice)
+                self.assertEqual(payload["hint"], advice)
+                self.assertEqual(payload["agent_result"]["next_action"], advice)
+                if not context:
+                    self.assertIn("qualityGate.inspection", advice)
+                    self.assertIn("ask before writing", advice)
+                self.assertFalse((home / "missing-config").exists())
+
     def test_supported_assessments_prepare_and_dispatch_each_configured_lane(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve() / "repo"
