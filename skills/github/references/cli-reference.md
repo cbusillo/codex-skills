@@ -195,6 +195,12 @@ place of field file indirection. Writes and unverified commands are refused
 before minting or delegation.
 Read hints cannot authorize a mutation through the reader.
 
+The PR watcher passes `GH_PR_READ_CONTEXT=watch` to its delegated `view` and
+`checks` reads, so their metadata and check polling retain the existing bulk
+watch operation. Their envelopes report the selected reader actor. Standalone
+targeted reads stay essential, and write commands and their preflights ignore
+this read context.
+
 Bulk reads yield when the latest observed remaining core quota is **below 25%**
 of the installation's hourly limit, rounded up. The shared response-header
 receipts supply that observation without another quota probe; they are scoped by

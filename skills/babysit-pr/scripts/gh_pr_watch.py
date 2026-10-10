@@ -410,6 +410,8 @@ def pr_helper_json(command, pr_spec=None, repo=None, allow_partial=False):
     env = os.environ.copy()
     env["GH_PR_GH"] = GH_COMMAND
     env["GITHUB_REQUEST_CALLER"] = os.environ.get("GITHUB_REQUEST_CALLER") or Path(__file__).name
+    if command in {"view", "checks"}:
+        env["GH_PR_READ_CONTEXT"] = "watch"
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
 
     raw = proc.stdout.strip()

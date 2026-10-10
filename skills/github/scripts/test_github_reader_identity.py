@@ -178,6 +178,46 @@ class ReaderIdentityTests(unittest.TestCase):
             self.assertIn('--reader', run.call_args.args[0])
             self.assertEqual(auth.call_count, 1)
 
+    def test_watcher_delegates_bulk_context_to_pr_reads_without_changing_writes(self):
+        self.credentials()
+        modules = {}
+        for name, path in [('reader_identity_pr', Path(api.__file__).with_name('gh-pr.py')),
+                ('reader_identity_watch', Path(api.__file__).parents[2] / 'babysit-pr/scripts/gh_pr_watch.py')]:
+            spec = importlib.util.spec_from_file_location(name, path)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[name] = module
+            self.addCleanup(sys.modules.pop, name)
+            # Delegation does not use the watcher's unrelated YAML settings.
+            with patch.dict(sys.modules, {'yaml': SimpleNamespace()}):
+                spec.loader.exec_module(module)
+            modules[name] = module
+        helper, watcher = modules.values()
+        observed = []
+        args = SimpleNamespace(repo='example/app', pr='7')
+        def get_pr(reader, *_args, **_kwargs):
+            observed.append(reader.expected_actor)
+            return {'number': 7}
+        def checks(reader, *_args, **_kwargs):
+            observed.append(reader.expected_actor)
+            return {'pr': {'number': 7}, 'summary': {'countsComplete': True, 'countsAreLowerBounds': False}}
+        def delegate(command, **kwargs):
+            with patch.dict(os.environ, kwargs['env']), patch.object(
+                    identity, 'github_app_auth', return_value=('synthetic', 'reader-app[bot]')), patch.object(
+                    github_read.GitHubReader, 'get_json', autospec=True, side_effect=get_pr), patch.object(
+                    github_read, 'pull_request_checks', side_effect=checks):
+                helper.CURRENT_OPERATION = f'github.pr.{command[-2]}'
+                result = helper.cmd_view(args) if command[-2] == 'view' else helper.cmd_checks(args)
+                # An inherited watch hint cannot change a write/preflight context.
+                helper.CURRENT_OPERATION = 'github.pr.comment'
+                self.assertEqual(helper.read_operation(), helper.CURRENT_OPERATION)
+            return subprocess.CompletedProcess(command, 0, json.dumps(result), '')
+        with patch.object(watcher, 'PR_HELPER', str(Path(api.__file__).with_name('gh-pr.py'))), patch(
+                'subprocess.run', side_effect=delegate):
+            for command in ('view', 'checks'):
+                result = watcher.pr_helper_json(command, '7', repo='example/app')
+                self.assertEqual(result['expected_actor'], 'reader-app[bot]')
+        self.assertEqual(observed, ['reader-app[bot]', 'reader-app[bot]'])
+
     def test_synthetic_path_mints_through_existing_app_auth_and_cache(self):
         config = self.credentials()
         requests = []

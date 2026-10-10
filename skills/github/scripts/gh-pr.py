@@ -304,10 +304,21 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def read_operation() -> str:
+    """Keep delegated polling in its matrix-owned bulk context.
+
+    Only view/checks can inherit watch context. Write commands and their
+    preflights retain their own essential operation regardless of this hint.
+    """
+    if CURRENT_OPERATION in {"github.pr.view", "github.pr.checks"} and os.environ.get("GH_PR_READ_CONTEXT") == "watch":
+        return "github.pr.watch"
+    return CURRENT_OPERATION
+
+
 def cmd_view(args: argparse.Namespace) -> dict[str, Any]:
     repo, number = resolve_pr(args.repo, args.pr)
     reader = github_read_core.GitHubReader(
-        gh_cmd=GH, expected_actor=EXPECTED_ACTOR, operation=CURRENT_OPERATION,
+        gh_cmd=GH, expected_actor=EXPECTED_ACTOR, operation=read_operation(),
         cache_enabled=True,
     )
     try:
@@ -319,6 +330,7 @@ def cmd_view(args: argparse.Namespace) -> dict[str, Any]:
     record_retry_summary(reader.retry_summary())
     return {
         "ok": True, "repo": repo, "pr": normalize_pr(pr),
+        "actor": reader.actor, "expected_actor": reader.expected_actor,
         **merge_observations(pr), "diagnostics": reader.diagnostics(),
     }
 
@@ -495,7 +507,7 @@ def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
     reader = github_read_core.GitHubReader(
         gh_cmd=GH,
         expected_actor=EXPECTED_ACTOR,
-        operation=CURRENT_OPERATION,
+        operation=read_operation(),
     )
     try:
         payload = github_read_core.pull_request_checks(reader, repo, number)
@@ -524,7 +536,7 @@ def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
         **payload,
         "ok": True,
         "actor": reader.actor,
-        "expected_actor": EXPECTED_ACTOR,
+        "expected_actor": reader.expected_actor,
         "completed_steps": reader.completed_steps,
         "diagnostics": reader.diagnostics(),
         **merge_observations(
@@ -1275,7 +1287,7 @@ def rest_result(
         path,
         payload,
         gh_cmd=GH,
-        operation=CURRENT_OPERATION,
+        operation=read_operation(),
         expected_actor=EXPECTED_ACTOR,
         bucket="rest_core",
         reconcile=reconcile,
