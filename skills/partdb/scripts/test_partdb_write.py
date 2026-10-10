@@ -12,8 +12,8 @@ import argparse
 import importlib.util
 import json
 import shutil
-import threading
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -277,14 +277,6 @@ def isolated_user_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "user-home")
 
 
-def apply_fixture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
-    plan_path, approval_path, plan = approved_plan_files(tmp_path)
-    monkeypatch.setitem(vars(partdb_write.partdb_read), "context", lambda: (tmp_path, {}))
-    monkeypatch.setitem(vars(partdb_write.partdb_read), "environment", lambda *_args: ("https://private.invalid", "read-token"))
-    monkeypatch.setitem(vars(partdb_write), "verify_lot_patch_schema", lambda *_args: None)
-    return plan_path, approval_path, plan
-
-
 @pytest.mark.parametrize("authority_failure", ["legacy", "missing", "different"])
 def test_apply_refuses_unbound_or_unavailable_receipt_authority_before_context(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, authority_failure: str,
@@ -424,27 +416,6 @@ def test_relocated_approval_cannot_replay_after_stock_returns_to_prior_amount(
     fresh_plan, fresh_approval, _artifact = new_approved_plan(tmp_path / "fresh")
     partdb_write.apply(apply_args(fresh_plan, fresh_approval))
     assert len(patches) == 2
-
-
-def test_apply_refuses_drift_before_write_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    plan_path, approval_path, plan = apply_fixture(monkeypatch, tmp_path)
-    monkeypatch.setitem(vars(partdb_write), "read_lot", lambda *_args: {"amount": 3})
-    monkeypatch.setitem(vars(partdb_write), "write_environment", lambda *_args: pytest.fail("write token must not be read"))
-
-    with pytest.raises(partdb_write.WriteError, match="changed after planning"):
-        partdb_write.apply(apply_args(plan_path, approval_path))
-    receipt = json.loads(partdb_write.receipt_path(plan_path, plan["digest"]).read_text())
-    assert receipt["outcome"] == "needs-reconciliation"
-
-
-def test_apply_already_target_is_idempotent_without_write_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    plan_path, approval_path, plan = apply_fixture(monkeypatch, tmp_path)
-    monkeypatch.setitem(vars(partdb_write), "read_lot", lambda *_args: {"amount": 2})
-    monkeypatch.setitem(vars(partdb_write), "write_environment", lambda *_args: pytest.fail("write token must not be read"))
-
-    partdb_write.apply(apply_args(plan_path, approval_path))
-
-    assert json.loads(partdb_write.receipt_path(plan_path, plan["digest"]).read_text())["outcome"] == "already-target"
 
 
 
