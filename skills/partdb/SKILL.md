@@ -106,7 +106,8 @@ plan, approval, and receipt files in a private ignored directory.
 5. Run `uv run scripts/partdb-write.py apply --plan ... --approval ... --apply`.
    It refuses a changed instance before querying it or obtaining write authority,
    reads again, refuses quantity drift, patches only after those checks, reads back to
-   verify, and records a redacted digest-keyed receipt beside the plan. Each approval is single-use;
+   verify, and records a redacted digest-keyed receipt in the local user's stable
+   private ledger. Each approval is single-use even if its files are moved or copied;
    a failed apply leaves a `needs-reconciliation` receipt instead of retrying a
    possibly completed write. This includes handled context-provider failures
    after an approval is reserved.
@@ -114,6 +115,19 @@ plan, approval, and receipt files in a private ignored directory.
 If the instance changes or an older plan lacks its binding, create a new plan,
 show its diff, and obtain approval of its new digest. The fingerprint binds the
 configured URL; it does not detect a replacement server behind the same URL.
+
+The ledger is `~/.local/state/codex-skills/partdb-write` on either harness,
+independent of the plan directory, harness account, and private-context pointer.
+Approvals bind its opaque authority ID. Keep the authority file and all receipts
+together; do not delete or fork this consumption history. Apply refuses missing
+or mismatched authority before context or write access. If the ledger is lost,
+corrupt, or its consumption history is uncertain, preserve any remaining ledger
+outside its active location as private reconciliation evidence. Generate and
+explicitly approve a fresh plan to initialize a new authority; older approvals
+remain invalid. Never restore stale consumption history into the active ledger.
+The helper cannot detect a manual rollback of both its authority and receipts.
+Plans and approvals from the older formats require fresh planning and approval;
+this also applies when moving work to a different ledger or local user.
 
 The private context must declare a separate write-token environment variable
 and `allow_mutations = true`; that only enables this helper's exact-plan gates,
