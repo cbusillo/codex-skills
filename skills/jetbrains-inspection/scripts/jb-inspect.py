@@ -700,7 +700,7 @@ def ide_selection_advice(reason: str, context: Any) -> str | None:
         return None
     if reason == "ide_config_missing" and not (context.get("inspection_lane") or context.get("inspection_lanes")):
         if context.get("ide") or context.get("ide_config_dir"):
-            return "Install the selected JetBrains IDE if needed and launch it once to create its configuration before retrying; repair the selected installation rather than changing repository IDE policy."
+            return "Install the selected JetBrains IDE if needed and launch it once to create its configuration before retrying; ask before changing the selected IDE/version in repository metadata."
         return "Install and launch a JetBrains IDE appropriate for this repository. " + IDE_ROUTE_CONFIGURATION_NEXT_ACTION
     if context.get("inspection_lane") or (context.get("inspection_lanes") and reason != "ide_selection_required"):
         return (
