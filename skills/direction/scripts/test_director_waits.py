@@ -78,6 +78,16 @@ class WaitTests(unittest.TestCase):
         self.assertTrue(rows[0]["possibly_stale"])
         self.assertTrue(rows[1]["verification_unknown"])
 
+    def test_verified_field_uses_shared_bold_and_comment_normalization(self):
+        sample = issue(extra="Waiting since: 2026-10-01\n<!-- Last verified: 2026-10-09 -->\n"
+                       "**Last verified:** Oct 5, 2026")
+        sample["updated_at"] = "2026-10-08T12:00:00Z"
+        row = director_waits.wait_rows("admin/repo", [sample], ["Director"], "admin", NOW)[0]
+        self.assertTrue(row["last_verified"].startswith("2026-10-05"))
+        self.assertEqual(row["recorded_at"], sample["updated_at"])
+        self.assertEqual(director_waits.wait_rows("admin/repo", [issue(reason="upstream owner to merge"),
+            issue(reason="code owner review")], ["admin", "Director", "owner"], "admin", NOW), [])
+
     def test_discovery_failure_preserves_scope_and_archived_waits_are_marked(self):
         reader = Mock()
         with patch.object(director_waits.github_identity, "github_app_config", side_effect=

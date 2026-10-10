@@ -955,7 +955,7 @@ def waiting_records(issue: dict[str, Any], status_text: str) -> list[dict[str, A
     """A wait belongs to its reporting issue; references are supporting context."""
     records: list[dict[str, Any]] = []
     status_text = re.sub(r"<!--.*?-->", "", status_text, flags=re.S)
-    status_text = re.sub(r"\*\*(Waiting for|Parked until|Blocked by|Waiting since)(:?)\*\*(:?)", r"\1\2\3", status_text, flags=re.I)
+    status_text = re.sub(r"\*\*(Waiting for|Parked until|Blocked by|Waiting since|Last verified)(:?)\*\*(:?)", r"\1\2\3", status_text, flags=re.I)
     verified = re.search(r"(?im)^\s*(?:[-*]\s+)?Last verified:\s*(.+)$", status_text)
     fields = re.split(
         r"(?im)(?=^[ \t]*(?:[-*]\s+)?(?:State|Next action|Blocked by|Waiting for|"

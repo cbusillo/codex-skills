@@ -174,8 +174,11 @@ explicit start is recorded), and `possibly_stale` when the wait predates its las
 verification. Read a possibly stale record before relying on it; the report
 uses the recorded requirement's comparison, named `staleness_basis`; it does
 not assert that later verification resolved a wait. Missing verification is
-reported as `verification_unknown`. Archived or disabled repositories remain
-visible but carry explicit flags.
+reported as `verification_unknown`; `recorded_at` anchors an unknown-age record
+without inventing its wait start. Archived or disabled inventory entries carry
+flags in returned rows or coverage errors. An unqualified initial `Owner` names
+the Director; an upstream or product owner does not without a known Director
+identity in that wait.
 The report does not settle a question or release a hold. `--director-name` adds a known
 alias when no people index supplies it. Missing access, read failures, limits
 and ambiguous aliases stay explicit in `complete`, `errors`, `scope` and

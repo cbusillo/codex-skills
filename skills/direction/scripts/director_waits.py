@@ -35,12 +35,13 @@ def parse_date(value):
             return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
         except ValueError:
             return None
-    month = re.match(r"[A-Za-z]+ \d{1,2}, \d{4}", value.strip())
+    month = re.match(r"(?:[A-Za-z]+ \d{1,2}, \d{4}|\d{1,2} [A-Za-z]+ \d{4})", value.strip())
     if month:
-        try:
-            return datetime.strptime(month[0], "%B %d, %Y").replace(tzinfo=timezone.utc)
-        except ValueError:
-            return None
+        for form in ("%B %d, %Y", "%b %d, %Y", "%d %B %Y", "%d %b %Y"):
+            try:
+                return datetime.strptime(month[0], form).replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
     return None
 
 
@@ -54,8 +55,9 @@ def wait_rows(repo, issues, terms, owner, now):
         wait = attention.director_wait_reason(repo, issue, terms, {owner.casefold()})
         if wait is None:
             continue
-        if (re.search(r"\bproduct owner\b", wait[0], re.I) and not attention.names_director(
-                wait[0], [term for term in terms if term.casefold() != "owner"], {owner.casefold()})):
+        if (not attention.names_director(wait[0], [term for term in terms if term.casefold() != "owner"],
+                                        {owner.casefold()})
+                and not re.match(r"^(?:the\s+)?owner\b", wait[0], re.I)):
             continue
         sections = github_direction_next.section_map(issue.get("body") or "")
         status = next((v for k, v in sections.items() if k.casefold() == "current status"), issue.get("body") or "")
@@ -63,14 +65,16 @@ def wait_rows(repo, issues, terms, owner, now):
                 "updated_at": issue.get("updated_at")}
         evidence = github_direction_next.milestone_wait_evidence(item, status, [])
         since = parse_date(evidence["since"])
-        verified = re.search(r"(?im)^\s*(?:[-*]\s+)?Last verified:\s*(.+)$", status)
-        last_verified = parse_date(verified[1]) if verified else None
+        records = github_direction_next.waiting_records(item, status)
+        verified = next((record.get("last_verified") for record in records if record.get("last_verified")), None)
+        last_verified = parse_date(verified)
         rows.append({
             "repo": repo, "number": issue["number"], "title": issue.get("title"),
             "url": issue.get("html_url"), "waiting_for": wait[0], "wait_kind": wait[1],
             "waiting_since": since.isoformat() if since else None,
             "wait_age_days": max(0, (now - since).total_seconds() / 86400) if since else None,
             "wait_age_unknown": since is None,
+            "recorded_at": evidence["recorded_at"],
             "last_verified": last_verified.isoformat() if last_verified else None,
             "possibly_stale": bool(since and last_verified and since < last_verified),
             "staleness_basis": "wait_predates_last_verification",
@@ -112,7 +116,9 @@ def collect(reader, owner, terms, now, repo_limit=1000, issue_limit=10000):
             rows.extend(new_rows)
             scanned.append(repo)
         except (GitHubReadError, GitHubReadShapeError, ValueError, TypeError, KeyError) as error:
-            errors.append({"scope": repo, "error": str(error)})
+            errors.append({"scope": repo, "error": str(error),
+                           "repository_archived": entry.get("archived") is True,
+                           "repository_disabled": entry.get("disabled") is True})
     return {**base, "waits": sorted(rows, key=lambda row: (row["repo"], row["number"])),
             "complete": not errors, "errors": errors, "repositories_scanned": scanned,
             "scope": "Director repositories visible to the configured automation identity; closed issues and PRs excluded"}
