@@ -193,7 +193,10 @@ def update_marketplace_json(
 
 def validate_write_destination(path: Path, force: bool) -> None:
     if path.exists() and not force:
-        raise FileExistsError(f"{path} already exists. Use --force to overwrite.")
+        raise FileExistsError(
+            f"{path} already exists. Use --force to overwrite. "
+            "For marketplace-only updates of an existing plugin, use --register-only --force."
+        )
 
 
 def write_json(path: Path, data: dict, force: bool) -> None:
