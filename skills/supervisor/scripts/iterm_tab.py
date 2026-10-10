@@ -12,6 +12,7 @@ import os
 import re
 import shlex
 import socket
+import subprocess
 from pathlib import Path
 
 import account_choice
@@ -166,19 +167,36 @@ def account_settings(command_text, keys, depth=0):
 
 
 def check_codex_daemon(choice):
-    """Refuse before launch unless the selected home's Unix daemon accepts connections."""
+    """Start the selected home's daemon natively, then verify its Unix socket."""
     if choice["provider"] != "openai":
         return
     home = Path(choice["env"]["CODEX_HOME"]).expanduser()
+    command = f"CODEX_HOME={shlex.quote(str(home))} codex app-server daemon start"
+    try:
+        started = subprocess.run(
+            ["codex", "app-server", "daemon", "start"],
+            env={**os.environ, "CODEX_HOME": str(home)},
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError(
+            f"Codex daemon start failed for CODEX_HOME={home} ({type(error).__name__}); "
+            f"run {command} to diagnose, then retry the launch"
+        ) from error
+    if started.returncode:
+        diagnostic = (started.stderr.strip() or started.stdout.strip())[-2000:]
+        raise ValueError(
+            f"Codex daemon start failed for CODEX_HOME={home} (exit {started.returncode}): "
+            f"{diagnostic or 'no command diagnostic'}; run {command} to diagnose, then retry the launch"
+        )
     endpoint = home / "app-server-control" / "app-server-control.sock"
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
             probe.settimeout(1.0)
             probe.connect(str(endpoint))
     except OSError as error:
-        command = f"CODEX_HOME={shlex.quote(str(home))} codex app-server daemon start"
         raise ValueError(
-            f"Codex daemon unavailable for CODEX_HOME={home} ({type(error).__name__}); "
+            f"Codex daemon unavailable after start for CODEX_HOME={home} ({type(error).__name__}); "
             f"run {command}, then retry the launch"
         ) from error
 

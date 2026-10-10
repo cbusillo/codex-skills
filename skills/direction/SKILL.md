@@ -372,10 +372,15 @@ closed, issues reopened, and merged pull requests that mark a revert. Each
 merged PR counts as milestone work when a closing keyword, `Refs`, or native
 PR issue link reaches a milestone's `Track:` graph (listed milestones and
 those closed since the window began, including removed lines; native
-blockers and sub-issues, including completed work). Otherwise its repository
-counts as own when named by the merged overall `DIRECTION.md` Order item 4,
-and tooling otherwise. Read that list; do not copy it into catalog guidance
-or a separate map. A repository can contain more than one kind of work.
+blockers and sub-issues, including completed work). Otherwise it counts as own
+when its repository is named by the merged overall `DIRECTION.md` Order item 4,
+when it links an issue in such a repository, or when it or an issue it links
+carries the `own-project` label (`capacity.own_project_label`), and tooling
+otherwise. Read that list; do not copy it into catalog guidance or a separate
+map. A repository can contain more than one kind of work: in a mixed
+repository, such as lab and house work in an infrastructure repository, the
+label is how that work counts as own. Reopened issues come from issues updated
+in the window, so busy label and claim traffic cannot truncate them.
 The audit reads each repository of that account the reader can see, never the
 search API, so it takes a few minutes. Reopened and reverted work is the quality
 signal the throughput numbers do not carry; report it with the share. Provider

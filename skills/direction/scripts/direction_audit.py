@@ -1231,6 +1231,64 @@ def native_pull_issue_refs(repo: str, number: int, *, fetch: Callable[[list[str]
     raise AuditError("native PR issue links truncated")
 
 
+def reopened_issue_events(
+    repo: str, since: dt.datetime, *, fetch: Callable[[list[str]], Any], max_pages: int = MAX_PAGES,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Each issue's latest reopens since the window opened, and whether the page cap cut it short.
+
+    Reopening updates an issue, so issues updated in the window hold every
+    reopen. The repository event feed is mostly label and close traffic and
+    runs past any page cap in a busy repository. Several reopens per issue are
+    read so one after the window closes, while the audit runs, cannot hide one
+    inside it.
+    """
+    owner, name = repo.split("/")
+    since_text = since.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    query = """query($owner:String!,$name:String!,$since:DateTime!,$cursor:String){
+      repository(owner:$owner,name:$name){
+        issues(first:100,after:$cursor,filterBy:{since:$since},orderBy:{field:UPDATED_AT,direction:DESC}){
+          nodes{number title timelineItems(itemTypes:[REOPENED_EVENT],since:$since,last:5){
+            nodes{... on ReopenedEvent{createdAt}}
+          }}
+          pageInfo{hasNextPage endCursor}
+        }
+      }
+    }"""
+    events: list[dict[str, Any]] = []
+    cursor = None
+    for _ in range(max_pages):
+        args = ["api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}",
+                "-f", f"name={name}", "-f", f"since={since_text}"]
+        if cursor:
+            args += ["-f", f"cursor={cursor}"]
+        response = fetch(args)
+        try:
+            if response.get("errors"):
+                raise AuditError("reopened issues unavailable")
+            issues = response["data"]["repository"]["issues"]
+            for node in issues["nodes"]:
+                for reopen in node["timelineItems"]["nodes"]:
+                    events.append({"event": "reopened", "created_at": reopen["createdAt"],
+                                   "issue": {"number": node["number"], "title": node["title"]}})
+            info = issues["pageInfo"]
+        except (AttributeError, KeyError, TypeError) as exc:
+            raise AuditError("reopened issues response unavailable") from exc
+        if not info["hasNextPage"]:
+            return events, False
+        if not info["endCursor"] or info["endCursor"] == cursor:
+            raise AuditError("reopened issues cursor missing")
+        cursor = info["endCursor"]
+    return events, True
+
+
+def own_repository(repo: str, own_projects: list[str]) -> bool:
+    return any(fnmatch.fnmatchcase(repo.split("/")[1].casefold(), pattern) for pattern in own_projects)
+
+
+def _labels(item: dict[str, Any]) -> set[str]:
+    return {str(label.get("name", "")).casefold() for label in item.get("labels") or [] if isinstance(label, dict)}
+
+
 def _within(value: Any, since: dt.datetime, until: dt.datetime) -> bool:
     moment = _parse_time(value)
     return moment is not None and since <= moment <= until
@@ -1240,9 +1298,14 @@ def capacity_summary(
     *, own_projects: list[str], tracked_issues: set[tuple[str, int]], direction_source: str,
     pulls: dict[str, list[dict[str, Any]]], milestones: dict[str, list[dict[str, Any]]],
     events: dict[str, list[dict[str, Any]]], since: dt.datetime, until: dt.datetime,
-    incomplete: bool = False,
+    incomplete: bool = False, own_label: str = "own-project", own_issues: frozenset[tuple[str, int]] | set[tuple[str, int]] = frozenset(),
 ) -> dict[str, Any]:
-    """The overall direction's weekly numbers from per-repository listings."""
+    """The overall direction's weekly numbers from per-repository listings.
+
+    A mixed repository's own-project work counts as own when the pull request,
+    or an issue it links, carries `own_label`, or it links an issue in an
+    own-project repository.
+    """
     merged_by_rank = dict.fromkeys(RANKS, 0)
     by_repository: dict[str, dict[str, Any]] = {}
     reverts: list[dict[str, Any]] = []
@@ -1254,9 +1317,11 @@ def capacity_summary(
             continue
         counts = dict.fromkeys(RANKS, 0)
         for pull in merged:
-            if pull_issue_refs(repo, pull) & tracked_issues:
+            refs = pull_issue_refs(repo, pull)
+            if refs & tracked_issues:
                 rank = "milestone"
-            elif any(fnmatch.fnmatchcase(repo.split("/")[1].casefold(), pattern) for pattern in own_projects):
+            elif (own_repository(repo, own_projects) or own_label.casefold() in _labels(pull)
+                  or refs & set(own_issues) or any(own_repository(ref, own_projects) for ref, _ in refs)):
                 rank = "own"
             else:
                 rank = "tooling"
@@ -1297,6 +1362,7 @@ def capacity_summary(
         "until": until.isoformat().replace("+00:00", "Z"),
         "classification_source": direction_source,
         "own_projects": own_projects,
+        "own_project_label": own_label,
         "merged_total": total,
         "merged_by_rank": merged_by_rank,
         "own_share": own_share,
@@ -1307,6 +1373,11 @@ def capacity_summary(
         "revert_pulls": reverts,
         "provider_capacity_unused": "manual",
     }
+
+
+def own_project_label(repo: str) -> str:
+    """The label that marks own-project work, from the planning helper that creates it."""
+    return str(planning_config(repo)["labels"]["own_project"])
 
 
 def fetch_capacity(
@@ -1343,6 +1414,29 @@ def fetch_capacity(
     pulls: dict[str, list[dict[str, Any]]] = {}
     milestones: dict[str, list[dict[str, Any]]] = {}
     events: dict[str, list[dict[str, Any]]] = {}
+    own_label = own_project_label(direction_repo)
+    own_issues: set[tuple[str, int]] = set()
+    linked_labels: dict[tuple[str, int], set[str] | None] = {}
+
+    def mark_own_links(repo_name: str, merged: dict[str, Any]) -> None:
+        """Read labels of linked issues outside own-project repositories, once each."""
+        refs = pull_issue_refs(repo_name, merged)
+        if (own_repository(repo_name, own_projects) or own_label.casefold() in _labels(merged)
+                or any(own_repository(ref[0], own_projects) for ref in refs)):
+            return
+        for ref in sorted(refs):
+            if ref not in linked_labels:
+                try:
+                    issue = fetch(["api", f"repos/{ref[0]}/issues/{ref[1]}", "--method", "GET"])
+                    linked_labels[ref] = _labels(issue) if isinstance(issue, dict) else None
+                except AuditError:
+                    linked_labels[ref] = None
+                if linked_labels[ref] is None:
+                    truncated.append(f"capacity_issue_labels:{ref[0]}#{ref[1]}")
+            if own_label.casefold() in (linked_labels[ref] or set()):
+                own_issues.add(ref)
+                return
+
     for meta in repos.values():
         name = str(meta.get("full_name"))
         pushed = _parse_time(meta.get("pushed_at"))
@@ -1369,9 +1463,11 @@ def fetch_capacity(
                         pull["_native_issue_refs"] = native_pull_issue_refs(name, pull["number"], fetch=fetch)
                     except AuditError:
                         truncated.append(f"capacity_pull_links:{name}#{pull.get('number')}")
+                    if not pull_issue_refs(name, pull) & tracked_issues:
+                        mark_own_links(name, pull)
             milestones[name], cut = fetch_paginated(f"repos/{name}/milestones?state=closed", fetch=fetch, max_pages=2)
             truncated += [f"capacity_milestones:{name}"] if cut else []
-            events[name], cut = fetch_paginated(f"repos/{name}/issues/events", fetch=fetch, stop=older("created_at"))
+            events[name], cut = reopened_issue_events(name, since, fetch=fetch)
             truncated += [f"capacity_events:{name}"] if cut else []
         except AuditError:
             truncated.append(f"capacity_reads:{name}")
@@ -1379,7 +1475,7 @@ def fetch_capacity(
     summary = capacity_summary(
         own_projects=own_projects, tracked_issues=tracked_issues, direction_source=source, pulls=pulls,
         milestones=milestones, events=events, since=since, until=until,
-        incomplete=bool(truncated),
+        incomplete=bool(truncated), own_label=own_label, own_issues=own_issues,
     )
     return summary, truncated
 
