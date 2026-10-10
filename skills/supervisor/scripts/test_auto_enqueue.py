@@ -11,7 +11,9 @@ import json
 import tempfile
 import unittest
 import urllib.error
+from email.message import Message
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import auto_enqueue as watch
@@ -53,7 +55,7 @@ def comment(body=None, number=1, login="engineer"):
     }
 
 
-def response(pulls, own=(), **result):
+def response(pulls, own=(), **result) -> dict[str, Any]:
     return {
         "status": "accepted",
         "result": {
@@ -339,8 +341,10 @@ class EnqueueTests(unittest.TestCase):
 
     def test_live_label_adapter_finishes_the_batch_and_driver_handoff(self):
         fake = Fake()
-        fake.deadline = 10_000
-        fake.label = lambda target, number: watch.Live.label(fake, target, number)
+        adapter = object.__new__(watch.Live)
+        adapter.deadline = 10_000
+        adapter.pages = fake.pages
+        fake.label = adapter.label
 
         def write(_method, path, _body, **_kwargs):
             number = int(path.split("/")[-2])
@@ -513,7 +517,7 @@ class QualificationTests(unittest.TestCase):
     def test_review_scope_denial_holds_only_that_pr(self):
         self.io.args = watch.operator.parse_args(["merge-train-policy-read"])
         denial = urllib.error.HTTPError(
-            "https://example.invalid/review", 403, "scope denied", {}, None
+            "https://example.invalid/review", 403, "scope denied", Message(), None
         )
         with patch.object(watch.review, "read_review", side_effect=denial):
             self.assertFalse(watch.Live.acceptance(self.io, REPO, self.pull))
