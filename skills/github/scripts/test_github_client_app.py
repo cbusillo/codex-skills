@@ -275,6 +275,34 @@ class ClientAppTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["token"], "fake-token-1")
         self.assertEqual(AppHandler.calls, [])
+        fake_git = self.root / "commit-git"
+        committed = self.root / "committed.json"
+        remote = self.root / "remote"
+        remote.write_text("https://github.com/client/product.git")
+        fake_git.write_text(
+            f"#!{sys.executable}\n"
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            f"if sys.argv[1:3] == ['remote', 'get-url']: print(Path({str(remote)!r}).read_text())\n"
+            "else:\n"
+            f"    Path({str(committed)!r}).write_text(json.dumps({{'author': os.environ.get('GIT_AUTHOR_NAME')}}))\n"
+        )
+        fake_git.chmod(0o700)
+        commit_env = {**os.environ, "CODEX_AUTOMATION_EMAIL": "bot@example.invalid",
+                      "GIT_COMMIT_AS_BOT_GIT": str(fake_git), "GIT_COMMIT_AS_BOT_PYTHON": sys.executable}
+        command = [str(Path(identity.__file__).with_name("git-commit-as-bot")), "-m", "fixture"]
+        result = subprocess.run(command, env=commit_env, text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(committed.read_text())["author"], "app-1[bot]")
+        remote.write_text("https://github.com/host/missing.git")
+        committed.unlink()
+        refused = subprocess.run(command, env=commit_env, text=True, capture_output=True, timeout=15)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertFalse(committed.exists())
+        allowed = subprocess.run(command, env={**commit_env, identity.OWN_USER_OPT_IN: "1"},
+                                 text=True, capture_output=True, timeout=15)
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+        self.assertIsNone(json.loads(committed.read_text())["author"])
 
     def test_push_helper_uses_client_token_without_a_real_push(self) -> None:
         fake_git = self.root / "git"

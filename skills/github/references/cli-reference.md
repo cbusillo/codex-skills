@@ -1413,6 +1413,11 @@ and `GITHUB_CLIENT_APP_TOKEN_CACHE_DIR` use the existing API and cache conventio
 The private key retains the owner-only file requirement. Tokens remain cached
 separately by App, key, API and repository. The selected App's verified bot login
 is the write identity; `CODEX_AUTOMATION_LOGIN` continues to name the primary App.
+Keep `GH_WITH_ENV_TOKEN_EXPECTED_LOGIN` unset globally in a two-App fleet, or
+set it per command to the intended App: an override pinned to the primary bot
+deliberately refuses routed writes as a different bot. Commit names and emails
+retain the existing `CODEX_AUTOMATION_*` / `GIT_COMMIT_AS_BOT_*` configuration;
+credential routing does not replace that metadata.
 
 Verify the selected App and current installation without a write:
 

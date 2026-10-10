@@ -32,21 +32,24 @@ if [ -f "$env_file" ]; then
 		# credentials never reach git commit or its hooks.
 		# shellcheck disable=SC1090
 		. "$env_file" >/dev/null
-		printf '%s\n%s\n%s\n%s\n' \
+		printf '%s\n%s\n%s\n%s\n%s\n' \
 			"${GIT_COMMIT_AS_BOT_NAME:-${CODEX_AUTOMATION_LOGIN:-}}" \
 			"${GIT_COMMIT_AS_BOT_EMAIL:-${CODEX_AUTOMATION_EMAIL:-}}" \
 			"${GITHUB_APP_ID:-${GITHUB_CLIENT_APP_OWNERS:-}}" \
-			"${GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH:-}"
+			"${GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH:-}" \
+			"${GITHUB_APP_ID:+app}"
 	)
 	bot_name=$(printf '%s\n' "$identity_values" | sed -n '1p')
 	bot_email=$(printf '%s\n' "$identity_values" | sed -n '2p')
 	app_configured=$(printf '%s\n' "$identity_values" | sed -n '3p')
 	require_automation_auth=$(printf '%s\n' "$identity_values" | sed -n '4p')
+	primary_app_configured=$(printf '%s\n' "$identity_values" | sed -n '5p')
 else
 	bot_name=${GIT_COMMIT_AS_BOT_NAME:-${CODEX_AUTOMATION_LOGIN:-}}
 	bot_email=${GIT_COMMIT_AS_BOT_EMAIL:-${CODEX_AUTOMATION_EMAIL:-}}
 	app_configured=${GITHUB_APP_ID:-${GITHUB_CLIENT_APP_OWNERS:-}}
 	require_automation_auth=${GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH:-}
+	primary_app_configured=${GITHUB_APP_ID:+app}
 fi
 
 if [ "$#" -eq 0 ]; then
@@ -82,6 +85,18 @@ origin_repository() {
 	esac
 	printf '%s\n' "${repo%.git}"
 }
+
+if [ -n "$app_configured" ] && [ -z "$primary_app_configured" ] && repo=$(origin_repository); then
+	if [ -n "$python_command" ]; then
+		selected_prefix=$($python_command "$identity_helper" app-prefix --repo "$repo")
+	elif command -v uv >/dev/null 2>&1; then
+		selected_prefix=$(uv run --no-project --no-config --python 3.12 "$identity_helper" app-prefix --repo "$repo")
+	else
+		echo "error: git-commit-as-bot requires uv or GIT_COMMIT_AS_BOT_PYTHON to choose the identity for $repo" >&2
+		exit 127
+	fi
+	if [ "$selected_prefix" != GITHUB_CLIENT_APP ]; then app_configured=; fi
+fi
 
 if [ -n "$app_configured" ] && repo=$(origin_repository); then
 	identity_status=0
