@@ -4165,6 +4165,7 @@ def _target_replacement_plan_response() -> dict[str, Any]:
             },
             "expected_next_target_name": "private-next-target",
             "expected_domain_hosts": ["next.example.invalid"],
+            "base_url": "https://private-origin.example.invalid",
             "expected_artifact_id": "",
             "data_source_mode": "existing",
             "approval_issue_url": "https://github.com/example/private/issues/1",
