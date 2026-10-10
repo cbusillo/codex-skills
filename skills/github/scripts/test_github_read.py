@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import json
+import argparse
+import importlib.util
 import os
 import subprocess
 import sys
@@ -672,6 +674,7 @@ def test_pull_checks_share_paged_readers_and_ids() -> None:
         process(include_output(checks)),
         process(include_output([])),
         process(include_output({"state": "success"})),
+        process(include_output({"workflow_runs": []})),
     ]
     reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="test.checks")
     with patch("subprocess.run", side_effect=responses):
@@ -681,7 +684,7 @@ def test_pull_checks_share_paged_readers_and_ids() -> None:
     assert check["jobId"] == 33
     assert check["checkSuiteId"] == 44
     assert payload["summary"]["failingCount"] == 1
-    assert reader.completed_steps == ["pull_request", "check_runs_page_1", "commit_statuses_page_1", "combined_status"]
+    assert reader.completed_steps == ["pull_request", "check_runs_page_1", "commit_statuses_page_1", "combined_status", "check_workflow_runs_page_1"]
 
 
 def test_pull_checks_keep_only_latest_status_per_context() -> None:
@@ -703,6 +706,7 @@ def test_pull_checks_keep_only_latest_status_per_context() -> None:
         process(include_output({"check_runs": []})),
         process(include_output(statuses)),
         process(include_output({"state": "success"})),
+        process(include_output({"workflow_runs": []})),
     ]
     reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="test.statuses")
     with patch("subprocess.run", side_effect=responses):
@@ -727,6 +731,7 @@ def test_pull_checks_preserve_check_runs_when_status_permission_is_missing() -> 
         process(include_output({"check_runs": [{"id": 11, "name": "tests", "status": "completed", "conclusion": "failure"}]})),
         process(include_output({"message": "Resource not accessible by integration"}, status=403), returncode=1),
         process(include_output({"state": "failure"})),
+        process(include_output({"workflow_runs": []})),
     ]
     reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="test.partial")
     with patch("subprocess.run", side_effect=responses):
@@ -750,6 +755,39 @@ def test_shape_failure_marks_diagnostics_degraded() -> None:
             raise AssertionError("expected GitHubReadShapeError")
     assert reader.diagnostics()["degraded"] is True
     assert reader.diagnostics()["degradedComponents"] == ["items"]
+
+
+def test_direct_checks_inventory_workflows_before_job_checks() -> None:
+    spec = importlib.util.spec_from_file_location("gh_pr_checks_fixture", Path(__file__).with_name("gh-pr.py"))
+    assert spec is not None and spec.loader is not None
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    sha = "a" * 40
+    for state, conclusion in (("queued", None), ("in_progress", None), ("completed", "failure"),
+                              ("completed", "success"), (None, None), ("unavailable", None)):
+        run_data = {"id": 22, "head_sha": sha, "status": state, "conclusion": conclusion}
+        workflow_response = process(include_output({"workflow_runs": [run_data] if state else []}))
+        if state == "unavailable":
+            workflow_response = process(include_output({"message": "Resource not accessible by integration"}, status=403), returncode=1)
+        responses = [process(include_output({"number": 7, "head": {"sha": sha}})),
+                     process(include_output({"check_runs": []})), process(include_output([])),
+                     process(include_output({"state": "pending"})), workflow_response]
+        with patch("subprocess.run", side_effect=responses) as transport:
+            try:
+                payload = helper.cmd_checks(argparse.Namespace(repo="o/r", pr="7"))
+            except helper.PrHelperError as exc:
+                assert state == "unavailable"
+                payload = exc.payload
+        summary = payload["summary"]
+        assert summary["pendingCount"] == int(state in {"queued", "in_progress"}), state
+        assert summary["failingCount"] == int(conclusion == "failure"), state
+        assert summary["countsComplete"] is (state != "unavailable"), state
+        assert summary["countsAreLowerBounds"] is (state == "unavailable"), state
+        if state == "unavailable":
+            assert "workflowSelection" in summary["unavailableComponents"]
+        command = transport.call_args.args[0]
+        endpoint = next(arg for arg in command if arg.startswith("/repos/o/r/actions/runs"))
+        assert f"head_sha={sha}" in endpoint
 
 
 def test_workflow_metadata_jobs_and_text_log_normalize() -> None:
@@ -1020,6 +1058,7 @@ def main() -> None:
         test_pull_checks_keep_only_latest_status_per_context,
         test_pull_checks_preserve_check_runs_when_status_permission_is_missing,
         test_shape_failure_marks_diagnostics_degraded,
+        test_direct_checks_inventory_workflows_before_job_checks,
         test_workflow_metadata_jobs_and_text_log_normalize,
         test_text_logs_opt_in_and_remove_terminal_commands,
         test_text_logs_support_older_cli_and_preserve_failures,
