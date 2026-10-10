@@ -213,14 +213,19 @@ diagnostic; keep that diagnostic out of public comments.
 For Codex's shared app server, launch with `codex --remote unix://`: the empty
 Unix endpoint resolves through the selected `CODEX_HOME`, so each account uses
 its own daemon. A fixed socket or WebSocket endpoint attaches to that server's
-account regardless of the exported home. Before creating any tab or launch
-receipt, `iterm_tab.py new --account-provider openai` checks each selected home's
+account regardless of the exported home. Keep the per-session `-c` settings:
+removing `--remote` while retaining the reasoning override can select embedded
+mode instead of the shared daemon (see [the Q152 validation](https://github.com/cbusillo/codex-skills/issues/1613#issuecomment-6102593628)).
+Before creating any tab or launch receipt, `iterm_tab.py new --account-provider openai`
+runs `CODEX_HOME=<selected-home> codex app-server daemon start` for each selected
+home, with a 30-second command timeout. Native `start` reuses a healthy running
+daemon; it also brings one back after a reboot. It does not use `bootstrap`,
+which can stop existing work. After a successful exit, the launcher checks that home's
 `app-server-control/app-server-control.sock` with a one-second connection timeout.
-If any connection fails (including a missing or stale socket), the whole launch
-refuses, naming that home and its shell-quoted recovery command:
-`CODEX_HOME=<selected-home> codex app-server daemon start`. Run that command and
-retry. The launcher does not start daemons itself, read tokens or change account
-configuration. The check proves the socket accepts connections; it cannot
+If startup fails or the socket is still unavailable, the whole launch refuses,
+naming that home, the failure, and its shell-quoted native command for diagnosis.
+The launcher does not read tokens or change account configuration. The check
+proves the socket accepts connections; it cannot
 guarantee that the daemon stays running until the launch command executes.
 
 Accounts live only in private config, the first `[accounts]` table in
