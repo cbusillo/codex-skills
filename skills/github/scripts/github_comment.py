@@ -57,8 +57,13 @@ def effective_expected_actor(expected_actor: Optional[str]) -> Optional[str]:
 
 
 def response_expected_actor(
-    result: github_api_core.ApiResult, expected_actor: Optional[str]
+    result: github_api_core.ApiResult, expected_actor: Optional[str], repository: Optional[str] = None
 ) -> Optional[str]:
+    primary_actor = github_identity.automation_login()
+    if (repository and github_identity.github_app_prefix(repository) == "GITHUB_CLIENT_APP"
+            and result.expected_actor and expected_actor and primary_actor
+            and expected_actor.casefold() == primary_actor.casefold()):
+        return result.expected_actor
     # The wrapper may authorize an own-user route only on the repository write.
     # Preserve that resolved login instead of rechecking the original bot login.
     if expected_actor and result.actor and result.expected_actor is None:
@@ -336,8 +341,9 @@ def authenticated_actor(
         is_write=False,
         retry_summaries=retry_summaries,
     )
-    if write_repository:
-        expected_actor = response_expected_actor(result, expected_actor)
+    actor_repository = write_repository or github_identity.repository_context()
+    if actor_repository:
+        expected_actor = response_expected_actor(result, expected_actor, actor_repository)
     login = result.body.get("login") if isinstance(result.body, dict) else None
     if not isinstance(login, str) or not login:
         raise _local_error(

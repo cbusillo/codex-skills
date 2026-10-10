@@ -83,6 +83,7 @@ class GitHubAppConfig:
     private_key_path: pathlib.Path
     api_url: str
     cache_dir: pathlib.Path
+    require_repository_installation: bool = False
 
 
 def env_file_path(environ: Mapping[str, str] | None = None) -> pathlib.Path | None:
@@ -193,20 +194,47 @@ def active_auth_fallback_allowed(environ: Mapping[str, str] | None = None) -> bo
     }
 
 
-def github_app_config(environ: Mapping[str, str] | None = None, *, reader: bool = False) -> GitHubAppConfig | None:
+def github_app_prefix(repository: str | None = None, environ: Mapping[str, str] | None = None, *, reader: bool = False) -> str:
+    """Choose credentials by repository owner; the bulk reader keeps its own route."""
+    if reader:
+        return "GITHUB_READER_APP"
+    owners = configured_value("GITHUB_CLIENT_APP_OWNERS", environ=environ)
+    if repository and owners:
+        if not REPOSITORY_PATTERN.fullmatch(repository):
+            raise GitHubAppError(f"invalid repository {repository!r}; expected OWNER/REPO")
+        if repository.split("/", 1)[0].casefold() in {owner.casefold() for owner in owners.replace(",", " ").split()}:
+            return "GITHUB_CLIENT_APP"
+    return "GITHUB_APP"
+
+
+def repository_context() -> str | None:
+    """Normalize GH_REPO the same way as the shell wrapper's repository reference."""
+    reference = configured_value("GH_REPO")
+    if not reference:
+        return None
+    reference = reference.rstrip("/").removesuffix(".git")
+    if reference.startswith("git@"):
+        reference = reference.split(":", 1)[-1]
+    return "/".join(reference.split("/")[-2:])
+
+
+def github_app_config(environ: Mapping[str, str] | None = None, *, reader: bool = False,
+                      repository: str | None = None) -> GitHubAppConfig | None:
     values = os.environ if environ is None else environ
     local_values = load_local_env(values)
-    prefix = "GITHUB_READER_APP" if reader else "GITHUB_APP"
+    prefix = github_app_prefix(repository, values, reader=reader)
     names = tuple(f"{prefix}_{suffix}" for suffix in ("ID", "INSTALLATION_ID", "PRIVATE_KEY_PATH"))
     configured = {
         name: configured_value(name, environ=values, local_env=local_values)
         for name in names
     }
     present = [name for name, value in configured.items() if value]
-    if not present:
+    client = prefix == "GITHUB_CLIENT_APP"
+    if not present and not client:
         return None
-    if len(present) != len(names):
-        missing = ", ".join(name for name in names if not configured[name])
+    required_names = (names[0], names[2]) if client else names
+    if any(not configured[name] for name in required_names):
+        missing = ", ".join(name for name in required_names if not configured[name])
         raise GitHubAppError(f"incomplete GitHub App configuration; missing {missing}")
 
     key_path = pathlib.Path(str(configured[f"{prefix}_PRIVATE_KEY_PATH"])).expanduser()
@@ -257,10 +285,11 @@ def github_app_config(environ: Mapping[str, str] | None = None, *, reader: bool 
 
     return GitHubAppConfig(
         app_id=str(configured[f"{prefix}_ID"]),
-        installation_id=str(configured[f"{prefix}_INSTALLATION_ID"]),
+        installation_id=str(configured[f"{prefix}_INSTALLATION_ID"] or ""),
         private_key_path=key_path,
         api_url=api_url,
         cache_dir=cache_dir,
+        require_repository_installation=client,
     )
 
 
@@ -648,7 +677,7 @@ def acts_as_own_user(repository: str, environ: Mapping[str, str] | None = None) 
             "yes",
         }:
             return False
-        config = github_app_config(values)
+        config = github_app_config(values, repository=repository)
         if config is None:
             return False
         repository_installation_config(config, repository)
@@ -695,6 +724,8 @@ def github_app_auth(
             )
             if repository_config is not None:
                 return _mint_and_cache(repository_config, cache_path, current_time)
+            if config.require_repository_installation:
+                raise GitHubAppError(f"the GitHub Client App is not installed on {repository}; reads require its installation on this repository")
     with _locked_cache(config) as cache_path:
         cached = None if refresh else _read_cached_token(cache_path, now=current_time)
         if cached:
@@ -730,6 +761,8 @@ def main() -> int:
         "--repo",
         help="OWNER/REPO whose installation to use; defaults to the configured installation.",
     )
+    app_prefix = subparsers.add_parser("app-prefix", help="Print the credential prefix for a repository.")
+    app_prefix.add_argument("--repo")
     app_auth.add_argument(
         "--require-installation",
         action="store_true",
@@ -738,15 +771,23 @@ def main() -> int:
             f"exit {CONTRIBUTOR_EXIT_STATUS} when the account that registered the App does not own --repo."
         ),
     )
-    subparsers.add_parser("app-check", help="Verify the configured App installation and print its bot login.")
+    app_check = subparsers.add_parser("app-check", help="Verify the configured App installation and print its bot login.")
+    app_check.add_argument("--repo", help="Verify the installation on OWNER/REPO.")
     subparsers.add_parser("app-token", help="Mint or reuse a GitHub App installation token.")
     args = parser.parse_args()
     try:
+        if args.command == "app-prefix":
+            print(github_app_prefix(args.repo, reader=args.reader))
+            return 0
         if args.command in {"app-auth", "app-check", "app-token"}:
-            config = github_app_config(reader=args.reader)
+            config = github_app_config(reader=args.reader, repository=getattr(args, "repo", None))
             if config is None:
                 raise GitHubAppError("GitHub App authentication is not configured")
             if args.command == "app-check":
+                if args.repo:
+                    repository_config = repository_installation_config(config, args.repo)
+                    assert repository_config is not None
+                    config = repository_config
                 print(check_github_app_installation(config))
                 return 0
             token, login = github_app_auth(

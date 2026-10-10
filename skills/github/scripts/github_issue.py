@@ -226,6 +226,7 @@ def _authenticated_actor(
     gh_cmd: str,
     operation: str,
     expected_actor: Optional[str],
+    write_repository: Optional[str] = None,
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
 ) -> str:
     try:
@@ -233,6 +234,7 @@ def _authenticated_actor(
             gh_cmd=gh_cmd,
             operation=operation,
             expected_actor=expected_actor,
+            write_repository=write_repository,
             retry_summaries=retry_summaries,
         )
     except github_comment.CommentError as exc:
@@ -664,8 +666,11 @@ def create_issue(
         gh_cmd=gh_cmd,
         operation=operation,
         expected_actor=expected_actor,
+        write_repository=resolved_repo if github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS") else None,
         retry_summaries=retry_summaries,
     )
+    if expected_actor and github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS"):
+        expected_actor = actor
     steps = ["resolve_actor"]
     for label in github_agent.assignment_labels(normalized_labels):
         label_path = f"/repos/{resolved_repo}/labels/{urllib.parse.quote(label, safe='')}"
@@ -961,8 +966,11 @@ def _edit_issue_impl(
         gh_cmd=gh_cmd,
         operation=operation,
         expected_actor=expected_actor,
+        write_repository=resolved_repo if github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS") else None,
         retry_summaries=retry_summaries,
     )
+    if expected_actor and github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS"):
+        expected_actor = actor
     steps = ["resolve_actor"]
     normalized_add_labels = _split_values(add_labels)
     normalized_remove_labels = _split_values(remove_labels)
@@ -1301,8 +1309,11 @@ def _set_issue_state_impl(
         gh_cmd=gh_cmd,
         operation=operation,
         expected_actor=expected_actor,
+        write_repository=resolved_repo if github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS") else None,
         retry_summaries=retry_summaries,
     )
+    if expected_actor and github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS"):
+        expected_actor = actor
     request: dict[str, Any] = {"state": state, "state_reason": state_reason}
     if duplicate_of is not None:
         try:
@@ -1317,14 +1328,18 @@ def _set_issue_state_impl(
                 completed_steps=steps,
                 failed_step="resolve_duplicate_issue",
             ) from exc
+        # A duplicate in another repository has its own read identity; only
+        # reads of the write target remain bound to its resolved personal writer.
+        separate_lookup = (duplicate_repo.casefold() != resolved_repo.casefold()
+                           and github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS"))
         result = _call_api(
             "GET",
             f"/repos/{duplicate_repo}/issues/{duplicate_number}",
             None,
             gh_cmd=gh_cmd,
             operation=operation,
-            actor=actor,
-            expected_actor=expected_actor,
+            actor=None if separate_lookup else actor,
+            expected_actor=None if separate_lookup else expected_actor,
             completed_steps=steps,
             failed_step="resolve_duplicate_issue",
             is_write=False,
