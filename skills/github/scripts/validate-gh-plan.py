@@ -4104,6 +4104,8 @@ def test_pr_checks_aggregates_retry_fields_across_reads() -> None:
             "  respond 200 4999 '{\"number\":12,\"state\":\"open\",\"title\":\"PR\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"sha\":\"abc\",\"ref\":\"feature\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}},\"user\":{\"login\":\"octocat\"}}'\n"
             "elif [[ \"$*\" == *'/check-runs'* ]]; then\n"
             "  respond 200 4998 '{\"check_runs\":[]}'\n"
+            "elif [[ \"$*\" == *'/actions/runs'* ]]; then\n"
+            "  respond 200 4995 '{\"workflow_runs\":[]}'\n"
             "elif [[ \"$*\" == *'/statuses'* ]]; then\n"
             "  respond 200 4997 '[]'\n"
             "elif [[ \"$*\" == *'/status'* ]]; then\n"
@@ -4134,9 +4136,10 @@ def test_pr_checks_aggregates_retry_fields_across_reads() -> None:
     assert result.returncode == 0, result
     payload = json.loads(result.stdout)
     assert payload["operation"] == "github.pr.checks", payload
-    assert payload["attempts"] == 5, payload
+    attempts = sum(request["attempts"] for request in payload["diagnostics"]["requests"])
+    assert payload["attempts"] == attempts, payload
     assert payload["retry_eligible"] is True, payload
-    assert payload["diagnostics"]["retry"]["attempts"] == 5, payload
+    assert payload["diagnostics"]["retry"]["attempts"] == attempts, payload
     assert result.stderr == "", result.stderr
 
 
@@ -4620,6 +4623,8 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
             "  printf '{\"number\":12,\"title\":\"Demo\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/commits/head-sha/check-runs'* ]]; then\n"
             "  printf '{\"check_runs\":[{\"name\":\"ci\",\"status\":\"completed\",\"conclusion\":\"success\"}]}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/actions/runs'* ]]; then\n"
+            "  printf '{\"workflow_runs\":[]}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/commits/head-sha/statuses'* ]]; then\n"
             "  printf '[]\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/commits/head-sha/status'* ]]; then\n"
@@ -6524,6 +6529,8 @@ def test_pr_helper_preserves_url_repo_and_paginates_checks() -> None:
             "  else\n"
             "    printf '{\"check_runs\":[{\"name\":\"ci-1\",\"status\":\"completed\",\"conclusion\":\"success\"}]}\\n'\n"
             "  fi\n"
+            "elif [[ \"$*\" == *'/repos/other/repo/actions/runs'* ]]; then\n"
+            "  printf '{\"workflow_runs\":[]}\\n'\n"
             "elif [[ \"$*\" == *'/repos/other/repo/commits/head-sha/statuses'* ]]; then\n"
             "  printf 'HTTP/2.0 200 \\r\\ncontent-type: application/json\\r\\n'\n"
             "  if [[ \"$*\" != *'page=2'* ]]; then\n"

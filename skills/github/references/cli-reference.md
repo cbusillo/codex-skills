@@ -387,6 +387,9 @@ also include the shared `api_result` diagnostics envelope.
 - `scripts/gh-pr.py checks <pr>`: Show check runs and commit statuses
   for the PR head, with Actions execution history selected under the
   [current execution contract](../../babysit-pr/references/github-api-notes.md#workflow-runs-for-head-sha).
+  Head workflows are read even before their first job check exists; unfinished
+  or failed runs count as pending or failed evidence. Unavailable Actions
+  reads report incomplete counts rather than a complete empty inventory.
 - `scripts/gh-pr.py update-branch <pr> [--wait-seconds 0..60]`: Merge the base
   into the PR branch after the ownership and authorization checks in
   [Merge Readiness](repo-workflow.md#merge-readiness), through the automation

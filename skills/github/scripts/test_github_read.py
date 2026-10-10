@@ -773,7 +773,11 @@ def test_direct_checks_inventory_workflows_before_job_checks() -> None:
                      process(include_output({"check_runs": []})), process(include_output([])),
                      process(include_output({"state": "pending"})), workflow_response]
         with patch("subprocess.run", side_effect=responses) as transport:
-            payload = helper.cmd_checks(argparse.Namespace(repo="o/r", pr="7"))
+            try:
+                payload = helper.cmd_checks(argparse.Namespace(repo="o/r", pr="7"))
+            except helper.PrHelperError as exc:
+                assert state == "unavailable"
+                payload = exc.payload
         summary = payload["summary"]
         assert summary["pendingCount"] == int(state in {"queued", "in_progress"}), state
         assert summary["failingCount"] == int(conclusion == "failure"), state
