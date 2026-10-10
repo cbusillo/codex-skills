@@ -1394,6 +1394,66 @@ Human warnings and progress remain on stderr, and the process exit code matches
 
 ## Authentication And Identity
 
+### Client fleets with two Apps
+
+Keep the Client's own write App and automation identity in the existing
+`GITHUB_APP_*` and `CODEX_AUTOMATION_*` settings. Add the already approved narrow
+App to the same private `local.env`:
+
+```sh
+GITHUB_CLIENT_APP_OWNERS=cbusillo
+GITHUB_CLIENT_APP_ID=<narrow App ID>
+GITHUB_CLIENT_APP_PRIVATE_KEY_PATH=/private/path/to/client-app.pem
+```
+
+The repository-account list accepts commas or quoted spaces and matches case-insensitively.
+`GITHUB_CLIENT_APP_INSTALLATION_ID` is optional: repository commands discover
+that App's installation on the exact repository. Optional `GITHUB_CLIENT_APP_API_URL`
+and `GITHUB_CLIENT_APP_TOKEN_CACHE_DIR` use the existing API and cache conventions.
+The private key retains the owner-only file requirement. Tokens remain cached
+separately by App, key, API and repository. The selected App's verified bot login
+is the write identity; `CODEX_AUTOMATION_LOGIN` continues to name the primary App.
+The primary App setup helper writes `GH_WITH_ENV_TOKEN_EXPECTED_LOGIN` to
+`local.env`. Remove that line before adding Client routing; `--replace-identity`
+writes it again, so remove it again after repeating primary App setup.
+An override pinned to the primary bot deliberately refuses routed writes as a
+different bot. A value in `local.env` wins over a per-command environment value;
+with the line absent, an explicit per-command override can pin the intended App.
+Commit names and emails
+retain the existing `CODEX_AUTOMATION_*` / `GIT_COMMIT_AS_BOT_*` configuration;
+credential routing does not replace that metadata.
+
+Verify the selected App and current installation without a write:
+
+```sh
+GH_REPO=cbusillo/PRODUCT skills/github/scripts/gh-with-env-token --check
+```
+
+Add that verified Client App bot login to the existing
+`CODEX_AUTOMATION_BOT_LOGINS` list, preserving any entries already there. This
+lets planning helpers and direction audits recognize its managed issue bodies
+and milestone authors through their existing automation trust list; keep
+`CODEX_AUTOMATION_LOGIN` set to the primary App.
+
+Commands naming a listed account's repository use the Client App. Other accounts
+and commands with no target repository keep the existing primary credential
+selection. The separate bulk reader App still serves bulk reads when configured.
+With no Client routing configured, existing fleet behavior is unchanged.
+
+If the Client App is not installed on the target, reads fail with the missing
+installation named. Writes retain the existing refusal and per-command own-user
+opt-in below; no token from the primary App is borrowed. Missing or partial
+Client configuration fails before sending a command. These settings do not
+create an App, install it, change permissions, or authorize outreach or access.
+
+Python write helpers keep prerequisite and reconciliation reads on a previously
+resolved own-user writer when the per-command opt-in is present. They use the
+wrapper's `--require-installation` prefix so a missing installation takes the
+same authorized own-user path. Ordinary Client-App reads still fail clearly;
+required-automation mode still refuses personal authentication.
+
+### Primary App and contributor identity
+
 `scripts/gh-with-env-token` is automation-first when a token is configured. It
 loads the first of `$CODE_HOME/local.env`, `$CODEX_HOME/local.env`, and
 `~/.code/local.env` that exists, so a home variable without its own
