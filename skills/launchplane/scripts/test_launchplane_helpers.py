@@ -4891,6 +4891,39 @@ def test_authorization_denial_keeps_denied_status() -> None:
     ) == "denied"
 
 
+@pytest.mark.parametrize("result", [None, [], 42])
+@pytest.mark.parametrize("legacy_context", [False, True])
+def test_context_main_handles_malformed_result_envelopes(
+    result: object, legacy_context: bool
+) -> None:
+    response: dict[str, object] = {"result": result, "private_extra": "private-response-marker"}
+    if legacy_context:
+        fixture = json.loads(
+            (SCRIPT_DIR.parent / "references" / "context.available.example.json").read_text()
+        )
+        response["context"] = {"generated_at": fixture["generated_at"], **fixture["sections"]}
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with (
+        patch.object(context_helper, "resolve_settings", return_value={
+            "service_url": "https://launchplane.example.invalid", "token": "fake-token",
+        }),
+        patch.object(context_helper, "request_launchplane", return_value=response),
+        redirect_stdout(stdout),
+        redirect_stderr(stderr),
+    ):
+        assert context_helper.main(["--repo", "example/repo"]) == 0
+    payload = json.loads(stdout.getvalue())
+    if legacy_context:
+        assert payload["status"] == "available"
+        assert payload["sections"]["work_graph"]["items"][0]["safe_to_start"] is False
+    else:
+        assert payload["status"] == "invalid"
+        assert payload["warnings"][0]["code"] == "invalid_response"
+        assert payload["sections"] == {}
+    assert "private-response-marker" not in stdout.getvalue()
+    assert stderr.getvalue() == ""
+
+
 def test_context_projection_contract_and_secret_shape() -> None:
     provider_context = json.loads((SCRIPT_DIR.parent / "references" / "context.available.example.json").read_text())
     raw_context = {"generated_at": provider_context["generated_at"], **provider_context["sections"]}

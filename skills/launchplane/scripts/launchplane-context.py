@@ -345,7 +345,8 @@ def project_context_sections(context: dict[str, Any]) -> dict[str, object]:
 def normalize_launchplane_payload(
     provider_payload: dict[str, Any], *, request: dict[str, object]
 ) -> dict[str, object]:
-    context = provider_payload.get("result", {}).get("context")
+    result = provider_payload.get("result")
+    context = result.get("context") if isinstance(result, dict) else None
     if not isinstance(context, dict):
         context = provider_payload.get("context")
     if not isinstance(context, dict):
