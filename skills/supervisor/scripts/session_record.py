@@ -23,7 +23,16 @@ def outside_fences(lines: list[str]) -> bool:
     """The final verdict must be outside a completed Markdown fence."""
     fence = None
     minimum_indent = 0
+    list_indent = None
     for line in lines:
+        line = line.expandtabs(4)
+        indent = len(line) - len(line.lstrip(" "))
+        listed_line = re.match(r"^( *(?:(?:[-+*]|[0-9]+[.)]) +)+)", line)
+        if fence is None:
+            if listed_line:
+                list_indent = len(listed_line[1])
+            elif line.strip() and list_indent is not None and indent < list_indent:
+                list_indent = None
         match = re.match(r"^\s*(`{3,}|~{3,})(.*)$", line)
         if not match and fence is None:
             listed = re.match(r"^(\s*(?:(?:[-+*]|[0-9]+[.)])\s+)+)(`{3,}|~{3,})(.*)$", line)
@@ -38,7 +47,7 @@ def outside_fences(lines: list[str]) -> bool:
         marker, rest = match.groups()
         if fence is None:
             fence = marker
-            minimum_indent = 0
+            minimum_indent = list_indent if list_indent is not None else (indent if indent > 3 else 0)
         elif (marker[0] == fence[0] and len(marker) >= len(fence) and not rest.strip()
               and re.fullmatch(r" {" + str(minimum_indent) + "," + str(minimum_indent + 3)
                                + "}" + re.escape(marker) + r"[ \t]*", line)):
@@ -198,7 +207,7 @@ def summarize(records: list[dict], harness: str) -> dict:
                 )
     # Citation metadata may follow the verdict; retain the raw response for readers.
     verdict_text = MEMORY_CITATION_TAIL.sub("", result["last_text"])
-    lines = verdict_text.strip().splitlines()
+    lines = verdict_text.rstrip().splitlines()
     result["safe_verdict"] = bool(
         lines
         and SAFE.fullmatch(re.sub(r"^[-*] ", "", lines[-1].strip()).replace("**", ""))
