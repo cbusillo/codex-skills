@@ -14,6 +14,8 @@ import unittest
 import test_gh_plan_claim as fixtures
 import github_plan_release as release
 import github_identity
+import github_comment
+import github_plan_claim
 
 PLAN, CLAIM, BOT = fixtures.PLAN, fixtures.CLAIM, fixtures.TEST_BOT
 
@@ -65,13 +67,13 @@ class ReleaseTests(unittest.TestCase):
         with patch.multiple(PLAN, default_repo=lambda _: "owner/repo", get_issue=self.f.get_issue,
             EXPECTED_ACTOR=BOT, collect_paged_rest_items=self.f.read_pages,
             comment_route=lambda: ("bot", "gh-with-env-token" if client_actor else "bot-gh", BOT), emit=self.f.emitted, api_json=self.api), \
-            patch.object(PLAN.github_identity, "configured_bot_logins", return_value=[BOT]), \
+            patch.object(github_identity, "configured_bot_logins", return_value=[BOT]), \
             patch.object(github_identity, "github_app_prefix", return_value="GITHUB_CLIENT_APP" if client_actor else "GITHUB_APP"), \
             patch.object(github_identity, "github_app_config", return_value=object()), \
             patch.object(github_identity, "github_app_auth", return_value=("fake-token", client_actor)), \
             patch.object(github_identity, "configured_value", return_value=None), \
-            patch.object(CLAIM, "local_inventory", side_effect=self.f.inventory_for), \
-            patch.object(PLAN.github_comment_core, "comment", autospec=True, side_effect=self.post):
+            patch.object(github_plan_claim, "local_inventory", side_effect=self.f.inventory_for), \
+            patch.object(github_comment, "comment", autospec=True, side_effect=self.post):
             PLAN.cmd_release_claim(self.args)
 
     def test_release_routes_source_identity_without_relaxing_author_checks(self):
