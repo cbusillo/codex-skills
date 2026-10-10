@@ -207,6 +207,17 @@ def github_app_prefix(repository: str | None = None, environ: Mapping[str, str] 
     return "GITHUB_APP"
 
 
+def repository_context() -> str | None:
+    """Normalize GH_REPO the same way as the shell wrapper's repository reference."""
+    reference = configured_value("GH_REPO")
+    if not reference:
+        return None
+    reference = reference.rstrip("/").removesuffix(".git")
+    if reference.startswith("git@"):
+        reference = reference.split(":", 1)[-1]
+    return "/".join(reference.split("/")[-2:])
+
+
 def github_app_config(environ: Mapping[str, str] | None = None, *, reader: bool = False,
                       repository: str | None = None) -> GitHubAppConfig | None:
     values = os.environ if environ is None else environ

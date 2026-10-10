@@ -25,6 +25,7 @@ import github_api
 import github_comment
 import github_identity as identity
 import github_issue
+import github_milestone
 from test_github_identity import test_private_key
 
 
@@ -233,6 +234,23 @@ class ClientAppTests(unittest.TestCase):
             actor="app-1[bot]", expected_actor="app-1[bot]")
         self.assertTrue(result.ok, result)
         self.assertEqual((result.actor, result.expected_actor), (actor, actor))
+
+    def test_global_repository_context_and_milestone_writer_use_client_actor(self) -> None:
+        os.environ.update({"GH_REPO": "https://github.com/host/product", "GH_WITH_ENV_TOKEN_GH": str(self.fake_gh()),
+                           "GH_WITH_ENV_TOKEN_PYTHON": sys.executable})
+        wrapper = str(Path(identity.__file__).with_name("gh-with-env-token"))
+        result = github_api.call_gh_with_retry("GET", "/user", gh_cmd=wrapper,
+            operation="github.plan.milestone_create", actor="app-1[bot]", expected_actor="app-1[bot]")
+        self.assertTrue(result.ok, result)
+        self.assertEqual(result.expected_actor, "app-2[bot]")
+        state = github_milestone._command_state("host/product", operation="github.plan.milestone_create",
+            actor="app-1[bot]", expected_actor="app-1[bot]", gh_cmd=wrapper, verify_actor=True)
+        self.assertEqual(state[1:3], ("app-2[bot]", "app-2[bot]"))
+        self.assertEqual(github_comment.authenticated_actor(gh_cmd=wrapper, operation="github.comment.issue",
+            expected_actor="APP-1[BOT]", write_repository="host/product"), "app-2[bot]")
+        with self.assertRaises(github_comment.CommentError):
+            github_comment.authenticated_actor(gh_cmd=wrapper, operation="github.comment.issue",
+                expected_actor="different[bot]", write_repository="host/product")
 
     def test_python_bulk_reads_use_reader_then_client_when_reader_absent(self) -> None:
         kwargs = dict(operation="github.plan.index", is_write=False, gh_cmd=github_api.DEFAULT_GH,

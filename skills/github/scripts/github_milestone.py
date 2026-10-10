@@ -11,9 +11,11 @@ import datetime as dt
 import hashlib
 import json
 import re
+from pathlib import Path
 from typing import Any, Optional
 
 import github_api as github_api_core
+import github_comment
 import github_identity
 
 
@@ -154,7 +156,18 @@ def _command_state(
     )
     steps: list[str] = []
     retry_summaries: list[github_api_core.RetrySummary] = []
-    if verify_actor:
+    if (verify_actor and Path(gh_cmd).name == "gh-with-env-token"
+            and github_identity.github_app_prefix(repo) == "GITHUB_CLIENT_APP"):
+        try:
+            actor = github_comment.authenticated_actor(gh_cmd=gh_cmd, operation=operation,
+                expected_actor=effective_expected_actor, write_repository=repo,
+                retry_summaries=retry_summaries)
+        except github_comment.CommentError as error:
+            raise MilestoneError(str(error), failure=error.failure,
+                                 api_result=error.api_result, payload=error.payload) from error
+        effective_expected_actor = actor
+        steps.append("resolve_actor")
+    elif verify_actor:
         actor = _authenticated_actor(
             gh_cmd=gh_cmd,
             operation=operation,

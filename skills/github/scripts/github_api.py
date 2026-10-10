@@ -2933,6 +2933,8 @@ def request_identity(
     main_actor = github_identity.automation_login()
     if repository is None and "--write-actor-for" in prefix:
         repository = prefix[prefix.index("--write-actor-for") + 1]
+    if repository is None and github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS"):
+        repository = github_identity.repository_context()
 
     def repository_identity() -> tuple[Optional[str], Optional[str], list[str]]:
         if (pathlib.Path(gh_cmd).name == "gh-with-env-token"

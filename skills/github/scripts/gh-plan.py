@@ -1984,6 +1984,17 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         raise PlanError("Release requires configured automation auth and --confirm-session-ended after verifying closure")
     if not args.session or any(c in args.session for c in "\n\r"):
         raise PlanError("Releaser must name its native session ID")
+    if pathlib.Path(gh_cmd).name == "gh-with-env-token" and github_identity.github_app_prefix(repo) == "GITHUB_CLIENT_APP":
+        try:
+            config = github_identity.github_app_config(repository=repo)
+            assert config is not None
+            _, selected_actor = github_identity.github_app_auth(config, repository=repo, require_installation=True)
+        except github_identity.GitHubAppError as error:
+            raise PlanError(str(error)) from error
+        override = github_identity.configured_value("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN")
+        if override and override.casefold() != selected_actor.casefold():
+            raise PlanError(f"Release would run as '{selected_actor}', expected '{override}'")
+        expected_actor = selected_actor
     evidence_match = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/issues/([1-9]\d*)#issuecomment-([1-9]\d*)", args.evidence_comment)
     if not evidence_match:
         raise PlanError("Evidence must be an exact GitHub issue-comment URL")

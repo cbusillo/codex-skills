@@ -815,11 +815,6 @@ its credentials and fail closed, without changing actor, when bot auth is
 unavailable, rejected, or rate-limited. The helpers choose the identity for
 each target repository:
 
-Client fleets may configure a second narrow App by repository owner; read
-[Client fleet configuration](references/cli-reference.md#client-fleets-with-two-apps)
-when setting up or diagnosing that route. The installation rules below apply
-to the selected App.
-
 - **Where the App is installed on that repository**: the App, in any
   account's repository.
 - **The App's registering account, without an installation on that
@@ -835,6 +830,11 @@ to the selected App.
   Commits keep your git identity, and `gh-pr.py create` adds the
   AI-assistance sentence to the body unless it already says so.
   `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1` refuses even with the opt-in.
+
+Client fleets may configure a second narrow App by repository owner; read
+[Client fleet configuration](references/cli-reference.md#client-fleets-with-two-apps)
+when setting up or diagnosing that route. The installation rules above apply
+to the selected App.
 
 Otherwise never fall back to the active human `gh` account unless the user
 explicitly approves that one-off; then set
