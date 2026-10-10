@@ -22,8 +22,8 @@ alternate backlogs.
 With a root `DIRECTION.md`, use only milestone titles listed in the merged file.
 Propose a new waypoint through the `direction` skill before creating it. The
 helpers refuse creating or renaming to unlisted titles. Closing a shipped
-milestone is normal planning work; removing its stale direction line requires
-a direction PR.
+milestone is normal planning work. For removal of its stale direction line,
+follow the [direction escalation procedure](../../direction/SKILL.md#escalation-and-disposition).
 
 Use `gh-plan.py milestone-list`, `milestone-show`, `milestone-create`,
 `milestone-update`, and `milestone-close` for container operations.

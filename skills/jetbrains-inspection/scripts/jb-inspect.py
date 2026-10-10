@@ -695,12 +695,16 @@ def normalize_reason(value: Any) -> str:
     return reason or "inspection_helper_error"
 
 
-def lane_ide_selection_advice(reason: str, context: Any) -> str | None:
+def ide_selection_advice(reason: str, context: Any) -> str | None:
     if not isinstance(context, dict) or reason not in IDE_ROUTE_CONFIGURATION_REASONS:
         return None
+    if reason == "ide_config_missing" and not (context.get("inspection_lane") or context.get("inspection_lanes")):
+        if context.get("ide") or context.get("ide_config_dir"):
+            return "Install the selected JetBrains IDE if needed and launch it once to create its configuration before retrying; ask before changing the selected IDE/version in repository metadata."
+        return "Install and launch a JetBrains IDE appropriate for this repository. " + IDE_ROUTE_CONFIGURATION_NEXT_ACTION
     if context.get("inspection_lane") or (context.get("inspection_lanes") and reason != "ide_selection_required"):
         return (
-            "Check that the selected IDE matches the intended configured lane and installed IDE/version; launch that IDE once "
+            "Check that the selected IDE matches the intended configured lane and installed IDE/version; install if needed and launch that IDE once "
             "to create its configuration before another assessment or open. "
             "Preserve qualityGate.inspection.lanes in .github/github.json; ask before changing lane policy."
         )
@@ -716,7 +720,7 @@ def lane_ide_selection_advice(reason: str, context: Any) -> str | None:
 
 
 def hint_for_error_reason(reason: str, context: Any = None) -> str | None:
-    lane_advice = lane_ide_selection_advice(reason, context)
+    lane_advice = ide_selection_advice(reason, context)
     if lane_advice:
         return lane_advice
     return {
@@ -6931,7 +6935,7 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
         diagnostic.get("execution_proof_block_reason") or diagnostic.get("execution_proof_skipped_reason")
     )
     if reason in IDE_ROUTE_CONFIGURATION_REASONS:
-        return lane_ide_selection_advice(reason, payload.get("context")) or IDE_ROUTE_CONFIGURATION_NEXT_ACTION
+        return ide_selection_advice(reason, payload.get("context")) or IDE_ROUTE_CONFIGURATION_NEXT_ACTION
     if reason == "plugin_deployment_mismatch":
         return "Install a plugin with native broad-scope execution proof, restart the IDE, resolve the route again, and rerun inspection."
     if reason == "execution_not_proven":
@@ -7034,6 +7038,8 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
         return "Wait for same-worktree writers and IDE indexing/project-model updates to settle, then rerun; stale cached findings must not be treated as current."
     if reason == "timeout":
         return "Wait for indexing/scanning to settle or rerun with a larger timeout."
+    if reason == "lifecycle_lock_timeout":
+        return "Wait for the owning lifecycle operation to finish, then run assessments sequentially. No IDE inspection started."
     if reason == "inspection_still_running":
         return "Wait for indexing/scanning to finish, then rerun inspection."
     if reason == "inspection_api_timeout":
@@ -7505,6 +7511,8 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
     if verdict == "RED":
         return "actionable_findings"
     normalized = normalize_reason(reason)
+    if normalized == "lifecycle_lock_timeout":
+        return "lifecycle_lock_busy"
     if normalized == "ide_memory_exhausted":
         return normalized
     if normalized == "plugin_deployment_mismatch":
@@ -7629,6 +7637,8 @@ def next_action_for_bucket(verdict: str, bucket: str, reason: str, payload: dict
     if verdict == "RED":
         return "Fix the reported findings, then rerun inspection."
     if bucket == "ide_memory_exhausted":
+        return next_action_for_unknown(reason, payload)
+    if bucket == "lifecycle_lock_busy":
         return next_action_for_unknown(reason, payload)
     if bucket in UNKNOWN_RETRY_BUCKETS:
         return next_action_for_unknown(reason, payload)
@@ -10668,7 +10678,15 @@ def jetbrains_config_dirs(context: dict[str, Any]) -> list[Path]:
     configured_dir = context.get("ide_config_dir")
     if configured_dir:
         path = Path(str(configured_dir)).expanduser().resolve()
-        return [path] if path.exists() else []
+        if path.exists():
+            return [path]
+        advice = ide_selection_advice("ide_config_missing", context)
+        raise InspectError(
+            "Cannot seed JetBrains trusted locations because the configured IDE directory is unavailable.",
+            3,
+            {"available_config_dirs": [], "error_reason": "ide_config_missing",
+             "context": public_context(context), "next_action": advice, "hint": advice},
+        )
     selection = resolve_ide_selection(context)
     if selection and selection.config_dir:
         return [selection.config_dir]
@@ -10692,13 +10710,22 @@ def jetbrains_config_dirs(context: dict[str, Any]) -> list[Path]:
                 "available_config_dirs": available,
                 "error_reason": "ide_config_missing",
                 "context": public_context(context),
-                "next_action": lane_ide_selection_advice("ide_config_missing", context) or "Launch the selected JetBrains IDE once, or update .github/github.json to name an installed JetBrains IDE/version.",
-                "hint": lane_ide_selection_advice("ide_config_missing", context) or "Use product-level metadata such as jetbrains.ide = WebStorm for latest stable. EAP requires explicit metadata such as jetbrains.ideChannel = eap and jetbrains.ideVersion = 2026.2.",
+                "next_action": ide_selection_advice("ide_config_missing", context) or "Launch the selected JetBrains IDE once, or update .github/github.json to name an installed JetBrains IDE/version.",
+                "hint": ide_selection_advice("ide_config_missing", context) or "Use product-level metadata such as jetbrains.ide = WebStorm for latest stable. EAP requires explicit metadata such as jetbrains.ideChannel = eap and jetbrains.ideVersion = 2026.2.",
                 "matched_product": product.display_name if product else None,
             },
         )
     if len(candidate_paths) == 1:
         return candidate_paths
+    if not candidate_paths:
+        reason = "ide_config_missing"
+        advice = ide_selection_advice(reason, context) or hint_for_error_reason(reason, context)
+        raise InspectError(
+            "Cannot seed JetBrains trusted locations because no installed IDE config directories exist.",
+            3,
+            {"available_config_dirs": [], "error_reason": reason,
+             "context": public_context(context), "next_action": advice, "hint": advice},
+        )
     raise InspectError(
         "Cannot seed JetBrains trusted locations because multiple IDE config directories exist and no IDE was selected.",
         3,
@@ -10706,8 +10733,8 @@ def jetbrains_config_dirs(context: dict[str, Any]) -> list[Path]:
             "available_config_dirs": [candidate.name for candidate in sorted(candidates, key=lambda item: item.name)],
             "error_reason": "ide_selection_required",
             "context": public_context(context),
-            "next_action": lane_ide_selection_advice("ide_selection_required", context) or "Add preferred JetBrains IDE metadata to .github/github.json, for example jetbrains.ide = WebStorm, PyCharm, or IntelliJ IDEA. Use --ide only for a one-off run.",
-            "hint": lane_ide_selection_advice("ide_selection_required", context) or "Set jetbrains.ide in repo metadata so the helper updates the intended JetBrains product instead of guessing across installed IDEs.",
+            "next_action": ide_selection_advice("ide_selection_required", context) or "Add preferred JetBrains IDE metadata to .github/github.json, for example jetbrains.ide = WebStorm, PyCharm, or IntelliJ IDEA. Use --ide only for a one-off run.",
+            "hint": ide_selection_advice("ide_selection_required", context) or "Set jetbrains.ide in repo metadata so the helper updates the intended JetBrains product instead of guessing across installed IDEs.",
         },
     )
 
@@ -10974,6 +11001,7 @@ class lifecycle_lock:
                             "Timed out waiting for the JetBrains inspection lifecycle lock.",
                             3,
                             {
+                                "error_reason": "lifecycle_lock_timeout",
                                 "lock_path": str(path),
                                 "timeout_ms": self.timeout_ms,
                                 "hint": "Another lifecycle inspection is running. Wait for it to finish, increase --lifecycle-lock-timeout-ms, or run lifecycle inspections sequentially.",
