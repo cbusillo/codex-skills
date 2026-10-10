@@ -29,7 +29,7 @@ partdb_read = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = partdb_read
 SPEC.loader.exec_module(partdb_read)
 
-PLAN_KIND = "partdb-write-plan.v1"
+PLAN_KIND = "partdb-write-plan.v2"
 APPROVAL_KIND = "partdb-write-approval.v1"
 RECEIPT_KIND = "partdb-write-receipt.v1"
 LOT_PATH = "/api/part_lots/{id}"
@@ -50,6 +50,10 @@ def canonical(value: Any) -> bytes:
 
 def digest(value: Any) -> str:
     return hashlib.sha256(canonical(value)).hexdigest()
+
+
+def instance_identity(base_url: str) -> str:
+    return digest({"base_url": base_url.rstrip("/")})
 
 
 def load_json(path: Path, description: str) -> Any:
@@ -173,7 +177,9 @@ def validate_intent(intent: Any) -> dict[str, int | float | str]:
 
 
 def validate_plan(artifact: Any) -> dict[str, Any]:
-    if not isinstance(artifact, dict) or set(artifact) != {"digest", "kind", "nonce", "operation"} or artifact.get("kind") != PLAN_KIND:
+    if isinstance(artifact, dict) and "instance_id" not in artifact:
+        raise WriteError("plan has no instance binding; create and approve a new plan")
+    if not isinstance(artifact, dict) or set(artifact) != {"digest", "kind", "nonce", "instance_id", "operation"} or artifact.get("kind") != PLAN_KIND:
         raise WriteError("plan artifact is invalid")
     expected = artifact.get("digest")
     unsigned = {key: value for key, value in artifact.items() if key != "digest"}
@@ -181,6 +187,9 @@ def validate_plan(artifact: Any) -> dict[str, Any]:
         raise WriteError("plan artifact digest is invalid")
     if not isinstance(artifact.get("nonce"), str) or len(artifact["nonce"]) != 32:
         raise WriteError("plan artifact is invalid")
+    instance_id = artifact.get("instance_id")
+    if not isinstance(instance_id, str) or len(instance_id) != 64 or any(char not in "0123456789abcdef" for char in instance_id):
+        raise WriteError("plan instance binding is invalid")
     operation = artifact.get("operation")
     if not isinstance(operation, dict) or set(operation) != {"lot_id", "prior_amount", "target_amount"}:
         raise WriteError("plan operation is invalid")
@@ -228,6 +237,7 @@ def plan(args: argparse.Namespace) -> None:
     artifact = {
         "kind": PLAN_KIND,
         "nonce": secrets.token_hex(16),
+        "instance_id": instance_identity(base_url),
         "operation": {
             "lot_id": intent["lot_id"],
             "prior_amount": current["amount"],
@@ -258,9 +268,11 @@ def apply(args: argparse.Namespace) -> None:
     plan_path = Path(args.plan)
     receipt_file = receipt_path(plan_path, plan_digest)
     reserve_receipt(receipt_file, plan_digest)
-    private_repo, config = partdb_read.context()
     try:
+        private_repo, config = partdb_read.context()
         base_url, read_token = partdb_read.environment(private_repo, config)
+        if instance_identity(base_url) != artifact["instance_id"]:
+            raise WriteError("Part-DB instance changed after planning; create and approve a new plan")
         verify_lot_patch_schema(base_url, read_token)
         current = read_lot(base_url, read_token, operation["lot_id"])
         if amounts_equal(current["amount"], operation["target_amount"]):
