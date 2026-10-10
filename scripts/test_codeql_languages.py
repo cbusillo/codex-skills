@@ -130,6 +130,10 @@ class SelectionTests(unittest.TestCase):
         self.write("nested/line\nbreak.swift", "print(2)\n")
         self.assertEqual(self.selection(self.commit()), {"swift"})
 
+    def test_composite_action_outside_github_directory_is_scanned(self) -> None:
+        self.write("skills/example/action.yml", "runs:\n  using: composite\n  steps: []\n")
+        self.assertEqual(self.selection(self.commit()), {"actions"})
+
     def test_main_schedule_and_dispatch_scan_every_language(self) -> None:
         for event in ("push", "schedule", "workflow_dispatch"):
             with self.subTest(event=event):

@@ -32,7 +32,7 @@ def languages_for_paths(paths: list[str]) -> set[str]:
         name = path.name.lower()
         if (
             raw_path.startswith(".github/workflows/") and suffix in {".yml", ".yaml"}
-        ) or (raw_path.startswith(".github/actions/") and name in {"action.yml", "action.yaml"}):
+        ) or name in {"action.yml", "action.yaml"}:
             selected.add("actions")
         if suffix in {".py", ".pyi", ".pyw"} or name in {
             "pyproject.toml", "uv.lock", "uv.toml", ".python-version",
