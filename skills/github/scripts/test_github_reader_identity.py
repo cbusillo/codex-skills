@@ -207,7 +207,11 @@ class ReaderIdentityTests(unittest.TestCase):
                     github_read, 'pull_request_checks', side_effect=checks):
                 helper.CURRENT_OPERATION = f'github.pr.{command[-2]}'
                 result = helper.cmd_view(args) if command[-2] == 'view' else helper.cmd_checks(args)
+                os.environ.pop('GH_PR_READ_CONTEXT', None)
+                standalone = helper.cmd_view(args) if command[-2] == 'view' else helper.cmd_checks(args)
+                self.assertEqual(standalone['expected_actor'], 'main-app[bot]')
                 # An inherited watch hint cannot change a write/preflight context.
+                os.environ['GH_PR_READ_CONTEXT'] = 'watch'
                 helper.CURRENT_OPERATION = 'github.pr.comment'
                 self.assertEqual(helper.read_operation(), helper.CURRENT_OPERATION)
             return subprocess.CompletedProcess(command, 0, json.dumps(result), '')
@@ -216,7 +220,11 @@ class ReaderIdentityTests(unittest.TestCase):
             for command in ('view', 'checks'):
                 result = watcher.pr_helper_json(command, '7', repo='example/app')
                 self.assertEqual(result['expected_actor'], 'reader-app[bot]')
-        self.assertEqual(observed, ['reader-app[bot]', 'reader-app[bot]'])
+        self.assertEqual(observed, ['reader-app[bot]', 'main-app[bot]', 'reader-app[bot]', 'main-app[bot]'])
+        with patch.object(identity, 'github_app_auth', return_value=('synthetic', 'reader-app[bot]')) as auth:
+            preflight = watcher.watcher_reader(operation='github.pr.rerun_failed')
+        auth.assert_not_called()
+        self.assertEqual(preflight.expected_actor, 'main-app[bot]')
 
     def test_synthetic_path_mints_through_existing_app_auth_and_cache(self):
         config = self.credentials()
@@ -274,6 +282,22 @@ class ReaderIdentityTests(unittest.TestCase):
         with patch('subprocess.run', return_value=self.response('main-app[bot]', headers={'etag': '"main"'})) as run:
             api.call_gh('GET', '/repos/example/app/issues', actor='main-app[bot]', expected_actor='main-app[bot]')
         self.assertFalse(any(str(arg).startswith('If-None-Match:') for arg in run.call_args.args[0]))
+
+    def test_essential_request_override_uses_main_then_bulk_reader_continues(self):
+        self.credentials()
+        with patch.object(identity, 'github_app_auth', return_value=('synthetic', 'reader-app[bot]')), patch(
+                'subprocess.run', side_effect=[self.response('main-app[bot]', body={'data': {}}), self.response()]) as run:
+            reader = github_read.GitHubReader(operation='github.pr.watch', strict_actor=True)
+            essential = reader.graphql_json('query { viewer { login } }', {},
+                step='readiness', operation='github.pr.review_readiness')
+            bulk = reader.request('GET', '/repos/example/app/issues/7/comments', step='poll')
+        self.assertTrue(essential.ok)
+        self.assertEqual(essential.expected_actor, 'main-app[bot]')
+        self.assertNotIn('--reader', run.call_args_list[0].args[0])
+        self.assertTrue(bulk.ok)
+        self.assertIn('--reader', run.call_args_list[1].args[0])
+        self.assertEqual(reader.expected_actor, 'reader-app[bot]')
+        self.assertFalse(reader.degraded_reasons)
 
     def test_wrapper_refuses_reader_writes_and_missing_auth_before_delegating(self):
         wrapper = Path(api.__file__).with_name('gh-with-env-token')

@@ -2931,6 +2931,14 @@ def request_identity(
         raise github_identity.GitHubAppError("read-only GitHub App refuses a write before sending")
     rule, _ = operation_retry_rule(operation, matrix_path=matrix_path)
     main_actor = github_identity.automation_login()
+    if reader and rule is not None and rule.request_priority == "essential":
+        # A per-request essential context wins over an inherited bulk prefix.
+        # The wrapper retains the existing main credential path, with personal
+        # auth fallback disabled. Reader mutations were refused above.
+        prefix.remove("--reader")
+        if "--require-automation-auth" not in prefix:
+            prefix.append("--require-automation-auth")
+        return main_actor, main_actor, prefix
     automatic = (not is_write and not preserve_identity and rule is not None and rule.request_priority == "bulk"
                  and pathlib.Path(gh_cmd).name == "gh-with-env-token"
                  and "--write-actor-for" not in prefix

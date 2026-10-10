@@ -171,6 +171,8 @@ When `GITHUB_READER_APP_ID`, `GITHUB_READER_APP_INSTALLATION_ID` and
 maintained wrapper select that read-only App before reserve checks, retries and
 body caching. The shared App authentication path validates the configured key
 file and mints/caches its installation token; no key contents are displayed.
+Install the reader App on every repository whose bulk reads it will serve.
+Access failures stop under that identity rather than borrowing main-App quota.
 Writes and essential reads retain the main App. The optional
 `GITHUB_READER_APP_API_URL` and `GITHUB_READER_APP_TOKEN_CACHE_DIR` select its
 API host and private token-cache directory, with the same defaults as the main
@@ -200,6 +202,10 @@ The PR watcher passes `GH_PR_READ_CONTEXT=watch` to its delegated `view` and
 watch operation. Their envelopes report the selected reader actor. Standalone
 targeted reads stay essential, and write commands and their preflights ignore
 this read context.
+Per-request essential operations override an inherited bulk reader prefix and
+return to the main identity. The shared reader retains its bulk context for
+later polling; each diagnostic row records that request's effective actor.
+Rerun selection and readback construct an essential reader before a write.
 
 Bulk reads yield when the latest observed remaining core quota is **below 25%**
 of the installation's hourly limit, rounded up. The shared response-header

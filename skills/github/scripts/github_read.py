@@ -326,30 +326,33 @@ class GitHubReader:
         self, result: github_api_core.ApiResult, *, method: str, path: str, step: str
     ) -> None:
         actor_mismatch = False
+        request_context = bool(result.operation and result.operation != self.operation)
+        expected_actor = result.expected_actor if request_context else self.expected_actor
         if result.actor:
-            if self.expected_actor and self.expected_actor.casefold() != result.actor.casefold():
+            if expected_actor and expected_actor.casefold() != result.actor.casefold():
                 self.mark_degraded(
                     "actor",
                     "actor_mismatch",
-                    f"GitHub read ran as '{result.actor}', expected '{self.expected_actor}'",
+                    f"GitHub read ran as '{result.actor}', expected '{expected_actor}'",
                 )
                 actor_mismatch = True
-            elif self.actor and self.actor.casefold() != result.actor.casefold():
+            elif not request_context and self.actor and self.actor.casefold() != result.actor.casefold():
                 self.mark_degraded(
                     "actor",
                     "actor_changed",
                     f"GitHub actor changed from '{self.actor}' to '{result.actor}' during one read operation",
                 )
-            self.actor = result.actor
+            if not request_context:
+                self.actor = result.actor
         if actor_mismatch and self.strict_actor:
             result.ok = False
-            result.expected_actor = self.expected_actor
+            result.expected_actor = expected_actor
             result.failed_step = step
             result.failure = github_api_core.FailureDetail(
                 cause="actor_mismatch",
                 message=(
                     f"Authenticated actor '{result.actor}' does not match "
-                    f"expected actor '{self.expected_actor}'"
+                    f"expected actor '{expected_actor}'"
                 ),
                 retryable=False,
                 fallback_eligible=False,

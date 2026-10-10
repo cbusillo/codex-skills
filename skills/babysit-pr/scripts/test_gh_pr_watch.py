@@ -757,7 +757,7 @@ def test_collect_snapshot_emits_review_request_and_session_degradation(monkeypat
     reader.results = [SimpleNamespace(headers={"x-poll-interval": "90"})]
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *args, **kwargs: pr)
     monkeypatch.setattr(gh_pr_watch, "load_state", lambda path: ({}, True))
-    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
+    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda **_kwargs: reader)
     monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda active_reader=None: "octocat")
     monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *args, **kwargs: [])
     monkeypatch.setattr(
@@ -2130,7 +2130,7 @@ def test_acquisition_full_retry_preserves_budget_and_intent(monkeypatch, tmp_pat
     run = {**failed_run(1), "retry_mode": "runner_acquisition"}
     _, path = retry_snapshot(monkeypatch, tmp_path, [run, failed_run(2, "cancelled")], [])
     reader = AcquisitionReader()
-    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
+    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda **_kwargs: reader)
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *a: sample_pr())
     monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *a, **kw: [reader.run])
     writes = []
@@ -2165,7 +2165,7 @@ def test_acquisition_retry_revalidates_before_write(monkeypatch, tmp_path, chang
     run = {**failed_run(1), "retry_mode": "runner_acquisition"}
     _, path = retry_snapshot(monkeypatch, tmp_path, [run], [])
     reader = AcquisitionReader()
-    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
+    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda **_kwargs: reader)
     monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *a, **kw: [reader.run])
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *a: {**sample_pr(), "head_sha": "new" if change == "head" else "abc123"})
     if change == "head":
@@ -2256,7 +2256,7 @@ def test_snapshot_offers_only_verified_acquisition_recovery(monkeypatch, tmp_pat
         pr["closed"] = True
     if gate in {"closed", "pending", "budget"}:
         reader.paged_json = lambda *_a, **_kw: pytest.fail("premature acquisition proof read")
-    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
+    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda **_kwargs: reader)
     monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_a, **_kw: "fixture-bot")
     monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *_a, **_kw: [])
     monkeypatch.setattr(gh_pr_watch.github_read, "pull_request_checks", lambda *_a, **_kw: {})
@@ -2283,7 +2283,7 @@ def test_changed_pr_preserves_an_earlier_ordinary_retry(monkeypatch, tmp_path):
     reader = AcquisitionReader()
     reader.run["id"] = 2
     reader.jobs[0]["run_id"] = 2
-    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
+    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda **_kwargs: reader)
     monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *_a, **_kw: [
         {**reader.run, "id": 1}, reader.run,
     ])
@@ -2489,7 +2489,7 @@ def test_later_read_error_reports_already_confirmed_progress(monkeypatch, tmp_pa
     recovery = {**failed_run(2), "retry_mode": "runner_acquisition"}
     _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1), recovery], [failed_job(1)])
     reader = AcquisitionReader()
-    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
+    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda **_kwargs: reader)
     monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *_a, **_kw: [
         {"id": run_id, "head_sha": "abc123", "run_attempt": 1,
          "status": "completed", "conclusion": "failure"} for run_id in (1, 2)
@@ -3002,7 +3002,7 @@ def execution_snapshot(monkeypatch, tmp_path, runs, checks, **reader_kwargs):
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *a, **kw: sample_pr())
     monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_: "octocat")
     monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *a, **kw: [])
-    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
+    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda **_kwargs: reader)
     args = argparse.Namespace(pr="123", repo=None, state_file=str(tmp_path / "state.json"), max_flaky_retries=3)
     snapshot, _ = gh_pr_watch.collect_snapshot(args)
     return snapshot, reader
@@ -3107,7 +3107,7 @@ def test_standalone_checks_select_superseded_runs_and_fail_closed_on_unavailable
 def test_same_head_replacement_race_prevents_obsolete_retry_without_charging(monkeypatch, tmp_path):
     retry_snapshot(monkeypatch, tmp_path, [failed_run(1, "cancelled")], [failed_job(1)])
     reader = ExecutionReader([], [])
-    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
+    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda **_kwargs: reader)
     monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *a, **kw: [execution(1, "cancelled"), execution(2)])
     monkeypatch.setattr(gh_pr_watch, "gh_text", lambda *a, **kw: pytest.fail("obsolete retry write"))
     result = gh_pr_watch.retry_failed_now(argparse.Namespace())

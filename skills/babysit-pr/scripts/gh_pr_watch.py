@@ -702,11 +702,11 @@ def apply_unfinished_workflow_runs(checks_summary, runs, head_sha):
     }
 
 
-def watcher_reader():
+def watcher_reader(*, operation="github.pr.watch"):
     return github_read.GitHubReader(
         gh_cmd=GH_COMMAND,
         expected_actor=github_identity.automation_login(),
-        operation="github.pr.watch",
+        operation=operation,
         cache_enabled=True,
     )
 
@@ -1813,7 +1813,7 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
     if pending:
         result["reason"] = "rerun_outcome_pending"
         return result
-    submission_reader = watcher_reader()
+    submission_reader = watcher_reader(operation="github.pr.rerun_failed")
     if eligible_runs:
         # A same-head replacement can appear after the snapshot. Pre-write
         # selection must reach GitHub, including for ordinary failed-job retries.
