@@ -74,6 +74,10 @@ resolver loads global entries first, then repo entries: the same `id` replaces
 the global entry for that repo; new ids supplement it. Missing indexes are
 normal: continue without enrichment, not an error.
 
+Replace `<skill-dir>` in commands with the absolute directory of this loaded
+skill. This route works from the skill directory or a client repository;
+command metadata examples are relative to the skill directory.
+
 Use [the public-safe schema](references/people.local.example.yaml) for the
 optional gitignored index. Real names, handles, emails, phone numbers, company
 and relationship facts belong only in ignored local files. Update through
@@ -83,10 +87,6 @@ people/overrides/supplements. Read [migration](references/migration.md) before
 consolidating identity facts from other local sources.
 
 ## Resolve Before Relying On Identity
-
-Replace `<skill-dir>` in commands with the absolute directory of this loaded
-skill. This route works from the skill directory or a client repository;
-command metadata examples are relative to the skill directory.
 
 1. Resolve each named human reference when context may matter:
 
