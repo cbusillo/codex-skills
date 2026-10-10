@@ -1198,6 +1198,8 @@ def _project_product_config_public_hosts(value: object) -> dict[str, object]:
         plan_digest=_project_sha256(source["plan_digest"]), runtime_port=port,
         https=True, service_name="web", certificate_type="none", verified=source["verified"],
     )
+    # The first validated public host owns the prod base URL; no origin URL is copied.
+    projected["resolved_base_url"] = f"https://{source['after'][0]}" if source["after"] else ""
     return projected
 
 
@@ -1306,6 +1308,23 @@ def _merge_train_pr_number(value: object) -> int:
     if number == 0:
         raise LaunchplaneSafetyError("invalid_response")
     return number
+
+
+def _project_merge_train_stack_plan(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    projected = _project_merge_component(source)
+    if "root_pull_request_number" in source:
+        projected["root_pull_request_number"] = _merge_train_pr_number(source["root_pull_request_number"])
+    if "child_dispositions" in source:
+        projected["child_dispositions"] = [
+            {
+                "pull_request_number": _merge_train_pr_number(_require_dict(child).get("pull_request_number")),
+                "expected_head_sha": public_identifier(child.get("expected_head_sha")),
+                "status": public_code(child.get("status")),
+            }
+            for child in source["child_dispositions"]
+        ]
+    return projected
 
 
 def _project_merge_train_queue_entry(value: object) -> dict[str, object]:
@@ -1533,7 +1552,10 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
         "branch_update_result",
     ):
         if key in source:
-            projected[key] = _project_merge_component(source[key], include_membership=key == "candidate")
+            projected[key] = (
+                _project_merge_train_stack_plan(source[key]) if key == "stack_collapse_plan"
+                else _project_merge_component(source[key], include_membership=key == "candidate")
+            )
     assert_public_safe_shape(projected)
     return projected
 
@@ -2734,7 +2756,9 @@ def _project_protected_artifacts(value: object) -> dict[str, object]:
             "instance": _protected_artifact_lane(entry.get("instance"), optional=True),
             "artifact_id": _protected_artifact_identifier(entry.get("artifact_id")),
             "source_record_type": public_code(entry.get("source_record_type")),
-            "source_record_id": _protected_artifact_lane(entry.get("source_record_id")),
+            "source_record_id": _protected_artifact_identifier(
+                public_identifier(entry.get("source_record_id"))
+            ),
             "image_digest": _protected_artifact_digest(entry.get("image_digest")),
         })
     projected = {
@@ -4265,7 +4289,7 @@ def summarize_http_error(
         "error_code": public_code(error.get("code"), default=status),
         "recommendation": http_error_recommendation(status),
     }
-    if operation == "privileged-policy-propose" and exc.code in {404, 409, 502, 503, 504}:
+    if operation == "privileged-policy-propose" and (exc.code in {404, 409} or 500 <= exc.code < 600):
         payload["status"] = (
             "unsupported" if exc.code == 404 else "conflict" if exc.code == 409 else "outcome_unknown"
         )
@@ -4274,7 +4298,7 @@ def summarize_http_error(
             if exc.code == 404
             else "This source event conflicts with an existing request. Restore the original envelope, or use a fresh source event only for an intentional new proposal."
             if exc.code == 409
-            else "Retain and re-run the identical private envelope and source event. A gateway error does not prove that the plan was not saved."
+            else "Retain and re-run the identical private envelope and source event. A service or gateway error does not prove that the plan was not saved."
         )
     message = (
         "Launchplane read was rejected; inspect the trace in an approved operator surface."

@@ -16,6 +16,32 @@ import github_plan_claim as claim
 RELEASE_MARKER = "github-plan:abandoned-release "
 
 
+def related_sessions_match(text: str, session: str) -> bool:
+    """Compare explicit session fields outside fenced examples."""
+    prose = claim.ownership_text(text, strip_quotes=False)
+    fence = None
+    for line in prose.splitlines():
+        line = re.sub(r"^\s*(?:>\s*)+", "", line)
+        opener = re.match(r" {0,3}(`{3,}|~{3,})", line)
+        if fence:
+            if re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*", line):
+                fence = None
+            continue
+        if opener:
+            fence = opener.group(1)
+            continue
+        fields = (
+            r"\b(?:Native[ \t_-]*)?(?:Session(?:[ \t_-]*ID)?|Thread[ \t_-]*ID)\b"
+            r"(?:[ \t]*[:=][ \t]*|[ \t]+[—-][ \t]+)([^\s,;|]+)"
+            r"|\|[ \t]*(?:Session(?:[ \t_-]*ID)?|Thread[ \t_-]*ID)[ \t]*\|[ \t]*([^\s|]+)"
+        )
+        for field in re.finditer(fields, line, re.IGNORECASE):
+            value = (field.group(1) or field.group(2)).strip("()<>")
+            if not re.fullmatch(rf"{re.escape(session)}\.?", value):
+                return False
+    return True
+
+
 def stamp(value: Any) -> datetime:
     parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
@@ -80,6 +106,8 @@ def prepare_release(
         if ((comment.get("user") or {}).get("login") != actor or claim.records(comment.get("body") or "")
                 or not re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", comment.get("body") or "")):
             raise ValueError("Related release must name an unstructured ownership follow-up of this exact source worker")
+        if not related_sessions_match(comment.get("body") or "", record["session"]):
+            raise ValueError("Related ownership follow-up names a different native session; obtain that session's own closure evidence")
         if stamp(comment.get("updated_at") or comment.get("created_at")) >= cutoff:
             raise ValueError("Related ownership follow-up is newer than the session-ended evidence")
     receipt = {"source_id": source["id"], "source": record, "source_updated_at": source.get("updated_at") or source["created_at"],

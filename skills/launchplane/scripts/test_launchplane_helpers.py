@@ -1230,6 +1230,35 @@ def test_controller_timeout_covers_slow_dry_run_and_mutation_and_keeps_override(
     assert ordinary.timeout < controller.timeout
 
 
+def test_controller_projects_stack_child_dispositions_without_private_comment_text() -> None:
+    response = _queue_refusal_response()
+    response["result"]["stack_collapse_plan"] = {
+        "collapse_id": "collapse-example", "root_pull_request_number": 42,
+        "child_dispositions": [{"pull_request_number": 43, "expected_head_sha": "b" * 40,
+                                "status": "closed", "detail": "Private child disposition prose",
+                                "comment_url": "https://github.com/example/repo/pull/43#issuecomment-1"}],
+    }
+    code, payload = _run_controller_response(response)
+    assert code == 0
+    stack = payload["result"]["stack_collapse_plan"]
+    assert stack["root_pull_request_number"] == 42
+    assert stack["child_dispositions"] == [{"pull_request_number": 43, "expected_head_sha": "b" * 40, "status": "closed"}]
+    assert "Private child disposition prose" not in json.dumps(payload)
+    assert "issuecomment-1" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("child", [None, "closed", {"pull_request_number": True},
+                                    {"pull_request_number": 0},
+                                    {"pull_request_number": 43, "expected_head_sha": "ghp_" + "a" * 36, "status": "closed"}])
+def test_controller_rejects_invalid_or_unsafe_stack_child_dispositions(child: object) -> None:
+    response = _queue_refusal_response()
+    response["result"]["stack_collapse_plan"] = {"child_dispositions": [child]}
+    code, payload = _run_controller_response(response)
+    assert code != 0
+    assert payload["status"] == "invalid"
+    assert not payload.get("result")
+
+
 def test_controller_block_and_reconciliation_preserve_durable_diagnostics() -> None:
     result = {
         "controller_action": "block", "mode": "blocked",
@@ -1990,7 +2019,44 @@ def test_product_config_projects_public_hostname_diff_and_readback(mode: str) ->
         request={"product": "example-product", "context": "example-site", "instance": "prod"},
         provider_payload=response,
     )
-    assert result["result"]["public_hosts"] == response["result"]["public_hosts"]
+    assert result["result"]["public_hosts"] == {
+        **response["result"]["public_hosts"],
+        "resolved_base_url": "https://example.com",
+    }
+
+
+@pytest.mark.parametrize("mode", ["dry-run", "apply"])
+def test_product_config_public_base_url_uses_ordered_intent_and_empty_is_distinct(
+    mode: str,
+) -> None:
+    for hosts in (["www.example.com", "example.com"], []):
+        response = _public_hosts_response(mode=mode)
+        public_hosts = response["result"]["public_hosts"]
+        public_hosts.update(
+            after=hosts, added=hosts, read_back_hosts=hosts if mode == "apply" else []
+        )
+        payload = write_action.summarize_success(
+            operation="product-config-apply" if mode == "apply" else "product-config-dry-run",
+            request={}, provider_payload=response,
+        )
+        assert payload["result"]["public_hosts"]["resolved_base_url"] == (
+            f"https://{hosts[0]}" if hosts else ""
+        )
+    response["result"].pop("public_hosts")
+    payload = write_action.summarize_success(
+        operation="product-config-apply" if mode == "apply" else "product-config-dry-run",
+        request={}, provider_payload=response,
+    )
+    assert "public_hosts" not in payload["result"]
+
+
+def test_product_config_cannot_supply_an_arbitrary_resolved_base_url() -> None:
+    response = _public_hosts_response()
+    response["result"]["public_hosts"]["resolved_base_url"] = "https://private-origin.example.invalid"
+    with pytest.raises(safety.LaunchplaneSafetyError):
+        write_action.summarize_success(
+            operation="product-config-dry-run", request={}, provider_payload=response,
+        )
 
 
 @pytest.mark.parametrize("change", [
@@ -3357,6 +3423,61 @@ def test_protected_artifacts_read_projection_and_query() -> None:
     assert status == 0 and payload["result"]["entries"][0]["artifact_id"] == ""
 
 
+def test_protected_artifacts_read_preserves_digest_bearing_record_ids() -> None:
+    response = _protected_artifacts_response()
+    inventory = response["protected_artifacts"]
+    original = inventory["entries"][0]
+    inventory["entries"] = [copy.deepcopy(original) for _ in range(4)]
+    for instance in ("prod", "testing"):
+        artifact = "ghcr.io/example/app@sha256:" + "a1" * 32
+        inventory["entries"].append({
+            **original,
+            "instance": instance,
+            "artifact_id": artifact,
+            "source_record_type": "release_tuple",
+            "source_record_id": f"example-context-{instance}-{artifact}",
+        })
+        inventory["warnings"].append(f"Protected artifact {artifact} has no stored manifest.")
+    status, payload, _ = _run_product_read(
+        ["protected-artifacts-read", "--product", "example-product"], response
+    )
+    assert status == 0 and payload["status"] == response["status"]
+    result = payload["result"]
+    assert result["entry_count"] == len(inventory["entries"])
+    assert result["warning_count"] == len(inventory["warnings"])
+    assert not result["entries_truncated"] and not result["warnings_truncated"]
+    for projected, source in zip(result["entries"], inventory["entries"], strict=True):
+        assert projected == {key: source[key] for key in projected}
+        assert projected["source_record_id"] == source["source_record_id"]
+    assert result["warnings"] == [
+        write_action.public_operator_text(warning) for warning in inventory["warnings"]
+    ]
+    assert "private-entry-field" not in json.dumps(payload)
+    assert "private-registry" not in json.dumps(payload)
+
+
+def test_protected_artifacts_read_rejects_unsafe_record_ids() -> None:
+    argv = ["protected-artifacts-read", "--product", "example-product"]
+    for record_id in (
+        "user:pass@registry.example/app",
+        "example-prod-user:pass@registry.example/app@sha256:" + "a" * 64,
+        "example-prod-ghcr.io/example/app@sha256:abc",
+        "example-prod-ghcr.io/example/app@sha256:" + "g" * 64,
+        "example-prod-ghcr.io/example/app@sha512:" + "a" * 64,
+        "example-prod-https://registry.example/app@sha256:" + "a" * 64,
+        "Bearer abcdefghijklmnop",
+        "",
+        None,
+    ):
+        response = _protected_artifacts_response()
+        response["protected_artifacts"]["entries"][0].update(
+            source_record_type="release_tuple", source_record_id=record_id
+        )
+        status, payload, _ = _run_product_read(argv, response)
+        assert status == 1 and payload["status"] == "invalid" and not payload["result"]
+        assert "user:pass" not in json.dumps(payload)
+
+
 def test_protected_artifacts_read_bounds_and_sanitizes_warnings() -> None:
     response = _protected_artifacts_response()
     inventory = response["protected_artifacts"]
@@ -4128,6 +4249,7 @@ def _target_replacement_plan_response() -> dict[str, Any]:
             },
             "expected_next_target_name": "private-next-target",
             "expected_domain_hosts": ["next.example.invalid"],
+            "base_url": "https://private-origin.example.invalid",
             "expected_artifact_id": "",
             "data_source_mode": "existing",
             "approval_issue_url": "https://github.com/example/private/issues/1",
@@ -4836,6 +4958,39 @@ def test_authorization_denial_keeps_denied_status() -> None:
     ) == "denied"
 
 
+@pytest.mark.parametrize("result", [None, [], 42])
+@pytest.mark.parametrize("legacy_context", [False, True])
+def test_context_main_handles_malformed_result_envelopes(
+    result: object, legacy_context: bool
+) -> None:
+    response: dict[str, object] = {"result": result, "private_extra": "private-response-marker"}
+    if legacy_context:
+        fixture = json.loads(
+            (SCRIPT_DIR.parent / "references" / "context.available.example.json").read_text()
+        )
+        response["context"] = {"generated_at": fixture["generated_at"], **fixture["sections"]}
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with (
+        patch.object(context_helper, "resolve_settings", return_value={
+            "service_url": "https://launchplane.example.invalid", "token": "fake-token",
+        }),
+        patch.object(context_helper, "request_launchplane", return_value=response),
+        redirect_stdout(stdout),
+        redirect_stderr(stderr),
+    ):
+        assert context_helper.main(["--repo", "example/repo"]) == 0
+    payload = json.loads(stdout.getvalue())
+    if legacy_context:
+        assert payload["status"] == "available"
+        assert payload["sections"]["work_graph"]["items"][0]["safe_to_start"] is False
+    else:
+        assert payload["status"] == "invalid"
+        assert payload["warnings"][0]["code"] == "invalid_response"
+        assert payload["sections"] == {}
+    assert "private-response-marker" not in stdout.getvalue()
+    assert stderr.getvalue() == ""
+
+
 def test_context_projection_contract_and_secret_shape() -> None:
     provider_context = json.loads((SCRIPT_DIR.parent / "references" / "context.available.example.json").read_text())
     raw_context = {"generated_at": provider_context["generated_at"], **provider_context["sections"]}
@@ -4853,6 +5008,24 @@ def test_context_projection_contract_and_secret_shape() -> None:
         assert exc.code == "unsafe_response_shape"
     else:
         raise AssertionError("expected context projection to fail closed")
+
+
+@pytest.mark.parametrize("selector", ["--repo", "--branch"])
+@pytest.mark.parametrize("value", ["ghp_" + "A" * 40, "/private/synthetic-path", "C:\\private\\synthetic-path", "~/synthetic-path"])
+def test_context_entrypoint_omits_unsafe_request_selectors(selector: str, value: str) -> None:
+    args = ["--repo", "example/repo"] if selector == "--branch" else []
+    result = run_helper("launchplane-context.py", [*args, selector, value])
+    assert result["returncode"] == 0
+    assert result["payload"]["status"] == "invalid"
+    assert result["payload"]["request"] == {}
+    assert value not in json.dumps(result["payload"])
+
+
+def test_context_valid_request_selectors_keep_optional_fallback() -> None:
+    result = run_helper("launchplane-context.py", ["--repo", "example/repo", "--branch", "work/café-42", "--issue", "42", "--pr", "43"])
+    assert result["returncode"] == 0
+    assert result["payload"]["status"] == "no_context"
+    assert result["payload"]["request"] == {"repository": "example/repo", "branch": "work/café-42", "issue_number": 42, "pr_number": 43}
 
 
 def test_current_agent_context_service_shape() -> None:
@@ -8088,6 +8261,7 @@ def test_privileged_policy_propose_rejects_malformed_result_without_echoing_priv
         (403, "denied"),
         (409, "conflict"),
         (404, "unsupported"),
+        (500, "outcome_unknown"),
         (502, "outcome_unknown"),
         (503, "outcome_unknown"),
         (504, "outcome_unknown"),
@@ -8164,6 +8338,51 @@ def test_privileged_policy_propose_failure_reports_safe_reconciliation(
         assert "private-token" not in output.getvalue()
         assert "private.example.invalid" not in output.getvalue()
         assert "never-emit" not in output.getvalue()
+
+
+def test_privileged_policy_proposal_saved_before_500_replays_the_same_plan() -> None:
+    envelope = {"descriptor_id": "managed-authz-policy-set", "source_event_id": "test:saved-proposal",
+                "request": {"managed_set_id": "example.proposal", "desired_policy": {"schema_version": 2},
+                            "reason": "Review access."}}
+    saved: dict[str, dict[str, object]] = {}
+    operation_id = "privileged-operation-" + "a" * 32
+
+    def post(**kwargs: Any) -> dict[str, object]:
+        body = kwargs["body"]
+        source = body["source_event_id"]
+        if source not in saved:
+            saved[source] = body
+            raise urllib.error.HTTPError("https://private.example.invalid", 500, "after save", Message(),
+                                         io.BytesIO(b'{"error":{"code":"internal_error"}}'))
+        assert body == saved[source]
+        return {"status": "ok", "write_status": "replayed", "trace_id": "launchplane_req_" + "b" * 32,
+                "summary": {"operation_id": operation_id, "descriptor_id": body["descriptor_id"],
+                            "status": "planned", "result_status": "ok", "changed": False,
+                            "expires_at": "", "added_rule_count": 1, "adopted_rule_count": 0,
+                            "updated_rule_count": 0, "removed_rule_count": 0, "unchanged_rule_count": 0,
+                            "policy_safety_blocker_count": 0, "operational_readiness_blocked_rule_count": 0}}
+
+    with TemporaryDirectory() as directory:
+        path = Path(directory) / "proposal.json"
+        path.write_text(json.dumps(envelope))
+        outputs = []
+        with (patch.object(write_action, "resolve_settings", return_value={
+                "service_url": "https://private.example.invalid", "token": "private-token"}),
+              patch.object(write_action, "request_launchplane", side_effect=post) as transport):
+            for expected in (1, 0):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    assert write_action.main(["privileged-policy-propose", "--payload-file", str(path)]) == expected
+                outputs.append(json.loads(output.getvalue()))
+                assert "private-token" not in output.getvalue()
+                assert "private.example.invalid" not in output.getvalue()
+        assert transport.call_count == 2
+        assert len(saved) == 1
+        assert outputs[0]["status"] == "outcome_unknown"
+        assert "identical private envelope and source event" in outputs[0]["summary"]["recommendation"]
+        assert outputs[1]["result"]["operation_id"] == operation_id
+        assert outputs[1]["result"]["authorizes_approval"] is False
+        assert outputs[1]["result"]["authorizes_execution"] is False
 
 
 def test_merge_policy_enrollment_projects_only_requested_repository() -> None:

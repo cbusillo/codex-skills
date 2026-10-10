@@ -131,7 +131,7 @@ def validate_marketplace_interface(payload: dict[str, Any]) -> None:
         raise ValueError("marketplace.json field 'interface' must be an object.")
 
 
-def update_marketplace_json(
+def prepare_marketplace_json(
     marketplace_path: Path,
     plugin_name: str,
     install_policy: str,
@@ -139,7 +139,7 @@ def update_marketplace_json(
     category: str,
     force: bool,
     plugin_root: Path | None = None,
-) -> None:
+) -> dict[str, Any]:
     if marketplace_path.exists():
         payload = load_json(marketplace_path)
     else:
@@ -165,19 +165,42 @@ def update_marketplace_json(
             if not force:
                 raise FileExistsError(
                     f"Marketplace entry '{plugin_name}' already exists in {marketplace_path}. "
-                    "Use --force to overwrite that entry."
+                    "Use --force to overwrite that entry and, in scaffold mode, plugin files. "
+                    "Use --register-only --force to update an existing plugin's entry without rewriting its files."
                 )
             plugins[index] = new_entry
             break
     else:
         plugins.append(new_entry)
 
+    return payload
+
+
+def update_marketplace_json(
+    marketplace_path: Path,
+    plugin_name: str,
+    install_policy: str,
+    auth_policy: str,
+    category: str,
+    force: bool,
+    plugin_root: Path | None = None,
+) -> None:
+    payload = prepare_marketplace_json(
+        marketplace_path, plugin_name, install_policy, auth_policy, category, force, plugin_root
+    )
     write_json(marketplace_path, payload, force=True)
 
 
-def write_json(path: Path, data: dict, force: bool) -> None:
+def validate_write_destination(path: Path, force: bool) -> None:
     if path.exists() and not force:
-        raise FileExistsError(f"{path} already exists. Use --force to overwrite.")
+        raise FileExistsError(
+            f"{path} already exists. Use --force to overwrite. "
+            "For marketplace-only updates of an existing plugin, use --register-only --force."
+        )
+
+
+def write_json(path: Path, data: dict, force: bool) -> None:
+    validate_write_destination(path, force)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as handle:
         json.dump(data, handle, indent=2)
@@ -275,9 +298,18 @@ def main() -> None:
         print(f"Registered plugin: {plugin_root}")
         print(f"marketplace manifest: {marketplace_path}")
         return
+    plugin_json_path = plugin_root / ".codex-plugin" / "plugin.json"
+    validate_write_destination(plugin_json_path, args.force)
+
+    marketplace_payload = None
+    if args.with_marketplace:
+        marketplace_payload = prepare_marketplace_json(
+            marketplace_path, plugin_name, args.install_policy, args.auth_policy,
+            args.category, args.force, plugin_root,
+        )
+
     plugin_root.mkdir(parents=True, exist_ok=True)
 
-    plugin_json_path = plugin_root / ".codex-plugin" / "plugin.json"
     write_json(plugin_json_path, build_plugin_json(plugin_name), args.force)
 
     optional_directories = {
@@ -306,16 +338,8 @@ def main() -> None:
             args.force,
         )
 
-    if args.with_marketplace:
-        update_marketplace_json(
-            marketplace_path,
-            plugin_name,
-            args.install_policy,
-            args.auth_policy,
-            args.category,
-            args.force,
-            plugin_root,
-        )
+    if marketplace_payload is not None:
+        write_json(marketplace_path, marketplace_payload, force=True)
 
     print(f"Created plugin scaffold: {plugin_root}")
     print(f"plugin manifest: {plugin_json_path}")

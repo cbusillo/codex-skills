@@ -178,7 +178,7 @@ def summarize(records: list[dict], harness: str) -> dict:
                 result.update(
                     last_text=text,
                     timestamp=record.get("timestamp"),
-                    at_turn_end=not tool_use,
+                    at_turn_end=message.get("stop_reason") == "end_turn" and not tool_use,
                 )
         else:
             if kind == "token_count":

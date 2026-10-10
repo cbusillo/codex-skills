@@ -106,6 +106,11 @@ The helper must emit one JSON object with these keys:
 - `unauthorized`: Launchplane rejected the configured credential or policy.
 - `invalid`: helper received unusable input or an invalid provider response.
 
+Caller selectors are checked with the shared public-text safety validator before
+configuration or provider reads. Token-shaped or local-path selectors return an
+`invalid` envelope with an empty request and a generic `invalid_request` warning;
+the original input is never echoed, including when context is unconfigured.
+
 Skills must treat every status except `available` as optional context absence.
 
 Section status values:
@@ -124,7 +129,10 @@ provider payloads.
 The current service response nests typed sections under
 `context.sections.<name>.payload`. The helper also accepts the earlier flattened
 section form while projecting both forms into the stable public `sections`
-envelope. Only documented repository, state, URL, readiness, and summary fields
+envelope. Both `result.context` and top-level `context` containers are supported.
+A non-object optional `result` falls back to top-level `context`; without a valid
+context object, the helper emits `invalid` JSON and exits `0`.
+Only documented repository, state, URL, readiness, and summary fields
 are copied; service-model provenance, host labels, internal target details, and
 unknown payload fields remain private.
 

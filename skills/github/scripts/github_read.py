@@ -1005,20 +1005,20 @@ def pull_request_checks(
     statuses = latest_status_events(statuses)
     normalized_checks = [normalize_check_run(item) for item in check_runs]
     superseded_checks = []
-    if any(check.get("appSlug") == "github-actions" for check in normalized_checks):
-        availability["workflowSelection"] = True
-        try:
-            if workflow_runs is None:
-                workflow_runs = reader.paged_json(
-                    f"/repos/{repo}/actions/runs", step_prefix="check_workflow_runs",
-                    params={"head_sha": sha}, collection_key="workflow_runs",
-                )
-            normalized_checks, superseded_checks, complete = current_check_runs(
-                reader, repo, sha, normalized_checks, workflow_runs,
+    # A workflow can queue or fail before publishing its first job check.
+    availability["workflowSelection"] = True
+    try:
+        if workflow_runs is None:
+            workflow_runs = reader.paged_json(
+                f"/repos/{repo}/actions/runs", step_prefix="check_workflow_runs",
+                params={"head_sha": sha}, collection_key="workflow_runs",
             )
-            availability["workflowSelection"] = complete
-        except (GitHubReadError, GitHubReadShapeError):
-            availability["workflowSelection"] = False
+        normalized_checks, superseded_checks, complete = current_check_runs(
+            reader, repo, sha, normalized_checks, workflow_runs,
+        )
+        availability["workflowSelection"] = complete
+    except (GitHubReadError, GitHubReadShapeError):
+        availability["workflowSelection"] = False
     normalized_statuses = [normalize_status(item) for item in statuses]
     failure_conclusions = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
     failing = [item for item in normalized_checks if item.get("conclusion") in failure_conclusions]

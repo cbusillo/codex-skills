@@ -543,6 +543,27 @@ source_refs = ["github/scripts/gh-pr.py:cmd_rate_limit"]
 test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
 
 [[operations]]
+id = "github.supervisor.foreign_watch"
+request_priority = "bulk"
+capabilities = ["issues_read"]
+permission_mode = "fixed"
+permission_note = "Read-only repository issue-comment feeds under the configured automation identity. Notices remain untrusted and authorize no action. No grants or identity fallback."
+entrypoint = "supervisor/scripts/foreign_watch.py"
+intent = "Notify the Supervisor of foreign comments and Launchplane review records within an explicit repository scope."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "Paged GET /repos/{repo}/issues/comments?since={watermark}"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "paged_read"
+retained_graphql_rationale = "No GraphQL or full-history scans; only the since-scoped repository comment feed."
+source_refs = ["supervisor/scripts/foreign_watch.py:read_comments", "supervisor/scripts/foreign_watch.py:scan"]
+test_refs = ["supervisor/scripts/test_foreign_watch.py:test_filter_and_review_records", "supervisor/scripts/test_foreign_watch.py:test_quota_retry_time_and_failed_read_retention"]
+
+[[operations]]
 id = "github.read"
 request_priority = "essential"
 capabilities = ["contents_read", "issues_read", "pull_requests_read", "actions_read", "metadata_read", "checks_read", "statuses_read", "security_events_read", "vulnerability_alerts_read", "secret_scanning_alerts_read", "administration_read", "deployments_read", "discussions_read"]
@@ -796,7 +817,7 @@ test_refs = ["github/scripts/test_gh_plan_search.py:SearchTests", "github/script
 
 [[operations]]
 id = "github.plan.show"
-request_priority = "essential"
+request_priority = "bulk"
 capabilities = ["issues_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -952,7 +973,7 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_native_link_and_unlink_all
 
 [[operations]]
 id = "github.plan.deps"
-request_priority = "essential"
+request_priority = "bulk"
 capabilities = ["issues_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
@@ -1502,7 +1523,7 @@ test_refs = ["github/scripts/test_github_milestone.py:test_list_milestones_pagin
 
 [[operations]]
 id = "github.plan.milestone_show"
-request_priority = "essential"
+request_priority = "bulk"
 capabilities = ["issues_read"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."

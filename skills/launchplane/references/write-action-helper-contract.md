@@ -193,9 +193,11 @@ local extensions until the vendored artifact is refreshed.
   disclose omitted rows. Unknown entry fields and image reference lists are
   dropped. Artifact ids may be registry references with an optional SHA-256
   digest suffix; credential-bearing userinfo is refused in ids and warning text.
-  Empty ids remain valid for preview feedback protecting image references only.
-  Nonempty image digests must be SHA-256, and lane and record names cannot carry
-  userinfo. Malformed retained fields fail the read. This diagnostic projection
+  Empty artifact ids remain valid for preview feedback protecting image references
+  only. Source record ids are required and can embed a digest-pinned image reference
+  (for example, a release-tuple id); they use the same SHA-256 suffix and userinfo
+  checks as artifact ids. Nonempty image digests must be SHA-256, and lane names
+  cannot contain `@`. Malformed retained fields fail the read. This diagnostic projection
   is not a complete registry-cleanup retention set when truncated.
 - `product-profile-read --product` calls `GET /v1/product-profiles/{product}`
   and returns the product's Client GitHub login and review label, `production_use`,
@@ -768,6 +770,14 @@ the configuration; `[]` clears only the managed public names.
 The optional result `public_hosts` projects hostname lists `before`, `after`,
 `added`, `updated`, `removed`, `unchanged`, `read_back_hosts`, plus `plan_digest`,
 `runtime_port`, `https`, `service_name`, `certificate_type`, and `verified`.
+The helper also reports `resolved_base_url`, derived from the first validated
+`after` host under
+[Launchplane's public-base-URL rule](https://github.com/cbusillo/launchplane/blob/main/control_plane/contracts/public_hosts.py).
+It is `""` for an explicitly empty host list; absent `public_hosts` evidence
+omits the whole block. No origin URL or arbitrary response URL is copied.
+This is intended configuration in a dry run and verified host configuration in
+an apply read-back, not proof that a deployment has rendered the URL. The generic
+target-replacement plan's `base_url` remains redacted without public-host provenance.
 Unknown fields, non-hostname values, malformed digests/ports, and inconsistent
 verification are refused. Existing responses without this result remain valid.
 Apply's verified read-back proves provider route configuration, not public HTTP
@@ -1321,7 +1331,7 @@ request fields. It emits bounded proposal metadata, counts, trace,
 and a relative `review_path` on the Launchplane UI host; it never returns
 policy selectors or credential-routing fields.
 
-On a timeout or response-verification failure, retain the same envelope and
+On a timeout, HTTP 5xx or response-verification failure, retain the same envelope and
 source event for reconciliation/replay. Never substitute a new identity or a new
 source event to force a duplicate proposal. A denial is not a missing token:
 report the refused action and trace and follow Launchplane denial handling.

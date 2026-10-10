@@ -159,7 +159,8 @@ def parse_interface_overrides(raw_overrides):
     return overrides, optional_order
 
 
-def write_openai_yaml(skill_dir, skill_name, raw_overrides):
+def render_openai_yaml(skill_name, raw_overrides):
+    """Validate interface overrides and render metadata without filesystem effects."""
     overrides, optional_order = parse_interface_overrides(raw_overrides)
     if overrides is None or optional_order is None:
         return None
@@ -185,12 +186,23 @@ def write_openai_yaml(skill_dir, skill_name, raw_overrides):
         if value is not None:
             interface_lines.append(f"  {key}: {yaml_quote(value)}")
 
+    return "\n".join(interface_lines) + "\n"
+
+
+def write_openai_yaml_content(skill_dir, content):
     agents_dir = Path(skill_dir) / "agents"
     agents_dir.mkdir(parents=True, exist_ok=True)
     output_path = agents_dir / "openai.yaml"
-    output_path.write_text("\n".join(interface_lines) + "\n")
+    output_path.write_text(content)
     print(f"[OK] Created agents/openai.yaml")
     return output_path
+
+
+def write_openai_yaml(skill_dir, skill_name, raw_overrides):
+    content = render_openai_yaml(skill_name, raw_overrides)
+    if content is None:
+        return None
+    return write_openai_yaml_content(skill_dir, content)
 
 
 def main():

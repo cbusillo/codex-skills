@@ -22,7 +22,7 @@ import re
 import sys
 from pathlib import Path
 
-from generate_openai_yaml import write_openai_yaml
+from generate_openai_yaml import render_openai_yaml, write_openai_yaml_content
 
 MAX_SKILL_NAME_LENGTH = 64
 ALLOWED_RESOURCES = {"scripts", "references", "assets"}
@@ -268,6 +268,7 @@ def init_skill(skill_name, path, resources, include_examples, interface_override
         path: Path where the skill directory should be created
         resources: Resource directories to create
         include_examples: Whether to create example files in resource directories
+        interface_overrides: UI metadata overrides in key=value form
 
     Returns:
         Path to created skill directory, or None if error
@@ -280,9 +281,13 @@ def init_skill(skill_name, path, resources, include_examples, interface_override
         print(f"[ERROR] Skill directory already exists: {skill_dir}")
         return None
 
+    openai_yaml = render_openai_yaml(skill_name, interface_overrides)
+    if openai_yaml is None:
+        return None
+
     # Create skill directory
     try:
-        skill_dir.mkdir(parents=True, exist_ok=False)
+        skill_dir.mkdir(parents=True)
         print(f"[OK] Created skill directory: {skill_dir}")
     except Exception as e:
         print(f"[ERROR] Error creating directory: {e}")
@@ -302,7 +307,7 @@ def init_skill(skill_name, path, resources, include_examples, interface_override
 
     # Create agents/openai.yaml
     try:
-        result = write_openai_yaml(skill_dir, skill_name, interface_overrides)
+        result = write_openai_yaml_content(skill_dir, openai_yaml)
         if not result:
             return None
     except Exception as e:

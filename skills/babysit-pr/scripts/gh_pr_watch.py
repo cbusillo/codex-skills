@@ -1077,7 +1077,8 @@ def launchplane_owner_review(item, pr):
     if item.get("kind") != "issue_comment":
         return None
     lines = str(item.get("body") or "").splitlines()
-    marker = re.fullmatch(r"<!-- launchplane:product-review:([A-Za-z0-9_.:-]+) -->", lines[0]) if lines else None
+    from github_review_markers import PRODUCT_REVIEW_MARKER
+    marker = PRODUCT_REVIEW_MARKER.fullmatch(lines[0]) if lines else None
     if marker is None:
         return None
     if type(item.get("author_id")) is not int or item["author_id"] < 1:

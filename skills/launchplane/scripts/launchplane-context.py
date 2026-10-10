@@ -15,7 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -83,9 +83,14 @@ def unavailable_payload(request: dict[str, object], *, status: str, code: str) -
 
 
 def normalized_request(args: argparse.Namespace) -> dict[str, object]:
-    request: dict[str, object] = {"repository": args.repo}
+    def public_selector(value: str) -> str:
+        if PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute() or value.startswith("~/"):
+            raise LaunchplaneSafetyError("invalid_request")
+        return public_summary_string(value)
+
+    request: dict[str, object] = {"repository": public_selector(args.repo)}
     if args.branch:
-        request["branch"] = args.branch
+        request["branch"] = public_selector(args.branch)
     if args.issue is not None:
         request["issue_number"] = args.issue
     if args.pr is not None:
@@ -345,7 +350,8 @@ def project_context_sections(context: dict[str, Any]) -> dict[str, object]:
 def normalize_launchplane_payload(
     provider_payload: dict[str, Any], *, request: dict[str, object]
 ) -> dict[str, object]:
-    context = provider_payload.get("result", {}).get("context")
+    result = provider_payload.get("result")
+    context = result.get("context") if isinstance(result, dict) else None
     if not isinstance(context, dict):
         context = provider_payload.get("context")
     if not isinstance(context, dict):
@@ -406,7 +412,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    request = normalized_request(args)
+    try:
+        request = normalized_request(args)
+    except LaunchplaneSafetyError:
+        emit(unavailable_payload({}, status="invalid", code="invalid_request"))
+        return 0
     try:
         settings = resolve_settings(args)
     except ValueError:

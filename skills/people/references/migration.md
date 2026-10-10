@@ -43,13 +43,8 @@ Keep workflow and repo policy in their owning systems:
 
 ## Suggested Cleanup
 
-1. Add one person at a time with a stable `id` and minimal aliases/contacts:
-
-   ```sh
-   uv run people/scripts/people_index.py upsert \
-     --id example-person \
-     --display-name "Example Person"
-   ```
+1. Add one person at a time with a stable `id` and minimal aliases/contacts,
+   using the [index helper invocation](../SKILL.md#optional-private-storage).
 
 2. Use `--scope repo` only when the entry is truly project-specific or should
    override global/user context for the active repository.
