@@ -1180,7 +1180,7 @@ def test_portfolio_capacity_needs_current_person_waits_and_complete_graph() -> N
             assert result["tooling_capacity_context"]["admitted"] is False
             assert result["tooling_capacity_context"]["reason"] == "milestone_names_no_person"
         module.load_direction = lambda *_: "# Direction\n\n## Milestones\n\n- `First`\n"
-        for extra in ({"state": "available"}, {"state": "underway"}, {"waiting_on": "event"}, {"waiting_on": None}, {"discussion_digest": "stale"}, {"ownership_complete": False}):
+        for extra in ({"state": "available"}, {"state": "underway"}, {"waiting_on": None}, {"discussion_digest": "stale"}, {"ownership_complete": False}):
             context = {"issues": {**base["issues"], "someone/business#10": {**base["issues"]["someone/business#10"], **extra}}}
             with patch.multiple(module, next_selection_context=lambda _args: context):
                 module.cmd_next(next_args())
@@ -3068,6 +3068,49 @@ TESTS.extend([test_milestone_agent_work_behind_bookkeeping_blocker_ranks_first,
               test_named_next_actor_or_absence_keeps_a_stated_precondition,
               test_track_whose_next_action_belongs_to_a_person_is_not_agent_work])
 
+
+
+def test_capacity_admits_staffed_milestones_but_not_available_work() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    staffed_leaf = global_issue("someone/business", 10)
+    gate = global_issue("someone/business", 11, labels=["plan", "plan:waiting"],
+                        body="## Current Status\nWaiting for: Scheduled supplier delivery.")
+    tool = global_issue("someone/tools", 20)
+    own = global_issue("someone/product", 30)
+    edges = {(roots[0]["repo"], 1): relationships(sub_issues=[staffed_leaf]),
+             (roots[1]["repo"], 2): relationships(blocked_by=[gate])}
+    with global_fixture(roots, [staffed_leaf, gate], edges, discovered=[tool, own]) as (module, result, _reads):
+        module.cmd_next(next_args())
+        items = {item["number"]: item for item in [*result["candidates"], *result["excluded"]]}
+        context = {"issues": {"someone/business#10": reviewed(items[10]),
+                              "someone/business#11": reviewed(items[11], "waiting", waiting_on="event"),
+                              "someone/tools#20": reviewed(items[20], category="repeated_stop_tooling"),
+                              "someone/product#30": reviewed(items[30])}}
+        with patch.multiple(module, next_selection_context=lambda _args: context):
+            module.cmd_next(next_args())
+            assert not result["tooling_capacity_context"]["admitted"]
+            assert [item["number"] for item in result["available_candidates"]] == [10, 30]
+            context["issues"]["someone/business#10"] = reviewed(items[10], "underway")
+            module.cmd_next(next_args())
+            capacity = result["tooling_capacity_context"]
+            assert capacity["admitted"]
+            assert capacity["milestone_staffed_count"] == capacity["milestone_wait_count"] == 1
+            assert capacity["milestone_staffing"][0]["underway"][0]["number"] == 10
+            assert capacity["milestone_waits"][1]["waits"][0]["waiting_for"] == "Scheduled supplier delivery."
+            assert [item["number"] for item in result["available_candidates"]] == [30, 20]
+            assert result["underway"][0]["number"] == 10
+            assert result["available_candidates"][-1]["tooling_admission_rule"] == capacity["reason"]
+            for extra in ({"discussion_digest": "old"}, {"ownership_complete": False}):
+                context["issues"]["someone/business#10"] = reviewed(items[10], "underway", **extra)
+                module.cmd_next(next_args())
+                assert not result["tooling_capacity_context"]["admitted"]
+            context["issues"]["someone/business#10"] = reviewed(items[10], "underway")
+            context["repository_holds"] = {"someone/business": {"reason": "Director hold", "evidence": ["recorded hold"]}}
+            module.cmd_next(next_args())
+            assert not result["tooling_capacity_context"]["admitted"]
+
+
+TESTS.append(test_capacity_admits_staffed_milestones_but_not_available_work)
 
 def main() -> None:
     for test in TESTS:

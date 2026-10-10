@@ -501,7 +501,7 @@ def tooling_capacity_context(
     milestone_titles: list[str], context: dict[str, Any],
     repository_waypoints: dict[str, list[str] | None], coverage_complete: bool,
 ) -> dict[str, Any]:
-    """Only current caller evidence can distinguish a person from an event wait."""
+    """Require current caller evidence for staffed work or real person/event waits."""
     result: dict[str, Any] = {"admitted": False, "reason": "milestone_waits_not_proven"}
     if not coverage_complete or not graph.get("dependency_context", {}).get("complete"):
         refusal = {**result, "reason": "incomplete_milestone_coverage"}
@@ -566,7 +566,25 @@ def tooling_capacity_context(
         ):
             continue
         frontier.append(entry)
+    staffed: dict[tuple[str, int], dict[str, Any]] = {}
     for entry in frontier:
+        review = reviews.get(f"{entry['repo']}#{entry['number']}".casefold(), {})
+        discussion = entry.get("discussion") or {}
+        own_status = section_map(discussion.get("body", "")).get("Current Status", "")
+        own_waits = waiting_records(entry, own_status)
+        if (review.get("state") == "underway" and entry.get("exclusion") is None
+                and entry.get("plan_status") == "active"
+                and not repository_hold(context, entry["repo"])
+                and not any(not row["no_current_wait"] for row in own_waits)
+                and not entry.get("stale_wait_evidence")):
+            if (not discussion.get("complete") or review.get("discussion_digest") != discussion.get("digest")
+                    or review.get("ownership_complete") is not True):
+                return {**result, "issue": f"{entry['repo']}#{entry['number']}", "required": "current_complete_staffing_review"}
+            staffed[(entry["repo"].casefold(), entry["number"])] = {
+                "repo": entry["repo"], "number": entry["number"], "url": entry["url"],
+                "reason": review["reason"], "evidence": review["evidence"],
+            }
+            continue
         if entry.get("exclusion") not in {None, "waiting", "parent_waiting"}:
             return {**result, "reason": "milestone_issue_excluded", "issue": f"{entry['repo']}#{entry['number']}", "exclusion": entry["exclusion"]}
         if entry.get("wait_evidence_complete") is False:
@@ -582,7 +600,7 @@ def tooling_capacity_context(
             not discussion.get("complete")
             or review.get("discussion_digest") != discussion.get("digest")
             or review.get("state") != "waiting"
-            or review.get("waiting_on") != "person"
+            or review.get("waiting_on") not in {"person", "event"}
             or review.get("ownership_complete") is not True
         ):
             return {**result, "issue": f"{entry['repo']}#{entry['number']}", "required": "current_complete_person_wait_review"}
@@ -590,7 +608,7 @@ def tooling_capacity_context(
         evidence = milestone_wait_evidence(source, status, milestone_titles)
         if not evidence["valid"]:
             return {**result, "reason": evidence["reason"], "issue": f"{entry['repo']}#{entry['number']}"}
-    # Person-wait reviews enable the adapter's capacity-only ancestry reads.
+    # Staffed-work and external-wait reviews enable capacity-only ancestry reads.
     # Report that prerequisite before context those reads have not gathered.
     if unknown:
         entry = unknown[0]
@@ -601,6 +619,7 @@ def tooling_capacity_context(
     # prerequisites whose ranking path retains only the earliest milestone.
     waits: dict[str, list[dict[str, Any]]] = {title: [] for title in milestone_titles
                                           if title not in graph.get("completed_milestones", [])}
+    staffing: dict[str, list[dict[str, Any]]] = {title: [] for title in waits}
     frontier_keys = {(entry["repo"].casefold(), entry["number"]) for entry in frontier}
     for title, records in waits.items():
         pending_keys = [key for key, entry in by_key.items()
@@ -612,7 +631,10 @@ def tooling_capacity_context(
                 continue
             visited.add(key)
             entry = by_key[key]
-            if key in frontier_keys:
+            if key in staffed:
+                if staffed[key] not in staffing[title]:
+                    staffing[title].append(staffed[key])
+            elif key in frontier_keys:
                 source = entry
                 status = section_map((entry.get("discussion") or {}).get("body", "")).get("Current Status", "")
                 evidence = milestone_wait_evidence(source, status, milestone_titles)
@@ -624,10 +646,13 @@ def tooling_capacity_context(
             pending_keys.extend((dep["repo"].casefold(), dep["number"])
                                 for dep in [*entry.get("blocked_by", []), *entry.get("open_sub_issues", [])]
                                 if (dep["repo"].casefold(), dep["number"]) in by_key)
-        if not records:
+        if not records and not staffing[title]:
             return {**result, "reason": "milestone_names_no_person", "milestone": title}
-    return {"admitted": True, "reason": "all_milestones_waiting_on_people", "milestone_wait_count": len(frontier),
-            "milestone_waits": [{"milestone": title, "waits": records} for title, records in waits.items()]}
+    people_only = not staffed and all(reviews[f"{entry['repo']}#{entry['number']}".casefold()].get("waiting_on") == "person" for entry in frontier)
+    return {"admitted": True, "reason": "all_milestones_waiting_on_people" if people_only else "all_milestones_staffed_or_waiting",
+            "milestone_wait_count": len(frontier) - len(staffed), "milestone_staffed_count": len(staffed),
+            "milestone_waits": [{"milestone": title, "waits": records} for title, records in waits.items()],
+            "milestone_staffing": [{"milestone": title, "underway": records} for title, records in staffing.items()]}
 
 
 def with_client_milestone(
@@ -798,7 +823,7 @@ def rank_portfolio_work(
                 else:
                     item.update(availability="available", category=category, review=review)
                     if category == "repeated_stop_tooling":
-                        rule = "repeated_stops" if stop_count >= 2 else "all_milestones_waiting_on_people"
+                        rule = "repeated_stops" if stop_count >= 2 else capacity["reason"]
                         item.update(tooling_admission_rule=rule, recorded_stop_count=stop_count)
                         item["reasons"] = [*item.get("reasons", []), rule]
         candidates.append(item)
@@ -810,7 +835,7 @@ def rank_portfolio_work(
     rank_next_candidates(candidates, direction_milestones=milestone_titles)
     priority = {"live_incident": 0, "milestone": 1, "repeated_stop_tooling": 2, "own_project": 3}
     candidates.sort(key=lambda candidate: (
-        0 if is_live_breakage(candidate) else (4 if candidate.get("tooling_admission_rule") == "all_milestones_waiting_on_people" else priority.get(candidate.get("category"), 1 if candidate.get("via") or candidate.get("client_request") else 5)),
+        0 if is_live_breakage(candidate) else (4 if candidate.get("tooling_admission_rule") in {"all_milestones_waiting_on_people", "all_milestones_staffed_or_waiting"} else priority.get(candidate.get("category"), 1 if candidate.get("via") or candidate.get("client_request") else 5)),
         -candidate.get("recorded_stop_count", 0) if capacity["admitted"] and candidate.get("category") == "repeated_stop_tooling" and not is_live_breakage(candidate) else (candidate["rank"] if candidate.get("via") or candidate.get("client_request") else candidate.get("repository_rank", candidate["rank"])),
         str(candidate.get("created_at") or ""), candidate["repo"].casefold(), candidate["number"],
     ))
