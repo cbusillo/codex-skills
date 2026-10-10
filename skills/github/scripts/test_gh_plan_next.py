@@ -1854,8 +1854,8 @@ def test_live_breakage_marker_preserves_holds_dependencies_waits_and_review() ->
         assert [item["number"] for item in result["available_candidates"]] == [5]
         assert {item["exclusion"] for item in result["excluded"]} >= {"repository_held", "blocked_by_open_dependency", "waiting"}
         assert result["underway"][0]["number"] == 4
-        assert result["candidate_coverage"]["complete"]
-        assert result["candidate_coverage"]["warning"] is None
+        assert not result["candidate_coverage"]["complete"]
+        assert result["discovery_context"]["incident_context"]["degraded"]
 
 
 def test_live_breakage_inventory_finds_incident_beyond_repository_issue_bound() -> None:
@@ -3118,6 +3118,108 @@ def test_capacity_admits_staffed_milestones_but_not_available_work() -> None:
 
 
 TESTS.append(test_capacity_admits_staffed_milestones_but_not_available_work)
+
+
+def test_incident_leaves_beyond_ordinary_scan_keep_native_priority_and_review() -> None:
+    marker = load_module().github_direction_next.LIVE_BREAKAGE_LABEL
+    incident = global_issue("someone/live", 90, labels=["plan", "plan:active", marker])
+    child = global_issue("someone/live", 91)
+    blocker = global_issue("someone/repair", 92)
+    ordinary = global_issue("someone/project", 1)
+    for relation in ("sub_issues", "blocked_by"):
+        leaf = child if relation == "sub_issues" else blocker
+        edges = {("someone/live", 90): relationships(**{relation: [leaf]})}
+        with global_fixture([], [leaf], edges, discovered=[ordinary, incident, leaf]) as (module, result, _reads):
+            module.load_direction = lambda *_: "# Direction\n## Milestones\n"
+            module.cmd_next(next_args(scan_limit=1))
+            candidate = next(item for item in result["candidates"] if item["number"] == leaf["number"])
+            assert result["candidates"][0]["number"] == leaf["number"]
+            assert [step["number"] for step in candidate["incident_via"]] == [90, leaf["number"]]
+            assert candidate["incident_via"][-1]["relationship"] == ("sub_issue" if relation == "sub_issues" else "blocked_by")
+            assert not result["available_candidates"]
+            context = {"issues": {f"{leaf['repo']}#{leaf['number']}": reviewed(candidate)}}
+            with patch.multiple(module, next_selection_context=lambda _args: context):
+                module.cmd_next(next_args(scan_limit=1))
+                assert result["available_candidates"][0]["number"] == leaf["number"]
+                context["issues"][f"{leaf['repo']}#{leaf['number']}"]["state"] = "underway"
+                module.cmd_next(next_args(scan_limit=1))
+                assert not result["available_candidates"]
+                assert result["underway"][0]["number"] == leaf["number"]
+                context["repository_holds"] = {leaf["repo"]: {"reason": "Director hold", "evidence": ["recorded hold"]}}
+                module.cmd_next(next_args(scan_limit=1))
+                assert not result["available_candidates"]
+
+
+def test_incident_paths_stop_whole_parent_waits_and_report_bounds_and_cycles() -> None:
+    marker = load_module().github_direction_next.LIVE_BREAKAGE_LABEL
+    root = global_issue("someone/live", 90, labels=["plan", "plan:active", marker])
+    leaf = global_issue("someone/live", 91)
+    later = global_issue("someone/live", 92)
+    edges = {("someone/live", 90): relationships(sub_issues=[leaf]),
+             ("someone/live", 91): relationships(blocked_by=[later]),
+             ("someone/live", 92): relationships(blocked_by=[root])}
+    with global_fixture([], [leaf, later], edges, discovered=[root]) as (module, result, _reads):
+        module.cmd_next(next_args(scan_limit=1))
+        assert result["discovery_context"]["incident_context"]["truncated"]
+        assert not result["candidate_coverage"]["complete"]
+        module.cmd_next(next_args(scan_limit=3))
+        assert result["discovery_context"]["incident_context"]["cycles"]
+        assert not result["candidate_coverage"]["complete"]
+        assert not result["candidates"]
+    for reason in ("State: Waiting.\nWaiting for: Client acceptance.", "State: Parked until Client acceptance."):
+        root["body"] = "## Current Status\n" + reason
+        with global_fixture([], [leaf], {("someone/live", 90): relationships(sub_issues=[leaf])}, discovered=[root]) as (module, result, reads):
+            module.cmd_next(next_args(scan_limit=1))
+            assert not result["candidates"]
+            assert not any(item["number"] == 91 for item in result["candidates"])
+            assert ("someone/live", 91) not in reads
+
+
+TESTS.extend([test_incident_leaves_beyond_ordinary_scan_keep_native_priority_and_review,
+              test_incident_paths_stop_whole_parent_waits_and_report_bounds_and_cycles])
+
+
+def test_incident_leaf_in_direction_inventory_is_not_a_track_exclusion() -> None:
+    root = global_issue("someone/live", 90, labels=["plan", "plan:active", "Live-Breakage"])
+    leaf = global_issue("someone/direction", 91)
+    ordinary = global_issue("someone/project", 1)
+    edges = {("someone/live", 90): relationships(blocked_by=[leaf])}
+    with global_fixture([leaf], [], edges, discovered=[ordinary, root, leaf]) as (module, result, _reads):
+        module.load_direction = lambda *_: "# Direction\n## Milestones\n"
+        module.cmd_next(next_args(scan_limit=1))
+        assert result["candidates"][0]["number"] == 91
+        assert [step["number"] for step in result["candidates"][0]["incident_via"]] == [90, 91]
+        assert not any(item["number"] == 91 for item in result["excluded"])
+
+
+TESTS.append(test_incident_leaf_in_direction_inventory_is_not_a_track_exclusion)
+
+def test_incident_descendants_preserve_staffed_capacity_admission() -> None:
+    for status in ("active", "waiting", "stale"):
+        root = track("someone/direction", 1, "First")
+        staffed = global_issue("someone/business", 10)
+        tool = global_issue("someone/tools", 20)
+        incident = global_issue("someone/live", 90, labels=["plan", "plan:active", "live-breakage"])
+        child = global_issue("outside/repair", 91, labels=["plan", f"plan:{status}"],
+                             body="## Current Status\nWaiting for: Supplier delivery." if status == "waiting" else "")
+        edges = {("someone/direction", 1): relationships(sub_issues=[staffed]),
+                 ("someone/live", 90): relationships(sub_issues=[child])}
+        with global_fixture([root], [staffed, child], edges, discovered=[tool, incident]) as (module, result, _reads):
+            module.load_direction = lambda *_: "# Direction\n## Milestones\n- `First` gets the product used.\n"
+            module.cmd_next(next_args())
+            items = {item["number"]: item for item in [*result["candidates"], *result["excluded"]]}
+            context = {"issues": {"someone/business#10": reviewed(items[10], "underway"),
+                                  "someone/tools#20": reviewed(items[20], category="repeated_stop_tooling")}}
+            with patch.multiple(module, next_selection_context=lambda _args: context):
+                module.cmd_next(next_args())
+                assert result["tooling_capacity_context"]["admitted"], (status, result["tooling_capacity_context"])
+                assert 20 in [item["number"] for item in result["available_candidates"]]
+                if status != "active":
+                    assert 91 not in [item["number"] for item in result["available_candidates"]]
+
+
+TESTS.append(test_incident_descendants_preserve_staffed_capacity_admission)
+
 
 def main() -> None:
     for test in TESTS:

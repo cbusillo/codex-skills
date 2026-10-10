@@ -278,7 +278,7 @@ def _observe_window(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hours", type=float, default=1.0)
-    parser.add_argument("--actor", default=github_identity.automation_login(), help="Default: configured automation actor")
+    parser.add_argument("--actor", help="Filter one actor; default: report all identities separately")
     parser.add_argument("--state-dir", type=pathlib.Path, action="append", dest="state_dirs",
                         help="Repeat to combine existing retry-state ledgers; default: this runtime's state directory")
     args = parser.parse_args()

@@ -12,7 +12,7 @@ graphql_operation_context_semantics = "GraphQL POST requests are classified expl
 retry_policy_semantics = "Runtime retries are fail-closed and matrix-gated; safe reads may retry provider-classified transient failures, while writes also require confirmed not-started/rejected outcomes or operation-specific reconciliation."
 retry_deadline_semantics = "The effective retry deadline is the earlier of GITHUB_RETRY_MAX_WAIT_SECONDS and an inherited absolute GITHUB_RETRY_DEADLINE_AT request deadline; subprocess execution, cooldown coordination, and reconciliation reads share that deadline."
 shared_cooldown_semantics = "Cross-process cooldowns are keyed by GitHub host, actor, and quota bucket under CODE_HOME/state/github-retry with advisory locking, atomic state replacement, stale expiry, and post-reset drain spacing."
-request_priority_semantics = "Essential operations retain quota access; bulk REST core reads yield below 25 percent of the observed installation limit until reset. Writes always remain essential, including mixed-operation writes."
+request_priority_semantics = "Essential reads and writes retain the main automation App; bulk reads use the optional configured read-only App before caching and quota admission. Missing reader credentials fall back only to the main App. Bulk REST core reads yield below 25 percent of their own identity's observed installation limit until reset. Writes always remain essential, including mixed-operation writes; reader writes are refused before sending."
 actor_policy_semantics = "Automation-required operations use the configured bot token, active-human-required operations explicitly clear token environment variables and use the active local gh account, and split-identity operations verify both roles before protected workflow mutation."
 
 [[operations]]
@@ -1904,10 +1904,10 @@ test_refs = ["github/scripts/test_github_capabilities.py"]
 id = "github.pr.runner_acquisition_evidence"
 request_priority = "essential"
 entrypoint = "babysit-pr/scripts/gh_pr_watch.py runner acquisition recovery"
-intent = "Verify exact-attempt unexecuted cancelled jobs, acquisition annotations and PR-required checks; unavailable evidence excludes recovery."
+intent = "Read fresh rerun-selection inventory and verify exact-attempt unexecuted cancelled jobs, acquisition annotations and PR-required checks; unavailable evidence excludes recovery."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "GET /repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs; GET /repos/{repo}/check-runs/{id}; GET /repos/{repo}/check-runs/{id}/annotations; GET /repos/{repo}/actions/runs/{run_id}; GET /repos/{repo}/pulls/{number}; POST /graphql node CheckRun isRequired(pullRequestNumber); GET /repos/{repo}/rules/branches/{base}; GET /repos/{repo}/contents/{workflow}?ref={head}"
+endpoint_or_command = "GET /repos/{repo}/actions/runs; GET /repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs; GET /repos/{repo}/check-runs/{id}; GET /repos/{repo}/check-runs/{id}/annotations; GET /repos/{repo}/actions/runs/{run_id}; GET /repos/{repo}/pulls/{number}; POST /graphql node CheckRun isRequired(pullRequestNumber); GET /repos/{repo}/rules/branches/{base}; GET /repos/{repo}/contents/{workflow}?ref={head}"
 quota_bucket = "mixed"
 actor_policy = "automation_required"
 mutation_class = "read"
@@ -1915,7 +1915,7 @@ idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "fresh_read"
 retained_graphql_rationale = "GraphQL CheckRun.isRequired supplies the PR-specific required-check decision absent from the REST check run."
-source_refs = ["babysit-pr/scripts/gh_pr_watch.py:runner_acquisition_retry"]
+source_refs = ["babysit-pr/scripts/gh_pr_watch.py:runner_acquisition_retry", "babysit-pr/scripts/gh_pr_watch.py:submit_locked_reruns"]
 test_refs = ["babysit-pr/scripts/test_gh_pr_watch.py:test_required_runner_acquisition_admitted_without_logs", "babysit-pr/scripts/test_gh_pr_watch.py:test_acquisition_exclusions_and_unavailable_evidence"]
 capabilities = ["actions_read", "checks_read", "pull_requests_read", "contents_read", "metadata_read"]
 permission_mode = "fixed"

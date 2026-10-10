@@ -443,6 +443,23 @@ def run_raw(
     initial_retry_actor = route_actor if route_actor == "active-gh-user" else EXPECTED_ACTOR
     initial_expected_actor = None if route_actor == "active-gh-user" else EXPECTED_ACTOR
     retry_rule, _ = github_api_core.operation_retry_rule(resolved_operation)
+    if route_actor != "active-gh-user":
+        try:
+            initial_retry_actor, initial_expected_actor, identity_prefix = github_api_core.request_identity(
+                operation=resolved_operation, is_write=resolved_is_write or inferred.is_write,
+                gh_cmd=command[0], gh_prefix_args=[], actor=initial_retry_actor,
+                expected_actor=initial_expected_actor,
+                repository=github_api_core.github_http_cache.repository_from_command(args),
+                preserve_identity=bool(prefer_active and retry_rule and
+                                       retry_rule.actor_policy == "automation_required_with_explicit_project_override"),
+            )
+        except github_identity.GitHubAppError as error:
+            result = github_api_core._identity_failure(
+                error, operation=resolved_operation, is_write=resolved_is_write,
+                actor=initial_retry_actor, expected_actor=initial_expected_actor, host=None, bucket=resolved_bucket,
+            )
+            raise PlanError(str(error), failure=result.failure, api_result=result.as_dict()) from error
+        command = [command[0], *identity_prefix, *command[1:]]
     probe_allowed = bool(
         retry_rule and retry_rule.retry_eligibility in {"safe", "conditional"}
     )
@@ -3578,6 +3595,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     graph_coverage = {"complete": ranked["dependency_context"]["complete"], "evaluated": ranked["evaluated"],
                       "truncated": ranked["truncated"], "evaluation_note": graph_evaluation_note}
     discoveries: list[dict[str, Any]] = []
+    inventory: list[dict[str, Any]] = []
     unevaluated_milestones: list[dict[str, Any]] = []
     discovery: dict[str, Any] = {"complete": False, "exclusion": "explicit_milestone_scope"}
     preflight = github_direction_next.tooling_capacity_context(
@@ -3687,6 +3705,45 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                         discovery["complete"] = False
             else:
                 discoveries.append(item)
+    # Marked incidents can be decomposed outside both the ordinary scan and
+    # the milestone graph. Their native leaves retain the marker's provenance.
+    incident_roots = [compact_list_issue(raw["repo"], raw) for raw in [*seeds.values(), *inventory]
+                      if github_direction_next.is_live_breakage(raw)] if scope is None else []
+    def read_incident_node(issue_repo: str, number: int) -> dict[str, Any]:
+        incident_node = read_node(issue_repo, number)
+        incident_item = incident_node["item"]
+        exclusion = incident_item.get("exclusion")
+        if (exclusion in {None, "blocked_by_open_dependency", "delegated_to_open_sub_issues"} or capacity_evidence) and exclusion not in {"completed", "pull_request", "unknown_dependencies"}:
+            incident_item = with_ancestry(incident_item)
+            if exclusion and exclusion not in {"blocked_by_open_dependency", "delegated_to_open_sub_issues"}:
+                incident_item["exclusion"] = exclusion
+        return {**incident_node, "item": incident_item}
+    incidents = github_direction_next.incident_work_paths(
+        incident_roots, read_node=read_incident_node, scan_limit=args.scan_limit,
+    )
+    incident_keys = {(item["repo"].casefold(), item["number"]) for item in incidents["items"]}
+    ranked["excluded"] = [item for item in ranked["excluded"] if not (
+        item.get("exclusion") == "outside_direction_tracks"
+        and (item["repo"].casefold(), item["number"]) in incident_keys)]
+    existing = {(item["repo"].casefold(), item["number"]): item
+                for item in [*ranked["candidates"], *ranked["excluded"], *discoveries]}
+    for item in incidents["items"]:
+        if not (item.get("discussion") or {}).get("complete"):
+            discovery["complete"] = False
+            discovery["capacity_complete"] = False
+        if item.get("exclusion") in {"unknown_dependencies", "unknown_ancestry"}:
+            discovery["capacity_complete"] = False
+        incident_key = (item["repo"].casefold(), item["number"])
+        if incident_key in existing:
+            existing[incident_key]["incident_via"] = item["incident_via"]
+        elif item.get("exclusion"):
+            ranked["excluded"].append(item)
+            ranked["waiting"].extend(nodes.get(incident_key, {}).get("waiting", []))
+        else:
+            discoveries.append({**item, "source": "incident_native_graph"})
+    discovery["incident_context"] = incidents["context"]
+    if not incidents["context"]["complete"]:
+        discovery["complete"] = False
     incomplete_milestone_sources = [
         source["repo"] for source in discovery.get("repositories", [])
         if set(direction_milestone_titles(source.get("direction") or "")).intersection(titles)
@@ -3745,7 +3802,10 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     ranked["graph_context"] = graph_coverage
     ranked["discovery_context"] = discovery
     milestone_ranking_complete = bool(graph_coverage["complete"] and not unevaluated_milestones and not incomplete_milestone_sources)
-    if candidate_coverage_complete:
+    if not incidents["context"]["complete"]:
+        coverage_warning = ("Incident-path coverage is partial: a native path was truncated, cyclic or unavailable. "
+                            "Unseen incident work may outrank milestone and other candidates.")
+    elif candidate_coverage_complete:
         coverage_warning = None
     elif milestone_ranking_complete:
         coverage_warning = ("Milestone ranking is complete; portfolio discovery is partial, so unseen work outside "

@@ -772,6 +772,12 @@ procedure and leave private values in the local overlay.
 
 ## GitHub Automation Token
 
+Bulk GitHub reads can use a separate read-only App, leaving the main automation
+App's quota for essential reads and writes. See the
+[GitHub identity and quota contract](skills/github/references/cli-reference.md#quota-reserve-and-conditional-gets)
+for configuration, fallback, write refusal and per-identity reporting.
+Install the reader App on every repository whose bulk reads it will serve.
+
 The GitHub workflow skill includes `skills/github/scripts/gh-with-env-token`,
 a small wrapper around `gh` that reads the user's ignored `local.env` file under
 `$CODE_HOME`, `$CODEX_HOME`, or `~/.code` and exports a token only for the
