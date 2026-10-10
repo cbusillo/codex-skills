@@ -1,4 +1,5 @@
 // Read-only exact-list lookup. Never requests access or reads reminder contents.
+// Disposable CodeQL probe: compile and analyze this helper without executing it.
 import Foundation
 import EventKit
 
