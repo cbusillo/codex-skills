@@ -22,7 +22,7 @@ class InitializerTests(unittest.TestCase):
         for override in ("short_description=short", "short_description=" + "x" * 65,
                          "unknown=value", "=value", "missing-equals"):
             with self.subTest(override=override), tempfile.TemporaryDirectory() as folder:
-                parent = Path(folder) / "skills"
+                parent = Path(folder).resolve() / "skills"
                 destination = parent / "demo-skill"
                 with contextlib.redirect_stdout(io.StringIO()) as output:
                     result = init_skill("demo-skill", parent, ["scripts", "references", "assets"], True, [override])
