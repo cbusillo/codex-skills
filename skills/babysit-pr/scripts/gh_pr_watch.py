@@ -31,6 +31,7 @@ GH_COMMAND = os.environ.get("GH_PR_WATCH_GH") or str(DEFAULT_GH)
 COMMAND_TIMEOUT_SECONDS = 60.0
 LOCK_TIMEOUT_SECONDS = 60.0
 DEFAULT_PR_HELPER = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-pr.py"
+RERUN_READ_OPERATION = "github.pr.runner_acquisition_evidence"
 PR_HELPER = os.environ.get("GH_PR_WATCH_PR_HELPER") or str(DEFAULT_PR_HELPER)
 DEFAULT_OWNER_REVIEW_HELPER = SCRIPT_DIR.parent.parent / "launchplane" / "scripts" / "launchplane-owner-review.py"
 OWNER_REVIEW_HELPER = os.environ.get("GH_PR_WATCH_OWNER_REVIEW_HELPER") or str(DEFAULT_OWNER_REVIEW_HELPER)
@@ -410,6 +411,8 @@ def pr_helper_json(command, pr_spec=None, repo=None, allow_partial=False):
     env = os.environ.copy()
     env["GH_PR_GH"] = GH_COMMAND
     env["GITHUB_REQUEST_CALLER"] = os.environ.get("GITHUB_REQUEST_CALLER") or Path(__file__).name
+    if command in {"view", "checks"}:
+        env["GH_PR_READ_CONTEXT"] = "watch"
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
 
     raw = proc.stdout.strip()
@@ -700,11 +703,11 @@ def apply_unfinished_workflow_runs(checks_summary, runs, head_sha):
     }
 
 
-def watcher_reader():
+def watcher_reader(*, operation="github.pr.watch"):
     return github_read.GitHubReader(
         gh_cmd=GH_COMMAND,
         expected_actor=github_identity.automation_login(),
-        operation="github.pr.watch",
+        operation=operation,
         cache_enabled=True,
     )
 
@@ -1510,13 +1513,17 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
                              if intent["outcome"] == "confirmed" and run_id not in present_ids]
     rejected = reconcile_rejected_reruns(state, pr["head_sha"], workflow_runs)
     retries_used = current_retry_count(state, pr["head_sha"])
+    evidence_reader = None
     if (not pr["closed"] and not pr["merged"] and not pending_reruns
             and checks_summary.get("evidence_complete") is True and checks_summary["all_terminal"]
             and retries_used < args.max_flaky_retries):
         ordinary_retry_ids = {run["run_id"] for run in retryable_failed_runs(failed_runs, failed_jobs)}
         for run in failed_runs:
-            if run["run_id"] not in ordinary_retry_ids and runner_acquisition_retry(pr, run, reader):
-                run["retry_mode"] = "runner_acquisition"
+            if run["run_id"] not in ordinary_retry_ids:
+                if evidence_reader is None:
+                    evidence_reader = watcher_reader(operation=RERUN_READ_OPERATION)
+                if runner_acquisition_retry(pr, run, evidence_reader):
+                    run["retry_mode"] = "runner_acquisition"
 
     review_diagnostic = None
     if is_review_readiness_unavailable(pr, checks_summary, new_review_items):
@@ -1577,11 +1584,16 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
             "missing_confirmed_run_ids": missing_confirmed_ids,
             "rejected_run_ids": list(rejected),
         },
-        "minimum_poll_seconds": max((github_read.poll_interval(result.headers) for result in reader.results), default=0.0),
+        "minimum_poll_seconds": max((
+            github_read.poll_interval(result.headers)
+            for active_reader in (reader, evidence_reader) if active_reader is not None
+            for result in active_reader.results
+        ), default=0.0),
         "read_diagnostics": {
             "pr": pr_diagnostic,
             "checks": checks_diagnostic,
             "review": review_diagnostic,
+            "runner_acquisition": evidence_reader.diagnostics() if evidence_reader is not None else None,
         },
     }
     return snapshot, state_path
@@ -1811,7 +1823,7 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
     if pending:
         result["reason"] = "rerun_outcome_pending"
         return result
-    submission_reader = watcher_reader()
+    submission_reader = watcher_reader(operation=RERUN_READ_OPERATION)
     if eligible_runs:
         # A same-head replacement can appear after the snapshot. Pre-write
         # selection must reach GitHub, including for ordinary failed-job retries.

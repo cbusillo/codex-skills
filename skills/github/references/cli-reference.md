@@ -108,9 +108,9 @@ already meet the requested removal. Do not replay completed mutations.
 
 ### Request Use
 
-`uv run scripts/github_request_usage.py --hours 1` ranks the configured App's
-local HTTP attempts by helper, operation, repository and quota bucket. Use
-`--actor LOGIN` to select another observed actor. The private hourly receipts
+`uv run scripts/github_request_usage.py --hours 1` ranks local HTTP attempts
+for all observed identities, separately by actor, helper, operation, repository
+and quota bucket. Use `--actor LOGIN` to filter one identity. The private hourly receipts
 live under the shared retry-state directory's `request-usage` folder and contain
 no request/response bodies, endpoint queries or credentials. Delegating watchers
 pass their caller name to the PR helper, so its reads count toward that watcher.
@@ -165,6 +165,47 @@ inventories, repository snapshots and PR/workflow watchers. Essential operations
 include writes, their preflights/readbacks, train/landing reads and targeted
 issue/PR/check reads. Writes always remain essential even inside a bulk operation.
 Search and GraphQL have separate budgets and retain their existing retry policy.
+
+When `GITHUB_READER_APP_ID`, `GITHUB_READER_APP_INSTALLATION_ID` and
+`GITHUB_READER_APP_PRIVATE_KEY_PATH` are configured, bulk operations using the
+maintained wrapper select that read-only App before reserve checks, retries and
+body caching. The shared App authentication path validates the configured key
+file and mints/caches its installation token; no key contents are displayed.
+Install the reader App on every repository whose bulk reads it will serve.
+Access failures stop under that identity rather than borrowing main-App quota.
+Writes and essential reads retain the main App. The optional
+`GITHUB_READER_APP_API_URL` and `GITHUB_READER_APP_TOKEN_CACHE_DIR` select its
+API host and private token-cache directory, with the same defaults as the main
+App. Existing token-cache keys distinguish App and installation IDs; request
+receipts, cooldowns and conditional bodies distinguish the authenticated actor.
+
+Missing or incomplete reader credentials produce a notice and use the configured
+main App with its existing reserve. That fallback requires main App credentials
+and refuses ambient tokens or personal login fallback. Installations with neither
+App configured retain their existing automation-token setup. Explicit actors,
+the approved own-user opt-in, custom transports, and the matrix's explicit
+Project identity policy retain their established routes; the reader role does
+not add a Projects grant. The capabilities audit pins both installation metadata
+and probes to the main App with `--main-app-only`. This prefix also preserves an
+explicit main-App read context. Optional Project commands keep their existing
+identity without keeping the issue reads in `next` on that identity. A configured reader with
+an unsafe key path or rejected authentication fails closed. Custom transports
+and explicitly different actors retain their existing identity handling.
+The wrapper's `--reader` prefix accepts verified reads and `--check`, including
+GraphQL queries provided literally or as JSON with `--input -`; use stdin in
+place of field file indirection. Writes and unverified commands are refused
+before minting or delegation.
+Read hints cannot authorize a mutation through the reader.
+
+The PR watcher passes `GH_PR_READ_CONTEXT=watch` to its delegated `view` and
+`checks` reads, so their metadata and check polling retain the existing bulk
+watch operation. Their envelopes report the selected reader actor. Standalone
+targeted reads stay essential, and write commands and their preflights ignore
+this read context.
+Per-request essential operations override an inherited bulk reader prefix and
+return to the main identity. The shared reader retains its bulk context for
+later polling; each diagnostic row records that request's effective actor.
+Rerun selection and readback construct an essential reader before a write.
 
 Bulk reads yield when the latest observed remaining core quota is **below 25%**
 of the installation's hourly limit, rounded up. The shared response-header
@@ -1351,7 +1392,9 @@ loads the first of `$CODE_HOME/local.env`, `$CODEX_HOME/local.env`, and
 `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, and
 `GITHUB_APP_PRIVATE_KEY_PATH` are all configured, it verifies the App identity,
 mints and caches an owner-only installation token, and uses the App for every
-command. Each account that installs the App has its own installation, so when a
+essential command or write. Bulk reads select the optional reader App as
+described under [quota reserve and conditional GETs](#quota-reserve-and-conditional-gets).
+Each account that installs an App has its own installation, so when a
 command names a repository (`-R`/`--repo`, an `api` path under `repos/`, or
 `GH_REPO`), the wrapper uses the installation on that repository. A write to a
 repository where the App is not installed is refused with that reason when the

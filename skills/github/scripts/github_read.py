@@ -238,6 +238,16 @@ class GitHubReader:
         deadline_at: Optional[float] = None,
     ) -> None:
         self.gh_cmd = gh_cmd
+        # Resolve before constructing the opt-in cache: bodies and actor checks
+        # must use the same identity as shared transport and quota admission.
+        self._identity_error: Optional[github_identity.GitHubAppError] = None
+        try:
+            actor, expected_actor, gh_prefix_args = github_api_core.request_identity(
+                operation=operation, is_write=False, gh_cmd=gh_cmd, gh_prefix_args=gh_prefix_args,
+                actor=actor, expected_actor=expected_actor,
+            )
+        except github_identity.GitHubAppError as error:
+            self._identity_error = error
         self.expected_actor = expected_actor
         self.operation = operation
         self.actor = actor
@@ -263,6 +273,11 @@ class GitHubReader:
         extra_headers: Optional[dict[str, str]] = None,
         allow_escape_sequences: bool = False,
     ) -> github_api_core.ApiResult:
+        if self._identity_error is not None:
+            return github_api_core._identity_failure(
+                self._identity_error, operation=operation or self.operation, is_write=False,
+                actor=self.request_actor, expected_actor=self.expected_actor, host=None, bucket=bucket,
+            )
         return github_api_core.call_gh_with_retry(
             method,
             path,
@@ -311,30 +326,33 @@ class GitHubReader:
         self, result: github_api_core.ApiResult, *, method: str, path: str, step: str
     ) -> None:
         actor_mismatch = False
+        request_context = bool(result.operation and result.operation != self.operation)
+        expected_actor = result.expected_actor if request_context else self.expected_actor
         if result.actor:
-            if self.expected_actor and self.expected_actor.casefold() != result.actor.casefold():
+            if expected_actor and expected_actor.casefold() != result.actor.casefold():
                 self.mark_degraded(
                     "actor",
                     "actor_mismatch",
-                    f"GitHub read ran as '{result.actor}', expected '{self.expected_actor}'",
+                    f"GitHub read ran as '{result.actor}', expected '{expected_actor}'",
                 )
                 actor_mismatch = True
-            elif self.actor and self.actor.casefold() != result.actor.casefold():
+            elif not request_context and self.actor and self.actor.casefold() != result.actor.casefold():
                 self.mark_degraded(
                     "actor",
                     "actor_changed",
                     f"GitHub actor changed from '{self.actor}' to '{result.actor}' during one read operation",
                 )
-            self.actor = result.actor
+            if not request_context:
+                self.actor = result.actor
         if actor_mismatch and self.strict_actor:
             result.ok = False
-            result.expected_actor = self.expected_actor
+            result.expected_actor = expected_actor
             result.failed_step = step
             result.failure = github_api_core.FailureDetail(
                 cause="actor_mismatch",
                 message=(
                     f"Authenticated actor '{result.actor}' does not match "
-                    f"expected actor '{self.expected_actor}'"
+                    f"expected actor '{expected_actor}'"
                 ),
                 retryable=False,
                 fallback_eligible=False,
@@ -354,7 +372,7 @@ class GitHubReader:
             self.completed_steps.append(step)
 
     def request(self, method: str, path: str, *, step: str) -> github_api_core.ApiResult:
-        cache = ConditionalResponseCache.from_reader(self) if method.upper() == "GET" else None
+        cache = ConditionalResponseCache.from_reader(self) if method.upper() == "GET" and self._identity_error is None else None
         try:
             result = cache.request(self, method, path, step=step) if cache else self._transport_request(method, path, step=step)
         except OSError:
