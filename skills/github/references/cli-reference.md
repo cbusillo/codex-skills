@@ -1159,6 +1159,15 @@ filters work in that repository without cutting native paths to independent
 work in another. Calling only `rank_direction_work` proves
 graph coverage, not portfolio discovery.
 
+Incident descendants use a separate `--scan-limit` allowance beyond ordinary
+discovery. `incident_via` records a path from a freshly marked root over native
+`blocked_by` or `sub_issue` steps. `discovery_context.incident_context` reports
+unique descendant evaluations, bounds, cycles and unavailable paths. Eligible
+nodes reuse the ten-parent ancestry bound. This is priority evidence only;
+exclusions, whole-parent waits, repository holds and ownership review still apply.
+Incomplete incident coverage is reported next to candidate coverage, including
+that unseen incident work may outrank milestones.
+
 ### Planning: Milestones
 
 - `milestone-list --state open|closed|all [--limit <n>]`: List milestones with
