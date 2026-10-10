@@ -102,6 +102,8 @@ class DriveSettings:
 class DriveState:
     batch: set[int] = field(default_factory=set)
     landed: dict[int, str] = field(default_factory=dict)
+    dispositions: dict[int, str] = field(default_factory=dict)
+    carried_children: dict[int, dict[str, Any]] = field(default_factory=dict)
     helper_failures: int = 0
     branch_updates: int = 0
     ineligible_streak: int = 0
@@ -399,6 +401,9 @@ def _record_landings(
     settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callable[[str, dict[str, Any]], None]
 ) -> str | None:
     target_state = None
+    for number in state.batch:
+        if number not in state.landed and state.dispositions.get(number) not in {"closed", "superseded"}:
+            state.dispositions[number] = "unknown"
     for number in sorted(state.batch):
         if number in state.landed:
             continue
@@ -408,8 +413,16 @@ def _record_landings(
         if pull_request.get("merged"):
             state.landed[number] = str(pull_request.get("merge_commit_sha") or "")
             emit("pr_landed", {"repository": settings.repository, "number": number, "merge_commit_sha": state.landed[number]})
-        elif number == settings.number and pull_request.get("state") == "closed":
-            target_state = "closed"
+        elif pull_request.get("state") == "closed" and pull_request.get("merged") is False:
+            carried = state.carried_children.get(number)
+            state.dispositions[number] = (
+                "superseded" if carried and (pull_request.get("head") or {}).get("sha") == carried["expected_head_sha"]
+                else "closed"
+            )
+            if number == settings.number:
+                target_state = "closed"
+        else:
+            state.dispositions[number] = "open" if pull_request.get("state") == "open" else "unknown"
     if settings.number in state.landed:
         return "landed"
     if target_state == "closed":
@@ -433,6 +446,8 @@ def _finish_landing(
                 break
             key = f"train-drive-{settings.repository.replace('/', '-')}-{settings.number}-finish-{finish_pass}-{int(io.now())}"
             response = io.controller(settings.repository, settings.base_branch, key)
+            if (response or {}).get("status") in {"accepted", "ok"}:
+                _remember_batch((response or {}).get("result") or {}, state)
             action = str(((response or {}).get("result") or {}).get("controller_action") or "")
             emit("snapshot", _snapshot(settings, state, action or "helper_unavailable", response))
             if action in {"batch_landed", "idle"}:
@@ -450,6 +465,19 @@ def _remember_batch(result: dict[str, Any], state: DriveState) -> None:
     for number in dry_run.get("queue_order") or ():
         if isinstance(number, int):
             state.batch.add(number)
+    stack = result.get("stack_collapse_plan") or {}
+    for child in stack.get("child_dispositions") or ():
+        number = child.get("pull_request_number")
+        if isinstance(number, int) and not isinstance(number, bool) and number > 0:
+            state.batch.add(number)
+            if (child.get("status") == "closed" and child.get("expected_head_sha")
+                and stack.get("collapse_id") and stack.get("root_pull_request_number")
+                and stack["root_pull_request_number"] != number):
+                state.carried_children[number] = {
+                    "collapse_id": stack.get("collapse_id"),
+                    "root_pull_request_number": stack.get("root_pull_request_number"),
+                    "expected_head_sha": child.get("expected_head_sha"),
+                }
 
 
 def _queue_entry(result: dict[str, Any], number: int) -> dict[str, Any] | None:
@@ -482,7 +510,9 @@ def _snapshot(settings: DriveSettings, state: DriveState, action: str, response:
 
 def _stop(settings: DriveSettings, state: DriveState, emit: Callable[[str, dict[str, Any]], None], outcome: str, **detail: Any) -> str:
     prs = [
-        {"number": number, "outcome": "landed" if number in state.landed else "open", "merge_commit_sha": state.landed.get(number, "")}
+        {"number": number, "outcome": "landed" if number in state.landed else state.dispositions.get(number, "unknown"),
+         "merge_commit_sha": state.landed.get(number, ""),
+         **({"carried_by": state.carried_children[number]} if state.dispositions.get(number) == "superseded" else {})}
         for number in sorted(state.batch)
     ]
     emit(
