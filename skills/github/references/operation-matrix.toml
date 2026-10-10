@@ -1057,7 +1057,7 @@ test_refs = ["direction/scripts/test_direction_audit.py:test_capacity_fetch_attr
 
 [[operations]]
 id = "github.plan.direction_read"
-request_priority = "bulk"
+request_priority = "essential"
 capabilities = ["contents_read"]
 permission_mode = "fixed"
 permission_note = "Read the merged remote DIRECTION.md through Contents read. Denied reads fail closed; a local checkout does not replace the remote authority."
