@@ -666,7 +666,7 @@ def create_issue(
         gh_cmd=gh_cmd,
         operation=operation,
         expected_actor=expected_actor,
-        write_repository=resolved_repo if github_identity.github_app_prefix(resolved_repo) == "GITHUB_CLIENT_APP" else None,
+        write_repository=resolved_repo if github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS") else None,
         retry_summaries=retry_summaries,
     )
     if github_identity.github_app_prefix(resolved_repo) == "GITHUB_CLIENT_APP":
@@ -966,7 +966,7 @@ def _edit_issue_impl(
         gh_cmd=gh_cmd,
         operation=operation,
         expected_actor=expected_actor,
-        write_repository=resolved_repo if github_identity.github_app_prefix(resolved_repo) == "GITHUB_CLIENT_APP" else None,
+        write_repository=resolved_repo if github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS") else None,
         retry_summaries=retry_summaries,
     )
     if github_identity.github_app_prefix(resolved_repo) == "GITHUB_CLIENT_APP":
@@ -1309,7 +1309,7 @@ def _set_issue_state_impl(
         gh_cmd=gh_cmd,
         operation=operation,
         expected_actor=expected_actor,
-        write_repository=resolved_repo if github_identity.github_app_prefix(resolved_repo) == "GITHUB_CLIENT_APP" else None,
+        write_repository=resolved_repo if github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS") else None,
         retry_summaries=retry_summaries,
     )
     if github_identity.github_app_prefix(resolved_repo) == "GITHUB_CLIENT_APP":

@@ -1429,6 +1429,12 @@ Verify the selected App and current installation without a write:
 GH_REPO=cbusillo/PRODUCT skills/github/scripts/gh-with-env-token --check
 ```
 
+Add that verified Client App bot login to the existing
+`CODEX_AUTOMATION_BOT_LOGINS` list, preserving any entries already there. This
+lets planning helpers and direction audits recognize its managed issue bodies
+and milestone authors through their existing automation trust list; keep
+`CODEX_AUTOMATION_LOGIN` set to the primary App.
+
 Commands naming a listed account's repository use the Client App. Other accounts
 and commands with no target repository keep the existing primary credential
 selection. The separate bulk reader App still serves bulk reads when configured.

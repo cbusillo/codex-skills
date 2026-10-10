@@ -27,6 +27,7 @@ import github_identity as identity
 import github_issue
 import github_milestone
 from test_github_identity import test_private_key
+from test_gh_plan_sections import PLAN
 
 
 class AppHandler(BaseHTTPRequestHandler):
@@ -162,6 +163,11 @@ class ClientAppTests(unittest.TestCase):
             "if args[:2] == ['api', 'user']: print(login); raise SystemExit(0)\n"
             "if '--include' in args: print('HTTP/2.0 200\\n')\n"
             "endpoint = next((a for a in args if a.startswith('/repos/')), '')\n"
+            "if endpoint.endswith('/issues') or '/issues?' in endpoint:\n"
+            "    if '--method' not in args or args[args.index('--method') + 1] == 'GET': print('[]'); raise SystemExit(0)\n"
+            "    issue = json.load(sys.stdin)\n"
+            "    issue.update({'id': 1, 'number': 1, 'state': 'open', 'html_url': 'https://github.com/client/product/issues/1', 'user': {'login': login}})\n"
+            "    print(json.dumps(issue)); raise SystemExit(0)\n"
             "if endpoint.endswith('/comments') or '/comments?' in endpoint:\n"
             "    if '--method' not in args or args[args.index('--method') + 1] == 'GET': print('[]'); raise SystemExit(0)\n"
             "    body = json.load(sys.stdin)['body']\n"
@@ -264,6 +270,27 @@ class ClientAppTests(unittest.TestCase):
         actor, expected, prefix = github_api.request_identity(**kwargs)
         self.assertEqual((actor, expected), ("app-2[bot]", "app-2[bot]"))
         self.assertIn("--main-app-only", prefix)
+
+    def test_explicit_other_repository_write_overrides_client_context(self) -> None:
+        os.environ.update({"GH_REPO": "host/product", "GH_WITH_ENV_TOKEN_GH": str(self.fake_gh()),
+                           "GH_WITH_ENV_TOKEN_PYTHON": sys.executable})
+        wrapper = str(Path(identity.__file__).with_name("gh-with-env-token"))
+        result = github_issue.create_issue("fixture", "fixture body", repo="client/product",
+                                           gh_cmd=wrapper, expected_actor="app-1[bot]")
+        self.assertEqual(result["actor"], "app-1[bot]")
+        state = github_milestone._command_state("client/product", operation="github.plan.milestone_create",
+            actor="app-1[bot]", expected_actor="app-1[bot]", gh_cmd=wrapper, verify_actor=True)
+        self.assertEqual(state[1:3], ("app-1[bot]", "app-1[bot]"))
+
+    def test_configured_client_login_trusts_its_managed_plan_body(self) -> None:
+        _, login = self.auth("host/product", write=True)
+        issue = {"body": PLAN.template_body("fixture"), "user": {"login": login}}
+        with patch.multiple(PLAN, EXPECTED_ACTOR="app-1[bot]"):
+            self.assertFalse(PLAN.read_plan_sections(issue)[1]["section_updates_allowed"])
+            with patch.dict(os.environ, {"CODEX_AUTOMATION_BOT_LOGINS": login}):
+                sections, provenance = PLAN.read_plan_sections(issue)
+                self.assertTrue(provenance["section_updates_allowed"])
+                self.assertTrue(sections)
 
     def test_own_user_comment_keeps_prerequisite_reads_on_resolved_writer(self) -> None:
         os.environ.update({identity.OWN_USER_OPT_IN: "1", "GH_WITH_ENV_TOKEN_GH": str(self.fake_gh()),

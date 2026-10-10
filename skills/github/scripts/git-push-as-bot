@@ -143,8 +143,11 @@ client_app=0
 if [ -n "${GITHUB_CLIENT_APP_OWNERS:-}" ]; then
 	if [ -n "$python_command" ]; then
 		app_prefix=$($python_command "$identity_helper" app-prefix --repo "$repo")
-	else
+	elif command -v uv >/dev/null 2>&1; then
 		app_prefix=$(uv run --no-project --no-config --python 3.12 "$identity_helper" app-prefix --repo "$repo")
+	else
+		echo "error: git-push-as-bot requires uv or GIT_PUSH_AS_BOT_PYTHON to choose the identity for $repo" >&2
+		exit 127
 	fi
 	if [ "$app_prefix" = GITHUB_CLIENT_APP ]; then
 		client_app=1
