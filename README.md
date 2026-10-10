@@ -970,7 +970,7 @@ uv run skills/github/scripts/github-capabilities.py audit --repo OWNER/REPO
 The reported actor must be your App's `APP-SLUG[bot]`, distinct from the Director's
 login. Audit each selected adopted repository; permission declarations and a
 successful identity check alone do not prove private repository access. On an
-already adopted repository, the agent opens a normal direction PR using the
+already adopted repository, the direction session opens a normal direction PR using the
 bot commit/push and PR helpers, the Director reviews and approves it as the eligible
 code owner, then the authorized merge follows green CI. A self-approval or
 unreviewed direction merge remains refused. Owner-only ruleset plan/apply stays
