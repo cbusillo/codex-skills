@@ -24,12 +24,15 @@ def outside_fences(lines: list[str]) -> bool:
     fence = None
     for line in lines:
         match = re.match(r"^\s*(`{3,}|~{3,})(.*)$", line)
+        if not match and fence is None:
+            match = re.match(r"^\s*(?:[-+*]|[0-9]+[.)])\s+(`{3,}|~{3,})(.*)$", line)
         if not match:
             continue
         marker, rest = match.groups()
         if fence is None:
             fence = marker
-        elif marker[0] == fence[0] and len(marker) >= len(fence) and not rest.strip():
+        elif (marker[0] == fence[0] and len(marker) >= len(fence) and not rest.strip()
+              and re.fullmatch(r" {0,3}" + re.escape(marker) + r"[ \t]*", line)):
             fence = None
     return fence is None
 
