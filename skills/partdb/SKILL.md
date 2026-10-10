@@ -108,7 +108,8 @@ plan, approval, and receipt files in a private ignored directory.
    reads again, refuses quantity drift, patches only after those checks, reads back to
    verify, and records a redacted digest-keyed receipt beside the plan. Each approval is single-use;
    a failed apply leaves a `needs-reconciliation` receipt instead of retrying a
-   possibly completed write.
+   possibly completed write. This includes handled context-provider failures
+   after an approval is reserved.
 
 If the instance changes or an older plan lacks its binding, create a new plan,
 show its diff, and obtain approval of its new digest. The fingerprint binds the
