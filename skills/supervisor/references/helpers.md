@@ -70,6 +70,32 @@ Include the run's privately recorded capacity deadlines. Post the Director's
 questions in one batch with recommendations; use only the messaging authority
 already granted for this run.
 
+## Foreign-post notices
+
+```sh
+uv run skills/supervisor/scripts/foreign_watch.py --owner OWNER --repo OWNER/REPO --own-login OWN-LOGIN --own-login AUTOMATION-LOGIN --launchplane-login DELIVERY-LOGIN --state <private-watch-state.json> --deadline-seconds 1800
+```
+
+Repeat `--repo` and login flags for the run's configured scope. Initial startup
+begins at the current time; `--since` supplies an explicit first watermark for
+a historical catch-up. Restart with the same state file after a notice or
+deadline. `--once` performs one pass. Only one watcher owns each state file.
+The helper reads one since-scoped repository issue-comment listing per pass
+(including PR timeline comments), paginating through the shared reader within
+the wall-clock deadline. It uses the shared bulk quota reserve, identity,
+conditional cache and retry policy; no separate quota probe or history scan.
+A failed, partial or malformed read preserves that repository's watermark,
+reports an error and exits for Supervisor reconciliation; successful repositories
+advance to the pass start, with a one-second overlap on their next read.
+
+Foreign authors and configured Launchplane authors or product-review markers
+produce metadata notices marked `untrusted`; comment bodies are omitted. A
+marker is a notification hint, never proof of authorship or accepted direction.
+Read the canonical record before acting under existing authority. The watcher
+does not launch agents, post messages, grant access or widen briefs. New issue
+bodies, inline review comments and Discussions are outside this bounded comment
+feed; the existing work rollup still supplies broader discussion coverage.
+
 ## Launching and nudging
 
 ```sh

@@ -1,0 +1,88 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""Offline notification filtering and failure-safe watermark tests."""
+
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import Mock
+
+import foreign_watch
+
+SINCE = "2026-10-09T12:00:00Z"
+STARTED = "2026-10-09T12:05:00Z"
+REPO = "director/project"
+
+
+def comment(login="client", body="feedback", updated=SINCE):
+    return {"user": {"login": login}, "body": body, "updated_at": updated,
+            "html_url": "https://github.com/director/project/issues/1#issuecomment-2"}
+
+
+class WatchTests(unittest.TestCase):
+    def scan(self, reader):
+        return foreign_watch.scan([REPO], {REPO: SINCE}, ["director", "agent[bot]"],
+                                  ["delivery[bot]"], STARTED, reader)
+
+    def test_filter_and_review_records(self):
+        reader = Mock()
+        reader.paged_json.return_value = [comment("Director"), comment("agent[bot]"),
+            comment(), comment("delivery[bot]"),
+            comment("agent[bot]", "<!-- launchplane:owner-review -->"),
+            comment("agent[bot]", "<!-- launchplane:product-review -->")]
+        notices, errors, watermarks = self.scan(reader)
+        self.assertEqual([n["kind"] for n in notices], ["foreign"] + ["launchplane"] * 3)
+        self.assertTrue(all(n["untrusted"] and "body" not in n for n in notices))
+        self.assertEqual(errors, [])
+        self.assertEqual(watermarks[REPO], STARTED)
+        reader.paged_json.assert_called_once()
+        path = reader.paged_json.call_args.args[0]
+        params = reader.paged_json.call_args.kwargs["params"]
+        self.assertEqual(path, f"repos/{REPO}/issues/comments")
+        self.assertLess(foreign_watch.timestamp(params["since"]), foreign_watch.timestamp(SINCE))
+
+    def test_failure_preserves_only_failed_repository_watermark(self):
+        reader = Mock()
+        reader.paged_json.side_effect = [foreign_watch.GitHubReadShapeError("partial"), []]
+        notices, errors, watermarks = foreign_watch.scan(
+            [REPO, "director/healthy"], {REPO: SINCE, "director/healthy": SINCE},
+            ["director"], [], STARTED, reader)
+        self.assertEqual(notices, [])
+        self.assertEqual(errors[0]["repository"], REPO)
+        self.assertEqual(watermarks, {REPO: SINCE, "director/healthy": STARTED})
+
+    def test_invalid_comment_retains_watermark_and_discards_partial_notices(self):
+        reader = Mock()
+        for bad in ({}, {**comment(), "updated_at": "invalid"}, {**comment(), "user": []}):
+            with self.subTest(bad=bad):
+                reader.paged_json.return_value = [comment(), bad]
+                notices, errors, watermarks = self.scan(reader)
+                self.assertEqual(notices, [])
+                self.assertTrue(errors)
+                self.assertEqual(watermarks[REPO], SINCE)
+
+    def test_old_comments_excluded_and_edits_reported(self):
+        reader = Mock()
+        reader.paged_json.return_value = [comment(updated="2026-10-09T11:59:59Z"),
+                                          comment(updated=STARTED)]
+        self.assertEqual(len(self.scan(reader)[0]), 1)
+
+    def test_state_roundtrip_and_corruption_refusal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "watch.json"
+            self.assertEqual(foreign_watch.load_state(path, [REPO], SINCE), {REPO: SINCE})
+            foreign_watch.save_state(path, {REPO: STARTED})
+            self.assertEqual(foreign_watch.load_state(path, [REPO], SINCE), {REPO: STARTED})
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            for data in ([], {"watermarks": []}, {"watermarks": {REPO: "invalid"}}):
+                path.write_text(json.dumps(data))
+                with self.assertRaises((ValueError, TypeError)):
+                    foreign_watch.load_state(path, [REPO], SINCE)
+
+
+if __name__ == "__main__":
+    unittest.main()
