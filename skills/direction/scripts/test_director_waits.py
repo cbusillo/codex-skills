@@ -7,6 +7,9 @@
 
 from datetime import datetime, timezone
 import unittest
+from contextlib import redirect_stdout
+import io
+import json
 from unittest.mock import Mock, patch
 
 import director_waits
@@ -100,6 +103,27 @@ class WaitTests(unittest.TestCase):
         with patch.object(director_waits.github_identity, "github_app_config", return_value={}):
             result = director_waits.collect(reader, "owner", ["Director"], NOW)
         self.assertTrue(result["waits"][0]["repository_archived"])
+
+    def test_unqualified_owner_within_reason_and_multiple_wait_age(self):
+        records = [issue(1, "decision from the owner on pricing"), issue(2, "approval by the owner"),
+                   issue(3, "product owner Client, then Director")]
+        rows = director_waits.wait_rows("admin/repo", records, ["admin", "owner", "Director"], "admin", NOW)
+        self.assertEqual([row["number"] for row in rows], [1, 2])
+        sample = issue(extra="Waiting since: 2026-09-01\nWaiting for: Client testing\nWaiting for: Director to decide")
+        self.assertTrue(director_waits.wait_rows("admin/repo", [sample], ["owner", "Director"], "admin", NOW)[0]["wait_age_unknown"])
+
+    def test_no_index_reports_alias_gap_and_explicit_name_is_supported(self):
+        people = {"status": "no_index", "director_names": [], "director_ambiguous": False}
+        for extra, expected in (([], 1), (["--director-name", "Pat"], 0)):
+            with self.subTest(extra=extra), patch.object(director_waits.sys, "argv",
+                    ["director_waits.py", "--owner", "admin", *extra]), \
+                 patch.object(director_waits.attention, "people_identities", return_value=people), \
+                 patch.object(director_waits, "GitHubReader"), \
+                 patch.object(director_waits, "collect", return_value={"complete": True, "errors": [], "waits": []}), \
+                 redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(director_waits.main(), expected)
+                result = json.loads(output.getvalue())
+                self.assertEqual(result["complete"], expected == 0)
 
 
 if __name__ == "__main__":

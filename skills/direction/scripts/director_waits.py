@@ -55,9 +55,9 @@ def wait_rows(repo, issues, terms, owner, now):
         wait = attention.director_wait_reason(repo, issue, terms, {owner.casefold()})
         if wait is None:
             continue
-        if (not attention.names_director(wait[0], [term for term in terms if term.casefold() != "owner"],
-                                        {owner.casefold()})
-                and not re.match(r"^(?:the\s+)?owner\b", wait[0], re.I)):
+        if (re.search(r"\b(?:product|upstream|code) owner\b", wait[0], re.I)
+                and attention.current_director_wait(wait[0],
+                    [term for term in terms if term.casefold() != "owner"], {owner.casefold()}) is None):
             continue
         sections = github_direction_next.section_map(issue.get("body") or "")
         status = next((v for k, v in sections.items() if k.casefold() == "current status"), issue.get("body") or "")
@@ -66,6 +66,8 @@ def wait_rows(repo, issues, terms, owner, now):
         evidence = github_direction_next.milestone_wait_evidence(item, status, [])
         since = parse_date(evidence["since"])
         records = github_direction_next.waiting_records(item, status)
+        if sum(not record["no_current_wait"] for record in records) > 1:
+            since = None  # A status-wide start cannot date one of several waits.
         verified = next((record.get("last_verified") for record in records if record.get("last_verified")), None)
         last_verified = parse_date(verified)
         rows.append({
@@ -76,6 +78,7 @@ def wait_rows(repo, issues, terms, owner, now):
             "wait_age_unknown": since is None,
             "recorded_at": evidence["recorded_at"],
             "last_verified": last_verified.isoformat() if last_verified else None,
+            "last_verified_raw": verified,
             "possibly_stale": bool(since and last_verified and since < last_verified),
             "staleness_basis": "wait_predates_last_verification",
             "verification_unknown": last_verified is None,
@@ -141,10 +144,12 @@ def main():
                           gh_prefix_args=automation_only_gh_prefix_args(),
                           deadline_at=time.time() + args.deadline_seconds)
     result = collect(reader, args.owner, terms, datetime.now(timezone.utc), args.repo_limit, args.issue_limit)
-    if people["status"] == "error" or people["director_ambiguous"]:
+    if (people["status"] == "error" or people["director_ambiguous"]
+            or (people["status"] == "no_index" and not args.director_name)):
         result["complete"] = False
-        result["errors"].append({"scope": "Director aliases", "error": "people identity unavailable or ambiguous"})
+        result["errors"].append({"scope": "Director aliases", "error": "people identity unavailable or ambiguous; supply known --director-name aliases when no index exists"})
     result["people_status"] = people["status"]
+    result["director_names"] = [*people["director_names"], *args.director_name]
     print(json.dumps(result))
     return int(not result["complete"])
 

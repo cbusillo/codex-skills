@@ -176,13 +176,17 @@ uses the recorded requirement's comparison, named `staleness_basis`; it does
 not assert that later verification resolved a wait. Missing verification is
 reported as `verification_unknown`; `recorded_at` anchors an unknown-age record
 without inventing its wait start. Archived or disabled inventory entries carry
-flags in returned rows or coverage errors. An unqualified initial `Owner` names
+flags in returned rows or coverage errors. An unqualified `Owner` names
 the Director; an upstream or product owner does not without a known Director
 identity in that wait.
 The report does not settle a question or release a hold. `--director-name` adds a known
 alias when no people index supplies it. Missing access, read failures, limits
 and ambiguous aliases stay explicit in `complete`, `errors`, `scope` and
 `people_status`; increase the named bounds for a complete accessible inventory.
+Without an index or explicit names, alias coverage is incomplete; returned
+`director_names` shows what name-based matching covered. Multiple current waits
+without an attributable start report unknown age, and `last_verified_raw`
+preserves a verification value that could not be parsed as a date.
 This full list is separate from the unasked-question radar, which filters for
 waiting labels and absence of an open question.
 Exit 1 means coverage is incomplete; retain the returned rows and report the
