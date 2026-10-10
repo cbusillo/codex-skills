@@ -673,13 +673,29 @@ files instead of committing it.
 
 ### Native helper build and CodeQL
 
-The root `Package.swift` gives CodeQL's Swift autobuilder a target for
+The root `Package.swift` gives CodeQL's Swift extractor a build target for
 `skills/work-closeout/scripts/reminder_list.swift`. On macOS 14 or newer,
 `swift build --product reminder-list` compiles that existing helper without
 running it or accessing Reminders. Build output stays in ignored `.build/`.
 The normal script invocation remains supported; the package is also the build
-entry point used for Swift extraction. Existing CodeQL language scanning stays
-enabled.
+entry point used for Swift extraction.
+
+The [CodeQL workflow](.github/workflows/codeql.yml) runs Actions, Python,
+JavaScript/TypeScript and Swift with the default queries on pushes to `main`,
+weekly, and on manual dispatch. On PRs, [language selection](scripts/codeql_languages.py)
+uses the complete base-to-head Git diff, including removed and renamed paths.
+Only affected languages analyze; every language job still reports success when
+unchanged, and an unavailable diff runs all languages. Workflow/selector changes
+also run all languages. An unchanged Swift lane uses a lightweight Linux job;
+an affected Swift lane builds `reminder-list` on macOS between CodeQL initialization
+and analysis, then uploads results under the existing language category. The
+helper is compiled without running it or accessing Reminders.
+
+This custom workflow requires [advanced CodeQL setup](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/configure-code-scanning/configuring-advanced-setup-for-code-scanning).
+GitHub blocks custom CodeQL uploads while default setup is enabled. Prepare and
+review its branch first; the repository admin switches setup at the coordinated
+verification window before opening the test PRs. This does not change the
+required Python validation jobs or repository protection.
 
 ### System Skill Overrides
 

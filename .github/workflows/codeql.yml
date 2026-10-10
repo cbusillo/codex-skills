@@ -1,0 +1,73 @@
+name: CodeQL
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '37 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  languages:
+    name: Select CodeQL languages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Check out complete PR history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select languages
+        id: select
+        run: python3 scripts/codeql_languages.py
+
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    needs: languages
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.languages.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - name: Report unchanged language
+        if: ${{ !matrix.scan }}
+        env:
+          LANGUAGE: ${{ matrix.language }}
+        run: echo "No files affecting ${LANGUAGE} changed; its full scan runs on main and weekly."
+
+      - name: Check out repository
+        if: ${{ matrix.scan }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        if: ${{ matrix.scan }}
+        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build_mode }}
+          tools: linked
+
+      - name: Build native Swift helper for extraction
+        if: ${{ matrix.scan && matrix.language == 'swift' }}
+        run: swift build --product reminder-list
+
+      - name: Analyze and upload
+        if: ${{ matrix.scan }}
+        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          category: /language:${{ matrix.language }}
+          wait-for-processing: true
