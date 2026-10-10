@@ -299,6 +299,7 @@ class LedgerTests(unittest.TestCase):
         for malformed in (
             {"type": "event_msg", "payload": ["unexpected"]},
             {"type": "event_msg", "payload": []},
+            {"type": "event_msg", "payload": {"type": []}},
             {"type": "assistant", "message": "unexpected"},
             {"type": "assistant", "message": {"content": ["unexpected"]}},
             {"type": "assistant", "message": {"content": [{"text": []}]}},
@@ -334,7 +335,9 @@ class LedgerTests(unittest.TestCase):
                 consumer(self.ledger)
 
     def test_native_agent_message_without_message_field_stays_readable(self):
-        self.write([event("agent_message", content=[{"type": "text", "text": "done"}]),
+        self.write([event("reasoning", content=None), event("token_count", info=None),
+                    event("token_count", info={"last_token_usage": None, "total_token_usage": None}),
+                    event("agent_message", content=[{"type": "text", "text": "done"}]),
                     event("task_complete")])
         result = status.snapshot(self.ledger)[0]
         self.assertNotIn("error", result)

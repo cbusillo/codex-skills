@@ -27,6 +27,9 @@ def validate_record(record: dict) -> None:
     if "sessionId" in record and not isinstance(record["sessionId"], str):
         raise TypeError("sessionId must be a string")
     payload = record.get("payload", {})
+    for container in (record, payload):
+        if "type" in container and not isinstance(container["type"], str):
+            raise TypeError("type must be a string")
     if record.get("type") == "session_meta" and not isinstance(payload.get("id"), str):
         raise TypeError("session_meta payload.id must be a string")
     if (payload.get("type") == "agent_message" and "message" in payload
