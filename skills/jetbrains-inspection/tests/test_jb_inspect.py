@@ -8326,6 +8326,30 @@ class LifecycleTest(unittest.TestCase):
 
 
 class AgentInspectContractTest(unittest.TestCase):
+    def test_lifecycle_lock_timeout_reports_contention_without_native_inspection(self):
+        output = io.StringIO()
+
+        def locked_operation(_args, _context):
+            with jb_inspect.lifecycle_lock(0):
+                self.fail("contended lifecycle must not start inspection")
+
+        with (
+            patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect"]),
+            patch.object(jb_inspect, "build_context", return_value={"scope": "files"}),
+            patch.object(jb_inspect.fcntl, "flock", side_effect=BlockingIOError),
+            patch.object(jb_inspect, "command_run", side_effect=locked_operation),
+            patch.object(jb_inspect, "log_assessment_records"),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(jb_inspect.main(), 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(result["agent_result"]["bucket"], "lifecycle_lock_busy")
+        self.assertFalse(result["agent_result"]["retry_policy"]["retry"])
+        self.assertIn("sequentially", result["agent_result"]["next_action"])
+        self.assertNotIn("indexing", result["agent_result"]["next_action"])
+        self.assertIsNone(result["diagnostic"].get("inspection_run_id"))
+
     def test_documented_repeatable_files_selectors_reach_inspection(self):
         paths = ["src/first.py", "src/file with spaces.py"]
         output = io.StringIO()
