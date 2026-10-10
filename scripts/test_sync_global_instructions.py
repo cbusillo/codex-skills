@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["tomlkit==0.15.1"]
+# dependencies = [
+#     "tomlkit==0.15.1",
+# ]
 # ///
 """Global instructions preserve private sections and existing files on adoption."""
 
