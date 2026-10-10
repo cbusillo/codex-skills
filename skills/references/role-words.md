@@ -26,10 +26,8 @@ for the permission.
 ## Release Rule
 
 Each product records its Client. The Director's overall `OWNER/direction`
-`DIRECTION.md` owns release authority, including standing acceptance for the
-Director's own products and any temporary hotfix path for live breakage.
-Read its stop boundaries before a production action; a role definition grants
-no release authority.
+`DIRECTION.md` owns release authority. Read its stop boundaries before a
+production action; a role definition grants no release authority.
 
 ## Legacy Identifiers
 
