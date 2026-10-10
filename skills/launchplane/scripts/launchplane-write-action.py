@@ -1198,6 +1198,8 @@ def _project_product_config_public_hosts(value: object) -> dict[str, object]:
         plan_digest=_project_sha256(source["plan_digest"]), runtime_port=port,
         https=True, service_name="web", certificate_type="none", verified=source["verified"],
     )
+    # The first validated public host owns the prod base URL; no origin URL is copied.
+    projected["resolved_base_url"] = f"https://{source['after'][0]}" if source["after"] else ""
     return projected
 
 
@@ -2734,7 +2736,9 @@ def _project_protected_artifacts(value: object) -> dict[str, object]:
             "instance": _protected_artifact_lane(entry.get("instance"), optional=True),
             "artifact_id": _protected_artifact_identifier(entry.get("artifact_id")),
             "source_record_type": public_code(entry.get("source_record_type")),
-            "source_record_id": _protected_artifact_lane(entry.get("source_record_id")),
+            "source_record_id": _protected_artifact_identifier(
+                public_identifier(entry.get("source_record_id"))
+            ),
             "image_digest": _protected_artifact_digest(entry.get("image_digest")),
         })
     projected = {
