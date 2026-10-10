@@ -4555,7 +4555,7 @@ def check_direction_lists_milestone(title: str, direction_text: str | None, *, r
         return {"direction": "listed", "direction_source": f"{repo}:{DIRECTION_FILE}"}
     raise PlanError(
         f"milestone title is not listed under '## Milestones' in {repo}:{DIRECTION_FILE}: {title!r}. "
-        "Add the line by a direction pull request first (see the direction skill).",
+        "Escalate the proposed line under the direction skill; its direction session drafts the pull request.",
         failure=github_api_core.FailureDetail(
             cause="validation_error",
             message="milestone not listed in DIRECTION.md",
