@@ -1328,14 +1328,18 @@ def _set_issue_state_impl(
                 completed_steps=steps,
                 failed_step="resolve_duplicate_issue",
             ) from exc
+        # A duplicate in another repository has its own read identity; only
+        # reads of the write target remain bound to its resolved personal writer.
+        separate_lookup = (duplicate_repo.casefold() != resolved_repo.casefold()
+                           and github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS"))
         result = _call_api(
             "GET",
             f"/repos/{duplicate_repo}/issues/{duplicate_number}",
             None,
             gh_cmd=gh_cmd,
             operation=operation,
-            actor=actor,
-            expected_actor=expected_actor,
+            actor=None if separate_lookup else actor,
+            expected_actor=None if separate_lookup else expected_actor,
             completed_steps=steps,
             failed_step="resolve_duplicate_issue",
             is_write=False,

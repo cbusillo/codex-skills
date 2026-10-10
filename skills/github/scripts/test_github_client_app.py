@@ -168,6 +168,10 @@ class ClientAppTests(unittest.TestCase):
             "    issue = json.load(sys.stdin)\n"
             "    issue.update({'id': 1, 'number': 1, 'state': 'open', 'html_url': 'https://github.com/client/product/issues/1', 'user': {'login': login}})\n"
             "    print(json.dumps(issue)); raise SystemExit(0)\n"
+            "if '/issues/' in endpoint and '/comments' not in endpoint:\n"
+            "    issue = json.load(sys.stdin) if '--method' in args and args[args.index('--method') + 1] == 'PATCH' else {}\n"
+            "    issue.update({'id': int(endpoint.rsplit('/', 1)[-1]), 'number': int(endpoint.rsplit('/', 1)[-1]), 'html_url': 'https://github.com/client/product/issues/1', 'user': {'login': login}})\n"
+            "    print(json.dumps(issue)); raise SystemExit(0)\n"
             "if endpoint.endswith('/comments') or '/comments?' in endpoint:\n"
             "    if '--method' not in args or args[args.index('--method') + 1] == 'GET': print('[]'); raise SystemExit(0)\n"
             "    body = json.load(sys.stdin)['body']\n"
@@ -285,6 +289,11 @@ class ClientAppTests(unittest.TestCase):
             own = github_issue.create_issue("fixture", "fixture body", repo="upstream/missing",
                 gh_cmd=wrapper, expected_actor="app-1[bot]")
             self.assertEqual(own["actor"], "own-user")
+            for duplicate in ("client/missing#5", "upstream/missing#5", "host/product#5"):
+                closed = github_issue.set_issue_state(1, state="closed", state_reason="duplicate",
+                    repo="upstream/missing", duplicate_of=duplicate,
+                    gh_cmd=wrapper, expected_actor="app-1[bot]")
+                self.assertEqual(closed["actor"], "own-user")
             # The primary route's ordinary reads retain their legacy default installation.
             read = self.wrapper("api", "/repos/upstream/missing")
             self.assertEqual(json.loads(read.stdout)["token"], "fake-token-1")
