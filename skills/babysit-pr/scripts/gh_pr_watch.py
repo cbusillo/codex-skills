@@ -31,6 +31,7 @@ GH_COMMAND = os.environ.get("GH_PR_WATCH_GH") or str(DEFAULT_GH)
 COMMAND_TIMEOUT_SECONDS = 60.0
 LOCK_TIMEOUT_SECONDS = 60.0
 DEFAULT_PR_HELPER = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-pr.py"
+RERUN_READ_OPERATION = "github.pr.runner_acquisition_evidence"
 PR_HELPER = os.environ.get("GH_PR_WATCH_PR_HELPER") or str(DEFAULT_PR_HELPER)
 DEFAULT_OWNER_REVIEW_HELPER = SCRIPT_DIR.parent.parent / "launchplane" / "scripts" / "launchplane-owner-review.py"
 OWNER_REVIEW_HELPER = os.environ.get("GH_PR_WATCH_OWNER_REVIEW_HELPER") or str(DEFAULT_OWNER_REVIEW_HELPER)
@@ -1516,9 +1517,13 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
             and checks_summary.get("evidence_complete") is True and checks_summary["all_terminal"]
             and retries_used < args.max_flaky_retries):
         ordinary_retry_ids = {run["run_id"] for run in retryable_failed_runs(failed_runs, failed_jobs)}
+        evidence_reader = None
         for run in failed_runs:
-            if run["run_id"] not in ordinary_retry_ids and runner_acquisition_retry(pr, run, reader):
-                run["retry_mode"] = "runner_acquisition"
+            if run["run_id"] not in ordinary_retry_ids:
+                if evidence_reader is None:
+                    evidence_reader = watcher_reader(operation=RERUN_READ_OPERATION)
+                if runner_acquisition_retry(pr, run, evidence_reader):
+                    run["retry_mode"] = "runner_acquisition"
 
     review_diagnostic = None
     if is_review_readiness_unavailable(pr, checks_summary, new_review_items):
@@ -1813,7 +1818,7 @@ def submit_locked_reruns(snapshot, state_path, result, eligible_runs):
     if pending:
         result["reason"] = "rerun_outcome_pending"
         return result
-    submission_reader = watcher_reader(operation="github.pr.rerun_failed")
+    submission_reader = watcher_reader(operation=RERUN_READ_OPERATION)
     if eligible_runs:
         # A same-head replacement can appear after the snapshot. Pre-write
         # selection must reach GitHub, including for ordinary failed-job retries.

@@ -222,9 +222,18 @@ class ReaderIdentityTests(unittest.TestCase):
                 self.assertEqual(result['expected_actor'], 'reader-app[bot]')
         self.assertEqual(observed, ['reader-app[bot]', 'main-app[bot]', 'reader-app[bot]', 'main-app[bot]'])
         with patch.object(identity, 'github_app_auth', return_value=('synthetic', 'reader-app[bot]')) as auth:
-            preflight = watcher.watcher_reader(operation='github.pr.rerun_failed')
+            preflight = watcher.watcher_reader(operation=watcher.RERUN_READ_OPERATION)
         auth.assert_not_called()
         self.assertEqual(preflight.expected_actor, 'main-app[bot]')
+        clock = [1000.0]
+        runtime = api.RetryRuntime(now=lambda: clock[0], sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                                   jitter=lambda _: 0, progress=lambda _: None)
+        with patch.object(api, 'default_retry_runtime', return_value=runtime), patch('subprocess.run', side_effect=[
+                self.response('main-app[bot]', status=502), self.response('main-app[bot]')]) as run:
+            result = preflight.request('GET', '/repos/example/app/actions/runs', step='preflight')
+        self.assertTrue(result.ok)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(result.retry_summary.attempts, 2)
 
     def test_synthetic_path_mints_through_existing_app_auth_and_cache(self):
         config = self.credentials()
