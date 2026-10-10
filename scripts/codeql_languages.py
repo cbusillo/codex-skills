@@ -33,7 +33,8 @@ def languages_for_paths(paths: list[str]) -> set[str]:
         if (
             raw_path.startswith(".github/workflows/") and suffix in {".yml", ".yaml"}
         ) or name in {"action.yml", "action.yaml"}:
-            selected.add("actions")
+            # JavaScript also extracts inline workflow/action scripts from YAML.
+            selected.update(("actions", "javascript-typescript"))
         if suffix in {".py", ".pyi", ".pyw"} or name in {
             "pyproject.toml", "uv.lock", "uv.toml", ".python-version",
             "pipfile", "pipfile.lock", "poetry.lock", "setup.cfg",

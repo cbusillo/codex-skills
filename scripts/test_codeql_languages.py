@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import unittest
@@ -31,8 +32,10 @@ class SelectionTests(unittest.TestCase):
         self.base = self.commit()
 
     def git(self, *args: str) -> str:
+        environment = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
         return subprocess.run(
-            ["git", *args], cwd=self.repo, check=True, capture_output=True, text=True,
+            ["git", *args], cwd=self.repo, env=environment,
+            check=True, capture_output=True, text=True,
         ).stdout.strip()
 
     def write(self, path: str, content: str) -> None:
@@ -108,8 +111,8 @@ class SelectionTests(unittest.TestCase):
 
     def test_source_and_build_inputs_select_affected_languages(self) -> None:
         cases = {
-            ".github/workflows/ci.yaml": {"actions"},
-            ".github/actions/local/action.yml": {"actions"},
+            ".github/workflows/ci.yaml": {"actions", "javascript-typescript"},
+            ".github/actions/local/action.yml": {"actions", "javascript-typescript"},
             "scripts/main.py": {"python"},
             "pyproject.toml": {"python"},
             "uv.lock": {"python"},
@@ -132,7 +135,11 @@ class SelectionTests(unittest.TestCase):
 
     def test_composite_action_outside_github_directory_is_scanned(self) -> None:
         self.write("skills/example/action.yml", "runs:\n  using: composite\n  steps: []\n")
-        self.assertEqual(self.selection(self.commit()), {"actions"})
+        self.assertEqual(self.selection(self.commit()), {"actions", "javascript-typescript"})
+
+    def test_workflow_edit_selects_inline_javascript_extraction(self) -> None:
+        self.write(".github/workflows/ci.yaml", "jobs:\n  inline:\n    steps: []\n")
+        self.assertEqual(self.selection(self.commit()), {"actions", "javascript-typescript"})
 
     def test_main_schedule_and_dispatch_scan_every_language(self) -> None:
         for event in ("push", "schedule", "workflow_dispatch"):
