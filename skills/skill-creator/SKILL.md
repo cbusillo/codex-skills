@@ -180,8 +180,8 @@ uv run scripts/init_skill.py <skill-name> --path <maintained-skill-root> [--reso
 
 The initializer creates the directory, frontmatter/TODO template,
 `agents/openai.yaml`, requested resource directories and optional example files.
-It validates interface overrides before creating files, so correcting rejected
-metadata can use the same destination.
+It checks interface keys and short-description length before creating files, so
+rejected inputs can be corrected at the same destination.
 Replace/delete unneeded placeholders from `--examples`.
 
 Derive human-facing `display_name`, `short_description` and `default_prompt`
