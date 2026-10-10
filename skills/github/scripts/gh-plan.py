@@ -3583,7 +3583,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         repository_waypoints={}, coverage_complete=graph_coverage["complete"],
     )
     capacity_evidence = bool(preflight["admitted"] or (preflight["reason"] in {"no_milestone_waits", "milestone_names_no_person"} and any(
-        review.get("state") == "waiting" and review.get("waiting_on") == "person"
+        review.get("state") == "underway" or (review.get("state") == "waiting" and review.get("waiting_on") in {"person", "event"})
         for review in selection_context.get("issues", {}).values()
     )))
     if scope is None:
