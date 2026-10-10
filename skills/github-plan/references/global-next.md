@@ -263,3 +263,40 @@ Discovery keeps its existing held-repository and marked-incident allowances,
 so it evaluates at most three times `--scan-limit` issues plus marked incidents. Omitted work still
 reports incomplete coverage and known omitted milestones still prevent capacity
 admission. Unknown or conflicting assignments consume the ordinary allowance.
+
+
+## Correct An Invalid Wait Before Claiming
+
+Read when global `next` or the direction audit reports `milestone_wait_invalid`,
+or when selection and claim disagree about a recorded wait. A finding is evidence
+to check, not permission to ignore a hold. This selection behavior is global-only;
+repo-local `next` and `claim` preserve recorded waiting state.
+
+1. Re-read the complete issue, comments, native relationships, relevant parent
+   discussions and current ownership. Determine whether the recorded condition is
+   scheduling (another milestone or agent selection), resolved, or a real person/event
+   wait. A real unresolved wait remains parked. Do not infer its resolution from
+   an invalid-wait finding or invent a Director decision.
+2. Preserve the original wait/status while running normal `gh-plan.py claim` with
+   the same worker, native session and task branch. For a verified invalid or resolved
+   condition, use `--wait-resolved` with that condition, existing resolution or
+   authorization evidence and source links. Do this before changing any wait field.
+   The supported path records the previous status and resolution, then runs normal
+   ownership, native-blocker and hold preflight and activates planning on success.
+   A refusal remains a stop. Do not clear labels or holds to make the command pass.
+3. After confirmed claim and status readback, correct any remaining automation-owned
+   Current Status with `gh-plan.py update-section ISSUE "Current Status" --body-file FILE`.
+   Record the verified next action and actual wait; the original condition and its
+   resolution are now durable in the claim comment. Preserve human-authored requests.
+   Write `Waiting for: None.` and `Blocked by: None.` only when both are true. A real
+   person/event wait belongs in `Waiting for:` or `Parked until:`, not only a
+   `Blocked by:` explanation. A known start may be recorded there; leave an unknown
+   start unstated. Output reports `since: null` for an unknown date. Re-read current
+   state before creating the linked worktree.
+
+When the request belongs to a person, preserve its body and record the correction
+in an authorized bot comment or automation-managed block. Existing resolution
+can be supplied directly to `claim --wait-resolved`; a body rewrite is not required.
+A known no-wait status such as `None; an agent acts next.` is recognized without
+resolution evidence. Extra clauses that record a hold still refuse. This normalization
+never clears native blockers, waiting labels, parent holds or competing claims.

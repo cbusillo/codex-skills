@@ -250,6 +250,11 @@ active issue labels and continuing background jobs do not lift a hold.
    retained artifacts and their recorded waits are checked. This claim does
    not lift a product hold or authorize changing the retained PRs.
 
+For a global invalid-wait finding, read the
+[supported wait correction procedure](references/global-next.md#correct-an-invalid-wait-before-claiming)
+before correcting status or claiming. Global selection does not clear a recorded
+wait; repo-local `next` and normal claim preflight retain it.
+
 Also report each `blocking_work_elsewhere` pair from `gh-plan.py next`, naming
 the local blocker and the repository/issue it holds up. Read the blocker's
 recorded wait and current ownership before proposing action; visibility does
