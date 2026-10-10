@@ -2734,7 +2734,9 @@ def _project_protected_artifacts(value: object) -> dict[str, object]:
             "instance": _protected_artifact_lane(entry.get("instance"), optional=True),
             "artifact_id": _protected_artifact_identifier(entry.get("artifact_id")),
             "source_record_type": public_code(entry.get("source_record_type")),
-            "source_record_id": _protected_artifact_lane(entry.get("source_record_id")),
+            "source_record_id": _protected_artifact_identifier(
+                public_identifier(entry.get("source_record_id"))
+            ),
             "image_digest": _protected_artifact_digest(entry.get("image_digest")),
         })
     projected = {
