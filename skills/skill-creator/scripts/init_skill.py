@@ -268,6 +268,7 @@ def init_skill(skill_name, path, resources, include_examples, interface_override
         path: Path where the skill directory should be created
         resources: Resource directories to create
         include_examples: Whether to create example files in resource directories
+        interface_overrides: UI metadata overrides in key=value form
 
     Returns:
         Path to created skill directory, or None if error
@@ -286,7 +287,7 @@ def init_skill(skill_name, path, resources, include_examples, interface_override
 
     # Create skill directory
     try:
-        skill_dir.mkdir(parents=True, exist_ok=False)
+        skill_dir.mkdir(parents=True)
         print(f"[OK] Created skill directory: {skill_dir}")
     except Exception as e:
         print(f"[ERROR] Error creating directory: {e}")
