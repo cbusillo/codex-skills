@@ -177,7 +177,7 @@ not assert that later verification resolved a wait. Missing verification is
 reported as `verification_unknown`; `recorded_at` anchors an unknown-age record
 without inventing its wait start. Archived or disabled inventory entries carry
 flags in returned rows or coverage errors. An unqualified `Owner` names
-the Director; an upstream or product owner does not without a known Director
+the Director; an upstream or product `owner` does not without a known Director
 identity in that wait.
 The report does not settle a question or release a hold. `--director-name` adds a known
 alias when no people index supplies it. Missing access, read failures, limits
