@@ -766,7 +766,9 @@ To recover an older ambiguous legacy release, the source author posts a new
 `Released claim <claim-comment-id>` comment for each original claim. For a
 closed automation session with a structured source claim, use the evidence-backed
 `release-claim` route above, including its verified related hand-written
-follow-ups. A hand-written source claim requires its author to post the exact-ID
+follow-ups. An explicit Session field on a related follow-up must name the
+source's native session; another session needs its own closure evidence or an
+exact-ID release by the original author. A hand-written source claim requires its author to post the exact-ID
 release.
 
 After a verified retained-work handoff, use `--resume-from <claim-comment-id>`.

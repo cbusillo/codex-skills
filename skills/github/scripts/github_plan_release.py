@@ -80,6 +80,10 @@ def prepare_release(
         if ((comment.get("user") or {}).get("login") != actor or claim.records(comment.get("body") or "")
                 or not re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", comment.get("body") or "")):
             raise ValueError("Related release must name an unstructured ownership follow-up of this exact source worker")
+        prose = claim.ownership_text(comment.get("body") or "", strip_quotes=False)
+        sessions = re.findall(r"(?im)\bSession:[ \t]*([^\n]+)", prose)
+        if any(session.strip() != record["session"] for session in sessions):
+            raise ValueError("Related ownership follow-up names a different native session; obtain that session's own closure evidence")
         if stamp(comment.get("updated_at") or comment.get("created_at")) >= cutoff:
             raise ValueError("Related ownership follow-up is newer than the session-ended evidence")
     receipt = {"source_id": source["id"], "source": record, "source_updated_at": source.get("updated_at") or source["created_at"],

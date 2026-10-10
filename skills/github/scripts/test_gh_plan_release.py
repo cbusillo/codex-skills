@@ -86,6 +86,29 @@ class ReleaseTests(unittest.TestCase):
         self.run_release()
         self.successor()
 
+    def test_related_followup_session_must_match_source_closure(self):
+        for field in ("Session: {}", "**Session:** `{}`", "> Session: {}"):
+            for session in ("session-b", "different-native-session"):
+                with self.subTest(field=field, session=session):
+                    self.setUp()
+                    self.f.comments.append(self.comment(2, "Claimed by trial-b\n" + field.format(session),
+                                                        "2026-10-01T01:00:00Z"))
+                    self.args.related_claim_comment = [2]
+                    if session == "session-b":
+                        self.run_release()
+                        self.successor()
+                    else:
+                        with self.assertRaisesRegex(PLAN.PlanError, "different native session"):
+                            self.run_release()
+                        self.f.assert_no_writes()
+
+    def test_source_author_can_release_distinct_followup_by_exact_id(self):
+        self.f.comments.append(self.comment(2, "Claimed by trial-b\nSession: distinct-session",
+                                           "2026-10-01T01:00:00Z"))
+        self.f.comments.append(self.comment(3, "Released claim 2", "2026-10-01T02:00:00Z"))
+        self.run_release()
+        self.successor()
+
     def refresh_setup(self):
         self.f.refresh_fixture()
         for n, c in enumerate(self.f.comments):
