@@ -19,6 +19,21 @@ MEMORY_CITATION_TAIL = re.compile(
 SAFE = re.compile(r"^(?:\*\*)?Safe to exit: yes\.?(?:\*\*)?$")
 
 
+def outside_fences(lines: list[str]) -> bool:
+    """The final verdict must be outside a completed Markdown fence."""
+    fence = None
+    for line in lines:
+        match = re.match(r"^\s*(`{3,}|~{3,})(.*)$", line)
+        if not match:
+            continue
+        marker, rest = match.groups()
+        if fence is None:
+            fence = marker
+        elif marker[0] == fence[0] and len(marker) >= len(fence) and not rest.strip():
+            fence = None
+    return fence is None
+
+
 def read_jsonl(path: Path) -> list[dict]:
     records = []
     with path.open(encoding="utf-8") as stream:
@@ -175,7 +190,7 @@ def summarize(records: list[dict], harness: str) -> dict:
     result["safe_verdict"] = bool(
         lines
         and SAFE.fullmatch(re.sub(r"^[-*] ", "", lines[-1].strip()).replace("**", ""))
-        and not any(line.lstrip().startswith(("```", "~~~")) for line in lines)
+        and outside_fences(lines)
         and result["at_turn_end"]
         and result["turn_end"] != "turn_aborted"
     )
