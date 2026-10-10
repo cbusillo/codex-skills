@@ -939,12 +939,15 @@ class TerminalTests(unittest.TestCase):
                 patch.object(account_choice, "select", return_value=choice),
                 patch.object(account_choice, "prepare_launch") as prepare,
                 patch.object(account_choice, "record_launch") as receipt,
+                patch.object(iterm_tab.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as start,
             ):
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as daemon:
                     daemon.bind(str(endpoint))
                     daemon.listen()
                     result = asyncio.run(iterm_tab.operate(app, args))
                     self.assertEqual(result["session_id"], "new")
+                    self.assertEqual(start.call_args.args[0], ["codex", "app-server", "daemon", "start"])
+                    self.assertEqual(start.call_args.kwargs["env"]["CODEX_HOME"], str(home))
                     window.async_create_tab.assert_awaited_once_with(select=False)
                     receipt.assert_called_once_with(choice)
                     sent = terminal.async_send_text.await_args_list[0].args[0]
@@ -990,6 +993,7 @@ class TerminalTests(unittest.TestCase):
                 patch.object(account_choice, "select_batch", return_value=choices),
                 patch.object(account_choice, "prepare_launch") as prepare,
                 patch.object(account_choice, "record_launch") as receipt,
+                patch.object(iterm_tab.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as start,
             ):
                 daemon.bind(str(endpoint))
                 daemon.listen()
@@ -998,6 +1002,8 @@ class TerminalTests(unittest.TestCase):
                 window.async_create_tab.assert_not_awaited()
                 prepare.assert_not_called()
                 receipt.assert_not_called()
+                self.assertEqual([call.kwargs["env"]["CODEX_HOME"] for call in start.call_args_list],
+                                 [choice["env"]["CODEX_HOME"] for choice in choices])
 
     def test_codex_daemon_timeout_refuses_and_closes_probe(self):
         probe = Mock()
@@ -1005,11 +1011,80 @@ class TerminalTests(unittest.TestCase):
         adapter = Mock()
         adapter.__enter__ = Mock(return_value=probe)
         adapter.__exit__ = Mock(return_value=False)
-        with patch.object(iterm_tab.socket, "socket", return_value=adapter):
+        with (
+            patch.object(iterm_tab.socket, "socket", return_value=adapter),
+            patch.object(iterm_tab.subprocess, "run", return_value=SimpleNamespace(returncode=0)),
+        ):
             with self.assertRaisesRegex(ValueError, "TimeoutError"):
                 iterm_tab.check_codex_daemon({"provider": "openai", "env": {"CODEX_HOME": "/selected"}})
         self.assertGreater(probe.settimeout.call_args.args[0], 0)
         adapter.__exit__.assert_called_once()
+
+    def test_codex_native_start_recovers_missing_socket(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as folder:
+            home = Path(folder) / "selected"
+            endpoint = home / "app-server-control" / "app-server-control.sock"
+            endpoint.parent.mkdir(parents=True)
+            choice = {"provider": "openai", "env": {"CODEX_HOME": str(home)}}
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as daemon:
+                def native_start(argv, **kwargs):
+                    self.assertFalse(endpoint.exists())
+                    self.assertEqual(argv, ["codex", "app-server", "daemon", "start"])
+                    self.assertEqual(kwargs["env"]["CODEX_HOME"], str(home))
+                    daemon.bind(str(endpoint))
+                    daemon.listen()
+                    return SimpleNamespace(returncode=0)
+
+                with patch.object(iterm_tab.subprocess, "run", side_effect=native_start) as start:
+                    self.assertIsNone(iterm_tab.check_codex_daemon(choice))
+                    start.assert_called_once()
+
+    def test_codex_start_failure_refuses_before_socket_tabs_and_receipts(self):
+        failures = [
+            (SimpleNamespace(returncode=1, stderr="native startup failed", stdout=""), "native startup failed"),
+            (SimpleNamespace(returncode=2, stderr="", stdout="startup diagnostic"), "startup diagnostic"),
+            (FileNotFoundError("codex unavailable"), "FileNotFoundError"),
+            (subprocess.TimeoutExpired("codex", 30), "TimeoutExpired"),
+        ]
+        with tempfile.TemporaryDirectory() as folder:
+            launch = Path(folder) / "launch.txt"
+            launch.write_text("codex --remote unix://")
+            choice = {"provider": "openai", "env": {"CODEX_HOME": str(Path(folder) / "selected")}}
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=launch,
+                                      account_provider="openai", account=None, account_config=None)
+            for failure, reason in failures:
+                probe = Mock()
+                with (
+                    self.subTest(reason=reason),
+                    patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
+                    patch.object(account_choice, "select", return_value=choice),
+                    patch.object(account_choice, "prepare_launch") as prepare,
+                    patch.object(account_choice, "record_launch") as receipt,
+                    patch.object(iterm_tab.subprocess, "run") as start,
+                ):
+                    if isinstance(failure, Exception):
+                        start.side_effect = failure
+                    else:
+                        start.return_value = failure
+                    # Initialize asyncio's own socketpair before mocking the daemon probe.
+                    with asyncio.Runner() as runner:
+                        runner.get_loop()
+                        with patch.object(socket, "socket", probe), self.assertRaisesRegex(ValueError, reason) as refused:
+                            runner.run(iterm_tab.operate(app, args))
+                    self.assertIn(choice["env"]["CODEX_HOME"], str(refused.exception))
+                    self.assertGreater(start.call_args.kwargs["timeout"], 0)
+                    probe.assert_not_called()
+                    window.async_create_tab.assert_not_awaited()
+                    prepare.assert_not_called()
+                    receipt.assert_not_called()
+
+    def test_claude_preflight_never_starts_codex(self):
+        with patch.object(iterm_tab.subprocess, "run") as start, patch.object(iterm_tab.socket, "socket") as probe:
+            self.assertIsNone(iterm_tab.check_codex_daemon({"provider": "anthropic", "env": {}}))
+        start.assert_not_called()
+        probe.assert_not_called()
 
     def test_default_claude_launch_clears_inherited_profile_after_cd(self):
         config = accounts_config(ACCOUNTS_TOML.replace(
@@ -1194,11 +1269,12 @@ class TerminalTests(unittest.TestCase):
         # Stand in for the CLI without reading auth or starting a real session.
         with tempfile.TemporaryDirectory() as folder:
             fake_codex = Path(folder) / "codex"
-            fake_codex.write_text('#!/bin/sh\nprintf "%s\\n" "$CODEX_HOME" "$1" "$2"\n')
+            fake_codex.write_text('#!/bin/sh\nprintf "%s\\n" "$CODEX_HOME" "$@"\n')
             fake_codex.chmod(0o700)
-            command = iterm_tab.with_account(f"cd / && {shlex.quote(str(fake_codex))} --remote unix://", choice)
+            settings = ["--remote", "unix://", "-c", 'model="test-model"', "-c", "model_reasoning_effort=medium"]
+            command = iterm_tab.with_account(f"cd / && {shlex.quote(str(fake_codex))} {shlex.join(settings)}", choice)
             launched = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True, check=True)
-        self.assertEqual(launched.stdout.splitlines(), [choice["env"]["CODEX_HOME"], "--remote", "unix://"])
+        self.assertEqual(launched.stdout.splitlines(), [choice["env"]["CODEX_HOME"], *settings])
 
     def test_launch_on_chosen_account_prefixes_env_only(self):
         terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
