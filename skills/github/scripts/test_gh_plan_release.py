@@ -87,7 +87,7 @@ class ReleaseTests(unittest.TestCase):
         self.successor()
 
     def test_related_followup_session_must_match_source_closure(self):
-        for field in ("Session: {}", "**Session:** `{}`", "> Session: {}", "Session: {}.", "Session: {} (capacity work)", "Session ID: {}", "Native session ID: {}", "session={}", "session_id: {}", "sessionId: {}", "Session-ID: {}", "Thread ID: {}", "Session — {}", "| Session | {} |", "Session: {}; PR #99"):
+        for field in ("Session: {}", "**Session:** `{}`", "> Session: {}", "Session: {}.", "Session: {} (capacity work)", "Session ID: {}", "Native session ID: {}", "session={}", "session_id: {}", "sessionId: {}", "Session-ID: {}", "Thread ID: {}", "Session — {}", "| Session | {} |", "Session: {}; PR #99", "(Session: {})"):
             for session in ("session-b", "different-native-session"):
                 with self.subTest(field=field, session=session):
                     self.setUp()
@@ -101,6 +101,17 @@ class ReleaseTests(unittest.TestCase):
                         with self.assertRaisesRegex(PLAN.PlanError, "different native session"):
                             self.run_release()
                         self.f.assert_no_writes()
+
+    def test_related_followup_prose_is_not_a_session_field(self):
+        for prose in ("session-start hook", "session-scoped work", "thread-safe cleanup",
+                      "Review thread: https://github.com/owner/repo/pull/99"):
+            with self.subTest(prose=prose):
+                self.setUp()
+                self.f.comments.append(self.comment(2, "Claimed by trial-b to fix " + prose,
+                                                    "2026-10-01T01:00:00Z"))
+                self.args.related_claim_comment = [2]
+                self.run_release()
+                self.successor()
 
     def test_related_source_followup_ignores_fenced_session_examples(self):
         for fence in ("```", "~~~"):

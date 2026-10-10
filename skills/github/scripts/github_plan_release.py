@@ -30,8 +30,14 @@ def related_sessions_match(text: str, session: str) -> bool:
         if opener:
             fence = opener.group(1)
             continue
-        for field in re.finditer(r"\b(?:Native[ \t_-]*)?(?:Session|Thread)(?:[ \t_-]*ID)?\b[ \t]*(?:[:=]|[—-])[ \t]*([^\s,;|]+)|\|[ \t]*(?:Session|Thread)(?:[ \t_-]*ID)?[ \t]*\|[ \t]*([^\s|]+)", line, re.IGNORECASE):
-            if not re.fullmatch(rf"{re.escape(session)}\.?", (field.group(1) or field.group(2)).strip()):
+        fields = (
+            r"\b(?:Native[ \t_-]*)?(?:Session(?:[ \t_-]*ID)?|Thread[ \t_-]*ID)\b"
+            r"(?:[ \t]*[:=][ \t]*|[ \t]+[—-][ \t]+)([^\s,;|]+)"
+            r"|\|[ \t]*(?:Session(?:[ \t_-]*ID)?|Thread[ \t_-]*ID)[ \t]*\|[ \t]*([^\s|]+)"
+        )
+        for field in re.finditer(fields, line, re.IGNORECASE):
+            value = (field.group(1) or field.group(2)).strip("()<>")
+            if not re.fullmatch(rf"{re.escape(session)}\.?", value):
                 return False
     return True
 
