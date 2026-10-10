@@ -101,6 +101,7 @@
   },
   "importantWorkflows": [
     "Validate Skills",
+    "CodeQL",
     "Launchplane Contract Freshness",
     "Launchplane Train Validation",
     "Update PEP 723 Dependencies"

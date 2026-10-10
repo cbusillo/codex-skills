@@ -49,6 +49,8 @@ APPROVED_REMOTE_ACTIONS: Mapping[str, ActionClassification] = {
     "astral-sh/setup-uv": ActionClassification(
         "Approved third-party publisher", "Python tool bootstrap"
     ),
+    "github/codeql-action/init": ActionClassification("GitHub-maintained", "code scanning"),
+    "github/codeql-action/analyze": ActionClassification("GitHub-maintained", "code scanning upload"),
 }
 
 
@@ -57,7 +59,7 @@ def initial_action_reference_files(root: Path) -> tuple[tuple[Path, ReferenceFil
     workflow_files.extend(sorted((root / ".github/workflows").glob("*.yaml")))
     composite_action_files = sorted((root / ".github/actions").rglob("action.yml"))
     composite_action_files.extend(sorted((root / ".github/actions").rglob("action.yaml")))
-    classified_files = [
+    classified_files: list[tuple[Path, ReferenceFileKind]] = [
         *((path, "workflow") for path in workflow_files),
         *((path, "action") for path in composite_action_files),
     ]
@@ -195,7 +197,8 @@ def local_reference_files(
     if not target.is_dir():
         return ()
     action_files = [target / "action.yml", target / "action.yaml"]
-    return tuple((path, "action") for path in action_files if path.is_file())
+    action_kind: ReferenceFileKind = "action"
+    return tuple((path, action_kind) for path in action_files if path.is_file())
 
 
 def parse_action_references(root: Path) -> tuple[list[ActionReference], list[str]]:
