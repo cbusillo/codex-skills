@@ -1136,7 +1136,8 @@ verification.
   local-extension read (`reconcile-requests-read --product`) for what the
   event reconciler last decided for each of a product's previews and its
   testing lane: state, attempt, delivery id, last error, and the plan's
-  action, reason, commit, digests and ids. Use `--target-key <exact-target-key>`
+  action, reason, commit, digests and ids. When testing keeps an older build,
+  `rejected_builds` lists the newer commits that failed verification. Use `--target-key <exact-target-key>`
   to select a target from the service response before the helper's output bound;
   a truncated unselected read cannot prove that testing is absent. An empty
   selection describes only the returned service list, not records outside it.
