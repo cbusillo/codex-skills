@@ -110,6 +110,23 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(before, {p.relative_to(plugin): p.read_bytes() for p in plugin.rglob("*") if p.is_file()})
         self.assertEqual(marketplace.read_text(), "[]")
 
+    def test_existing_plugin_conflict_precedes_duplicate_hint_and_registration_preserves_files(self):
+        self.run_plugin("--with-marketplace", "--with-mcp", "--with-apps")
+        plugin = self.root / "plugins/notes"
+        manifest = plugin / ".codex-plugin/plugin.json"
+        manifest.write_text('{"name":"notes","description":"Owner content"}')
+        (plugin / ".mcp.json").write_text('{"mcpServers":{"custom":{}}}')
+        before = {p.relative_to(plugin): p.read_bytes() for p in plugin.rglob("*") if p.is_file()}
+        marketplace = self.root / ".agents/plugins/marketplace.json"
+        market_before = marketplace.read_bytes()
+        result = self.run_plugin("--with-marketplace", "--with-mcp", "--with-apps", success=False)
+        self.assertIn(f"{manifest} already exists", result.stderr)
+        self.assertEqual(marketplace.read_bytes(), market_before)
+        self.assertEqual(before, {p.relative_to(plugin): p.read_bytes() for p in plugin.rglob("*") if p.is_file()})
+        self.run_plugin("--register-only", "--force", "--auth-policy", "ON_USE")
+        self.assertEqual(self.entry()["policy"]["authentication"], "ON_USE")
+        self.assertEqual(before, {p.relative_to(plugin): p.read_bytes() for p in plugin.rglob("*") if p.is_file()})
+
 
 if __name__ == "__main__":
     unittest.main()

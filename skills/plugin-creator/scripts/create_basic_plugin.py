@@ -190,9 +190,13 @@ def update_marketplace_json(
     write_json(marketplace_path, payload, force=True)
 
 
-def write_json(path: Path, data: dict, force: bool) -> None:
+def validate_write_destination(path: Path, force: bool) -> None:
     if path.exists() and not force:
         raise FileExistsError(f"{path} already exists. Use --force to overwrite.")
+
+
+def write_json(path: Path, data: dict, force: bool) -> None:
+    validate_write_destination(path, force)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as handle:
         json.dump(data, handle, indent=2)
@@ -290,6 +294,9 @@ def main() -> None:
         print(f"Registered plugin: {plugin_root}")
         print(f"marketplace manifest: {marketplace_path}")
         return
+    plugin_json_path = plugin_root / ".codex-plugin" / "plugin.json"
+    validate_write_destination(plugin_json_path, args.force)
+
     marketplace_payload = None
     if args.with_marketplace:
         marketplace_payload = prepare_marketplace_json(
@@ -299,7 +306,6 @@ def main() -> None:
 
     plugin_root.mkdir(parents=True, exist_ok=True)
 
-    plugin_json_path = plugin_root / ".codex-plugin" / "plugin.json"
     write_json(plugin_json_path, build_plugin_json(plugin_name), args.force)
 
     optional_directories = {
