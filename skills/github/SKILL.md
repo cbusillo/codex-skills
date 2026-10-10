@@ -876,9 +876,10 @@ Use PRs for all non-trivial changes.
   PR, issue, review, and closeout text.
 - **Labels**: Planning labels are only for durable planning issues. PR labels
   follow the [label taxonomy](references/repo-workflow.md#label-taxonomy):
-  `preview-ready`, the optional `awaiting-qa` handoff, and the merge-train
-  enqueue label from active policy, which still needs a fresh readiness check
-  and merge authorization.
+  `preview-ready`, the optional `awaiting-qa` handoff, `own-project` for
+  own-project work in a mixed repository, and the merge-train enqueue label
+  from active policy, which still needs a fresh readiness check and merge
+  authorization.
 - **Follow-through**: When an open PR needs repeated CI, review, mergeability,
   or merged/closed polling, hand off to `babysit-pr`. Use its `--once` snapshot
   for a merged or closed PR's closeout evidence.
