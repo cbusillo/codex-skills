@@ -65,9 +65,15 @@ def fetch(item):
         timeout=120,
     )
     result = json.loads(run.stdout)
-    if not result.get("ok") or result.get("outcome_certainty") != "confirmed":
+    if (result.get("ok") is not True
+            or result.get("outcome_certainty") not in {"confirmed", "not_applicable"}
+            or result.get("disposition") != "complete"
+            or result.get("exit_code") != 0):
         raise ValueError("issue discussion read is incomplete")
-    return result["issue"]["comments"]
+    comments = result["issue"]["comments"]
+    if not isinstance(comments, list) or not all(isinstance(c, dict) for c in comments):
+        raise ValueError("issue discussion comments are malformed")
+    return comments
 
 
 def main():
