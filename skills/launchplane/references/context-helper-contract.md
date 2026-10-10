@@ -106,6 +106,11 @@ The helper must emit one JSON object with these keys:
 - `unauthorized`: Launchplane rejected the configured credential or policy.
 - `invalid`: helper received unusable input or an invalid provider response.
 
+Caller selectors are checked with the shared public-text safety validator before
+configuration or provider reads. Token-shaped or local-path selectors return an
+`invalid` envelope with an empty request and a generic `invalid_request` warning;
+the original input is never echoed, including when context is unconfigured.
+
 Skills must treat every status except `available` as optional context absence.
 
 Section status values:
