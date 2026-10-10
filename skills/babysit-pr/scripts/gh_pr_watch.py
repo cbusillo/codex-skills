@@ -1513,11 +1513,11 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
                              if intent["outcome"] == "confirmed" and run_id not in present_ids]
     rejected = reconcile_rejected_reruns(state, pr["head_sha"], workflow_runs)
     retries_used = current_retry_count(state, pr["head_sha"])
+    evidence_reader = None
     if (not pr["closed"] and not pr["merged"] and not pending_reruns
             and checks_summary.get("evidence_complete") is True and checks_summary["all_terminal"]
             and retries_used < args.max_flaky_retries):
         ordinary_retry_ids = {run["run_id"] for run in retryable_failed_runs(failed_runs, failed_jobs)}
-        evidence_reader = None
         for run in failed_runs:
             if run["run_id"] not in ordinary_retry_ids:
                 if evidence_reader is None:
@@ -1584,11 +1584,16 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
             "missing_confirmed_run_ids": missing_confirmed_ids,
             "rejected_run_ids": list(rejected),
         },
-        "minimum_poll_seconds": max((github_read.poll_interval(result.headers) for result in reader.results), default=0.0),
+        "minimum_poll_seconds": max((
+            github_read.poll_interval(result.headers)
+            for active_reader in (reader, evidence_reader) if active_reader is not None
+            for result in active_reader.results
+        ), default=0.0),
         "read_diagnostics": {
             "pr": pr_diagnostic,
             "checks": checks_diagnostic,
             "review": review_diagnostic,
+            "runner_acquisition": evidence_reader.diagnostics() if evidence_reader is not None else None,
         },
     }
     return snapshot, state_path
