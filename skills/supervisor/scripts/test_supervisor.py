@@ -637,6 +637,26 @@ class QuestionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             oq.fetch("repo#1")
 
+    def test_complete_cached_discussion_preserves_question_inventory(self):
+        comments = [{"id": 1, "url": "question", "author": "bot",
+                     "body": "Owner question: proceed?"},
+                    {"id": 2, "url": "answer", "author": "owner", "body": "question yes"}]
+        envelope = {"ok": True, "outcome_certainty": "confirmed", "disposition": "complete",
+                    "exit_code": 0, "recommended_next_action": "none", "issue": {"comments": comments}}
+        for certainty in ("confirmed", "not_applicable"):
+            with self.subTest(certainty=certainty), patch.object(oq.subprocess, "run",
+                return_value=SimpleNamespace(stdout=json.dumps({**envelope, "outcome_certainty": certainty,
+                    "recommended_next_action": "inspect_last_failure" if certainty == "not_applicable" else "none"}))):
+                fetched = oq.fetch("example/repo#1")
+                self.assertEqual(fetched, comments)
+                self.assertEqual(oq.questions(fetched, "owner", {"bot"})[0]["status"], "answered")
+        for override in ({"ok": False}, {"outcome_certainty": "unknown"},
+                         {"disposition": "stop"}, {"exit_code": 1},
+                         {"issue": {"comments": {}}}):
+            with self.subTest(override=override), patch.object(oq.subprocess, "run",
+                return_value=SimpleNamespace(stdout=json.dumps({**envelope, **override}))), self.assertRaises(ValueError):
+                oq.fetch("example/repo#1")
+
 
 NOW = datetime(2026, 10, 3, 16, tzinfo=timezone.utc)
 ACCOUNTS_TOML = """

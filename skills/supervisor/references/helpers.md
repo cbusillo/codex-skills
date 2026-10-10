@@ -71,8 +71,12 @@ ended, not that work succeeded; an abort is also a notice. Use Claude Code's
 `notify_when_idle` when available, not another watcher.
 
 The question helper reads every comment via the maintained GitHub helper and
-returns every question, not just the newest. Configure the Director's login
-and only the trusted decision-recording authors for this run. A later reply
+returns every question, not just the newest. Successful complete reads,
+including cached reads with `not_applicable`
+outcome certainty, preserve that inventory; failed or incomplete reads report
+an error rather than an empty question list.
+Configure the Director's login and only the trusted decision-recording authors
+for this run. A later reply
 must link a question's URL or comment id to mark it answered; unlinked plain
 answers remain `needs_review` for the Supervisor to reconcile from the exact
 decision record. A script's match does not itself establish what was decided.
