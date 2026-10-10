@@ -148,6 +148,8 @@ def validate_skill_content(content: str, skill_dir: Path | None = None) -> tuple
     if not isinstance(name, str):
         return False, f"Name must be a string, got {type(name).__name__}"
     name = name.strip()
+    if not name:
+        return False, "Name cannot be empty"
     if name:
         if not re.match(r"^[a-z0-9-]+$", name):
             return (
@@ -170,6 +172,8 @@ def validate_skill_content(content: str, skill_dir: Path | None = None) -> tuple
     if not isinstance(description, str):
         return False, f"Description must be a string, got {type(description).__name__}"
     description = description.strip()
+    if not description:
+        return False, "Description cannot be empty"
     if description:
         if "<" in description or ">" in description:
             return False, "Description cannot contain angle brackets (< or >)"
@@ -460,6 +464,19 @@ def run_self_tests():
     """Exercise validator policy without relying on repo-local fixtures."""
 
     cases = [
+        *[
+            (
+                f"blank-{field}-{index}",
+                "---\n"
+                + (f"name: {value}\ndescription: Use for demo work.\n" if field == "name"
+                   else f"name: demo-skill\ndescription: {value}\n")
+                + "---\n",
+                False,
+                f"{field.capitalize()} cannot be empty",
+            )
+            for field in ("name", "description")
+            for index, value in enumerate(('""', '"   "', '"\\t\\n"'))
+        ],
         (
             "minimal",
             "---\nname: demo-skill\ndescription: Use for demo work.\n---\n\n# Demo\n",

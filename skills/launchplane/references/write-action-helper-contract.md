@@ -1331,7 +1331,7 @@ request fields. It emits bounded proposal metadata, counts, trace,
 and a relative `review_path` on the Launchplane UI host; it never returns
 policy selectors or credential-routing fields.
 
-On a timeout or response-verification failure, retain the same envelope and
+On a timeout, HTTP 5xx or response-verification failure, retain the same envelope and
 source event for reconciliation/replay. Never substitute a new identity or a new
 source event to force a duplicate proposal. A denial is not a missing token:
 report the refused action and trace and follow Launchplane denial handling.
