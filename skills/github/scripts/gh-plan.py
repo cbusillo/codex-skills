@@ -2105,6 +2105,18 @@ def cmd_claim(args: argparse.Namespace) -> None:
     if subprocess.run(["git", "check-ref-format", "--branch", args.branch],
                       capture_output=True).returncode:
         raise PlanError("Claim branch is not a valid Git branch")
+    admission = getattr(args, "admission", None)
+    admission_links = list(dict.fromkeys(getattr(args, "admission_link", None) or []))
+    admission_unlinked = getattr(args, "admission_unlinked", None)
+    if (admission_links or admission_unlinked is not None) and not admission:
+        raise PlanError("--admission-link and --admission-unlinked require --admission")
+    if any(not github_plan_claim.ISSUE_URL.fullmatch(link) for link in admission_links):
+        raise PlanError("--admission-link must be an exact GitHub issue or pull request URL")
+    if admission_unlinked is not None and (admission != "milestone" or not admission_unlinked.strip()
+                                           or any(c in admission_unlinked for c in "\n\r")):
+        raise PlanError("--admission-unlinked records one nonempty line for milestone admission")
+    if admission == "repeat-stop" and len(admission_links) < 2:
+        raise PlanError("Repeat-stop admission needs both occurrences: pass --admission-link once for each")
     refresh_pr = getattr(args, "refresh_pr", None)
     handoff_id = getattr(args, "handoff_comment", None)
     if refresh_pr and (not handoff_id or not args.resume_from):
@@ -2313,6 +2325,38 @@ def cmd_claim(args: argparse.Namespace) -> None:
         if peers:
             refuse(peers)
 
+    def admission_line() -> str:
+        if not admission:
+            return ""
+        track = None
+        if admission == "milestone":
+            def read_parent(parent_repo: str, parent_number: int) -> dict[str, Any] | None:
+                try:
+                    return api_json("GET", f"/repos/{parent_repo}/issues/{parent_number}/parent", is_write=False,
+                                    bucket="rest_core", failed_step="claim_admission_parent")[1]
+                except PlanError as parent_error:
+                    if (parent_error.api_result or {}).get("status") == 404:
+                        return None
+                    raise
+
+            track, complete = github_plan_claim.admission_track(
+                (issue_repo, number), issue_repo.split("/")[0],
+                read_issue=lambda node_repo, node_number: get_issue(str(node_number), node_repo)[1],
+                read_parent=read_parent,
+                read_blocking=lambda node_repo, node_number: collect_paged_rest_items(
+                    f"/repos/{node_repo}/issues/{node_number}/dependencies/blocking",
+                    query={}, bucket="rest_core", step_prefix="claim_admission_blocking")[1],
+            )
+            if not track and not admission_unlinked:
+                raise ClassifiedPlanError(
+                    "claim_admission_unlinked",
+                    "Milestone admission needs this issue linked into its milestone's Track graph (a sub-issue or blocker "
+                    "of the Track or of work already in its graph). Link it with gh-plan.py link, or pass "
+                    "--admission-unlinked REASON" + ("" if complete else "; the graph walk hit its node limit"),
+                    payload={"graph_walk_complete": complete},
+                )
+        return github_plan_claim.admission_text(admission, admission_links, track=track, unlinked=admission_unlinked) + "\n\n"
+
     def check_native_blockers() -> None:
         _, blockers = collect_paged_rest_items(
             f"/repos/{issue_repo}/issues/{number}/dependencies/blocked_by",
@@ -2334,6 +2378,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
             claim = {key: owned[0][key] for key in claim}
         retained = github_plan_claim.retained_branch(comments, args.resume_from) if args.resume_from else None
         check_native_blockers()
+        admission_record = admission_line()
         retained_branches = handoff_preflight(comments, status)
         inventory = github_plan_claim.local_inventory(target_repo, number)
         _, pulls = collect_paged_rest_items(
@@ -2358,6 +2403,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
             f"Claimed by {claim['worker']}\n\nSession: {claim['session']}\nBranch: {claim['branch']}\n"
             f"Claimed at: {claim['claimed_at']}\nNext action: {args.next_action}\n\n"
             + (f"Agent override (Director-authorized): {override}\n\n" if override else "")
+            + admission_record
             + github_plan_claim.marker(claim)
             + (f"\n\nConflict-only refresh: {claim['refresh_pr']}; released claim {args.resume_from}; handoff comment {handoff_id}." if refresh_pr else "")
             + (f"\n\nRetained-work handoff: released claim {args.resume_from}; handoff comment {handoff_id}. This ordinary successor claim preserves retained PRs and their product holds." if handoff_id and not refresh_pr else "")
@@ -4910,6 +4956,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--handoff-comment", type=int, help="Exact source-author retained-PR handoff comment ID; with --resume-from for ordinary successor work or --refresh-pr for conflict-only refresh")
     p.add_argument("--planning-checkout", help="Canonical planning repository checkout for cross-repository ownership inventory")
     p.add_argument("--wait-resolved", help="Existing resolution evidence for a recorded wait/hold; grants no new authority")
+    p.add_argument("--admission", choices=github_plan_claim.ADMISSIONS,
+                   help="Which overall Order rule admits this work; milestone requires a native link into a milestone Track graph")
+    p.add_argument("--admission-link", action="append", default=[], metavar="URL",
+                   help="Issue or PR evidence for the admission; repeat-stop needs both occurrences")
+    p.add_argument("--admission-unlinked", metavar="REASON",
+                   help="Why milestone work cannot be linked into its Track graph yet")
     p.set_defaults(func=cmd_claim)
 
     p = sub.add_parser("create", help="Create a durable plan issue")

@@ -187,7 +187,8 @@ records that run.
    question comment it answers, and points
    the session at it. It records only what the Director said. Briefs accept a decision recorded by the
    Supervisor or a direction session, not only one posted from the Director's
-   own login.
+   own login. On an escalation, it leaves the `direction` label in place; the
+   weekly direction audit judges the decision and removes it.
 3. **A check about every 23 minutes.** Keep a ledger of session, repository,
    issue, and tab title. Nudge a stalled session with exact facts: the comment,
    the failing check, the time it last moved. Check each session's context

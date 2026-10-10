@@ -93,8 +93,8 @@ one.
 
 ## Roles
 
-- **Director** decides. Approves direction pull requests, closes escalations, and
-  is the only party whose yes changes the file.
+- **Director** decides. Approves direction pull requests, decides escalations,
+  and is the only party whose yes changes the file.
 - **Direction agent** drafts, argues, and audits. It runs in a session the
   Director starts directly in a host, never as a subordinate call from an
   executing agent: an executing agent choosing what the direction agent sees
@@ -166,8 +166,9 @@ adopted repository, all from one session and one checkout: for each
 repository, run the audit script with `--repo OWNER/REPO`, read the findings
 first, then do steps 1 to 4 for that repository with `--repo` on every
 helper, using the merged `DIRECTION.md` the audit fetched rather than the
-local file. The adopted repositories are the ones in the marker's `audits`
-map plus any the Director names; a repository enters the map only when an
+local file. The audit of `OWNER/direction` also covers active repositories
+without a file; see `active_unadopted` below. The adopted repositories are the
+ones in the marker's `audits` map plus any the Director names; a repository enters the map only when an
 audit reads its merged `DIRECTION.md`. An unadopted audit still reports
 `direction_missing` and leaves the marker untouched. Nobody opens a session
 per repository; the
@@ -289,8 +290,14 @@ For each finding:
   (Pro for a user account, Team for an organization) or a public repository
   enables them; ask the Director which, if either, they want.
 - `escalation_open`: a `direction` issue, or a pull request that changes
-  `DIRECTION.md`, waiting on the Director. Decide it in this session or say why
-  not.
+  `DIRECTION.md`, waiting on the Director. Read the full thread, check each
+  recorded Director decision against the session transcripts where they are
+  readable, and judge whether anything still waits on the Director. If nothing
+  does, post that judgment on the issue, with the decisions it rests on, and
+  remove the `direction` label. If something does, keep the label and put the
+  remaining decision to the Director in this session. Executing and Supervisor
+  sessions keep the label when they record a decision; this check is the
+  audit's.
 - `waiting_blocks_other_repository`: a waiting local issue blocks open work
   in another repository. Report both issues and the local wait; ask the Director
   whether to lift it, with a recommendation based on the recorded reason.
@@ -388,10 +395,24 @@ Incomplete graph, native link, repository or Order-list reads keep the floor
 `unknown` and the audit window open for a rerun; partial counts are not a
 settled share.
 
-In the audit of `OWNER/direction`, you may also list, as information only, the
-repositories that received executing-loop work since the last audit but have no
-`DIRECTION.md`, saying that the overall direction applies to them. Never
-suggest that one adopt its own file; that is the Director's call.
+The audit of `OWNER/direction` also returns `capacity.milestone_outcomes`: for
+each listed milestone, what moved in its `Track:` graph during the window,
+beside the pull-request counts. `issues_closed` comes from the graph listings;
+`links_added` (sub-issue and blocked-by links) and `items_checked` (checkboxes
+unchecked when the window opened and checked now) are read only for issues
+updated in the window, at most 200 of them. `unavailable` names any limit hit
+or unread issue, and `complete` is false when it is not empty. Report each
+milestone's line; a milestone with no movement says so.
+
+It also returns `active_unadopted`: the stale-wait report and `gate_phrase`
+matches for every repository of that account with a push in the window that
+is not archived and has no `DIRECTION.md` on its default branch. Most
+milestone work lives in such repositories. Read each one's stale-wait items
+and gate phrases as the sections above describe; `complete` and `unavailable`
+state the coverage limits. These repositories are not adopted: the audit does
+not add them to the marker, report `direction_missing` for them, or hold its
+window open for them, and you never suggest that one adopt its own file; that
+is the Director's call.
 
 ## Unannounced Planted Run
 

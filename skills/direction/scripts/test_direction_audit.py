@@ -1316,6 +1316,137 @@ def test_only_the_direction_repository_audit_counts_capacity() -> None:
     assert windows == [("o/direction", SINCE)]
 
 
+def test_weekly_direction_audit_covers_active_repositories_without_a_direction_file() -> None:
+    import base64
+
+    module = load()
+    old = stamp(SINCE - dt.timedelta(days=1))
+    listing = [{"full_name": f"o/{name}", "owner": {"login": "o"}, "pushed_at": pushed, "archived": archived}
+               for name, pushed, archived in (("direction", stamp(NOW), False), ("adopted", stamp(NOW), False),
+                                              ("site", stamp(NOW), False), ("quiet", old, False),
+                                              ("attic", stamp(NOW), True), ("broken", stamp(NOW), False))]
+    waiting = {**issue(157, "Production crash fix", labels=("plan", "plan:waiting"),
+                       body="## Current Status\nWaiting for: PR o/site#5 to merge.\n"),
+               "issue_dependencies_summary": {"total_blocked_by": 0}}
+    gated = issue(160, "Ship the form", body="Merge once both reviewers approve.")
+    calls: list[str] = []
+
+    def fetch(args: list[str]) -> Any:
+        path = args[1]
+        calls.append(path)
+        if path.startswith("installation/repositories"):
+            return {"repositories": listing}
+        if path == "repos/o/adopted/contents/DIRECTION.md":
+            return {"content": base64.b64encode(DIRECTION.encode()).decode()}
+        if "/contents/" in path:
+            raise module.AuditError("HTTP 404")
+        if path.startswith("repos/o/broken/issues"):
+            raise module.AuditError("HTTP 502")
+        if path.startswith("repos/o/site/issues?state=open"):
+            return [waiting, gated, {"number": 6, "title": "both reviewers approve", "pull_request": {}}]
+        if path.startswith("repos/o/site/milestones"):
+            return [{"number": 2, "title": "Launch", "description": "Closes when all findings are resolved."}]
+        if path == "repos/o/site":
+            return {"archived": False, "default_branch": "main"}
+        if path == "repos/o/site/issues/5":
+            return {"number": 5, "state": "closed", "pull_request": {}}
+        if path == "repos/o/site/pulls/5":
+            return {"number": 5, "merged_at": stamp(NOW), "base": {"ref": "main"}}
+        return []
+
+    report = module.active_unadopted_report("o/direction", SINCE, fetch=fetch)
+    assert [row["repo"] for row in report["repositories"]] == ["o/site"]
+    site = report["repositories"][0]
+    assert [item["number"] for item in site["stale_wait_report"]["items"]] == [157]
+    assert [(item.get("number"), item.get("milestone")) for item in site["gate_phrases"]] == [(160, None), (None, 2)]
+    assert report["unavailable"] == [{"repo": "o/broken", "source": "issues", "reason": "unavailable"}]
+    assert not report["complete"]
+    assert not any(path.startswith(("repos/o/quiet/", "repos/o/attic/", "repos/o/direction/issues")) for path in calls)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        marker.write_text(json.dumps({"audits": {"o/direction": stamp(SINCE)}}))
+        output = StringIO()
+        with (patch.dict("os.environ", {"DIRECTION_MARKER": str(marker)}),
+              patch.dict(vars(module), {
+                  "merged_direction": lambda *_args, **_kwargs: DIRECTION,
+                  "gh_json": lambda *_args, **_kwargs: [],
+                  "fetch_capacity": lambda *_args, **_kwargs: (summary(module), []),
+                  "active_unadopted_report": lambda *_args, **_kwargs: report,
+              }),
+              redirect_stdout(output)):
+            module.main(["--repo", "o/direction", "--automation", "bot", "--gh", "fixture-gh"])
+        result = json.loads(output.getvalue())
+        assert result["active_unadopted"] == report
+        assert "direction_missing" not in kinds(result)
+        # Its coverage limits are reported, not a reason to hold the audit window open.
+        assert set(json.loads(marker.read_text())["audits"]) == {"o/direction"} and result["marked"]
+
+
+def test_milestone_outcomes_report_closures_links_and_checked_finish_line_items() -> None:
+    module = load()
+    before = stamp(SINCE - dt.timedelta(days=2))
+    inside = stamp(SINCE + dt.timedelta(days=1))
+    track_body = "## Finish Line\n- [x] Spike A runs\n- [ ] Spike B runs\n- [x] Old proof\n"
+    activity = {
+        ("o/direction", 1): {"body": track_body, "createdAt": before,
+                             "timelineItems": {"totalCount": 2, "nodes": [
+                                 {"__typename": "SubIssueAddedEvent", "createdAt": inside,
+                                  "subIssue": {"url": "https://github.com/x/product/issues/9"}},
+                                 {"__typename": "BlockedByAddedEvent", "createdAt": stamp(NOW + dt.timedelta(minutes=5)),
+                                  "blockingIssue": {"url": "https://github.com/o/tools/issues/3"}}]},
+                             "userContentEdits": {"totalCount": 2, "nodes": [
+                                 {"editedAt": inside, "diff": track_body},
+                                 {"editedAt": before, "diff": track_body.replace("[x] Spike A", "[ ] Spike A")}]}},
+        ("x/product", 9): {"body": "- [x] Shipped\n", "createdAt": inside,
+                           "timelineItems": {"totalCount": 0, "nodes": []},
+                           "userContentEdits": {"totalCount": 0, "nodes": []}},
+    }
+    edges = {
+        "repos/o/direction/issues/1/sub_issues": [
+            {"html_url": "https://github.com/x/product/issues/9", "state": "closed", "title": "Ship it",
+             "closed_at": inside, "updated_at": inside}],
+        "repos/o/direction/issues/1/dependencies/blocked_by": [
+            {"html_url": "https://github.com/o/tools/issues/3", "state": "open", "updated_at": before}],
+    }
+    graphql_reads: list[tuple[str, int]] = []
+
+    def fetch(args: list[str]) -> Any:
+        path = args[1].split("?")[0]
+        if path == "graphql":
+            values = dict(arg.split("=", 1) for arg in args if "=" in arg and not arg.startswith("query="))
+            key = (f"{values['owner']}/{values['name']}", int(values["number"]))
+            graphql_reads.append(key)
+            return {"data": {"repository": {"issue": activity[key]}}}
+        if path == "repos/o/direction/milestones":
+            return [{"number": 1, "title": "Thin fork decision", "state": "open"},
+                    {"number": 2, "title": "Dogfood week", "state": "open"}]
+        if args[1].startswith("repos/o/direction/issues?state=all&milestone=1"):
+            return [{"number": 1, "title": "Track: thin fork", "state": "open", "updated_at": inside},
+                    {"number": 4, "title": "Ordinary work", "state": "open", "updated_at": inside}]
+        return edges.get(path, [])
+
+    thin, dogfood = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=fetch)
+    assert thin["milestone"] == "Thin fork decision" and thin["complete"], thin
+    assert thin["tracks"] == ["https://github.com/o/direction/issues/1"]
+    assert [item["url"] for item in thin["issues_closed"]] == ["https://github.com/x/product/issues/9"]
+    assert thin["links_added"] == [{"to": "https://github.com/o/direction/issues/1", "kind": "sub_issue",
+                                    "issue": "https://github.com/x/product/issues/9", "added_at": inside}]
+    # Boxes checked during the window count; one already checked, or on an issue
+    # created in the window with no earlier box, does not.
+    assert thin["items_checked"] == [{"url": "https://github.com/o/direction/issues/1", "item": "Spike A runs"}]
+    assert sorted(graphql_reads) == [("o/direction", 1), ("x/product", 9)], "quiet issues need no activity read"
+    assert dogfood == {"milestone": "Dogfood week", "tracks": [], "issues_closed": [], "links_added": [],
+                       "items_checked": [], "unavailable": [], "complete": True}
+
+    limited = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=fetch, max_reads=1)[0]
+    assert not limited["complete"] and any(item.endswith(":read_limit") for item in limited["unavailable"])
+    activity[("o/direction", 1)] = {**activity[("o/direction", 1)], "userContentEdits": {
+        "totalCount": 150, "nodes": [{"editedAt": inside, "diff": track_body}]}}
+    cut = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=fetch)[0]
+    assert "activity:o/direction#1:history_limit" in cut["unavailable"] and not cut["complete"]
+
+
 def test_stale_wait_report_checks_realistic_parked_records_without_writes() -> None:
     module = load()
     rows = [

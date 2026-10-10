@@ -2690,6 +2690,96 @@ class ClaimTests(unittest.TestCase):
             self.run_claim()
         self.assertEqual(caught.exception.payload["claim_recovery"]["release_own_claim"]["body"], "Released claim 1")
 
+    # A claim names the Order rule that admits its work; milestone work is linked first.
+    TRACK = {"title": "Track: CM website live", "milestone": {"title": "CM website live and used"}}
+
+    @staticmethod
+    def walk(graph, start=("owner/product", 7), **kwargs):
+        reads = []
+
+        def read_issue(repo, number):
+            reads.append((repo, number))
+            return graph.get((repo, number), {}).get("issue", {"title": "Work"})
+
+        return CLAIM.admission_track(
+            start, "owner", read_issue=read_issue,
+            read_parent=lambda repo, number: graph.get((repo, number), {}).get("parent"),
+            read_blocking=lambda repo, number: graph.get((repo, number), {}).get("blocking", []),
+            **kwargs,
+        ), reads
+
+    def test_walk_reaches_the_track_through_a_parent_and_a_blocked_issue(self):
+        graph = {
+            ("owner/product", 7): {"parent": {"html_url": "https://github.com/owner/product/issues/3"}},
+            ("owner/product", 3): {"blocking": [{"html_url": "https://github.com/owner/direction/issues/9"}]},
+            ("owner/direction", 9): {"issue": self.TRACK},
+        }
+        (track, complete), _ = self.walk(graph)
+        self.assertTrue(complete)
+        self.assertEqual(track["url"], "https://github.com/owner/direction/issues/9")
+        self.assertEqual(track["milestone"], "CM website live and used")
+
+    def test_walk_without_a_track_is_complete_and_unlinked_and_survives_cycles(self):
+        graph = {
+            ("owner/product", 7): {"blocking": [{"html_url": "https://github.com/owner/product/issues/8"}]},
+            ("owner/product", 8): {"parent": {"html_url": "https://github.com/owner/product/issues/7"}},
+            # A Track title outside OWNER/direction, or without a milestone, is not the graph.
+            ("owner/product", 9): {"issue": self.TRACK},
+        }
+        (track, complete), reads = self.walk(graph)
+        self.assertEqual((track, complete), (None, True))
+        self.assertEqual(reads, [("owner/product", 7), ("owner/product", 8)])
+        limited, _ = self.walk(graph, max_nodes=1)
+        self.assertEqual(limited, (None, False))
+
+    def admit(self, kind, links=(), unlinked=None, track=None, complete=True):
+        self.args.admission, self.args.admission_link, self.args.admission_unlinked = kind, list(links), unlinked
+        with patch.object(CLAIM, "admission_track", return_value=(track, complete)) as walk:
+            self.run_claim()
+        return walk
+
+    def test_unlinked_milestone_claim_refuses_before_any_write(self):
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.admit("milestone")
+        self.assertEqual(caught.exception.code, "claim_admission_unlinked")
+        self.assert_no_writes()
+
+    def test_linked_or_explained_milestone_claim_records_its_admission(self):
+        track = {"url": "https://github.com/owner/direction/issues/9", "title": "Track: CM website live",
+                 "milestone": "CM website live and used"}
+        walk = self.admit("milestone", track=track)
+        self.assertEqual(walk.call_args.args[:2], (("owner/repo", 42), "owner"))
+        self.assertIn("Admission: milestone; reaches https://github.com/owner/direction/issues/9 "
+                      "(Track: CM website live, milestone `CM website live and used`)", self.comments[-1]["body"])
+        self.setUp()
+        self.admit("milestone", unlinked="the Track issue is not created yet")
+        self.assertIn("Admission: milestone; not linked into a milestone Track graph: the Track issue is not created yet",
+                      self.comments[-1]["body"])
+
+    def test_repeat_stop_needs_both_occurrences_and_spare_capacity_is_named(self):
+        first = "https://github.com/owner/repo/issues/5"
+        for links in ((), (first,), (first, first)):
+            self.setUp()
+            with self.assertRaises(PLAN.PlanError):
+                self.admit("repeat-stop", links)
+            self.assert_no_writes()
+        self.setUp()
+        self.admit("repeat-stop", (first, "https://github.com/owner/other/pull/6"))
+        self.assertIn(f"Admission: repeat-stop; {first}, https://github.com/owner/other/pull/6", self.comments[-1]["body"])
+        self.setUp()
+        walk = self.admit("spare-capacity")
+        walk.assert_not_called()
+        self.assertIn("Admission: spare-capacity\n", self.comments[-1]["body"])
+
+    def test_admission_details_require_the_kind_they_describe(self):
+        for kind, links, unlinked in ((None, ("https://github.com/owner/repo/issues/5",), None),
+                                      ("spare-capacity", (), "reason"),
+                                      ("milestone", ("not a url",), None)):
+            self.setUp()
+            with self.assertRaises(PLAN.PlanError):
+                self.admit(kind, links, unlinked)
+            self.assert_no_writes()
+
 
 if __name__ == "__main__":
     unittest.main()

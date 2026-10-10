@@ -777,3 +777,53 @@ def artifact_evidence(
             if not permitted(branch) or not same_repo:
                 conflicts.append({"source": "open_pr", "number": pull["number"], "branch": branch})
     return conflicts
+
+
+# The kinds of work the overall Order admits; a claim names one with --admission.
+ADMISSIONS = ("live-breakage", "milestone", "repeat-stop", "spare-capacity")
+ISSUE_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/([1-9]\d*)")
+
+
+def admission_track(
+    start: tuple[str, int], owner: str, *, read_issue: Any, read_parent: Any, read_blocking: Any,
+    max_nodes: int = 50,
+) -> tuple[dict[str, Any] | None, bool]:
+    """The milestone Track this issue reaches through parents and the issues it blocks.
+
+    Returns the Track and whether the walk was complete. A Track is an issue
+    titled `Track:` with a milestone in OWNER/direction, the graph the weekly
+    audit counts as milestone work.
+    """
+    direction = f"{owner}/direction".casefold()
+    pending = [start]
+    seen: set[tuple[str, int]] = set()
+    while pending:
+        repo, number = pending.pop(0)
+        key = (repo.casefold(), number)
+        if key in seen:
+            continue
+        if len(seen) >= max_nodes:
+            return None, False
+        seen.add(key)
+        issue = read_issue(repo, number)
+        milestone = (issue.get("milestone") or {}).get("title")
+        if key[0] == direction and str(issue.get("title") or "").startswith("Track:") and milestone:
+            return {"url": f"https://github.com/{repo}/issues/{number}", "title": issue.get("title"),
+                    "milestone": milestone}, True
+        for linked in [read_parent(repo, number), *read_blocking(repo, number)]:
+            match = ISSUE_URL.fullmatch(str((linked or {}).get("html_url") or ""))
+            if match:
+                pending.append((match[1], int(match[2])))
+    return None, True
+
+
+def admission_text(kind: str, links: list[str], *, track: dict[str, Any] | None = None, unlinked: str | None = None) -> str:
+    """The claim comment's admission line."""
+    detail = []
+    if track:
+        detail.append(f"reaches {track['url']} ({track['title']}, milestone `{track['milestone']}`)")
+    if unlinked:
+        detail.append(f"not linked into a milestone Track graph: {unlinked}")
+    if links:
+        detail.append(", ".join(links))
+    return f"Admission: {kind}" + ("; " + "; ".join(detail) if detail else "")
