@@ -3104,6 +3104,13 @@ def test_capacity_admits_staffed_milestones_but_not_available_work() -> None:
                 context["issues"]["someone/business#10"] = reviewed(items[10], "underway", **extra)
                 module.cmd_next(next_args())
                 assert not result["tooling_capacity_context"]["admitted"]
+            shared = module.github_direction_next
+            graph = {"candidates": [items[10]], "excluded": [], "dependency_context": {"complete": True}}
+            unread = {**items[10], "wait_evidence_complete": False}
+            refusal = shared.tooling_capacity_context({**graph, "candidates": [unread]}, [],
+                milestone_titles=["First"], context={"issues": {"someone/business#10": reviewed(unread, "underway")}},
+                repository_waypoints={}, coverage_complete=True)
+            assert not refusal["admitted"] and refusal["required"] == "current_wait_evidence"
             context["issues"]["someone/business#10"] = reviewed(items[10], "underway")
             context["repository_holds"] = {"someone/business": {"reason": "Director hold", "evidence": ["recorded hold"]}}
             module.cmd_next(next_args())
