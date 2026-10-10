@@ -4101,8 +4101,8 @@ def close_error_with_recovery(
 
 def cmd_close(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
-    config = load_config(repo)
     issue_repo, number = issue_ref(args.issue, repo)
+    config = load_config(issue_repo)
     close_reason = plan_close_reason(args.reason)
     issue_actor, issue = get_issue(args.issue, repo)
     _, relationship_preflight = close_relationship_preflight(issue_repo, number, close_reason)
