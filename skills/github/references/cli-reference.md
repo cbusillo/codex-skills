@@ -1405,6 +1405,12 @@ The private key retains the owner-only file requirement. Tokens remain cached
 separately by App, key, API and repository. The selected App's verified bot login
 is the write identity; `CODEX_AUTOMATION_LOGIN` continues to name the primary App.
 
+Verify the selected App and current installation without a write:
+
+```sh
+GH_REPO=cbusillo/PRODUCT skills/github/scripts/gh-with-env-token --check
+```
+
 Commands naming a listed account's repository use the Client App. Other accounts
 and commands with no target repository keep the existing primary credential
 selection. The separate bulk reader App still serves bulk reads when configured.
@@ -1415,6 +1421,12 @@ installation named. Writes retain the existing refusal and per-command own-user
 opt-in below; no token from the primary App is borrowed. Missing or partial
 Client configuration fails before sending a command. These settings do not
 create an App, install it, change permissions, or authorize outreach or access.
+
+Python write helpers keep prerequisite and reconciliation reads on a previously
+resolved own-user writer when the per-command opt-in is present. They use the
+wrapper's `--require-installation` prefix so a missing installation takes the
+same authorized own-user path. Ordinary Client-App reads still fail clearly;
+required-automation mode still refuses personal authentication.
 
 ### Primary App and contributor identity
 

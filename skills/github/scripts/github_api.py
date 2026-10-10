@@ -2939,13 +2939,21 @@ def request_identity(
                 and github_identity.github_app_prefix(repository) == "GITHUB_CLIENT_APP"):
             client_config = github_identity.github_app_config(repository=repository)
             assert client_config is not None
+            read_for_writer = (not is_write and actor and expected_actor
+                               and actor.casefold() == expected_actor.casefold()
+                               and (not main_actor or actor.casefold() != main_actor.casefold())
+                               and github_identity.own_user_opted_in())
             try:
                 _, client_login = github_identity.github_app_auth(
                     client_config, repository=repository,
-                    require_installation=is_write or "--write-actor-for" in prefix,
+                    require_installation=bool(is_write or "--write-actor-for" in prefix or read_for_writer),
                 )
             except github_identity.ContributorRepository:
                 # The wrapper owns explicit own-user authorization and refusal.
+                # Prerequisite/readback reads retain the already resolved writer,
+                # rather than borrowing an App installation or changing actor.
+                if read_for_writer and "--require-installation" not in prefix:
+                    prefix.append("--require-installation")
                 return actor, expected_actor, prefix
             override = github_identity.configured_value("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN")
             if override and override.casefold() != client_login.casefold():
@@ -2978,7 +2986,7 @@ def request_identity(
         # the main App; partial credentials cannot escape into a personal token.
         local_values = github_identity.load_local_env()
         if not any(github_identity.configured_value(f"{app}_{suffix}", local_env=local_values)
-                   for app in ("GITHUB_APP", "GITHUB_READER_APP", "GITHUB_CLIENT_APP")
+                   for app in ("GITHUB_APP", "GITHUB_READER_APP")
                    for suffix in ("ID", "INSTALLATION_ID", "PRIVATE_KEY_PATH")):
             return repository_identity()
         if not _reader_fallback_reported:

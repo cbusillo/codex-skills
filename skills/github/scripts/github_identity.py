@@ -760,7 +760,8 @@ def main() -> int:
             f"exit {CONTRIBUTOR_EXIT_STATUS} when the account that registered the App does not own --repo."
         ),
     )
-    subparsers.add_parser("app-check", help="Verify the configured App installation and print its bot login.")
+    app_check = subparsers.add_parser("app-check", help="Verify the configured App installation and print its bot login.")
+    app_check.add_argument("--repo", help="Verify the installation on OWNER/REPO.")
     subparsers.add_parser("app-token", help="Mint or reuse a GitHub App installation token.")
     args = parser.parse_args()
     try:
@@ -772,6 +773,10 @@ def main() -> int:
             if config is None:
                 raise GitHubAppError("GitHub App authentication is not configured")
             if args.command == "app-check":
+                if args.repo:
+                    repository_config = repository_installation_config(config, args.repo)
+                    assert repository_config is not None
+                    config = repository_config
                 print(check_github_app_installation(config))
                 return 0
             token, login = github_app_auth(

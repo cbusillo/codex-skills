@@ -50,6 +50,7 @@ require_automation_auth=0
 require_automation_auth_from_process=0
 reader_app=0
 main_app_only=0
+require_repository_installation=0
 stdout_file=$(mktemp)
 stderr_file=$(mktemp)
 classification_file=$(mktemp)
@@ -80,6 +81,10 @@ while [ "$#" -gt 0 ]; do
 	--main-app-only)
 		main_app_only=1
 		require_automation_auth=1
+		shift
+		;;
+	--require-installation)
+		require_repository_installation=1
 		shift
 		;;
 	--reader)
@@ -597,6 +602,8 @@ check_account() {
 		set -- app-check
 		if [ "$reader_app" -eq 1 ]; then
 			set -- --reader "$@"
+		elif [ "$client_app" -eq 1 ]; then
+			set -- "$@" --repo "$(target_repository)"
 		fi
 		checked_login=$(run_python "$identity_helper" "$@")
 		if [ -z "$checked_login" ]; then
@@ -816,6 +823,12 @@ app_auth_for_command() {
 	require_installation=
 	if [ -n "$write_actor_repository" ]; then
 		target_repo=$write_actor_repository
+		require_installation=1
+	elif [ "$require_repository_installation" -eq 1 ]; then
+		if [ -z "$target_repo" ]; then
+			echo "error: --require-installation needs a command targeting OWNER/REPO" >&2
+			return 2
+		fi
 		require_installation=1
 	elif [ -n "$target_repo" ] && is_write_command "$@"; then
 		require_installation=1

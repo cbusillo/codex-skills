@@ -40,6 +40,8 @@ class AppHandler(BaseHTTPRequestHandler):
         payload = None
         if self.path == "/app":
             payload = {"slug": f"app-{app}", "owner": {"login": "client"}}
+        elif self.path.startswith("/app/installations/") and method == "GET":
+            payload = {"id": int(app) + 100, "app_id": int(app), "app_slug": f"app-{app}"}
         elif self.path.startswith("/repos/") and self.path.endswith("/installation"):
             if "/missing/" not in self.path:
                 payload = {"id": int(app) + 100, "app_id": int(app)}
@@ -158,6 +160,11 @@ class ClientAppTests(unittest.TestCase):
             "login = 'own-user' if token == 'fake-user-token' or not token else 'app-' + token[-1] + '[bot]'\n"
             "if args[:2] == ['api', 'user']: print(login); raise SystemExit(0)\n"
             "if '--include' in args: print('HTTP/2.0 200\\n')\n"
+            "endpoint = next((a for a in args if a.startswith('/repos/')), '')\n"
+            "if endpoint.endswith('/comments') or '/comments?' in endpoint:\n"
+            "    if '--method' not in args or args[args.index('--method') + 1] == 'GET': print('[]'); raise SystemExit(0)\n"
+            "    body = json.load(sys.stdin)['body']\n"
+            "    print(json.dumps({'id': 1, 'html_url': 'https://github.com/host/missing/issues/1#issuecomment-1', 'body': body, 'user': {'login': login}, 'created_at': '2026-10-10T16:00:00Z'})); raise SystemExit(0)\n"
             "print(json.dumps({'login': login, 'token': token}))\n"
         )
         gh.chmod(0o700)
@@ -181,6 +188,13 @@ class ClientAppTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)["token"], "fake-token-1")
         result = self.wrapper("--reader", "api", "/repos/host/product")
         self.assertEqual(json.loads(result.stdout)["token"], "fake-token-3")
+
+    def test_check_with_repository_context_verifies_selected_client_installation(self) -> None:
+        with patch.dict(os.environ, {"GH_REPO": "host/product"}):
+            result = self.wrapper("--check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("app-2[bot]", result.stdout)
+        self.assertIn(("GET", "/app/installations/102", "2"), AppHandler.calls)
 
     def test_wrapper_missing_installation_refusal_and_explicit_own_user(self) -> None:
         result = self.wrapper("api", "/repos/host/missing")
@@ -232,6 +246,35 @@ class ClientAppTests(unittest.TestCase):
         actor, expected, prefix = github_api.request_identity(**kwargs)
         self.assertEqual((actor, expected), ("app-2[bot]", "app-2[bot]"))
         self.assertIn("--main-app-only", prefix)
+
+    def test_own_user_comment_keeps_prerequisite_reads_on_resolved_writer(self) -> None:
+        os.environ.update({identity.OWN_USER_OPT_IN: "1", "GH_WITH_ENV_TOKEN_GH": str(self.fake_gh()),
+                           "GH_WITH_ENV_TOKEN_PYTHON": sys.executable})
+        result = github_comment.comment("issue", 1, "fixture", repo="host/missing",
+                                        expected_actor="app-1[bot]")
+        self.assertEqual(result["actor"], "own-user")
+        self.assertEqual(result["comment"]["author"], "own-user")
+        # A standalone read with that opt-in still cannot borrow an installation.
+        standalone = self.wrapper("api", "/repos/host/missing", own_user=True)
+        self.assertNotEqual(standalone.returncode, 0)
+        with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "1"}):
+            with self.assertRaises(github_comment.CommentError):
+                github_comment.comment("issue", 1, "fixture", repo="host/missing",
+                                       expected_actor="app-1[bot]")
+
+    def test_client_app_does_not_change_other_accounts_legacy_token_route(self) -> None:
+        for prefix in ("GITHUB_APP", "GITHUB_READER_APP"):
+            for suffix in ("ID", "INSTALLATION_ID", "PRIVATE_KEY_PATH"):
+                os.environ.pop(f"{prefix}_{suffix}")
+        os.environ["CODEX_GITHUB_TOKEN"] = "fake-token-1"
+        actor, expected, prefix = github_api.request_identity(operation="github.plan.index", is_write=False,
+            gh_cmd=github_api.DEFAULT_GH, gh_prefix_args=[], actor="app-1[bot]", expected_actor="app-1[bot]",
+            repository="client/product")
+        self.assertEqual((actor, expected, prefix), ("app-1[bot]", "app-1[bot]", []))
+        result = self.wrapper("api", "/repos/client/product")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["token"], "fake-token-1")
+        self.assertEqual(AppHandler.calls, [])
 
     def test_push_helper_uses_client_token_without_a_real_push(self) -> None:
         fake_git = self.root / "git"
