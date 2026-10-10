@@ -23,7 +23,7 @@ commands:
   - name: resolve-person
     source: skill
     resource_path: scripts/resolve_person.py
-    example_argv: ["uv", "run", "people/scripts/resolve_person.py", "Example"]
+    example_argv: ["uv", "run", "scripts/resolve_person.py", "Example"]
     purpose: Resolve a named person, alias, or handle against local private identity context.
   - name: upsert-person
     source: skill
@@ -32,7 +32,7 @@ commands:
       [
         "uv",
         "run",
-        "people/scripts/people_index.py",
+        "scripts/people_index.py",
         "upsert",
         "--id",
         "example-person",
@@ -77,18 +77,21 @@ normal: continue without enrichment, not an error.
 Use [the public-safe schema](references/people.local.example.yaml) for the
 optional gitignored index. Real names, handles, emails, phone numbers, company
 and relationship facts belong only in ignored local files. Update through
-`uv run people/scripts/people_index.py upsert --id <id> --display-name "<name>" --github <handle>`, which
+`uv run <skill-dir>/scripts/people_index.py upsert --id <id> --display-name "<name>" --github <handle>`, which
 defaults to global/user storage; use `--scope repo` only for repo-specific
 people/overrides/supplements. Read [migration](references/migration.md) before
 consolidating identity facts from other local sources.
 
 ## Resolve Before Relying On Identity
 
-1. Resolve each named human reference when context may matter, using the helper
-   from this skill directory:
+Replace `<skill-dir>` in commands with the absolute directory of this loaded
+skill. This route works from the skill directory or a client repository;
+command metadata examples are relative to the skill directory.
+
+1. Resolve each named human reference when context may matter:
 
    ```sh
-   uv run people/scripts/resolve_person.py "<name-or-handle>"
+   uv run <skill-dir>/scripts/resolve_person.py "<name-or-handle>"
    ```
 
 2. Branch on `status`: `matched` permits task-relevant fields; `ambiguous`
@@ -141,7 +144,7 @@ handles, aliases, reviewer/assignee/manager fields, or contact/routing notes.
    payloads, tool command echoes, or the current review conversation. Those are
    search artifacts, not person evidence.
 5. Promote only verified durable identity/contact/role/routing facts with
-   `people/scripts/people_index.py upsert`, which defaults to global/user
+   the bundled index helper's `upsert`, which defaults to global/user
    storage. Keep transient issue status, CI results, one-off reviews, and stale
    operational state out of the people index.
 6. If an artifact mentions a person but evidence is incomplete, add only a
