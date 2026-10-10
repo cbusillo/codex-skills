@@ -36,6 +36,8 @@ class ReaderIdentityTests(unittest.TestCase):
             'CODEX_AUTOMATION_LOGIN': 'main-app[bot]',
             'GITHUB_RETRY_STATE_DIR': str(self.root / 'state'),
             'GITHUB_HTTP_CACHE_DIR': str(self.root / 'bodies'),
+            'GITHUB_APP_ID': '12345', 'GITHUB_APP_INSTALLATION_ID': '67890',
+            'GITHUB_APP_PRIVATE_KEY_PATH': str(self.root / 'unused-main-path'),
         }
         env = patch.dict(os.environ, self.environment, clear=True)
         env.start()
@@ -92,6 +94,7 @@ class ReaderIdentityTests(unittest.TestCase):
                 result = api.call_gh_with_retry(method, path, body, gh_prefix_args=['--reader'], is_write=False)
             self.assertFalse(result.ok)
             self.assertEqual(result.failure.cause, 'identity_refused')
+            self.assertEqual(result.failure.write_outcome, 'not_started')
             auth.assert_not_called()
             run.assert_not_called()
 
@@ -102,6 +105,37 @@ class ReaderIdentityTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.failure.cause, 'identity_refused')
         run.assert_not_called()
+
+    def test_reader_auth_failure_is_structured_at_reader_and_planner_boundaries(self):
+        self.credentials()
+        with patch.object(identity, 'github_app_auth', side_effect=identity.GitHubAppError('token request denied')), patch('subprocess.run') as run:
+            reader = github_read.GitHubReader(operation='github.plan.index', cache_enabled=True)
+            with self.assertRaises(github_read.GitHubReadError) as failure:
+                reader.request('GET', '/repos/example/app/issues', step='read')
+        self.assertEqual(failure.exception.result.failure.cause, 'identity_refused')
+        run.assert_not_called()
+        env = {**os.environ, 'GITHUB_READER_APP_PRIVATE_KEY_PATH': str(self.root / 'missing-key')}
+        result = subprocess.run([sys.executable, str(Path(api.__file__).with_name('gh-plan.py')),
+                                 '--repo', 'example/app', 'index'], env=env, text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout)['error_code'], 'identity_refused')
+        self.assertNotIn('Traceback', result.stderr)
+
+    def test_legacy_tokens_own_user_projects_and_explicit_actor_keep_their_routes(self):
+        arguments = dict(operation='github.plan.index', is_write=False, gh_cmd=api.DEFAULT_GH,
+                         gh_prefix_args=[], actor='main-app[bot]', expected_actor='main-app[bot]')
+        for suffix in ('ID', 'INSTALLATION_ID', 'PRIVATE_KEY_PATH'):
+            os.environ.pop(f'GITHUB_APP_{suffix}')
+        self.assertEqual(api.request_identity(**arguments), ('main-app[bot]', 'main-app[bot]', []))
+        self.credentials()
+        with patch.object(identity, 'github_app_auth') as auth:
+            with patch.dict(os.environ, {'GH_WITH_ENV_TOKEN_OWN_USER': '1'}):
+                self.assertEqual(api.request_identity(**arguments)[2], [])
+            self.assertEqual(api.request_identity(**{**arguments, 'operation': 'github.plan.project_list'})[2], [])
+            os.environ.pop('CODEX_AUTOMATION_LOGIN')
+            self.assertEqual(api.request_identity(**{**arguments, 'actor': 'other-user', 'expected_actor': 'other-user'}),
+                             ('other-user', 'other-user', []))
+        auth.assert_not_called()
 
     def test_synthetic_path_mints_through_existing_app_auth_and_cache(self):
         config = self.credentials()
@@ -168,6 +202,8 @@ class ReaderIdentityTests(unittest.TestCase):
         fake_gh.chmod(0o700)
         env = {**os.environ, 'GH_WITH_ENV_TOKEN_PYTHON': sys.executable, 'GH_WITH_ENV_TOKEN_GH': str(fake_gh),
                'GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK': '1', 'GH_TOKEN': 'synthetic-personal-token'}
+        for suffix in ('ID', 'INSTALLATION_ID', 'PRIVATE_KEY_PATH'):
+            env.pop(f'GITHUB_APP_{suffix}')
         for args, body in [(['--reader', 'api', '/repos/example/app/issues', '-X', 'POST'], ''),
                 (['--reader', 'api', 'graphql', '--input', '-'], '{"query":"mutation { x }"}'),
                 (['--reader', 'api', 'graphql', '--input', '-'], '{"query":"query Read { x } mutation Write { y }", "operationName":"Write"}'),
@@ -181,7 +217,7 @@ class ReaderIdentityTests(unittest.TestCase):
     def test_wrapper_delegates_rest_and_graphql_reads_with_reader_token(self):
         wrapper = Path(api.__file__).with_name('gh-with-env-token')
         fake_identity = self.root / 'identity.py'
-        fake_identity.write_text("import sys\nassert sys.argv[1:3] == ['--reader', 'app-auth']\nprint('reader-app[bot]')\nprint('synthetic-reader-token')\n")
+        fake_identity.write_text("import sys\nassert sys.argv[1] == '--reader'\nprint('reader-app[bot]')\nif sys.argv[2] == 'app-auth': print('synthetic-reader-token')\n")
         fake_gh = self.root / 'gh'
         fake_gh.write_text('#!/bin/sh\n[ "$GH_TOKEN" = synthetic-reader-token ] || exit 9\nprintf \'{"ok":true}\\n\'\n')
         fake_gh.chmod(0o700)
@@ -190,10 +226,15 @@ class ReaderIdentityTests(unittest.TestCase):
                'GH_WITH_ENV_TOKEN_PYTHON': sys.executable, 'GH_WITH_ENV_TOKEN_GH': str(fake_gh),
                'GH_WITH_ENV_TOKEN_IDENTITY_HELPER': str(fake_identity)}
         for args, body in [(['api', '/repos/example/app/issues'], ''),
-                (['api', 'graphql', '--input', '-'], '{"query":"query { viewer { login } }"}')]:
+                (['api', 'graphql', '--input', '-'], '{"query":"query { viewer { login } }"}'),
+                (['api', 'graphql', '--field=query=query { viewer { login } }'], ''),
+                (['repo', 'view', 'example/app', '--json', 'name'], '')]:
             result = subprocess.run([str(wrapper), '--reader', *args], input=body, text=True, capture_output=True, env=env)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.returncode, 0, f'{args}: {result.stderr}')
             self.assertEqual(json.loads(result.stdout), {'ok': True})
+        checked = subprocess.run([str(wrapper), '--reader', '--check'], text=True, capture_output=True, env=env)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertIn('reader-app[bot]', checked.stdout)
 
     def test_graphql_strings_comments_and_fragments_are_reads(self):
         for document in ['query { node(id: "mutation") { id } }',

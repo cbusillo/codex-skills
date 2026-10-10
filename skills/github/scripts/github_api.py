@@ -123,6 +123,7 @@ class OperationRetryRule:
     reconciliation_strategy: str
     quota_bucket: str
     request_priority: str = "essential"
+    actor_policy: str = "automation_required"
 
 
 @dataclass(frozen=True)
@@ -1669,6 +1670,7 @@ def operation_retry_rule(
                     reconciliation_strategy=str(item.get("reconciliation_strategy") or "fail_closed_write"),
                     quota_bucket=str(item.get("quota_bucket") or "unknown"),
                     request_priority=str(item.get("request_priority") or "essential"),
+                    actor_policy=str(item.get("actor_policy") or "automation_required"),
                 )
             _operation_rule_cache[resolved] = (modified, rules)
         rule = _operation_rule_cache[resolved][1].get(operation)
@@ -2929,13 +2931,23 @@ def request_identity(
     rule, _ = operation_retry_rule(operation, matrix_path=matrix_path)
     main_actor = github_identity.automation_login()
     automatic = (not is_write and rule is not None and rule.request_priority == "bulk"
+                 and rule.actor_policy != "automation_required_with_explicit_project_override"
                  and pathlib.Path(gh_cmd).name == "gh-with-env-token"
                  and "--write-actor-for" not in prefix
-                 and all(not value or not main_actor or value.casefold() == main_actor.casefold()
+                 and not github_identity.own_user_opted_in()
+                 and all(not value or (main_actor and value.casefold() == main_actor.casefold())
                          for value in (actor, expected_actor)))
     if not reader and not automatic:
         return actor, expected_actor, prefix
     if not reader and not github_identity.reader_config_available():
+        # App-free installations retain the documented automation-token path.
+        # Once either App is configured, a missing reader falls back only to
+        # the main App; partial credentials cannot escape into a personal token.
+        local_values = github_identity.load_local_env()
+        if not any(github_identity.configured_value(f"{app}_{suffix}", local_env=local_values)
+                   for app in ("GITHUB_APP", "GITHUB_READER_APP")
+                   for suffix in ("ID", "INSTALLATION_ID", "PRIVATE_KEY_PATH")):
+            return actor, expected_actor, prefix
         if not _reader_fallback_reported:
             print("notice: reader App credentials missing; bulk reads use the main automation identity with its quota reserve", file=sys.stderr)
             _reader_fallback_reported = True
@@ -3425,15 +3437,16 @@ def call_gh_with_retry(
     )
     resolved_bucket = bucket or infer_api_bucket(path)
     resolved_operation = operation or "github.api.call"
+    reader_mutation = resolved_is_write or reader_request_is_write(method, path, body)
     try:
         actor, expected_actor, gh_prefix_args = request_identity(
             operation=resolved_operation,
-            is_write=resolved_is_write or reader_request_is_write(method, path, body),
+            is_write=reader_mutation,
             gh_cmd=gh_cmd, gh_prefix_args=gh_prefix_args, actor=actor, expected_actor=expected_actor,
             repository=github_http_cache.repository_from_path(path), matrix_path=matrix_path,
         )
     except github_identity.GitHubAppError as error:
-        return _identity_failure(error, operation=resolved_operation, is_write=resolved_is_write,
+        return _identity_failure(error, operation=resolved_operation, is_write=reader_mutation,
                                  actor=actor, expected_actor=expected_actor, host=host, bucket=resolved_bucket)
     def attempt(timeout_seconds: Optional[float]) -> ApiResult:
         return call_gh(

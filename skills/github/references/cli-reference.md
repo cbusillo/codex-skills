@@ -179,11 +179,17 @@ receipts, cooldowns and conditional bodies distinguish the authenticated actor.
 
 Missing or incomplete reader credentials produce a notice and use the configured
 main App with its existing reserve. That fallback requires main App credentials
-and refuses ambient tokens or personal login fallback. A configured reader with
+and refuses ambient tokens or personal login fallback. Installations with neither
+App configured retain their existing automation-token setup. Explicit actors,
+the approved own-user opt-in, custom transports, and the matrix's explicit
+Project identity policy retain their established routes; the reader role does
+not add a Projects grant. A configured reader with
 an unsafe key path or rejected authentication fails closed. Custom transports
 and explicitly different actors retain their existing identity handling.
-The wrapper's `--reader` prefix accepts verified reads only, including GraphQL
-queries; writes and unverified commands are refused before minting or delegation.
+The wrapper's `--reader` prefix accepts verified reads and `--check`, including
+GraphQL queries provided literally or as JSON with `--input -`; use stdin in
+place of field file indirection. Writes and unverified commands are refused
+before minting or delegation.
 Read hints cannot authorize a mutation through the reader.
 
 Bulk reads yield when the latest observed remaining core quota is **below 25%**

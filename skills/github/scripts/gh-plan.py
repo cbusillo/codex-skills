@@ -443,12 +443,19 @@ def run_raw(
     initial_retry_actor = route_actor if route_actor == "active-gh-user" else EXPECTED_ACTOR
     initial_expected_actor = None if route_actor == "active-gh-user" else EXPECTED_ACTOR
     if route_actor != "active-gh-user":
-        initial_retry_actor, initial_expected_actor, identity_prefix = github_api_core.request_identity(
-            operation=resolved_operation, is_write=resolved_is_write or inferred.is_write,
-            gh_cmd=command[0], gh_prefix_args=[], actor=initial_retry_actor,
-            expected_actor=initial_expected_actor,
-            repository=github_api_core.github_http_cache.repository_from_command(args),
-        )
+        try:
+            initial_retry_actor, initial_expected_actor, identity_prefix = github_api_core.request_identity(
+                operation=resolved_operation, is_write=resolved_is_write or inferred.is_write,
+                gh_cmd=command[0], gh_prefix_args=[], actor=initial_retry_actor,
+                expected_actor=initial_expected_actor,
+                repository=github_api_core.github_http_cache.repository_from_command(args),
+            )
+        except github_identity.GitHubAppError as error:
+            result = github_api_core._identity_failure(
+                error, operation=resolved_operation, is_write=resolved_is_write,
+                actor=initial_retry_actor, expected_actor=initial_expected_actor, host=None, bucket=resolved_bucket,
+            )
+            raise PlanError(str(error), failure=result.failure, api_result=result.as_dict()) from error
         command = [command[0], *identity_prefix, *command[1:]]
     retry_rule, _ = github_api_core.operation_retry_rule(resolved_operation)
     probe_allowed = bool(

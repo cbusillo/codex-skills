@@ -594,11 +594,11 @@ print_account() {
 
 check_account() {
 	if [ "$auth_source" = github_app ]; then
-		if [ -n "$python_command" ]; then
-			checked_login=$($python_command "$identity_helper" app-check)
-		else
-			checked_login=$(uv run --no-project --no-config --python 3.12 "$identity_helper" app-check)
+		set -- app-check
+		if [ "$reader_app" -eq 1 ]; then
+			set -- --reader "$@"
 		fi
+		checked_login=$(run_python "$identity_helper" "$@")
 		if [ -z "$checked_login" ]; then
 			echo "error: GitHub App authentication check returned no actor" >&2
 			return 1
@@ -874,7 +874,7 @@ fi
 # Reader mode is fail-closed even for GraphQL POSTs, conflicting method flags,
 # and unrecognized CLI commands. Classify the complete captured body, never
 # delegate an unverified command to the read-only identity.
-if [ "$reader_app" -eq 1 ]; then
+if [ "$reader_app" -eq 1 ] && [ "$check_auth" -ne 1 ]; then
 	if [ -n "$write_actor_repository" ]; then
 		probe_validation_error "read-only App cannot resolve a write actor"
 	fi
@@ -888,18 +888,22 @@ body = pathlib.Path(sys.argv[2]).read_text()
 context = github_api.infer_gh_command_context(args, input_text=body)
 if args and args[0] == "api" and context.bucket == "graphql":
     # Inspect all definitions because operationName can select a later mutation.
-    payload = github_api._try_parse_json(body)
+    payload = github_api._try_parse_json(body) if body else None
     if payload is None:
         for index, arg in enumerate(args):
             if arg in {"-f", "-F", "--field", "--raw-field"} and index + 1 < len(args):
                 value = args[index + 1]
                 if value.startswith("query="):
                     payload = {"query": value.split("=", 1)[1]}
+            elif arg.startswith(("--field=", "--raw-field=")):
+                value = arg.split("=", 1)[1]
+                if value.startswith("query="):
+                    payload = {"query": value.split("=", 1)[1]}
     if github_api.reader_request_is_write("POST", "/graphql", payload):
         context = github_api.CommandContext(True, context.transport, context.bucket)
 # Only API reads and the known read-only CLI families used by bulk helpers.
 allowed = bool(args) and (args[0] == "api" or
-    (len(args) > 1 and args[:2] in [["repo", "list"], ["issue", "list"],
+    (len(args) > 1 and args[:2] in [["repo", "list"], ["repo", "view"], ["issue", "list"],
         ["issue", "view"], ["pr", "list"], ["pr", "view"], ["pr", "checks"],
         ["run", "list"], ["run", "view"], ["search", "issues"], ["search", "prs"]]))
 if context.is_write or not allowed:
@@ -964,7 +968,7 @@ if [ "$main_app_only" -eq 1 ] && [ "$app_variable_count" -ne 3 ]; then
 fi
 if [ "$app_variable_count" -gt 0 ]; then
 	if [ "$app_variable_count" -ne 3 ]; then
-		echo "error: incomplete GitHub App configuration; set GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, and GITHUB_APP_PRIVATE_KEY_PATH" >&2
+		echo "error: incomplete GitHub App configuration; set $app_variables" >&2
 		exit 1
 	fi
 	app_auth_status=0
