@@ -1988,6 +1988,49 @@ class ClaimTests(unittest.TestCase):
                 classified = CLAIM.current_ownership_text(status, self.comments, repo="owner/repo", number=42)
                 self.assertEqual(CLAIM.has_ownership_assertion(classified), change != "valid")
 
+    def test_readback_rechecks_live_released_status_sessions(self):
+        for phase in ("after_post", "after_status"):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.released_note_fixture()
+                self.inventory["sessions"] = [{"sessionId": "session-b", "cwd": "/unrelated"}]
+                def add_status_holder():
+                    self.issue["body"] += "\nSession: trial-b / session-b; executing claim released in the closeout comment."
+                setattr(self, phase, add_status_holder)
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assertIn("post", self.events)
+                if phase == "after_post": self.assertNotIn("status", self.events)
+                self.assertTrue(caught.exception.payload["claim_recovery"])
+
+    def test_retained_pr_history_cannot_hide_live_source_session(self):
+        self.refresh_fixture()
+        pr_owner = {**OTHER, "worker": "pr-worker", "session": "pr-session"}
+        self.target_comments["/repos/owner/repo/issues/99/comments"] = [
+            {"id": 71, "body": CLAIM.marker(pr_owner), "user": {"login": TEST_BOT},
+             "created_at": "2026-10-01T00:00:00Z"},
+            {"id": 72, "body": "Released claim 71", "user": {"login": TEST_BOT},
+             "created_at": "2026-10-01T00:02:00Z"},
+        ]
+        self.targets["99"]["body"] += ("\n\n## Current Status\n\n"
+            "Session: pr-worker / pr-session; executing claim released in the closeout comment.")
+        self.inventory["sessions"] = [{"sessionId": "pr-session", "cwd": "/unrelated"}]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        self.assert_no_writes()
+
+    def test_canonical_issue_url_preserves_ownership_after_alias_or_transfer(self):
+        for canonical in ("owner/renamed/issues/42", "owner/transferred/issues/198"):
+            for holder in (canonical, "owner/repo/issues/42"):
+                with self.subTest(canonical=canonical, holder=holder):
+                    self.setUp()
+                    self.issue["html_url"] = f"https://github.com/{canonical}"
+                    self.issue["body"] += f"Blocked by: https://github.com/{holder} (actively owned by another-worker)."
+                    self.args.wait_resolved = "Wait resolved; ownership still needs independent proof."
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                    self.assertEqual(caught.exception.code, "claim_conflict")
+                    self.assert_no_writes()
+
     def test_pr_refresh_preserves_holder_of_the_claimed_issue(self):
         for holder_issue in (42, 99):
             with self.subTest(holder_issue=holder_issue):

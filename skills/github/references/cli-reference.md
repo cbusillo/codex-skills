@@ -655,15 +655,17 @@ still refuses; there is no worker-alias release. A closed-session release also
 requires the note and its last edit to precede the attested session end. The compound field
 `Session: WORKER / SESSION; executing claim released in the closeout comment.`
 likewise needs the matching structured claim and timestamp-proved exact-ID
-release. A visible live source session still refuses, and retained artifacts
+release. Live source sessions are checked again on claim readback whenever that
+historical field is removed. A visible live source session still refuses, and retained artifacts
 keep their independent checks. A quoted replaced `Session:` field in the
 specific stale-field correction sentence is history; other current or uncertain
 holder prose is checked independently. A `Blocked by:` GitHub issue URL followed
 by `(actively owned by WORKER)` identifies that linked issue's holder only when
-its repository/number differs from the issue being claimed. Missing issue identity,
+its repository/number differs from both the requested issue and its canonical
+GitHub issue URL. Missing issue identity,
 same-issue ownership and additional holders remain ambiguous. These exclusions
 do not resolve waits, native blockers or competing comments. Retained-PR status
-ownership remains conservative during refresh; issue-holder exclusions apply
+ownership remains conservative during refresh; all status-history exclusions apply
 only to the issue's own status.
 
 An issue URL in a PR body is context alone. Title or branch ownership,

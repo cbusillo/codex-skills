@@ -2290,6 +2290,18 @@ def cmd_claim(args: argparse.Namespace) -> None:
             payload={"competing_evidence": competing_claims, "claim_recovery": claim_recovery()},
         )
 
+    def check_status_peers(status_text: str, status_comments: list[dict[str, Any]]) -> None:
+        sessions = set(github_plan_claim.released_status_lines(status_text, status_comments).values())
+        if not sessions:
+            return
+        fresh_inventory = github_plan_claim.local_inventory(target_repo, number)
+        peers = [{"source": "claude_session", "session": peer.get("sessionId"),
+                  "certainty": "visible_in_native_inventory"}
+                 for peer in fresh_inventory["sessions"]
+                 if peer.get("sessionId") in sessions and peer.get("sessionId") != claim["session"]]
+        if peers:
+            refuse(peers)
+
     def check_native_blockers() -> None:
         _, blockers = collect_paged_rest_items(
             f"/repos/{issue_repo}/issues/{number}/dependencies/blocked_by",
@@ -2303,7 +2315,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         previous_status = status
         previous_wait_labels = set(normalize_labels(issue.get("labels"))) & {config["labels"][key] for key in ("waiting", "blocked")}
         check_agent(issue)
-        conflicts, owned = github_plan_claim.discussion_evidence(status, comments, claim, resume_from=args.resume_from, repo=issue_repo, number=number)
+        conflicts, owned = github_plan_claim.discussion_evidence(status, comments, claim, resume_from=args.resume_from, repo=issue_repo, number=number, issue_url=issue.get("html_url"))
         if conflicts:
             refuse(conflicts)
         check_wait(issue, status)
@@ -2323,8 +2335,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
                                                        retained_repo=target_repo if handoff_id else None,
                                                        inventory_repo=target_repo,
                                                        recorded_branches=github_plan_claim.recorded_claim_branches(status, comments),
-                                                       status_sessions={r["session"] for _, r, _ in github_plan_claim.exact_released_sources(comments)
-                                                                        if f"Session: {r['worker']} / {r['session']}; executing claim released in the closeout comment." in status})
+                                                       status_sessions=set(github_plan_claim.released_status_lines(status, comments).values()))
         if conflicts:
             refuse(conflicts)
         completed.append("ownership_preflight")
@@ -2355,9 +2366,10 @@ def cmd_claim(args: argparse.Namespace) -> None:
         # Check the discussion again before touching status or labels.
         issue, status, comments, can_update = claim_snapshot(args.issue, repo)
         check_agent(issue)
-        conflicts, observed = github_plan_claim.discussion_evidence(status, comments, claim, resume_from=args.resume_from, repo=issue_repo, number=number)
+        conflicts, observed = github_plan_claim.discussion_evidence(status, comments, claim, resume_from=args.resume_from, repo=issue_repo, number=number, issue_url=issue.get("html_url"))
         if conflicts:
             refuse(conflicts)
+        check_status_peers(status, comments)
         check_wait(issue, status)
         check_issue_holds(issue, status)
         check_native_blockers()
@@ -2395,9 +2407,10 @@ def cmd_claim(args: argparse.Namespace) -> None:
         actor = label_result.get("actor") or actor
         final, final_status, final_comments, _ = claim_snapshot(args.issue, repo)
         check_agent(final)
-        conflicts, observed = github_plan_claim.discussion_evidence(final_status, final_comments, claim, resume_from=args.resume_from, repo=issue_repo, number=number)
+        conflicts, observed = github_plan_claim.discussion_evidence(final_status, final_comments, claim, resume_from=args.resume_from, repo=issue_repo, number=number, issue_url=final.get("html_url"))
         if conflicts:
             refuse(conflicts)
+        check_status_peers(final_status, final_comments)
         check_issue_holds(final, final_status)
         check_native_blockers()
         handoff_preflight(final_comments, final_status)

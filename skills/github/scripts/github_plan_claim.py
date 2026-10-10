@@ -344,31 +344,48 @@ def exact_released_sources(comments: list[dict[str, Any]]) -> list[tuple[int, di
     return found
 
 
+def released_status_lines(status: str, comments: list[dict[str, Any]]) -> dict[str, str]:
+    """Share the exact historical-field match with live-session checks."""
+    return {
+        line: record["session"]
+        for _, record, _ in exact_released_sources(comments)
+        for line in status.splitlines()
+        if line.rstrip(" \t") == (
+            f"Session: {record['worker']} / {record['session']}; "
+            "executing claim released in the closeout comment."
+        )
+    }
+
+
 def current_ownership_text(
     status: str, comments: list[dict[str, Any]], *, repo: str | None, number: int | None,
+    issue_url: str | None = None,
 ) -> str:
     """Remove only the demonstrated historical and other-issue assertions."""
+    if repo is None or number is None:
+        return status
     # This sentence quotes a replaced field, not a present Session field.
     status = re.sub(
         r'(The previous )"Session: [\w.-]+"'
         r'( line was stale and made the next claim refuse as ambiguous ownership '
         r'\([^\n]+\); this status replaces it\.)', r'\1previous holder\2', status,
     )
-    for _, record, _ in exact_released_sources(comments):
-        status = re.sub(
-            rf"(?m)^Session: {re.escape(record['worker'])} / {re.escape(record['session'])}; "
-            r"executing claim released in the closeout comment\.[ \t]*$", "", status,
-        )
-    if repo is not None and number is not None:
-        def other_issue(match: re.Match[str]) -> str:
-            if (match.group(1).casefold(), int(match.group(2))) == (repo.casefold(), number):
-                return match.group()
-            return match.group().replace(match.group(3), "")
+    released_lines = released_status_lines(status, comments)
+    status = "\n".join(line for line in status.splitlines() if line not in released_lines)
+    identities = {(repo.casefold(), number)}
+    canonical = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)", issue_url or "")
+    if canonical:
+        identities.add((canonical.group(1).casefold(), int(canonical.group(2))))
 
-        status = re.sub(
-            r"(?m)^Blocked by: https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+) "
-            r"\((actively owned by [\w.-]+)\)(?=\.(?:\s|$)|\s*$)", other_issue, status,
-        )
+    def other_issue(match: re.Match[str]) -> str:
+        if (match.group(1).casefold(), int(match.group(2))) in identities:
+            return match.group()
+        return match.group().replace(match.group(3), "")
+
+    status = re.sub(
+        r"(?m)^Blocked by: https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+) "
+        r"\((actively owned by [\w.-]+)\)(?=\.(?:\s|$)|\s*$)", other_issue, status,
+    )
     return status
 
 
@@ -411,7 +428,7 @@ def released_explanatory_note(
 
 def discussion_evidence(
     status: str, comments: list[dict[str, Any]], claim: dict[str, str], *, resume_from: int | None = None,
-    repo: str | None = None, number: int | None = None,
+    repo: str | None = None, number: int | None = None, issue_url: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     """Old claims remain ambiguous until explicitly released; age is never a lease."""
     from github_plan_release import effective_comments
@@ -425,7 +442,7 @@ def discussion_evidence(
             owned.append(record)
         else:
             conflicts.append({"source": "current_status", "record": record})
-    ownership_status = current_ownership_text(status, comments, repo=repo, number=number)
+    ownership_status = current_ownership_text(status, comments, repo=repo, number=number, issue_url=issue_url)
     # A matching marker or complete legacy identity accounts only for that
     # owner's assertions; it must not hide a second holder in the same status.
     own_claim = claim if owned or all(claim[key] in status for key in ("worker", "session", "branch")) else None
