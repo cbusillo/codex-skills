@@ -25,6 +25,9 @@ resources:
   - path: scripts/foreign_watch.py
     kind: script
     description: Emit bounded untrusted foreign-poster and Launchplane review notices.
+  - path: scripts/auto_enqueue.py
+    kind: script
+    description: Enqueue current-head ready handoffs in capped groups between candidates, respecting the Supervisor hold record.
   - path: scripts/oq.py
     kind: script
     description: Read all Director questions through the paged GitHub helper.
@@ -73,6 +76,16 @@ commands:
     resource_path: scripts/finished_map.py
     example_argv: ["uv", "run", "scripts/finished_map.py", "--ledger", "<ledger.json>"]
     purpose: Find close-out candidates without authorizing shutdown.
+  - name: supervisor-auto-enqueue
+    source: skill
+    resource_path: scripts/auto_enqueue.py
+    example_argv: ["uv", "run", "scripts/auto_enqueue.py", "--owner", "OWNER", "--control-plane-repo", "OWNER/CONTROL", "--hold-file", "<private-holds.json>", "--once"]
+    purpose: Preview stable batches from active Launchplane policy; apply only under the Supervisor's existing enqueue authority.
+  - name: supervisor-enqueue-holds
+    source: skill
+    resource_path: scripts/auto_enqueue.py
+    example_argv: ["uv", "run", "scripts/auto_enqueue.py", "holds", "--hold-file", "<private-holds.json>", "--pause", "OWNER/REPO"]
+    purpose: Serialize repository pauses and Client release holds with local enqueue passes.
   - name: supervisor-close-ttys
     source: skill
     resource_path: scripts/close_ttys.py
@@ -229,6 +242,11 @@ records that run.
    refuses a whole batch when its candidate fails, while the driver may only
    report "lease held"; after about 45 minutes, read the candidate's CI
    directly.
+   For Q154's interim automatic routing, read the
+   [auto-enqueue helper procedure](references/helpers.md#interim-auto-enqueue-watcher)
+   before running it. Executing sessions still hand off; the Supervisor owns
+   enqueue authority and release pauses. Launchplane#3327 owns replacing this
+   interim watcher with service admission.
 6. **The Supervisor briefs, watches, nudges, and records.** It never decides
    for the Director, never widens a brief, and never scores a run it launched;
    a direction session on another model judges those runs. When the Director
