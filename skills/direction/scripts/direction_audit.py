@@ -1234,18 +1234,20 @@ def native_pull_issue_refs(repo: str, number: int, *, fetch: Callable[[list[str]
 def reopened_issue_events(
     repo: str, since: dt.datetime, *, fetch: Callable[[list[str]], Any], max_pages: int = MAX_PAGES,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Each issue's latest reopen since the window opened, and whether the page cap cut it short.
+    """Each issue's latest reopens since the window opened, and whether the page cap cut it short.
 
     Reopening updates an issue, so issues updated in the window hold every
     reopen. The repository event feed is mostly label and close traffic and
-    runs past any page cap in a busy repository.
+    runs past any page cap in a busy repository. Several reopens per issue are
+    read so one after the window closes, while the audit runs, cannot hide one
+    inside it.
     """
     owner, name = repo.split("/")
     since_text = since.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     query = """query($owner:String!,$name:String!,$since:DateTime!,$cursor:String){
       repository(owner:$owner,name:$name){
         issues(first:100,after:$cursor,filterBy:{since:$since},orderBy:{field:UPDATED_AT,direction:DESC}){
-          nodes{number title timelineItems(itemTypes:[REOPENED_EVENT],since:$since,last:1){
+          nodes{number title timelineItems(itemTypes:[REOPENED_EVENT],since:$since,last:5){
             nodes{... on ReopenedEvent{createdAt}}
           }}
           pageInfo{hasNextPage endCursor}

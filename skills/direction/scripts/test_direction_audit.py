@@ -1251,7 +1251,7 @@ def test_reopens_come_from_issues_updated_in_a_window_busier_than_the_event_cap(
         # filled more than the old 2,000-event cap.
         nodes = [{"number": page * 100 + n, "title": f"Issue {page * 100 + n}", "timelineItems": {"nodes": []}}
                  for n in range(100)]
-        nodes[7]["timelineItems"]["nodes"] = [{"createdAt": stamp(NOW)}]
+        nodes[7]["timelineItems"]["nodes"] = [{"createdAt": stamp(NOW)}, {"createdAt": stamp(NOW + dt.timedelta(minutes=3))}]
         return reopened_page(nodes, str(page + 1) if page + 1 < pages else None)
 
     events, cut = module.reopened_issue_events("o/live", SINCE, fetch=fetch)
@@ -1261,7 +1261,7 @@ def test_reopens_come_from_issues_updated_in_a_window_busier_than_the_event_cap(
     assert {item["number"] for item in result["issues_reopened"]} == {7, 107, 207}
 
     events, cut = module.reopened_issue_events("o/live", SINCE, fetch=fetch, max_pages=2)
-    assert cut and len(events) == 2
+    assert cut and len(events) == 4
     for response in ({"data": {"repository": None}}, {**reopened_page([]), "errors": [{"message": "denied"}]},
                      reopened_page([], cursor="")):
         try:
