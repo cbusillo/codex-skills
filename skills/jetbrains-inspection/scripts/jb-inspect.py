@@ -7034,6 +7034,8 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
         return "Wait for same-worktree writers and IDE indexing/project-model updates to settle, then rerun; stale cached findings must not be treated as current."
     if reason == "timeout":
         return "Wait for indexing/scanning to settle or rerun with a larger timeout."
+    if reason == "lifecycle_lock_timeout":
+        return "Wait for the owning lifecycle operation to finish, then run assessments sequentially. No IDE inspection started."
     if reason == "inspection_still_running":
         return "Wait for indexing/scanning to finish, then rerun inspection."
     if reason == "inspection_api_timeout":
@@ -7505,6 +7507,8 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
     if verdict == "RED":
         return "actionable_findings"
     normalized = normalize_reason(reason)
+    if normalized == "lifecycle_lock_timeout":
+        return "lifecycle_lock_busy"
     if normalized == "ide_memory_exhausted":
         return normalized
     if normalized == "plugin_deployment_mismatch":
@@ -7629,6 +7633,8 @@ def next_action_for_bucket(verdict: str, bucket: str, reason: str, payload: dict
     if verdict == "RED":
         return "Fix the reported findings, then rerun inspection."
     if bucket == "ide_memory_exhausted":
+        return next_action_for_unknown(reason, payload)
+    if bucket == "lifecycle_lock_busy":
         return next_action_for_unknown(reason, payload)
     if bucket in UNKNOWN_RETRY_BUCKETS:
         return next_action_for_unknown(reason, payload)
@@ -10974,6 +10980,7 @@ class lifecycle_lock:
                             "Timed out waiting for the JetBrains inspection lifecycle lock.",
                             3,
                             {
+                                "error_reason": "lifecycle_lock_timeout",
                                 "lock_path": str(path),
                                 "timeout_ms": self.timeout_ms,
                                 "hint": "Another lifecycle inspection is running. Wait for it to finish, increase --lifecycle-lock-timeout-ms, or run lifecycle inspections sequentially.",
