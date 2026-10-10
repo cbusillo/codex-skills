@@ -2215,7 +2215,9 @@ def cmd_claim(args: argparse.Namespace) -> None:
                 f"/repos/{target_repo}/issues/{pull['number']}/comments", query={},
                 bucket="rest_core", step_prefix="refresh_comments",
             )
-            competing, _ = github_plan_claim.discussion_evidence(sections.get("Current Status", ""), target_comments, claim, repo=target_repo, number=pull["number"])
+            # PR status may name the canonical issue being claimed. Keep its
+            # holder prose conservative rather than applying issue exclusions.
+            competing, _ = github_plan_claim.discussion_evidence(sections.get("Current Status", ""), target_comments, claim)
             if competing:
                 refuse(competing)
             if not refresh_pr or pull["number"] == target_number:

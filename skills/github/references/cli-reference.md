@@ -651,7 +651,8 @@ An explanatory note beginning `Claimed by WORKER; structured claim #ID was
 confirmed and read back.` is accounted for by that exact source's authored
 release only when author, session and timestamps agree. A reused worker across
 native sessions, an edited note after release, or another ownership assertion
-still refuses; there is no worker-alias release. The compound field
+still refuses; there is no worker-alias release. A closed-session release also
+requires the note and its last edit to precede the attested session end. The compound field
 `Session: WORKER / SESSION; executing claim released in the closeout comment.`
 likewise needs the matching structured claim and timestamp-proved exact-ID
 release. A visible live source session still refuses, and retained artifacts
@@ -661,7 +662,9 @@ holder prose is checked independently. A `Blocked by:` GitHub issue URL followed
 by `(actively owned by WORKER)` identifies that linked issue's holder only when
 its repository/number differs from the issue being claimed. Missing issue identity,
 same-issue ownership and additional holders remain ambiguous. These exclusions
-do not resolve waits, native blockers or competing comments.
+do not resolve waits, native blockers or competing comments. Retained-PR status
+ownership remains conservative during refresh; issue-holder exclusions apply
+only to the issue's own status.
 
 An issue URL in a PR body is context alone. Title or branch ownership,
 implementation references (`Refs`, `Fixes`, `Closes`, `Resolves`, `Implements`,

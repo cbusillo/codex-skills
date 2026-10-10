@@ -1929,7 +1929,12 @@ class ClaimTests(unittest.TestCase):
                 if change == "wrong_id": note["body"] = note["body"].replace("#1", "#99")
                 if change == "wrong_worker": note["body"] = note["body"].replace("trial-b", "trial-c")
                 if change == "different_session": note["body"] += "\nSession: another-session"
-                if change == "reused_worker": self.comments.insert(1, {**source, "id": 4, "body": CLAIM.marker({**OTHER, "session": "reused-session"})})
+                if change == "reused_worker":
+                    self.comments[1:1] = [
+                        {**source, "id": 4, "body": CLAIM.marker({**OTHER, "session": "reused-session"}),
+                         "created_at": "2026-10-01T00:00:05Z"},
+                        {**release, "id": 5, "body": "Released claim 4", "created_at": "2026-10-01T00:00:10Z"},
+                    ]
                 if change == "unreleased": self.comments.pop()
                 if change == "early_release": release["created_at"] = "2026-09-30T23:59:00Z"
                 if change == "edited_source": source["updated_at"] = "2026-10-01T00:03:00Z"
@@ -1941,6 +1946,56 @@ class ClaimTests(unittest.TestCase):
                 if change == "naive_time": note["created_at"] = "2026-10-01T00:01:00"
                 if change == "second_holder": note["body"] += "\nOwned by another-worker."
                 if change == "later_claim": self.comments.append({**source, "id": 4})
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assert_no_writes()
+
+    def test_closed_session_release_does_not_account_for_post_closure_notes(self):
+        import github_plan_release as release_helper
+        for note_time in ("2026-10-01T00:00:30Z", "2026-10-01T00:01:30Z"):
+            with self.subTest(note_time=note_time):
+                self.setUp()
+                self.released_note_fixture()
+                source, note, release = self.comments
+                note["created_at"] = note_time
+                evidence = {"id": 88, "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:01:40Z",
+                            "body": "Closed session session-b\nEnded at: 2026-10-01T00:01:00Z\nSafe to exit: yes",
+                            "issue_url": "https://api.github.com/repos/owner/control/issues/884"}
+                self.closed_pulls[88] = evidence
+                release["body"] = release_helper.prepare_release(
+                    source, evidence, self.comments[:2], self.inventory, actor=TEST_BOT, role="supervisor",
+                    releaser_session="supervisor-native", evidence_url="https://github.com/owner/control/issues/884#issuecomment-88",
+                    retained_prs=[], related=[],
+                )
+                if note_time > "2026-10-01T00:01:00Z":
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                    self.assertEqual(caught.exception.code, "claim_conflict")
+                    self.assert_no_writes()
+                else:
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_compound_status_classification_requires_release_proof_independently(self):
+        status = "Session: trial-b / session-b; executing claim released in the closeout comment."
+        for change in ("valid", "foreign", "missing_time", "edited_source"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.released_note_fixture()
+                self.comments.pop(1)
+                if change == "foreign": self.comments[-1]["user"]["login"] = "other"
+                if change == "missing_time": self.comments[-1].pop("created_at")
+                if change == "edited_source": self.comments[0]["updated_at"] = "2026-10-01T00:03:00Z"
+                classified = CLAIM.current_ownership_text(status, self.comments, repo="owner/repo", number=42)
+                self.assertEqual(CLAIM.has_ownership_assertion(classified), change != "valid")
+
+    def test_pr_refresh_preserves_holder_of_the_claimed_issue(self):
+        for holder_issue in (42, 99):
+            with self.subTest(holder_issue=holder_issue):
+                self.setUp()
+                self.refresh_fixture()
+                self.targets["99"]["body"] += ("\n\n## Current Status\n\n"
+                    f"Blocked by: https://github.com/owner/repo/issues/{holder_issue} (actively owned by another-worker).")
+                self.args.wait_resolved = "The upstream prerequisite landed; ownership must be checked separately."
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
                 self.assertEqual(caught.exception.code, "claim_conflict")
                 self.assert_no_writes()
@@ -1959,6 +2014,7 @@ class ClaimTests(unittest.TestCase):
             with self.subTest(change=change):
                 self.setUp()
                 self.released_note_fixture()
+                self.comments.pop(1)  # Isolate the status guard from explanatory-note refusal.
                 self.issue["body"] += "Session: trial-b / session-b; executing claim released in the closeout comment.\n"
                 if change == "unreleased": self.comments.pop()
                 if change == "foreign_release": self.comments[-1]["user"]["login"] = "other"

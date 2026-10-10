@@ -376,7 +376,7 @@ def released_explanatory_note(
     text: str, index: int, comments: list[dict[str, Any]],
 ) -> bool:
     """An exact source reference accounts for that session's earlier note only."""
-    from github_plan_release import related_sessions_match, stamp
+    from github_plan_release import receipt_for, related_sessions_match, stamp
     header = re.match(r"Claimed by (\S+); structured claim #(\d+) was confirmed and read back\.", text)
     if not header:
         return False
@@ -388,10 +388,14 @@ def released_explanatory_note(
                 or not related_sessions_match(text, record["session"])):
             continue
         try:
+            receipt = receipt_for(release)
+            cutoff = stamp(release.get("created_at"))
+            if receipt is not None:
+                cutoff = min(cutoff, stamp(receipt["evidence_at"]))
             if not max(stamp(source.get("created_at")), stamp(source.get("updated_at") or source.get("created_at")),
                        stamp(record["claimed_at"])) < stamp(note.get("created_at")) <= stamp(
                 note.get("updated_at") or note.get("created_at")
-            ) < stamp(release.get("created_at")):
+            ) < cutoff:
                 continue
         except (ValueError, TypeError):
             continue
