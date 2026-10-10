@@ -1990,7 +1990,44 @@ def test_product_config_projects_public_hostname_diff_and_readback(mode: str) ->
         request={"product": "example-product", "context": "example-site", "instance": "prod"},
         provider_payload=response,
     )
-    assert result["result"]["public_hosts"] == response["result"]["public_hosts"]
+    assert result["result"]["public_hosts"] == {
+        **response["result"]["public_hosts"],
+        "resolved_base_url": "https://example.com",
+    }
+
+
+@pytest.mark.parametrize("mode", ["dry-run", "apply"])
+def test_product_config_public_base_url_uses_ordered_intent_and_empty_is_distinct(
+    mode: str,
+) -> None:
+    for hosts in (["www.example.com", "example.com"], []):
+        response = _public_hosts_response(mode=mode)
+        public_hosts = response["result"]["public_hosts"]
+        public_hosts.update(
+            after=hosts, added=hosts, read_back_hosts=hosts if mode == "apply" else []
+        )
+        payload = write_action.summarize_success(
+            operation="product-config-apply" if mode == "apply" else "product-config-dry-run",
+            request={}, provider_payload=response,
+        )
+        assert payload["result"]["public_hosts"]["resolved_base_url"] == (
+            f"https://{hosts[0]}" if hosts else ""
+        )
+    response["result"].pop("public_hosts")
+    payload = write_action.summarize_success(
+        operation="product-config-apply" if mode == "apply" else "product-config-dry-run",
+        request={}, provider_payload=response,
+    )
+    assert "public_hosts" not in payload["result"]
+
+
+def test_product_config_cannot_supply_an_arbitrary_resolved_base_url() -> None:
+    response = _public_hosts_response()
+    response["result"]["public_hosts"]["resolved_base_url"] = "https://private-origin.example.invalid"
+    with pytest.raises(safety.LaunchplaneSafetyError):
+        write_action.summarize_success(
+            operation="product-config-dry-run", request={}, provider_payload=response,
+        )
 
 
 @pytest.mark.parametrize("change", [
@@ -4183,6 +4220,7 @@ def _target_replacement_plan_response() -> dict[str, Any]:
             },
             "expected_next_target_name": "private-next-target",
             "expected_domain_hosts": ["next.example.invalid"],
+            "base_url": "https://private-origin.example.invalid",
             "expected_artifact_id": "",
             "data_source_mode": "existing",
             "approval_issue_url": "https://github.com/example/private/issues/1",

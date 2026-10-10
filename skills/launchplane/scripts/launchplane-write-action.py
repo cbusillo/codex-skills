@@ -1198,6 +1198,8 @@ def _project_product_config_public_hosts(value: object) -> dict[str, object]:
         plan_digest=_project_sha256(source["plan_digest"]), runtime_port=port,
         https=True, service_name="web", certificate_type="none", verified=source["verified"],
     )
+    # The first validated public host owns the prod base URL; no origin URL is copied.
+    projected["resolved_base_url"] = f"https://{source['after'][0]}" if source["after"] else ""
     return projected
 
 
