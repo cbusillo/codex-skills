@@ -543,6 +543,27 @@ source_refs = ["github/scripts/gh-pr.py:cmd_rate_limit"]
 test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
 
 [[operations]]
+id = "github.direction.director_waits"
+request_priority = "bulk"
+capabilities = ["metadata_read", "issues_read"]
+permission_mode = "fixed"
+permission_note = "Read-only inventory of the Director's repositories visible to the configured automation identity and their open issues. No grants, fallback identity, question resolution or hold release."
+entrypoint = "direction/scripts/director_waits.py"
+intent = "List every visible open issue whose current wait names the Director, with explicit age and verification evidence."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "Paged GET /installation/repositories or /user/repos; paged GET /repos/{repo}/issues?state=open"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "paged_read"
+retained_graphql_rationale = "No GraphQL; repository and open-issue inventories use bounded REST reads."
+source_refs = ["direction/scripts/director_waits.py:collect", "direction/scripts/director_waits.py:wait_rows"]
+test_refs = ["direction/scripts/test_director_waits.py:test_all_status_labels_and_asked_questions_are_included", "direction/scripts/test_director_waits.py:test_limits_are_incomplete_not_empty_or_complete"]
+
+[[operations]]
 id = "github.read"
 request_priority = "essential"
 capabilities = ["contents_read", "issues_read", "pull_requests_read", "actions_read", "metadata_read", "checks_read", "statuses_read", "security_events_read", "vulnerability_alerts_read", "secret_scanning_alerts_read", "administration_read", "deployments_read", "discussions_read"]
