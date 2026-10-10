@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import importlib.util
 from types import SimpleNamespace
 import json
 import os
@@ -158,6 +159,24 @@ class ReaderIdentityTests(unittest.TestCase):
         auth.assert_not_called()
         self.assertEqual(observed, [installation['actor']])
         self.assertEqual(result['installation']['actor'], installation['actor'])
+
+    def test_planner_derives_project_identity_preservation_without_excluding_issue_reads(self):
+        self.credentials()
+        spec = importlib.util.spec_from_file_location('reader_identity_plan', Path(api.__file__).with_name('gh-plan.py'))
+        planner = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = planner
+        self.addCleanup(sys.modules.pop, spec.name)
+        spec.loader.exec_module(planner)
+        response = subprocess.CompletedProcess([], 0, '{}', '')
+        with patch.object(identity, 'github_app_auth', return_value=('synthetic', 'reader-app[bot]')) as auth, patch(
+                'subprocess.run', return_value=response) as run:
+            planner.run_raw(['project', 'list', '--owner', 'example', '--format', 'json'],
+                            operation='github.plan.next', prefer_active=True, bucket='graphql')
+            auth.assert_not_called()
+            self.assertNotIn('--reader', run.call_args.args[0])
+            planner.run_raw(['api', '/repos/example/app/issues'], operation='github.plan.next', bucket='rest_core')
+            self.assertIn('--reader', run.call_args.args[0])
+            self.assertEqual(auth.call_count, 1)
 
     def test_synthetic_path_mints_through_existing_app_auth_and_cache(self):
         config = self.credentials()
