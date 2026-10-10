@@ -3685,6 +3685,29 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                         discovery["complete"] = False
             else:
                 discoveries.append(item)
+    # Marked incidents can be decomposed outside both the ordinary scan and
+    # the milestone graph. Their native leaves retain the marker's provenance.
+    incident_roots = [compact_list_issue(raw["repo"], raw) for raw in [*seeds.values(), *inventory]
+                      if github_direction_next.LIVE_BREAKAGE_LABEL in normalize_labels(raw.get("labels"))] if scope is None else []
+    def read_incident_node(issue_repo: str, number: int) -> dict[str, Any]:
+        node = read_node(issue_repo, number)
+        return {**node, "item": with_ancestry(node["item"])}
+    incidents = github_direction_next.incident_work_paths(
+        incident_roots, read_node=read_incident_node, scan_limit=args.scan_limit,
+    )
+    existing = {(item["repo"].casefold(), item["number"]): item
+                for item in [*ranked["candidates"], *ranked["excluded"], *discoveries]}
+    for item in incidents["items"]:
+        key = (item["repo"].casefold(), item["number"])
+        if key in existing:
+            existing[key]["incident_via"] = item["incident_via"]
+        elif item.get("exclusion"):
+            ranked["excluded"].append(item)
+        else:
+            discoveries.append({**item, "source": "incident_native_graph"})
+    discovery["incident_context"] = incidents["context"]
+    if not incidents["context"]["complete"]:
+        discovery["complete"] = False
     incomplete_milestone_sources = [
         source["repo"] for source in discovery.get("repositories", [])
         if set(direction_milestone_titles(source.get("direction") or "")).intersection(titles)
