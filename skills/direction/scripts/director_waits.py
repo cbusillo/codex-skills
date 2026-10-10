@@ -19,7 +19,7 @@ import time
 SKILLS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SKILLS / "github/scripts"))
 sys.path.insert(0, str(SKILLS / "github-work-rollup/scripts"))
-from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError
+from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args
 import github_identity
 import github_direction_next
 import github_unanswered_comments as attention
@@ -54,9 +54,13 @@ def wait_rows(repo, issues, terms, owner, now):
         wait = attention.director_wait_reason(repo, issue, terms, {owner.casefold()})
         if wait is None:
             continue
+        if (re.search(r"\bproduct owner\b", wait[0], re.I) and not attention.names_director(
+                wait[0], [term for term in terms if term.casefold() != "owner"], {owner.casefold()})):
+            continue
         sections = github_direction_next.section_map(issue.get("body") or "")
-        status = next((v for k, v in sections.items() if k.casefold() == "current status"), "")
-        item = {"repo": repo, "number": issue["number"], "updated_at": issue.get("updated_at")}
+        status = next((v for k, v in sections.items() if k.casefold() == "current status"), issue.get("body") or "")
+        item = {"repo": repo, "number": issue["number"], "url": issue.get("html_url"),
+                "updated_at": issue.get("updated_at")}
         evidence = github_direction_next.milestone_wait_evidence(item, status, [])
         since = parse_date(evidence["since"])
         verified = re.search(r"(?im)^\s*(?:[-*]\s+)?Last verified:\s*(.+)$", status)
@@ -69,19 +73,23 @@ def wait_rows(repo, issues, terms, owner, now):
             "wait_age_unknown": since is None,
             "last_verified": last_verified.isoformat() if last_verified else None,
             "possibly_stale": bool(since and last_verified and since < last_verified),
+            "staleness_basis": "wait_predates_last_verification",
+            "verification_unknown": last_verified is None,
         })
     return rows
 
 
 def collect(reader, owner, terms, now, repo_limit=1000, issue_limit=10000):
     rows, errors = [], []
-    app = github_identity.github_app_config() is not None
+    base = {"waits": [], "complete": False, "errors": [], "repositories_scanned": [],
+            "scope": "Director repositories visible to the configured automation identity; closed issues and PRs excluded"}
     try:
+        app = github_identity.github_app_config() is not None
         repos = reader.paged_json("/installation/repositories" if app else "/user/repos",
             collection_key="repositories" if app else None, step_prefix="director_wait_repositories",
             params={} if app else {"affiliation": "owner,collaborator,organization_member"}, limit=repo_limit + 1)
-    except (GitHubReadError, GitHubReadShapeError) as error:
-        return {"waits": [], "complete": False, "errors": [{"scope": "repositories", "error": str(error)}]}
+    except (GitHubReadError, GitHubReadShapeError, github_identity.GitHubAppError) as error:
+        return {**base, "errors": [{"scope": "repositories", "error": str(error)}]}
     if len(repos) > repo_limit:
         errors.append({"scope": "repositories", "error": "repository limit reached"})
     scanned = []
@@ -97,11 +105,15 @@ def collect(reader, owner, terms, now, repo_limit=1000, issue_limit=10000):
                                       params={"state": "open"}, limit=issue_limit + 1)
             if len(issues) > issue_limit:
                 errors.append({"scope": repo, "error": "issue limit reached"})
-            rows.extend(wait_rows(repo, issues[:issue_limit], terms, owner, now))
+            new_rows = wait_rows(repo, issues[:issue_limit], terms, owner, now)
+            for row in new_rows:
+                row["repository_archived"] = entry.get("archived") is True
+                row["repository_disabled"] = entry.get("disabled") is True
+            rows.extend(new_rows)
             scanned.append(repo)
         except (GitHubReadError, GitHubReadShapeError, ValueError, TypeError, KeyError) as error:
             errors.append({"scope": repo, "error": str(error)})
-    return {"waits": sorted(rows, key=lambda row: (row["repo"], row["number"])),
+    return {**base, "waits": sorted(rows, key=lambda row: (row["repo"], row["number"])),
             "complete": not errors, "errors": errors, "repositories_scanned": scanned,
             "scope": "Director repositories visible to the configured automation identity; closed issues and PRs excluded"}
 
@@ -120,6 +132,7 @@ def main():
     people = attention.people_identities({args.owner.casefold()}, None)
     terms = [args.owner, "Director", "owner", *people["director_names"], *args.director_name]
     reader = GitHubReader(operation="github.direction.director_waits", strict_actor=True,
+                          gh_prefix_args=automation_only_gh_prefix_args(),
                           deadline_at=time.time() + args.deadline_seconds)
     result = collect(reader, args.owner, terms, datetime.now(timezone.utc), args.repo_limit, args.issue_limit)
     if people["status"] == "error" or people["director_ambiguous"]:

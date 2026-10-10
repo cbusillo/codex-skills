@@ -67,6 +67,30 @@ class WaitTests(unittest.TestCase):
         self.assertEqual(len(result["errors"]), 2)
         self.assertEqual(len(result["waits"]), 1)
 
+    def test_headingless_age_and_product_owner_disambiguation(self):
+        headingless = {**issue(extra="Waiting since: 2026-10-01\nLast verified: 2026-10-05"),
+                       "body": "Waiting for: Director to choose\nWaiting since: 2026-10-01\nLast verified: 2026-10-05"}
+        rows = director_waits.wait_rows("admin/repo", [headingless,
+            issue(2, "product owner Client to accept"), issue(3, "owner to choose")],
+            ["admin", "Director", "owner"], "admin", NOW)
+        self.assertEqual([row["number"] for row in rows], [1, 3])
+        self.assertEqual(rows[0]["wait_age_days"], 8)
+        self.assertTrue(rows[0]["possibly_stale"])
+        self.assertTrue(rows[1]["verification_unknown"])
+
+    def test_discovery_failure_preserves_scope_and_archived_waits_are_marked(self):
+        reader = Mock()
+        with patch.object(director_waits.github_identity, "github_app_config", side_effect=
+                          director_waits.github_identity.GitHubAppError("incomplete identity")):
+            result = director_waits.collect(reader, "owner", ["Director"], NOW)
+        self.assertFalse(result["complete"])
+        self.assertIn("scope", result)
+        self.assertEqual(result["repositories_scanned"], [])
+        reader.paged_json.side_effect = [[{"full_name": "owner/repo", "archived": True}], [issue()]]
+        with patch.object(director_waits.github_identity, "github_app_config", return_value={}):
+            result = director_waits.collect(reader, "owner", ["Director"], NOW)
+        self.assertTrue(result["waits"][0]["repository_archived"])
+
 
 if __name__ == "__main__":
     unittest.main()

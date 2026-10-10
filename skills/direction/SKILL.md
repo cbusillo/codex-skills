@@ -172,12 +172,18 @@ This reads wait records across repositories; it does not audit their direction
 files or milestones. Report every wait, its `wait_age_days` (or unknown when no
 explicit start is recorded), and `possibly_stale` when the wait predates its last
 verification. Read a possibly stale record before relying on it; the report
-does not settle a question or release a hold. `--director-name` adds a known
+uses the recorded requirement's comparison, named `staleness_basis`; it does
+not assert that later verification resolved a wait. Missing verification is
+reported as `verification_unknown`. Archived or disabled repositories remain
+visible but carry explicit flags.
+The report does not settle a question or release a hold. `--director-name` adds a known
 alias when no people index supplies it. Missing access, read failures, limits
 and ambiguous aliases stay explicit in `complete`, `errors`, `scope` and
 `people_status`; increase the named bounds for a complete accessible inventory.
 This full list is separate from the unasked-question radar, which filters for
 waiting labels and absence of an open question.
+Exit 1 means coverage is incomplete; retain the returned rows and report the
+gap instead of treating them as an empty inventory.
 
 Use the starting repository's GitHub account for `OWNER`; do not pass `--repo`, which
 would narrow the search. The list covers issues visible to the configured
