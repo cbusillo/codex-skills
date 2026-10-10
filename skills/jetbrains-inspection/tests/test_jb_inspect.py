@@ -2435,6 +2435,99 @@ class LaneIdeAdviceTest(unittest.TestCase):
                 open_project.assert_not_called()
             self.assertEqual(json.loads((root / ".github" / "github.json").read_text()), metadata)
 
+    def test_missing_configured_ide_keeps_repair_advice_in_all_outputs(self):
+        for installed in (None, "IntelliJIdea2026.1"):
+            with self.subTest(installed=installed), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp).resolve()
+                root = home / "repo"
+                metadata = self.make_repo(root)
+                del metadata["qualityGate"]["inspection"]["lanes"]
+                metadata["qualityGate"]["inspection"]["ide"] = "PyCharm"
+                write_json(root / ".github" / "github.json", metadata)
+                if installed:
+                    make_config_dir(home, installed)
+                output = io.StringIO()
+                with (
+                    patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "",
+                                           "JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(home / "absent.json"),
+                                           "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root)}),
+                    patch.object(jb_inspect.sys, "platform", "darwin"),
+                    patch.object(jb_inspect.Path, "home", return_value=home),
+                    patch.object(jb_inspect, "find_exact_route", return_value=None),
+                    patch.object(jb_inspect, "open_project_for_lifecycle") as opened,
+                    patch.object(sys, "argv", [str(SCRIPT_PATH), "open-worktree", "--repo", str(root), "--json"]),
+                    redirect_stdout(output),
+                ):
+                    code = jb_inspect.main()
+                self.assertEqual(code, 3)
+                opened.assert_not_called()
+                payload = json.loads(output.getvalue())
+                self.assertEqual(payload["error_reason"], "ide_config_missing")
+                advice = payload["next_action"]
+                self.assertIn("launch", advice)
+                for actual in (payload["hint"], payload["verdict_next_action"], payload["agent_result"]["next_action"]):
+                    self.assertEqual(actual, advice)
+                human = io.StringIO()
+                with redirect_stdout(human):
+                    jb_inspect.emit(dict(payload), False, code, command="open-worktree")
+                self.assertIn(advice, human.getvalue())
+                self.assertEqual(json.loads((root / ".github" / "github.json").read_text()), metadata)
+
+    def test_zero_installed_lane_configs_report_install_prerequisite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            root = home / "repo"
+            metadata = self.make_repo(root)
+            output = io.StringIO()
+            with (
+                patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "",
+                                       "JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(home / "absent.json"),
+                                       "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root)}),
+                patch.object(jb_inspect.sys, "platform", "darwin"),
+                patch.object(jb_inspect.Path, "home", return_value=home),
+                patch.object(jb_inspect, "find_exact_route", return_value=None),
+                patch.object(jb_inspect, "open_project_for_lifecycle") as opened,
+                patch.object(sys, "argv", [str(SCRIPT_PATH), "open-worktree", "--repo", str(root), "--json"]),
+                redirect_stdout(output),
+            ):
+                self.assertEqual(jb_inspect.main(), 3)
+            opened.assert_not_called()
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["error_reason"], "ide_config_missing")
+            self.assertEqual(payload["available_config_dirs"], [])
+            self.assertIn("no installed", payload["error"])
+            advice = payload["agent_result"]["next_action"]
+            self.assertIn("install", advice)
+            self.assertIn("launch", advice)
+            self.assertNotIn("open-worktree --ide", advice)
+            self.assertEqual(payload["hint"], advice)
+            self.assertEqual(payload["next_action"], advice)
+            self.assertEqual(json.loads((root / ".github" / "github.json").read_text()), metadata)
+
+    def test_fresh_install_without_selection_and_missing_explicit_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            for context in ({}, {"ide_config_dir": str(home / "missing-config")}):
+                with (
+                    self.subTest(context=context),
+                    patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}),
+                    patch.object(jb_inspect.sys, "platform", "darwin"),
+                    patch.object(jb_inspect.Path, "home", return_value=home),
+                ):
+                    with self.assertRaises(jb_inspect.InspectError) as raised:
+                        jb_inspect.jetbrains_config_dirs(context)
+                payload = jb_inspect.error_payload(raised.exception)
+                jb_inspect.apply_verdict(payload)
+                self.assertEqual(payload["error_reason"], "ide_config_missing")
+                advice = payload["next_action"]
+                self.assertIn("launch", advice)
+                self.assertEqual(payload["hint"], advice)
+                self.assertEqual(payload["agent_result"]["next_action"], advice)
+                if not context:
+                    self.assertIn("qualityGate.inspection", advice)
+                    self.assertIn("ask before writing", advice)
+                self.assertFalse((home / "missing-config").exists())
+
     def test_supported_assessments_prepare_and_dispatch_each_configured_lane(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve() / "repo"
