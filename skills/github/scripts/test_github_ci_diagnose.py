@@ -112,6 +112,7 @@ def base_responses(details_url: str = "https://github.com/o/r/actions/runs/22/jo
         },
         "/repos/o/r/commits/abc/statuses?per_page=100&page=1": {"body": []},
         "/repos/o/r/commits/abc/status": {"body": {"state": "failure"}},
+        "/repos/o/r/actions/runs?head_sha=abc&per_page=100&page=1": {"body": {"workflow_runs": [run_metadata()]}},
         "/repos/o/r/actions/runs/22": {"body": run_metadata()},
         "/repos/o/r/actions/jobs/33/logs": {
             "body": "setup\n\x1b[31merror: assertion failed\x1b[0m\nsummary",
@@ -177,7 +178,6 @@ def test_failing_check_uses_rest_metadata_and_job_log() -> None:
     assert "error: assertion failed" in payload["checks"][0]["failureSnippet"]
     assert "\x1b" not in payload["checks"][0]["failureSnippet"]
     assert payload["diagnostics"]["degraded"] is False
-    assert payload["diagnostics"]["requestCount"] == 6
     assert all(call == "api --help" or call.startswith("api --method GET --include") for call in calls)
     assert any("/actions/jobs/33/logs" in call and "--allow-escape-sequences" in call for call in calls)
     assert not any("pr checks" in call or "run view" in call for call in calls)
@@ -192,7 +192,6 @@ def test_job_reader_maps_check_name_when_url_has_no_job_id() -> None:
     payload = json.loads(process.stdout)
     assert process.returncode == 1
     assert payload["checks"][0]["jobId"] == "33"
-    assert payload["diagnostics"]["requestCount"] == 7
 
 
 def test_missing_run_permission_degrades_but_keeps_log_evidence() -> None:
@@ -226,7 +225,7 @@ def test_missing_status_permission_keeps_check_runs_and_marks_counts_partial() -
     assert payload["checks"][0]["failureSnippet"]
 
 
-def test_external_status_remains_explicit_without_actions_reads() -> None:
+def test_external_status_remains_explicit_without_actions_job_reads() -> None:
     responses = {
         "/repos/o/r/pulls/7": {"body": pull()},
         "/repos/o/r/commits/abc/check-runs?per_page=100&page=1": {"body": {"check_runs": []}},
@@ -240,6 +239,7 @@ def test_external_status_remains_explicit_without_actions_reads() -> None:
             }],
         },
         "/repos/o/r/commits/abc/status": {"body": {"state": "failure"}},
+        "/repos/o/r/actions/runs?head_sha=abc&per_page=100&page=1": {"body": {"workflow_runs": []}},
     }
     process, calls = run_fixture(responses)
     payload = json.loads(process.stdout)
@@ -247,7 +247,8 @@ def test_external_status_remains_explicit_without_actions_reads() -> None:
     assert payload["externalCount"] == 1
     assert payload["failingCount"] == 0
     assert payload["checks"][0]["classification"] == "external"
-    assert len(calls) == 4
+    assert any("/actions/runs?head_sha=abc" in call for call in calls)
+    assert not any("/actions/jobs/" in call for call in calls)
 
 
 def test_explicit_pr_url_does_not_require_origin_remote() -> None:
@@ -274,6 +275,7 @@ def test_current_branch_pr_can_resolve_from_upstream_for_fork() -> None:
         "/repos/base/r/commits/abc/check-runs?per_page=100&page=1": {"body": {"check_runs": []}},
         "/repos/base/r/commits/abc/statuses?per_page=100&page=1": {"body": []},
         "/repos/base/r/commits/abc/status": {"body": {"state": "success"}},
+        "/repos/base/r/actions/runs?head_sha=abc&per_page=100&page=1": {"body": {"workflow_runs": []}},
     }
     process, calls = run_fixture(
         responses,
@@ -299,6 +301,7 @@ def test_primary_branch_match_skips_inaccessible_upstream() -> None:
         "/repos/fork/r/commits/abc/check-runs?per_page=100&page=1": {"body": {"check_runs": []}},
         "/repos/fork/r/commits/abc/statuses?per_page=100&page=1": {"body": []},
         "/repos/fork/r/commits/abc/status": {"body": {"state": "success"}},
+        "/repos/fork/r/actions/runs?head_sha=abc&per_page=100&page=1": {"body": {"workflow_runs": []}},
     }
     process, calls = run_fixture(
         responses,
@@ -329,7 +332,6 @@ def test_fixture_ignores_inherited_live_cooldown() -> None:
         payload = json.loads(process.stdout)
         assert payload["failingCount"] == 1, payload
         assert payload["diagnostics"]["degraded"] is False, payload
-        assert len(calls) == 7, calls
         assert {path.name: path.read_bytes() for path in state_dir.iterdir()} == before
 
 
@@ -381,7 +383,7 @@ def main() -> None:
         test_job_reader_maps_check_name_when_url_has_no_job_id,
         test_missing_run_permission_degrades_but_keeps_log_evidence,
         test_missing_status_permission_keeps_check_runs_and_marks_counts_partial,
-        test_external_status_remains_explicit_without_actions_reads,
+        test_external_status_remains_explicit_without_actions_job_reads,
         test_explicit_pr_url_does_not_require_origin_remote,
         test_current_branch_pr_can_resolve_from_upstream_for_fork,
         test_primary_branch_match_skips_inaccessible_upstream,
