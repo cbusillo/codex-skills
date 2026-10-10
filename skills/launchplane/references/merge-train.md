@@ -54,12 +54,13 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   same-repo linear stack-collapse planning/execution when needed,
   collapsed-root admission, candidate plan/build/observe, landing-plan
   creation, PR-native landing, and child PR disposition.
-- **Proven Batch Flow**: The controller has been proven against a live
-  multi-PR batch train. It can reflow a failed candidate when the eligible queue
-  changes, build and observe a replacement candidate, create a landing plan,
-  land the original PRs through GitHub's PR merge API in train order, and post
-  managed feedback to each PR. Treat this as the normal rollout path, not an
-  experimental one-off.
+- **Landing Contract**: Read Launchplane's canonical
+  [PR-Native Landing](https://github.com/cbusillo/launchplane/blob/main/docs/merge-train-policy.md#pr-native-landing)
+  section for the provider target, completion evidence, and single-entry,
+  multi-entry merge-method, legacy, squash/rebase and stack exceptions. Use
+  [Batch And Recovery](https://github.com/cbusillo/launchplane/blob/main/docs/merge-admission.md#batch-and-recovery)
+  for admission/outcome reconciliation. Let the controller perform that path;
+  constituent completion is not an instruction to merge constituents by hand.
 - **Stacked PRs**: For a same-repo linear stack, label the root PR that
   targets the protected base branch and every child that is ready to land,
   since collapsing merges each child into the root. Launchplane collapses a child only when it is
