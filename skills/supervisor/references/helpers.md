@@ -42,8 +42,9 @@ out of public comments. Context counts may be absent and are not a reason to
 hand off. For Claude, the count includes cached input.
 
 A final unfenced exit verdict may follow completed backtick or tilde fenced
-blocks. A verdict inside an open block, or a shorter or mismatched closing
-fence, does not qualify. Recognition still supplies only a candidate; the
+blocks. A verdict inside an open block does not qualify. Shorter, mismatched,
+trailing-text or over-indented closing fences do not close it; list-item
+fences close relative to the list's content column. Recognition still supplies only a candidate; the
 shutdown procedure owns every verification before terminal input or closure.
 
 ## Checks and morning digest

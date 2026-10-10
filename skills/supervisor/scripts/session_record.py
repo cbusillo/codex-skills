@@ -22,17 +22,26 @@ SAFE = re.compile(r"^(?:\*\*)?Safe to exit: yes\.?(?:\*\*)?$")
 def outside_fences(lines: list[str]) -> bool:
     """The final verdict must be outside a completed Markdown fence."""
     fence = None
+    minimum_indent = 0
     for line in lines:
         match = re.match(r"^\s*(`{3,}|~{3,})(.*)$", line)
         if not match and fence is None:
-            match = re.match(r"^\s*(?:[-+*]|[0-9]+[.)])\s+(`{3,}|~{3,})(.*)$", line)
+            listed = re.match(r"^(\s*(?:(?:[-+*]|[0-9]+[.)])\s+)+)(`{3,}|~{3,})(.*)$", line)
+            if listed:
+                # A list fence closes relative to its content column. A flush-left
+                # marker can open a new outer block and cannot prove closure.
+                prefix, fence, _ = listed.groups()
+                minimum_indent = len(prefix.expandtabs(4))
+                continue
         if not match:
             continue
         marker, rest = match.groups()
         if fence is None:
             fence = marker
+            minimum_indent = 0
         elif (marker[0] == fence[0] and len(marker) >= len(fence) and not rest.strip()
-              and re.fullmatch(r" {0,3}" + re.escape(marker) + r"[ \t]*", line)):
+              and re.fullmatch(r" {" + str(minimum_indent) + "," + str(minimum_indent + 3)
+                               + "}" + re.escape(marker) + r"[ \t]*", line)):
             fence = None
     return fence is None
 

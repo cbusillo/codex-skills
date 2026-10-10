@@ -114,6 +114,8 @@ class TranscriptTests(unittest.TestCase):
             "````sh\n```\n`````\nSafe to exit: yes",
             "   ~~~sh\ncommand\n   ~~~~  \nSafe to exit: yes",
             "```sh\n~~~\n```\n~~~text\nhello\n~~~\nSafe to exit: yes",
+            "- ```sh\n  command\n  ```\nSafe to exit: yes",
+            "  - ```sh\n    command\n    ```\nSafe to exit: yes",
         ):
             for harness, records in (
                 ("claude", [claude(text)]),
@@ -131,6 +133,7 @@ class TranscriptTests(unittest.TestCase):
             "```text\n\t```\nSafe to exit: yes",
             "- ```text\nSafe to exit: yes",
             "1. ~~~text\nSafe to exit: yes",
+            "- ```sh\ncommand\n```\nSafe to exit: yes",
             "```sh\ncommand\n```\n> Safe to exit: yes",
             "~~~sh\ncommand\n~~~\nNot Safe to exit: yes",
             "```sh\ncommand\n```\nSafe to exit: yes if CI passes",
@@ -413,10 +416,15 @@ class LedgerTests(unittest.TestCase):
 
     def test_memory_citation_fixture_through_status_candidates_and_close(self):
         fixture = Path(__file__).parent / "fixtures/codex-closeout-memory-citation.jsonl"
-        self.transcript.write_text(fixture.read_text().replace(
-            "Safe to exit: yes", "Verified with:\\n```sh\\nuv run test_supervisor.py"
-            "\\n```\\nSafe to exit: yes"
-        ))
+        self.transcript.write_text(fixture.read_text())
+        self.assertTrue(status.snapshot(self.ledger)[0]["safe_verdict"])
+        self.assertTrue(finished_map.candidates(self.ledger)[0]["candidate"])
+        records = session_record.read_jsonl(fixture)
+        records[1]["payload"]["content"][0]["text"] = (
+            "Verified with:\n```sh\nuv run test_supervisor.py\n```\n"
+            + records[1]["payload"]["content"][0]["text"]
+        )
+        self.transcript.write_text("".join(json.dumps(record) + "\n" for record in records))
         result = status.snapshot(self.ledger)[0]
         self.assertTrue(result["safe_verdict"])
         self.assertIn("<oai-mem-citation>", result["last_text"])
