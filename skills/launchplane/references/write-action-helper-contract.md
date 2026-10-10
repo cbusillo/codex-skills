@@ -768,6 +768,14 @@ the configuration; `[]` clears only the managed public names.
 The optional result `public_hosts` projects hostname lists `before`, `after`,
 `added`, `updated`, `removed`, `unchanged`, `read_back_hosts`, plus `plan_digest`,
 `runtime_port`, `https`, `service_name`, `certificate_type`, and `verified`.
+The helper also reports `resolved_base_url`, derived from the first validated
+`after` host under
+[Launchplane's public-base-URL rule](https://github.com/cbusillo/launchplane/blob/main/control_plane/contracts/public_hosts.py).
+It is `""` for an explicitly empty host list; absent `public_hosts` evidence
+omits the whole block. No origin URL or arbitrary response URL is copied.
+This is intended configuration in a dry run and verified host configuration in
+an apply read-back, not proof that a deployment has rendered the URL. The generic
+target-replacement plan's `base_url` remains redacted without public-host provenance.
 Unknown fields, non-hostname values, malformed digests/ports, and inconsistent
 verification are refused. Existing responses without this result remain valid.
 Apply's verified read-back proves provider route configuration, not public HTTP
