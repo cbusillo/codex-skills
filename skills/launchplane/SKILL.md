@@ -344,6 +344,11 @@ commands:
         "<key>",
       ]
     purpose: Applies only reviewed merge-train policy import evidence after active-policy digest preflight.
+  - name: launchplane-generic-web-deploy-recovery-reference-read
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "generic-web-deploy-recovery-reference-read", "--product", "<product>"]
+    purpose: Reads a service-owned reference to one exact held testing event deploy without collecting its request or key.
   - name: launchplane-generic-web-deploy-recovery-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -454,10 +459,14 @@ policy:
           purpose: Applies only the exact reviewed inventory payload through the bounded helper.
     - id: prefer-launchplane-write-helper-for-generic-web-deploy-recovery-api
       match:
-        shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/admin/generic-web/deploy-recovery/(dry-run|apply)\\b"
+        shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/admin/generic-web/deploy-recovery/(dry-run|apply|[^/\\s?]+/testing)\\b"
       action: require_preferred
       message: Raw Launchplane generic-web deploy-recovery calls bypass helper-owned private-file, dry-run/apply, idempotency, digest binding, redaction, and trace discipline. Use the write-action helper.
       preferred:
+        - kind: script
+          path: scripts/launchplane-write-action.py
+          example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "generic-web-deploy-recovery-reference-read", "--product", "<product>"]
+          purpose: Reads the exact held testing event reference through the bounded helper.
         - kind: script
           path: scripts/launchplane-write-action.py
           example_argv:
@@ -1054,10 +1063,14 @@ verification.
   inventory digest binding, and a stable idempotency key.
 - `POST /v1/admin/generic-web/deploy-recovery/dry-run`: Generic-web
   deploy-recovery dry-run path; always run before apply and capture the
-  `recovery_digest` from the redacted result.
+  `recovery_digest` from the redacted result. Before event-driven testing
+  recovery, read [the helper recovery contract](references/write-action-helper-contract.md#generic-web-deploy-recovery)
+  and obtain `generic-web-deploy-recovery-reference-read --product P`. Use the
+  returned reference instead of reconstructing a deploy request or key.
 - `POST /v1/admin/generic-web/deploy-recovery/apply`: Generic-web
-  deploy-recovery apply path; requires the original deploy idempotency key,
-  the dry-run digest, and reviewed acknowledgement.
+  deploy-recovery apply path; requires the dry-run digest and reviewed
+  acknowledgement. Original-deploy payloads require the original key; reference
+  payloads resolve it inside Launchplane.
 - `POST /v1/product-config/odoo-addon-settings/apply`: Projected contract
   path for an Odoo lane's Shopify addon settings on its instance-override record
   (`odoo-addon-settings-dry-run` / `odoo-addon-settings-apply`). The private
@@ -1124,7 +1137,10 @@ verification.
   local-extension read (`reconcile-requests-read --product`) for what the
   event reconciler last decided for each of a product's previews and its
   testing lane: state, attempt, delivery id, last error, and the plan's
-  action, reason, commit, digests and ids.
+  action, reason, commit, digests and ids. Use `--target-key <exact-target-key>`
+  to select a target from the service response before the helper's output bound;
+  a truncated unselected read cannot prove that testing is absent. An empty
+  selection describes only the returned service list, not records outside it.
 - `GET /v1/products/{product}/secret-bindings`: Bounded local-extension read
   (`product-secret-bindings-read --product`) of a product's runtime secret
   binding metadata: binding key, name, scope, context, instance, declared
