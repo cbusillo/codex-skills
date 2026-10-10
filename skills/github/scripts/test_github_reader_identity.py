@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+from types import SimpleNamespace
 import json
 import os
 from pathlib import Path
@@ -63,7 +64,7 @@ class ReaderIdentityTests(unittest.TestCase):
     def test_bulk_routing_and_essential_reads_writes_keep_main(self):
         self.credentials()
         with patch.object(identity, 'github_app_auth', return_value=('synthetic-token', 'reader-app[bot]')) as auth:
-            for operation in ('github.plan.index', 'github.repo_snapshot', 'github.pr.watch'):
+            for operation in ('github.plan.index', 'github.plan.next', 'github.repo_snapshot', 'github.pr.watch'):
                 actor, expected, prefix = api.request_identity(
                     operation=operation, is_write=False, gh_cmd=api.DEFAULT_GH,
                     gh_prefix_args=[], actor='main-app[bot]', expected_actor='main-app[bot]')
@@ -131,11 +132,32 @@ class ReaderIdentityTests(unittest.TestCase):
         with patch.object(identity, 'github_app_auth') as auth:
             with patch.dict(os.environ, {'GH_WITH_ENV_TOKEN_OWN_USER': '1'}):
                 self.assertEqual(api.request_identity(**arguments)[2], [])
-            self.assertEqual(api.request_identity(**{**arguments, 'operation': 'github.plan.project_list'})[2], [])
+            self.assertEqual(api.request_identity(**{**arguments, 'operation': 'github.plan.project_list',
+                                                     'preserve_identity': True})[2], [])
             os.environ.pop('CODEX_AUTOMATION_LOGIN')
             self.assertEqual(api.request_identity(**{**arguments, 'actor': 'other-user', 'expected_actor': 'other-user'}),
                              ('other-user', 'other-user', []))
         auth.assert_not_called()
+
+    def test_main_app_opt_out_keeps_audit_metadata_and_probes_on_one_identity(self):
+        from test_github_capabilities import cli, capabilities
+        config = self.credentials()
+        observed = []
+        def membership(reader, *_args, **_kwargs):
+            observed.append(reader.expected_actor)
+            return [{'full_name': 'example/app'}]
+        installation = {'actor': 'main-app[bot]', 'suspended': False,
+                        'permissions': capabilities.permission_profile(capabilities.load_matrix())['permissions']['repository']}
+        with patch.object(identity, 'github_app_config', return_value=config), patch.object(
+                identity, 'github_app_installation_metadata', return_value=installation), patch.object(
+                identity, 'github_app_auth', return_value=('synthetic', 'reader-app[bot]')) as auth, patch.object(
+                github_read.GitHubReader, 'paged_json', autospec=True, side_effect=membership), patch.object(
+                capabilities, 'audit_repository', return_value={'state': 'audited'}):
+            result = cli.run_audit(SimpleNamespace(refresh_token=False, all_installed=False, repo=['example/app']),
+                                   capabilities.load_matrix())
+        auth.assert_not_called()
+        self.assertEqual(observed, [installation['actor']])
+        self.assertEqual(result['installation']['actor'], installation['actor'])
 
     def test_synthetic_path_mints_through_existing_app_auth_and_cache(self):
         config = self.credentials()

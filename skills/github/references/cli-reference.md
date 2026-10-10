@@ -183,7 +183,10 @@ and refuses ambient tokens or personal login fallback. Installations with neithe
 App configured retain their existing automation-token setup. Explicit actors,
 the approved own-user opt-in, custom transports, and the matrix's explicit
 Project identity policy retain their established routes; the reader role does
-not add a Projects grant. A configured reader with
+not add a Projects grant. The capabilities audit pins both installation metadata
+and probes to the main App with `--main-app-only`. This prefix also preserves an
+explicit main-App read context. Optional Project commands keep their existing
+identity without keeping the issue reads in `next` on that identity. A configured reader with
 an unsafe key path or rejected authentication fails closed. Custom transports
 and explicitly different actors retain their existing identity handling.
 The wrapper's `--reader` prefix accepts verified reads and `--check`, including

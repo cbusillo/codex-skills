@@ -2917,6 +2917,7 @@ def request_identity(
     *, operation: str, is_write: bool, gh_cmd: str, gh_prefix_args: Optional[list[str]],
     actor: Optional[str], expected_actor: Optional[str], repository: Optional[str] = None,
     matrix_path: pathlib.Path = DEFAULT_OPERATION_MATRIX,
+    preserve_identity: bool = False,
 ) -> tuple[Optional[str], Optional[str], list[str]]:
     """Select the purpose-specific App before quota admission and body caching.
 
@@ -2930,10 +2931,10 @@ def request_identity(
         raise github_identity.GitHubAppError("read-only GitHub App refuses a write before sending")
     rule, _ = operation_retry_rule(operation, matrix_path=matrix_path)
     main_actor = github_identity.automation_login()
-    automatic = (not is_write and rule is not None and rule.request_priority == "bulk"
-                 and rule.actor_policy != "automation_required_with_explicit_project_override"
+    automatic = (not is_write and not preserve_identity and rule is not None and rule.request_priority == "bulk"
                  and pathlib.Path(gh_cmd).name == "gh-with-env-token"
                  and "--write-actor-for" not in prefix
+                 and "--main-app-only" not in prefix
                  and not github_identity.own_user_opted_in()
                  and all(not value or (main_actor and value.casefold() == main_actor.casefold())
                          for value in (actor, expected_actor)))

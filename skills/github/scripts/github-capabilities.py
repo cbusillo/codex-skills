@@ -50,7 +50,7 @@ def run_audit(args: argparse.Namespace, matrix: dict) -> dict:
             return {"state": "unavailable", "reason": "app_actor_mismatch"}
     reader = github_read.GitHubReader(
         expected_actor=str(installation["actor"]), strict_actor=True,
-        operation="github.capabilities.audit", gh_prefix_args=["--require-automation-auth"])
+        operation="github.capabilities.audit", gh_prefix_args=["--require-automation-auth", "--main-app-only"])
     repositories = reader.paged_json("/installation/repositories", step_prefix="installation_membership", collection_key="repositories")
     names = [entry.get("full_name") for entry in repositories]
     if any(not isinstance(name, str) or not name for name in names):
