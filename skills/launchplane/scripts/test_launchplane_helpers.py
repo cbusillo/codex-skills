@@ -3357,6 +3357,61 @@ def test_protected_artifacts_read_projection_and_query() -> None:
     assert status == 0 and payload["result"]["entries"][0]["artifact_id"] == ""
 
 
+def test_protected_artifacts_read_preserves_digest_bearing_record_ids() -> None:
+    response = _protected_artifacts_response()
+    inventory = response["protected_artifacts"]
+    original = inventory["entries"][0]
+    inventory["entries"] = [copy.deepcopy(original) for _ in range(4)]
+    for instance in ("prod", "testing"):
+        artifact = "ghcr.io/example/app@sha256:" + "a1" * 32
+        inventory["entries"].append({
+            **original,
+            "instance": instance,
+            "artifact_id": artifact,
+            "source_record_type": "release_tuple",
+            "source_record_id": f"example-context-{instance}-{artifact}",
+        })
+        inventory["warnings"].append(f"Protected artifact {artifact} has no stored manifest.")
+    status, payload, _ = _run_product_read(
+        ["protected-artifacts-read", "--product", "example-product"], response
+    )
+    assert status == 0 and payload["status"] == response["status"]
+    result = payload["result"]
+    assert result["entry_count"] == len(inventory["entries"])
+    assert result["warning_count"] == len(inventory["warnings"])
+    assert not result["entries_truncated"] and not result["warnings_truncated"]
+    for projected, source in zip(result["entries"], inventory["entries"], strict=True):
+        assert projected == {key: source[key] for key in projected}
+        assert projected["source_record_id"] == source["source_record_id"]
+    assert result["warnings"] == [
+        write_action.public_operator_text(warning) for warning in inventory["warnings"]
+    ]
+    assert "private-entry-field" not in json.dumps(payload)
+    assert "private-registry" not in json.dumps(payload)
+
+
+def test_protected_artifacts_read_rejects_unsafe_record_ids() -> None:
+    argv = ["protected-artifacts-read", "--product", "example-product"]
+    for record_id in (
+        "user:pass@registry.example/app",
+        "example-prod-user:pass@registry.example/app@sha256:" + "a" * 64,
+        "example-prod-ghcr.io/example/app@sha256:abc",
+        "example-prod-ghcr.io/example/app@sha256:" + "g" * 64,
+        "example-prod-ghcr.io/example/app@sha512:" + "a" * 64,
+        "example-prod-https://registry.example/app@sha256:" + "a" * 64,
+        "Bearer abcdefghijklmnop",
+        "",
+        None,
+    ):
+        response = _protected_artifacts_response()
+        response["protected_artifacts"]["entries"][0].update(
+            source_record_type="release_tuple", source_record_id=record_id
+        )
+        status, payload, _ = _run_product_read(argv, response)
+        assert status == 1 and payload["status"] == "invalid" and not payload["result"]
+        assert "user:pass" not in json.dumps(payload)
+
+
 def test_protected_artifacts_read_bounds_and_sanitizes_warnings() -> None:
     response = _protected_artifacts_response()
     inventory = response["protected_artifacts"]

@@ -1110,9 +1110,8 @@ verification.
   per-entry reason, context, instance, artifact id, source record type and id,
   and image digest. It returns sanitized warning texts, total entry and warning
   counts, and truncation flags. Image reference lists, URLs and other provider fields are
-  dropped. Artifact ids may themselves be image references; credential-bearing
-  registry userinfo is refused. Use this diagnostic projection to explain retention; truncated
-  output is not a complete retention set for registry cleanup.
+  dropped. Identifier validation and retention limits follow the
+  [helper contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads).
 - `GET /v1/product-profiles/{product}`: Bounded local-extension read
   (`product-profile-read --product`) for who a product's Client is and its
   `production_use`: `prelaunch` skips Client release review, while `live` and

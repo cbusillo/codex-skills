@@ -193,9 +193,11 @@ local extensions until the vendored artifact is refreshed.
   disclose omitted rows. Unknown entry fields and image reference lists are
   dropped. Artifact ids may be registry references with an optional SHA-256
   digest suffix; credential-bearing userinfo is refused in ids and warning text.
-  Empty ids remain valid for preview feedback protecting image references only.
-  Nonempty image digests must be SHA-256, and lane and record names cannot carry
-  userinfo. Malformed retained fields fail the read. This diagnostic projection
+  Empty artifact ids remain valid for preview feedback protecting image references
+  only. Source record ids are required and can embed a digest-pinned image reference
+  (for example, a release-tuple id); they use the same SHA-256 suffix and userinfo
+  checks as artifact ids. Nonempty image digests must be SHA-256, and lane names
+  cannot contain `@`. Malformed retained fields fail the read. This diagnostic projection
   is not a complete registry-cleanup retention set when truncated.
 - `product-profile-read --product` calls `GET /v1/product-profiles/{product}`
   and returns the product's Client GitHub login and review label, `production_use`,
