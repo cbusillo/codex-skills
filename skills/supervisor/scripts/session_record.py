@@ -23,16 +23,19 @@ def outside_fences(lines: list[str]) -> bool:
     """The final verdict must be outside a completed Markdown fence."""
     fence = None
     minimum_indent = 0
-    list_indent = None
+    list_indents = []
     for line in lines:
         line = line.expandtabs(4)
         indent = len(line) - len(line.lstrip(" "))
         listed_line = re.match(r"^( *(?:(?:[-+*]|[0-9]+[.)]) +)+)", line)
         if fence is None:
+            if line.strip():
+                while list_indents and indent < list_indents[-1]:
+                    list_indents.pop()
             if listed_line:
-                list_indent = len(listed_line[1])
-            elif line.strip() and list_indent is not None and indent < list_indent:
-                list_indent = None
+                for marker_part in re.finditer(r"(?:[-+*]|[0-9]+[.)]) +", listed_line[1]):
+                    if not list_indents or marker_part.end() > list_indents[-1]:
+                        list_indents.append(marker_part.end())
         match = re.match(r"^\s*(`{3,}|~{3,})(.*)$", line)
         if not match and fence is None:
             listed = re.match(r"^(\s*(?:(?:[-+*]|[0-9]+[.)])\s+)+)(`{3,}|~{3,})(.*)$", line)
@@ -47,7 +50,7 @@ def outside_fences(lines: list[str]) -> bool:
         marker, rest = match.groups()
         if fence is None:
             fence = marker
-            minimum_indent = list_indent if list_indent is not None else (indent if indent > 3 else 0)
+            minimum_indent = list_indents[-1] if list_indents else (indent if indent > 3 else 0)
         elif (marker[0] == fence[0] and len(marker) >= len(fence) and not rest.strip()
               and re.fullmatch(r" {" + str(minimum_indent) + "," + str(minimum_indent + 3)
                                + "}" + re.escape(marker) + r"[ \t]*", line)):
@@ -210,7 +213,7 @@ def summarize(records: list[dict], harness: str) -> dict:
     lines = verdict_text.rstrip().splitlines()
     result["safe_verdict"] = bool(
         lines
-        and not re.match(r"^(?: {4}|\t)", lines[-1])
+        and not re.match(r"^ {4}", lines[-1].expandtabs(4))
         and SAFE.fullmatch(re.sub(r"^[-*] ", "", lines[-1].strip()).replace("**", ""))
         and outside_fences(lines)
         and result["at_turn_end"]
