@@ -1308,6 +1308,23 @@ def _merge_train_pr_number(value: object) -> int:
     return number
 
 
+def _project_merge_train_stack_plan(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    projected = _project_merge_component(source)
+    if "root_pull_request_number" in source:
+        projected["root_pull_request_number"] = _merge_train_pr_number(source["root_pull_request_number"])
+    if "child_dispositions" in source:
+        projected["child_dispositions"] = [
+            {
+                "pull_request_number": _merge_train_pr_number(_require_dict(child).get("pull_request_number")),
+                "expected_head_sha": public_identifier(child.get("expected_head_sha")),
+                "status": public_code(child.get("status")),
+            }
+            for child in source["child_dispositions"]
+        ]
+    return projected
+
+
 def _project_merge_train_queue_entry(value: object) -> dict[str, object]:
     source = _require_dict(value)
     projected: dict[str, object] = {
@@ -1533,7 +1550,10 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
         "branch_update_result",
     ):
         if key in source:
-            projected[key] = _project_merge_component(source[key], include_membership=key == "candidate")
+            projected[key] = (
+                _project_merge_train_stack_plan(source[key]) if key == "stack_collapse_plan"
+                else _project_merge_component(source[key], include_membership=key == "candidate")
+            )
     assert_public_safe_shape(projected)
     return projected
 

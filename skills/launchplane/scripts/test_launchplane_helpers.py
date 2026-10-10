@@ -1230,6 +1230,35 @@ def test_controller_timeout_covers_slow_dry_run_and_mutation_and_keeps_override(
     assert ordinary.timeout < controller.timeout
 
 
+def test_controller_projects_stack_child_dispositions_without_private_comment_text() -> None:
+    response = _queue_refusal_response()
+    response["result"]["stack_collapse_plan"] = {
+        "collapse_id": "collapse-example", "root_pull_request_number": 42,
+        "child_dispositions": [{"pull_request_number": 43, "expected_head_sha": "b" * 40,
+                                "status": "closed", "detail": "Private child disposition prose",
+                                "comment_url": "https://github.com/example/repo/pull/43#issuecomment-1"}],
+    }
+    code, payload = _run_controller_response(response)
+    assert code == 0
+    stack = payload["result"]["stack_collapse_plan"]
+    assert stack["root_pull_request_number"] == 42
+    assert stack["child_dispositions"] == [{"pull_request_number": 43, "expected_head_sha": "b" * 40, "status": "closed"}]
+    assert "Private child disposition prose" not in json.dumps(payload)
+    assert "issuecomment-1" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("child", [None, "closed", {"pull_request_number": True},
+                                    {"pull_request_number": 0},
+                                    {"pull_request_number": 43, "expected_head_sha": "ghp_" + "a" * 36, "status": "closed"}])
+def test_controller_rejects_invalid_or_unsafe_stack_child_dispositions(child: object) -> None:
+    response = _queue_refusal_response()
+    response["result"]["stack_collapse_plan"] = {"child_dispositions": [child]}
+    code, payload = _run_controller_response(response)
+    assert code != 0
+    assert payload["status"] == "invalid"
+    assert not payload.get("result")
+
+
 def test_controller_block_and_reconciliation_preserve_durable_diagnostics() -> None:
     result = {
         "controller_action": "block", "mode": "blocked",
