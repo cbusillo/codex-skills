@@ -442,6 +442,14 @@ def run_raw(
     resolved_operation = operation or CURRENT_OPERATION
     initial_retry_actor = route_actor if route_actor == "active-gh-user" else EXPECTED_ACTOR
     initial_expected_actor = None if route_actor == "active-gh-user" else EXPECTED_ACTOR
+    if route_actor != "active-gh-user":
+        initial_retry_actor, initial_expected_actor, identity_prefix = github_api_core.request_identity(
+            operation=resolved_operation, is_write=resolved_is_write or inferred.is_write,
+            gh_cmd=command[0], gh_prefix_args=[], actor=initial_retry_actor,
+            expected_actor=initial_expected_actor,
+            repository=github_api_core.github_http_cache.repository_from_command(args),
+        )
+        command = [command[0], *identity_prefix, *command[1:]]
     retry_rule, _ = github_api_core.operation_retry_rule(resolved_operation)
     probe_allowed = bool(
         retry_rule and retry_rule.retry_eligibility in {"safe", "conditional"}

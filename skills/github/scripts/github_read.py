@@ -238,6 +238,12 @@ class GitHubReader:
         deadline_at: Optional[float] = None,
     ) -> None:
         self.gh_cmd = gh_cmd
+        # Resolve before constructing the opt-in cache: bodies and actor checks
+        # must use the same identity as shared transport and quota admission.
+        actor, expected_actor, gh_prefix_args = github_api_core.request_identity(
+            operation=operation, is_write=False, gh_cmd=gh_cmd, gh_prefix_args=gh_prefix_args,
+            actor=actor, expected_actor=expected_actor,
+        )
         self.expected_actor = expected_actor
         self.operation = operation
         self.actor = actor

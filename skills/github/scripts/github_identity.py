@@ -193,14 +193,11 @@ def active_auth_fallback_allowed(environ: Mapping[str, str] | None = None) -> bo
     }
 
 
-def github_app_config(environ: Mapping[str, str] | None = None) -> GitHubAppConfig | None:
+def github_app_config(environ: Mapping[str, str] | None = None, *, reader: bool = False) -> GitHubAppConfig | None:
     values = os.environ if environ is None else environ
     local_values = load_local_env(values)
-    names = (
-        "GITHUB_APP_ID",
-        "GITHUB_APP_INSTALLATION_ID",
-        "GITHUB_APP_PRIVATE_KEY_PATH",
-    )
+    prefix = "GITHUB_READER_APP" if reader else "GITHUB_APP"
+    names = tuple(f"{prefix}_{suffix}" for suffix in ("ID", "INSTALLATION_ID", "PRIVATE_KEY_PATH"))
     configured = {
         name: configured_value(name, environ=values, local_env=local_values)
         for name in names
@@ -212,7 +209,7 @@ def github_app_config(environ: Mapping[str, str] | None = None) -> GitHubAppConf
         missing = ", ".join(name for name in names if not configured[name])
         raise GitHubAppError(f"incomplete GitHub App configuration; missing {missing}")
 
-    key_path = pathlib.Path(str(configured["GITHUB_APP_PRIVATE_KEY_PATH"])).expanduser()
+    key_path = pathlib.Path(str(configured[f"{prefix}_PRIVATE_KEY_PATH"])).expanduser()
     try:
         key_stat = key_path.lstat()
     except FileNotFoundError as error:
@@ -225,7 +222,7 @@ def github_app_config(environ: Mapping[str, str] | None = None) -> GitHubAppConf
     if key_mode & 0o077:
         raise GitHubAppError("GitHub App private key must be owner-readable only (mode 600)")
 
-    configured_api_url = configured_value("GITHUB_APP_API_URL", environ=values, local_env=local_values)
+    configured_api_url = configured_value(f"{prefix}_API_URL", environ=values, local_env=local_values)
     generic_api_url = configured_value("GITHUB_API_URL", environ=values, local_env=local_values)
     gh_host = configured_value("GH_HOST", environ=values, local_env=local_values)
     if not configured_api_url and not generic_api_url and gh_host and gh_host != "github.com":
@@ -243,7 +240,7 @@ def github_app_config(environ: Mapping[str, str] | None = None) -> GitHubAppConf
     ):
         raise GitHubAppError("GitHub App API URL must be HTTPS (or loopback HTTP for tests)")
     cache_override = configured_value(
-        "GITHUB_APP_TOKEN_CACHE_DIR",
+        f"{prefix}_TOKEN_CACHE_DIR",
         environ=values,
         local_env=local_values,
     )
@@ -259,12 +256,19 @@ def github_app_config(environ: Mapping[str, str] | None = None) -> GitHubAppConf
         raise GitHubAppError("cannot resolve GitHub App token cache without a Code home")
 
     return GitHubAppConfig(
-        app_id=str(configured["GITHUB_APP_ID"]),
-        installation_id=str(configured["GITHUB_APP_INSTALLATION_ID"]),
+        app_id=str(configured[f"{prefix}_ID"]),
+        installation_id=str(configured[f"{prefix}_INSTALLATION_ID"]),
         private_key_path=key_path,
         api_url=api_url,
         cache_dir=cache_dir,
     )
+
+
+def reader_config_available() -> bool:
+    """Presence only; validation and minting remain in the existing App path."""
+    local_values = load_local_env()
+    return all(configured_value(f"GITHUB_READER_APP_{suffix}", local_env=local_values)
+               for suffix in ("ID", "INSTALLATION_ID", "PRIVATE_KEY_PATH"))
 
 
 def _b64url(payload: bytes) -> str:
@@ -719,6 +723,7 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description="Resolve shared GitHub automation identity.")
+    parser.add_argument("--reader", action="store_true", help="Use the configured read-only App.")
     subparsers = parser.add_subparsers(dest="command", required=True)
     app_auth = subparsers.add_parser("app-auth", help="Resolve the App bot login and installation token.")
     app_auth.add_argument(
@@ -738,7 +743,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         if args.command in {"app-auth", "app-check", "app-token"}:
-            config = github_app_config()
+            config = github_app_config(reader=args.reader)
             if config is None:
                 raise GitHubAppError("GitHub App authentication is not configured")
             if args.command == "app-check":

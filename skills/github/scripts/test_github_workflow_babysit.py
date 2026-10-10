@@ -257,7 +257,7 @@ class WorkflowBabysitterTests(unittest.TestCase):
             self.assertEqual(result.body, {"value": 1})
             self.assertEqual(call.call_args.kwargs["extra_headers"]["If-None-Match"], '"v1"')
             self.assertEqual(call.call_args.kwargs["deadline_at"], client.deadline_at)
-            self.assertEqual(call.call_args.kwargs["gh_prefix_args"], ["--require-automation-auth"])
+            self.assertIn("--require-automation-auth", call.call_args.kwargs["gh_prefix_args"])
         self.assertEqual(client.minimum_poll_seconds, 60)
         # Repeated identity and protected-environment reads must stay fresh.
         for role, path, operation in (

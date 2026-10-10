@@ -48,6 +48,8 @@ check_auth=0
 write_actor_repository=
 require_automation_auth=0
 require_automation_auth_from_process=0
+reader_app=0
+main_app_only=0
 stdout_file=$(mktemp)
 stderr_file=$(mktemp)
 classification_file=$(mktemp)
@@ -75,6 +77,16 @@ readonly own_user_opt_in
 
 while [ "$#" -gt 0 ]; do
 	case "${1:-}" in
+	--main-app-only)
+		main_app_only=1
+		require_automation_auth=1
+		shift
+		;;
+	--reader)
+		reader_app=1
+		require_automation_auth=1
+		shift
+		;;
 	--print-auth-account)
 		print_auth_account=1
 		shift
@@ -809,6 +821,9 @@ app_auth_for_command() {
 		require_installation=1
 	fi
 	set -- app-auth
+	if [ "$reader_app" -eq 1 ]; then
+		set -- --reader "$@"
+	fi
 	if [ -n "$target_repo" ]; then
 		set -- "$@" --repo "$target_repo"
 	fi
@@ -856,6 +871,47 @@ if [ "$reads_stdin" -eq 1 ] && [ ! -t 0 ]; then
 	stdin_captured=1
 fi
 
+# Reader mode is fail-closed even for GraphQL POSTs, conflicting method flags,
+# and unrecognized CLI commands. Classify the complete captured body, never
+# delegate an unverified command to the read-only identity.
+if [ "$reader_app" -eq 1 ]; then
+	if [ -n "$write_actor_repository" ]; then
+		probe_validation_error "read-only App cannot resolve a write actor"
+	fi
+	if ! run_python - "$script_dir" "$stdin_file" "$@" <<'PY'
+import pathlib
+import sys
+sys.path.insert(0, sys.argv[1])
+import github_api
+args = sys.argv[3:]
+body = pathlib.Path(sys.argv[2]).read_text()
+context = github_api.infer_gh_command_context(args, input_text=body)
+if args and args[0] == "api" and context.bucket == "graphql":
+    # Inspect all definitions because operationName can select a later mutation.
+    payload = github_api._try_parse_json(body)
+    if payload is None:
+        for index, arg in enumerate(args):
+            if arg in {"-f", "-F", "--field", "--raw-field"} and index + 1 < len(args):
+                value = args[index + 1]
+                if value.startswith("query="):
+                    payload = {"query": value.split("=", 1)[1]}
+    if github_api.reader_request_is_write("POST", "/graphql", payload):
+        context = github_api.CommandContext(True, context.transport, context.bucket)
+# Only API reads and the known read-only CLI families used by bulk helpers.
+allowed = bool(args) and (args[0] == "api" or
+    (len(args) > 1 and args[:2] in [["repo", "list"], ["issue", "list"],
+        ["issue", "view"], ["pr", "list"], ["pr", "view"], ["pr", "checks"],
+        ["run", "list"], ["run", "view"], ["search", "issues"], ["search", "prs"]]))
+if context.is_write or not allowed:
+    print("error: read-only GitHub App refuses a write or unverified command before sending", file=sys.stderr)
+    raise SystemExit(1)
+PY
+	then
+		exit 1
+	fi
+	# Missing or failed reader auth never uses an ambient token or personal login.
+fi
+
 # github_identity.CONTRIBUTOR_EXIT_STATUS: the App is not installed on the
 # target repository and the account that registered it does not own it.
 contributor_exit_status=3
@@ -891,13 +947,21 @@ act_as_own_user() {
 }
 
 app_variable_count=0
-for app_variable in GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH; do
+app_variables='GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH'
+if [ "$reader_app" -eq 1 ]; then
+	app_variables='GITHUB_READER_APP_ID GITHUB_READER_APP_INSTALLATION_ID GITHUB_READER_APP_PRIVATE_KEY_PATH'
+fi
+for app_variable in $app_variables; do
 	eval "app_variable_value=\${$app_variable:-}"
 	if [ -n "$app_variable_value" ]; then
 		app_variable_count=$((app_variable_count + 1))
 	fi
 done
 auth_source=user_token
+if [ "$main_app_only" -eq 1 ] && [ "$app_variable_count" -ne 3 ]; then
+	echo "error: reader fallback requires the configured main GitHub App" >&2
+	exit 1
+fi
 if [ "$app_variable_count" -gt 0 ]; then
 	if [ "$app_variable_count" -ne 3 ]; then
 		echo "error: incomplete GitHub App configuration; set GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, and GITHUB_APP_PRIVATE_KEY_PATH" >&2
@@ -919,6 +983,12 @@ if [ "$app_variable_count" -gt 0 ]; then
 		exit 1
 	fi
 	auth_source=github_app
+	if [ "$reader_app" -eq 1 ]; then
+		expected_login=$app_login
+	fi
+elif [ "$reader_app" -eq 1 ]; then
+	echo "error: read-only GitHub App is not configured" >&2
+	exit 1
 elif [ -n "${CODEX_GITHUB_TOKEN:-}" ]; then
 	GH_TOKEN=$CODEX_GITHUB_TOKEN
 elif [ -z "${GH_TOKEN:-}" ] && [ -n "${GITHUB_TOKEN:-}" ]; then

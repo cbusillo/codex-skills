@@ -2885,6 +2885,82 @@ def run_with_retry(
 # ---------------------------------------------------------------------------
 
 
+_reader_fallback_reported = False
+
+
+def reader_request_is_write(method: str, path: str, body: Any = None) -> bool:
+    """Conservatively inspect every GraphQL operation, not just the first.
+
+    operationName can select a later mutation in a document beginning with a
+    query. Strings and comments do not define operations.
+    """
+    if not is_graphql_path(path):
+        return method.upper() not in {"GET", "HEAD"}
+    if infer_graphql_operation_type(body) not in {"query", "subscription"}:
+        return True
+    document = body.get("query") if isinstance(body, dict) else body
+    document = re.sub(r'"""[\s\S]*?"""|"(?:\\.|[^"\\])*"|#[^\r\n]*', ' ', document)
+    braces = parentheses = 0
+    previous = ""
+    for token in re.findall(r'[A-Za-z_][A-Za-z_0-9]*|[{}()]', document):
+        if token == "mutation" and braces == 0 and parentheses == 0 and previous in {"", "}"}:
+            return True
+        braces += (token == "{") - (token == "}")
+        parentheses += (token == "(") - (token == ")")
+        previous = token
+    return False
+
+
+def request_identity(
+    *, operation: str, is_write: bool, gh_cmd: str, gh_prefix_args: Optional[list[str]],
+    actor: Optional[str], expected_actor: Optional[str], repository: Optional[str] = None,
+    matrix_path: pathlib.Path = DEFAULT_OPERATION_MATRIX,
+) -> tuple[Optional[str], Optional[str], list[str]]:
+    """Select the purpose-specific App before quota admission and body caching.
+
+    Custom transports and explicitly different actors retain their own identity.
+    Reader auth uses only the existing configured-path App mint/cache code.
+    """
+    global _reader_fallback_reported
+    prefix = list(gh_prefix_args or [])
+    reader = "--reader" in prefix
+    if reader and is_write:
+        raise github_identity.GitHubAppError("read-only GitHub App refuses a write before sending")
+    rule, _ = operation_retry_rule(operation, matrix_path=matrix_path)
+    main_actor = github_identity.automation_login()
+    automatic = (not is_write and rule is not None and rule.request_priority == "bulk"
+                 and pathlib.Path(gh_cmd).name == "gh-with-env-token"
+                 and "--write-actor-for" not in prefix
+                 and all(not value or not main_actor or value.casefold() == main_actor.casefold()
+                         for value in (actor, expected_actor)))
+    if not reader and not automatic:
+        return actor, expected_actor, prefix
+    if not reader and not github_identity.reader_config_available():
+        if not _reader_fallback_reported:
+            print("notice: reader App credentials missing; bulk reads use the main automation identity with its quota reserve", file=sys.stderr)
+            _reader_fallback_reported = True
+        if "--require-automation-auth" not in prefix:
+            prefix.append("--require-automation-auth")
+        if "--main-app-only" not in prefix:
+            prefix.append("--main-app-only")
+        return actor, expected_actor, prefix
+    config = github_identity.github_app_config(reader=True)
+    if config is None:
+        raise github_identity.GitHubAppError("read-only GitHub App is not configured")
+    _, login = github_identity.github_app_auth(config, repository=repository)
+    if "--reader" not in prefix:
+        prefix.append("--reader")
+    return login, login, prefix
+
+
+def _identity_failure(error: github_identity.GitHubAppError, *, operation: str,
+                      is_write: bool, actor: Optional[str], expected_actor: Optional[str],
+                      host: Optional[str], bucket: str) -> ApiResult:
+    return _local_retry_failure(operation=operation, is_write=is_write, actor=actor,
+                                expected_actor=expected_actor, host=host or DEFAULT_HOST,
+                                bucket=bucket, cause="identity_refused", message=str(error))
+
+
 def call_gh(
     method: str,
     path: str,
@@ -2908,6 +2984,18 @@ def call_gh(
     conditional_cache: bool = True,
 ) -> ApiResult:
     """Execute a fresh GET, reusing its body only after same-identity HTTP 304."""
+    # Explicit read hints never authorize a mutation through the reader.
+    mutation = bool(is_write) or reader_request_is_write(method, path, body)
+    try:
+        actor, expected_actor, gh_prefix_args = request_identity(
+            operation=operation or "github.api.call", is_write=mutation, gh_cmd=gh_cmd,
+            gh_prefix_args=gh_prefix_args, actor=actor, expected_actor=expected_actor,
+            repository=github_http_cache.repository_from_path(path),
+        )
+    except github_identity.GitHubAppError as error:
+        return _identity_failure(error, operation=operation or "github.api.call", is_write=mutation,
+                                 actor=actor, expected_actor=expected_actor, host=host,
+                                 bucket=bucket or infer_api_bucket(path))
     kwargs = dict(
         gh_cmd=gh_cmd, gh_prefix_args=gh_prefix_args, api_version=api_version,
         extra_headers=extra_headers, completed_steps=completed_steps,
@@ -3337,6 +3425,16 @@ def call_gh_with_retry(
     )
     resolved_bucket = bucket or infer_api_bucket(path)
     resolved_operation = operation or "github.api.call"
+    try:
+        actor, expected_actor, gh_prefix_args = request_identity(
+            operation=resolved_operation,
+            is_write=resolved_is_write or reader_request_is_write(method, path, body),
+            gh_cmd=gh_cmd, gh_prefix_args=gh_prefix_args, actor=actor, expected_actor=expected_actor,
+            repository=github_http_cache.repository_from_path(path), matrix_path=matrix_path,
+        )
+    except github_identity.GitHubAppError as error:
+        return _identity_failure(error, operation=resolved_operation, is_write=resolved_is_write,
+                                 actor=actor, expected_actor=expected_actor, host=host, bucket=resolved_bucket)
     def attempt(timeout_seconds: Optional[float]) -> ApiResult:
         return call_gh(
             method,
