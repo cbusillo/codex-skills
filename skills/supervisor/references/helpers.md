@@ -172,17 +172,19 @@ policy revision. Repository metadata is never consulted for those facts.
 The loop defaults to a 30-minute wall-clock bound and five-minute cadence;
 `--once`, `--interval`, and `--deadline-seconds` configure it. Re-arm through the
 harness's scheduler, or choose a longer explicit deadline for continuous use.
-One failed/incomplete read or uncertain write stops the run for reconciliation,
+One failed repository/train read or uncertain write stops the run for reconciliation,
 preserving already queued work. Reads use the shared GitHub cache, quota reserve
 and retry deadline. No separate retry loop or human-auth fallback is added.
 
 A ready handoff starts with the standalone `Ready for the merge train` line and
 includes one `Head: <full SHA>` field matching the PR's current head. The latest
-handoff from its author, or a Supervisor explicitly listed with
+handoff by creation/edit time from its author, or a Supervisor explicitly listed with
 `--handoff-login`, wins. The `Engineering ready; waiting for ...` form invalidates
 an earlier Ready. Missing/stale heads, drafts, blocking train dispositions,
-current-head change requests, unavailable checks, and incomplete file inventories
-do not enqueue. Required checks are read from current branch protection and
+current-head change requests and unavailable checks do not enqueue. A file
+inventory changed during reading skips that PR; other ready members continue.
+An unavailable Client review scope holds that PR rather than bypassing acceptance.
+Required checks are read from current branch protection and
 matched to their configured App. A Client review label, request check, or real
 Client test notes (including legacy `## Owner test notes`) additionally requires an accepted current-head decision
 read from Launchplane, even when a ready comment claims acceptance. Client prose
@@ -194,11 +196,18 @@ form one area. `--max-batch-size` defaults to four. Area grouping is a routing
 heuristic; Launchplane's combined candidate checks still prove compatibility.
 An active candidate, reconciliation, landing, or preexisting queue preserves
 that repository's batch. Each write rechecks policy, pauses, train state, current
-head and readiness. If a candidate starts during the group, remaining PRs wait
+head and readiness. A behind-base single-member queue awaiting the train's
+branch update can still accumulate this watcher's group before any stored
+candidate exists; the watcher never updates that branch itself.
+If a candidate starts during the group, remaining PRs wait
 for another pass. Repeated passes never extend an already queued group.
 
-The helper emits JSONL `batch`, `held`, `busy`, `enqueued`, and `driver_handoff`
-events. The handoff contains the maintained driver's argv and labeled member
+The helper emits JSONL `batch`, `held`, `busy`, `skipped`, `enqueued`, and
+`driver_handoff` events. Busy diagnostics include queue dispositions and labeled
+PR numbers when available. A blocked labeled PR deliberately holds the
+repository until the Supervisor reconciles it; busy alone never means a healthy
+candidate is progressing. Skipped events identify PRs whose head readiness or
+file inventory was not proved. The handoff contains the maintained driver's argv and labeled member
 numbers. Run that driver using the Supervisor's normal background monitoring,
 one driver per train; verify every intended member's eventual landing. The
 watcher does not merge, update branches, deploy or send Client invitations.

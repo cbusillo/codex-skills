@@ -10,6 +10,7 @@ import copy
 import json
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -85,6 +86,7 @@ class Fake:
         self.calls = 0
         self.before = lambda _self: None
         self.targets = [copy.deepcopy(TARGET)]
+        self.after_label_action = "idle"
 
     def policies(self, _owner):
         return copy.deepcopy(self.targets)
@@ -101,7 +103,11 @@ class Fake:
                     "merge_train_batch_candidate_record_id": "active",
                 }
                 if self.active
-                else {}
+                else {
+                    "controller_action": self.after_label_action
+                    if self.writes
+                    else "idle"
+                }
             ),
         )
 
@@ -109,6 +115,8 @@ class Fake:
         return copy.deepcopy(self.pulls[int(path.rsplit("/", 1)[-1])])
 
     def pages(self, path, **_params):
+        if path.endswith("/labels"):
+            return self.pulls[int(path.split("/")[-2])]["labels"]
         if path.endswith("/files"):
             number = int(path.split("/")[-2])
             return [{"filename": "src/code.py" if number != 3 else "docs/guide.md"}]
@@ -258,12 +266,14 @@ class EnqueueTests(unittest.TestCase):
         self.run_pass(fake)
         self.assertEqual(fake.writes, [])
 
-    def test_truncated_file_inventory_refuses(self):
+    def test_changed_file_inventory_skips_that_pr_and_continues(self):
         fake = Fake()
         fake.pulls[1]["changed_files"] = 2
-        with self.assertRaises(ValueError):
-            self.run_pass(fake)
-        self.assertEqual(fake.writes, [])
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [2, 4, 5, 6])
+        self.assertTrue(
+            any(event == "skipped" and data["pr"] == 1 for event, data in self.events)
+        )
 
     def test_repository_filter_cannot_create_enrollment(self):
         fake = Fake()
@@ -288,6 +298,8 @@ class EnqueueTests(unittest.TestCase):
         self.assertEqual(
             self.path.with_name(self.path.name + ".lock").stat().st_ino, inode
         )
+        watch.edit_holds(["--hold-file", str(self.path), "--resume", REPO.upper()])
+        self.assertFalse(watch.held(watch.read_holds(self.path), REPO, CONTROL))
 
     def test_latest_wait_stale_head_missing_head_and_untrusted_ready_refuse(self):
         self.assertTrue(watch.latest_ready(pr(), [comment()], {"engineer"}))
@@ -317,6 +329,72 @@ class EnqueueTests(unittest.TestCase):
             watch.areas([{"filename": "src/x", "previous_filename": "legacy/x"}]),
             {"src", "legacy"},
         )
+
+    def test_behind_base_root_can_accumulate_its_group_without_branch_mutation(self):
+        fake = Fake()
+        fake.after_label_action = "update_branch"
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [1, 2, 4, 5])
+        self.assertFalse(watch.idle(response([], controller_action="update_branch")))
+
+    def test_live_label_adapter_finishes_the_batch_and_driver_handoff(self):
+        fake = Fake()
+        fake.deadline = 10_000
+        fake.label = lambda target, number: watch.Live.label(fake, target, number)
+
+        def write(_method, path, _body, **_kwargs):
+            number = int(path.split("/")[-2])
+            fake.writes.append(number)
+            fake.pulls[number]["labels"].append({"name": TARGET["label"]})
+            return api_result("confirmed")
+
+        with patch.object(watch.github_api, "call_gh_with_retry", side_effect=write):
+            self.run_pass(fake)
+        self.assertEqual(fake.writes, [1, 2, 4, 5])
+        self.assertTrue(any(event == "driver_handoff" for event, _data in self.events))
+
+    def test_blocked_labeled_pr_reports_its_hold(self):
+        fake = Fake()
+        fake.pulls[1]["labels"] = [{"name": TARGET["label"]}]
+        original_train = fake.train
+
+        def blocked(target):
+            value = original_train(target)
+            value["result"]["dry_run_result"]["queue"][0]["ineligible_reasons"] = [
+                "manual hold"
+            ]
+            return value
+
+        fake.train = blocked
+        self.run_pass(fake)
+        busy = next(data for event, data in self.events if event == "busy")
+        self.assertEqual(busy["labeled"], [1])
+        self.assertEqual(busy["queue"][0]["ineligible_reasons"], ["manual hold"])
+        self.assertEqual(fake.writes, [])
+
+    def test_an_edited_wait_invalidates_a_later_created_ready(self):
+        waiting = comment(f"{watch.WAITING} the Client's acceptance")
+        waiting["updated_at"] = "2026-01-01T00:05:00Z"
+        self.assertFalse(
+            watch.latest_ready(pr(), [waiting, comment(number=2)], {"engineer"})
+        )
+
+
+def api_result(certainty=None):
+    result = watch.github_api.ApiResult(ok=True, status=200, body=[])
+    if certainty is not None:
+        result.retry_summary = watch.github_api.RetrySummary(
+            attempts=1,
+            elapsed_wait=0,
+            retry_eligible=False,
+            last_actor="automation",
+            last_bucket="rest_core",
+            outcome_certainty=certainty,
+            reconciliation=None,
+            recommended_next_action="none",
+            effective_deadline=10_000,
+        )
+    return result
 
 
 class QualificationTests(unittest.TestCase):
@@ -431,6 +509,41 @@ class QualificationTests(unittest.TestCase):
                 self.assertEqual(
                     watch.Live.acceptance(self.io, REPO, self.pull), expected
                 )
+
+    def test_review_scope_denial_holds_only_that_pr(self):
+        self.io.args = watch.operator.parse_args(["merge-train-policy-read"])
+        denial = urllib.error.HTTPError(
+            "https://example.invalid/review", 403, "scope denied", {}, None
+        )
+        with patch.object(watch.review, "read_review", side_effect=denial):
+            self.assertFalse(watch.Live.acceptance(self.io, REPO, self.pull))
+
+    def test_live_label_requires_confirmed_or_reconciled_write_and_readback(self):
+        self.io.deadline = 10_000
+        self.io.pages = lambda _path: [{"name": TARGET["label"]}]
+        for certainty in ("confirmed", "reconciled_applied"):
+            with patch.object(
+                watch.github_api,
+                "call_gh_with_retry",
+                return_value=api_result(certainty),
+            ) as call:
+                watch.Live.label(self.io, TARGET, 1)
+                self.assertEqual(call.call_count, 1)
+        for certainty in (None, "unknown", "not_applicable"):
+            with patch.object(
+                watch.github_api,
+                "call_gh_with_retry",
+                return_value=api_result(certainty),
+            ) as call:
+                with self.assertRaises(ValueError):
+                    watch.Live.label(self.io, TARGET, 1)
+                self.assertEqual(call.call_count, 1)
+        self.io.pages = lambda _path: []
+        with patch.object(
+            watch.github_api, "call_gh_with_retry", return_value=api_result("confirmed")
+        ):
+            with self.assertRaises(ValueError):
+                watch.Live.label(self.io, TARGET, 1)
 
 
 if __name__ == "__main__":

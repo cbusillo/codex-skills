@@ -205,6 +205,10 @@ records that run.
    waiting for the Client's acceptance" until the Client accepts its current
    head, and "Ready for the merge train" only after
    ([codex-skills#1535](https://github.com/cbusillo/codex-skills/issues/1535)).
+   For auto-enqueueing, briefs specify the exact ready comment format: first
+   line `Ready for the merge train`, then a blank line and one
+   `Head: <full current SHA>` field. A renewed wait updates or replaces that
+   handoff; a push requires a ready handoff naming the new head.
    Anchor each brief, sweeps and checks included, on an issue in the same
    repository. Tell read-only checks not to claim it, so two of them on one
    issue do not clash.

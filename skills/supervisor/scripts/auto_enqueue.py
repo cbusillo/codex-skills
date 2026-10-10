@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -118,7 +119,13 @@ def latest_ready(pr, comments, trusted):
             handoffs.append(comment)
     if not handoffs:
         return False
-    latest = max(handoffs, key=lambda item: (timestamp(item["created_at"]), item["id"]))
+    latest = max(
+        handoffs,
+        key=lambda item: (
+            timestamp(item.get("updated_at") or item["created_at"]),
+            item["id"],
+        ),
+    )
     body = latest["body"]
     heads = HEAD.findall(body)
     return body.splitlines()[0] == READY and heads == [pr["head"]["sha"]]
@@ -151,11 +158,13 @@ def idle(response, own=()):
     result = response.get("result") or {}
     if any((response.get("records") or {}).values()):
         return False
-    if result.get("mode") != "dry-run" or result.get("controller_action") not in {
-        "idle",
-        "wait_for_checks",
-        "plan_candidate",
-    }:
+    allowed_actions = {"idle", "wait_for_checks", "plan_candidate"}
+    if own:
+        allowed_actions.add("update_branch")
+    if (
+        result.get("mode") != "dry-run"
+        or result.get("controller_action") not in allowed_actions
+    ):
         return False
     if any(value for key, value in result.items() if "record_id" in key) or result.get(
         "controller_reconciliation_status"
@@ -250,7 +259,12 @@ class Live:
     def acceptance(self, repo, pr):
         args = argparse.Namespace(**vars(self.args), pr=pr["number"], decision_id="")
         args.repo = repo
-        decision = review.read_review(args)
+        try:
+            decision = review.read_review(args)
+        except urllib.error.HTTPError as error:
+            if error.code == 403:
+                return False
+            raise
         return bool(
             decision
             and decision["decision"] == "accepted"
@@ -354,10 +368,15 @@ class Live:
             gh_prefix_args=automation_only_gh_prefix_args(),
             deadline_at=self.deadline,
         )
-        if not result.ok or result.outcome_certainty not in {
-            "confirmed",
-            "not_applicable",
-        }:
+        if (
+            not result.ok
+            or result.retry_summary is None
+            or result.retry_summary.outcome_certainty
+            not in {
+                "confirmed",
+                "reconciled_applied",
+            }
+        ):
             raise ValueError("enqueue write uncertain; reconcile before restarting")
         labels = self.pages(f"/repos/{target['repo']}/issues/{number}/labels")
         if target["label"] not in {item["name"] for item in labels}:
@@ -382,7 +401,16 @@ def run_pass(io, args, emit):
                 if other["repo"].casefold() == repo.casefold() and other != target
             ]
             if not idle(response) or any(not idle(io.train(other)) for other in others):
-                emit("busy", {"repository": repo})
+                emit(
+                    "busy",
+                    {
+                        "repository": repo,
+                        "action": response.get("result", {}).get("controller_action"),
+                        "queue": response.get("result", {})
+                        .get("dry_run_result", {})
+                        .get("queue", []),
+                    },
+                )
                 continue
             queue = response["result"]["dry_run_result"]["queue"]
             author_allowed = {
@@ -392,11 +420,20 @@ def run_pass(io, args, emit):
             }
             pulls = io.pages(f"/repos/{repo}/pulls", state="open")
             # Any already labeled PR preserves the existing batch, even if currently ineligible.
-            if any(
-                target["label"] in {label["name"] for label in pr["labels"]}
+            labeled = [
+                pr["number"]
                 for pr in pulls
-            ):
-                emit("busy", {"repository": repo})
+                if target["label"] in {label["name"] for label in pr["labels"]}
+            ]
+            if labeled:
+                emit(
+                    "busy",
+                    {
+                        "repository": repo,
+                        "labeled": labeled,
+                        "queue": [item for item in queue if item["number"] in labeled],
+                    },
+                )
                 continue
             candidates = []
             for listed in pulls:
@@ -406,7 +443,15 @@ def run_pass(io, args, emit):
                 if io.qualified(target, pr, set(args.handoff_login)):
                     files = io.pages(f"/repos/{repo}/pulls/{pr['number']}/files")
                     if len(files) != pr["changed_files"] or not files:
-                        raise ValueError("PR file inventory incomplete")
+                        emit(
+                            "skipped",
+                            {
+                                "repository": repo,
+                                "pr": pr["number"],
+                                "reason": "file_inventory_changed_or_incomplete",
+                            },
+                        )
+                        continue
                     candidates.append(
                         {
                             "number": pr["number"],
@@ -414,6 +459,15 @@ def run_pass(io, args, emit):
                             "created_at": pr["created_at"],
                             "areas": areas(files),
                         }
+                    )
+                else:
+                    emit(
+                        "skipped",
+                        {
+                            "repository": repo,
+                            "pr": pr["number"],
+                            "reason": "current_head_readiness_not_proven",
+                        },
                     )
             batch = group(candidates, args.max_batch_size)
             emit(
@@ -519,8 +573,12 @@ def edit_holds(argv):
         data["coordinated_repositories"] = sorted(
             set(data["coordinated_repositories"] + args.coordinated_repo)
         )
+        pauses = {
+            name.casefold(): name for name in data["paused_repositories"] + args.pause
+        }
+        resumes = {name.casefold() for name in args.resume}
         data["paused_repositories"] = sorted(
-            (set(data["paused_repositories"]) | set(args.pause)) - set(args.resume)
+            name for key, name in pauses.items() if key not in resumes
         )
         finished = {name.casefold() for name in args.release_finished}
         releases = {
