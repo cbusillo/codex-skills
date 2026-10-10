@@ -107,6 +107,59 @@ class TranscriptTests(unittest.TestCase):
         record["message"]["content"].append({"type": "tool_use", "name": "Bash"})
         self.assertFalse(session_record.summarize([record], "claude")["safe_verdict"])
 
+    def test_same_line_closeout_prefaces(self):
+        for text in (
+            "No Director action needed. Safe to exit: yes.",
+            "No Director decision needed. **Safe to exit: yes.**",
+        ):
+            for harness, records in (
+                ("claude", [claude(text)]),
+                ("codex", [event("agent_message", message=text), event("task_complete")]),
+            ):
+                with self.subTest(text=text, harness=harness):
+                    result = session_record.summarize(records, harness)
+                    self.assertTrue(result["safe_verdict"])
+                    self.assertEqual(result["verdict_recognition"], "recognized")
+                    self.assertEqual(result["last_text"], text)
+        for text in (
+            'No Director action needed. "Safe to exit: yes."',
+            "> No Director action needed. Safe to exit: yes.",
+            "Not No Director action needed. Safe to exit: yes.",
+            "If CI passes: No Director action needed. Safe to exit: yes.",
+            "No Director action needed. Safe to exit: yes for this check only.",
+            "No Director decision needed. Safe to exit: yes, if CI passes.",
+            "No Director action needed. Safe to exit: yes. Still working.",
+            "Other final prose. Safe to exit: yes.",
+        ):
+            with self.subTest(text=text):
+                result = session_record.summarize([claude(text)], "claude")
+                self.assertFalse(result["safe_verdict"])
+                self.assertEqual(result["verdict_recognition"], "unrecognized")
+        self.assertEqual(session_record.summarize([claude("Working")], "claude")
+                         ["verdict_recognition"], "absent")
+
+    def test_same_line_verdict_retains_citation_and_activity_guards(self):
+        fixture = session_record.read_jsonl(
+            Path(__file__).parent / "fixtures/codex-closeout-memory-citation.jsonl"
+        )
+        response = fixture[1]["payload"]["content"][0]["text"]
+        citation = response[response.index("<oai-mem-citation>"):]
+        text = "No Director action needed. Safe to exit: yes.\n\n" + citation
+        records = [event("agent_message", message=text), event("task_complete")]
+        self.assertTrue(session_record.summarize(records, "codex")["safe_verdict"])
+        for tail in (event("turn_aborted"), event("task_started"),
+                     event("user_message", message="continue"), event("function_call")):
+            with self.subTest(tail=tail):
+                self.assertFalse(session_record.summarize(records + [tail], "codex")
+                                 ["safe_verdict"])
+        for suffix in (citation + "Still working", citation + citation,
+                       citation.replace("</oai-mem-citation>", "")):
+            with self.subTest(suffix=suffix):
+                self.assertFalse(session_record.summarize(
+                    [event("agent_message", message="No Director action needed. "
+                           "Safe to exit: yes.\n\n" + suffix), event("task_complete")],
+                    "codex")["safe_verdict"])
+
     def test_codex_turn_end_abort_and_resume(self):
         records = [
             event("task_started"),
@@ -381,25 +434,29 @@ class LedgerTests(unittest.TestCase):
 
     def test_memory_citation_fixture_through_status_candidates_and_close(self):
         fixture = Path(__file__).parent / "fixtures/codex-closeout-memory-citation.jsonl"
-        self.transcript.write_text(fixture.read_text())
-        result = status.snapshot(self.ledger)[0]
-        self.assertTrue(result["safe_verdict"])
-        self.assertIn("<oai-mem-citation>", result["last_text"])
-        self.assertTrue(finished_map.candidates(self.ledger)[0]["candidate"])
-        entry = session_record.load_ledger(self.ledger)[0]
-        terminal = SimpleNamespace(
-            session_id="term1",
-            async_get_variable=AsyncMock(return_value="ttys001"),
-            async_close=AsyncMock(),
-        )
-        app = SimpleNamespace(terminal_windows=[
-            SimpleNamespace(tabs=[SimpleNamespace(sessions=[terminal])])
-        ])
-        with patch.object(close_ttys, "inventory", return_value=[(20, "ttys001", "-zsh")]):
-            self.assertTrue(asyncio.run(close_ttys.close(app, entry, False, True, True))["dry_run"])
-            terminal.async_close.assert_not_awaited()
-            asyncio.run(close_ttys.close(app, entry, True, True, True))
-        terminal.async_close.assert_awaited_once_with(force=False)
+        for preface in ("", "No Director action needed. ", "No Director decision needed. "):
+            with self.subTest(preface=preface):
+                self.transcript.write_text(fixture.read_text().replace(
+                    "Safe to exit: yes", preface + "Safe to exit: yes"
+                ))
+                result = status.snapshot(self.ledger)[0]
+                self.assertTrue(result["safe_verdict"])
+                self.assertIn("<oai-mem-citation>", result["last_text"])
+                self.assertTrue(finished_map.candidates(self.ledger)[0]["candidate"])
+                entry = session_record.load_ledger(self.ledger)[0]
+                terminal = SimpleNamespace(
+                    session_id="term1",
+                    async_get_variable=AsyncMock(return_value="ttys001"),
+                    async_close=AsyncMock(),
+                )
+                app = SimpleNamespace(terminal_windows=[
+                    SimpleNamespace(tabs=[SimpleNamespace(sessions=[terminal])])
+                ])
+                with patch.object(close_ttys, "inventory", return_value=[(20, "ttys001", "-zsh")]):
+                    self.assertTrue(asyncio.run(close_ttys.close(app, entry, False, True, True))["dry_run"])
+                    terminal.async_close.assert_not_awaited()
+                    asyncio.run(close_ttys.close(app, entry, True, True, True))
+                terminal.async_close.assert_awaited_once_with(force=False)
 
     def test_activity_race_keeps_tab(self):
         entry = session_record.load_ledger(self.ledger)[0]
