@@ -568,6 +568,8 @@ def tooling_capacity_context(
         frontier.append(entry)
     staffed: dict[tuple[str, int], dict[str, Any]] = {}
     for entry in frontier:
+        if entry.get("exclusion") not in {None, "waiting", "parent_waiting"}:
+            return {**result, "reason": "milestone_issue_excluded", "issue": f"{entry['repo']}#{entry['number']}", "exclusion": entry["exclusion"]}
         if entry.get("wait_evidence_complete") is False:
             return {**result, "issue": f"{entry['repo']}#{entry['number']}", "required": "current_wait_evidence"}
         review = reviews.get(f"{entry['repo']}#{entry['number']}".casefold(), {})
@@ -587,8 +589,6 @@ def tooling_capacity_context(
                 "reason": review["reason"], "evidence": review["evidence"],
             }
             continue
-        if entry.get("exclusion") not in {None, "waiting", "parent_waiting"}:
-            return {**result, "reason": "milestone_issue_excluded", "issue": f"{entry['repo']}#{entry['number']}", "exclusion": entry["exclusion"]}
         own_status = section_map((entry.get("discussion") or {}).get("body", "")).get("Current Status", "")
         own_waits = waiting_records(entry, own_status)
         if (entry.get("plan_status") != "waiting" or not own_waits

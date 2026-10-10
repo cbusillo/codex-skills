@@ -286,10 +286,9 @@ Apply repository-wide Director holds before considering any issue there, even
 when labels say active or background work continues. Read full discussions and
 current ownership evidence before recommending discovered work. Raw candidates
 are possible work; `available_candidates` requires current caller review.
-Live breakage comes first, then eligible milestone work; unrelated tooling needs
-two linked repeated stops, or current evidence that every milestone waits on a
-person while provider capacity would otherwise go unused. The linked global
-selection procedure defines that evidence and the output admission reasons.
+The Director’s current overall Order owns work priority and tooling admission.
+The linked global selection procedure defines the required current evidence and
+output admission reasons.
 Keep the own-project share available when business
 tracks wait. Weekly capacity is audit context, not a per-call quota. Discovery
 grants no write, merge, deployment, or direction-adoption authority under
