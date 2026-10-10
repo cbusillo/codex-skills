@@ -2102,14 +2102,11 @@ def cmd_claim(args: argparse.Namespace) -> None:
 
     def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False) -> bool:
         status_state = next_plan_status(waiting_issue, load_config(target_repo) if target else config)
-        reports = github_direction_next.waiting_records(
-            compact_issue(waiting_issue),
-            "\n".join(
-                line for line in waiting_status.splitlines()
-                if not ((match := re.match(r"\s*(?:[-*]\s+)?Waiting for:\s*(.+)", line, re.I))
-                        and github_plan_claim.no_wait_reason(match.group(1), field="Waiting for"))
-            ),
-        )
+        # Parse full fields before normalizing explicit absence, so a wrapped
+        # continuation cannot disappear with its first no-wait line.
+        reports = [row for row in github_direction_next.waiting_records(compact_issue(waiting_issue), waiting_status)
+                   if not github_plan_claim.no_wait_reason(row["waiting_for"], field="Waiting for")
+                   or re.search(r"(?im)^\s*(?:[-*]\s+)?Parked until:", waiting_status)]
         blocked_text = any(
             (match := re.match(r"\s*(?:[-*]\s+)?Blocked by:\s*(.+)", line, re.I))
             and not github_plan_claim.no_wait_reason(match.group(1), field="Blocked by")
