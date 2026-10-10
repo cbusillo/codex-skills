@@ -25,10 +25,9 @@ for the permission.
 
 ## Release Rule
 
-Each product records its Client. A production release needs the Client's
-acceptance, unless the Client is the Director; then the Director's standing
-direction is the acceptance. Either way the release runs the same gated path:
-verified backup, release record, post-deploy checks, automatic rollback.
+Each product records its Client. The Director's overall `OWNER/direction`
+`DIRECTION.md` owns release authority. Read its stop boundaries before a
+production action; a role definition grants no release authority.
 
 ## Legacy Identifiers
 
