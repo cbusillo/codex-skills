@@ -1471,6 +1471,10 @@ def has_managed_provenance(body: str) -> bool:
 
 
 def issue_body_is_fully_managed(issue: dict[str, Any]) -> bool:
+    body = issue.get("body") or ""
+    has_managed_provenance(body)
+    if contributor_plan_body(issue) is not None:
+        return False
     author_login = issue_author_login(issue)
     managed_authors = {
         login.casefold()
