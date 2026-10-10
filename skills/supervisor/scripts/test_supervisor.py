@@ -333,6 +333,13 @@ class LedgerTests(unittest.TestCase):
             with self.assertRaises(TypeError):
                 consumer(self.ledger)
 
+    def test_native_agent_message_without_message_field_stays_readable(self):
+        self.write([event("agent_message", content=[{"type": "text", "text": "done"}]),
+                    event("task_complete")])
+        result = status.snapshot(self.ledger)[0]
+        self.assertNotIn("error", result)
+        self.assertFalse(result["safe_verdict"])
+
     def test_relative_path_and_duplicate_identity(self):
         self.assertEqual(
             session_record.load_ledger(self.ledger)[0]["transcript"],
