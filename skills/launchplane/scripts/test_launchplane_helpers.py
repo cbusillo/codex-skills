@@ -4981,6 +4981,24 @@ def test_context_projection_contract_and_secret_shape() -> None:
         raise AssertionError("expected context projection to fail closed")
 
 
+@pytest.mark.parametrize("selector", ["--repo", "--branch"])
+@pytest.mark.parametrize("value", ["ghp_" + "A" * 40, "/private/synthetic-path", "C:\\private\\synthetic-path", "~/synthetic-path"])
+def test_context_entrypoint_omits_unsafe_request_selectors(selector: str, value: str) -> None:
+    args = ["--repo", "example/repo"] if selector == "--branch" else []
+    result = run_helper("launchplane-context.py", [*args, selector, value])
+    assert result["returncode"] == 0
+    assert result["payload"]["status"] == "invalid"
+    assert result["payload"]["request"] == {}
+    assert value not in json.dumps(result["payload"])
+
+
+def test_context_valid_request_selectors_keep_optional_fallback() -> None:
+    result = run_helper("launchplane-context.py", ["--repo", "example/repo", "--branch", "work/café-42", "--issue", "42", "--pr", "43"])
+    assert result["returncode"] == 0
+    assert result["payload"]["status"] == "no_context"
+    assert result["payload"]["request"] == {"repository": "example/repo", "branch": "work/café-42", "issue_number": 42, "pr_number": 43}
+
+
 def test_current_agent_context_service_shape() -> None:
     provider_payload = {
         "status": "ok",
