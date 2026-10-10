@@ -952,6 +952,14 @@ act_as_own_user() {
 
 app_variable_count=0
 app_variables='GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH'
+client_app=0
+if [ "$reader_app" -ne 1 ] && [ -n "${GITHUB_CLIENT_APP_OWNERS:-}" ]; then
+	app_prefix=$(run_python "$identity_helper" app-prefix --repo "${write_actor_repository:-$(target_repository "$@")}") || exit $?
+	if [ "$app_prefix" = GITHUB_CLIENT_APP ]; then
+		client_app=1
+		app_variables='GITHUB_CLIENT_APP_ID GITHUB_CLIENT_APP_PRIVATE_KEY_PATH'
+	fi
+fi
 if [ "$reader_app" -eq 1 ]; then
 	app_variables='GITHUB_READER_APP_ID GITHUB_READER_APP_INSTALLATION_ID GITHUB_READER_APP_PRIVATE_KEY_PATH'
 fi
@@ -962,12 +970,14 @@ for app_variable in $app_variables; do
 	fi
 done
 auth_source=user_token
-if [ "$main_app_only" -eq 1 ] && [ "$app_variable_count" -ne 3 ]; then
+required_app_variables=3
+if [ "$client_app" -eq 1 ]; then required_app_variables=2; fi
+if [ "$main_app_only" -eq 1 ] && [ "$app_variable_count" -ne "$required_app_variables" ]; then
 	echo "error: reader fallback requires the configured main GitHub App" >&2
 	exit 1
 fi
-if [ "$app_variable_count" -gt 0 ]; then
-	if [ "$app_variable_count" -ne 3 ]; then
+if [ "$app_variable_count" -gt 0 ] || [ "$client_app" -eq 1 ]; then
+	if [ "$app_variable_count" -ne "$required_app_variables" ]; then
 		echo "error: incomplete GitHub App configuration; set $app_variables" >&2
 		exit 1
 	fi
@@ -989,6 +999,8 @@ if [ "$app_variable_count" -gt 0 ]; then
 	auth_source=github_app
 	if [ "$reader_app" -eq 1 ]; then
 		expected_login=$app_login
+	elif [ "$client_app" -eq 1 ]; then
+		expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-$app_login}
 	fi
 elif [ "$reader_app" -eq 1 ]; then
 	echo "error: read-only GitHub App is not configured" >&2

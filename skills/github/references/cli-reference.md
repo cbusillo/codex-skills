@@ -1385,6 +1385,39 @@ Human warnings and progress remain on stderr, and the process exit code matches
 
 ## Authentication And Identity
 
+### Client fleets with two Apps
+
+Keep the Client's own write App and automation identity in the existing
+`GITHUB_APP_*` and `CODEX_AUTOMATION_*` settings. Add the already approved narrow
+App to the same private `local.env`:
+
+```sh
+GITHUB_CLIENT_APP_OWNERS=cbusillo
+GITHUB_CLIENT_APP_ID=<narrow App ID>
+GITHUB_CLIENT_APP_PRIVATE_KEY_PATH=/private/path/to/client-app.pem
+```
+
+The repository-account list accepts commas or quoted spaces and matches case-insensitively.
+`GITHUB_CLIENT_APP_INSTALLATION_ID` is optional: repository commands discover
+that App's installation on the exact repository. Optional `GITHUB_CLIENT_APP_API_URL`
+and `GITHUB_CLIENT_APP_TOKEN_CACHE_DIR` use the existing API and cache conventions.
+The private key retains the owner-only file requirement. Tokens remain cached
+separately by App, key, API and repository. The selected App's verified bot login
+is the write identity; `CODEX_AUTOMATION_LOGIN` continues to name the primary App.
+
+Commands naming a listed account's repository use the Client App. Other accounts
+and commands with no target repository keep the existing primary credential
+selection. The separate bulk reader App still serves bulk reads when configured.
+With no Client routing configured, existing fleet behavior is unchanged.
+
+If the Client App is not installed on the target, reads fail with the missing
+installation named. Writes retain the existing refusal and per-command own-user
+opt-in below; no token from the primary App is borrowed. Missing or partial
+Client configuration fails before sending a command. These settings do not
+create an App, install it, change permissions, or authorize outreach or access.
+
+### Primary App and contributor identity
+
 `scripts/gh-with-env-token` is automation-first when a token is configured. It
 loads the first of `$CODE_HOME/local.env`, `$CODEX_HOME/local.env`, and
 `~/.code/local.env` that exists, so a home variable without its own

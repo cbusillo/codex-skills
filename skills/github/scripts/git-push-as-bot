@@ -138,16 +138,31 @@ https_url="https://github.com/$repo.git"
 # run as the same automation identity: a configured GitHub App comes first, with
 # the installation on the selected repository (each owner installs it separately).
 app_variable_count=0
-for app_variable in GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH; do
+app_variables='GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH'
+client_app=0
+if [ -n "${GITHUB_CLIENT_APP_OWNERS:-}" ]; then
+	if [ -n "$python_command" ]; then
+		app_prefix=$($python_command "$identity_helper" app-prefix --repo "$repo")
+	else
+		app_prefix=$(uv run --no-project --no-config --python 3.12 "$identity_helper" app-prefix --repo "$repo")
+	fi
+	if [ "$app_prefix" = GITHUB_CLIENT_APP ]; then
+		client_app=1
+		app_variables='GITHUB_CLIENT_APP_ID GITHUB_CLIENT_APP_PRIVATE_KEY_PATH'
+	fi
+fi
+for app_variable in $app_variables; do
 	eval "app_variable_value=\${$app_variable:-}"
 	if [ -n "$app_variable_value" ]; then
 		app_variable_count=$((app_variable_count + 1))
 	fi
 done
 
-if [ "$app_variable_count" -gt 0 ]; then
-	if [ "$app_variable_count" -ne 3 ]; then
-		echo "error: incomplete GitHub App configuration; set GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, and GITHUB_APP_PRIVATE_KEY_PATH" >&2
+required_app_variables=3
+if [ "$client_app" -eq 1 ]; then required_app_variables=2; fi
+if [ "$app_variable_count" -gt 0 ] || [ "$client_app" -eq 1 ]; then
+	if [ "$app_variable_count" -ne "$required_app_variables" ]; then
+		echo "error: incomplete GitHub App configuration; set $app_variables" >&2
 		exit 1
 	fi
 	app_auth_status=0
@@ -197,6 +212,7 @@ if [ "$app_variable_count" -gt 0 ]; then
 			echo "error: GitHub App authentication helper returned an invalid response; refusing to push" >&2
 			exit 1
 		fi
+		if [ "$client_app" -eq 1 ]; then expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-$app_login}; fi
 		if ! same_login "$app_login" "$expected_login"; then
 			echo "error: push would run as '$app_login', expected '$expected_login'" >&2
 			echo "hint: configure CODEX_AUTOMATION_LOGIN for the GitHub App bot identity" >&2

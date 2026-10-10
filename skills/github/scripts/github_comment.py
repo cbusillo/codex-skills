@@ -337,7 +337,8 @@ def authenticated_actor(
         retry_summaries=retry_summaries,
     )
     if write_repository:
-        expected_actor = response_expected_actor(result, expected_actor)
+        expected_actor = (result.expected_actor if result.expected_actor is not None
+                          else response_expected_actor(result, expected_actor))
     login = result.body.get("login") if isinstance(result.body, dict) else None
     if not isinstance(login, str) or not login:
         raise _local_error(

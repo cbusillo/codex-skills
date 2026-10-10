@@ -778,6 +778,11 @@ App's quota for essential reads and writes. See the
 for configuration, fallback, write refusal and per-identity reporting.
 Install the reader App on every repository whose bulk reads it will serve.
 
+Client fleets with two Apps keep their own write App in `GITHUB_APP_*` and
+configure the narrow product-repository App in `GITHUB_CLIENT_APP_*`.
+See [Client fleet configuration](skills/github/references/cli-reference.md#client-fleets-with-two-apps)
+for routing by GitHub account and the setup values. Existing fleets need no new settings.
+
 The GitHub workflow skill includes `skills/github/scripts/gh-with-env-token`,
 a small wrapper around `gh` that reads the user's ignored `local.env` file under
 `$CODE_HOME`, `$CODEX_HOME`, or `~/.code` and exports a token only for the

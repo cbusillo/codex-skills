@@ -815,6 +815,11 @@ its credentials and fail closed, without changing actor, when bot auth is
 unavailable, rejected, or rate-limited. The helpers choose the identity for
 each target repository:
 
+Client fleets may configure a second narrow App by repository owner; read
+[Client fleet configuration](references/cli-reference.md#client-fleets-with-two-apps)
+when setting up or diagnosing that route. The installation rules below apply
+to the selected App.
+
 - **Where the App is installed on that repository**: the App, in any
   account's repository.
 - **The App's registering account, without an installation on that

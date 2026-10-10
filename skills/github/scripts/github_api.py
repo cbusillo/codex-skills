@@ -2931,6 +2931,29 @@ def request_identity(
         raise github_identity.GitHubAppError("read-only GitHub App refuses a write before sending")
     rule, _ = operation_retry_rule(operation, matrix_path=matrix_path)
     main_actor = github_identity.automation_login()
+    if repository is None and "--write-actor-for" in prefix:
+        repository = prefix[prefix.index("--write-actor-for") + 1]
+
+    def repository_identity() -> tuple[Optional[str], Optional[str], list[str]]:
+        if (pathlib.Path(gh_cmd).name == "gh-with-env-token"
+                and github_identity.github_app_prefix(repository) == "GITHUB_CLIENT_APP"):
+            client_config = github_identity.github_app_config(repository=repository)
+            assert client_config is not None
+            try:
+                _, client_login = github_identity.github_app_auth(
+                    client_config, repository=repository,
+                    require_installation=is_write or "--write-actor-for" in prefix,
+                )
+            except github_identity.ContributorRepository:
+                # The wrapper owns explicit own-user authorization and refusal.
+                return actor, expected_actor, prefix
+            override = github_identity.configured_value("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN")
+            if override and override.casefold() != client_login.casefold():
+                return actor, override, prefix
+            if all(not value or (main_actor and value.casefold() == main_actor.casefold())
+                   or value.casefold() == client_login.casefold() for value in (actor, expected_actor)):
+                return client_login, client_login, prefix
+        return actor, expected_actor, prefix
     if reader and rule is not None and rule.request_priority == "essential":
         # A per-request essential context wins over an inherited bulk prefix.
         # The wrapper retains the existing main credential path, with personal
@@ -2938,7 +2961,8 @@ def request_identity(
         prefix.remove("--reader")
         if "--require-automation-auth" not in prefix:
             prefix.append("--require-automation-auth")
-        return main_actor, main_actor, prefix
+        actor, expected_actor = main_actor, main_actor
+        return repository_identity()
     automatic = (not is_write and not preserve_identity and rule is not None and rule.request_priority == "bulk"
                  and pathlib.Path(gh_cmd).name == "gh-with-env-token"
                  and "--write-actor-for" not in prefix
@@ -2947,16 +2971,16 @@ def request_identity(
                  and all(not value or (main_actor and value.casefold() == main_actor.casefold())
                          for value in (actor, expected_actor)))
     if not reader and not automatic:
-        return actor, expected_actor, prefix
+        return repository_identity()
     if not reader and not github_identity.reader_config_available():
         # App-free installations retain the documented automation-token path.
         # Once either App is configured, a missing reader falls back only to
         # the main App; partial credentials cannot escape into a personal token.
         local_values = github_identity.load_local_env()
         if not any(github_identity.configured_value(f"{app}_{suffix}", local_env=local_values)
-                   for app in ("GITHUB_APP", "GITHUB_READER_APP")
+                   for app in ("GITHUB_APP", "GITHUB_READER_APP", "GITHUB_CLIENT_APP")
                    for suffix in ("ID", "INSTALLATION_ID", "PRIVATE_KEY_PATH")):
-            return actor, expected_actor, prefix
+            return repository_identity()
         if not _reader_fallback_reported:
             print("notice: reader App credentials missing; bulk reads use the main automation identity with its quota reserve", file=sys.stderr)
             _reader_fallback_reported = True
@@ -2964,7 +2988,7 @@ def request_identity(
             prefix.append("--require-automation-auth")
         if "--main-app-only" not in prefix:
             prefix.append("--main-app-only")
-        return actor, expected_actor, prefix
+        return repository_identity()
     config = github_identity.github_app_config(reader=True)
     if config is None:
         raise github_identity.GitHubAppError("read-only GitHub App is not configured")

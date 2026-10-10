@@ -35,7 +35,7 @@ if [ -f "$env_file" ]; then
 		printf '%s\n%s\n%s\n%s\n' \
 			"${GIT_COMMIT_AS_BOT_NAME:-${CODEX_AUTOMATION_LOGIN:-}}" \
 			"${GIT_COMMIT_AS_BOT_EMAIL:-${CODEX_AUTOMATION_EMAIL:-}}" \
-			"${GITHUB_APP_ID:+app}" \
+			"${GITHUB_APP_ID:-${GITHUB_CLIENT_APP_OWNERS:-}}" \
 			"${GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH:-}"
 	)
 	bot_name=$(printf '%s\n' "$identity_values" | sed -n '1p')
@@ -45,7 +45,7 @@ if [ -f "$env_file" ]; then
 else
 	bot_name=${GIT_COMMIT_AS_BOT_NAME:-${CODEX_AUTOMATION_LOGIN:-}}
 	bot_email=${GIT_COMMIT_AS_BOT_EMAIL:-${CODEX_AUTOMATION_EMAIL:-}}
-	app_configured=${GITHUB_APP_ID:+app}
+	app_configured=${GITHUB_APP_ID:-${GITHUB_CLIENT_APP_OWNERS:-}}
 	require_automation_auth=${GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH:-}
 fi
 
