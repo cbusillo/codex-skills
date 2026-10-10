@@ -19,6 +19,45 @@ MEMORY_CITATION_TAIL = re.compile(
 SAFE = re.compile(r"^(?:\*\*)?Safe to exit: yes\.?(?:\*\*)?$")
 
 
+def outside_fences(lines: list[str]) -> bool:
+    """The final verdict must be outside a completed Markdown fence."""
+    fence = None
+    minimum_indent = 0
+    list_indents = []
+    for line in lines:
+        line = line.expandtabs(4)
+        indent = len(line) - len(line.lstrip(" "))
+        listed_line = re.match(r"^( *(?:(?:[-+*]|[0-9]+[.)]) +)+)", line)
+        if fence is None:
+            if line.strip():
+                while list_indents and indent < list_indents[-1]:
+                    list_indents.pop()
+            if listed_line:
+                for marker_part in re.finditer(r"(?:[-+*]|[0-9]+[.)]) +", listed_line[1]):
+                    if not list_indents or marker_part.end() > list_indents[-1]:
+                        list_indents.append(marker_part.end())
+        match = re.match(r"^\s*(`{3,}|~{3,})(.*)$", line)
+        if not match and fence is None:
+            listed = re.match(r"^(\s*(?:(?:[-+*]|[0-9]+[.)])\s+)+)(`{3,}|~{3,})(.*)$", line)
+            if listed:
+                # A list fence closes relative to its content column. A flush-left
+                # marker can open a new outer block and cannot prove closure.
+                prefix, fence, _ = listed.groups()
+                minimum_indent = len(prefix.expandtabs(4))
+                continue
+        if not match:
+            continue
+        marker, rest = match.groups()
+        if fence is None:
+            fence = marker
+            minimum_indent = list_indents[-1] if list_indents else (indent if indent > 3 else 0)
+        elif (marker[0] == fence[0] and len(marker) >= len(fence) and not rest.strip()
+              and re.fullmatch(r" {" + str(minimum_indent) + "," + str(minimum_indent + 3)
+                               + "}" + re.escape(marker) + r"[ \t]*", line)):
+            fence = None
+    return fence is None
+
+
 def read_jsonl(path: Path) -> list[dict]:
     records = []
     with path.open(encoding="utf-8") as stream:
@@ -171,11 +210,12 @@ def summarize(records: list[dict], harness: str) -> dict:
                 )
     # Citation metadata may follow the verdict; retain the raw response for readers.
     verdict_text = MEMORY_CITATION_TAIL.sub("", result["last_text"])
-    lines = verdict_text.strip().splitlines()
+    lines = verdict_text.rstrip().splitlines()
     result["safe_verdict"] = bool(
         lines
+        and not re.match(r"^ {4}", lines[-1].expandtabs(4))
         and SAFE.fullmatch(re.sub(r"^[-*] ", "", lines[-1].strip()).replace("**", ""))
-        and not any(line.lstrip().startswith(("```", "~~~")) for line in lines)
+        and outside_fences(lines)
         and result["at_turn_end"]
         and result["turn_end"] != "turn_aborted"
     )

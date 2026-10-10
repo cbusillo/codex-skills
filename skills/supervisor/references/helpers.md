@@ -41,6 +41,7 @@ other sessions; a malformed ledger itself ends the watch. Status output includes
 out of public comments. Context counts may be absent and are not a reason to
 hand off. For Claude, the count includes cached input.
 
+
 ## Checks and morning digest
 
 ```sh
@@ -209,6 +210,14 @@ never changes a
 login, including the desktop app's.
 
 ## Finished-session shutdown stages
+
+A final unfenced exit verdict may follow completed backtick or tilde fenced
+blocks. A verdict inside an open block does not qualify. Shorter, mismatched,
+trailing-text or over-indented closing fences do not close it; list-item
+fences close relative to the list's content column. Recognition still supplies
+only a candidate; the shutdown procedure owns every verification before terminal input or closure.
+A final verdict indented four columns, including a nested verdict bullet, stays
+unrecognized. Use a standalone unindented final `Safe to exit: yes` instead.
 
 `finished_map.py` offers candidates only. Its conservative last-line parser
 rejects quoted, negated, conditional and aborted verdicts. The shared parser used
