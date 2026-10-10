@@ -4021,6 +4021,9 @@ def cmd_project_set(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     config = load_config(repo)
     _, issue = get_issue(args.issue, repo)
+    if not any((args.focus, args.manager, args.finish_line)):
+        emit({"ok": True, "updated": {}})
+        return
     project_config = config.get("projects") or {}
     owner = args.owner or project_config.get("owner") or issue["repo"].split("/", 1)[0]
     project = args.project or project_config.get("default_project")
