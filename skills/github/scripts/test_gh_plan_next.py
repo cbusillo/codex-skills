@@ -3088,7 +3088,7 @@ def test_incident_leaves_beyond_ordinary_scan_keep_native_priority_and_review() 
             assert candidate["incident_via"][-1]["relationship"] == ("sub_issue" if relation == "sub_issues" else "blocked_by")
             assert not result["available_candidates"]
             context = {"issues": {f"{leaf['repo']}#{leaf['number']}": reviewed(candidate)}}
-            with patch.object(module, "next_selection_context", return_value=context):
+            with patch.multiple(module, next_selection_context=lambda _args: context):
                 module.cmd_next(next_args(scan_limit=1))
                 assert result["available_candidates"][0]["number"] == leaf["number"]
                 context["issues"][f"{leaf['repo']}#{leaf['number']}"]["state"] = "underway"

@@ -1081,7 +1081,7 @@ def incident_work_paths(
     is read once, and the first current marked root supplies its native path.
     """
     root_keys = {(root["repo"].casefold(), root["number"]) for root in roots}
-    pending = [(root, []) for root in reversed(roots)]
+    pending: list[tuple[dict[str, Any], list[dict[str, Any]]]] = [(root, []) for root in reversed(roots)]
     seen: set[tuple[str, int]] = set()
     items = []
     evaluated = 0
@@ -1107,7 +1107,7 @@ def incident_work_paths(
             evaluated += 1
         seen.add(key)
         node = read_node(ref["repo"], ref["number"])
-        item = {**node["item"], "incident_via": via}
+        item: dict[str, Any] = {**node["item"], "incident_via": via}
         items.append(item)
         reason = item.get("exclusion")
         if reason in {"unknown_dependencies", "unknown_ancestry"}:
