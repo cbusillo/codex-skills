@@ -24,19 +24,18 @@ def no_wait_reason(reason: str, *, field: str) -> bool:
     reason = reason.strip().casefold().rstrip(" .")
     if reason in {"none", "n/a", "nothing", "-", "no native issue blocker"}:
         return True
-    if field == "Waiting for" and re.fullmatch(
-        r"(?:none|nothing|n/a)[;.]\s*(?:(?:the )?next actor is an agent|an agent acts next|this is agent work)",
-        reason,
-    ):
-        return True
-    # Apart from the exact agent-next forms above, only Blocked by may contain
-    # an explanatory sentence. Other semicolons and wrapped holds still refuse.
-    if re.search(r"\b(?:wait(?:ing)?|await(?:ing)?|pending|parked|blocked|until|unless|except|but|after|requires?|needs?)\b", reason):
+    # Explicit no-wait prefixes may carry sweep explanations. Check the whole
+    # explanation for hold words before accepting it, including wrapped clauses.
+    if re.search(r"\b(?:wait(?:ing)?|await(?:ing)?|pending|parked|blocked|until|unless|except|but|after|before|must|outstanding|prerequisite|requires?|needs?)\b", reason):
         return False
     if field == "Blocked by":
-        return bool(re.fullmatch(r"(?:none|n/a|nothing|no native issue blocker)\.\s+[^;]+", reason))
+        return bool(re.fullmatch(
+            r"(?:none|n/a|nothing|no native issue blocker)(?:[.;]\s*|\s+).+", reason,
+        ))
     if field == "Waiting for":
-        return bool(re.fullmatch(r"nothing for [\w -]+", reason))
+        return bool(re.fullmatch(
+            r"(?:none|nothing|n/a)[;.]\s*.+|nothing for [\w -]+", reason,
+        ))
     return False
 
 

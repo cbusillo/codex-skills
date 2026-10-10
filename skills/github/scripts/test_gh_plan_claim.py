@@ -2588,6 +2588,10 @@ class ClaimTests(unittest.TestCase):
             "Blocked by: None.\nWaiting for: None; the next actor is an agent.",
             "Blocked by: None.\nWaiting for: None; an agent acts next.",
             "Blocked by: None.\nWaiting for: nothing; this is agent work.",
+            "Blocked by: No native issue blocker recorded for this source task.\nWaiting for: None; an executing agent acts next.",
+            "Blocked by: No native issue blocker; engineering qualification remains.\nWaiting for: None; an agent acts next, so keep plan:active.",
+            "Blocked by: No native issue blocker recorded for the offline repair.\nWaiting for: None; source validation is agent work.",
+            "Blocked by: None; independent of the installer.\nWaiting for: Nothing. Engineering can proceed.",
             "**Blocked by:** None.\n**Waiting for:** None.",
         )
         for status in statuses:
@@ -2644,6 +2648,12 @@ class ClaimTests(unittest.TestCase):
             "Blocked by: No native issue blocker;\n  waiting for owner decision",
             "Blocked by: none. Waiting for owner decision.",
             "Blocked by: none. Pending physical confirmation.",
+            "Blocked by: None.\nWaiting for: None; Chris must sign off before work starts.",
+            "Blocked by: None.\nWaiting for: None; Chris's sign-off is outstanding.",
+            "Blocked by: No native issue blocker recorded; waiting for Client acceptance.",
+            "Blocked by: No native issue blocker; engineering qualification requires Client acceptance.",
+            "Blocked by: None.\nWaiting for: None; an executing agent acts next after Client acceptance.",
+            "Blocked by: None.\nWaiting for: None; an agent acts next, so keep plan:active; pending Chris approval.",
             "Blocked by: None.\nWaiting for: Physical confirmation after implementation.",
             "Blocked by: None.\nWaiting for: Nothing for read-only investigation; waiting for owner decision.",
             "Blocked by: None.\nWaiting for: Nothing for read-only investigation until owner approval.",
