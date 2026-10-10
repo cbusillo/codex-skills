@@ -8088,6 +8088,7 @@ def test_privileged_policy_propose_rejects_malformed_result_without_echoing_priv
         (403, "denied"),
         (409, "conflict"),
         (404, "unsupported"),
+        (500, "outcome_unknown"),
         (502, "outcome_unknown"),
         (503, "outcome_unknown"),
         (504, "outcome_unknown"),
@@ -8164,6 +8165,51 @@ def test_privileged_policy_propose_failure_reports_safe_reconciliation(
         assert "private-token" not in output.getvalue()
         assert "private.example.invalid" not in output.getvalue()
         assert "never-emit" not in output.getvalue()
+
+
+def test_privileged_policy_proposal_saved_before_500_replays_the_same_plan() -> None:
+    envelope = {"descriptor_id": "managed-authz-policy-set", "source_event_id": "test:saved-proposal",
+                "request": {"managed_set_id": "example.proposal", "desired_policy": {"schema_version": 2},
+                            "reason": "Review access."}}
+    saved: dict[str, dict[str, object]] = {}
+    operation_id = "privileged-operation-" + "a" * 32
+
+    def post(**kwargs: Any) -> dict[str, object]:
+        body = kwargs["body"]
+        source = body["source_event_id"]
+        if source not in saved:
+            saved[source] = body
+            raise urllib.error.HTTPError("https://private.example.invalid", 500, "after save", Message(),
+                                         io.BytesIO(b'{"error":{"code":"internal_error"}}'))
+        assert body == saved[source]
+        return {"status": "ok", "write_status": "replayed", "trace_id": "launchplane_req_" + "b" * 32,
+                "summary": {"operation_id": operation_id, "descriptor_id": body["descriptor_id"],
+                            "status": "planned", "result_status": "ok", "changed": False,
+                            "expires_at": "", "added_rule_count": 1, "adopted_rule_count": 0,
+                            "updated_rule_count": 0, "removed_rule_count": 0, "unchanged_rule_count": 0,
+                            "policy_safety_blocker_count": 0, "operational_readiness_blocked_rule_count": 0}}
+
+    with TemporaryDirectory() as directory:
+        path = Path(directory) / "proposal.json"
+        path.write_text(json.dumps(envelope))
+        outputs = []
+        with (patch.object(write_action, "resolve_settings", return_value={
+                "service_url": "https://private.example.invalid", "token": "private-token"}),
+              patch.object(write_action, "request_launchplane", side_effect=post) as transport):
+            for expected in (1, 0):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    assert write_action.main(["privileged-policy-propose", "--payload-file", str(path)]) == expected
+                outputs.append(json.loads(output.getvalue()))
+                assert "private-token" not in output.getvalue()
+                assert "private.example.invalid" not in output.getvalue()
+        assert transport.call_count == 2
+        assert len(saved) == 1
+        assert outputs[0]["status"] == "outcome_unknown"
+        assert "identical private envelope and source event" in outputs[0]["summary"]["recommendation"]
+        assert outputs[1]["result"]["operation_id"] == operation_id
+        assert outputs[1]["result"]["authorizes_approval"] is False
+        assert outputs[1]["result"]["authorizes_execution"] is False
 
 
 def test_merge_policy_enrollment_projects_only_requested_repository() -> None:

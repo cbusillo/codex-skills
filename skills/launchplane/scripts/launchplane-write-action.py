@@ -4265,7 +4265,7 @@ def summarize_http_error(
         "error_code": public_code(error.get("code"), default=status),
         "recommendation": http_error_recommendation(status),
     }
-    if operation == "privileged-policy-propose" and exc.code in {404, 409, 502, 503, 504}:
+    if operation == "privileged-policy-propose" and (exc.code in {404, 409} or 500 <= exc.code < 600):
         payload["status"] = (
             "unsupported" if exc.code == 404 else "conflict" if exc.code == 409 else "outcome_unknown"
         )
@@ -4274,7 +4274,7 @@ def summarize_http_error(
             if exc.code == 404
             else "This source event conflicts with an existing request. Restore the original envelope, or use a fresh source event only for an intentional new proposal."
             if exc.code == 409
-            else "Retain and re-run the identical private envelope and source event. A gateway error does not prove that the plan was not saved."
+            else "Retain and re-run the identical private envelope and source event. A service or gateway error does not prove that the plan was not saved."
         )
     message = (
         "Launchplane read was rejected; inspect the trace in an approved operator surface."
