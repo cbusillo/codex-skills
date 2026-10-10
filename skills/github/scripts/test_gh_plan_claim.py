@@ -1919,7 +1919,7 @@ class ClaimTests(unittest.TestCase):
     def test_released_note_requires_exact_identity_author_and_chronology(self):
         for change in ("foreign_note", "foreign_release", "wrong_id", "wrong_worker", "different_session",
                        "reused_worker", "unreleased", "early_release", "edited_source", "edited_note",
-                       "missing_time", "naive_time", "second_holder", "later_claim"):
+                       "edited_source_before_release", "missing_time", "naive_time", "second_holder", "later_claim"):
             with self.subTest(change=change):
                 self.setUp()
                 self.released_note_fixture()
@@ -1933,6 +1933,9 @@ class ClaimTests(unittest.TestCase):
                 if change == "unreleased": self.comments.pop()
                 if change == "early_release": release["created_at"] = "2026-09-30T23:59:00Z"
                 if change == "edited_source": source["updated_at"] = "2026-10-01T00:03:00Z"
+                if change == "edited_source_before_release":
+                    source["updated_at"] = "2026-10-01T00:01:30Z"
+                    source["body"] = CLAIM.marker({**OTHER, "session": "edited-session"})
                 if change == "edited_note": note["updated_at"] = "2026-10-01T00:03:00Z"
                 if change == "missing_time": note.pop("created_at")
                 if change == "naive_time": note["created_at"] = "2026-10-01T00:01:00"

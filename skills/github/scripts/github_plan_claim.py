@@ -388,7 +388,8 @@ def released_explanatory_note(
                 or not related_sessions_match(text, record["session"])):
             continue
         try:
-            if not stamp(source.get("created_at")) < stamp(note.get("created_at")) <= stamp(
+            if not max(stamp(source.get("created_at")), stamp(source.get("updated_at") or source.get("created_at")),
+                       stamp(record["claimed_at"])) < stamp(note.get("created_at")) <= stamp(
                 note.get("updated_at") or note.get("created_at")
             ) < stamp(release.get("created_at")):
                 continue
