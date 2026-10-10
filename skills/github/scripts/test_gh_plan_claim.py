@@ -2401,6 +2401,7 @@ class ClaimTests(unittest.TestCase):
             "Blocked by: None.\nWaiting for: Nothing for read-only investigation; waiting for owner decision.",
             "Blocked by: None.\nWaiting for: Nothing for read-only investigation until owner approval.",
             "Blocked by: None.\nParked until: Nothing for read-only investigation.",
+            "Blocked by: None.\n**Parked until:** Nothing for read-only investigation.",
             "Blocked by: None.\nWaiting for: None; an agent acts next after Client acceptance.",
             "Blocked by: None.\nWaiting for: None; the next actor is an agent; pending Chris approval.",
             "Blocked by: None.\nWaiting for: None; an agent acts next.\n  Waiting for Chris to approve.",

@@ -271,21 +271,22 @@ repo-local `next` and `claim` preserve recorded waiting state.
    scheduling (another milestone or agent selection), resolved, or a real person/event
    wait. A real unresolved wait remains parked. Do not infer its resolution from
    an invalid-wait finding or invent a Director decision.
-2. For an automation-owned Current Status, use `gh-plan.py update-section ISSUE
-   "Current Status" --body-file FILE` to record the verified next action and actual
-   wait. Preserve human-authored requests. If absence is established, write
-   `Waiting for: None.` and `Blocked by: None.` only when both are true. If there is
-   a person/event hold, keep it in `Waiting for:` or `Parked until:` rather than only
-   a `Blocked by:` explanation. A known start may be recorded there; leave an unknown
-   start unstated. Output reports `since: null` for an unknown date.
-3. Run normal `gh-plan.py claim` with the same worker, native session and task branch.
-   If a waiting label or recorded status still requires resolution, supply
-   `--wait-resolved` with the verified condition, existing resolution/authorization
-   evidence and its source links. This supported path records the previous status
-   and resolution, then runs normal ownership, native-blocker and hold preflight.
-   It activates planning state on success; a refusal remains a stop. Do not clear
-   labels or holds to make the command pass. Re-read the claim and status before
-   creating the linked worktree.
+2. Preserve the original wait/status while running normal `gh-plan.py claim` with
+   the same worker, native session and task branch. For a verified invalid or resolved
+   condition, use `--wait-resolved` with that condition, existing resolution or
+   authorization evidence and source links. Do this before changing any wait field.
+   The supported path records the previous status and resolution, then runs normal
+   ownership, native-blocker and hold preflight and activates planning on success.
+   A refusal remains a stop. Do not clear labels or holds to make the command pass.
+3. After confirmed claim and status readback, correct any remaining automation-owned
+   Current Status with `gh-plan.py update-section ISSUE "Current Status" --body-file FILE`.
+   Record the verified next action and actual wait; the original condition and its
+   resolution are now durable in the claim comment. Preserve human-authored requests.
+   Write `Waiting for: None.` and `Blocked by: None.` only when both are true. A real
+   person/event wait belongs in `Waiting for:` or `Parked until:`, not only a
+   `Blocked by:` explanation. A known start may be recorded there; leave an unknown
+   start unstated. Output reports `since: null` for an unknown date. Re-read current
+   state before creating the linked worktree.
 
 When the request belongs to a person, preserve its body and record the correction
 in an authorized bot comment or automation-managed block. Existing resolution

@@ -29,8 +29,8 @@ def no_wait_reason(reason: str, *, field: str) -> bool:
         reason,
     ):
         return True
-    # Only Blocked by may contain a separate explanatory sentence. A semicolon
-    # (including a continued wait on the next line) remains a recorded blocker.
+    # Apart from the exact agent-next forms above, only Blocked by may contain
+    # an explanatory sentence. Other semicolons and wrapped holds still refuse.
     if re.search(r"\b(?:wait(?:ing)?|await(?:ing)?|pending|parked|blocked|until|unless|except|but|after|requires?|needs?)\b", reason):
         return False
     if field == "Blocked by":
