@@ -58,7 +58,7 @@ class AppHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         self.respond("POST")
 
-    def log_message(self, fmt: str, *args: object) -> None:
+    def log_message(self, *args: object, **kwargs: object) -> None:
         pass
 
 
