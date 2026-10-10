@@ -210,6 +210,7 @@ def summarize(records: list[dict], harness: str) -> dict:
     lines = verdict_text.rstrip().splitlines()
     result["safe_verdict"] = bool(
         lines
+        and not re.match(r"^(?: {4}|\t)", lines[-1])
         and SAFE.fullmatch(re.sub(r"^[-*] ", "", lines[-1].strip()).replace("**", ""))
         and outside_fences(lines)
         and result["at_turn_end"]

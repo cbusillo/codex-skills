@@ -118,6 +118,7 @@ class TranscriptTests(unittest.TestCase):
             "Done.\n  - ```sh\n    command\n    ```\nSafe to exit: yes",
             "1. Verified with:\n    ```sh\n    command\n    ```\nSafe to exit: yes",
             "- Verified with:\n\t```sh\n\tcommand\n\t```\nSafe to exit: yes",
+            "> ```sh\n> command\n> ```\nSafe to exit: yes",
         ):
             for harness, records in (
                 ("claude", [claude(text)]),
@@ -138,6 +139,9 @@ class TranscriptTests(unittest.TestCase):
             "- ```sh\ncommand\n```\nSafe to exit: yes",
             "- Verified:\n  ```sh\n  command\n```\nSafe to exit: yes",
             "- Verified:\n    ```sh\n      ```\nSafe to exit: yes",
+            "Output:\n    Safe to exit: yes",
+            "Output:\n\tSafe to exit: yes",
+            "> ```sh\n> command\n> ```\n```\nSafe to exit: yes",
             "```sh\ncommand\n```\n> Safe to exit: yes",
             "~~~sh\ncommand\n~~~\nNot Safe to exit: yes",
             "```sh\ncommand\n```\nSafe to exit: yes if CI passes",
