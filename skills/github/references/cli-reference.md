@@ -1147,7 +1147,7 @@ separately from admission. For capacity admission, pass `coverage_complete=True`
 to `rank_portfolio_work` only for complete milestone graph coverage with no known
 milestone issues left uninspected; its default is false. Portfolio discovery
 bounds or unavailable sources remain explicit coverage warnings, not a blanket
-admission veto. Current milestone person-wait reviews and
+admission veto. Current milestone staffing and person/event-wait reviews and
 `tooling_admission_rule` outputs follow the linked global selection procedure.
 Supply parsed
 `repository_waypoints` separately from ranking order for waypoint explanations

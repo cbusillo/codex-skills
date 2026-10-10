@@ -58,8 +58,8 @@ Read for `next` in a repository owner's direction repository, including explicit
    budget prevent spare-capacity tooling admission until reviewed.
 5. Select under the Director's direction: live incidents first, listed milestones
    in order, other tooling with two linked occurrences of the stop it fixes, or
-   when every milestone candidate waits on a person and provider capacity would
-   otherwise go unused, and eligible own projects from their share. Read each repository's direction;
+   when every milestone’s available work already has the sessions it can use
+   and provider capacity would otherwise go unused, and eligible own projects from their share. Read each repository's direction;
    discovery does not adopt direction or grant execution permission. Do not infer
    that an unlinked child can proceed through its parent's whole-plan wait.
 6. Report the highest-ranked independently available item, with higher-ranked
@@ -166,12 +166,18 @@ Categories for discovered work are `live_incident`, `repeated_stop_tooling`, and
 `repeated_stop_tooling` category. Two distinct HTTPS links in `stop_occurrences`
 admit it under the repeated-stop rule. With fewer links, capacity admission needs
 complete milestone graph coverage and current reviews of every inspected milestone
-frontier issue, including excluded waits and discovered milestone work. Each must
-be `state: waiting`, with `waiting_on: person`, the current `discussion_digest`,
-complete discussion and ownership evidence, and a reason and evidence identifying
-who must act. A CI/event wait, a hold alone, underway or unreviewed milestone
-issue, or incomplete milestone graph coverage does not establish this rule.
-Each listed open milestone needs a named person wait; an empty Track cannot establish that evidence. The output lists those waits in `tooling_capacity_context.milestone_waits`, with `since` null when no usable ISO start was recorded and `recorded_at` kept separately.
+frontier issue, including excluded waits and discovered milestone work. Each needs
+complete discussion and ownership evidence, the current `discussion_digest`, and
+reason/evidence sources. An available unclaimed issue prevents admission. A current
+`state: underway` review establishes staffing only for active work with no exclusion,
+repository hold or pending recorded wait. It does not authorize taking over that work.
+A `state: waiting` review needs `waiting_on: person` or `event`, an issue-owned waiting
+status and a named pending wait. An agent-only, stale or unreviewed wait does not prove
+admission. Each listed open milestone needs at least one staffed issue or real wait;
+an empty Track does not supply that evidence. The output records waits in
+`tooling_capacity_context.milestone_waits` and staffed work with its caller evidence
+in `milestone_staffing`. `since` is null when no usable ISO start was recorded;
+`recorded_at` is kept separately.
 Record a known start inline in the existing status field, for example `Waiting for: Alex to test; since 2026-08-20`; leave an unknown start unstated.
 An existing `Waiting since:` line is also accepted. `recorded_at` is the source issue's `updated_at`, which moves on later activity and never establishes the wait's start.
 A `--milestone` run cannot establish portfolio-wide capacity admission.
@@ -183,17 +189,16 @@ the milestone-wait condition, not provider usage.
 
 `tooling_capacity_context` explains whether the capacity rule is established,
 including the first unresolved issue when a milestone review or context is missing.
-Missing milestone person-wait reviews are reported before discovery context that
+Missing milestone staffing or person/event-wait reviews are reported before discovery context that
 the capacity-only reads have not yet gathered. Supply current reviews with
 `--selection-context` and rerun; an ordinary unreviewed `next` does not establish
 capacity admission. Unknown discovery context still prevents admission once the
 milestone reviews are complete.
 Held repositories remain excluded from selection. Capacity-only reads run only
-when current person-wait reviews leave that admission possible; available or
-underway graph work disables those extra reads. Then held repositories are
+when current staffing or person/event-wait reviews leave that admission possible; available unclaimed graph work disables those extra reads. Then held repositories are
 inventoried read-only.
 A hold alone is never a person wait. Their milestone candidates need the same
-current person-wait reviews; unrelated holds do not block independent tooling.
+current staffing or person/event-wait reviews; unrelated holds do not block independent tooling.
 Held issues use a separate bounded allowance of `--scan-limit`, leaving the
 ordinary discovery allowance available to selectable work. Their failures and
 bounds affect `discovery_context.capacity_complete`, not ordinary candidate
@@ -217,7 +222,8 @@ Dependencies of discovered title-matched
 milestone containers inherit that scope; unavailable reads or dependency cycles
 cannot establish person waits.
 Every available tooling candidate carries `tooling_admission_rule`
-(`repeated_stops` or `all_milestones_waiting_on_people`), the same value in
+(`repeated_stops`, `all_milestones_waiting_on_people`, or
+`all_milestones_staffed_or_waiting`), the same value in
 `reasons`, and `recorded_stop_count` for weekly audit counts. During capacity
 admission, tooling sorts by distinct recorded stop links, most first, then age.
 Own projects stay ahead of capacity-admitted tooling so spare-capacity work
