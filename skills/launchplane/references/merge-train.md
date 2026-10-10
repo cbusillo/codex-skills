@@ -54,12 +54,13 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   same-repo linear stack-collapse planning/execution when needed,
   collapsed-root admission, candidate plan/build/observe, landing-plan
   creation, PR-native landing, and child PR disposition.
-- **Proven Batch Flow**: The controller has been proven against a live
-  multi-PR batch train. It can reflow a failed candidate when the eligible queue
-  changes, build and observe a replacement candidate, create a landing plan,
-  land the original PRs through GitHub's PR merge API in train order, and post
-  managed feedback to each PR. Treat this as the normal rollout path, not an
-  experimental one-off.
+- **Landing Contract**: Read Launchplane's canonical
+  [PR-Native Landing](https://github.com/cbusillo/launchplane/blob/main/docs/merge-train-policy.md#pr-native-landing)
+  section for the provider target, completion evidence, and single-entry,
+  multi-entry merge-method, legacy, squash/rebase and stack exceptions. Use
+  [Batch And Recovery](https://github.com/cbusillo/launchplane/blob/main/docs/merge-admission.md#batch-and-recovery)
+  for admission/outcome reconciliation. Let the controller perform that path;
+  constituent completion is not an instruction to merge constituents by hand.
 - **Stacked PRs**: For a same-repo linear stack, label the root PR that
   targets the protected base branch and every child that is ready to land,
   since collapsing merges each child into the root. Launchplane collapses a child only when it is
@@ -107,8 +108,11 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   The controller helper projects validated candidate PR numbers. While the
   controller observes a candidate containing this driver's PR, it leaves the batch PRs
   to that observation and reads them again on a phase change or final landing.
-  Unchanged controller phases poll less often, up to five minutes, and respect
-  the shared low-budget floor. A generic `github_request_failed` refusal probes
+  Every controller call makes Launchplane re-read the whole repository train
+  from GitHub, and Launchplane also runs its own passes. Unchanged controller
+  phases and a lease held by another holder therefore poll less often, doubling
+  up to `--max-wait-seconds` (fifteen minutes by default), and respect the
+  shared low-budget floor; any phase change returns to `--poll-seconds`. A generic `github_request_failed` refusal probes
   the quota-free `/rate_limit` endpoint through the target repository's
   installation. Zero local core quota permits one wait to reset per refusal
   streak, within the driver's deadline, without spending its helper-failure budget.
@@ -122,6 +126,13 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   batch candidate record id, the landing-plan record id, workflow run URLs, and
   the final root merge commit. Include child disposition evidence when the root
   lands.
+  The driver's terminal `prs` rows distinguish `landed`, `closed`, `open` and
+  `unknown`. A closed child is `superseded` only when the projected controller
+  disposition confirms it was closed after its root landed and its expected
+  head matches GitHub; `carried_by` retains that collapse, root and head evidence.
+  Only a verified GitHub merge supplies a child's `merge_commit_sha`; a carried
+  child's value stays empty. Failed reads keep prior verified terminal results,
+  while unavailable nonterminal members are `unknown`.
 - **Batch Evidence**: For flat batch runs, report the dry-run/admission reason,
   candidate record id and candidate SHA, required-check status on the candidate
   commit, landing-plan record id, each landed PR number and merge commit, managed

@@ -21,6 +21,12 @@ Each pass calls `launchplane-write-action.py merge-train-controller-run-once
 A controller lease held by another driver is a wait, not a failure; if it is
 still held at the deadline the outcome is needs_owner.
 
+Every controller call makes Launchplane re-read the whole train from GitHub
+(roughly 15 requests per open PR in the repository, on the shared App quota),
+and Launchplane already runs its own passes on a timer and on check
+completions. So while the controller repeats the same action or holds its
+lease, the pause doubles from --poll-seconds up to --max-wait-seconds.
+
 When the landed repository is the skills catalog this command lives in, the
 landed stop event carries `runtime_reconciliation`: the receipt from running
 `reconcile-runtime-checkout.py` with the landing SHA, so the installed catalog
@@ -89,6 +95,7 @@ class DriveSettings:
     base_branch: str = "main"
     deadline: float = 0.0
     poll_seconds: float = 60.0
+    max_wait_seconds: float = 900.0
     allow_branch_update: bool = False
     max_branch_updates: int = 3
     max_helper_failures: int = 5
@@ -102,6 +109,8 @@ class DriveSettings:
 class DriveState:
     batch: set[int] = field(default_factory=set)
     landed: dict[int, str] = field(default_factory=dict)
+    dispositions: dict[int, str] = field(default_factory=dict)
+    carried_children: dict[int, dict[str, Any]] = field(default_factory=dict)
     helper_failures: int = 0
     branch_updates: int = 0
     ineligible_streak: int = 0
@@ -161,7 +170,7 @@ def local_driver(settings: DriveSettings) -> Iterator[dict[str, Any] | None]:
 
 def _pause(settings: DriveSettings, io: DriveIO, state: DriveState, *, minimum: float = 0.0) -> None:
     delay = github_read.poll_delay(
-        min(settings.poll_seconds * 2 ** min(state.unchanged_passes, 10), max(settings.poll_seconds, 300.0)),
+        min(settings.poll_seconds * 2 ** min(state.unchanged_passes, 10), max(settings.poll_seconds, settings.max_wait_seconds)),
         minimum,
         repository=settings.repository,
     )
@@ -266,6 +275,8 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
                 # Another driver is running the controller; keep polling until its lease is released or expires.
                 snapshot["controller_action"] = "controller_lease_held"
                 state.lease_held = snapshot
+                # The lease holder is already advancing the train; back off like an unchanged pass.
+                state.unchanged_passes = min(state.unchanged_passes + 1, 10)
                 emit("snapshot", snapshot)
                 _pause(settings, io, state)
                 continue
@@ -399,6 +410,9 @@ def _record_landings(
     settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callable[[str, dict[str, Any]], None]
 ) -> str | None:
     target_state = None
+    for number in state.batch:
+        if number not in state.landed and state.dispositions.get(number) not in {"closed", "superseded"}:
+            state.dispositions[number] = "unknown"
     for number in sorted(state.batch):
         if number in state.landed:
             continue
@@ -408,8 +422,16 @@ def _record_landings(
         if pull_request.get("merged"):
             state.landed[number] = str(pull_request.get("merge_commit_sha") or "")
             emit("pr_landed", {"repository": settings.repository, "number": number, "merge_commit_sha": state.landed[number]})
-        elif number == settings.number and pull_request.get("state") == "closed":
-            target_state = "closed"
+        elif pull_request.get("state") == "closed" and pull_request.get("merged") is False:
+            carried = state.carried_children.get(number)
+            state.dispositions[number] = (
+                "superseded" if carried and (pull_request.get("head") or {}).get("sha") == carried["expected_head_sha"]
+                else "closed"
+            )
+            if number == settings.number:
+                target_state = "closed"
+        else:
+            state.dispositions[number] = "open" if pull_request.get("state") == "open" else "unknown"
     if settings.number in state.landed:
         return "landed"
     if target_state == "closed":
@@ -433,6 +455,8 @@ def _finish_landing(
                 break
             key = f"train-drive-{settings.repository.replace('/', '-')}-{settings.number}-finish-{finish_pass}-{int(io.now())}"
             response = io.controller(settings.repository, settings.base_branch, key)
+            if (response or {}).get("status") in {"accepted", "ok"}:
+                _remember_batch((response or {}).get("result") or {}, state)
             action = str(((response or {}).get("result") or {}).get("controller_action") or "")
             emit("snapshot", _snapshot(settings, state, action or "helper_unavailable", response))
             if action in {"batch_landed", "idle"}:
@@ -450,6 +474,19 @@ def _remember_batch(result: dict[str, Any], state: DriveState) -> None:
     for number in dry_run.get("queue_order") or ():
         if isinstance(number, int):
             state.batch.add(number)
+    stack = result.get("stack_collapse_plan") or {}
+    for child in stack.get("child_dispositions") or ():
+        number = child.get("pull_request_number")
+        if isinstance(number, int) and not isinstance(number, bool) and number > 0:
+            state.batch.add(number)
+            if (child.get("status") == "closed" and child.get("expected_head_sha")
+                and stack.get("collapse_id") and stack.get("root_pull_request_number")
+                and stack["root_pull_request_number"] != number):
+                state.carried_children[number] = {
+                    "collapse_id": stack.get("collapse_id"),
+                    "root_pull_request_number": stack.get("root_pull_request_number"),
+                    "expected_head_sha": child.get("expected_head_sha"),
+                }
 
 
 def _queue_entry(result: dict[str, Any], number: int) -> dict[str, Any] | None:
@@ -482,7 +519,9 @@ def _snapshot(settings: DriveSettings, state: DriveState, action: str, response:
 
 def _stop(settings: DriveSettings, state: DriveState, emit: Callable[[str, dict[str, Any]], None], outcome: str, **detail: Any) -> str:
     prs = [
-        {"number": number, "outcome": "landed" if number in state.landed else "open", "merge_commit_sha": state.landed.get(number, "")}
+        {"number": number, "outcome": "landed" if number in state.landed else state.dispositions.get(number, "unknown"),
+         "merge_commit_sha": state.landed.get(number, ""),
+         **({"carried_by": state.carried_children[number]} if state.dispositions.get(number) == "superseded" else {})}
         for number in sorted(state.batch)
     ]
     emit(
@@ -652,6 +691,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--base-branch", default="main")
     parser.add_argument("--deadline-minutes", type=float, default=240.0)
     parser.add_argument("--poll-seconds", type=float, default=60.0)
+    parser.add_argument("--max-wait-seconds", type=float, default=900.0,
+                        help="Longest pause between controller calls while nothing changes.")
     parser.add_argument("--helper-timeout", type=float, default=180.0)
     parser.add_argument(
         "--allow-branch-update",
@@ -670,6 +711,7 @@ def main(argv: list[str]) -> int:
         base_branch=args.base_branch,
         deadline=time.time() + args.deadline_minutes * 60,
         poll_seconds=args.poll_seconds,
+        max_wait_seconds=args.max_wait_seconds,
         allow_branch_update=args.allow_branch_update,
     )
     try:

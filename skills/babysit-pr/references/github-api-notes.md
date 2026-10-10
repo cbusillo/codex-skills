@@ -101,7 +101,7 @@ For an execution with multiple attempts, GitHub's latest job inventory selects
 current checks, including successful jobs reused by a partial rerun. Job detail
 is otherwise fetched only for completed current failed runs needing diagnosis.
 
-For standalone reads, workflow discovery starts when Actions checks are present;
+For standalone reads, workflow discovery lists head runs even before job checks exist;
 the watcher always supplies its full head-pinned run inventory. Saved
 rerun intents reconcile against the full inventory, including superseded runs:
 supersession alone never releases an unknown write. Before any retry write,

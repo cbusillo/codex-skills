@@ -108,6 +108,8 @@ class WorkflowClient(Protocol):
 
     def resolve_actors(self) -> tuple[str, str]: ...
 
+    def resolve_automation_actor(self) -> str: ...
+
     def dispatch(
         self,
         *,
@@ -163,6 +165,9 @@ class GitHubWorkflowClient:
         automation_login = self._resolve_automation_login()
         reviewer_login = self._resolve_reviewer_login()
         return automation_login, reviewer_login
+
+    def resolve_automation_actor(self) -> str:
+        return self._resolve_automation_login()
 
     def dispatch(
         self,
@@ -497,7 +502,7 @@ class WorkflowBabysitter:
         started_at: float | None = None,
         deadline: float | None = None,
     ) -> dict[str, Any]:
-        automation_login, reviewer_login = actors or self.client.resolve_actors()
+        automation_login, reviewer_login = actors or (self.client.resolve_automation_actor(), "")
         started_at = self.clock() if started_at is None else started_at
         deadline = started_at + timeout_seconds if deadline is None else deadline
         if (
@@ -564,6 +569,18 @@ class WorkflowBabysitter:
 
             approval_action: tuple[tuple[int, ...], tuple[str, ...]] | None = None
             if run.status == "waiting":
+                if not reviewer_login:
+                    automation_login, reviewer_login = self.client.resolve_actors()
+                    if authorized_environments and automation_login.casefold() == reviewer_login.casefold():
+                        return blocked_result(
+                            outcome="self_review_identity_conflict",
+                            message="refusing protected-environment approval without independent review",
+                            actors=actors_payload(automation_login, reviewer_login),
+                            authorized_environments=authorized_environments,
+                            run=run_payload(run, fallback_url=run_url),
+                            polls=polls,
+                            elapsed_seconds=self.clock() - started_at,
+                        )
                 pending = self.client.get_pending_environments(run_id)
                 if pending:
                     if any(

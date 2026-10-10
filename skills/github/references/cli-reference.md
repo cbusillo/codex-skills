@@ -160,10 +160,11 @@ set a temporary `GITHUB_RETRY_STATE_DIR`, which also isolates these receipts.
 
 Each operation's `request_priority` in
 [`operation-matrix.toml`](operation-matrix.toml) is its shared admission default.
-Bulk REST/core operations include issue listings/searches, global next, audits,
-inventories, repository snapshots and PR/workflow watchers. Essential operations
-include writes, their preflights/readbacks, train/landing reads and targeted
-issue/PR/check reads. Writes always remain essential even inside a bulk operation.
+Bulk REST/core operations include issue listings/searches, global next, read-only
+planning views (show, dependencies, milestones), audits, inventories,
+repository snapshots and PR/workflow watchers. Essential operations include
+writes, their preflights/readbacks, train/landing reads and targeted PR/check
+reads. Writes always remain essential even inside a bulk operation.
 Search and GraphQL have separate budgets and retain their existing retry policy.
 
 When `GITHUB_READER_APP_ID`, `GITHUB_READER_APP_INSTALLATION_ID` and
@@ -387,6 +388,9 @@ also include the shared `api_result` diagnostics envelope.
 - `scripts/gh-pr.py checks <pr>`: Show check runs and commit statuses
   for the PR head, with Actions execution history selected under the
   [current execution contract](../../babysit-pr/references/github-api-notes.md#workflow-runs-for-head-sha).
+  Head workflows are read even before their first job check exists; unfinished
+  or failed runs count as pending or failed evidence. Unavailable Actions
+  reads report incomplete counts rather than a complete empty inventory.
 - `scripts/gh-pr.py update-branch <pr> [--wait-seconds 0..60]`: Merge the base
   into the PR branch after the ownership and authorization checks in
   [Merge Readiness](repo-workflow.md#merge-readiness), through the automation
@@ -766,8 +770,13 @@ To recover an older ambiguous legacy release, the source author posts a new
 `Released claim <claim-comment-id>` comment for each original claim. For a
 closed automation session with a structured source claim, use the evidence-backed
 `release-claim` route above, including its verified related hand-written
-follow-ups. A hand-written source claim requires its author to post the exact-ID
-release.
+follow-ups. Explicit Session/Session ID or Thread ID fields on a related follow-up must
+name the source's native session. Field aliases (session_id/sessionId), spaced
+dash separators and vertical field/value tables are supported; free prose or
+horizontal tables do not establish a session identity. Use the canonical
+Session field or authored exact-ID recovery for those older formats. A distinct structured claim needs its own closure
+evidence; an unstructured claim needs an exact-ID release by its author.
+A hand-written source claim requires its author to post the exact-ID release.
 
 After a verified retained-work handoff, use `--resume-from <claim-comment-id>`.
 The source must be one structured claim explicitly released by its author.
