@@ -1175,6 +1175,165 @@ def tracked_capacity_issues(
     return seen, sorted(set(errors))
 
 
+CHECKBOX = re.compile(r"^\s*[-*]\s+\[([ xX])]\s+(.+?)\s*$", re.M)
+MAX_OUTCOME_READS = 200
+
+
+def cached_reads(fetch: Callable[[list[str]], Any]) -> Callable[[list[str]], Any]:
+    """Share identical reads between the capacity count and milestone outcomes."""
+    cache: dict[tuple[str, ...], Any] = {}
+
+    def read(args: list[str]) -> Any:
+        key = tuple(args)
+        if key not in cache:
+            cache[key] = fetch(args)
+        return cache[key]
+    return read
+
+
+def checked_items(before: str | None, after: str) -> list[str]:
+    """Checkbox items unchecked in `before` and checked in `after`."""
+    unchecked = {text for mark, text in CHECKBOX.findall(before or "") if mark == " "}
+    return [text for mark, text in CHECKBOX.findall(after) if mark in "xX" and text in unchecked]
+
+
+def node_activity(repo: str, number: int, since: dt.datetime, *, fetch: Callable[[list[str]], Any]) -> dict[str, Any]:
+    """Graph links added to an issue since `since`, and its body when the window opened."""
+    owner, name = repo.split("/")
+    query = """query($owner:String!,$name:String!,$number:Int!,$since:DateTime!){
+      repository(owner:$owner,name:$name){issue(number:$number){
+        body createdAt
+        timelineItems(itemTypes:[SUB_ISSUE_ADDED_EVENT,BLOCKED_BY_ADDED_EVENT],since:$since,first:100){
+          totalCount
+          nodes{__typename ... on SubIssueAddedEvent{createdAt subIssue{url}}
+                ... on BlockedByAddedEvent{createdAt blockingIssue{url}}}
+        }
+        userContentEdits(first:100){totalCount nodes{editedAt diff}}
+      }}
+    }"""
+    since_text = since.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    response = fetch(["api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}", "-f", f"name={name}",
+                      "-F", f"number={number}", "-f", f"since={since_text}"])
+    try:
+        if response.get("errors"):
+            raise AuditError("milestone outcome read unavailable")
+        issue = response["data"]["repository"]["issue"]
+        events = issue["timelineItems"]
+        edits = issue["userContentEdits"]
+        links = [{"kind": "sub_issue" if node["__typename"] == "SubIssueAddedEvent" else "blocked_by",
+                  "issue": (node.get("subIssue") or node.get("blockingIssue") or {}).get("url"),
+                  "added_at": node["createdAt"]} for node in events["nodes"]]
+        # Revisions come newest first; the one in force at the window start is
+        # the newest made before it. An issue created in the window had no boxes.
+        before_window = [edit for edit in edits["nodes"]
+                         if (moment := _parse_time(edit.get("editedAt"))) is not None and moment < since]
+        created = _parse_time(issue.get("createdAt"))
+        complete = events["totalCount"] <= len(events["nodes"])
+        if before_window:
+            baseline = before_window[0].get("diff")
+        elif created is not None and created >= since:
+            baseline = ""
+        elif not edits["nodes"]:
+            baseline = issue["body"]  # Never edited: unchanged since before the window.
+        else:
+            # Edited only in the window: the oldest revision read is the original
+            # text when every revision was read.
+            baseline = edits["nodes"][-1].get("diff")
+            complete &= edits["totalCount"] <= len(edits["nodes"])
+        return {"links": links, "checked": checked_items(baseline, issue["body"] or ""), "complete": complete}
+    except (AttributeError, KeyError, TypeError) as exc:
+        raise AuditError("milestone outcome response unavailable") from exc
+
+
+def milestone_outcomes(
+    direction_repo: str, text: str, since: dt.datetime, until: dt.datetime, *,
+    fetch: Callable[[list[str]], Any], max_nodes: int = 500, max_reads: int = MAX_OUTCOME_READS,
+) -> list[dict[str, Any]]:
+    """What moved in each listed milestone's Track graph during the window.
+
+    Closed issues come from the graph listings themselves; links added and
+    checkboxes checked are read only for issues updated in the window.
+    """
+    outcomes: list[dict[str, Any]] = []
+    reads = 0
+    try:
+        milestones, cut = fetch_paginated(f"repos/{direction_repo}/milestones?state=all", fetch=fetch)
+    except AuditError:
+        return [{"milestone": None, "complete": False, "unavailable": ["milestones"]}]
+    by_title = {item.get("title"): item for item in milestones}
+    for title in parse_direction(text)["milestones"]:
+        row: dict[str, Any] = {"milestone": title, "tracks": [], "issues_closed": [], "links_added": [],
+                               "items_checked": [], "unavailable": ["milestones"] if cut else []}
+        outcomes.append(row)
+        milestone = by_title.get(title)
+        if milestone is None:
+            row["unavailable"].append("milestone_missing")
+            continue
+        nodes: dict[tuple[str, int], dict[str, Any]] = {}
+        pending: list[tuple[str, int]] = []
+        try:
+            roots, root_cut = fetch_paginated(
+                f"repos/{direction_repo}/issues?state=all&milestone={milestone['number']}", fetch=fetch,
+            )
+            if root_cut:
+                row["unavailable"].append("tracks")
+            for root in roots:
+                if "pull_request" not in root and str(root.get("title", "")).startswith("Track:"):
+                    key = (direction_repo, int(root["number"]))
+                    nodes[key] = root
+                    pending.append(key)
+                    row["tracks"].append(f"https://github.com/{direction_repo}/issues/{root['number']}")
+        except AuditError:
+            row["unavailable"].append("tracks")
+        seen: set[tuple[str, int]] = set()
+        while pending:
+            key = pending.pop()
+            if key in seen:
+                continue
+            if len(seen) >= max_nodes:
+                row["unavailable"].append("graph_limit")
+                break
+            seen.add(key)
+            repo, number = key
+            for endpoint in ("dependencies/blocked_by", "sub_issues"):
+                try:
+                    edges, edge_cut = fetch_paginated(f"repos/{repo}/issues/{number}/{endpoint}", fetch=fetch)
+                    if edge_cut:
+                        row["unavailable"].append(f"graph:{repo}#{number}:{endpoint}")
+                    for edge in edges:
+                        match = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)", str(edge.get("html_url") or ""))
+                        if not match:
+                            raise AuditError("milestone graph relationship identity unknown")
+                        child = (match[1], int(match[2]))
+                        nodes.setdefault(child, edge)
+                        pending.append(child)
+                except AuditError:
+                    row["unavailable"].append(f"graph:{repo}#{number}:{endpoint}")
+        for (repo, number) in sorted(seen):
+            node = nodes.get((repo, number)) or {}
+            url = f"https://github.com/{repo}/issues/{number}"
+            if node.get("state") == "closed" and _within(node.get("closed_at"), since, until):
+                row["issues_closed"].append({"url": url, "title": node.get("title"), "closed_at": node.get("closed_at")})
+            updated = _parse_time(node.get("updated_at"))
+            if updated is not None and updated < since:
+                continue
+            if reads >= max_reads:
+                row["unavailable"].append(f"activity:{repo}#{number}:read_limit")
+                continue
+            reads += 1
+            try:
+                activity = node_activity(repo, number, since, fetch=fetch)
+            except AuditError:
+                row["unavailable"].append(f"activity:{repo}#{number}")
+                continue
+            if not activity["complete"]:
+                row["unavailable"].append(f"activity:{repo}#{number}:history_limit")
+            row["links_added"] += [{"to": url, **link} for link in activity["links"] if _within(link["added_at"], since, until)]
+            row["items_checked"] += [{"url": url, "item": item} for item in activity["checked"]]
+        row["complete"] = not row["unavailable"]
+    return outcomes
+
+
 def pull_issue_refs(repo: str, pull: dict[str, Any]) -> set[tuple[str, int]]:
     """Explicit closing/Refs clauses, rather than incidental issue mentions."""
     refs = set(pull.get("_native_issue_refs") or [])
@@ -1309,6 +1468,82 @@ def capacity_summary(
     }
 
 
+def owner_repositories(owner: str, *, fetch: Callable[[list[str]], Any]) -> tuple[dict[str, dict[str, Any]], bool]:
+    """The owner's repositories the reader can see, and whether the listing was cut short."""
+    try:
+        listed, cut = fetch_paginated("installation/repositories", fetch=fetch, key="repositories")
+    except AuditError as installation_error:
+        # The Director's own login has no installation; it lists what it owns.
+        try:
+            listed, cut = fetch_paginated("user/repos?affiliation=owner", fetch=fetch)
+        except AuditError as exc:
+            raise AuditError(f"could not list repositories: {installation_error}; {exc}") from exc
+    return {
+        str(item.get("full_name")).casefold(): item for item in listed
+        if str(((item.get("owner") or {}).get("login")) or "").casefold() == owner.casefold()
+    }, cut
+
+
+def active_unadopted_report(
+    direction_repo: str, since: dt.datetime, *, fetch: Callable[[list[str]], Any],
+) -> dict[str, Any]:
+    """Stale waits and gate wording for active repositories without a DIRECTION.md.
+
+    Most milestone work lives in repositories that never adopted their own file.
+    This reads them the way `--stale-waits-only` and the gate-phrase check do,
+    without stamping, adopting, or reporting them as missing a file.
+    """
+    owner = direction_repo.split("/")[0]
+    unavailable: list[dict[str, str]] = []
+    rows: list[dict[str, Any]] = []
+    repos, cut = owner_repositories(owner, fetch=fetch)
+    if cut:
+        unavailable.append({"source": "repositories", "reason": "page_limit"})
+    try:
+        installation = fetch(["api", "installation/repositories?per_page=1", "--method", "GET"])
+        if isinstance(installation, dict) and installation.get("repository_selection") == "selected":
+            # An App installed on chosen repositories cannot see the rest of the account.
+            unavailable.append({"source": "repositories", "reason": "installation_selected_repositories"})
+    except AuditError:
+        pass  # The Director's own login lists every repository it owns.
+    for key in sorted(repos):
+        meta = repos[key]
+        name = str(meta.get("full_name"))
+        pushed = _parse_time(meta.get("pushed_at"))
+        if meta.get("archived") or (pushed is not None and pushed < since) or key == direction_repo.casefold():
+            continue
+        try:
+            if merged_direction(name, fetch=fetch) is not None:
+                continue  # Adopted: its own audit covers it.
+            issues, issues_cut = fetch_paginated(f"repos/{name}/issues?state=open", fetch=fetch)
+            milestones, milestones_cut = fetch_paginated(f"repos/{name}/milestones?state=open", fetch=fetch, max_pages=2)
+        except AuditError:
+            unavailable.append({"repo": name, "source": "issues", "reason": "unavailable"})
+            continue
+        gates = []
+        for item in issues:
+            if "pull_request" not in item:
+                found = gate_phrases(f"{item.get('title') or ''}\n{item.get('body') or ''}")
+                gates += [{"number": item.get("number"), "title": item.get("title"), "phrases": found}] if found else []
+        for item in milestones:
+            found = gate_phrases(str(item.get("description") or ""))
+            gates += [{"milestone": item.get("number"), "title": item.get("title"), "phrases": found}] if found else []
+        rows.append({
+            "repo": name,
+            "gate_phrases": gates,
+            "gate_phrases_complete": not (issues_cut or milestones_cut),
+            "stale_wait_report": stale_wait_report(issues, name, fetch=fetch, inventory_complete=not issues_cut),
+        })
+    return {
+        "since": since.isoformat().replace("+00:00", "Z"),
+        "complete": not unavailable and all(
+            row["gate_phrases_complete"] and row["stale_wait_report"]["complete"] for row in rows
+        ),
+        "repositories": rows,
+        "unavailable": unavailable,
+    }
+
+
 def fetch_capacity(
     direction_repo: str, since: dt.datetime, until: dt.datetime, *, fetch: Callable[[list[str]], Any],
 ) -> tuple[dict[str, Any], list[str]]:
@@ -1323,20 +1558,9 @@ def fetch_capacity(
         truncated.append("capacity_own_projects")
     tracked_issues, graph_errors = tracked_capacity_issues(direction_repo, text or "", since, fetch=fetch)
     truncated.extend(graph_errors)
-    try:
-        listed, cut = fetch_paginated("installation/repositories", fetch=fetch, key="repositories")
-    except AuditError as installation_error:
-        # The Director's own login has no installation; it lists what it owns.
-        try:
-            listed, cut = fetch_paginated("user/repos?affiliation=owner", fetch=fetch)
-        except AuditError as exc:
-            raise AuditError(f"could not list repositories: {installation_error}; {exc}") from exc
+    repos, cut = owner_repositories(owner, fetch=fetch)
     if cut:
         truncated.append("capacity_repositories")
-    repos = {
-        str(item.get("full_name")).casefold(): item for item in listed
-        if str(((item.get("owner") or {}).get("login")) or "").casefold() == owner
-    }
     def older(field: str) -> Callable[[dict[str, Any]], bool]:
         return lambda item: (moment := _parse_time(item.get(field))) is not None and moment < since
 
@@ -1465,9 +1689,13 @@ def main(argv: list[str] | None = None) -> int:
         truncated += ["rulesets"] if cut else []
         direction_pulls = direction_pull_requests(repo, pulls, fetch=fetch)
         capacity = None
+        unadopted = None
         if repo.split("/")[1].casefold() == "direction":
-            capacity, cut = fetch_capacity(repo, audit_since, now, fetch=fetch)
+            shared = cached_reads(fetch)
+            capacity, cut = fetch_capacity(repo, audit_since, now, fetch=shared)
             truncated.extend(cut)
+            capacity["milestone_outcomes"] = milestone_outcomes(repo, direction_text or "", audit_since, now, fetch=shared)
+            unadopted = active_unadopted_report(repo, audit_since, fetch=shared)
     except AuditError as exc:
         error: dict[str, Any] = {"ok": False, "error": str(exc)}
         if args.gh == str(WRAPPER):
@@ -1497,6 +1725,8 @@ def main(argv: list[str] | None = None) -> int:
     result["stale_wait_report"] = stale_wait_report(
         issues, repo, fetch=fetch, inventory_complete="issues" not in truncated,
     )
+    if unadopted is not None:
+        result["active_unadopted"] = unadopted
     result.update({"repo": repo, "direction_source": f"{repo}:DIRECTION.md@default-branch", "read_only": True})
     result["audit_since"] = audit_since.isoformat().replace("+00:00", "Z")
     # Preserve unseen labeled closures and milestone additions without letting
