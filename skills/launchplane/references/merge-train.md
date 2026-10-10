@@ -108,8 +108,11 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   The controller helper projects validated candidate PR numbers. While the
   controller observes a candidate containing this driver's PR, it leaves the batch PRs
   to that observation and reads them again on a phase change or final landing.
-  Unchanged controller phases poll less often, up to five minutes, and respect
-  the shared low-budget floor. A generic `github_request_failed` refusal probes
+  Every controller call makes Launchplane re-read the whole repository train
+  from GitHub, and Launchplane also runs its own passes. Unchanged controller
+  phases and a lease held by another holder therefore poll less often, doubling
+  up to `--max-wait-seconds` (fifteen minutes by default), and respect the
+  shared low-budget floor; any phase change returns to `--poll-seconds`. A generic `github_request_failed` refusal probes
   the quota-free `/rate_limit` endpoint through the target repository's
   installation. Zero local core quota permits one wait to reset per refusal
   streak, within the driver's deadline, without spending its helper-failure budget.

@@ -21,6 +21,12 @@ Each pass calls `launchplane-write-action.py merge-train-controller-run-once
 A controller lease held by another driver is a wait, not a failure; if it is
 still held at the deadline the outcome is needs_owner.
 
+Every controller call makes Launchplane re-read the whole train from GitHub
+(roughly 15 requests per open PR in the repository, on the shared App quota),
+and Launchplane already runs its own passes on a timer and on check
+completions. So while the controller repeats the same action or holds its
+lease, the pause doubles from --poll-seconds up to --max-wait-seconds.
+
 When the landed repository is the skills catalog this command lives in, the
 landed stop event carries `runtime_reconciliation`: the receipt from running
 `reconcile-runtime-checkout.py` with the landing SHA, so the installed catalog
@@ -89,6 +95,7 @@ class DriveSettings:
     base_branch: str = "main"
     deadline: float = 0.0
     poll_seconds: float = 60.0
+    max_wait_seconds: float = 900.0
     allow_branch_update: bool = False
     max_branch_updates: int = 3
     max_helper_failures: int = 5
@@ -163,7 +170,7 @@ def local_driver(settings: DriveSettings) -> Iterator[dict[str, Any] | None]:
 
 def _pause(settings: DriveSettings, io: DriveIO, state: DriveState, *, minimum: float = 0.0) -> None:
     delay = github_read.poll_delay(
-        min(settings.poll_seconds * 2 ** min(state.unchanged_passes, 10), max(settings.poll_seconds, 300.0)),
+        min(settings.poll_seconds * 2 ** min(state.unchanged_passes, 10), max(settings.poll_seconds, settings.max_wait_seconds)),
         minimum,
         repository=settings.repository,
     )
@@ -268,6 +275,8 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
                 # Another driver is running the controller; keep polling until its lease is released or expires.
                 snapshot["controller_action"] = "controller_lease_held"
                 state.lease_held = snapshot
+                # The lease holder is already advancing the train; back off like an unchanged pass.
+                state.unchanged_passes = min(state.unchanged_passes + 1, 10)
                 emit("snapshot", snapshot)
                 _pause(settings, io, state)
                 continue
@@ -682,6 +691,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--base-branch", default="main")
     parser.add_argument("--deadline-minutes", type=float, default=240.0)
     parser.add_argument("--poll-seconds", type=float, default=60.0)
+    parser.add_argument("--max-wait-seconds", type=float, default=900.0,
+                        help="Longest pause between controller calls while nothing changes.")
     parser.add_argument("--helper-timeout", type=float, default=180.0)
     parser.add_argument(
         "--allow-branch-update",
@@ -700,6 +711,7 @@ def main(argv: list[str]) -> int:
         base_branch=args.base_branch,
         deadline=time.time() + args.deadline_minutes * 60,
         poll_seconds=args.poll_seconds,
+        max_wait_seconds=args.max_wait_seconds,
         allow_branch_update=args.allow_branch_update,
     )
     try:
