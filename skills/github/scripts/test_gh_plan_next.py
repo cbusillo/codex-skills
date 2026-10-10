@@ -3128,6 +3128,22 @@ def test_incident_paths_stop_whole_parent_waits_and_report_bounds_and_cycles() -
 TESTS.extend([test_incident_leaves_beyond_ordinary_scan_keep_native_priority_and_review,
               test_incident_paths_stop_whole_parent_waits_and_report_bounds_and_cycles])
 
+
+def test_incident_leaf_in_direction_inventory_is_not_a_track_exclusion() -> None:
+    root = global_issue("someone/live", 90, labels=["plan", "plan:active", "Live-Breakage"])
+    leaf = global_issue("someone/direction", 91)
+    ordinary = global_issue("someone/project", 1)
+    edges = {("someone/live", 90): relationships(blocked_by=[leaf])}
+    with global_fixture([leaf], [], edges, discovered=[ordinary, root, leaf]) as (module, result, _reads):
+        module.load_direction = lambda *_: "# Direction\n## Milestones\n"
+        module.cmd_next(next_args(scan_limit=1))
+        assert result["candidates"][0]["number"] == 91
+        assert [step["number"] for step in result["candidates"][0]["incident_via"]] == [90, 91]
+        assert not any(item["number"] == 91 for item in result["excluded"])
+
+
+TESTS.append(test_incident_leaf_in_direction_inventory_is_not_a_track_exclusion)
+
 def main() -> None:
     for test in TESTS:
         test()
