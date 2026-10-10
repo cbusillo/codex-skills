@@ -24,6 +24,11 @@ def no_wait_reason(reason: str, *, field: str) -> bool:
     reason = reason.strip().casefold().rstrip(" .")
     if reason in {"none", "n/a", "nothing", "-", "no native issue blocker"}:
         return True
+    if field == "Waiting for" and re.fullmatch(
+        r"(?:none|nothing|n/a)[;.]\s*(?:(?:the )?next actor is an agent|an agent acts next|this is agent work)",
+        reason,
+    ):
+        return True
     # Only Blocked by may contain a separate explanatory sentence. A semicolon
     # (including a continued wait on the next line) remains a recorded blocker.
     if re.search(r"\b(?:wait(?:ing)?|await(?:ing)?|pending|parked|blocked|until|unless|except|but|after|requires?|needs?)\b", reason):

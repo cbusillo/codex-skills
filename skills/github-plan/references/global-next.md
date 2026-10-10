@@ -257,3 +257,39 @@ Discovery keeps its existing held-repository and marked-incident allowances,
 so it evaluates at most three times `--scan-limit` issues plus marked incidents. Omitted work still
 reports incomplete coverage and known omitted milestones still prevent capacity
 admission. Unknown or conflicting assignments consume the ordinary allowance.
+
+
+## Correct An Invalid Wait Before Claiming
+
+Read when global `next` or the direction audit reports `milestone_wait_invalid`,
+or when selection and claim disagree about a recorded wait. A finding is evidence
+to check, not permission to ignore a hold. This selection behavior is global-only;
+repo-local `next` and `claim` preserve recorded waiting state.
+
+1. Re-read the complete issue, comments, native relationships, relevant parent
+   discussions and current ownership. Determine whether the recorded condition is
+   scheduling (another milestone or agent selection), resolved, or a real person/event
+   wait. A real unresolved wait remains parked. Do not infer its resolution from
+   an invalid-wait finding or invent a Director decision.
+2. For an automation-owned Current Status, use `gh-plan.py update-section ISSUE
+   "Current Status" --body-file FILE` to record the verified next action and actual
+   wait. Preserve human-authored requests. If absence is established, write
+   `Waiting for: None.` and `Blocked by: None.` only when both are true. If there is
+   a person/event hold, keep it in `Waiting for:` or `Parked until:` rather than only
+   a `Blocked by:` explanation. A known start may be recorded there; leave an unknown
+   start unstated. Output reports `since: null` for an unknown date.
+3. Run normal `gh-plan.py claim` with the same worker, native session and task branch.
+   If a waiting label or recorded status still requires resolution, supply
+   `--wait-resolved` with the verified condition, existing resolution/authorization
+   evidence and its source links. This supported path records the previous status
+   and resolution, then runs normal ownership, native-blocker and hold preflight.
+   It activates planning state on success; a refusal remains a stop. Do not clear
+   labels or holds to make the command pass. Re-read the claim and status before
+   creating the linked worktree.
+
+When the request belongs to a person, preserve its body and record the correction
+in an authorized bot comment or automation-managed block. Existing resolution
+can be supplied directly to `claim --wait-resolved`; a body rewrite is not required.
+A known no-wait status such as `None; an agent acts next.` is recognized without
+resolution evidence. Extra clauses that record a hold still refuse. This normalization
+never clears native blockers, waiting labels, parent holds or competing claims.

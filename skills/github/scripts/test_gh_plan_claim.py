@@ -2349,6 +2349,9 @@ class ClaimTests(unittest.TestCase):
             "Blocked by: none. The service fields are live.",
             "Blocked by: None.\nWaiting for: Nothing for read-only investigation.",
             "- Blocked by: NONE.\n- Waiting for: NOTHING FOR READ-ONLY INVESTIGATION.",
+            "Blocked by: None.\nWaiting for: None; the next actor is an agent.",
+            "Blocked by: None.\nWaiting for: None; an agent acts next.",
+            "Blocked by: None.\nWaiting for: nothing; this is agent work.",
         )
         for status in statuses:
             with self.subTest(status=status):
@@ -2358,6 +2361,35 @@ class ClaimTests(unittest.TestCase):
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
                 self.assertIn("post", self.events)
                 self.assertIn(status, self.emitted.call_args.args[0]["previous_current_status"])
+
+    def test_global_invalid_wait_selection_still_requires_actual_claim_resolution(self):
+        import test_gh_plan_next as selection
+        root = selection.track("someone/direction", 1, "First")
+        leaf = selection.global_issue("owner/repo", 42, labels=["plan", "plan:waiting"],
+            body=PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n## Current Status\nState: Waiting.\nWaiting for: starts after First\nBlocked by: None.")
+        edges = {("someone/direction", 1): selection.relationships(sub_issues=[leaf])}
+        with selection.global_fixture([root], [leaf], edges) as (module, result, _reads):
+            module.cmd_next(selection.next_args())
+            candidate = next(item for item in result["candidates"] if item["number"] == 42)
+            context = {"issues": {"owner/repo#42": selection.reviewed(candidate, category="milestone")}}
+            with patch.object(module, "next_selection_context", return_value=context):
+                module.cmd_next(selection.next_args())
+            self.assertEqual([item["number"] for item in result["available_candidates"]], [42])
+        self.issue.update(leaf)
+        self.issue["user"] = {"login": TEST_BOT}
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_wait_unresolved")
+        self.assert_no_writes()
+        self.args.wait_resolved = "Full milestone path and discussion verified: ordering First is scheduling, not a person/event hold; Director already authorized this work. No native blockers or competing ownership."
+        self.run_claim()
+        receipt = self.emitted.call_args.args[0]
+        self.assertTrue(receipt["ok"])
+        self.assertIn("post_claim", receipt["completed_steps"])
+        self.assertIn("starts after First", receipt["previous_current_status"])
+        self.assertIn(self.args.wait_resolved, self.comments[-1]["body"])
+        self.assertIn("plan:active", PLAN.normalize_labels(self.issue["labels"]))
+        self.assertNotIn("plan:waiting", PLAN.normalize_labels(self.issue["labels"]))
 
     def test_no_wait_prefix_does_not_hide_real_wait(self):
         statuses = (
@@ -2369,6 +2401,9 @@ class ClaimTests(unittest.TestCase):
             "Blocked by: None.\nWaiting for: Nothing for read-only investigation; waiting for owner decision.",
             "Blocked by: None.\nWaiting for: Nothing for read-only investigation until owner approval.",
             "Blocked by: None.\nParked until: Nothing for read-only investigation.",
+            "Blocked by: None.\nWaiting for: None; an agent acts next after Client acceptance.",
+            "Blocked by: None.\nWaiting for: None; the next actor is an agent; pending Chris approval.",
+            "Blocked by: None.\nWaiting for: None; an agent acts next.\n  Waiting for Chris to approve.",
         )
         for status in statuses:
             with self.subTest(status=status):
