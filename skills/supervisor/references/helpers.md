@@ -41,6 +41,15 @@ other sessions; a malformed ledger itself ends the watch. Status output includes
 out of public comments. Context counts may be absent and are not a reason to
 hand off. For Claude, the count includes cached input.
 
+Status and candidates expose `verdict_recognition`: `recognized` for a valid
+completed unqualified verdict, `unrecognized` when verdict wording is present
+but does not qualify, and `absent` when it is missing. A final verdict may share
+its line with `No Director action needed.` or `No Director decision needed.`;
+other accompanying prose stays unrecognized. For an ambiguous response, read
+the full transcript and handoff and ask the worker for a fresh standalone
+unqualified verdict if appropriate. Manual review does not override a refused
+parser result or any shutdown verification.
+
 ## Checks and morning digest
 
 ```sh

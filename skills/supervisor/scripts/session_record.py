@@ -17,6 +17,7 @@ MEMORY_CITATION_TAIL = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 SAFE = re.compile(r"^(?:\*\*)?Safe to exit: yes\.?(?:\*\*)?$")
+NO_DIRECTOR_ACTION = re.compile(r"^No Director (?:action|decision) needed\.\s+")
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -174,10 +175,16 @@ def summarize(records: list[dict], harness: str) -> dict:
     lines = verdict_text.strip().splitlines()
     result["safe_verdict"] = bool(
         lines
-        and SAFE.fullmatch(re.sub(r"^[-*] ", "", lines[-1].strip()).replace("**", ""))
+        and SAFE.fullmatch(NO_DIRECTOR_ACTION.sub(
+            "", re.sub(r"^[-*] ", "", lines[-1].strip()).replace("**", "")
+        ))
         and not any(line.lstrip().startswith(("```", "~~~")) for line in lines)
         and result["at_turn_end"]
         and result["turn_end"] != "turn_aborted"
+    )
+    result["verdict_recognition"] = (
+        "recognized" if result["safe_verdict"] else
+        "unrecognized" if "Safe to exit:" in verdict_text else "absent"
     )
     return result
 

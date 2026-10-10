@@ -15,6 +15,7 @@ import math
 import os
 import secrets
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,9 +30,10 @@ partdb_read = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = partdb_read
 SPEC.loader.exec_module(partdb_read)
 
-PLAN_KIND = "partdb-write-plan.v2"
-APPROVAL_KIND = "partdb-write-approval.v1"
+PLAN_KIND = "partdb-write-plan.v3"
+APPROVAL_KIND = "partdb-write-approval.v2"
 RECEIPT_KIND = "partdb-write-receipt.v1"
+AUTHORITY_FILE_NAME = "authority-id"
 LOT_PATH = "/api/part_lots/{id}"
 
 
@@ -177,6 +179,8 @@ def validate_intent(intent: Any) -> dict[str, int | float | str]:
 
 
 def validate_plan(artifact: Any) -> dict[str, Any]:
+    if isinstance(artifact, dict) and artifact.get("kind") != PLAN_KIND:
+        raise WriteError("plan format is outdated or invalid; create and approve a new plan")
     if isinstance(artifact, dict) and "instance_id" not in artifact:
         raise WriteError("plan has no instance binding; create and approve a new plan")
     if not isinstance(artifact, dict) or set(artifact) != {"digest", "kind", "nonce", "instance_id", "operation"} or artifact.get("kind") != PLAN_KIND:
@@ -201,17 +205,53 @@ def validate_plan(artifact: Any) -> dict[str, Any]:
     return artifact
 
 
-def validate_approval(approval: Any, plan_digest: str) -> None:
-    if not isinstance(approval, dict) or approval != {"kind": APPROVAL_KIND, "plan_digest": plan_digest}:
-        raise WriteError("approval does not match the exact plan")
+def receipt_root() -> Path:
+    return Path.home() / ".local" / "state" / "codex-skills" / "partdb-write"
+
+
+def receipt_authority(root: Path, *, create: bool = False) -> str:
+    authority_file = root / AUTHORITY_FILE_NAME
+    temporary: Path | None = None
+    try:
+        if create:
+            root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(mode="w", dir=root, prefix=".authority-", delete=False) as handle:
+                temporary = Path(handle.name)
+                handle.write(secrets.token_hex(16) + "\n")
+            try:
+                os.link(temporary, authority_file)
+            except FileExistsError:
+                pass
+        authority = authority_file.read_text().strip()
+    except (OSError, UnicodeDecodeError):
+        raise WriteError("receipt authority is unavailable; restore its private state before applying") from None
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                raise WriteError("receipt authority cleanup failed; preserve its private state") from None
+    if len(authority) != 32 or any(char not in "0123456789abcdef" for char in authority):
+        raise WriteError("receipt authority is invalid; restore its private state before applying")
+    return authority
+
+
+def validate_approval(approval: Any, plan_digest: str) -> Path:
+    if (not isinstance(approval, dict) or set(approval) != {"kind", "plan_digest", "receipt_authority"}
+            or approval.get("kind") != APPROVAL_KIND or approval.get("plan_digest") != plan_digest):
+        raise WriteError("approval does not match the exact plan and receipt authority; create and approve a new plan")
+    root = receipt_root()
+    if approval["receipt_authority"] != receipt_authority(root):
+        raise WriteError("approval belongs to a different receipt authority; create and approve a new plan")
+    return root
 
 
 def receipt(plan_digest: str, outcome: str) -> dict[str, str]:
     return {"kind": RECEIPT_KIND, "outcome": outcome, "plan_digest": plan_digest}
 
 
-def receipt_path(plan_path: Path, plan_digest: str) -> Path:
-    return plan_path.parent / ".partdb-write-receipts" / f"{plan_digest}.json"
+def receipt_path(_plan_path: Path, plan_digest: str, root: Path | None = None) -> Path:
+    return (root if root is not None else receipt_root()) / f"{plan_digest}.json"
 
 
 def reserve_receipt(path: Path, plan_digest: str) -> None:
@@ -254,7 +294,11 @@ def approve(args: argparse.Namespace) -> None:
     expected = artifact["digest"]
     if args.approve != expected:
         raise WriteError("typed approval does not match the plan digest")
-    save_json(Path(args.output), {"kind": APPROVAL_KIND, "plan_digest": expected})
+    save_json(Path(args.output), {
+        "kind": APPROVAL_KIND,
+        "plan_digest": expected,
+        "receipt_authority": receipt_authority(receipt_root(), create=True),
+    })
     print(json.dumps({"approved": True, "plan_digest": expected}, sort_keys=True))
 
 
@@ -263,10 +307,9 @@ def apply(args: argparse.Namespace) -> None:
         raise WriteError("refusing mutation without --apply")
     artifact = validate_plan(load_json(Path(args.plan), "plan artifact"))
     plan_digest = artifact["digest"]
-    validate_approval(load_json(Path(args.approval), "approval artifact"), plan_digest)
+    ledger_root = validate_approval(load_json(Path(args.approval), "approval artifact"), plan_digest)
     operation = artifact["operation"]
-    plan_path = Path(args.plan)
-    receipt_file = receipt_path(plan_path, plan_digest)
+    receipt_file = receipt_path(Path(args.plan), plan_digest, ledger_root)
     reserve_receipt(receipt_file, plan_digest)
     try:
         private_repo, config = partdb_read.context()

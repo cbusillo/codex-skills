@@ -1471,6 +1471,10 @@ def has_managed_provenance(body: str) -> bool:
 
 
 def issue_body_is_fully_managed(issue: dict[str, Any]) -> bool:
+    body = issue.get("body") or ""
+    has_managed_provenance(body)
+    if contributor_plan_body(issue) is not None:
+        return False
     author_login = issue_author_login(issue)
     managed_authors = {
         login.casefold()
@@ -2102,14 +2106,12 @@ def cmd_claim(args: argparse.Namespace) -> None:
 
     def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False) -> bool:
         status_state = next_plan_status(waiting_issue, load_config(target_repo) if target else config)
-        reports = github_direction_next.waiting_records(
-            compact_issue(waiting_issue),
-            "\n".join(
-                line for line in waiting_status.splitlines()
-                if not ((match := re.match(r"\s*(?:[-*]\s+)?Waiting for:\s*(.+)", line, re.I))
-                        and github_plan_claim.no_wait_reason(match.group(1), field="Waiting for"))
-            ),
-        )
+        parked_status = re.sub(r"\*\*(Parked until)(:?)\*\*(:?)", r"\1\2\3", waiting_status, flags=re.I)
+        # Parse full fields before normalizing explicit absence, so a wrapped
+        # continuation cannot disappear with its first no-wait line.
+        reports = [row for row in github_direction_next.waiting_records(compact_issue(waiting_issue), waiting_status)
+                   if not github_plan_claim.no_wait_reason(row["waiting_for"], field="Waiting for")
+                   or re.search(r"(?im)^\s*(?:[-*]\s+)?Parked until:", parked_status)]
         blocked_text = any(
             (match := re.match(r"\s*(?:[-*]\s+)?Blocked by:\s*(.+)", line, re.I))
             and not github_plan_claim.no_wait_reason(match.group(1), field="Blocked by")
@@ -4099,8 +4101,8 @@ def close_error_with_recovery(
 
 def cmd_close(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
-    config = load_config(repo)
     issue_repo, number = issue_ref(args.issue, repo)
+    config = load_config(issue_repo)
     close_reason = plan_close_reason(args.reason)
     issue_actor, issue = get_issue(args.issue, repo)
     _, relationship_preflight = close_relationship_preflight(issue_repo, number, close_reason)
