@@ -49,7 +49,7 @@ class SectionTests(unittest.TestCase):
             "body": "## Objective\n\nKeep this.\n\n## Finish Line\n\nOld text.\n\n## Scope\n\nKeep that.\n",
         }
 
-    def run_update(self, *body_args: str, stdin: str | io.TextIOBase = "", target: str = "42", **overrides: Any) -> tuple[int, dict, Mock, str]:
+    def run_update(self, *body_args: str, stdin: str | io.TextIOBase = "", target: str = "42", section: str = "Finish Line", **overrides: Any) -> tuple[int, dict, Mock, str]:
         output, errors = io.StringIO(), io.StringIO()
         edit = Mock(side_effect=lambda _repo, _number, *, body: ("fixture-bot[bot]", {**self.issue, "body": body}))
         replacements = {"default_repo": Mock(return_value="owner/repo"),
@@ -57,7 +57,7 @@ class SectionTests(unittest.TestCase):
                         "rest_edit_issue": edit, "EXPECTED_ACTOR": "fixture-bot[bot]", **overrides}
         with patch.multiple(PLAN, **replacements), \
                 patch.object(github_identity, "configured_bot_logins", return_value=["fixture-bot[bot]"]), \
-                patch.object(sys, "argv", [str(SCRIPT), "update-section", target, "Finish Line", *body_args]), \
+                patch.object(sys, "argv", [str(SCRIPT), "update-section", target, section, *body_args]), \
                 patch.object(sys, "stdin", io.StringIO(stdin) if isinstance(stdin, str) else stdin), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             code = 0
@@ -98,6 +98,66 @@ class SectionTests(unittest.TestCase):
                     self.assertEqual(original[2], "Original request with `\\u0027`.\n")
                     managed = PLAN.contributor_plan_body(self.issue)
                     self.assertEqual(managed, f"## Finish Line\n\n{content}")
+
+    def run_show(self, full: bool = False) -> tuple[int, dict]:
+        output, errors = io.StringIO(), io.StringIO()
+        with patch.multiple(PLAN,
+                            default_repo=Mock(return_value="owner/repo"),
+                            load_config=Mock(return_value={"default_sections": ["Finish Line"]}),
+                            get_issue=Mock(return_value=("fixture-bot[bot]", self.issue)),
+                            collect_paged_rest_items=Mock(return_value=("fixture-bot[bot]", []))), \
+                patch.object(github_identity, "configured_bot_logins", return_value=["fixture-bot[bot]"]), \
+                patch.object(sys, "argv", [str(SCRIPT), "show", "42", *(["--full"] if full else [])]), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            code = 0
+            try:
+                PLAN.main()
+            except SystemExit as exc:
+                assert isinstance(exc.code, int)
+                code = exc.code
+        return code, json.loads(output.getvalue())
+
+    def test_managed_author_envelope_preserves_original_on_public_updates(self) -> None:
+        original = "## Finish Line\n\nOriginal human requirement.\n"
+        self.issue["body"] = PLAN.wrap_contributor_plan(
+            {"body": original}, "## Finish Line\n\nManaged target.")
+        for content in ("New target.", "Next target."):
+            code, _, edit, errors = self.run_update("--body", content)
+            self.assertEqual(code, 0, errors)
+            self.issue["body"] = edit.call_args.kwargs["body"]
+            block = PLAN.marked_block(self.issue["body"], PLAN.PLAN_ORIGINAL_START, PLAN.PLAN_ORIGINAL_END)
+            self.assertIsNotNone(block)
+            self.assertEqual(block[2], original)
+            code, result = self.run_show()
+            self.assertEqual(code, 0)
+            self.assertEqual(result["issue"]["sections"]["Finish Line"], content)
+            self.assertEqual(result["issue"]["provenance"]["ownership"], "contributor_envelope")
+        code, result, edit, _ = self.run_update("--body", "Replacement", section="Original request")
+        self.assertNotEqual(code, 0)
+        self.assertFalse(result["ok"])
+        edit.assert_not_called()
+
+    def test_managed_author_malformed_markers_fail_closed_on_read_and_update(self) -> None:
+        envelope = PLAN.wrap_contributor_plan({"body": "Original"}, "## Finish Line\n\nManaged")
+        malformed = (
+            envelope + PLAN.PLAN_MANAGED_START,
+            envelope.replace(PLAN.PLAN_ORIGINAL_END, ""),
+            envelope.replace(PLAN.PLAN_MANAGED_END, PLAN.PLAN_MANAGED_START),
+            PLAN.PLAN_MANAGED_PROVENANCE_MARKER * 2 + "\n" + self.issue["body"],
+            "inline " + PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n" + self.issue["body"],
+        )
+        for body in malformed:
+            with self.subTest(body=body):
+                self.issue["body"] = body
+                self.assert_prewrite_failure(("--body", "New target"))
+                code, result = self.run_show()
+                self.assertNotEqual(code, 0)
+                self.assertFalse(result["ok"])
+                code, result = self.run_show(full=True)
+                self.assertEqual(code, 0)
+                self.assertEqual(result["issue"]["body"], body)
+                self.assertEqual(result["issue"]["provenance"]["ownership"], "unknown")
+                self.assertFalse(result["issue"]["provenance"]["section_updates_allowed"])
 
     def assert_prewrite_failure(self, args: tuple[str, ...], step: str | None = None, **overrides: Any) -> None:
         code, result, edit, errors = self.run_update(*args, **overrides)

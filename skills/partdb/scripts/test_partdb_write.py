@@ -11,7 +11,9 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import shutil
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -87,7 +89,11 @@ def write_json(path: Path, value: object) -> None:
 
 
 def approval(plan: dict[str, object]) -> dict[str, object]:
-    return {"kind": partdb_write.APPROVAL_KIND, "plan_digest": plan["digest"]}
+    return {
+        "kind": partdb_write.APPROVAL_KIND,
+        "plan_digest": plan["digest"],
+        "receipt_authority": partdb_write.receipt_authority(partdb_write.receipt_root(), create=True),
+    }
 
 
 def approved_plan_files(tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
@@ -220,7 +226,7 @@ def test_apply_writes_then_read_back_verifies(monkeypatch: pytest.MonkeyPatch, t
 
 def test_apply_refuses_reused_approval(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     plan_path, approval_path, plan = approved_plan_files(tmp_path)
-    partdb_write.receipt_path(plan_path, plan["digest"]).parent.mkdir()
+    partdb_write.receipt_path(plan_path, plan["digest"]).parent.mkdir(parents=True, exist_ok=True)
     partdb_write.receipt_path(plan_path, plan["digest"]).write_text(json.dumps(partdb_write.receipt(plan["digest"], "verified")))
     monkeypatch.setitem(vars(partdb_write.partdb_read), "context", lambda: pytest.fail("context must not be accessed"))
 
@@ -264,6 +270,153 @@ def test_schema_probe_requires_amount_merge_patch_schema(monkeypatch: pytest.Mon
 
     with pytest.raises(partdb_write.WriteError, match="does not support"):
         partdb_write.verify_lot_patch_schema("https://private.invalid", "read-token")
+
+
+@pytest.fixture(autouse=True)
+def isolated_user_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "user-home")
+
+
+@pytest.mark.parametrize("authority_failure", ["legacy", "missing", "different"])
+def test_apply_refuses_unbound_or_unavailable_receipt_authority_before_context(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, authority_failure: str,
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    approval_path = tmp_path / "approval.json"
+    artifact = artifact_plan()
+    authorization = approval(artifact)
+    write_json(plan_path, artifact)
+    if authority_failure == "legacy":
+        del authorization["receipt_authority"]
+    elif authority_failure == "missing":
+        (partdb_write.receipt_root() / partdb_write.AUTHORITY_FILE_NAME).unlink()
+    else:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "other-user-home")
+        partdb_write.receipt_authority(partdb_write.receipt_root(), create=True)
+    write_json(approval_path, authorization)
+    monkeypatch.setitem(vars(partdb_write.partdb_read), "context", lambda: pytest.fail("context must not be accessed"))
+
+    with pytest.raises(partdb_write.WriteError, match="receipt authority"):
+        partdb_write.apply(apply_args(plan_path, approval_path))
+    assert not partdb_write.receipt_path(plan_path, artifact["digest"]).exists()
+
+
+@pytest.mark.parametrize("legacy_kind", ["partdb-write-plan.v1", "partdb-write-plan.v2"])
+def test_consumed_legacy_plan_cannot_receive_new_approval(tmp_path: Path, legacy_kind: str) -> None:
+    artifact = artifact_plan()
+    artifact["kind"] = legacy_kind
+    if legacy_kind.endswith(".v2"):
+        artifact["instance_id"] = "0" * 64
+    legacy_digest = partdb_write.digest({key: value for key, value in artifact.items() if key != "digest"})
+    artifact["digest"] = legacy_digest
+    plan_path = tmp_path / "legacy-plan.json"
+    approval_path = tmp_path / "approval.json"
+    write_json(plan_path, artifact)
+    legacy_receipt = tmp_path / ".partdb-write-receipts" / f"{legacy_digest}.json"
+    legacy_receipt.parent.mkdir()
+    write_json(legacy_receipt, partdb_write.receipt(artifact["digest"], "verified"))
+
+    with pytest.raises(partdb_write.WriteError, match="create and approve a new plan"):
+        partdb_write.approve(argparse.Namespace(plan=str(plan_path), approve=artifact["digest"], output=str(approval_path)))
+    assert not approval_path.exists()
+    assert not partdb_write.receipt_root().exists()
+
+
+def test_concurrent_authority_initialization_publishes_complete_identity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    results: list[str] = []
+    errors: list[Exception] = []
+    original_nonce = partdb_write.secrets.token_hex
+
+    def delayed_nonce(size: int) -> str:
+        if threading.current_thread() is first:
+            started.set()
+            if not release.wait(5):
+                raise RuntimeError("fixture synchronization timed out")
+        return original_nonce(size)
+
+    def initialize() -> None:
+        try:
+            results.append(partdb_write.receipt_authority(tmp_path / "ledger", create=True))
+        except Exception as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=initialize)
+    monkeypatch.setitem(vars(partdb_write.secrets), "token_hex", delayed_nonce)
+    first.start()
+    try:
+        assert started.wait(5)
+        second = partdb_write.receipt_authority(tmp_path / "ledger", create=True)
+    finally:
+        release.set()
+        first.join(5)
+    assert not first.is_alive()
+    assert errors == []
+    assert results == [second]
+
+
+@pytest.mark.parametrize("relocation", ["copy", "move"])
+@pytest.mark.parametrize("uncertain_write", [False, True])
+def test_relocated_approval_cannot_replay_after_stock_returns_to_prior_amount(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, relocation: str, uncertain_write: bool,
+) -> None:
+    amount = 1
+    fail_write = uncertain_write
+    patches: list[tuple[object, ...]] = []
+    monkeypatch.setitem(vars(partdb_write.partdb_read), "context", lambda: (tmp_path, {}))
+    monkeypatch.setitem(vars(partdb_write.partdb_read), "environment", lambda *_args: ("https://private.invalid", "read-fixture"))
+    monkeypatch.setitem(vars(partdb_write), "verify_lot_patch_schema", lambda *_args: None)
+    monkeypatch.setitem(vars(partdb_write), "read_lot", lambda *_args: {"amount": amount})
+    monkeypatch.setitem(vars(partdb_write), "write_environment", lambda *_args: ("https://private.invalid", "write-fixture"))
+
+    def patch(*args: object) -> None:
+        nonlocal amount
+        patches.append(args)
+        amount = 4
+        if fail_write:
+            raise partdb_write.WriteError("uncertain fixture write")
+
+    monkeypatch.setitem(vars(partdb_write), "patch_lot", patch)
+
+    def new_approved_plan(directory: Path) -> tuple[Path, Path, dict[str, object]]:
+        directory.mkdir()
+        intent = directory / "intent.json"
+        draft_plan_path = directory / "plan.json"
+        draft_approval_path = directory / "approval.json"
+        write_json(intent, {"op": "part-lot-amount-set", "lot_id": 7, "amount": 4})
+        partdb_write.plan(argparse.Namespace(intent=str(intent), output=str(draft_plan_path)))
+        draft_artifact = json.loads(draft_plan_path.read_text())
+        partdb_write.approve(argparse.Namespace(plan=str(draft_plan_path), approve=draft_artifact["digest"], output=str(draft_approval_path)))
+        return draft_plan_path, draft_approval_path, draft_artifact
+
+    plan_path, approval_path, artifact = new_approved_plan(tmp_path / "original")
+    if uncertain_write:
+        with pytest.raises(partdb_write.WriteError, match="uncertain fixture write"):
+            partdb_write.apply(apply_args(plan_path, approval_path))
+    else:
+        partdb_write.apply(apply_args(plan_path, approval_path))
+    amount = 1
+    relocated = tmp_path / "relocated"
+    relocated.mkdir()
+    for source in (plan_path, approval_path):
+        if relocation == "copy":
+            shutil.copyfile(source, relocated / source.name)
+        else:
+            source.rename(relocated / source.name)
+    with pytest.raises(partdb_write.WriteError, match="already used"):
+        partdb_write.apply(apply_args(relocated / "plan.json", relocated / "approval.json"))
+    assert len(patches) == 1
+    assert json.loads(partdb_write.receipt_path(plan_path, artifact["digest"]).read_text())["outcome"] == (
+        "needs-reconciliation" if uncertain_write else "verified"
+    )
+    fail_write = False
+    fresh_plan, fresh_approval, _artifact = new_approved_plan(tmp_path / "fresh")
+    partdb_write.apply(apply_args(fresh_plan, fresh_approval))
+    assert len(patches) == 2
+
 
 
 if __name__ == "__main__":
