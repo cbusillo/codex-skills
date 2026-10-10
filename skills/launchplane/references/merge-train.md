@@ -122,6 +122,13 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   batch candidate record id, the landing-plan record id, workflow run URLs, and
   the final root merge commit. Include child disposition evidence when the root
   lands.
+  The driver's terminal `prs` rows distinguish `landed`, `closed`, `open` and
+  `unknown`. A closed child is `superseded` only when the projected controller
+  disposition confirms it was closed after its root landed and its expected
+  head matches GitHub; `carried_by` retains that collapse, root and head evidence.
+  Only a verified GitHub merge supplies a child's `merge_commit_sha`; a carried
+  child's value stays empty. Failed reads keep prior verified terminal results,
+  while unavailable nonterminal members are `unknown`.
 - **Batch Evidence**: For flat batch runs, report the dry-run/admission reason,
   candidate record id and candidate SHA, required-check status on the candidate
   commit, landing-plan record id, each landed PR number and merge commit, managed
