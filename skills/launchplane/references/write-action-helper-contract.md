@@ -236,9 +236,15 @@ local extensions until the vendored artifact is refreshed.
   status and digest to distinguish a replay from a new deploy attempt. A failed
   testing deploy also keeps `last_failed_error_code` and `last_failed_error_summary`.
   The service redacts that summary, and the helper's summary rules then apply
-  to it the same way they do to `last_error`. Any other plan field,
-  such as rejected-build error text or PR feedback, is dropped and counted under
-  `requests[].last_plan.<unlisted field>`; the same drop and omit rules apply.
+  to it the same way they do to `last_error`. A testing plan also keeps
+  `current_commit`, its build-selection counts and flags, and `rejected_builds`:
+  each newer build that failed verification and was skipped, by `commit` only.
+  Launchplane records the reason only as free text, which is dropped and counted
+  under `requests[].last_plan.rejected_builds[].error` (launchplane#3322 adds a
+  fixed code and run id). `destroy_retry_key` and `preview_recovery_plan` are
+  withheld and counted under their own names. Any other plan field, such as PR
+  feedback, is dropped and counted under `requests[].last_plan.<unlisted field>`;
+  the same drop and omit rules apply.
 - `product-secret-bindings-read --product` calls
   `GET /v1/products/{product}/secret-bindings` with no query. It returns up to
   200 of the product's runtime secret bindings, each with `binding_key`,

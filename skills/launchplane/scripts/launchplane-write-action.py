@@ -2767,7 +2767,7 @@ def _project_protected_artifacts(value: object) -> dict[str, object]:
         "entries": projected_entries,
         "entry_count": len(entries),
         "entries_truncated": len(entries) > PROTECTED_ARTIFACTS_MAX_ENTRIES,
-        "warnings": [_protected_artifact_warning(warning) for warning in warnings[:PROTECTED_ARTIFACTS_MAX_WARNINGS]],
+        "warnings": [_protected_artifact_warning(item) for item in warnings[:PROTECTED_ARTIFACTS_MAX_WARNINGS]],
         "warning_count": len(warnings),
         "warnings_truncated": len(warnings) > PROTECTED_ARTIFACTS_MAX_WARNINGS,
     }
@@ -2800,6 +2800,8 @@ def _reconcile_plan_validators() -> dict[str, Any]:
             "deploy_status",
             "post_deploy_status",
             "last_failed_error_code",
+            "preview_result_error_code",
+            "current_build_evidence",
         ),
         _public_dotted_code,
     )
@@ -2824,6 +2826,9 @@ def _reconcile_plan_validators() -> dict[str, Any]:
                 "deployment_record_id",
                 "last_failed_operation_id",
                 "hold_recorded_by",
+                "current_commit",
+                "preview_build_run",
+                "feedback_recovery_delivery_id",
             ),
             public_identifier,
         )
@@ -2834,6 +2839,9 @@ def _reconcile_plan_validators() -> dict[str, Any]:
         # (launchplane#2717); the helper's own summary redaction still applies.
         last_failed_error_summary=lambda value: public_summary_string(value, max_length=1500),
         hold_reason=lambda value: public_operator_text(value, max_length=300),
+        # Launchplane's fixed sentences for why it stopped retrying.
+        destroy_retry_stop_reason=lambda value: public_summary_string(value, max_length=400),
+        feedback_recovery_stop_reason=lambda value: public_summary_string(value, max_length=400),
         hold_recorded_at=lambda value: public_summary_string(value, max_length=64),
         preview_url=_public_origin_url,
     )
@@ -2841,6 +2849,29 @@ def _reconcile_plan_validators() -> dict[str, Any]:
 
 
 RECONCILE_PLAN_VALIDATORS = _reconcile_plan_validators()
+RECONCILE_PLAN_FLAGS = frozenset({
+    "held",
+    "owner_review_requested",
+    "current_commit_seen",
+    "preview_mutation_attempted",
+    "preview_execution_refused",
+    "preview_transport_retryable",
+    "feedback_recovery_closed_observed",
+})
+# Counts: testing build selection (how much run and commit history was read) and retries.
+RECONCILE_PLAN_COUNTS = frozenset({
+    "pull_request_number",
+    "build_runs_seen",
+    "build_runs_total",
+    "commit_history_seen",
+    "built_commits_seen",
+    "ordered_built_commits",
+    "destroy_failed_attempts",
+    "feedback_recovery_failed_attempts",
+})
+# Written by the reconciler but deliberately left out, and counted under their own
+# name: a retry fingerprint is no evidence, and a recovery plan carries provider topology.
+RECONCILE_PLAN_WITHHELD = frozenset({"destroy_retry_key", "preview_recovery_plan"})
 # Plan lists of setting key names (never values), by the name they are output under.
 RECONCILE_PLAN_KEY_NAME_LISTS = {
     "omitted_integration_credential_keys": "omitted_integration_keys",
@@ -2852,6 +2883,32 @@ def _reconcile_deploy_key_digest(value: object) -> str:
     if not isinstance(value, str) or len(value) > 1024:
         raise LaunchplaneSafetyError("invalid_response")
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _project_rejected_builds(entries: list[object], drops: _FieldDrops) -> list[dict[str, object]]:
+    """The newer builds testing selection skipped, newest first, by commit. Launchplane
+    records each reason only as free text, which can carry API paths and upstream errors,
+    so it is dropped and counted (launchplane#3322 adds a fixed code and run id)."""
+    projected: list[dict[str, object]] = []
+    for entry in entries[:RECONCILE_MAX_PLAN_LIST_ITEMS]:
+        if not isinstance(entry, dict):
+            drops.drop("requests[].last_plan.rejected_builds[]")
+            continue
+        commit = drops.keep(
+            "requests[].last_plan.rejected_builds[].commit", public_identifier, entry.get("commit")
+        )
+        for key in entry:
+            if key != "commit":
+                drops.drop(
+                    "requests[].last_plan.rejected_builds[].error"
+                    if key == "error"
+                    else "requests[].last_plan.rejected_builds[].<unlisted field>"
+                )
+        if commit:
+            projected.append({"commit": commit})
+    if len(entries) > RECONCILE_MAX_PLAN_LIST_ITEMS:
+        drops.drop("requests[].last_plan.rejected_builds[]")
+    return projected
 
 
 def _project_reconcile_plan(plan_value: object, drops: _FieldDrops) -> dict[str, object]:
@@ -2867,10 +2924,14 @@ def _project_reconcile_plan(plan_value: object, drops: _FieldDrops) -> dict[str,
             projected["deploy_key_sha256"] = drops.keep(
                 "requests[].last_plan.deploy_key_sha256", _reconcile_deploy_key_digest, value
             )
-        elif key in {"held", "owner_review_requested"}:
+        elif key in RECONCILE_PLAN_FLAGS:
             projected[key] = value if isinstance(value, bool) else None
-        elif key == "pull_request_number":
+        elif key in RECONCILE_PLAN_COUNTS:
             projected[key] = value if type(value) is int else None
+        elif key == "rejected_builds" and isinstance(value, list):
+            projected[key] = _project_rejected_builds(value, drops)
+        elif key in RECONCILE_PLAN_WITHHELD:
+            drops.drop(f"requests[].last_plan.{key}")
         elif key in RECONCILE_PLAN_KEY_NAME_LISTS and isinstance(value, list):
             # Key names only; the output name avoids the sensitive-key denylist.
             output_key = RECONCILE_PLAN_KEY_NAME_LISTS[key]

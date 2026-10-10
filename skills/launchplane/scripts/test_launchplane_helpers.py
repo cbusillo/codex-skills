@@ -3810,10 +3810,13 @@ def test_reconcile_requests_read_keeps_the_decision_and_drops_the_rest() -> None
         "preview_plan_id",
         "preview_url",
         "omitted_integration_keys",
+        "rejected_builds",
     }
+    assert plan["rejected_builds"] == []
     assert result["omitted_request_count"] == 1
     assert result["dropped_field_paths"] == [
         "requests[].last_plan.<unlisted field>",
+        "requests[].last_plan.rejected_builds[].<unlisted field>",
         "requests[].target_key",
     ]
     rendered = json.dumps(payload)
@@ -3910,12 +3913,85 @@ def test_reconcile_requests_read_keeps_testing_operation_ids() -> None:
         "missing_keys",
     ):
         assert kept[name] == plan[name], name
-    assert "rejected_builds" not in kept
+    assert kept["rejected_builds"] == [{"commit": "abc123"}]
     assert "pr_feedback" not in kept
-    assert payload["result"]["dropped_field_count"] == 2
+    assert payload["result"]["dropped_field_paths"] == [
+        "requests[].last_plan.<unlisted field>",
+        "requests[].last_plan.rejected_builds[].error",
+    ]
     rendered = json.dumps(payload)
     assert "Private build failure text" not in rendered
     assert "Private feedback text" not in rendered
+
+
+def test_reconcile_requests_read_shows_why_testing_skipped_a_newer_build() -> None:
+    old_commit = "1" * 40
+    new_commit = "2" * 40
+    plan = {
+        "target": "testing",
+        "action": "none",
+        "reason": "already_deployed",
+        "held": False,
+        "desired_commit": old_commit,
+        "current_commit": old_commit,
+        "build_runs_seen": 30,
+        "build_runs_total": 412,
+        "commit_history_seen": 2,
+        "current_commit_seen": True,
+        "built_commits_seen": 2,
+        "ordered_built_commits": 2,
+        "current_build_evidence": "recorded_runtime_identity",
+        "rejected_builds": [
+            {
+                "commit": new_commit,
+                "error": "GitHub read failed for /repos/example/private-path: HTTP Error 404",
+            },
+            {"commit": "not a commit; rm -rf", "error": "Private text"},
+            "Private entry text",
+        ],
+        "preview_recovery_plan": {"provider_target": "private-host"},
+    }
+    response = {
+        "status": "ok",
+        "product": "example-product",
+        "requests": [{"target_key": "example-product:testing", "last_plan": plan}],
+    }
+    argv = ["reconcile-requests-read", "--product", "example-product"]
+    status, payload, _calls = _run_product_read(argv, response)
+
+    assert status == 0
+    kept = payload["result"]["requests"][0]["last_plan"]
+    assert kept["rejected_builds"] == [{"commit": new_commit}]
+    for name in (
+        "current_commit",
+        "build_runs_seen",
+        "build_runs_total",
+        "commit_history_seen",
+        "current_commit_seen",
+        "built_commits_seen",
+        "ordered_built_commits",
+        "current_build_evidence",
+    ):
+        assert kept[name] == plan[name], name
+    assert "preview_recovery_plan" not in kept
+    assert payload["result"]["dropped_field_paths"] == [
+        "requests[].last_plan.preview_recovery_plan",
+        "requests[].last_plan.rejected_builds[]",
+        "requests[].last_plan.rejected_builds[].commit",
+        "requests[].last_plan.rejected_builds[].error",
+    ]
+    rendered = json.dumps(payload)
+    assert "private-path" not in rendered
+    assert "Private" not in rendered
+    assert "private-host" not in rendered
+
+    plan["build_runs_seen"] = "30"
+    plan["current_commit_seen"] = "yes"
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    kept = payload["result"]["requests"][0]["last_plan"]
+    assert kept["build_runs_seen"] is None
+    assert kept["current_commit_seen"] is None
 
 
 def test_reconcile_requests_read_keeps_generic_web_testing_outcome() -> None:
