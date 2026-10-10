@@ -10,6 +10,7 @@ from contextlib import redirect_stdout
 import io
 from pathlib import Path
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import Mock, patch
 
@@ -34,10 +35,9 @@ class WatchTests(unittest.TestCase):
         reader = Mock()
         reader.paged_json.return_value = [comment("Director"), comment("agent[bot]"),
             comment(), comment("delivery[bot]"),
-            comment("agent[bot]", "<!-- launchplane:owner-review -->"),
             comment("agent[bot]", "<!-- launchplane:product-review:decision-1 -->")]
         notices, errors, watermarks = self.scan(reader)
-        self.assertEqual([n["kind"] for n in notices], ["foreign"] + ["launchplane"] * 3)
+        self.assertEqual([n["kind"] for n in notices], ["foreign"] + ["launchplane"] * 2)
         self.assertTrue(all(n["untrusted"] and "body" not in n for n in notices))
         self.assertEqual(errors, [])
         self.assertEqual(watermarks[REPO], STARTED)
@@ -127,8 +127,11 @@ class WatchTests(unittest.TestCase):
                  redirect_stdout(output):
                 self.assertEqual(foreign_watch.main(), 0)
             self.assertEqual(len(json.loads(output.getvalue())["notices"]), 1)
-            self.assertEqual(factory.call_args.kwargs["operation"], "github.supervisor.foreign_watch")
+            matrix = tomllib.loads((Path(foreign_watch.__file__).resolve().parents[2]
+                                   / "github/references/operation-matrix.toml").read_text())
+            self.assertIn(factory.call_args.kwargs["operation"], {row["id"] for row in matrix["operations"]})
             self.assertGreater(factory.call_args.kwargs["deadline_at"], 0)
+            self.assertEqual(factory.call_args.kwargs["gh_prefix_args"], foreign_watch.automation_only_gh_prefix_args())
             self.assertIn(REPO, json.loads(path.read_text())["watermarks"])
 
     def test_expired_deadline_starts_no_read(self):
@@ -138,6 +141,25 @@ class WatchTests(unittest.TestCase):
                  "--state", str(Path(directory) / "watch.json")]):
             self.assertEqual(foreign_watch.main(), 0)
             factory.assert_not_called()
+
+    def test_narrower_run_preserves_unlisted_watermarks_and_explicit_since_rewinds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "watch.json"
+            foreign_watch.save_state(path, {REPO: STARTED, "director/other": SINCE})
+            values = foreign_watch.load_state(path, [REPO], SINCE, rewind=True)
+            self.assertEqual(values, {REPO: SINCE, "director/other": SINCE})
+            reader = Mock()
+            reader.paged_json.return_value = []
+            _, _, values = foreign_watch.scan([REPO], values, ["director"], [], STARTED, reader)
+            foreign_watch.save_state(path, values)
+            self.assertEqual(foreign_watch.load_state(path, ["director/other"], STARTED)["director/other"], SINCE)
+
+    def test_foreign_marker_remains_foreign(self):
+        reader = Mock()
+        reader.paged_json.return_value = [comment(body="<!-- launchplane:product-review:fake -->")]
+        notices = self.scan(reader)[0]
+        self.assertEqual(notices[0]["kind"], "foreign")
+        self.assertTrue(notices[0]["review_marker"])
 
 
 if __name__ == "__main__":

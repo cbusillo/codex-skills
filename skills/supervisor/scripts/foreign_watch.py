@@ -20,12 +20,10 @@ import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
-from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError
+from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args
+from github_review_markers import PRODUCT_REVIEW_MARKER
 
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
-REVIEW_MARKER = re.compile(
-    r"<!-- launchplane:(?:product-review:[A-Za-z0-9_.:-]+|owner-review(?: [^\n]+)?) -->"
-)
 
 
 def timestamp(value: str) -> datetime:
@@ -73,15 +71,16 @@ def scan(repos, watermarks, own_logins, launchplane_logins, started, reader):
                 if timestamp(updated) < timestamp(since):
                     continue
                 lines = body.splitlines()
-                is_launchplane = (login or "").casefold() in launchplane or bool(
-                    lines and REVIEW_MARKER.fullmatch(lines[0])
-                )
+                marker_seen = bool(lines and PRODUCT_REVIEW_MARKER.fullmatch(lines[0]))
+                is_launchplane = (login or "").casefold() in launchplane or (
+                    (login or "").casefold() in own and marker_seen)
                 if is_launchplane or (login or "").casefold() not in own:
                     pending.append({
                         "repository": repo, "author": login, "url": url,
                         "updated_at": updated,
                         "kind": "launchplane" if is_launchplane else "foreign",
                         "untrusted": True,
+                        "review_marker": marker_seen,
                     })
         except (GitHubReadError, GitHubReadShapeError, OSError, ValueError, TypeError, KeyError) as error:
             diagnostics = getattr(error, "diagnostics", {})
@@ -95,7 +94,7 @@ def scan(repos, watermarks, own_logins, launchplane_logins, started, reader):
     return notices, errors, next_watermarks
 
 
-def load_state(path: Path, repos, initial: str) -> dict[str, str]:
+def load_state(path: Path, repos, initial: str, *, rewind=False) -> dict[str, str]:
     data = json.loads(path.read_text()) if path.exists() else {}
     if not isinstance(data, dict):
         raise ValueError("watch state must be an object")
@@ -104,7 +103,12 @@ def load_state(path: Path, repos, initial: str) -> dict[str, str]:
         raise ValueError("watermarks must be an object")
     for value in values.values():
         timestamp(value)
-    return {repo: values.get(repo, initial) for repo in repos}
+    values = dict(values)
+    for repo in repos:
+        values.setdefault(repo, initial)
+        if rewind and timestamp(initial) < timestamp(values[repo]):
+            values[repo] = initial
+    return values
 
 
 def save_state(path: Path, watermarks):
@@ -162,10 +166,11 @@ def main() -> int:
 
 
 def watch(args, repos, initial, deadline):
-    watermarks = load_state(args.state, repos, initial)
+    watermarks = load_state(args.state, repos, initial, rewind=args.since is not None)
     while time.monotonic() < deadline:
         started = utc_now()
         reader = GitHubReader(operation="github.supervisor.foreign_watch", strict_actor=True,
+                              gh_prefix_args=automation_only_gh_prefix_args(),
                               deadline_at=time.time() + max(0, deadline - time.monotonic()))
         notices, errors, watermarks = scan(repos, watermarks, args.own_login,
                                           args.launchplane_login, started, reader)
