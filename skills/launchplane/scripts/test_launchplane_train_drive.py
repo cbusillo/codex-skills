@@ -58,6 +58,7 @@ class FakeTrain:
         self.failing: list[dict[str, str]] = []
         self.companions: list[int] = []
         self.clock = 0.0
+        self.sleeps: list[float] = []
         self.reconciled: list[str] = []
         self.reconcile_receipt: dict[str, Any] | None = None
 
@@ -73,6 +74,7 @@ class FakeTrain:
             "merged": merged,
             "merge_commit_sha": f"sha-{number}" if merged else None,
             "head_repository": REPO,
+            "head": {"sha": f"head-{number}"},
         }
 
     def update_branch(self, _repository: str, _number: int) -> bool:
@@ -84,6 +86,7 @@ class FakeTrain:
 
     def sleep(self, seconds: float) -> None:
         self.clock += seconds
+        self.sleeps.append(seconds)
 
     def reconcile(self, _repository: str, landing_sha: str) -> dict[str, Any] | None:
         self.reconciled.append(landing_sha)
@@ -621,8 +624,86 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
     def test_a_closed_pull_request_needs_the_owner(self) -> None:
         train = FakeTrain([_response("idle")])
         train.closed.add(7)
-        outcome, _ = _drive(train)
+        outcome, events = _drive(train)
         self.assertEqual(outcome, "needs_owner")
+        self.assertEqual(events[-1][1]["prs"], [{"number": 7, "outcome": "closed", "merge_commit_sha": ""}])
+
+    def test_cli_reports_carried_children_from_the_projected_controller_response(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+        spec = importlib.util.spec_from_file_location("disposition_write_action", SCRIPT_DIR / "launchplane-write-action.py")
+        assert spec is not None and spec.loader is not None
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        raw = {
+            "status": "accepted", "records": {}, "trace_id": "disposition-trace",
+            "result": {
+                "controller_action": "batch_landed",
+                "stack_collapse_plan": {
+                    "collapse_id": "collapse-example", "root_pull_request_number": 7,
+                    "child_dispositions": [{"pull_request_number": 8, "expected_head_sha": "head-8",
+                                            "status": "closed", "detail": "child PR closed after root landed"}],
+                },
+            },
+        }
+        projected = helper.summarize_success(operation="merge-train-controller-run-once",
+                                             request={"repository": REPO}, provider_payload=raw)
+        train = FakeTrain([projected], merge_after={7: 1})
+        train.closed.add(8)
+        output = StringIO()
+        with patch.object(train_drive, "live_io", return_value=train.io()), redirect_stdout(output):
+            code = train_drive.main(["--repo", REPO, "--pr", "7"])
+        receipt = json.loads(output.getvalue().splitlines()[-1])["payload"]
+        self.assertEqual((code, receipt["outcome"]), (0, "landed"))
+        self.assertEqual(receipt["prs"], [
+            {"number": 7, "outcome": "landed", "merge_commit_sha": "sha-7"},
+            {"number": 8, "outcome": "superseded", "merge_commit_sha": "",
+             "carried_by": {"collapse_id": "collapse-example", "root_pull_request_number": 7,
+                            "expected_head_sha": "head-8"}},
+        ])
+
+    def test_closed_child_without_matching_carried_evidence_is_only_closed(self) -> None:
+        for expected_head in ("", "older-head"):
+            with self.subTest(expected_head=expected_head):
+                response = _response("land_batch", **_queue((7, []), (8, [])), stack_collapse_plan={
+                    "collapse_id": "collapse-example", "root_pull_request_number": 7,
+                    "child_dispositions": ([{"pull_request_number": 8, "expected_head_sha": expected_head, "status": "closed"}]
+                                           if expected_head else []),
+                })
+                train = FakeTrain([response], merge_after={7: 1})
+                train.closed.add(8)
+                outcome, events = _drive(train)
+                self.assertEqual(outcome, "landed")
+                self.assertEqual(events[-1][1]["prs"][1], {"number": 8, "outcome": "closed", "merge_commit_sha": ""})
+
+    def test_unavailable_companion_read_is_unknown_after_an_open_observation(self) -> None:
+        train = FakeTrain([_response("wait_for_checks", **_queue((7, []), (8, []))),
+                           _response("land_batch")], merge_after={7: 2})
+        read = train.pull_request
+        train.pull_request = lambda repo, number: None if number == 8 and train.calls >= 2 else read(repo, number)
+        outcome, events = _drive(train)
+        self.assertEqual(outcome, "landed")
+        self.assertEqual(events[-1][1]["prs"][1], {"number": 8, "outcome": "unknown", "merge_commit_sha": ""})
+
+    def test_final_read_failure_preserves_a_verified_closed_companion(self) -> None:
+        train = FakeTrain([_response("wait_for_checks", **_queue((7, []), (8, []))),
+                           _response("land_batch")], merge_after={7: 2})
+        train.closed.add(8)
+        read = train.pull_request
+        train.pull_request = lambda repo, number: None if number == 8 and train.calls >= 2 else read(repo, number)
+        self.assertEqual(_drive(train)[1][-1][1]["prs"][1], {"number": 8, "outcome": "closed", "merge_commit_sha": ""})
+
+    def test_stack_finish_discovers_closed_children_and_preserves_open_members(self) -> None:
+        train = FakeTrain([
+            _response("execute_stack_collapse", **_queue((7, []), (9, []))), _response("land_batch"),
+            _response("batch_landed", stack_collapse_plan={
+                "collapse_id": "collapse-example", "root_pull_request_number": 7,
+                "child_dispositions": [{"pull_request_number": 8, "expected_head_sha": "head-8", "status": "closed"}],
+            }),
+        ], merge_after={7: 2})
+        train.closed.add(8)
+        self.assertEqual({row["number"]: row["outcome"] for row in _drive(train)[1][-1][1]["prs"]},
+                         {7: "landed", 8: "superseded", 9: "open"})
 
     def test_a_helper_that_keeps_failing_ends_in_an_error(self) -> None:
         outcome, events = _drive(FakeTrain([None]))
@@ -635,6 +716,29 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         self.assertEqual(outcome, "landed")
         held = events[0][1]
         self.assertEqual((held["controller_action"], held["error_code"], held["http_status"]), ("controller_lease_held", train_drive.LEASE_HELD_CODE, 409))
+
+    def test_an_unchanged_wait_backs_off_to_the_longest_pause(self) -> None:
+        # Each controller call re-reads the whole train from GitHub, so a long CI wait must not call it every few minutes.
+        train = FakeTrain([_response("wait_for_checks")])
+        _drive(train, deadline=3_600, max_wait_seconds=900)
+        self.assertLessEqual(train.calls, 8)
+        # Pauses carry up to three seconds of jitter; the last sleep is cut short by the deadline.
+        self.assertEqual([int(pause) // 10 * 10 for pause in train.sleeps[:-1]][:6], [60, 120, 240, 480, 900, 900])
+        self.assertLess(max(train.sleeps), 904)
+
+    def test_a_held_lease_backs_off_instead_of_polling_every_minute(self) -> None:
+        train = FakeTrain([_refusal(train_drive.LEASE_HELD_CODE)])
+        _drive(train, deadline=3_600, max_wait_seconds=900)
+        self.assertLessEqual(train.calls, 8)
+        self.assertGreater(train.sleeps[3], train.sleeps[0] * 4)
+
+    def test_progress_resets_the_pause_to_the_poll_interval(self) -> None:
+        train = FakeTrain([_response("wait_for_checks")] * 4 + [_response("plan_landing"), _response("land_batch")],
+                          merge_after={7: 6})
+        outcome, _ = _drive(train)
+        self.assertEqual(outcome, "landed")
+        self.assertGreater(train.sleeps[3], 400)
+        self.assertLess(train.sleeps[4], 64)
 
     def test_a_lease_still_held_at_the_deadline_needs_the_owner(self) -> None:
         outcome, events = _drive(FakeTrain([_refusal(train_drive.LEASE_HELD_CODE)]), deadline=1_000)

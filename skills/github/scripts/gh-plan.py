@@ -2122,6 +2122,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
     config = load_config(issue_repo, checkout=planning_checkout) if planning_checkout else load_config(issue_repo)
 
     def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False) -> bool:
+        waiting_status = github_plan_claim.ownership_text(waiting_status, strip_quotes=False)
         status_state = next_plan_status(waiting_issue, load_config(target_repo) if target else config)
         parked_status = re.sub(r"\*\*(Parked until)(:?)\*\*(:?)", r"\1\2\3", waiting_status, flags=re.I)
         # Parse full fields before normalizing explicit absence, so a wrapped
@@ -2143,6 +2144,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         return has_wait
 
     def hold_fields(status_to_check: str) -> str:
+        status_to_check = github_plan_claim.ownership_text(status_to_check, strip_quotes=False)
         lines = []
         in_hold = False
         for line in status_to_check.splitlines():
