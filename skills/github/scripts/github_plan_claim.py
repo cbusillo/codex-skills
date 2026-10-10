@@ -26,7 +26,7 @@ def no_wait_reason(reason: str, *, field: str) -> bool:
         return True
     # Explicit no-wait prefixes may carry sweep explanations. Check the whole
     # explanation for hold words before accepting it, including wrapped clauses.
-    if re.search(r"\b(?:wait(?:ing)?|await(?:ing)?|pending|parked|blocked|until|unless|except|but|after|before|must|outstanding|prerequisite|requir\w*|need\w*|approv\w*|accept\w*)\b", reason):
+    if re.search(r"\b(?:wait(?:ing)?|await(?:ing)?|pending|parked|blocked|until|unless|except|but|after|before|must|outstanding|prerequisite|requir\w*|need\w*|approv\w*|accept\w*|review|decision|depend\w*|clarification|sign[\s-]?off)\b", reason):
         return False
     if field == "Blocked by":
         return bool(re.fullmatch(
