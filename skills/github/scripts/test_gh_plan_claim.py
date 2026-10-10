@@ -2352,6 +2352,7 @@ class ClaimTests(unittest.TestCase):
             "Blocked by: None.\nWaiting for: None; the next actor is an agent.",
             "Blocked by: None.\nWaiting for: None; an agent acts next.",
             "Blocked by: None.\nWaiting for: nothing; this is agent work.",
+            "**Blocked by:** None.\n**Waiting for:** None.",
         )
         for status in statuses:
             with self.subTest(status=status):
@@ -2361,6 +2362,16 @@ class ClaimTests(unittest.TestCase):
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
                 self.assertIn("post", self.events)
                 self.assertIn(status, self.emitted.call_args.args[0]["previous_current_status"])
+
+    def test_formatted_blocked_by_refuses_before_writes(self):
+        for field in ("Blocked by:", "**Blocked by:**", "**Blocked by**:", "_Blocked by:_"):
+            with self.subTest(field=field):
+                self.setUp()
+                self.issue["body"] += field + " Chris approval\nWaiting for: None.\n"
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_wait_unresolved")
+                self.assert_no_writes()
 
     def test_global_invalid_wait_selection_still_requires_actual_claim_resolution(self):
         import test_gh_plan_next as selection

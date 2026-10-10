@@ -75,6 +75,9 @@ class FakeWorkflowClient:
     def resolve_actors(self) -> tuple[str, str]:
         return self.automation_login, self.reviewer_login
 
+    def resolve_automation_actor(self) -> str:
+        return self.automation_login
+
     def dispatch(
         self,
         *,
@@ -634,6 +637,38 @@ class WorkflowBabysitterTests(unittest.TestCase):
 
         self.assertEqual(result["outcome"], "self_review_identity_conflict")
         self.assertEqual(client.approvals, [])
+
+    def test_completed_watch_does_not_require_a_human_session(self) -> None:
+        for authorized in (frozenset(), frozenset({"protected-admin"})):
+            with self.subTest(authorized=authorized):
+                client = FakeWorkflowClient(runs=[run_snapshot("completed", conclusion="success")])
+                with mock.patch.object(client, "resolve_actors", side_effect=AssertionError("no human session")) as human:
+                    result = workflow_babysit.WorkflowBabysitter(client).watch(
+                        run_id=123, run_url=None, authorized_environments=authorized,
+                        approval_comment="unused", timeout_seconds=30, poll_interval_seconds=5,
+                    )
+                self.assertEqual(result["outcome"], "completed_success")
+                self.assertEqual(result["actors"]["review"], "")
+                human.assert_not_called()
+
+    def test_watch_resolves_reviewer_only_when_protected_review_is_reached(self) -> None:
+        client = FakeWorkflowClient(
+            runs=[run_snapshot("in_progress"), run_snapshot("waiting"), run_snapshot("completed", conclusion="success")],
+            pending=[(pending_environment(can_approve=True),)],
+        )
+        clock = ManualClock()
+        resolution_times = []
+        with mock.patch.object(client, "resolve_actors", side_effect=lambda: (
+            resolution_times.append(clock.value) or (client.automation_login, client.reviewer_login)
+        )):
+            result = workflow_babysit.WorkflowBabysitter(client, clock=clock.now, sleep=clock.sleep).watch(
+                run_id=123, run_url=None, authorized_environments=frozenset({"protected-admin"}),
+                approval_comment="Reviewed protected action.", timeout_seconds=30, poll_interval_seconds=5,
+            )
+        self.assertEqual(result["outcome"], "completed_success")
+        self.assertEqual(len(resolution_times), 1)
+        self.assertGreater(resolution_times[0], 0)
+        self.assertEqual(client.approvals, [(123, (77,), "Reviewed protected action.")])
 
 
 class GitHubWorkflowClientTests(unittest.TestCase):
