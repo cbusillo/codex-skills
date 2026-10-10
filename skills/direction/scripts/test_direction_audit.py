@@ -1330,12 +1330,13 @@ def test_weekly_direction_audit_covers_active_repositories_without_a_direction_f
                "issue_dependencies_summary": {"total_blocked_by": 0}}
     gated = issue(160, "Ship the form", body="Merge once both reviewers approve.")
     calls: list[str] = []
+    selection = "all"
 
     def fetch(args: list[str]) -> Any:
         path = args[1]
         calls.append(path)
         if path.startswith("installation/repositories"):
-            return {"repositories": listing}
+            return {"repositories": listing, "repository_selection": selection}
         if path == "repos/o/adopted/contents/DIRECTION.md":
             return {"content": base64.b64encode(DIRECTION.encode()).decode()}
         if "/contents/" in path:
@@ -1362,6 +1363,9 @@ def test_weekly_direction_audit_covers_active_repositories_without_a_direction_f
     assert report["unavailable"] == [{"repo": "o/broken", "source": "issues", "reason": "unavailable"}]
     assert not report["complete"]
     assert not any(path.startswith(("repos/o/quiet/", "repos/o/attic/", "repos/o/direction/issues")) for path in calls)
+    selection = "selected"
+    narrowed = module.active_unadopted_report("o/direction", SINCE, fetch=fetch)
+    assert {"source": "repositories", "reason": "installation_selected_repositories"} in narrowed["unavailable"]
 
     with tempfile.TemporaryDirectory() as tmp:
         marker = Path(tmp) / "marker.json"

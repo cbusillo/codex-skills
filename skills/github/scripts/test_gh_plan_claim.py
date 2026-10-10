@@ -2726,6 +2726,9 @@ class ClaimTests(unittest.TestCase):
             # A Track title outside OWNER/direction, or without a milestone, is not the graph.
             ("owner/product", 9): {"issue": self.TRACK},
         }
+        retired = {("owner/product", 7): {"parent": {"html_url": "https://github.com/owner/direction/issues/2"}},
+                   ("owner/direction", 2): {"issue": {**self.TRACK, "milestone": {"title": "Old", "state": "closed"}}}}
+        self.assertEqual(self.walk(retired)[0], (None, True))
         (track, complete), reads = self.walk(graph)
         self.assertEqual((track, complete), (None, True))
         self.assertEqual(reads, [("owner/product", 7), ("owner/product", 8)])

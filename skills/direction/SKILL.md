@@ -409,7 +409,8 @@ matches for every repository of that account with a push in the window that
 is not archived and has no `DIRECTION.md` on its default branch. Most
 milestone work lives in such repositories. Read each one's stale-wait items
 and gate phrases as the sections above describe; `complete` and `unavailable`
-state the coverage limits. These repositories are not adopted: the audit does
+state the coverage limits, including an App installed only on selected
+repositories. These repositories are not adopted: the audit does
 not add them to the marker, report `direction_missing` for them, or hold its
 window open for them, and you never suggest that one adopt its own file; that
 is the Director's call.

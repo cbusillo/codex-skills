@@ -1499,6 +1499,13 @@ def active_unadopted_report(
     repos, cut = owner_repositories(owner, fetch=fetch)
     if cut:
         unavailable.append({"source": "repositories", "reason": "page_limit"})
+    try:
+        installation = fetch(["api", "installation/repositories?per_page=1", "--method", "GET"])
+        if isinstance(installation, dict) and installation.get("repository_selection") == "selected":
+            # An App installed on chosen repositories cannot see the rest of the account.
+            unavailable.append({"source": "repositories", "reason": "installation_selected_repositories"})
+    except AuditError:
+        pass  # The Director's own login lists every repository it owns.
     for key in sorted(repos):
         meta = repos[key]
         name = str(meta.get("full_name"))

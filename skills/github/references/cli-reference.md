@@ -599,8 +599,8 @@ argument grant no Director decision or permission to lift a repository hold.
 When the overall direction's Order admits the work, name the rule with
 `--admission live-breakage|milestone|repeat-stop|spare-capacity`; the claim
 comment records it as an `Admission:` line. `milestone` walks the issue's
-native parent and `blocks` links up to a `Track:` issue with a milestone in
-`OWNER/direction`, records the Track it reaches, and refuses before writing
+native parent and `blocks` links up to a `Track:` issue with an open milestone
+in `OWNER/direction`, records the Track it reaches, and refuses before writing
 (`claim_admission_unlinked`) when none is reached. Link the issue into that
 graph with `gh-plan.py link`, or pass `--admission-unlinked "<why not yet>"`.
 `repeat-stop` needs both occurrences as `--admission-link URL`; any kind may

@@ -791,8 +791,9 @@ def admission_track(
     """The milestone Track this issue reaches through parents and the issues it blocks.
 
     Returns the Track and whether the walk was complete. A Track is an issue
-    titled `Track:` with a milestone in OWNER/direction, the graph the weekly
-    audit counts as milestone work.
+    titled `Track:` with an open milestone in OWNER/direction, the graph the
+    weekly audit counts as milestone work. Open milestones there are the
+    listed ones; a closed one is history and admits nothing.
     """
     direction = f"{owner}/direction".casefold()
     pending = [start]
@@ -807,7 +808,8 @@ def admission_track(
         seen.add(key)
         issue = read_issue(repo, number)
         milestone = (issue.get("milestone") or {}).get("title")
-        if key[0] == direction and str(issue.get("title") or "").startswith("Track:") and milestone:
+        if (key[0] == direction and str(issue.get("title") or "").startswith("Track:") and milestone
+                and (issue.get("milestone") or {}).get("state", "open") == "open"):
             return {"url": f"https://github.com/{repo}/issues/{number}", "title": issue.get("title"),
                     "milestone": milestone}, True
         for linked in [read_parent(repo, number), *read_blocking(repo, number)]:
