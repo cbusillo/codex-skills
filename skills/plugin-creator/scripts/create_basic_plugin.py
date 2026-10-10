@@ -165,7 +165,8 @@ def prepare_marketplace_json(
             if not force:
                 raise FileExistsError(
                     f"Marketplace entry '{plugin_name}' already exists in {marketplace_path}. "
-                    "Use --force to overwrite that entry."
+                    "Use --force to overwrite that entry and, in scaffold mode, plugin files. "
+                    "Use --register-only --force to update an existing plugin's entry without rewriting its files."
                 )
             plugins[index] = new_entry
             break
