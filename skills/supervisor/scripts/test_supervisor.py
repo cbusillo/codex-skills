@@ -33,7 +33,7 @@ def claude(text, **extra):
     return {
         "type": "assistant",
         "timestamp": "2026-10-03T00:00:00Z",
-        "message": {"content": [{"type": "text", "text": text}], **extra},
+        "message": {"content": [{"type": "text", "text": text}], "stop_reason": "end_turn", **extra},
     }
 
 
@@ -105,6 +105,32 @@ class TranscriptTests(unittest.TestCase):
     def test_tool_use_after_verdict_invalidates_it(self):
         record = claude("Safe to exit: yes")
         record["message"]["content"].append({"type": "tool_use", "name": "Bash"})
+        self.assertFalse(session_record.summarize([record], "claude")["safe_verdict"])
+
+    def test_claude_split_records_require_terminal_stop_reason(self):
+        for reason in ("tool_use", "max_tokens", "stop_sequence", None):
+            with self.subTest(stop_reason=reason), tempfile.TemporaryDirectory() as folder:
+                transcript = Path(folder) / "session.jsonl"
+                ledger = Path(folder) / "ledger.json"
+                entry = {"session_id": "fixture", "harness": "claude",
+                         "transcript": str(transcript), "supervisor_owned": True}
+                ledger.write_text(json.dumps([entry]))
+                records = [{"sessionId": "fixture", **claude("Safe to exit: yes", stop_reason=reason)}]
+                transcript.write_text("\n".join(json.dumps(r) for r in records))
+                summary = session_record.summarize(records, "claude")
+                self.assertFalse(summary["at_turn_end"])
+                self.assertFalse(finished_map.candidates(ledger)[0]["candidate"])
+                records.append(claude("", stop_reason="tool_use"))
+                records[-1]["message"]["content"] = [{"type": "tool_use", "name": "Bash"}]
+                transcript.write_text("\n".join(json.dumps(r) for r in records))
+                self.assertFalse(finished_map.candidates(ledger)[0]["candidate"])
+                records.append(claude("Safe to exit: yes"))
+                transcript.write_text("\n".join(json.dumps(r) for r in records))
+                self.assertTrue(finished_map.candidates(ledger)[0]["candidate"])
+
+    def test_claude_missing_stop_reason_is_not_completion_evidence(self):
+        record = claude("Safe to exit: yes")
+        del record["message"]["stop_reason"]
         self.assertFalse(session_record.summarize([record], "claude")["safe_verdict"])
 
     def test_same_line_closeout_prefaces(self):
@@ -636,6 +662,26 @@ class QuestionTests(unittest.TestCase):
             oq.fetch("example/repo#1")
         with self.assertRaises(ValueError):
             oq.fetch("repo#1")
+
+    def test_complete_cached_discussion_preserves_question_inventory(self):
+        comments = [{"id": 1, "url": "question", "author": "bot",
+                     "body": "Owner question: proceed?"},
+                    {"id": 2, "url": "answer", "author": "owner", "body": "question yes"}]
+        envelope = {"ok": True, "outcome_certainty": "confirmed", "disposition": "complete",
+                    "exit_code": 0, "recommended_next_action": "none", "issue": {"comments": comments}}
+        for certainty in ("confirmed", "not_applicable"):
+            with self.subTest(certainty=certainty), patch.object(oq.subprocess, "run",
+                return_value=SimpleNamespace(stdout=json.dumps({**envelope, "outcome_certainty": certainty,
+                    "recommended_next_action": "inspect_last_failure" if certainty == "not_applicable" else "none"}))):
+                fetched = oq.fetch("example/repo#1")
+                self.assertEqual(fetched, comments)
+                self.assertEqual(oq.questions(fetched, "owner", {"bot"})[0]["status"], "answered")
+        for override in ({"ok": False}, {"outcome_certainty": "unknown"},
+                         {"disposition": "stop"}, {"exit_code": 1},
+                         {"issue": {"comments": {}}}):
+            with self.subTest(override=override), patch.object(oq.subprocess, "run",
+                return_value=SimpleNamespace(stdout=json.dumps({**envelope, **override}))), self.assertRaises(ValueError):
+                oq.fetch("example/repo#1")
 
 
 NOW = datetime(2026, 10, 3, 16, tzinfo=timezone.utc)
