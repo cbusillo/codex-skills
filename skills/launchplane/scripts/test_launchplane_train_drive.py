@@ -661,11 +661,12 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         ])
 
     def test_closed_child_without_matching_carried_evidence_is_only_closed(self) -> None:
-        for expected_head in (None, "older-head"):
+        for expected_head in ("", "older-head"):
             with self.subTest(expected_head=expected_head):
                 response = _response("land_batch", **_queue((7, []), (8, [])), stack_collapse_plan={
                     "collapse_id": "collapse-example", "root_pull_request_number": 7,
-                    "child_dispositions": [{"pull_request_number": 8, "expected_head_sha": expected_head, "status": "closed"}],
+                    "child_dispositions": ([{"pull_request_number": 8, "expected_head_sha": expected_head, "status": "closed"}]
+                                           if expected_head else []),
                 })
                 train = FakeTrain([response], merge_after={7: 1})
                 train.closed.add(8)
