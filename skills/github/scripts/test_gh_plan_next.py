@@ -3194,6 +3194,33 @@ def test_incident_leaf_in_direction_inventory_is_not_a_track_exclusion() -> None
 
 TESTS.append(test_incident_leaf_in_direction_inventory_is_not_a_track_exclusion)
 
+def test_incident_descendants_preserve_staffed_capacity_admission() -> None:
+    for status in ("active", "waiting", "stale"):
+        root = track("someone/direction", 1, "First")
+        staffed = global_issue("someone/business", 10)
+        tool = global_issue("someone/tools", 20)
+        incident = global_issue("someone/live", 90, labels=["plan", "plan:active", "live-breakage"])
+        child = global_issue("outside/repair", 91, labels=["plan", f"plan:{status}"],
+                             body="## Current Status\nWaiting for: Supplier delivery." if status == "waiting" else "")
+        edges = {("someone/direction", 1): relationships(sub_issues=[staffed]),
+                 ("someone/live", 90): relationships(sub_issues=[child])}
+        with global_fixture([root], [staffed, child], edges, discovered=[tool, incident]) as (module, result, _reads):
+            module.load_direction = lambda *_: "# Direction\n## Milestones\n- `First` gets the product used.\n"
+            module.cmd_next(next_args())
+            items = {item["number"]: item for item in [*result["candidates"], *result["excluded"]]}
+            context = {"issues": {"someone/business#10": reviewed(items[10], "underway"),
+                                  "someone/tools#20": reviewed(items[20], category="repeated_stop_tooling")}}
+            with patch.multiple(module, next_selection_context=lambda _args: context):
+                module.cmd_next(next_args())
+                assert result["tooling_capacity_context"]["admitted"], (status, result["tooling_capacity_context"])
+                assert 20 in [item["number"] for item in result["available_candidates"]]
+                if status != "active":
+                    assert 91 not in [item["number"] for item in result["available_candidates"]]
+
+
+TESTS.append(test_incident_descendants_preserve_staffed_capacity_admission)
+
+
 def main() -> None:
     for test in TESTS:
         test()

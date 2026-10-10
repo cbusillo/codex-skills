@@ -82,7 +82,7 @@ Director-marked issues are evaluated outside the ordinary discovery scan allowan
 A separate label inventory covers marked issues beyond a repository's ordinary
 issue-list bound. Native `blocked-by` and sub-issue leaves also inherit priority through
 `incident_via`, an issue URL path with the relationship of each step. A separate
-`--scan-limit` allowance bounds unique descendant reads beyond the ordinary scan.
+`--scan-limit` allowance bounds unique descendant evaluations beyond the ordinary scan.
 Eligible incident nodes also reuse the existing ancestor check, bounded to ten
 parents per node; the descendant allowance is not an API-request count.
 `discovery_context.incident_context` reports truncation, cycles and unavailable

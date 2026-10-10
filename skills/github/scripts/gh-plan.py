@@ -3693,8 +3693,11 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     def read_incident_node(issue_repo: str, number: int) -> dict[str, Any]:
         incident_node = read_node(issue_repo, number)
         incident_item = incident_node["item"]
-        if incident_item.get("exclusion") in {None, "blocked_by_open_dependency", "delegated_to_open_sub_issues"}:
+        exclusion = incident_item.get("exclusion")
+        if (exclusion in {None, "blocked_by_open_dependency", "delegated_to_open_sub_issues"} or capacity_evidence) and exclusion not in {"completed", "pull_request", "unknown_dependencies"}:
             incident_item = with_ancestry(incident_item)
+            if exclusion and exclusion not in {"blocked_by_open_dependency", "delegated_to_open_sub_issues"}:
+                incident_item["exclusion"] = exclusion
         return {**incident_node, "item": incident_item}
     incidents = github_direction_next.incident_work_paths(
         incident_roots, read_node=read_incident_node, scan_limit=args.scan_limit,
