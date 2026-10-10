@@ -17,10 +17,11 @@ RELEASE_MARKER = "github-plan:abandoned-release "
 
 
 def related_sessions_match(text: str, session: str) -> bool:
-    """Compare authored fields, not quoted code examples or a reused alias."""
+    """Compare explicit session fields outside fenced examples."""
     prose = claim.ownership_text(text, strip_quotes=False)
     fence = None
     for line in prose.splitlines():
+        line = re.sub(r"^\s*(?:>\s*)+", "", line)
         opener = re.match(r" {0,3}(`{3,}|~{3,})", line)
         if fence:
             if re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*", line):
@@ -29,7 +30,7 @@ def related_sessions_match(text: str, session: str) -> bool:
         if opener:
             fence = opener.group(1)
             continue
-        for field in re.finditer(r"\bSession:[ \t]*([^\n]+)", line, re.IGNORECASE):
+        for field in re.finditer(r"\b(?:Native[ \t]+)?Session(?:[ \t]+ID)?[ \t]*[:=][ \t]*([^\n]+)", line, re.IGNORECASE):
             if not re.fullmatch(rf"{re.escape(session)}\.?(?:[ \t]+\([^()]*\))?", field.group(1).strip()):
                 return False
     return True
