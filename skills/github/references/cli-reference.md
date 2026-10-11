@@ -400,7 +400,7 @@ also include the shared `api_result` diagnostics envelope.
   Head workflows are read even before their first job check exists; unfinished
   or failed runs count as pending or failed evidence. Unavailable Actions
   reads report incomplete counts rather than a complete empty inventory.
-- `scripts/gh-pr.py ready <pr> [--waiting-for-client]`: Read current-head
+- `scripts/gh-pr.py ready <pr> [--waiting-for-client] [--allow-no-checks]`: Read current-head
   checks and post the [ready handoff](#ready-handoffs) through automation auth.
 - `scripts/gh-pr.py update-branch <pr> [--wait-seconds 0..60]`: Merge the base
   into the PR branch after the ownership and authorization checks in
@@ -486,11 +486,13 @@ test notes) requires a successful current-head
 Client decision before enqueueing. Read-back and uncertain-comment recovery
 use the [shared retry policy](#shared-retry-policy); do not replay an unknown write.
 
-To withdraw an earlier Ready while CI is pending or failing, use
+To withdraw an earlier Ready after a renewed hold, defect or change request
+(including while CI is pending or failing), use
 `gh-pr.py --repo OWNER/REPO comment <pr> --body-file <file>` with
-`Engineering ready; waiting for the Client's acceptance` as the first line.
-This invalidates the earlier Ready without enqueueing; explain the renewed wait
-in the following paragraph. Resume with `ready` once checks and acceptance permit it.
+`Engineering ready; waiting for <actual wait reason>` as the first line.
+This invalidates the earlier Ready without enqueueing; name the actual wait,
+using the Client's acceptance only when that is the wait. Resume with `ready`
+once the hold, checks and any required acceptance permit it.
 
 ### Security Signal Reads
 
