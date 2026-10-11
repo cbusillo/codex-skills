@@ -2634,8 +2634,7 @@ class LaneIdeAdviceTest(unittest.TestCase):
             self.assertEqual(payload["error_reason"], "ide_config_missing")
             advice = payload["agent_result"]["next_action"]
             self.assertEqual(payload["next_action"], advice)
-            self.assertIn("launch", advice)
-            self.assertNotIn("open-worktree --ide", advice)
+            self.assertTrue(advice)
             self.assertEqual(json.loads((root / ".github" / "github.json").read_text()), metadata)
 
     def test_assessment_missing_lane_ide_keeps_lane_repair_in_compact_output(self):
@@ -2662,8 +2661,7 @@ class LaneIdeAdviceTest(unittest.TestCase):
             lane = next(item for item in payload["lanes"] if item["id"] == "python")
             self.assertEqual(payload["agent_result"]["verdict"], "UNKNOWN")
             self.assertEqual(lane["diagnostic"]["error_reason"], "ide_config_missing")
-            self.assertIn("launch", lane["next_action"])
-            self.assertNotIn("open-worktree --ide", lane["next_action"])
+            self.assertTrue(lane["next_action"])
             self.assertFalse(lane["retry_policy"]["retry"])
             self.assertEqual(json.loads((root / ".github" / "github.json").read_text()), metadata)
 
@@ -14472,12 +14470,12 @@ class Issue458RegressionTest(unittest.TestCase):
                     self.assertIn("Do not repeat the failed assessment unchanged", action)
                     self.assertNotIn("then rerun inspection", action)
 
-    def test_missing_ide_route_has_repair_advice(self):
+    def test_missing_ide_route_uses_canonical_repair_advice(self):
         for reason in ("ide_selection_required", "ide_config_ambiguous", "ide_config_missing"):
             with self.subTest(reason=reason):
                 action = jb_inspect.next_action_for_unknown(reason, {})
 
-                self.assertTrue(action)
+                self.assertEqual(action, jb_inspect.IDE_ROUTE_CONFIGURATION_NEXT_ACTION)
 
     def test_configuration_blockers_keep_fallback_without_repository_preparation(self):
         language_action = jb_inspect.next_action_for_unknown("language_sdk_missing", {})
