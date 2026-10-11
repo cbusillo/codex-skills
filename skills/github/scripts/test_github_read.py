@@ -99,6 +99,17 @@ def test_present_terminal_link_header_does_not_fabricate_next_page() -> None:
     assert run.call_count == 1
 
 
+def test_search_request_uses_search_quota_and_preserves_coverage_metadata() -> None:
+    payload = {"items": [], "total_count": 0, "incomplete_results": False}
+    reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="github.direction.director_waits")
+    response = process(include_output(payload, headers={"x-ratelimit-resource": "search"}))
+    with patch("subprocess.run", return_value=response):
+        result = reader.request("GET", "/search/issues?q=user:fixture", step="wait_search", bucket="search")
+    assert result.body == payload
+    assert result.bucket == "search"
+    assert reader.diagnostics()["bucket"] == "search"
+
+
 def test_request_diagnostics_include_quota_and_request_id() -> None:
     reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="test.repository")
     response = process(include_output({"full_name": "o/r", "default_branch": "main", "delete_branch_on_merge": True}))
@@ -1030,6 +1041,7 @@ def main() -> None:
         test_issue_reader_paginates_and_filters_pull_requests,
         test_present_terminal_link_header_does_not_fabricate_next_page,
         test_request_diagnostics_include_quota_and_request_id,
+        test_search_request_uses_search_quota_and_preserves_coverage_metadata,
         test_graphql_json_uses_bounded_shared_graphql_transport,
         test_reader_diagnostics_marks_mixed_rest_and_graphql_buckets,
         test_conditional_cache_reuses_304_body_and_scopes_query_and_identity,
