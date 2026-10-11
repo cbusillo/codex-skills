@@ -12,11 +12,13 @@ import subprocess
 import shlex
 import socket
 import os
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import account_choice
@@ -29,7 +31,7 @@ import session_record
 import status
 
 
-def claude(text, **extra):
+def claude(text, **extra) -> dict[str, Any]:
     return {
         "type": "assistant",
         "timestamp": "2026-10-03T00:00:00Z",
@@ -737,7 +739,8 @@ def choose_from(rows, recommendations=None, **extra):
 
 
 class AccountChoiceTests(unittest.TestCase):
-    def snapshot(self, provider="anthropic", order=None, stale=False, age=0):
+    @staticmethod
+    def snapshot(provider="anthropic", order=None, stale=False, age: float = 0) -> dict[str, Any]:
         rows = [account_row("main", .01, []), account_row("spare", .04, [], cfg="cfg-spare")]
         for row in rows:
             row["provider"] = provider
@@ -1471,7 +1474,7 @@ class TerminalTests(unittest.TestCase):
 
     def test_new_cli_requires_provider_before_connecting_to_iterm(self):
         fake = SimpleNamespace(run_until_complete=Mock())
-        with patch.dict("sys.modules", {"iterm2": fake}), patch.object(__import__("sys"), "argv", ["iterm_tab.py", "new", "--window-id", "window", "--command-file", "launch.txt"]):
+        with patch.dict("sys.modules", {"iterm2": fake}), patch.object(sys, "argv", ["iterm_tab.py", "new", "--window-id", "window", "--command-file", "launch.txt"]):
             with self.assertRaises(SystemExit) as failed:
                 iterm_tab.main()
         self.assertEqual(failed.exception.code, 2)
