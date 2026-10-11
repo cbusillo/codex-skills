@@ -22,6 +22,10 @@ homes share `settings.json` through symlinks, pass the canonical shared file;
 symlink destinations refuse. The helper preserves unrelated settings and hooks,
 and refuses an existing different process wrapper or move directory. Resolve
 such a conflict explicitly rather than replacing another launcher's controls.
+Its hooks carry `hook --enrollment codex-skills-account-move`; refresh and
+uninstall remove only those, plus older unmarked hooks at this catalog's
+`skills/supervisor/scripts/claude_account.py` path, which refresh rewrites
+with the marker. Another tool's script with the same filename is kept.
 After an interpreter upgrade, preview the same install command with `--refresh`;
 add `--write` to replace only this helper's existing wrapper and hook interpreter.
 To remove enrollment, preview `claude_account.py uninstall --settings
