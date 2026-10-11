@@ -14,7 +14,6 @@ import fcntl
 import os
 from pathlib import Path
 import re
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -54,8 +53,12 @@ def verify_closed(entry, supervisor_session):
     for _, _, command in rows:
         if not command.split() or Path(command.split()[0]).name not in {"codex", "claude"}:
             continue
-        argv = shlex.split(command)
-        if entry["session_id"] in argv[1:]:
+        # ps does not preserve shell quoting. Inspect only native resume
+        # operands; arbitrary quoted prompt text is neither syntax nor identity.
+        argv = command.split()
+        if any(arg in {"resume", "--resume", "-r"} and index + 1 < len(argv)
+               and argv[index + 1].strip("\"'") == entry["session_id"]
+               or arg == f"--resume={entry['session_id']}" for index, arg in enumerate(argv)):
             raise ValueError("source native session is visible in a resumed harness process")
     status = session_record.session_status(entry)
     if not status["safe_verdict"]:

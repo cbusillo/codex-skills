@@ -205,6 +205,10 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "resumed harness"):
                 helper.validate_closure({**self.entry, "_backfill": True}, "supervisor")
 
+    def test_unrelated_harness_prompt_quoting_is_not_a_process_parser_error(self):
+        with patch.object(helper, "inventory", return_value=[(456, "another-tty", "codex exec don't change anything")]):
+            self.assertTrue(helper.validate_closure(self.entry, "supervisor")["safe_verdict"])
+
     def test_newer_native_metadata_in_original_or_other_account_refuses(self):
         original = self.transcript.read_text()
         metadata = json.dumps({"type": "session_meta", "timestamp": "2026-01-01T00:03:00Z", "payload": {"id": "source-session"}}) + "\n"
