@@ -127,6 +127,11 @@ class Tests(IsolatedAsyncioTestCase):
         self.assertEqual(self.rules(source, paths={"tests/fixtures/package.json"}), set())
         source = 'data = json.loads(Path("package.json").read_text())\nself.assertEqual(analyze(data).name, "fixture-app")'
         self.assertEqual(self.rules(source, paths={"package.json"}), set())
+        source = 'FIXTURES = ROOT / "tests" / "fixtures"\nconfig = load_config(FIXTURES / "minimal" / "pyproject.toml")\nself.assertEqual(config.name, "minimal")'
+        paths = {"pyproject.toml", "tests/fixtures/minimal/pyproject.toml"}
+        self.assertEqual(self.rules(source, paths=paths), set())
+        source = 'config = json.loads((tmp_path_factory.mktemp("repo") / "package.json").read_text())\nself.assertEqual(config["name"], "minimal")'
+        self.assertEqual(self.rules(source, paths={"package.json"}), set())
 
     def test_workflow_execution_keeps_behavior_tests(self) -> None:
         source = '''

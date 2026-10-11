@@ -20,7 +20,7 @@ EXTENSIONS = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".swift"}
 VERSION = re.compile(r"(?<![\w.])(?:>=\s*)?\d+\.\d+\.\d+(?:[-+][\w.]+)?(?![\w.])|@v\d+\b")
 STRING = re.compile(r'''"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`''')
 READ = re.compile(r"(?:^|\.)(?:open|read_text|read_bytes|read|readFileSync|readFile|readText)$|(?:^|\.)load\w*", re.I)
-TEMP = re.compile(r"\b(?:tmp_path|tmpdir|temp_dir|temp_root|temporary_directory|tempfile|TemporaryDirectory|mkdtemp|temp)\b", re.I)
+TEMP = re.compile(r"\b(?:tmp_path|tmp_path_factory|tmpdir|temp_dir|temp_root|temporary_directory|tempfile|TemporaryDirectory|mkdtemp|mktemp|temp)\b", re.I)
 EXECUTE = re.compile(r"subprocess\.|os\.system|(?:^|\.)(?:run|execute|exec|eval|run_shell)\b")
 MESSAGES = {
     "pinned-config": "Tracked config value compared with a test-owned literal; enforce the rule in a linter or compare with its source of truth.",
@@ -74,10 +74,15 @@ def kind(path: str, catalog: bool) -> str | None:
 
 
 def match_paths(values: list[str], tracked: set[str]) -> set[str]:
-    candidates = values + ["/".join(values)]
-    return {path for path in tracked for value in candidates if value and (
-        path == value or value.endswith("/" + path) or fnmatch.fnmatchcase(path, value)
+    value = str(Path("/".join(values))) if values else ""
+    value = re.sub(r"^(?:\./|\.\./)+", "", value)
+    matches = {path for path in tracked if value and (
+        path == value or (Path(value).is_absolute() and value.endswith("/" + path))
+        or fnmatch.fnmatchcase(path, value)
     )}
+    # An absolute fixture path must not also resolve to a shorter root filename.
+    longest = max((len(path) for path in matches), default=0)
+    return {path for path in matches if len(path) == longest}
 
 
 def aliases_for(nodes: list[ast.AST]) -> dict[str, ast.AST]:
@@ -234,14 +239,16 @@ def foreign_findings(path: str, source: str, tracked: set[str], versions: set[st
     # Bounded foreign-language data flow: reader calls plus let/const/var aliases.
     config_names: set[str] = set()
     found: set[Finding] = set()
-    config_paths = {item for item in match_paths([m.group()[1:-1] for m in STRING.finditer(cleaned)], tracked)
+    config_paths = {item for literal in STRING.finditer(cleaned)
+                    for item in match_paths([literal.group()[1:-1]], tracked)
                     if kind(item, catalog) == "config"}
     for match in re.finditer(r'''import\s+(\w+)\s+from\s+(["'])(.*?)\2''', cleaned):
         if match_paths([match.group(3)], tracked) & config_paths:
             config_names.add(match.group(1))
     for start, _end, name, body in calls:
         if re.search(r"readFile|readText|load|String|^require$", name, re.I):
-            paths = match_paths([m.group()[1:-1] for m in STRING.finditer(body)], tracked)
+            values = [m.group()[1:-1] for m in STRING.finditer(body)]
+            paths = match_paths(values[:1], tracked)
             if (paths & config_paths or (config_paths and name.startswith("load") and re.search(r"\bpath\b", body))) and not TEMP.search(body):
                 prefix = cleaned[max(0, cleaned.rfind("\n", 0, start)):start]
                 assignment = re.search(r"(?:let|const|var)\s+(\w+)\s*=", prefix)
