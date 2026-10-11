@@ -6,6 +6,7 @@
 """Offline routing regressions through the real selection and creation paths."""
 
 from argparse import Namespace
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -16,6 +17,24 @@ import test_github_issue as issue_tests
 
 
 class AgentTests(unittest.TestCase):
+    def setUp(self):
+        # Environment fixtures must not inherit the harness running this suite.
+        self.parent_probe = patch.object(subprocess, "run")
+        self.ps = self.parent_probe.start()
+        self.ps.return_value = subprocess.CompletedProcess([], 1, "", "")
+        self.addCleanup(self.parent_probe.stop)
+
+    def test_remote_codex_daemon_resolves_inherited_claude_markers(self):
+        inherited = {"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "supervisor",
+                     "CODEX_THREAD_ID": "worker"}
+        self.ps.side_effect = [subprocess.CompletedProcess([], 0, row, "") for row in
+                               ("20 uv\n", "30 /bin/zsh\n", "1 /opt/app-server/bin/codex\n")]
+        with patch.dict(agent.os.environ, inherited, clear=True), patch.object(agent.os, "getppid", return_value=10):
+            detected = agent.running_agent()
+        self.assertEqual(detected, "codex")
+        self.assertIsNone(agent.exclusion({"labels": ["agent:codex"]}, detected))
+        self.assertEqual(agent.exclusion({"labels": ["agent:claude"]}, detected)["exclusion"], "assigned_elsewhere")
+
     def test_detection_and_explicit_family(self):
         self.assertIsNone(agent.running_agent(environ={}))
         self.assertEqual(agent.running_agent(environ={"CLAUDECODE": "1"}), "claude")
@@ -24,6 +43,49 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(agent.running_agent("codex", environ=inherited), "codex")
         self.assertIsNotNone(agent.exclusion({"labels": ["agent:codex"]}, agent.running_agent(environ=inherited)))
         self.assertEqual(agent.running_agent("claude", environ=inherited), "claude")
+
+    def test_nearest_native_harness_wins_without_session_markers(self):
+        for family in agent.FAMILIES:
+            other = next(name for name in agent.FAMILIES if name != family)
+            self.ps.side_effect = [subprocess.CompletedProcess([], 0, row, "") for row in
+                                   ("20 /bin/sh\n", f"30 /opt/bin/{family}\n", f"1 /opt/bin/{other}\n")]
+            with patch.dict(agent.os.environ, {}, clear=True), patch.object(agent.os, "getppid", return_value=10):
+                self.assertEqual(agent.running_agent(), family)
+            self.ps.reset_mock()
+
+    def test_unavailable_or_ambiguous_process_evidence_stays_unknown(self):
+        cases = ([subprocess.CompletedProcess([], 1, "", "")],
+                 [OSError("ps unavailable")],
+                 [subprocess.TimeoutExpired("ps", 0.1)],
+                 [subprocess.CompletedProcess([], 0, "invalid", "")],
+                 [subprocess.CompletedProcess([], 0, "10 /bin/sh", "")],
+                 [subprocess.CompletedProcess([], 0, "20 node", ""),
+                  subprocess.CompletedProcess([], 0, "1 codex", "")],
+                 [subprocess.CompletedProcess([], 0, "20 /opt/claude/versions/2.1.296", ""),
+                  subprocess.CompletedProcess([], 0, "1 codex", "")])
+        for rows in cases:
+            with self.subTest(rows=rows), patch.dict(agent.os.environ, {}, clear=True), \
+                    patch.object(agent.os, "getppid", return_value=10):
+                self.ps.side_effect = rows
+                self.assertIsNone(agent.running_agent())
+
+    def test_probe_is_bounded_and_reads_no_arguments_or_environment(self):
+        self.ps.side_effect = [subprocess.CompletedProcess([], 0, f"{pid + 1} /bin/sh", "")
+                               for pid in range(10, 40)]
+        with patch.dict(agent.os.environ, {}, clear=True), patch.object(agent.os, "getppid", return_value=10):
+            self.assertIsNone(agent.running_agent())
+        self.assertLess(self.ps.call_count, 30)
+        for call in self.ps.call_args_list:
+            requested_fields = call.args[0][call.args[0].index("-o") + 1].replace("=", "").split(",")
+            self.assertTrue(set(requested_fields) <= {"pid", "ppid", "comm", "ucomm", "fname"})
+            self.assertNotIn("-E", call.args[0])
+            self.assertGreater(call.kwargs["timeout"], 0)
+
+    def test_explicit_and_single_family_markers_do_not_probe_processes(self):
+        with patch.dict(agent.os.environ, {"CLAUDECODE": "1"}, clear=True):
+            self.assertEqual(agent.running_agent(), "claude")
+            self.assertEqual(agent.running_agent("codex"), "codex")
+        self.ps.assert_not_called()
 
     def test_local_next_both_directions_before_limit(self):
         for family, other, scan in (("codex", "claude", 1), ("claude", "codex", 1),

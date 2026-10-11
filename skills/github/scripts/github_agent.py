@@ -8,6 +8,10 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
+import re
+import subprocess
+import time
 from typing import Any, Mapping
 
 FAMILIES = ("claude", "codex")
@@ -15,6 +19,37 @@ LABEL_DEFS = {
     f"agent:{family}": {"color": "1d76db", "description": f"Assigned to the {family.title()} agent family"}
     for family in FAMILIES
 }
+
+
+def ancestor_agent() -> str | None:
+    """Resolve inherited markers from the nearest native harness, without argv."""
+    pid = os.getppid()
+    seen: set[int] = set()
+    deadline = time.monotonic() + 1.0
+    for _ in range(12):
+        remaining = deadline - time.monotonic()
+        if pid <= 1 or pid in seen or remaining <= 0:
+            break
+        seen.add(pid)
+        try:
+            result = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "ppid=,comm="],
+                capture_output=True, text=True, timeout=min(0.5, remaining),
+            )
+            if result.returncode:
+                break
+            parent, executable = result.stdout.strip().split(maxsplit=1)
+            pid = int(parent)
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            break
+        name = Path(executable).name
+        if name in FAMILIES:
+            return name
+        # Unknown native names and script-hosted agents may hide an inner
+        # harness. Traverse only the shells/launchers used to run our helpers.
+        if name not in {"sh", "zsh", "bash", "dash", "fish", "uv"} and not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", name):
+            break
+    return None
 
 
 def running_agent(explicit: str | None = None, *, environ: Mapping[str, str] | None = None) -> str | None:
@@ -27,7 +62,9 @@ def running_agent(explicit: str | None = None, *, environ: Mapping[str, str] | N
     claude = bool(env.get("CLAUDE_CODE_SESSION_ID") or env.get("CLAUDECODE"))
     if codex != claude:
         return "codex" if codex else "claude"
-    return None
+    # An explicit environment requests environment-only detection, including
+    # optional receipt accounting that must not add process I/O.
+    return ancestor_agent() if environ is None else None
 
 
 def assignment_labels(labels: list[Any]) -> list[str]:
