@@ -329,7 +329,7 @@ async def observe(config: Path | None, *, once: bool = False, storage: Path | No
     store = ActivityStore(storage or root, private)
     live_bindings = {f"binding-{a['homeKey']}.json" for a in configured}
     for binding in store.private.glob("binding-*.json"):
-        if binding.name in live_bindings or not re.fullmatch(r"binding-[0-9a-f]{64}\.json", binding.name) or binding.is_symlink():
+        if binding.name in live_bindings or not re.fullmatch(r"binding-[0-9a-f]{64}[.]json", binding.name) or binding.is_symlink():
             continue
         try:
             if read_json(binding).get("producerID") == "codex-skills":

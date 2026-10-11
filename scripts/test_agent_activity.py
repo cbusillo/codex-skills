@@ -15,7 +15,6 @@ import unittest
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from aiohttp import web, WSMsgType
 
@@ -131,11 +130,10 @@ class ActivityTests(unittest.TestCase):
         binary = ephemeral / 'claude'
         binary.write_text('fixture')
         binary.chmod(0o700)
-        with patch('observe_agent_activity.shutil.which', return_value=str(binary)):
-            with self.assertRaises(ValueError):
-                durable_cli('claude')
-            durable = Path(sys.executable).resolve()
-            self.assertEqual(durable_cli('claude', durable), str(durable))
+        with self.assertRaises(ValueError):
+            durable_cli('claude', binary)
+        durable = Path(sys.executable).resolve()
+        self.assertEqual(durable_cli('claude', durable), str(durable))
 
     def test_stop_and_interrupt_need_native_done_before_success(self):
         self.hook('UserPromptSubmit')
@@ -254,17 +252,15 @@ class ObserverTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder).resolve()
             store = ActivityStore(root / 'panel', root / 'private')
-            original = asyncio.create_subprocess_exec
             script = ('import json,sys,time; '
                       f'data=json.dumps([{{"sessionId":{SESSION!r},"status":"busy","name":"x"*100000}}]); '
                       'sys.stdout.write(data[:64]);sys.stdout.flush();time.sleep(.03); '
                       'sys.stdout.write(data[64:]);sys.stdout.flush()')
 
-            async def fake_cli(*_args, **kwargs):
-                return await original(sys.executable, '-c', script, **kwargs)
-
-            with patch.object(asyncio, 'create_subprocess_exec', fake_cli):
-                await claude_poll(store, {'accountID': ACCOUNT, 'env': {}}, once=True)
+            fixture = root / 'claude-fixture'
+            fixture.write_text(f'#!{sys.executable}\n{script}\n')
+            fixture.chmod(0o700)
+            await claude_poll(store, {'accountID': ACCOUNT, 'env': {}}, once=True, executable=str(fixture))
             records = [json.loads(p.read_text()) for p in store.events.glob('*.json')]
             self.assertEqual([r['state'] for r in records], ['working'])
             self.assertNotIn('name', records[0])

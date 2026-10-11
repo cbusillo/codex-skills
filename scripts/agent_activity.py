@@ -20,7 +20,7 @@ PRODUCER = "codex-skills"
 STATES = {"working", "attention", "quiet", "completed", "failed", "cancelled"}
 TERMINAL = {"completed", "failed", "cancelled"}
 SOURCES = {"codex-status", "codex-turn", "claude-hook", "claude-inventory"}
-OWN_FILE = re.compile(r"^codex-skills-[0-9a-f-]{36}\.json$")
+OWN_FILE = re.compile(r"^codex-skills-[0-9a-f-]{36}[.]json$")
 LEASE_SECONDS = 90
 
 
@@ -172,7 +172,7 @@ class ActivityStore:
             except (OSError, ValueError, KeyError, TypeError):
                 continue
         for path in self.private.glob("*.json"):
-            if not re.fullmatch(r"[0-9a-f]{64}\.json", path.name) or path.is_symlink():
+            if not re.fullmatch(r"[0-9a-f]{64}[.]json", path.name) or path.is_symlink():
                 continue
             fd = None
             try:
