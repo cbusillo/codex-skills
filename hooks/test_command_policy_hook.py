@@ -73,7 +73,9 @@ class CommandPolicyHookTests(unittest.TestCase):
             "rg launchplane settings.json",
         ):
             with self.subTest(command=command):
-                self.assertEqual(bash(command).returncode, 0)
+                result = bash(command)
+                self.assertEqual(result.returncode, 0)
+                self.assertFalse(result.stderr, "allowance must come from successful policy evaluation")
         for command in ("launchplane status", "uv run launchplane status",
                         "printf '%s' launchplane && launchplane status"):
             with self.subTest(command=command):

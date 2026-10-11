@@ -1863,15 +1863,17 @@ class TerminalTests(unittest.TestCase):
         app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "launch.txt"
-            path.write_text("codex --remote unix://\x1b")
             args = argparse.Namespace(
                 command="new", window_id="chosen", command_file=path, brief_file=fixture_briefs(path)
             )
-            with (
-                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
-                self.assertRaises(ValueError),
-            ):
-                asyncio.run(iterm_tab.operate(app, args))
+            for control in ("\x1b", "\t"):
+                path.write_text("codex --remote unix://" + control)
+                with (
+                    self.subTest(control=control),
+                    patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
+                    self.assertRaises(ValueError),
+                ):
+                    asyncio.run(iterm_tab.operate(app, args))
         window.async_create_tab.assert_not_awaited()
 
     def test_unverified_send_refuses_without_keys(self):
