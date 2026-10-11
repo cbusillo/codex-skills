@@ -228,7 +228,14 @@ class Live:
             deadline_at=deadline,
         )
         self.args = operator.parse_args(["merge-train-policy-read"])
-        self.settings = operator.resolve_settings(self.args)
+        try:
+            self.settings = operator.resolve_settings(self.args)
+        except ValueError as error:
+            if str(error) not in {"invalid_config", "invalid_env_config"}:
+                raise
+            raise LaunchplaneReadError("Launchplane admin configuration unavailable") from error
+        if not self.settings["service_url"]:
+            raise LaunchplaneReadError("Launchplane admin configuration unavailable")
         operator.validate_service_url(self.settings["service_url"])
         if not self.settings["token"]:
             raise LaunchplaneReadError("Launchplane admin configuration unavailable")
@@ -300,6 +307,12 @@ class Live:
             codes = {item["code"] for item in payload.get("warnings", [])}
             status = summary.get("http_status", 0)
             if (
+                status in {401, 403}
+                or payload.get("status") in {"unauthorized", "denied"}
+                or codes & {"authorization_denied", "unsafe_redirect"}
+            ):
+                raise WatchError("controller read rejected")
+            if (
                 payload.get("operation") == "merge-train-controller-run-once"
                 and payload.get("request") == {
                     "repository": target["repo"],
@@ -315,8 +328,6 @@ class Live:
                 )
             ):
                 raise ConnectionError("controller transient read failure")
-            if status in {401, 403} or codes & {"permission_denied", "unsafe_redirect"}:
-                raise WatchError("controller read rejected")
             raise LaunchplaneReadError("controller read unavailable")
         return payload
 
