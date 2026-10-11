@@ -531,6 +531,10 @@ classify_failure() {
 	status_code=$1
 	shift
 	write_flag=
+	classification_operation=github.gh_with_env_token
+	if [ "${1:-}" = pr ] && [ "${2:-}" = create ]; then
+		classification_operation=github.pr.create
+	fi
 	if is_write_command "$@"; then
 		write_flag=--write
 	fi
@@ -538,7 +542,7 @@ classify_failure() {
 		--returncode "$status_code" \
 		--stdout-file "$stdout_file" \
 		--stderr-file "$stderr_file" \
-		--operation github.gh_with_env_token \
+		--operation "$classification_operation" \
 		--expected-actor "$expected_login" \
 		--transport gh_cli_wrapper \
 		--probe-unknown-rate-limit \
