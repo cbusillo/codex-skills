@@ -395,6 +395,24 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(parsed.confirm_session_ended and parsed.dry_run)
         self.assertEqual(run.call_args.kwargs["cwd"], self.root / "a")
 
+    def test_release_envelope_distinguishes_reconciliation_and_issue_refusals(self):
+        args = ("test/a", 1, 2, [], [], self.entry["handoff_url"], "supervisor", self.root)
+        success = {"ok": True, "outcome_certainty": "reconciled_applied"}
+        with patch.object(helper.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=json.dumps(success))):
+            self.assertEqual(helper.run_release(*args, False), success)
+        refusal = {"ok": False, "release_refusal_scope": helper.release.ISSUE_REFUSAL_SCOPE}
+        with patch.object(helper.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout=json.dumps(refusal))):
+            with self.assertRaises(helper.ConfirmedIssueRefusal):
+                helper.run_release(*args, True)
+            with self.assertRaises(ValueError) as caught:
+                helper.run_release(*args, False)
+            self.assertNotIsInstance(caught.exception, helper.ConfirmedIssueRefusal)
+        refusal["release_refusal_scope"] = "session_or_unknown"
+        with patch.object(helper.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout=json.dumps(refusal))):
+            with self.assertRaises(ValueError) as caught:
+                helper.run_release(*args, True)
+            self.assertNotIsInstance(caught.exception, helper.ConfirmedIssueRefusal)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -275,7 +275,7 @@ def run_release(repo, number, source_id, related, prs, evidence_url, supervisor_
         argv.append("--dry-run")
     result = subprocess.run(argv, cwd=checkout, capture_output=True, text=True, timeout=180)
     payload = json.loads(result.stdout)
-    if result.returncode or payload.get("ok") is not True or payload.get("outcome_certainty") != "confirmed":
+    if result.returncode or payload.get("ok") is not True or payload.get("outcome_certainty") not in {"confirmed", "reconciled_applied"}:
         if dry_run and payload.get("release_refusal_scope") == release.ISSUE_REFUSAL_SCOPE and "post_release" not in payload.get("completed_steps", []):
             raise ConfirmedIssueRefusal(payload)
         raise ValueError(f"release-claim did not confirm success; preserve records: {json.dumps(payload)}")

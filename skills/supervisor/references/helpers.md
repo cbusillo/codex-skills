@@ -498,6 +498,8 @@ On a refusal or uncertain write, preserve posted attestations/releases and
 their returned diagnostics. Only a confirmed issue-scoped dry-run refusal may
 continue to independent claims after fresh closure verification. Source-session
 uncertainty and uncertain writes stop that session's remaining release steps.
+Visible peers in source or retained worktrees also stop the session's releases,
+even with a different native ID: a continuation may have acquired a new ID.
 The shared release helper owns this classification; it is not inferred from
 error wording.
 Inspect their readback before recovery. Already valid releases are skipped;

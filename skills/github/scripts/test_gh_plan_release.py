@@ -114,12 +114,12 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(PLAN.PlanError, "open issue"):
             self.f.run_claim()
 
-    def test_retained_peer_refusal_is_isolated_but_live_source_is_not(self):
+    def test_retained_peer_and_live_source_refusals_stop_the_session(self):
         self.f.inventory["worktrees"] = [{"branch": fixtures.OTHER["branch"], "path": "/source"}]
         self.f.inventory["sessions"] = [{"sessionId": "different-session", "cwd": "/source"}]
         with self.assertRaises(PLAN.PlanError) as caught:
             self.run_release()
-        self.assertEqual(caught.exception.payload["release_refusal_scope"], release.ISSUE_REFUSAL_SCOPE)
+        self.assertNotEqual(caught.exception.payload["release_refusal_scope"], release.ISSUE_REFUSAL_SCOPE)
         self.f.assert_no_writes()
         self.f.inventory["sessions"] = [{"sessionId": fixtures.OTHER["session"], "cwd": "/source"}]
         with self.assertRaises(PLAN.PlanError) as caught:

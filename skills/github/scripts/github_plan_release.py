@@ -108,8 +108,7 @@ def prepare_release(
              if any(cwd == root or root in cwd.parents
                     for cwd in [pathlib.Path(s.get("cwd") or "/").resolve()] for root in retained_paths)]
     if peers:
-        refusal = IssueReleaseRefusal if all(isinstance(s.get("sessionId"), str) and s["sessionId"] and s["sessionId"] != record["session"] for s in peers) else ValueError
-        raise refusal("A live peer is using the source claim's retained worktree")
+        raise ValueError("A live peer is using the source claim's retained worktree")
     for comment in related:
         if ((comment.get("user") or {}).get("login") != actor or claim.records(comment.get("body") or "")
                 or not re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", comment.get("body") or "")):
