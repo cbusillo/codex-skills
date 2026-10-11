@@ -53,7 +53,7 @@ uses current, previously installed, or committed shared sources with the
 authoritative private source. Receipts distinguish generated outputs the installer
 managed from skipped sources, so private-source edits propagate through links
 while hand edits remain protected. Targets
-inside the catalog checkout are preserved.
+inside the catalog checkout and read-only targets are preserved.
 Unmanaged personal targets stay unchanged. Later edits to those linked sources
 stay in their external source; to propagate them into regular outputs, update
 `.local/global-instructions.md` and rerun the installer. Unknown generated linked

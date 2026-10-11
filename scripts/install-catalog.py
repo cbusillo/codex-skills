@@ -182,7 +182,8 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
     historical_outputs = None
     for path in destinations:
         target = path.resolve()
-        if target not in preserved_targets or target.is_relative_to(ROOT.resolve()):
+        if (target not in preserved_targets or target.is_relative_to(ROOT.resolve())
+                or not os.access(target, os.W_OK) or not os.access(target.parent, os.W_OK)):
             continue
         inspected = target.read_bytes()
         text = inspected.decode().replace("\r\n", "\n").replace("\r", "\n")
@@ -193,7 +194,9 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                 historical_outputs = {"\n\n".join(filter(None, (base.strip(), personal.strip()))) + "\n"
                                       for base in committed_shared_sources(sync)}
             recognized = text in historical_outputs
-        if recognized and (text == content or str(path) not in hashes or digest == hashes[str(path)]):
+        # Old receipts hashed linked text after universal-newline decoding.
+        matches_receipt = hashes.get(str(path)) in {digest, hashlib.sha256(text.encode()).hexdigest()}
+        if recognized and (text == content or str(path) not in hashes or matches_receipt):
             refresh_targets[target] = inspected
     # All destinations are inspected before any mutation.
     instruction_preview = sync.synchronize_instructions(content, destinations, write=False, refresh_targets=refresh_targets)

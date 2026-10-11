@@ -343,7 +343,7 @@ def synchronize_instructions(content: str, destinations: list[Path], *, write: b
                 continue
             text = path.read_text()
             state = "current" if text == content else "skipped" if text.startswith(HEADER) else "preserved"
-            linked[path] = {"path": str(path), "sha256": hashlib.sha256(text.encode()).hexdigest(),
+            linked[path] = {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                             "state": state,
                             "reason": "Symlink and target preserved; update the instruction source separately"}
             if text != content:
