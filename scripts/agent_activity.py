@@ -205,7 +205,7 @@ def hook_activity(payload: object, env: dict) -> None:
     event = payload.get("hook_event_name")
     events = {"UserPromptSubmit": "working", "Stop": "quiet", "StopFailure": "failed",
               "Interrupt": "cancelled", "Notification": "attention", "PermissionRequest": "attention",
-              "SubagentStart": "working", "SubagentStop": "completed", "SessionEnd": "quiet"}
+              "SubagentStart": "working", "SubagentStop": "quiet", "SessionEnd": "quiet"}
     if event not in events:
         return
     private = Path(env.get("CODE_HOME") or Path.home() / ".code").expanduser()
@@ -220,8 +220,6 @@ def hook_activity(payload: object, env: dict) -> None:
     # Codex outcomes come from the daemon, avoiding hook/observer duplicate runs.
     if harness == "codex":
         return
-    if event == "SubagentStop" and payload.get("stop_hook_active") is True:
-        return
     attention = None
     if event == "Notification":
         attention = {"permission_prompt": "approval", "elicitation_dialog": "input"}.get(payload.get("notification_type"))
@@ -233,15 +231,15 @@ def hook_activity(payload: object, env: dict) -> None:
     if not session:
         return
     parent = agent = None
-    if event in ("SubagentStart", "SubagentStop"):
-        raw_agent = payload.get("agent_id")
-        if not isinstance(raw_agent, str) or not re.fullmatch(r"[0-9a-f-]{1,64}", raw_agent):
+    raw_agent = payload.get("agent_id")
+    if raw_agent is not None or event in ("SubagentStart", "SubagentStop"):
+        if not isinstance(raw_agent, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", raw_agent):
             return
         parent = session
         agent = str(uuid.uuid5(uuid.UUID(session), raw_agent))
         session = agent
     store = ActivityStore(Path(binding["storageRoot"]), private)
-    # Stop can be continued by another hook. Even later idle cannot distinguish
+    # Stop/SubagentStop can be continued by another hook. Even later idle cannot distinguish
     # completion from an interrupted continuation; native background done can.
     store.emit(binding["accountID"], harness, session, events[event], "claude-hook",
                parent=parent, agent=agent, attention=attention,

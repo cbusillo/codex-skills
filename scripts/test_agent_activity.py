@@ -71,16 +71,29 @@ class ActivityTests(unittest.TestCase):
 
     def test_subagent_parentage_and_nonterminal_reentrant_stop(self):
         self.hook("UserPromptSubmit")
-        self.hook("SubagentStart", agent_id="abc123")
-        self.hook("SubagentStop", agent_id="abc123", last_assistant_message=SECRET)
+        self.hook("SubagentStart", agent_id="agent-abc123")
+        self.hook("SubagentStop", agent_id="agent-abc123", last_assistant_message=SECRET)
         child = [r for r in self.events() if r['parentSessionID']]
         self.assertEqual({r['parentSessionID'] for r in child}, {SESSION})
         self.assertEqual(len({r['sessionID'] for r in child}), 1)
         self.assertEqual(len({r['runID'] for r in child}), 1)
+        self.assertEqual({r['state'] for r in child}, {'working', 'quiet'})
         self.hook("Stop", stop_hook_active=True)
         parents = [r for r in self.events() if r['sessionID'] == SESSION]
         self.assertTrue(all(r['state'] in ('working', 'quiet') for r in parents))
         self.assertFalse(any(r['state'] == 'completed' for r in parents))
+
+    def test_common_child_events_do_not_change_the_parent_outcome(self):
+        self.hook('UserPromptSubmit')
+        self.hook('SubagentStart', agent_id='agent-abc123')
+        self.hook('PermissionRequest', agent_id='agent-abc123', tool_input={'command': SECRET})
+        self.hook('StopFailure', agent_id='agent-abc123', error=SECRET)
+        children = [r for r in self.events() if r['parentSessionID'] == SESSION]
+        self.assertEqual({r['state'] for r in children}, {'working', 'attention', 'failed'})
+        self.assertEqual(len({r['runID'] for r in children}), 1)
+        self.assertEqual([r['state'] for r in self.events() if r['sessionID'] == SESSION], ['working'])
+        self.assertNotIn('agent-abc123', json.dumps(self.events()))
+        self.assertNotIn(SECRET, json.dumps(self.events()))
 
     def test_inventory_renews_busy_leases_and_does_not_invent_completion(self):
         self.hook("UserPromptSubmit")

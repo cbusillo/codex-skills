@@ -104,7 +104,9 @@ identity and outcomes, so hooks do not create duplicate Codex runs.
 
 Claude Code: UserPromptSubmit starts a run, notifications and PermissionRequest
 report attention, StopFailure reports API failure, and SubagentStart/Stop
-retain child identity and parentage. Stop becomes quiet because another Stop
+retain child identity and parentage. Native child IDs, including `agent-` IDs,
+are mapped to opaque UUIDs. Child attention and API failures stay on the child,
+using the hooks' common `agent_id` field. Stop and SubagentStop become quiet because another Stop
 hook can continue the turn, and an interruption of that continuation also
 becomes idle. Even Stop followed by idle cannot prove success. Completion is
 emitted only from a native background-session `done` state; native `failed`
