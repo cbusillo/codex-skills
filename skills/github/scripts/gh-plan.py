@@ -1960,7 +1960,7 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[
     for release_comment, receipt in github_plan_release.receipts(comments):
         valid = False
         try:
-            evidence_match = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/issues/([1-9]\d*)#issuecomment-([1-9]\d*)", receipt["evidence_url"])
+            evidence_match = github_plan_release.COMMENT_URL.fullmatch(receipt["evidence_url"])
             if evidence_match:
                 evidence_repo, evidence_number, evidence_id = evidence_match.groups()
                 _, evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}", bucket="rest_core", failed_step="claim_release_evidence")
@@ -2003,9 +2003,9 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         if override and override.casefold() != selected_actor.casefold():
             raise PlanError(f"Release would run as '{selected_actor}', expected '{override}'")
         expected_actor = selected_actor
-    evidence_match = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/issues/([1-9]\d*)#issuecomment-([1-9]\d*)", args.evidence_comment)
+    evidence_match = github_plan_release.COMMENT_URL.fullmatch(args.evidence_comment)
     if not evidence_match:
-        raise PlanError("Evidence must be an exact GitHub issue-comment URL")
+        raise PlanError("Evidence must be an exact GitHub issue or PR timeline-comment URL")
     evidence_repo, evidence_number, evidence_id = evidence_match.groups()
     _, evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}", bucket="rest_core", failed_step="release_evidence")
     if evidence.get("issue_url") != f"https://api.github.com/repos/{evidence_repo}/issues/{evidence_number}":

@@ -649,8 +649,8 @@ base; forks use a canonical planning issue. The PR's remote source head is its
 work record; local source branches/worktrees and live peers remain competing
 evidence unless owned or covered by an exact authored release. `--resume-from`
 works for released PR claims; `--refresh-pr` and `--handoff-comment` keep their
-canonical-issue contract. `release-claim` accepts the same PR references and
-checks the claimed source branch against the closed-session attestation. A
+canonical-issue contract. `release-claim` accepts the same PR references and attestation URLs on either
+issue or PR timeline comments. It checks the claimed source branch against the closed-session attestation. A
 later update to a separate Dependabot work-record branch does not count as
 source-session activity; source-branch activity, ownership and peer checks
 still refuse independently. A closed

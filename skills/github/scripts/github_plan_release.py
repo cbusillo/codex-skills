@@ -13,6 +13,7 @@ from typing import Any
 
 import github_plan_claim as claim
 
+COMMENT_URL = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)#issuecomment-([1-9]\d*)")
 RELEASE_MARKER = "github-plan:abandoned-release "
 ISSUE_REFUSAL_SCOPE = "issue"
 

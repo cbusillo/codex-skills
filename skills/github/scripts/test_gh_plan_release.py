@@ -136,6 +136,13 @@ class ReleaseTests(unittest.TestCase):
         self.successor()
         self.assertEqual(self.f.pulls[1]["state"], "open")
 
+    def test_pr_comment_attestation_url_releases_and_stays_valid_on_claim_readback(self):
+        self.pr_setup()
+        self.args.evidence_comment = self.args.evidence_comment.replace("/issues/884", "/pull/884")
+        self.run_release()
+        self.successor()
+        self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
+
     def test_pr_attestation_new_activity_live_peer_or_changed_evidence_refuses(self):
         for mode in ("commit", "peer", "evidence"):
             with self.subTest(mode=mode):

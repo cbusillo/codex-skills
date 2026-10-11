@@ -35,7 +35,7 @@ from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, aut
 from github_comment import CommentError, comment
 
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
-HANDOFF = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/issues/([1-9]\d*)#issuecomment-([1-9]\d*)")
+HANDOFF = release.COMMENT_URL
 
 
 class PartialRelease(ValueError):
@@ -499,12 +499,17 @@ def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_
     if "pull_request" in issue:
         sources = active_claims(reader, repo, number, entry["session_id"], actor)
         comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="pr_inventory_source")
+        active_ids = {identifier for source, related, unresolved in sources for identifier in [source["id"], *related, *unresolved]}
         for row in entry.get("_inventory_claims", []):
             if row["repo"] != repo or row["issue"] != number:
                 continue
             expected = next((c for c in comments if c["id"] == row["claim_comment_id"]), None)
             if expected is None or (expected.get("user") or {}).get("login") != actor or not belongs_to_session(expected.get("body") or "", entry["session_id"]):
                 raise ValueError("inventory PR source is missing or lacks exact native-session/author evidence")
+            entry.setdefault("_inventory_results", {})[(repo, number, row["claim_comment_id"])] = {
+                "repository": repo, "issue": number, "claim_comment": row["claim_comment_id"],
+                "status": "manual_release_required" if row["claim_comment_id"] in active_ids else "already_released"}
+        rows = {}
         for source, related, unresolved in sources:
             if entry.get("_inventory") and not any(row["repo"] == repo and row["issue"] == number
                     and row["claim_comment_id"] == source["id"] for row in entry["_inventory_claims"]):
@@ -522,8 +527,10 @@ def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_
             row = {"repository": repo, "pull_request": number,
                    "claim_comments": [source["id"], *related],
                    "status": "manual_release_required", "release_argv": argv,
+                   "dry_run_argv": [*argv, "--dry-run"], "checkout": str(checkout_root / repo.split("/")[1]),
                    "attestation_body": closure_attestation(entry)}
-            entry.setdefault("_pr_claim_handoffs", {})[(repo, number, source["id"])] = row
+            rows[(repo, number, source["id"])] = row
+        entry.setdefault("_pr_claim_handoffs", {}).update(rows)
         return [], retained_status
     comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="session_issue_filter")
     if not any(belongs_to_session(c.get("body") or "", entry["session_id"]) for c in comments) and not belongs_to_session(issue.get("body") or "", entry["session_id"]):
@@ -788,9 +795,9 @@ def main():
                     GitHubReadError, GitHubReadShapeError, CommentError) as error:
                 report = error.report if isinstance(error, PartialRelease) else {"session_id": entry["session_id"]}
                 reports.append({**report, "error": str(error), "next_action": "inspect records before retry"})
-        ok = not any("error" in r or r.get("issue_refusals") for r in reports)
+        ok = not any("error" in r or r.get("issue_refusals") or r.get("pr_claim_handoffs") for r in reports)
         print(json.dumps({"ok": ok, "reports": reports, "repositories_checked": repos,
-                          "needs_reconciliation": any(r.get("retained_status_claims") or r.get("issue_refusals") or "error" in r for r in reports),
+                          "needs_reconciliation": any(r.get("retained_status_claims") or r.get("issue_refusals") or r.get("pr_claim_handoffs") or "error" in r for r in reports),
                           "coverage": "exact verified inventory claims" if all(e.get("_inventory") for e in entries) else "explicit scope" if args.repo else "accessible repositories under the requested owner",
                           "outside_scope": "other repository owners and other automation App identities; use their configured evidence-backed release-claim route"}))
         return 0 if ok else 1

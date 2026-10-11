@@ -79,6 +79,25 @@ class ReleaseTests(unittest.TestCase):
         report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
         self.assertEqual(report["pr_claim_handoffs"], [])
 
+    def test_main_requires_reconciliation_when_pr_handoffs_remain(self):
+        log = self.root / "closed.json"
+        log.write_text(json.dumps([self.entry]))
+        for apply in (False, True):
+            argv = ["helper", "backfill", "--closed-log", str(log), "--supervisor-session", "supervisor",
+                "--owner", "test", "--checkout-root", str(self.root), "--confirm-session-ended",
+                "--verified-handoff", "--transcript-root", str(self.root)] + (["--apply"] if apply else [])
+            output = io.StringIO()
+            with patch.object(helper.sys, "argv", argv), \
+                    patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
+                    patch.object(helper, "GitHubReader", return_value=self.reader), \
+                    patch.object(helper, "discover", return_value=([("test/a", 1)], ["test/a"])), \
+                    patch.object(helper, "release_session", return_value={"pr_claim_handoffs": [{"claim_comments": [1]}]}), \
+                    contextlib.redirect_stdout(output):
+                self.assertEqual(helper.main(), 1)
+            result = json.loads(output.getvalue())
+            self.assertFalse(result["ok"])
+            self.assertTrue(result["needs_reconciliation"])
+
     def test_finished_process_and_safe_verdict(self):
         self.assertTrue(helper.validate_closure(self.entry, "supervisor")["safe_verdict"])
         for rows in ([(123, "other", "zsh")], [(456, "ttys123", "codex")], [(456, "ttys123", "zsh -c work")]):
