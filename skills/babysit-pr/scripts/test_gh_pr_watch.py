@@ -12,6 +12,7 @@ import base64
 import json
 import multiprocessing
 import os
+import signal
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -2949,6 +2950,37 @@ def test_interrupted_command_launch_preserves_termination_and_restores_handlers(
         assert worker.exitcode == 128 + termination_signal
         assert launch_attempted.is_set() == (stage == "failed_launch")
         assert launch_failed.is_set() == (stage == "failed_launch")
+    finally:
+        if worker.is_alive():
+            worker.kill()
+            worker.join(timeout=2)
+
+
+@pytest.mark.parametrize("termination_signal", [signal.SIGTERM, signal.SIGHUP])
+def test_signal_during_handler_restoration_is_preserved(monkeypatch, termination_signal):
+    ctx = multiprocessing.get_context("fork")
+    restoration_reached = ctx.Event()
+    def attempt():
+        handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP)}
+        restore = signal.signal
+        def signal_during_restore(signum, handler):
+            if signum == signal.SIGTERM and handler == handlers[signum]:
+                restoration_reached.set()
+                os.kill(os.getpid(), termination_signal)
+            return restore(signum, handler)
+        monkeypatch.setattr(gh_pr_watch.signal, "signal", signal_during_restore)
+        try:
+            with gh_pr_watch.command_signal_cleanup():
+                pass
+        except SystemExit:
+            assert {sig: signal.getsignal(sig) for sig in handlers} == handlers
+            raise
+    worker = ctx.Process(target=attempt)
+    try:
+        worker.start()
+        worker.join(timeout=2)
+        assert restoration_reached.is_set()
+        assert worker.exitcode == 128 + termination_signal
     finally:
         if worker.is_alive():
             worker.kill()

@@ -310,11 +310,12 @@ def command_signal_cleanup():
     try:
         yield check_termination
     finally:
+        deferring = True
         try:
-            check_termination()
-        finally:
             for signum, handler in previous.items():
                 signal.signal(signum, handler)
+        finally:
+            check_termination()
 
 
 def gh_text(args, repo=None):

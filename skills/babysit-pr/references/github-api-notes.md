@@ -213,7 +213,8 @@ and reap the command group, restore the parent's signal handlers, and exit while
 retaining submitting intent and budget. Cleanup does not prove no write occurred.
 SIGTERM or SIGHUP during process creation is deferred until the parent has
 the command handle, then uses that same cleanup path.
-Those signals during timeout cleanup are deferred until the command group is reaped.
+Once exception cleanup starts, those signals are deferred while the command
+group is killed and reaped. A pending signal is checked after restoring handlers.
 An uncatchable SIGKILL or termination
 outside that cleanup path can leave the command alive without its parent-enforced
 ceiling. Its saved unknown intent blocks replay. Identify the outstanding
