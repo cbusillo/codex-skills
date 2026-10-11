@@ -186,6 +186,52 @@ class TranscriptTests(unittest.TestCase):
                            "Safe to exit: yes.\n\n" + suffix), event("task_complete")],
                     "codex")["safe_verdict"])
 
+    def test_terminal_verdict_outside_completed_fences(self):
+        for text in (
+            "Verified with:\n```sh\nuv run test_supervisor.py\n```\nSafe to exit: yes",
+            "~~~sh\ncommand\n~~~\n**Safe to exit: yes.**",
+            "````sh\n```\n`````\nSafe to exit: yes",
+            "Done.\n   ~~~sh\ncommand\n   ~~~~  \nSafe to exit: yes",
+            "```sh\n~~~\n```\n~~~text\nhello\n~~~\nSafe to exit: yes",
+            "- ```sh\n  command\n  ```\nSafe to exit: yes",
+            "Done.\n  - ```sh\n    command\n    ```\nSafe to exit: yes",
+            "1. Verified with:\n    ```sh\n    command\n    ```\nSafe to exit: yes",
+            "- Verified with:\n\t```sh\n\tcommand\n\t```\nSafe to exit: yes",
+            "> ```sh\n> command\n> ```\nSafe to exit: yes",
+        ):
+            for harness, records in (
+                ("claude", [claude(text)]),
+                ("codex", [event("agent_message", message=text), event("task_complete")]),
+            ):
+                with self.subTest(text=text, harness=harness):
+                    self.assertTrue(session_record.summarize(records, harness)["safe_verdict"])
+        for text in (
+            "```text\nSafe to exit: yes\n```",
+            "~~~text\nSafe to exit: yes",
+            "````text\n```\nSafe to exit: yes",
+            "```sh\n~~~\nSafe to exit: yes",
+            "```sh\n``` trailing text\nSafe to exit: yes",
+            "```text\n    ```\nSafe to exit: yes",
+            "```text\n\t```\nSafe to exit: yes",
+            "- ```text\nSafe to exit: yes",
+            "1. ~~~text\nSafe to exit: yes",
+            "- ```sh\ncommand\n```\nSafe to exit: yes",
+            "- Verified:\n  ```sh\n  command\n```\nSafe to exit: yes",
+            "- Verified:\n    ```sh\n      ```\nSafe to exit: yes",
+            "Output:\n    Safe to exit: yes",
+            "Output:\n\tSafe to exit: yes",
+            "> ```sh\n> command\n> ```\n```\nSafe to exit: yes",
+            "- Outer\n  - Inner\n  ```sh\n  command\n```\nSafe to exit: yes",
+            "- - Inner\n  ```sh\n  command\n```\nSafe to exit: yes",
+            "Output:\n \tSafe to exit: yes",
+            "```sh\ncommand\n```\n> Safe to exit: yes",
+            "~~~sh\ncommand\n~~~\nNot Safe to exit: yes",
+            "```sh\ncommand\n```\nSafe to exit: yes if CI passes",
+            "```sh\ncommand\n```\nSafe to exit: yes for this check only",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(session_record.summarize([claude(text)], "claude")["safe_verdict"])
+
     def test_codex_turn_end_abort_and_resume(self):
         records = [
             event("task_started"),
@@ -509,11 +555,19 @@ class LedgerTests(unittest.TestCase):
 
     def test_memory_citation_fixture_through_status_candidates_and_close(self):
         fixture = Path(__file__).parent / "fixtures/codex-closeout-memory-citation.jsonl"
-        for preface in ("", "No Director action needed. ", "No Director decision needed. "):
+        for preface in (
+            "", "No Director action needed. ", "No Director decision needed. ",
+            "Verified with:\n```sh\ncommand\n```\n",
+            "Verified with:\n~~~sh\ncommand\n~~~\nNo Director action needed. ",
+            "Verified with:\n```sh\ncommand\n```\nNo Director decision needed. ",
+        ):
             with self.subTest(preface=preface):
-                self.transcript.write_text(fixture.read_text().replace(
+                records = session_record.read_jsonl(fixture)
+                text = records[1]["payload"]["content"][0]["text"]
+                records[1]["payload"]["content"][0]["text"] = text.replace(
                     "Safe to exit: yes", preface + "Safe to exit: yes"
-                ))
+                )
+                self.transcript.write_text("".join(json.dumps(record) + "\n" for record in records))
                 result = status.snapshot(self.ledger)[0]
                 self.assertTrue(result["safe_verdict"])
                 self.assertIn("<oai-mem-citation>", result["last_text"])
