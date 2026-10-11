@@ -381,21 +381,23 @@ editing prompt whose entire command is empty. Missing/unknown input refuses;
 screen appearance and `--verified-input` are not substitutes. For Supervisor
 launches that may leave an outer shell, source iTerm's bundled integration in
 that shell before the agent invocation. On Chris-Studio's zsh launch shells,
-the launch file can start with:
+keep the launch file on one line, with the integration source followed by the
+existing final `exec` invocation:
 
 ```sh
-. /Applications/iTerm.app/Contents/Resources/iterm2_shell_integration.zsh
+. /Applications/iTerm.app/Contents/Resources/iterm2_shell_integration.zsh && exec claude <authorized arguments>
 ```
 
 Use the installed integration for the launch shell and actual app location on
 other hosts. This changes only that Supervisor launch shell, never `.zshrc` or
 an iTerm profile. For an already idle Supervisor shell without integration,
 verify the exact target and empty input under the shutdown procedure before
-sending this source command with `send`; read back the new empty prompt before
+sending just the integration source command with `send`; read back the new empty prompt before
 closing. Preserve the tab if that verification is unavailable.
 
-Claude launches export the account-move opt-in in the launch shell, so an
-explicit `exec` replaces that shell instead of a subshell. The Director's iTerm
+Claude launches with a final simple `exec` use `exec env` to pass the account-move
+opt-in only to the agent that replaces the launch shell. Returning
+launches keep the opt-in contained in a subshell. The Director's iTerm
 profile still decides whether an ended terminal closes automatically.
 
 ### Verify and close
@@ -422,13 +424,17 @@ uv run skills/supervisor/scripts/close_ttys.py --ledger <private-ledger.json> --
 uv run skills/supervisor/scripts/iterm_tab.py close --session-id <exact-iterm-id> --ledger <private-ledger.json>
 ```
 
-The two flags attest the Supervisor checked the issue handoff and empty input
+The dry-run helper's two flags attest the Supervisor checked the issue handoff and empty input
 (or recorded the Director's text). Default is a dry run. This helper never
 answers prompts or sends exit commands: it checks transcript, ownership, exact
 iTerm id and TTY, then proves the recorded PID is absent and only `login` and idle login/interactive shell processes
 remain on that TTY. Other jobs, including prompt helpers and shell scripts, preserve the tab.
-Process arguments are inspected privately and never emitted. Apply rechecks activity and processes and requests
-one non-force close. An uncertain inventory or remaining/reused PID preserves
+Process arguments are inspected privately and never emitted. Its existing
+`--apply` adapter remains available and rechecks transcript activity and processes.
+The procedure above uses that dry run for the transcript/handoff gate, then
+`iterm_tab.py close` for current process and native input proof; neither command
+alone replaces the full shutdown procedure. The close command performs one
+non-force close request and has no dry-run mode. An uncertain inventory or remaining/reused PID preserves
 the tab. Read back `iterm_tab.py list` to confirm closure; never force or retry
 an uncertain close. Other terminal applications use the same skill procedure
 through their supported controls, not this iTerm adapter.

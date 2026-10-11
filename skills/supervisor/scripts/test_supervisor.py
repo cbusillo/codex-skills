@@ -950,6 +950,7 @@ class TabCloseTests(unittest.TestCase):
         for entries in ([], [self.entry, self.entry],
                         [{**self.entry, "supervisor_owned": False}],
                         [{**self.entry, "tty": "ttys999"}],
+                        [{**self.entry, "tty": None}],
                         [{**self.entry, "window_id": "director"}],
                         [{**self.entry, "tab_id": "other"}]):
             with self.subTest(entries=entries):
@@ -1014,6 +1015,26 @@ class TabCloseTests(unittest.TestCase):
             output, _ = child.communicate(timeout=5)
             self.assertEqual(child.returncode, 0)
             self.assertEqual(output.split(), [str(child.pid), "1"])
+
+    def test_returning_claude_launch_does_not_mark_later_commands(self):
+        choice = {"provider": "anthropic", "env": {}}
+        command = iterm_tab.with_account('printf "%s " "$CLAUDE_ACCOUNT_MOVE_ENABLED"', choice)
+        result = subprocess.run(["/bin/sh", "-c",
+            command + '\nprintf "%s" "${CLAUDE_ACCOUNT_MOVE_ENABLED-unset}"'],
+            env={k: v for k, v in os.environ.items() if k != "CLAUDE_ACCOUNT_MOVE_ENABLED"},
+            capture_output=True, text=True, timeout=5, check=True)
+        self.assertEqual(result.stdout, "1 unset")
+        for text in ('cd / && exec claude brief',
+                     '. /integration && exec claude "brief has ; punctuation"'):
+            self.assertIsNotNone(iterm_tab.scoped_exec(text))
+        for text in ('claude "exec task"', 'exec claude task; printf later',
+                     '( exec claude task )', 'claude task'):
+            self.assertIsNone(iterm_tab.scoped_exec(text))
+        command = iterm_tab.with_account('cd /nonexistent-supervisor-test-1627 && exec true', choice)
+        result = subprocess.run(["/bin/sh", "-c", command + '\nprintf "%s" "${CLAUDE_ACCOUNT_MOVE_ENABLED-unset}"'],
+            env={k: v for k, v in os.environ.items() if k != "CLAUDE_ACCOUNT_MOVE_ENABLED"},
+            capture_output=True, text=True, timeout=5, check=True)
+        self.assertEqual(result.stdout, "unset")
 
 
 class TerminalTests(unittest.TestCase):

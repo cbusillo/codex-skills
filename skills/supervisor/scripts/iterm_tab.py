@@ -201,6 +201,23 @@ def check_codex_daemon(choice):
         ) from error
 
 
+def scoped_exec(command_text):
+    """Scope the marker to a final simple exec without exporting into the shell."""
+    prefix, separator, final = command_text.rpartition("&&")
+    lexer = shlex.shlex(final, posix=True, punctuation_chars=";&|()")
+    lexer.whitespace_split = True
+    try:
+        words = list(lexer)
+    except ValueError:
+        return None
+    if (len(words) < 2 or words[0] != "exec" or words[1].startswith("-")
+            or any(token and all(c in ";&|()" for c in token) for token in words)
+            or not re.match(r"^\s*exec\s+", final)):
+        return None
+    final = re.sub(r"^(\s*)exec\s+", r"\1exec env CLAUDE_ACCOUNT_MOVE_ENABLED=1 ", final, count=1)
+    return prefix + separator + final
+
+
 def with_account(command_text, choice):
     """Prefix one agent invocation with the chosen account's environment."""
     if "\n" in command_text:
@@ -222,7 +239,9 @@ def with_account(command_text, choice):
     if settings:
         prefixes.append(f"export {settings}")
     if choice["provider"] == "anthropic":
-        prefixes.append("export CLAUDE_ACCOUNT_MOVE_ENABLED=1")
+        command_text = scoped_exec(command_text) or (
+            "( export CLAUDE_ACCOUNT_MOVE_ENABLED=1; " + command_text + "\n)"
+        )
     return " && ".join([*prefixes, command_text])
 
 
@@ -251,8 +270,12 @@ async def close_session(app, session_id, ledger):
         for key, value in (("window_id", window.window_id), ("tab_id", tab.tab_id)):
             if key in entry and entry[key] != value:
                 raise ValueError("terminal location differs from launch ledger")
-        tty = (await session.async_get_variable("tty") or "").removeprefix("/dev/")
-        if not tty or tty != entry.get("tty", "").removeprefix("/dev/"):
+        live_tty = await session.async_get_variable("tty")
+        expected_tty = entry.get("tty")
+        if not isinstance(live_tty, str) or not isinstance(expected_tty, str):
+            raise ValueError("terminal TTY is missing or invalid")
+        tty = live_tty.removeprefix("/dev/")
+        if not tty or tty != expected_tty.removeprefix("/dev/"):
             raise ValueError("terminal TTY differs from launch ledger")
         rows = inventory()
         jobs = [row for row in rows if row[1] == tty]

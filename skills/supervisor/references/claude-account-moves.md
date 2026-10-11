@@ -47,8 +47,11 @@ not a cache or task artifact. If it is missing, uninstall still removes matching
 enrollment settings and hooks without recreating the directory. Write enrollment creates it and its managed `process-wrapper` entrypoint. Protect this directory
 as private session evidence: requests contain working and transcript paths, but
 never error strings, tokens or credentials. Only sessions carrying `CLAUDE_ACCOUNT_MOVE_ENABLED=1` record or execute moves.
-The Supervisor terminal launcher contains this marker in a subshell for its
-Anthropic invocation; it does not persist in the tab shell. Sessions without the
+The Supervisor terminal launcher contains this marker in a subshell when its
+Anthropic invocation returns. A final simple `exec` invocation instead uses
+`exec env` to pass it only to the agent that replaces the launch shell; there is no outer shell left
+after the agent exits. Use that final `exec` form for Supervisor launch files.
+Sessions without the
 marker remain inert. Before enabling service-hosted sessions, qualify whether
 Claude's detached service propagates the marker to unrelated sessions; this
 branch does not establish that isolation. Leave the Director's sessions alone.
