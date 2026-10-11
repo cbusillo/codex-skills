@@ -5094,7 +5094,18 @@ def test_context_projection_contract_and_secret_shape() -> None:
 
 
 @pytest.mark.parametrize("selector", ["--repo", "--branch"])
-@pytest.mark.parametrize("value", ["ghp_" + "A" * 40, "/private/synthetic-path", "C:\\private\\synthetic-path", "~/synthetic-path"])
+@pytest.mark.parametrize("value", [
+    *[prefix + "A" * 40 for prefix in ("ghp_", "ghs_", "gho_", "ghu_", "ghr_", "github_pat_")],
+    "/private/synthetic-path",
+    "C:\\private\\synthetic-path",
+    "~/synthetic-path",
+    "~fixture/synthetic-path",
+    "file:///private/synthetic-path",
+    "../../private/synthetic-path",
+    "work/../synthetic-path",
+    "..\\..\\private\\synthetic-path",
+    "  ~fixture/synthetic-path  ",
+])
 def test_context_entrypoint_omits_unsafe_request_selectors(selector: str, value: str) -> None:
     args = ["--repo", "example/repo"] if selector == "--branch" else []
     result = run_helper("launchplane-context.py", [*args, selector, value])
@@ -5102,6 +5113,17 @@ def test_context_entrypoint_omits_unsafe_request_selectors(selector: str, value:
     assert result["payload"]["status"] == "invalid"
     assert result["payload"]["request"] == {}
     assert value not in json.dumps(result["payload"])
+
+
+@pytest.mark.parametrize("prefix", ["ghp_", "ghs_", "gho_", "ghu_", "ghr_", "github_pat_"])
+def test_shared_safety_rejects_and_redacts_github_tokens(prefix: str) -> None:
+    synthetic_token = prefix + "A" * 40
+    for validator in (safety.public_summary_string, safety.public_identifier, safety.public_trace_id):
+        with pytest.raises(safety.LaunchplaneSafetyError):
+            validator(synthetic_token)
+    with pytest.raises(safety.LaunchplaneSafetyError):
+        safety.assert_public_safe_shape({"summary": [synthetic_token]})
+    assert safety.public_operator_text("Review " + synthetic_token) == "Review [redacted]"
 
 
 def test_context_valid_request_selectors_keep_optional_fallback() -> None:

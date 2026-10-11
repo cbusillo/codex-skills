@@ -15,7 +15,7 @@ from typing import Any
 
 
 TOKEN_PATTERNS = (
-    re.compile(r"ghp_[A-Za-z0-9_]+"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9_]+"),
     re.compile(r"github_pat_[A-Za-z0-9_]+"),
     re.compile(r"sk-[A-Za-z0-9_-]+"),
     re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
