@@ -44,11 +44,15 @@ arbitrary data flow or understand every language/test DSL. Foreign-language
 source-text/instruction checks, computed paths, imported loaders with no path
 argument, and custom assertion helpers can escape it. Python execution
 detection is per function, so an unrelated execution in the same test can
-hide a workflow warning. Foreign alias detection is file-wide and conservative.
+hide a workflow warning; execution through a helper or later class method can
+produce a false positive. Foreign alias detection is file-wide and conservative.
+Coincidental version matches in dependency locks or documentation need triage;
+token duplication alone does not prove ownership.
 Comments and Python string fixtures are ignored. Source-of-truth agreement,
 temporary fixtures and real artifact/immutable-evidence checks remain valid;
 triage candidates using the repository's test rubric. Symlinked files and
-binary/non-UTF-8 files are excluded; the report does not prove complete coverage.
+binary/non-UTF-8 files, gitlinks and locally deleted files are excluded; the
+report does not prove complete coverage.
 No blocking mode is enabled: tune false positives before introducing one.
 
 ## Wire another repository's CI

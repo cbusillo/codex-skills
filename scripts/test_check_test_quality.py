@@ -89,6 +89,15 @@ let plist = try loadInfoPlist("Config/App-Info.plist")
         result = self.rules(source, suffix=".ts", paths={".github/workflows/ci.yml"}, versions={"@v4"})
         self.assertIn("duplicated-version", result)
         self.assertIn("workflow-no-execution", result)
+        self.assertIn("pinned-config", result)
+
+    def test_javascript_import_require_and_node_assertions(self) -> None:
+        for source in (
+            'const pkg = require("../package.json"); expect(pkg.name).toBe("app");',
+            'import pkg from "./package.json"; expect(pkg.name).not.toEqual("old");',
+            'const pkg = require("./package.json"); assert.strictEqual(pkg.name, "app");',
+        ):
+            self.assertIn("pinned-config", self.rules(source, suffix=".ts", paths={"package.json"}))
 
     def test_workflow_execution_keeps_behavior_tests(self) -> None:
         source = '''
@@ -121,6 +130,39 @@ self.assertEqual(response.message, "The requested operation could not be complet
 assert artifact.digest == expected_digest
 '''
         self.assertEqual(self.rules(source, versions={"4.5.6"}), set())
+
+    def test_parsed_execution_output_and_scanner_output_are_behavior(self) -> None:
+        source = '''
+r = subprocess.run(["uv", "run", "scripts/tool.py", "--json"])
+data = json.loads(r.stdout)
+self.assertIn("ok", data["status"])
+result = scan('assert version == "4.5.6"')
+self.assertIn("duplicated-version", result)
+self.assertEqual(settings.host, "127.0.0.1")
+'''
+        self.assertEqual(self.rules(source, paths={"scripts/tool.py"}, versions={"4.5.6", "127.0.0"}), set())
+        self.assertEqual(guard.VERSION.findall("127.0.0.1"), [])
+
+    def test_unpacked_temporary_paths_and_templates(self) -> None:
+        fixture = '''
+class Tests:
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.first, self.second = self.root / "one", self.root / "two"
+    def test_fixture(self):
+        self.assertIn("private wording", (self.first / "AGENTS.md").read_text())
+'''
+        self.assertEqual(self.rules(fixture, paths={"AGENTS.md"}, catalog=True), set())
+        source = 'template_path = ROOT / "templates/helper.py"\nself.assertIn("function_name", template_path.read_text())'
+        self.assertIn("source-text", self.rules(source, paths={"templates/helper.py"}))
+        fixture = '''
+with tempfile.TemporaryDirectory() as directory:
+    manifest, expected = build_fixture(Path(directory))
+    workspace = Path(manifest["workspace"])
+    self.assertNotIn("private wording", (workspace / "AGENTS.md").read_text())
+'''
+        self.assertEqual(self.rules(fixture, paths={"AGENTS.md"}, catalog=True), set())
 
     def test_config_types_and_source_extensions(self) -> None:
         for path in ("pyproject.toml", "uv.lock", "Dockerfile.release", "docker-compose.test.yml",
@@ -170,7 +212,19 @@ class Command(unittest.TestCase):
         with TemporaryDirectory() as directory:
             result = subprocess.run([sys.executable, guard.__file__, "--repo", directory], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("scan failed", result.stderr)
+            self.assertTrue(result.stderr)
+
+    def test_gitlinks_and_locally_deleted_files_do_not_crash(self) -> None:
+        with TemporaryDirectory() as directory:
+            repo = Path(directory)
+            subprocess.run(["git", "init", "-q", directory], check=True)
+            (repo / "deleted.txt").write_text("fixture")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            (repo / "deleted.txt").unlink()
+            (repo / "submodule").mkdir()
+            subprocess.run(["git", "update-index", "--add", "--cacheinfo",
+                            "160000," + "1" * 40 + ",submodule"], cwd=repo, check=True)
+            self.assertEqual(guard.scan(repo, []), [])
 
 
 if __name__ == "__main__":

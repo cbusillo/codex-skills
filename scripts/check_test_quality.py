@@ -17,10 +17,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 EXTENSIONS = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".swift"}
-VERSION = re.compile(r"(?:>=\s*)?\d+\.\d+\.\d+(?:[-+][\w.]+)?|@v\d+\b")
+VERSION = re.compile(r"(?<![\w.])(?:>=\s*)?\d+\.\d+\.\d+(?:[-+][\w.]+)?(?![\w.])|@v\d+\b")
 STRING = re.compile(r'''"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`''')
 READ = re.compile(r"(?:^|\.)(?:open|read_text|read_bytes|read|readFileSync|readFile|readText)$|(?:^|\.)load\w*", re.I)
-TEMP = re.compile(r"tmp_path|tmpdir|temp\w*|TemporaryDirectory|mkdtemp", re.I)
+TEMP = re.compile(r"\b(?:tmp_path|tmpdir|temp_dir|temp_root|temporary_directory|tempfile|TemporaryDirectory|mkdtemp|temp)\b", re.I)
 EXECUTE = re.compile(r"subprocess\.|os\.system|(?:^|\.)(?:run|execute|exec|eval|run_shell)\b")
 MESSAGES = {
     "pinned-config": "Tracked config value compared with a test-owned literal; enforce the rule in a linter or compare with its source of truth.",
@@ -84,7 +84,14 @@ def aliases_for(nodes: list[ast.AST]) -> dict[str, ast.AST]:
         for node in ast.walk(root):
             if isinstance(node, ast.Assign):
                 for target in node.targets:
-                    aliases[ast.unparse(target)] = node.value
+                    if isinstance(target, (ast.Tuple, ast.List)) and isinstance(node.value, (ast.Tuple, ast.List)):
+                        for left, right in zip(target.elts, node.value.elts):
+                            aliases[ast.unparse(left)] = right
+                    elif isinstance(target, (ast.Tuple, ast.List)):
+                        for left in target.elts:
+                            aliases[ast.unparse(left)] = node.value
+                    else:
+                        aliases[ast.unparse(target)] = node.value
             elif isinstance(node, ast.AnnAssign) and node.value is not None:
                 aliases[ast.unparse(node.target)] = node.value
             elif isinstance(node, (ast.For, ast.AsyncFor)):
@@ -142,7 +149,7 @@ def python_findings(path: str, source: str, tracked: set[str], versions: set[str
                         return set()
                     if name == "inspect.getsource":
                         return {"<inspect-source>"}
-                    if READ.search(name):
+                    if READ.search(name) and not name.startswith(("json.", "tomllib.", "yaml.", "plistlib.")):
                         expanded_text = " ".join(ast.unparse(child) for child in expanded(item))
                         if not TEMP.search(expanded_text):
                             paths = match_paths(strings(item), tracked)
@@ -154,7 +161,7 @@ def python_findings(path: str, source: str, tracked: set[str], versions: set[str
         executing = any(isinstance(node, ast.Call) and EXECUTE.search(ast.unparse(node.func))
                         for node in ast.walk(scope))
         for node in ast.walk(scope):
-            if isinstance(node, ast.Call) and not executing:
+            if isinstance(node, ast.Call) and not executing and READ.search(ast.unparse(node.func)) and not ast.unparse(node.func).startswith(("json.", "tomllib.", "yaml.", "plistlib.")):
                 for origin in origins(node):
                     if origin.startswith(".github/workflows/") and origin.endswith((".yml", ".yaml")):
                         found.add(finding(path, node.lineno, "workflow-no-execution"))
@@ -169,10 +176,16 @@ def python_findings(path: str, source: str, tracked: set[str], versions: set[str
                 membership = any(isinstance(op, (ast.In, ast.NotIn)) for op in node.ops)
             if not operands:
                 continue
+            def expected_strings(item: ast.AST, seen: frozenset[str] = frozenset()) -> list[str]:
+                if isinstance(item, ast.Name) and item.id in aliases and item.id not in seen:
+                    return expected_strings(aliases[item.id], seen | {item.id})
+                if isinstance(item, ast.Constant) and isinstance(item.value, str):
+                    return [item.value]
+                if isinstance(item, (ast.Tuple, ast.List, ast.Set)):
+                    return [value for child in item.elts for value in expected_strings(child, seen)]
+                return []
             # Subscript keys are identifiers, not expected literal operands.
-            literals = [value for operand in operands if isinstance(operand, (ast.Constant, ast.List, ast.Tuple))
-                        or (isinstance(operand, ast.Name) and not origins(operand))
-                        for value in strings(operand)]
+            literals = [value for operand in operands for value in expected_strings(operand)]
             if not literals:
                 continue
             inputs = set().union(*(origins(operand) for operand in operands))
@@ -193,8 +206,10 @@ def foreign_findings(path: str, source: str, tracked: set[str], versions: set[st
     cleaned = tokens.sub(lambda match: match.group() if STRING.fullmatch(match.group())
                          else re.sub(r"[^\n]", " ", match.group()), source)
     quoted = {item.start(): item.end() for item in STRING.finditer(cleaned)}
-    calls: list[tuple[int, str, str]] = []
+    calls: list[tuple[int, int, str, str]] = []
     for match in re.finditer(r"(?:\b\w+|#expect|#require)\s*\(", cleaned):
+        if any(start <= match.start() < end for start, end in quoted.items()):
+            continue
         depth, end = 1, match.end()
         while end < len(cleaned) and depth:
             if end in quoted:
@@ -202,14 +217,17 @@ def foreign_findings(path: str, source: str, tracked: set[str], versions: set[st
                 continue
             depth += (cleaned[end] == "(") - (cleaned[end] == ")")
             end += 1
-        calls.append((match.start(), match.group().split("(")[0].strip(), cleaned[match.end():end - 1]))
+        calls.append((match.start(), end, match.group().split("(")[0].strip(), cleaned[match.end():end - 1]))
     # Bounded foreign-language data flow: reader calls plus let/const/var aliases.
     config_names: set[str] = set()
     found: set[Finding] = set()
     config_paths = {item for item in match_paths([m.group()[1:-1] for m in STRING.finditer(cleaned)], tracked)
                     if kind(item, catalog) == "config"}
-    for start, name, body in calls:
-        if re.search(r"readFile|readText|load|String", name, re.I):
+    for match in re.finditer(r'''import\s+(\w+)\s+from\s+(["'])(.*?)\2''', cleaned):
+        if match_paths([match.group(3)], tracked) & config_paths:
+            config_names.add(match.group(1))
+    for start, _end, name, body in calls:
+        if re.search(r"readFile|readText|load|String|^require$", name, re.I):
             paths = match_paths([m.group()[1:-1] for m in STRING.finditer(body)], tracked)
             if (paths & config_paths or (config_paths and name.startswith("load") and re.search(r"\bpath\b", body))) and not TEMP.search(body):
                 prefix = cleaned[max(0, cleaned.rfind("\n", 0, start)):start]
@@ -224,14 +242,20 @@ def foreign_findings(path: str, source: str, tracked: set[str], versions: set[st
             expression = STRING.sub("", match.group(2))
             if any(re.search(rf"\b{re.escape(name)}\b", expression) for name in config_names):
                 config_names.add(match.group(1))
-    for start, name, body in calls:
-        if not re.search(r"assert|expect|toEqual|toBe", name, re.I):
+    for start, _end, name, body in calls:
+        node_assertion = name in {"equal", "strictEqual", "deepStrictEqual"} and cleaned[:start].rstrip().endswith("assert.")
+        if not node_assertion and not re.search(r"assert|expect|toEqual|toBe", name, re.I):
             continue
         expected = body.split("==", 1)[-1] if "==" in body else body
         values = [item.group()[1:-1] for item in STRING.finditer(expected)]
         if not values:
             continue
         expression = STRING.sub("", body)
+        if name in {"toEqual", "toBe", "toStrictEqual"}:
+            for _prior_start, prior_end, prior_name, prior_body in reversed(calls):
+                if prior_end <= start and prior_name == "expect" and cleaned[prior_end:start].strip() in {".", ".not."}:
+                    expression += " " + STRING.sub("", prior_body)
+                    break
         line = cleaned.count("\n", 0, start) + 1
         if any(re.search(rf"\b{re.escape(alias)}\b", expression) for alias in config_names):
             found.add(finding(path, line, "pinned-config"))
@@ -249,7 +273,7 @@ def scan(repo: Path, excludes: list[str]) -> list[Finding]:
     sources: dict[str, str] = {}
     for path in sorted(tracked):
         file = repo / path
-        if file.is_symlink():
+        if file.is_symlink() or not file.is_file():
             continue
         try:
             text = file.read_text(encoding="utf-8")
