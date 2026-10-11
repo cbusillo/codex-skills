@@ -498,7 +498,17 @@ def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_
     issue = reader.get_json(f"/repos/{repo}/issues/{number}", step="release_canonical_issue")
     if "pull_request" in issue:
         sources = active_claims(reader, repo, number, entry["session_id"], actor)
+        comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="pr_inventory_source")
+        for row in entry.get("_inventory_claims", []):
+            if row["repo"] != repo or row["issue"] != number:
+                continue
+            expected = next((c for c in comments if c["id"] == row["claim_comment_id"]), None)
+            if expected is None or (expected.get("user") or {}).get("login") != actor or not belongs_to_session(expected.get("body") or "", entry["session_id"]):
+                raise ValueError("inventory PR source is missing or lacks exact native-session/author evidence")
         for source, related, unresolved in sources:
+            if entry.get("_inventory") and not any(row["repo"] == repo and row["issue"] == number
+                    and row["claim_comment_id"] == source["id"] for row in entry["_inventory_claims"]):
+                raise ValueError("inventory PR source needs its structured claim selected explicitly")
             if unresolved:
                 raise ValueError("PR ownership follow-ups need verified exact-ID releases")
             argv = ["uv", "run", str(GITHUB / "gh-plan.py"), "--repo", repo,
