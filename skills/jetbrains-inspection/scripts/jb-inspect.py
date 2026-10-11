@@ -9297,7 +9297,7 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
         "error_reason": payload.get("error_reason"),
         "endpoint": payload.get("endpoint") or attribution.get("endpoint"),
         "http_status": payload.get("http_status") or attribution.get("http_status"),
-        "response_code": payload.get("response_code") or attribution.get("code"),
+        "response_code": payload.get("response_code"),
         "error_message": guidance_for_command(payload.get("error_message") or payload.get("error"), "agent-inspect"),
         "hint": guidance_for_command(payload.get("hint"), "agent-inspect"),
         "attribution_class": payload.get("attribution_class"),

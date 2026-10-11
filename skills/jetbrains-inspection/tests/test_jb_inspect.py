@@ -10179,6 +10179,17 @@ class AttributionContractTest(unittest.TestCase):
         self.assertEqual(payload["http_status"], 200)
         self.assertEqual(payload["response_code"], "invalid_api_response")
         self.assertEqual(payload["client_run_id"], "ffffffff-ffff-4fff-8fff-ffffffffffff")
+        result = jb_inspect.inspection_endpoint_failure_result(raised.exception, {}, {}, {}, None)
+        compact = jb_inspect.compact_agent_result_payload(result, 1)
+        self.assertEqual(compact["diagnostic"]["http_status"], payload["http_status"])
+        self.assertEqual(compact["diagnostic"]["endpoint"], payload["endpoint"])
+
+    def test_compact_local_timeout_has_no_http_response_code(self):
+        payload = {"status": "error", "error_reason": "timeout"}
+        jb_inspect.apply_verdict(payload)
+        compact = jb_inspect.compact_agent_result_payload(payload, 1)
+        self.assertIsNone(compact["diagnostic"]["http_status"])
+        self.assertIsNone(compact["diagnostic"]["response_code"])
 
     def test_broad_non_json_http_failure_survives_compact_lane_report(self):
         files = [f"/repo/src/module_{index}.py" for index in range(160)]
@@ -10199,8 +10210,9 @@ class AttributionContractTest(unittest.TestCase):
                 sent = request.call_args.args[0]
                 self.assertEqual(urllib.parse.parse_qs(urllib.parse.urlsplit(sent.full_url).query)["files"], [",".join(files)])
                 result = jb_inspect.inspection_endpoint_failure_result(
-                    raised.exception, context, {}, {}, None,
+                    raised.exception, {"project_key": "path:/repo"}, {}, {}, None,
                 )
+                result["context"] = context
                 result["cleanup"] = {"status": "closed"}
                 compact_lane = jb_inspect.compact_inspection_lane_result(lane, 0, context, selected, result)
                 compact = jb_inspect.compact_agent_result_payload({
