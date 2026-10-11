@@ -421,7 +421,7 @@ def current_ownership_text(
     holder = r"[\w-]+(?:\.[\w-]+)*"
     clause = re.compile(
         rf"(?P<lead>(?:^|(?<=[;!?] )|(?<=\. ))(?:[-*] )?(?:[A-Z][\w ]*: )?(?:[Ii]ssue )?)"
-        rf"(?P<ref>{reference})(?![\w/#])(?P<body>(?:[^;!?.\n]|\.(?!\s))*?) owned by {holder}(?=[;!?]|\.(?:\s|$)|\s*$)",
+        rf"(?P<ref>{reference})(?=\s)(?P<body>(?:[^;!?.\n]|\.(?!\s))*?) owned by {holder}(?=[;!?]|\.(?:\s|$)|\s*$)",
         re.MULTILINE,
     )
 

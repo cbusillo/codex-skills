@@ -2283,7 +2283,9 @@ class ClaimTests(unittest.TestCase):
                          "#3314 is settled. Here it is owned by LP-D1.",
                          "#3314 is complete and the follow-up is owned by LP-D1.",
                          "#3314 was closed when the repair was owned by LP-D1.",
-                         "#3314, like the remaining slice, is owned by LP-D1."):
+                         "#3314, like the remaining slice, is owned by LP-D1.",
+                         "#3314's follow-up is owned by LP-D1.",
+                         "#3314’s follow-up is owned by LP-D1."):
             with self.subTest(sentence=sentence):
                 self.setUp()
                 self.issue["body"] += "Last verified: October 10, 2026. " + sentence + "\n"
