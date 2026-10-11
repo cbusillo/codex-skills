@@ -511,6 +511,11 @@ def run_pass(io, args, emit):
                 pr["number"]: sorted(label["name"] for label in pr["labels"])
                 for pr in pulls
                 if target["label"] in {label["name"] for label in pr["labels"]}
+                and any(
+                    f"held by {label['name']} label"
+                    in dispositions[pr["number"]]["ineligible_reasons"]
+                    for label in pr["labels"]
+                )
             }
             candidates = []
             for listed in pulls:

@@ -67,6 +67,12 @@ def response(pulls, own=(), **result) -> dict[str, Any]:
                     {
                         "number": p["number"],
                         "head_sha": p["head"]["sha"],
+                        "actor_role": "trusted_automation",
+                        "mergeable": "mergeable",
+                        "required_checks_status": "pass",
+                        "eligible": p["number"] in own
+                        or TARGET["label"] in {label["name"] for label in p["labels"]},
+                        "branch_update_required": False,
                         "ineligible_reasons": []
                         if p["number"] in own
                         or TARGET["label"] in {label["name"] for label in p["labels"]}
@@ -78,6 +84,37 @@ def response(pulls, own=(), **result) -> dict[str, Any]:
             **result,
         },
     }
+
+
+def candidate_response(
+    own, *, status="ready_for_checks", action="observe_candidate", records=None, queue=None
+):
+    result: dict[str, Any] = {
+        "mode": "dry-run",
+        "controller_action": action,
+        "candidate": {
+            "status": status,
+            "base_sha": SHA,
+            "candidate_ref": "launchplane/train/example/batch",
+            "candidate_sha": "c" * 40,
+            "entries": [
+                {"pull_request_number": number, "head_sha": SHA} for number in own
+            ],
+        },
+    }
+    if queue is not None:
+        result["dry_run_result"] = queue
+    return watch.operator.summarize_success(
+        operation="merge-train-controller-run-once",
+        request={"repository": REPO},
+        provider_payload={
+            "status": "accepted",
+            "records": records
+            if records is not None
+            else {"merge_train_batch_candidate_record_id": "active"},
+            "result": result,
+        },
+    )
 
 
 class Fake:
@@ -126,28 +163,7 @@ class Fake:
         ]
         if self.scheduler_owns_batch and self.writes:
             # A normal active-candidate observation omits dry_run_result.
-            value = watch.operator.summarize_success(
-                operation="merge-train-controller-run-once",
-                request={"repository": REPO},
-                provider_payload={
-                    "status": "accepted",
-                    "records": {"merge_train_batch_candidate_record_id": "active"},
-                    "result": {
-                        "mode": "dry-run",
-                        "controller_action": "observe_candidate",
-                        "candidate": {
-                            "status": self.candidate_status,
-                            "base_sha": SHA,
-                            "candidate_ref": "launchplane/train/example/batch",
-                            "candidate_sha": "c" * 40,
-                            "entries": [
-                                {"pull_request_number": number, "head_sha": SHA}
-                                for number in self.writes
-                            ],
-                        },
-                    },
-                },
-            )
+            value = candidate_response(self.writes, status=self.candidate_status)
         return value
 
     def get(self, path):
@@ -266,7 +282,18 @@ class EnqueueTests(unittest.TestCase):
         fake.ineligible[6] = ["held by merge-blocked label"]
         self.run_pass(fake)
         self.assertEqual(fake.writes, [1, 2, 4, 5])
-        self.assertEqual(fake.pulls[6]["labels"][1]["name"], "merge-blocked")
+        self.assertEqual(
+            fake.pulls[6]["labels"],
+            [{"name": TARGET["label"]}, {"name": "merge-blocked"}],
+        )
+
+    def test_queue_free_observation_cannot_preserve_a_nonlabel_hold(self):
+        fake = Fake()
+        fake.scheduler_owns_batch = True
+        fake.pulls[6]["labels"] = [{"name": TARGET["label"]}]
+        fake.ineligible[6] = ["actor role is not allowed to enqueue"]
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [1])
 
     def test_own_scheduler_candidate_stops_when_held_labels_change(self):
         fake = Fake()
@@ -306,13 +333,16 @@ class EnqueueTests(unittest.TestCase):
         def train(target):
             value = original_train(target)
             if len(fake.writes) > 1:
-                value["result"]["controller_action"] = "plan_candidate"
-                value["result"]["dry_run_result"] = response(
-                    fake.pulls.values(), fake.writes
-                )["result"]["dry_run_result"]
-                value["records"] = {
-                    "superseded_merge_train_batch_candidate_record_id": "active"
-                }
+                return candidate_response(
+                    fake.writes,
+                    action="plan_candidate",
+                    queue=response(fake.pulls.values(), fake.writes)["result"][
+                        "dry_run_result"
+                    ],
+                    records={
+                        "superseded_merge_train_batch_candidate_record_id": "active"
+                    },
+                )
             return value
 
         fake.train = train
@@ -395,12 +425,14 @@ class EnqueueTests(unittest.TestCase):
         def train(target):
             value = original_train(target)
             if fake.writes:
-                value["result"]["dry_run_result"] = response(fake.pulls.values())["result"][
+                queue = response(fake.pulls.values(), fake.writes)["result"][
                     "dry_run_result"
                 ]
-                value["result"]["dry_run_result"]["queue"][1]["ineligible_reasons"] = [
-                    "actor role is not allowed to enqueue"
-                ]
+                queue["queue"][1].update(
+                    eligible=False,
+                    ineligible_reasons=["actor role is not allowed to enqueue"],
+                )
+                return candidate_response(fake.writes, queue=queue)
             return value
 
         fake.train = train
