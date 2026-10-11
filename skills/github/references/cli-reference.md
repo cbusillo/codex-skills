@@ -592,11 +592,13 @@ or Project focus state.
   `OPEN` or `CLOSED` values.
   Inventory output includes freshly read `repository.archived` (boolean or
   null) and `repository.disposition` (`current`, `frozen_historical`, or
-  `unknown`), also attached to each plan row. Archived rows stay in the inventory
-  as frozen history; their active-looking labels do not establish current work.
+  `unknown`), also attached to each plan row. Archived repositories return no plan
+  rows by default; `--include-archived` restores their frozen history.
   Unavailable or missing archive metadata preserves the rows with unknown context.
 - `search <query>`: Search issues through the REST search endpoint with an
-  `is:issue` constraint. Add the current repository only when the query has no
+  `is:issue` constraint. Archived repositories are excluded by default;
+  `--include-archived` preserves the caller's archive qualifiers instead.
+  Add the current repository only when the query has no
   positive `repo:`, `org:`, or `user:` scope; an explicit global `--repo` always
   adds its repository qualifier. GitHub ORs multiple `repo:` qualifiers, so
   this can widen a query that already names another repository.
@@ -635,6 +637,27 @@ uv run <skill-dir>/scripts/gh-plan.py claim <issue> \
   --worker <worker-token> --session <session-id> \
   --branch work/<task-slug> --next-action "<action>"
 ```
+
+For PR-only work, including Dependabot fixes and bare PRs, pass the PR number,
+`OWNER/REPO#N`, or its exact `https://github.com/OWNER/REPO/pull/N` URL to the same
+command. A PR claim uses the same structured comment, ownership/readback,
+exact-author release and closed-session attestation rules below. Its result
+identifies `record_kind: pr` and `current_status_location: claim_comment`;
+it preserves the PR body and labels and creates no tracking issue. Put recovery
+status in a `## Current Status` comment; the latest such comment and the body
+status are checked for holds. When a PR links a canonical implementation issue,
+claim that issue instead. PR-scoped claims require a same-repository head and
+base; forks use a canonical planning issue. The PR's remote source head is its
+work record; local source branches/worktrees and live peers remain competing
+evidence unless owned or covered by an exact authored release. `--resume-from`
+works for released PR claims; `--refresh-pr` and `--handoff-comment` keep their
+canonical-issue contract. `release-claim` accepts the same PR references and attestation URLs on either
+issue or PR timeline comments. It checks the claimed source branch against the closed-session attestation. A
+later update to a separate Dependabot work-record branch does not count as
+source-session activity; source-branch activity, ownership and peer checks
+still refuse independently. A closed
+PR can release ended ownership without reopening it; a new claim still needs
+an open record.
 
 Agent routing and the session override are defined in
 [Agent Assignment](../../github-plan/SKILL.md#agent-assignment). `next` and
@@ -860,7 +883,7 @@ caller's transcript/closure verification, including peers or hosts unavailable
 to the helper; partial inventory alone is never closure evidence. The command
 leaves issue status, waits, blockers, branches and worktrees intact. A verified
 closed-session release accepts an open or closed canonical issue without
-reopening it; creating a new claim still requires an open issue.
+reopening it; creating a new claim still requires an open issue or PR.
 `release_refusal_scope` distinguishes the release helper's confirmed retained-work
 refusals for one issue from a source-session or unknown failure. A Supervisor may
 continue independent claims after an issue-scoped dry-run refusal and fresh closure
@@ -1051,8 +1074,8 @@ with a normal fast-forward refspec (`task-branch:pr-head-branch`) under the
 brief's authority; never check out the PR branch in two worktrees or force-push.
 Recheck its live head before integrating and pushing so a concurrent update
 is preserved. Then release the new issue claim
-with its exact comment ID. Direct `claim <PR>` remains unsupported; the
-canonical issue is the durable ownership and status record.
+with its exact comment ID. This refresh route keeps the canonical issue as its
+durable ownership and status record; PR-only claims use [Planning: Claim](#planning-claim).
 
 A refused write/readback race includes `claim_recovery.release_own_claim` when
 this invocation posted a claim. Post its exact `Released claim <comment-id>`

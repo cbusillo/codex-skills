@@ -143,8 +143,9 @@ Director asks; that is execution.
 3. Propose, in this order: escalation decisions, milestone lines to add or
    retire, and a direction pull request when the file itself must change. The
    Director decides in chat; record the decision on GitHub the same session,
-   on an issue that ends done or split as the
-   [executing loop](../references/executing-loop.md) says.
+   on an issue that records the completed decision or names the remaining
+   action and who takes it, under github-plan's
+   [Close Or Hand Off](../github-plan/SKILL.md#close-or-hand-off).
 4. End with what the executing agent should see on GitHub when it next runs
    `next`, so the handoff needs no copy and paste.
 
@@ -166,6 +167,11 @@ or `plan:waiting` label and waits that already have a posted question:
 ```bash
 uv run <skill-dir>/scripts/director_waits.py --owner OWNER
 ```
+
+Cross-repository searches and audit repository discovery exclude archived repositories
+by default. Add `--include-archived` to `gh-plan.py search`, `director_waits.py`,
+or `direction_audit.py` for historical results. An explicitly named archived
+repository still reports frozen history in the stale-wait audit.
 
 It uses two Director-wide GitHub issue searches for open issue bodies containing
 `Waiting for` or `Parked until`, then applies the shared human-attention classifier locally with

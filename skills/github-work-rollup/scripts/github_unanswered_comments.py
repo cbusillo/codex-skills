@@ -36,6 +36,7 @@ if str(IDENTITY_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(IDENTITY_SCRIPT_DIR))
 import github_identity
 import github_direction_next
+import github_repository_scope as repository_scope
 
 
 def load_sibling_module(name: str, path: Path) -> Any:
@@ -120,9 +121,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Report external issue and PR comments that still need the owner's attention."
     )
+    repository_scope.add_include_archived_argument(parser)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="Optional GitHub work rollup YAML config.")
     parser.add_argument("--repo", action="append", default=[], help="OWNER/REPO. May be repeated.")
-    parser.add_argument("--repo-owner", action="append", default=[], help="Owner whose non-archived repos should be scanned.")
+    parser.add_argument("--repo-owner", action="append", default=[], help="Owner whose repos should be scanned, excluding archives by default.")
     parser.add_argument("--thread", action="append", default=[], help="Full-history OWNER/REPO#NUMBER or GitHub issue/PR URL.")
     parser.add_argument("--self-login", action="append", default=[], help="Human owner login whose reactions and replies count.")
     parser.add_argument("--bot-login", action="append", default=[], help="Automation login whose targeted replies count.")
@@ -191,6 +193,7 @@ def resolve_settings(
         "until": until.astimezone(timezone.utc),
         "window_label": window_label,
         "limit_repos": args.limit_repos,
+        "include_archived": bool(getattr(args, "include_archived", False)),
         "people_index": args.people_index or (Path(str(config["people_index"])) if config.get("people_index") else None),
     }
 
@@ -262,7 +265,18 @@ def unique_threads(values: Any) -> list[tuple[str, int]]:
 
 
 def resolve_repositories(settings: dict[str, Any]) -> list[str]:
-    repositories = [*settings["repositories"], *(repo for repo, _ in settings["threads"])]
+    def read_metadata(repo):
+        metadata = run_json([GH, "repo", "view", repo, "--json", "isArchived"])
+        if not isinstance(metadata, dict):
+            raise rollup.RollupError(f"Invalid repository metadata for {repo}")
+        return metadata
+
+    repositories = repository_scope.filter_named_repositories(
+        settings["repositories"], read_metadata,
+        include_archived=settings.get("include_archived", False),
+    )
+    settings["excluded_archived_repositories"] = [repo for repo in settings["repositories"] if repo not in repositories]
+    repositories.extend(repo for repo, _ in settings["threads"])
     for owner in settings["repo_owners"]:
         payload = run_json(
             [
@@ -285,16 +299,20 @@ def resolve_repositories(settings: dict[str, Any]) -> list[str]:
         visible_repositories = [
             str(item["nameWithOwner"])
             for item in payload
-            if isinstance(item, dict) and not item.get("isArchived") and item.get("nameWithOwner")
+            if isinstance(item, dict) and repository_scope.includes_repository(item, include_archived=settings.get("include_archived", False)) and item.get("nameWithOwner")
         ]
+        settings["excluded_archived_repositories"].extend(
+            str(item["nameWithOwner"]) for item in payload
+            if isinstance(item, dict) and item.get("nameWithOwner") and str(item["nameWithOwner"]) not in visible_repositories
+        )
         if not visible_repositories:
-            raise rollup.RollupError(f"Repository owner scope {owner!r} resolved to no visible non-archived repositories.")
+            raise rollup.RollupError(f"Repository owner scope {owner!r} resolved to no visible repositories in the selected archive scope.")
         repositories.extend(
             visible_repositories
         )
     if not repositories:
-        if settings["explicit_scope"]:
-            raise rollup.RollupError("The explicit repository scope resolved to no repositories.")
+        if settings["explicit_scope"] or settings["repositories"] or settings["repo_owners"]:
+            raise rollup.RollupError("The explicit repository scope resolved to no repositories; use --include-archived for archived repositories.")
         repositories.append(current_repository())
     return rollup.unique(repositories)
 
@@ -1225,6 +1243,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             "until": format_api_timestamp(settings["until"]),
         },
         "repositories": repositories,
+        "excluded_archived_repositories": rollup.unique(settings.get("excluded_archived_repositories", [])),
         "self_logins": sorted(self_logins),
         "bot_logins": sorted(bot_logins),
         "coverage": {
@@ -1280,6 +1299,9 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"- Waits on you with no open question: {counts.get('unasked_director_waits', 0)}"
         f" (plus {counts.get('unasked_director_holds', 0)} worded as a hold)",
     ]
+    excluded_archived = payload.get("excluded_archived_repositories") or []
+    if excluded_archived:
+        lines.append(f"- Archived repositories excluded: {', '.join(excluded_archived)}; use --include-archived to include them.")
     sections = (
         ("needs_your_eyes", "Needs Your Eyes"),
         ("bot_answered_needs_your_eyes", "Bot Answered — Needs Your Eyes"),

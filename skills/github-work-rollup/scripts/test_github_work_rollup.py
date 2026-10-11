@@ -68,6 +68,8 @@ def args(**overrides: object) -> argparse.Namespace:
 
 
 def preflight_response(command: list[str]) -> subprocess.CompletedProcess[str] | None:
+    if command[1:3] == ["repo", "view"] and "isArchived" in command[-1].split(","):
+        return completed(command, {"isArchived": False})
     if command[1:] == ["--check"]:
         return completed(command, "GitHub automation actor: example-user (source: configured_token)\n")
     if command[1:3] == ["api", "--method"] and command[4].startswith("repos/"):
@@ -262,7 +264,7 @@ def test_preflight_checks_scoped_access_and_reports_actor(
         assert calls[1][3:5] == ["GET", "repos/example-org/example-repo"]
     if "subject" in scope:
         assert calls[1][3:5] == ["GET", "search/issues"]
-        assert "q=author:example-user" in calls[1]
+        assert "author:example-user" in next(field[2:].split() for field in calls[1] if field.startswith("q="))
     assert not any(command[1:3] in (["auth", "status"], ["api", "user"]) for command in calls)
 
 
@@ -592,7 +594,7 @@ def test_subject_search_pages_until_collection_limit(monkeypatch: pytest.MonkeyP
 
     payload = github_work_rollup.collect_rollup(settings)
 
-    search_commands = [command for command in calls if command[1:3] == ["api", "--method"] and "q=author:cli-user updated:>=2026-06-01" in command]
+    search_commands = [command for command in calls if command[1:3] == ["api", "--method"] and any(field.startswith("page=") for field in command) and any(field.startswith("q=") and "author:cli-user" in field[2:].split() for field in command)]
     assert [field for command in search_commands for field in command if field.startswith("page=")] == ["page=1", "page=2"]
     assert [field for command in search_commands for field in command if field.startswith("per_page=")] == ["per_page=100", f"per_page={collection_limit - 100}"]
     assert payload["summary"]["recent_activity"] == collection_limit

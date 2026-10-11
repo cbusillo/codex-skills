@@ -1367,7 +1367,7 @@ def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
     assert not any("page=2" in path for path in calls if "/pulls" in path)
     assert not any(path.startswith(("repos/o/quiet/pulls", "repos/o/attic/", "repos/x/")) for path in calls)
     assert "graphql:reopened:name=quiet" in calls
-    assert any(path.startswith("repos/o/shut/milestones") for path in calls)
+    assert not any(path.startswith("repos/o/shut/") for path in calls)
     assert result["own_share_floor"] == "below"
     def missing_links(args: list[str]) -> Any:
         if args[1] == "graphql":

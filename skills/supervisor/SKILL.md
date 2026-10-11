@@ -4,6 +4,9 @@ description: Use when the Director asks a session to supervise other agent sessi
 metadata:
   short-description: Brief, watch, nudge, and record agent sessions
 resources:
+  - path: scripts/services.py
+    kind: script
+    description: Render persistent launchd jobs without installing them, and supervise bounded commands.
   - path: scripts/iterm_tab.py
     kind: script
     description: List, read, launch and reach exact iTerm sessions.
@@ -44,6 +47,11 @@ resources:
     kind: reference
     description: Private ledger schema, helper usage and shutdown stages.
 commands:
+  - name: supervisor-services-render
+    source: skill
+    resource_path: scripts/services.py
+    example_argv: ["uv", "run", "scripts/services.py", "render", "--catalog", "<runtime-catalog>", "--config", "<private-services.json>", "--output", "<private-jobs-directory>"]
+    purpose: Prepare reviewed launchd jobs; only the Supervisor installs and starts them.
   - name: supervisor-iterm-tab
     source: skill
     resource_path: scripts/iterm_tab.py
@@ -268,6 +276,10 @@ records that run.
    refuses a whole batch when its candidate fails, while the driver may only
    report "lease held"; after about 45 minutes, read the candidate's CI
    directly.
+   After landing, load `github` and complete
+   [After A Merge](../github/SKILL.md#after-a-merge), including
+   [issue readback and remaining proof](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof)
+   for the work handed to you.
    For Q154's interim automatic routing, read the
    [auto-enqueue helper procedure](references/helpers.md#interim-auto-enqueue-watcher)
    before running it. Executing sessions still hand off; the Supervisor owns

@@ -204,6 +204,10 @@ Assign new issues with `gh-plan.py create ... --agent claude|codex` or
 exists and rejects conflicting family labels. It never infers an assignment
 from the authoring harness.
 
+Searches, `index`, and global `next` repository discovery exclude archived repositories
+by default. Add `--include-archived` to the command to include historical work.
+Explicit issue reads and linked dependency evidence remain available.
+
 ## Choose Work
 
 Check known repository-wide Director holds before selection or implementation;
@@ -251,8 +255,9 @@ active issue labels and continuing background jobs do not lift a hold.
    For an authorized PR-only conflict refresh of a finished session, claim its
    canonical open planning issue with `--refresh-pr`, `--resume-from`, and
    `--handoff-comment`; read Planning: Claim for the exact released-handoff
-   proof and supported route before using these flags. Direct PR claims remain
-   unsupported. Active ownership still refuses.
+   proof and supported route before using these flags. For PR-only work, use
+   [Planning: Claim](../github/references/cli-reference.md#planning-claim).
+   Active ownership still refuses.
    For ordinary successor work before a retained PR can be refreshed, use
    `--resume-from` with `--handoff-comment` and omit `--refresh-pr`. Read
    Planning: Claim for the exact released multi-branch handoff proof; all
@@ -273,10 +278,11 @@ including truncation, unread gates, and unavailable reads.
 
 Also report `dependabot_candidates` as PR work needing an agent, with each PR's
 link and age. Read the PR discussion and check current ownership before taking
-it on; the PR is its work record, and issue-only `claim` does not claim a PR.
-For an authorized `go` on a PR candidate, load `github` and follow its existing
-PR workflow after the ownership check, using the PR record rather than creating
-an issue per PR. Uncertain or competing ownership remains a stop.
+it on; the PR is its work record. For authorized PR-only work, claim the PR
+through [Planning: Claim](../github/references/cli-reference.md#planning-claim)
+before creating a linked worktree, then load `github` and follow its existing-PR
+workflow. Use a linked canonical implementation issue when one exists.
+Uncertain or competing ownership remains a stop.
 Report `dependabot_unverified_candidates` and incomplete `dependabot_context`
 as uncertainty. Read [Next Work](../github/references/cli-reference.md#planning-next-work)
 for the PR discovery bounds. An empty issue list with PR candidates does not
@@ -338,6 +344,8 @@ section updates read-only.
 Use `create` for a new plan and `update-section` for an owned section. Use body
 files or stdin for multiline content through the maintained helpers. Keep the
 finish line observable, with scope, acceptance evidence, and one next action.
+Size implementation issues and place post-merge proof under GitHub's
+[issue closing and post-merge proof](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof).
 Keep Current Status concise:
 
 ```text
@@ -492,15 +500,17 @@ Director's approval through the
 Record the exact action in a new comment; never edit existing question or
 decision comments to migrate them, or bypass a closure refusal through another tool.
 
-Prefer non-closing `Refs` from PRs unless the Director requests auto-close or an
-internal task is conclusively complete. After a landing, reconcile issues
+Choose PR closing language under GitHub's
+[issue closing and post-merge proof](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof).
+After a landing, reconcile issues
 referenced by the canonical PR body and comments and every issue it unblocks,
 including cross-repository dependents, within
 [existing posting authority](#missing-cross-repository-gates). Check remaining
 waits against the landed evidence; update Current Status, labels and native
 relationships under [Status Labels](#status-labels), preserving unresolved waits,
-blockers and Director holds. Close only issues whose finish lines are satisfied; end every other one
-done or split as the [executing loop](../references/executing-loop.md) says.
+blockers and Director holds. Close only issues whose finish lines are satisfied;
+keep remaining work with its next actor under
+[issue closing and post-merge proof](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof).
 Use `gh-plan.py close --comment-file` for durable plan issues.
 
 For closure failures, partial Project synchronization, quota or retry/reconciliation,
