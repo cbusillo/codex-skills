@@ -877,6 +877,8 @@ Use PRs for all non-trivial changes.
   abandoned attempts, and include purposeful verification rather than routine
   CI steps. Preserve existing screenshots, images, and links. Use repo-relative
   paths or GitHub links and no self-references. Follow
+  [issue closing and post-merge proof](references/repo-workflow.md#issue-closing-and-post-merge-proof)
+  for closing language and later validation, and
   [talking with the Director](../references/talking-with-the-director.md) for durable
   PR, issue, review, and closeout text.
 - **Labels**: Planning labels are only for durable planning issues. PR labels
