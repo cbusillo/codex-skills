@@ -188,11 +188,18 @@ Before any enqueue write starts in a pass, a transient network read failure
 non-JSON provider evidence even without an HTTP status)
 emits `pass_failed` and ends only that pass. The watcher waits its normal interval
 and reads fresh state again within its deadline; `--once` reports the failed pass
-and exits nonzero. Other failures, or any failure during or after an enqueue write
+and exits nonzero. Read-only Launchplane configuration and controller response
+failures use `LaunchplaneReadError` and follow the same recovery path. Explicit
+controller authentication or unsafe-redirect rejections remain terminal.
+Other failures, or any failure during or after an enqueue write
 in that pass, stop the run for Supervisor reconciliation, preserving already
 queued work. Reads retain the shared GitHub cache, quota reserve and request retry
 deadline; no human-auth fallback is added. The deadline `stop` event reports
 completed and failed pass counts so an outage throughout the watch is visible.
+Every `stop` event includes a message. Helper-authored exception messages identify
+the specific failure; external exception details are withheld to keep provider
+bodies, credentials and private Client prose out of events. Failed-pass events
+use the same message policy.
 
 When the task authorizes a Supervisor handoff, sessions use the installed GitHub
 skill's helper: `uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
