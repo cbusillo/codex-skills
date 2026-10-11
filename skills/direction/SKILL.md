@@ -167,14 +167,16 @@ or `plan:waiting` label and waits that already have a posted question:
 uv run <skill-dir>/scripts/director_waits.py --owner OWNER
 ```
 
-It uses one Director-wide GitHub issue search for open issue bodies containing
-`Waiting for`, then applies the shared human-attention classifier locally with
+It uses two Director-wide GitHub issue searches for open issue bodies containing
+`Waiting for` or `Parked until`, then applies the shared human-attention classifier locally with
 the optional people index for the Director's names. This reads wait records
 across repositories; it does not audit their direction files or milestones.
 Report every wait and its `wait_age_days` (unknown without an explicit start).
 `possibly_stale` flags missing/unparseable verification or verification before
 the wait began; `staleness_basis` explains which. A wait verified after it began
-is not stale merely because it is older. Read flagged records before relying on
+is not stale merely because it is older. `verification_age_days` exposes old
+verification even when the wait start is unknown; there is no automatic age
+threshold. Read flagged records before relying on
 them; these fields do not prove whether a wait was resolved. `recorded_at`
 anchors unknown-age records without inventing their start; `last_verified_raw`
 preserves unparseable evidence. Multiple waits without attributable starts have
@@ -186,7 +188,7 @@ coverage stays explicit in `people_status`, `director_names` and `errors`.
 `complete` describes only the accessible indexed search, whose indexing may lag
 live records. Missing access is not proof of coverage of private repositories.
 Search timeouts, missing metadata, changed totals, duplicates, result bounds
-and quota/deadline failures report incomplete coverage. The search limit is
+and quota/deadline failures report incomplete coverage. Each search has a limit of
 1,000 issues; a larger `--issue-limit` cannot bypass GitHub's ceiling.
 This full list is separate from the unasked-question radar, which filters for
 waiting labels and absence of an open question.

@@ -568,19 +568,19 @@ id = "github.direction.director_waits"
 request_priority = "bulk"
 capabilities = ["issues_read"]
 permission_mode = "fixed"
-permission_note = "Read-only owner-wide search of open issue bodies visible to the configured automation identity. No grants, fallback identity, question resolution or hold release."
+permission_note = "Read-only Director-wide searches of open issue bodies visible to the configured automation identity. No grants, fallback identity, question resolution or hold release."
 entrypoint = "direction/scripts/director_waits.py"
 intent = "List every visible open issue whose current wait names the Director, with explicit age and verification evidence."
 current_transport = "rest_api"
 selected_transport = "rest_api"
-endpoint_or_command = "Paged GET /search/issues?q=user:{owner} is:issue is:open in:body Waiting for"
+endpoint_or_command = "Paged GET /search/issues?q=user:{owner} is:issue is:open in:body Waiting for or Parked until"
 quota_bucket = "search"
 actor_policy = "automation_required"
 mutation_class = "read"
 idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "paged_read"
-retained_graphql_rationale = "No GraphQL; one owner-wide issue search uses bounded REST reads with explicit search coverage."
+retained_graphql_rationale = "No GraphQL; two Director-wide issue searches use bounded REST reads with explicit search coverage."
 source_refs = ["direction/scripts/director_waits.py:collect", "direction/scripts/director_waits.py:wait_rows"]
 test_refs = ["direction/scripts/test_director_waits.py:test_all_status_labels_and_asked_questions_are_included", "direction/scripts/test_director_waits.py:test_search_metadata_limits_and_partial_failure_preserve_rows"]
 
@@ -2337,7 +2337,7 @@ degraded_behavior = "Only the owner creates/installs the App in their browser. C
 documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest"
 
 [api_surface_fingerprints]
-"direction/scripts/director_waits.py" = "e663ffcb6b0b6466e927a13b875f8bb44ec02a9d8f8b2d6ceb7ab7ffb30ce181"
+"direction/scripts/director_waits.py" = "80d13bb5dd18f8be93c5853d131ff8660fff7fc64103a6840f8a2959f99af2ea"
 "direction/scripts/direction_mark.py" = "c4263dc36bf8f69fda588da59f605b5b354cbfdccbebc673b4bd3c8d326cac50"
 "github/scripts/github_client.py" = "1a1910b5e5ae3cfd421fedce585344bd56b416312bfe0a9cda7222881d543fc6"
 "github/scripts/github_app_setup.py" = "752a8c6d16f8117271700a616a506dabc80528544f5315a1d15d67ab141ec4c4"

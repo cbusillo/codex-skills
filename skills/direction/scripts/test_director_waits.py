@@ -57,7 +57,7 @@ class WaitTests(unittest.TestCase):
         records = [issue(), {**issue(2), "repository_url": "https://api.github.com/repos/owner/second"}]
         reader.request.return_value = SimpleNamespace(body={
             "items": records, "total_count": 2, "incomplete_results": False})
-        result = director_waits.collect(reader, "owner", ["owner", "Director"], NOW)
+        result = director_waits.collect_query(reader, "owner", ["owner", "Director"], NOW)
         self.assertTrue(result["complete"])
         self.assertEqual(len(result["waits"]), 2)
         self.assertEqual(reader.request.call_count, 1)
@@ -73,7 +73,7 @@ class WaitTests(unittest.TestCase):
                          {"total_count": 1}):
             reader = Mock()
             reader.request.return_value = SimpleNamespace(body={"items": [issue()], **metadata})
-            result = director_waits.collect(reader, "owner", ["Director"], NOW, 1)
+            result = director_waits.collect_query(reader, "owner", ["Director"], NOW, 1)
             self.assertFalse(result["complete"])
             self.assertEqual(len(result["waits"]), 1)
             self.assertTrue(result["errors"])
@@ -81,7 +81,7 @@ class WaitTests(unittest.TestCase):
         reader.request.side_effect = [SimpleNamespace(body={
             "items": [issue(i) for i in range(100)], "total_count": 101,
             "incomplete_results": False}), director_waits.GitHubReadShapeError("quota exhausted")]
-        result = director_waits.collect(reader, "owner", ["Director"], NOW)
+        result = director_waits.collect_query(reader, "owner", ["Director"], NOW)
         self.assertFalse(result["complete"])
         self.assertEqual(len(result["waits"]), 100)
 
@@ -92,7 +92,7 @@ class WaitTests(unittest.TestCase):
                                  ({"items": [issue(101)], "total_count": 102, "incomplete_results": False}, False)):
             reader = Mock()
             reader.request.side_effect = [SimpleNamespace(body=first), SimpleNamespace(body=second)]
-            result = director_waits.collect(reader, "owner", ["Director"], NOW)
+            result = director_waits.collect_query(reader, "owner", ["Director"], NOW)
             self.assertEqual(result["complete"], complete)
             self.assertEqual(reader.request.call_count, 2)
 
@@ -127,13 +127,13 @@ class WaitTests(unittest.TestCase):
     def test_search_failure_or_malformed_item_keeps_explicit_scope(self):
         reader = Mock()
         reader.request.side_effect = director_waits.GitHubReadShapeError("unavailable")
-        result = director_waits.collect(reader, "owner", ["Director"], NOW)
+        result = director_waits.collect_query(reader, "owner", ["Director"], NOW)
         self.assertFalse(result["complete"])
         self.assertIn("scope", result)
         reader.request.side_effect = None
         reader.request.return_value = SimpleNamespace(body={"total_count": 2,
             "incomplete_results": False, "items": [None, issue()]})
-        result = director_waits.collect(reader, "owner", ["Director"], NOW)
+        result = director_waits.collect_query(reader, "owner", ["Director"], NOW)
         self.assertFalse(result["complete"])
         self.assertEqual(len(result["waits"]), 1)
 
@@ -145,8 +145,29 @@ class WaitTests(unittest.TestCase):
         sample = issue(extra="Waiting since: 2026-09-01\nWaiting for: Client testing\nWaiting for: Director to decide")
         self.assertTrue(director_waits.wait_rows("admin/repo", [sample], ["owner", "Director"], "admin", NOW)[0]["wait_age_unknown"])
 
+    def test_parked_and_waiting_searches_merge_without_losing_waits(self):
+        parked = {**issue(2), "body": "## Current Status\nParked until: Director selects it"}
+        reader = Mock()
+        reader.request.side_effect = [SimpleNamespace(body={"items": [issue()], "total_count": 1, "incomplete_results": False}),
+            SimpleNamespace(body={"items": [issue(), parked], "total_count": 2, "incomplete_results": False})]
+        report = director_waits.collect(reader, "owner", ["Director"], NOW)
+        self.assertTrue(report["complete"])
+        self.assertEqual([row["number"] for row in report["waits"]], [1, 2])
+        self.assertEqual(reader.request.call_count, 2)
+
+    def test_product_wait_cannot_hide_director_decision_or_hold(self):
+        for reason in ("Chris to approve", "Chris to resume"):
+            mixed = issue(reason="product owner Client to accept", extra="Waiting for: " + reason)
+            row = director_waits.wait_rows("admin/repo", [mixed], ["owner", "Director", "Chris"], "admin", NOW)[0]
+            self.assertEqual(row["waiting_for"], reason)
+
+    def test_old_verification_exposes_age_without_inventing_a_policy_threshold(self):
+        row = director_waits.wait_rows("owner/repo", [issue(extra="Last verified: 2026-03-01")],
+                                      ["Director"], "owner", NOW)[0]
+        self.assertEqual(row["verification_age_days"], (NOW - datetime(2026, 3, 1, tzinfo=timezone.utc)).days)
+
     def test_no_index_reports_alias_gap_and_explicit_name_is_supported(self):
-        people = {"status": "no_index", "director_names": [], "director_ambiguous": False}
+        people = {"status": "ok", "director_names": [], "director_ambiguous": False}
         for extra, expected in (([], 1), (["--director-name", "Pat"], 0)):
             with self.subTest(extra=extra), patch.object(director_waits.sys, "argv",
                     ["director_waits.py", "--owner", "admin", *extra]), \
