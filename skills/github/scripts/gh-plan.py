@@ -2044,6 +2044,25 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             if (p.get("head") or {}).get("ref") == source_branch]
         subject_pr = "pull_request" in source_issue
         subject_url = f"https://github.com/{source_issue['repo']}/pull/{source_issue['number']}"
+        if subject_pr:
+            # The claim's branch identifies source-session activity. A separate
+            # Dependabot work-record branch may advance after that session ends.
+            ended = re.findall(r"(?m)^Ended at: (\S+)$", evidence.get("body") or "")
+            source_ref = None
+            try:
+                _, source_ref = api_json("GET",
+                    f"/repos/{source_issue['repo']}/git/ref/heads/{urllib.parse.quote(source_branch, safe='')}",
+                    bucket="rest_core", failed_step="release_claim_branch")
+            except PlanError as branch_error:
+                if (plan_error_status(branch_error) != 404
+                        or source_branch in source_inventory["remote_branches"]):
+                    raise
+            if source_ref is not None:
+                _, source_commit = api_json("GET",
+                    f"/repos/{source_issue['repo']}/commits/{source_ref['object']['sha']}",
+                    bucket="rest_core", failed_step="release_claim_branch_commit")
+                if github_plan_release.stamp(source_commit["commit"]["committer"]["date"]) >= github_plan_release.stamp(ended[0]):
+                    raise PlanError("Claimed source branch has commit activity after the cited session-ended evidence")
         checked_prs = list(dict.fromkeys([*args.retained_pr, *branch_prs, *([subject_url] if subject_pr else [])]))
         retained_branches = set()
         for url in checked_prs:
@@ -2059,7 +2078,7 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             try:
                 github_plan_release.check_retained_pr(pull, head_commit, repo=source_issue["repo"],
                     number=source_issue["number"], actor=expected_actor, ended=ended[0],
-                    subject_pr=source_issue["number"] if subject_pr else None)
+                    subject_pr=source_issue["number"] if subject_pr else None, source_branch=source_branch)
             except github_plan_release.IssueReleaseRefusal as retained_error:
                 issue_refusal = retained_error
         release_actor = expected_actor

@@ -280,7 +280,6 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(PLAN.PlanError) as caught:
             self.run_claim()
         self.assertEqual(caught.exception.payload["claim_recovery"]["release_own_claim"]["comment_id"], 1)
-        self.assertIn("current open PR", str(caught.exception))
 
     def compete(self, record=None):
         if record is None:

@@ -803,11 +803,12 @@ def recorded_claim_branches(status: str, comments: list[dict[str, Any]]) -> set[
 
 
 def pr_issue_reference(pull: dict[str, Any], number: int, *, repo: str,
-                       local_references: bool = True, attestation: bool = False) -> bool:
+                       local_references: bool = True, attestation: bool = False, record_kind: str = "issue") -> bool:
     """Ownership needs implementation evidence; named handoffs may attest links."""
     title = pull.get("title") or ""
     body = pull.get("body") or ""
-    issue_url = rf"https://github\.com/{re.escape(repo)}/issues/{number}"
+    path_kind = "pull" if record_kind == "pr" else "issues"
+    issue_url = rf"https://github\.com/{re.escape(repo)}/{path_kind}/{number}"
     issue_reference = rf"(?:{re.escape(repo)}#{number}|{issue_url})(?!\d)"
     if local_references:
         issue_reference = rf"(?:#{number}|{issue_reference})(?!\d)"
@@ -895,7 +896,8 @@ def artifact_evidence(
         if pull["number"] == subject_pr:
             continue
         branch = (pull.get("head") or {}).get("ref", "")
-        if (pr_issue_reference(pull, number, repo=repo, local_references=local_references)
+        if (pr_issue_reference(pull, number, repo=repo, local_references=local_references,
+                               record_kind="pr" if subject_pr is not None else "issue")
                 or branch in (recorded_branches or set())
                 or (local_references and references_issue(branch, number))):
             if pull.get("state") == "closed":
