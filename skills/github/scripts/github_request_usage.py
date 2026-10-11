@@ -80,7 +80,8 @@ def record_response(
     caller = pathlib.Path(os.environ.get("GITHUB_REQUEST_CALLER") or sys.argv[0]).name
     session = os.environ.get("GITHUB_REQUEST_SESSION")
     if not session:
-        family = github_agent.running_agent()
+        # Optional per-response accounting must not inspect processes or add I/O.
+        family = github_agent.running_agent(environ=os.environ)
         if family == "codex":
             session = os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_SESSION_ID")
         elif family == "claude":
