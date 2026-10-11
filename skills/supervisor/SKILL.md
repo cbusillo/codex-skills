@@ -85,7 +85,7 @@ commands:
     source: skill
     resource_path: scripts/auto_enqueue.py
     example_argv: ["uv", "run", "scripts/auto_enqueue.py", "holds", "--hold-file", "<private-holds.json>", "--pause", "OWNER/REPO"]
-    purpose: Serialize repository pauses and Client release holds with local enqueue passes.
+    purpose: Serialize repository pauses and optional manual release pauses with local enqueue passes.
   - name: supervisor-close-ttys
     source: skill
     resource_path: scripts/close_ttys.py
@@ -249,7 +249,7 @@ records that run.
    For Q154's interim automatic routing, read the
    [auto-enqueue helper procedure](references/helpers.md#interim-auto-enqueue-watcher)
    before running it. Executing sessions still hand off; the Supervisor owns
-   enqueue authority and release pauses. Launchplane#3327 owns replacing this
+   enqueue authority and optional manual pauses. Launchplane#3327 owns replacing this
    interim watcher with service admission.
 6. **The Supervisor briefs, watches, nudges, and records.** It never decides
    for the Director, never widens a brief, and never scores a run it launched;
@@ -283,8 +283,10 @@ for products a Client runs business on.
   replaces this hand ordering once Launchplane's automatic batch flow ships.
 - Once a product's release batch has landed, its release is ready even
   before the invitation posts. From then until the release finishes, land
-  nothing else on that product or on Launchplane, and ask any session running
-  its own Launchplane drivers to pause them.
+  nothing else on that product, and ask any session running a driver for that
+  product to pause it.
+  The hold on Launchplane landings during Client releases is retired by the
+  [Director's Q160 decision on launchplane#3145](https://github.com/cbusillo/launchplane/issues/3145#issuecomment-6103873272).
 - Every PR in a repository that feeds a Client release (shared add-ons,
   devkit, images, tenants and the live sites) carries a `## Client test notes`
   section. One missing section, even on a housekeeping PR, blocks the release
