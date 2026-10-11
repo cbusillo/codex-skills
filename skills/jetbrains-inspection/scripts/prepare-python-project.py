@@ -174,8 +174,8 @@ def prepare_script_environment(repo: Path, python: str, scripts: list[str]) -> N
         )
         if result.returncode:
             raise RuntimeError(
-                f"PEP 723 inspection dependencies could not be resolved together ({', '.join(scripts)}). "
-                "Choose a compatible script set; the inspection SDK was not changed.\n" + result.stderr
+                f"PEP 723 inspection dependencies could not be resolved ({', '.join(scripts)}). "
+                "The inspection SDK was not changed. uv diagnostic:\n" + result.stderr
             )
         validate_existing_venv(repo / ".venv", python)
         if not (repo / ".venv").exists():

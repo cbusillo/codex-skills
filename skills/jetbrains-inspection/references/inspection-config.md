@@ -122,7 +122,10 @@ preparation. Read-only commands never invoke the provisioning operation.
 Successful preparation writes a bounded durable receipt under the helper cache.
 For repositories of standalone scripts, structured `prepare.python.pep723Scripts`
 accepts up to 25 worktree-relative script paths. The generator reads their
-PEP 723 `dependencies` arrays and resolves them together with `uv pip compile`
+PEP 723 metadata through uv's native script support. Select scripts whose
+dependencies cover the inspected files; update the set when that scope adds
+dependencies. The generator resolves their
+`dependencies` arrays together with `uv pip compile`
 for the selected Python version before changing the worktree SDK. Resolution
 failure, including conflicting pins, stops preparation with a diagnostic naming
 the script set. `uv pip sync` installs the resolved set into `.venv`, removing

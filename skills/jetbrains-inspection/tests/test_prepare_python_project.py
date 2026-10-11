@@ -64,7 +64,7 @@ class PreparePythonProjectTest(unittest.TestCase):
                 self.assertEqual(installed_version(), "1.0")
                 self.write_script(repo, "two.py", ["inspection-fixture==2.0"])
                 before = first.read_bytes()
-                with self.assertRaisesRegex(RuntimeError, "could not be resolved together"):
+                with self.assertRaisesRegex(RuntimeError, "could not be resolved"):
                     prepare_python_project.prepare_script_environment(repo, python, ["one.py", "two.py"])
                 self.assertEqual(installed_version(), "1.0")
                 self.assertEqual(first.read_bytes(), before)
@@ -78,14 +78,15 @@ class PreparePythonProjectTest(unittest.TestCase):
     def test_script_metadata_and_paths_fail_visibly(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary).resolve()
-            path = self.write_script(repo, "script.py", ["one==1", "one==1"])
+            path = self.write_script(repo, "script.py", [])
             self.assertEqual(prepare_python_project.script_paths(repo, ["script.py"]), [str(path)])
             for source in ["pass\n", "# /// script\n# dependencies = []\n",
                            '# /// script\n# dependencies = "one"\n# ///\n',
                            path.read_text() * 2]:
                 path.write_text(source, encoding="utf-8")
-                with self.assertRaises(RuntimeError):
+                with patch.dict(os.environ, {"UV_NO_INDEX": "true"}), self.assertRaises(RuntimeError):
                     prepare_python_project.prepare_script_environment(repo, "3.12", ["script.py"])
+                self.assertFalse((repo / ".venv").exists())
             for name in ["../outside.py", str(repo / "script.py")]:
                 with self.assertRaisesRegex(RuntimeError, "inside the worktree"):
                     prepare_python_project.script_paths(repo, [name])
