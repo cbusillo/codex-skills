@@ -889,6 +889,23 @@ class QualificationTests(unittest.TestCase):
     def qualified(self):
         return self.io.qualified(TARGET, self.pull, set(), self.agent_review_required)
 
+    def test_cli_defaults_accept_automation_review_of_dependency_head(self):
+        self.pull["user"]["login"] = "dependabot[bot]"
+        self.comments = [comment(login="shiny-code-app[bot]")]
+        outcomes = []
+
+        def one_pass(_live, args, _emit, **_kwargs):
+            outcomes.append(self.io.qualified(
+                TARGET, self.pull, set(args.handoff_login), True,
+            ))
+
+        with patch.object(watch, "Live"), patch.object(watch, "run_pass", one_pass):
+            with patch("builtins.print"):
+                self.assertEqual(watch.main([
+                    "--owner", "example", "--hold-file", "/unused/holds.json", "--once",
+                ]), 0)
+        self.assertEqual(outcomes, [True])
+
     def test_green_required_check_is_bound_to_expected_app(self):
         self.assertTrue(self.qualified())
         self.checks["checkRuns"][0]["appId"] = 99
