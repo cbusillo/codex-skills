@@ -415,6 +415,45 @@ only a candidate; the shutdown procedure owns every verification before terminal
 A final verdict indented four columns, including a nested verdict bullet, stays
 unrecognized. Use a standalone unindented final `Safe to exit: yes` instead.
 
+
+### Native shell-input proof
+
+`iterm_tab.py close --session-id <exact-iterm-id> --ledger <private-ledger.json>`
+requires one matching `supervisor_owned: true` launch-ledger entry with its
+`iterm_session_id` and `tty`. Include the `window_id` and `tab_id` from launch
+output when available; they are checked too. Director-owned or ambiguous entries
+and split tabs refuse. Never add a Director's tab to the Supervisor ledger.
+
+The close command requires iTerm's native shell integration to report an
+editing prompt whose entire command is empty. Missing/unknown input refuses;
+screen appearance and `--verified-input` are not substitutes for the close
+command's native proof. A successful final `exec` normally ends the terminal;
+after the exit wait, use `list` and record closure if the exact session is gone.
+Native prompt proof is needed only for a surviving idle outer shell, such as
+an older returning launch or a failed `exec`. On Chris-Studio's zsh shells,
+the standalone integration source command is:
+
+```sh
+. /Applications/iTerm.app/Contents/Resources/iterm2_shell_integration.zsh
+```
+
+Use the installed integration for the launch shell and actual app location on
+other hosts. This changes only that Supervisor shell, never `.zshrc` or an
+iTerm profile. Before bootstrapping an already idle Supervisor shell, perform
+the shutdown procedure's manual input inspection and Director-text preservation
+steps, then send just this source command with `send --verified-target`.
+This manual check authorizes only bootstrap, not closure; read back the new
+native empty prompt before closing. Preserve the tab if input is uncertain.
+If an ended session is retained with no TTY processes, preserve it and report
+the profile setting instead of force-closing or changing the Director's setting.
+
+Claude launches with a final simple `exec` use `exec env` to pass the account-move
+opt-in only to the agent that replaces the launch shell. Returning
+launches keep the opt-in contained in a subshell. The Director's iTerm
+profile still decides whether an ended terminal closes automatically.
+
+### Verify and close
+
 `finished_map.py` offers candidates only. Its conservative last-line parser
 rejects quoted, negated, conditional and aborted verdicts. The shared parser used
 by status, candidates and terminal closure ignores one complete trailing
@@ -587,20 +626,24 @@ also explicitly excludes other `--owner` values and automation App identities;
 use those repositories' configured evidence-backed release route under existing
 posting authority, without changing identity settings or using a personal fallback.
 Then perform the guarded tab-close
-step below (the verified exact-tab route from #1627/#1629 applies once landed).
+step below.
 
 ```sh
 uv run skills/supervisor/scripts/close_ttys.py --ledger <private-ledger.json> --session-id <native-id> --verified-handoff --verified-input
-uv run skills/supervisor/scripts/close_ttys.py --ledger <private-ledger.json> --session-id <native-id> --verified-handoff --verified-input --apply
+uv run skills/supervisor/scripts/iterm_tab.py close --session-id <exact-iterm-id> --ledger <private-ledger.json>
 ```
 
-The two flags attest the Supervisor checked the issue handoff and empty input
+The dry-run helper's two flags attest the Supervisor checked the issue handoff and empty input
 (or recorded the Director's text). Default is a dry run. This helper never
 answers prompts or sends exit commands: it checks transcript, ownership, exact
 iTerm id and TTY, then proves the recorded PID is absent and only `login` and idle login/interactive shell processes
 remain on that TTY. Other jobs, including prompt helpers and shell scripts, preserve the tab.
-Process arguments are inspected privately and never emitted. Apply rechecks activity and processes and requests
-one non-force close. An uncertain inventory or remaining/reused PID preserves
+Process arguments are inspected privately and never emitted. Its existing
+`--apply` adapter remains available and rechecks transcript activity and processes.
+The procedure above uses that dry run for the transcript/handoff gate, then
+`iterm_tab.py close` for current process and native input proof; neither command
+alone replaces the full shutdown procedure. The close command performs one
+non-force close request and has no dry-run mode. An uncertain inventory or remaining/reused PID preserves
 the tab. Read back `iterm_tab.py list` to confirm closure; never force or retry
 an uncertain close. Other terminal applications use the same skill procedure
 through their supported controls, not this iTerm adapter.
