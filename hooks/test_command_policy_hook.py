@@ -220,6 +220,7 @@ class CommandPolicyHookTests(unittest.TestCase):
                     self.assertEqual(bash("uv run --extra dev " + command, checkout).returncode, 2)
             self.assertEqual(bash("launchplane ci unittest-shard local", checkout).returncode, 2)
             self.assertEqual(bash("uv run --project /other launchplane ci unittest-shard local", checkout).returncode, 2)
+            self.assertEqual(bash("echo --repository; tools/launchplane action-pins check --revision HEAD", checkout).returncode, 2)
 
     def test_postgres_gate_runs_only_against_a_named_loopback_database(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

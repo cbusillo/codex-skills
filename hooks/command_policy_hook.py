@@ -474,7 +474,7 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
         command = argv
         while command and command[0].startswith(POSTGRES_URL_VARIABLE):
             command = command[1:]
-        if "launchplane" in command and command[:2] != ["uv", "run"]:
+        if any(Path(token).name == "launchplane" for token in command) and command[:2] != ["uv", "run"]:
             return None
     return cwd if cwd.is_absolute() else None
 
