@@ -13,6 +13,7 @@ from typing import Any
 
 import github_plan_claim as claim
 
+COMMENT_URL = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)#issuecomment-([1-9]\d*)")
 RELEASE_MARKER = "github-plan:abandoned-release "
 ISSUE_REFUSAL_SCOPE = "issue"
 
@@ -78,14 +79,21 @@ def check_activity(comments: list[dict[str, Any]], source: dict[str, Any], cutof
             raise ValueError("Source session shows ownership activity after the cited evidence")
 
 
-def check_retained_pr(pull, head_commit, *, repo, number, actor, ended):
+def check_retained_pr(pull, head_commit, *, repo, number, actor, ended, subject_pr=None, source_branch=None):
     """One retained-work guard shared by write preflight and read-only planning."""
-    if stamp(head_commit["commit"]["committer"]["date"]) >= stamp(ended):
+    subject = subject_pr is not None and pull.get("number") == subject_pr
+    if (not subject or (pull.get("head") or {}).get("ref") == source_branch) and stamp(head_commit["commit"]["committer"]["date"]) >= stamp(ended):
         raise ValueError("Retained PR has commit activity after the cited session-ended evidence")
+    if subject:
+        if (pull.get("state") not in {"open", "closed"}
+                or any(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != repo.casefold()
+                       for side in ("head", "base"))):
+            raise IssueReleaseRefusal("PR claim's work record must remain a same-repository open or closed PR")
+        return
     if ((pull.get("user") or {}).get("login") != actor
             or pull.get("state") != "open" and not pull.get("merged_at")
             or any(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != repo.casefold() for side in ("head", "base"))
-            or not claim.pr_issue_reference(pull, number, repo=repo, attestation=True)):
+            or not claim.pr_issue_reference(pull, number, repo=repo, attestation=True, record_kind="pr" if subject_pr is not None else "issue")):
         raise IssueReleaseRefusal("Retained PR must independently link the canonical issue and belong to the source automation identity")
 
 
