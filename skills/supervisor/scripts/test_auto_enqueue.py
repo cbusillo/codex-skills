@@ -18,6 +18,7 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 import auto_enqueue as watch
+from ready_handoff import READY, WAITING
 
 REPO = "example/tool"
 CLIENT = "example/client-product"
@@ -52,7 +53,7 @@ def comment(body=None, number=1, login="engineer"):
         "created_at": f"2026-01-01T00:01:{number:02d}Z",
         "body": body
         if body is not None
-        else f"{watch.READY}\n\nHead: {SHA}. Verified.",
+        else f"{READY}\n\nHead: {SHA}. Verified.",
     }
 
 
@@ -555,11 +556,11 @@ class EnqueueTests(unittest.TestCase):
     def test_latest_wait_stale_head_missing_head_and_untrusted_ready_refuse(self):
         self.assertTrue(watch.latest_ready(pr(), [comment()], {"engineer"}))
         for entries in (
-            [comment(), comment(f"{watch.WAITING} the Client's acceptance", 2)],
-            [comment(watch.READY)],
-            [comment(f"{watch.READY}\nHead: {'b' * 40}")],
+            [comment(), comment(f"{WAITING} the Client's acceptance", 2)],
+            [comment(READY)],
+            [comment(f"{READY}\nHead: {'b' * 40}")],
             [comment(login="stranger")],
-            [comment(f"> {watch.READY}\nHead: {SHA}")],
+            [comment(f"> {READY}\nHead: {SHA}")],
         ):
             with self.subTest(entries=entries):
                 self.assertFalse(watch.latest_ready(pr(), entries, {"engineer"}))
@@ -738,7 +739,7 @@ class EnqueueTests(unittest.TestCase):
         self.assertEqual(fake.writes, [3])
 
     def test_an_edited_wait_invalidates_a_later_created_ready(self):
-        waiting = comment(f"{watch.WAITING} the Client's acceptance")
+        waiting = comment(f"{WAITING} the Client's acceptance")
         waiting["updated_at"] = "2026-01-01T00:05:00Z"
         self.assertFalse(
             watch.latest_ready(pr(), [waiting, comment(number=2)], {"engineer"})

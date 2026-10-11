@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT.parent))
 sys.path.insert(0, str(ROOT / "github/scripts"))
 from skills.github.scripts import github_api
-from skills.github.scripts.ready_handoff import READY as READY, WAITING as WAITING, latest_ready, timestamp
+from skills.github.scripts.ready_handoff import latest_ready
 from skills.github.scripts.github_read import (
     GitHubReader,
     GitHubReadError,

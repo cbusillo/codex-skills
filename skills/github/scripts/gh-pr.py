@@ -1542,7 +1542,7 @@ def read_text_file(path: str, *, preserve_newlines: bool = False, **payload: Any
     try:
         if path == "-":
             if preserve_newlines:
-                return sys.stdin.buffer.read().decode("utf-8")
+                return sys.stdin.buffer.read().decode()
             return sys.stdin.read()
         newline = "" if preserve_newlines else None
         with pathlib.Path(path).open(encoding="utf-8", newline=newline) as stream:
