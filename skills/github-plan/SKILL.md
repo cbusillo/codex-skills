@@ -229,7 +229,12 @@ active issue labels and continuing background jobs do not lift a hold.
    waits, then stop without changing planning state. On authorized `go`, run
    `gh-plan.py claim <issue> --worker <worker> --session <session-id>
    --branch <task-branch> --next-action "<action>"` before creating a
-   branch or worktree, using exactly the branch the worktree helper will create
+   branch or worktree, adding `--admission <kind>` when the overall Order
+   admits the work: live-site breakage, a named `milestone` item (linked into
+   that milestone's Track graph before the claim, or with the reason it cannot
+   be), a `repeat-stop` with both occurrences, or `spare-capacity`. Name the
+   real kind: work that clears a milestone blocker is milestone work once
+   linked, not spare capacity. Claim using exactly the branch the worktree helper will create
    (`work/<task-slug>` for `dev-worktree`). Read [Planning: Claim](../github/references/cli-reference.md#planning-claim)
    for refusal, partial recovery, or release. Continue only on confirmed success;
    preserve competing or uncertain ownership for the Director to decide. Keep
