@@ -12,6 +12,7 @@ import contextlib
 import json
 import os
 import plistlib
+import re
 import shutil
 import stat
 import sys
@@ -19,11 +20,11 @@ from pathlib import Path
 
 import aiohttp
 
-from agent_activity import ActivityStore, atomic_json, directory, home_key, native_id, account_id
+from agent_activity import ActivityStore, atomic_json, directory, home_key, native_id, account_id, read_json
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "skills" / "supervisor" / "scripts"))
-import account_choice  # noqa: E402
+sys.path.insert(0, str(ROOT))
+from skills.supervisor.scripts import account_choice
 
 POLL_SECONDS = 30
 LABEL = "com.codex-skills.agent-activity"
@@ -78,7 +79,7 @@ class CodexObserver:
             async with asyncio.timeout(10):
                 return await future
         finally:
-            self.pending.pop(request_id, None)
+            del self.pending[request_id]
 
     async def receive(self) -> None:
         try:
@@ -89,7 +90,7 @@ class CodexObserver:
                 if not isinstance(message, dict):
                     continue
                 future = self.pending.get(message.get("id")) if isinstance(message.get("id"), int) else None
-                if future and not future.done():
+                if "method" not in message and future and not future.done():
                     if "error" in message:
                         future.set_exception(ValueError("observer RPC rejected"))
                     else:
@@ -97,7 +98,10 @@ class CodexObserver:
                 elif "id" not in message and message.get("method") in LIFECYCLE:
                     # Unknown notifications and every server request are discarded.
                     # Never answer a request addressed to an interactive client.
-                    self.queue.put_nowait(message)
+                    try:
+                        self.queue.put_nowait(message)
+                    except asyncio.QueueFull:
+                        raise ValueError("lifecycle queue overflow; reconnect without inferred outcomes") from None
         finally:
             for future in self.pending.values():
                 if not future.done():
@@ -269,7 +273,11 @@ def project_claude(store: ActivityStore, account: str, rows: object) -> None:
                 continue  # Generic dialogs do not prove approval or input.
             state = "attention"
         elif status == "idle":
-            state, attention = "quiet", None
+            state = {"done": "completed", "failed": "failed", "stopped": "cancelled"}.get(row.get("state"), "quiet")
+            attention = None
+        elif row.get("state") in ("done", "failed", "stopped"):
+            state = {"done": "completed", "failed": "failed", "stopped": "cancelled"}[row["state"]]
+            attention = None
         else:
             continue
         store.emit(account, "claude", row["sessionId"], state, "claude-inventory",
@@ -287,9 +295,14 @@ async def claude_poll(store: ActivityStore, account: dict, *, once: bool = False
                                                            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                                                            limit=1024 * 1024)
             async with asyncio.timeout(10):
-                output = await process.stdout.read(1024 * 1024 + 1)
-                if len(output) > 1024 * 1024:
-                    raise ValueError("Claude inventory exceeds bound")
+                chunks = []
+                size = 0
+                while chunk := await process.stdout.read(65536):
+                    size += len(chunk)
+                    if size > 1024 * 1024:
+                        raise ValueError("Claude inventory exceeds bound")
+                    chunks.append(chunk)
+                output = b"".join(chunks)
                 await process.wait()
             if process.returncode != 0:
                 raise ValueError("Claude inventory unavailable")
@@ -311,12 +324,23 @@ async def claude_poll(store: ActivityStore, account: dict, *, once: bool = False
 async def observe(config: Path | None, *, once: bool = False, storage: Path | None = None,
                   state_root: Path | None = None) -> None:
     configured, root = accounts(config)
+    if storage is not None and state_root is None:
+        raise ValueError("qualification storage requires isolated --state-root")
     private = state_root or Path(os.environ.get("CODE_HOME") or Path.home() / ".code").expanduser()
     store = ActivityStore(storage or root, private)
+    live_bindings = {f"binding-{a['homeKey']}.json" for a in configured}
+    for binding in store.private.glob("binding-*.json"):
+        if binding.name in live_bindings or not re.fullmatch(r"binding-[0-9a-f]{64}\.json", binding.name) or binding.is_symlink():
+            continue
+        try:
+            if read_json(binding).get("producerID") == "codex-skills":
+                binding.unlink()
+        except (OSError, ValueError):
+            continue
     jobs = []
     for account in configured:
         atomic_json(store.private / f"binding-{account['homeKey']}.json",
-                    {"accountID": account["accountID"], "storageRoot": str(storage or root)})
+                    {"producerID": "codex-skills", "accountID": account["accountID"], "storageRoot": str(storage or root)})
         if account["harness"] == "codex":
             home = Path(account["env"]["CODEX_HOME"]).expanduser()
             jobs.append(CodexObserver(store, account["accountID"], home).run(once=once))
@@ -330,6 +354,9 @@ async def observe(config: Path | None, *, once: bool = False, storage: Path | No
 def install(config: Path | None, *, write: bool = False) -> dict:
     if sys.platform != "darwin":
         raise ValueError("launchd installation requires macOS")
+    # Durable jobs must not depend on a linked checkout slated for retirement.
+    if (ROOT / ".git").is_file():
+        raise ValueError("install from the reconciled runtime checkout, not a task worktree")
     uv = shutil.which("uv")
     if not uv:
         raise ValueError("uv is unavailable")

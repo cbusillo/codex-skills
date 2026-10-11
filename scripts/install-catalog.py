@@ -182,8 +182,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             groups = existing.get("hooks", {}) if isinstance(existing, dict) else None
             if not isinstance(groups, dict):
                 raise ValueError("Invalid hooks.json configuration")
-            catalog_events = ("PreToolUse", "SessionStart", *sync.ACTIVITY_EVENTS)
-            for event in catalog_events:
+            for event in ("PreToolUse", "SessionStart", "Stop", "Interrupt"):
                 if not isinstance(groups.get(event, []), list):
                     raise ValueError(f"Invalid {event} configuration")
             # Add/update alerts only for an installation still bound to catalog
@@ -192,9 +191,9 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             managed = any(
                 isinstance(group, dict) and isinstance(group.get("hooks"), list)
                 and any(isinstance(handler, dict) and handler.get("statusMessage") in (
-                    sync.HOOK_LABEL, "codex-skills session start", *(f"codex-skills {e.lower()} alert" for e in sync.ACTIVITY_EVENTS),
+                    sync.HOOK_LABEL, "codex-skills session start", "codex-skills stop alert", "codex-skills interrupt alert",
                 ) for handler in group["hooks"])
-                for event in catalog_events
+                for event in ("PreToolUse", "SessionStart", "Stop", "Interrupt")
                 for group in groups.get(event, [])
             )
             if managed:
@@ -233,7 +232,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                 isinstance(group, dict) and isinstance(group.get("hooks"), list)
                 and any(isinstance(handler, dict) and (
                     handler.get("statusMessage") in (sync.HOOK_LABEL, "codex-skills session start",
-                                                     *(f"codex-skills {e.lower()} alert" for e in sync.ACTIVITY_EVENTS))
+                                                     "codex-skills stop alert", "codex-skills interrupt alert")
                     or any(str(ROOT / "hooks" / script) in str(handler.get("command", ""))
                            for script in ("command_policy_hook.py", "direction_check_hook.py", "session_alert_hook.py"))
                 ) for handler in group["hooks"])

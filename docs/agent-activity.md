@@ -9,10 +9,11 @@ It reads no credentials and makes no model requests.
 
 ## Start and install
 
-After landing and runtime reconciliation, refresh the catalog hook declarations
-with the existing installer. Codex trust remains owned by Codex: review new or
-changed definitions through `/hooks`. Claude Code loads the plugin declarations
-in its next session. No producer operation enables or trusts a hook.
+After landing and runtime reconciliation, refresh the existing advisory Codex
+alerts with the catalog installer if needed. Codex trust remains owned by Codex:
+review new or changed definitions through `/hooks`. Its activity observer does
+not depend on hooks. Claude Code loads the new plugin declarations in its next
+session. No producer operation enables or trusts a hook.
 
 Run the observer in the foreground:
 
@@ -24,10 +25,12 @@ uv run scripts/observe_agent_activity.py run
 come from that config's snapshot command; unavailable or ambiguous account
 mapping fails rather than inventing an ID. For one bounded qualification pass,
 use `once`. Use both `--storage-root` and `--state-root` to isolate qualification
-output from the live App Group and hook bindings.
+output from the live App Group and hook bindings; an override store without
+isolated state is refused.
 
 On macOS, `install` previews a LaunchAgent. `install --write` writes that exact
-job, preserving an existing different job. It does not load or restart it.
+job, preserving an existing different job. Installation from a linked task
+checkout is refused. It does not load or restart the job.
 Use the printed `launchAgent` path with the native launcher:
 
 ```sh
@@ -47,7 +50,9 @@ Each atomic JSON file in `<storage root>/Agent Activity/` is at most 1 KB and
 mode 0600. The producer prunes its own valid regular event files after 24 hours;
 it preserves foreign, malformed and redirected files. Readers ignore malformed,
 oversized and old files, deduplicate by `eventID` and fold by account, harness,
-session and run. Order by `observedAt`, then `eventID`; delivery is best effort.
+session and run. Order by `observedAt`, then `eventID`; IDs are monotonic for a
+session within one millisecond. Delivery is best effort. Repeated quiet polls
+do not create event files, and quiet cannot overwrite a terminal outcome.
 
 The version 1 record has:
 
@@ -59,7 +64,9 @@ The version 1 record has:
   native signal used (`codex-status`, `codex-turn`, `claude-hook` or
   `claude-inventory`).
 - `observedAt` and `leaseExpiresAt`: UTC timestamps. Live records have a
-  90-second lease, renewed by the 30-second observer cadence.
+90-second lease, renewed by the 30-second observer cadence while working or
+awaiting attention. Quiet records need no heartbeat. Private session records
+expire after 24 hours too; lock buckets have a fixed upper bound of 256 files.
 
 An expired live record is **stale**, never completed. A terminal record is a
 recent milestone, not a live worker. No signal is interpreted as blocked.
@@ -93,11 +100,15 @@ identity and outcomes, so hooks do not create duplicate Codex runs.
 
 Claude Code: UserPromptSubmit starts a run, notifications and PermissionRequest
 report attention, StopFailure reports API failure, and SubagentStart/Stop
-retain child identity and parentage. Stop is provisional because another Stop
-hook can continue the turn: completion is emitted only when the supported
-`claude agents --json` inventory subsequently corroborates idle. Reentrant
-Stops remain provisional too. Busy/waiting inventory records renew the run;
-idle with no Stop becomes quiet, never completed. A missing session expires.
+retain child identity and parentage. Stop becomes quiet because another Stop
+hook can continue the turn, and an interruption of that continuation also
+becomes idle. Even Stop followed by idle cannot prove success. Completion is
+emitted only from a native background-session `done` state; native `failed`
+and `stopped` map to failed and cancelled. Interactive idle remains quiet,
+including after Stop. This corrects an unproven assumption in the #377 study:
+stock interactive Claude interfaces cannot provide an unambiguous successful
+turn outcome. Busy/waiting inventory records renew the run; a missing session
+expires.
 There is no native interrupt hook on Claude Code; interruption without an
 outcome becomes quiet or stale. Child hook records have short leases; Claude's
 inventory does not enumerate subagents, so an independently renewed child

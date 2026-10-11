@@ -14,11 +14,12 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 from aiohttp import web
 
 from agent_activity import ActivityStore, atomic_json, home_key, hook_activity, uuid7
-from observe_agent_activity import CodexObserver, project_claude
+from observe_agent_activity import CodexObserver, project_claude, claude_poll
 
 SESSION = str(uuid.uuid4())
 RUN = str(uuid.uuid4())
@@ -50,9 +51,9 @@ class ActivityTests(unittest.TestCase):
         self.hook("UserPromptSubmit")
         self.hook("Notification", notification_type="permission_prompt", message=SECRET)
         self.hook("Stop", stop_hook_active=False)
-        project_claude(self.store, ACCOUNT, [{'sessionId': SESSION, 'status': 'idle'}])
+        project_claude(self.store, ACCOUNT, [{'sessionId': SESSION, 'status': 'idle', 'state': 'done'}])
         records = self.events()
-        self.assertEqual({r['state'] for r in records}, {"working", "attention", "completed"})
+        self.assertEqual({r['state'] for r in records}, {"working", "attention", "quiet", "completed"})
         self.assertEqual(len({r['runID'] for r in records}), 1)
         self.assertTrue(any(r['attentionKind'] == 'approval' for r in records))
         for path in self.store.events.glob("*.json"):
@@ -78,7 +79,8 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(len({r['runID'] for r in child}), 1)
         self.hook("Stop", stop_hook_active=True)
         parents = [r for r in self.events() if r['sessionID'] == SESSION]
-        self.assertTrue(all(r['state'] == 'working' for r in parents))
+        self.assertTrue(all(r['state'] in ('working', 'quiet') for r in parents))
+        self.assertFalse(any(r['state'] == 'completed' for r in parents))
 
     def test_inventory_renews_busy_leases_and_does_not_invent_completion(self):
         self.hook("UserPromptSubmit")
@@ -89,7 +91,7 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(busy['runID'], before['runID'])
         self.assertGreaterEqual(busy['leaseExpiresAt'], before['leaseExpiresAt'])
         self.hook("Stop")
-        project_claude(self.store, ACCOUNT, [{**row, 'status': 'idle'}])
+        project_claude(self.store, ACCOUNT, [{**row, 'status': 'idle', 'state': 'done'}])
         count = len(self.events())
         project_claude(self.store, ACCOUNT, [row])
         self.assertEqual(len(self.events()), count)  # Stop-hook process still reads busy.
@@ -112,18 +114,56 @@ class ActivityTests(unittest.TestCase):
                       {**self.env, 'AGENT_ACTIVITY_DISABLED': '1'})
         self.assertEqual(self.events(), [])
 
-    def test_stop_continuation_requires_idle_and_new_prompt_clears_provisional_end(self):
+    def test_stop_and_interrupt_need_native_done_before_success(self):
         self.hook('UserPromptSubmit')
         self.hook('Stop')
         project_claude(self.store, ACCOUNT, [{'sessionId': SESSION, 'status': 'busy'}])
         self.assertFalse(any(r['state'] == 'completed' for r in self.events()))
         self.hook('Stop', stop_hook_active=True)
         project_claude(self.store, ACCOUNT, [{'sessionId': SESSION, 'status': 'idle'}])
+        self.assertEqual(sum(r['state'] == 'completed' for r in self.events()), 0)
+        project_claude(self.store, ACCOUNT, [{'sessionId': SESSION, 'status': 'idle', 'state': 'done'}])
         self.assertEqual(sum(r['state'] == 'completed' for r in self.events()), 1)
         self.hook('UserPromptSubmit')
         project_claude(self.store, ACCOUNT, [{'sessionId': SESSION, 'status': 'idle'}])
         self.assertEqual(sum(r['state'] == 'completed' for r in self.events()), 1)
         self.assertTrue(any(r['state'] == 'quiet' for r in self.events()))
+
+    def test_terminal_outcome_survives_later_quiet_and_quiet_does_not_churn(self):
+        for harness, account, source in [('codex', 'openai-a', 'codex-status'), ('claude', ACCOUNT, 'claude-hook')]:
+            session = str(uuid.uuid4())
+            self.store.emit(account, harness, session, 'working', source, start=True)
+            self.store.emit(account, harness, session, 'completed', source)
+            for _ in range(3):
+                self.assertIsNone(self.store.emit(account, harness, session, 'quiet', source))
+        self.hook('Stop')
+        count = len(self.events())
+        for _ in range(3):
+            project_claude(self.store, ACCOUNT, [{'sessionId': SESSION, 'status': 'idle'}])
+        self.assertEqual(len(self.events()), count)
+
+    def test_same_timestamp_transitions_fold_in_emission_order(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        first = self.store.emit(ACCOUNT, 'claude', SESSION, 'working', 'claude-hook', run=RUN, now=now)
+        last = self.store.emit(ACCOUNT, 'claude', SESSION, 'completed', 'claude-inventory', run=RUN, now=now)
+        self.assertGreater(last['eventID'], first['eventID'])
+        folded = sorted([last, first], key=lambda r: (r['observedAt'], r['eventID']))[-1]
+        self.assertEqual(folded['state'], 'completed')
+
+    def test_activity_storage_failure_preserves_advisory_stop(self):
+        bad = self.root / 'redirected-panel'
+        bad.symlink_to(self.root / 'panel', target_is_directory=True)
+        atomic_json(self.store.private / f"binding-{home_key('claude', self.env)}.json",
+                    {'accountID': ACCOUNT, 'storageRoot': str(bad)})
+        hook = Path(__file__).resolve().parents[1] / 'hooks' / 'session_alert_hook.py'
+        env = {**os.environ, **self.env}
+        env.pop('CODEX_SKILLS_HARNESS', None)
+        result = subprocess.run([sys.executable, str(hook)], env=env, capture_output=True, text=True,
+                                input=json.dumps({'hook_event_name': 'Stop', 'session_id': SESSION}), timeout=5)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout), {})
+        advisory = json.loads((self.root / 'code' / 'session-events.jsonl').read_text())
+        self.assertEqual(advisory['event'], 'Stop')
 
     def test_uuid7_and_prune_only_owned_day_old_regular_records(self):
         now = dt.datetime.now(dt.timezone.utc)
@@ -163,6 +203,25 @@ class ActivityTests(unittest.TestCase):
 
 
 class ObserverTests(unittest.IsolatedAsyncioTestCase):
+    async def test_claude_reads_multiple_pipe_chunks_before_projecting(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            store = ActivityStore(root / 'panel', root / 'private')
+            original = asyncio.create_subprocess_exec
+            script = ('import json,sys,time; '
+                      f'data=json.dumps([{{"sessionId":{SESSION!r},"status":"busy","name":"x"*100000}}]); '
+                      'sys.stdout.write(data[:64]);sys.stdout.flush();time.sleep(.03); '
+                      'sys.stdout.write(data[64:]);sys.stdout.flush()')
+
+            async def fake_cli(*_args, **kwargs):
+                return await original(sys.executable, '-c', script, **kwargs)
+
+            with patch('observe_agent_activity.asyncio.create_subprocess_exec', fake_cli):
+                await claude_poll(store, {'accountID': ACCOUNT, 'env': {}}, once=True)
+            records = [json.loads(p.read_text()) for p in store.events.glob('*.json')]
+            self.assertEqual([r['state'] for r in records], ['working'])
+            self.assertNotIn('name', records[0])
+
     async def test_real_socket_initial_active_idle_before_terminal_and_unsubscribe(self):
         with tempfile.TemporaryDirectory(dir="/tmp") as temp:
             root = Path(temp).resolve()
@@ -200,9 +259,10 @@ class ObserverTests(unittest.IsolatedAsyncioTestCase):
                         joined.set()
                     else:
                         self.fail(f'unexpected request {method}')
+                        raise AssertionError('unexpected observer request')
                     await ws.send_json({'id': data['id'], 'result': result})
                     if method == 'thread/turns/list' and not terminal.is_set():
-                        await ws.send_json({'id': 'approval-request', 'method': 'item/commandExecution/requestApproval',
+                        await ws.send_json({'id': data['id'], 'method': 'item/commandExecution/requestApproval',
                                             'params': {'threadId': SESSION, 'command': SECRET}})
                         await ws.send_json({'method': 'item/agentMessage/delta', 'params': {'delta': SECRET}})
                         terminal.set()
