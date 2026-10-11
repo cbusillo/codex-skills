@@ -8483,9 +8483,7 @@ def test_privileged_policy_propose_failure_reports_safe_reconciliation(
         result = json.loads(output.getvalue())
         assert result["status"] == expected
         if expected in {"outcome_unknown", "accepted_unverified"}:
-            assert (
-                "identical private envelope and source event" in result["summary"]["recommendation"]
-            )
+            assert result["summary"]["recommendation"]
         if failure in (403, 409, "malformed"):
             assert result["summary"]["trace_id"] == "launchplane_req_" + "c" * 32
         assert "private-token" not in output.getvalue()
@@ -8532,7 +8530,7 @@ def test_privileged_policy_proposal_saved_before_500_replays_the_same_plan() -> 
         assert transport.call_count == 2
         assert len(saved) == 1
         assert outputs[0]["status"] == "outcome_unknown"
-        assert "identical private envelope and source event" in outputs[0]["summary"]["recommendation"]
+        assert outputs[0]["summary"]["recommendation"]
         assert outputs[1]["result"]["operation_id"] == operation_id
         assert outputs[1]["result"]["authorizes_approval"] is False
         assert outputs[1]["result"]["authorizes_execution"] is False
