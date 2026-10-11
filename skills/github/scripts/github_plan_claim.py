@@ -855,13 +855,15 @@ def admission_track(
     return None, not limits
 
 
-def admission_text(kind: str, links: list[str], *, track: dict[str, Any] | None = None, unlinked: str | None = None) -> str:
+def admission_text(kind: str, links: list[str], *, track: dict[str, Any] | None = None,
+                   unlinked: str | None = None, graph_complete: bool = True) -> str:
     """The claim comment's admission line."""
     detail = []
     if track:
         detail.append(f"reaches {track['url']} ({track['title']}, milestone `{track['milestone']}`)")
     if unlinked:
-        detail.append(f"not linked into a milestone Track graph: {unlinked}")
+        description = "not linked into a milestone Track graph" if graph_complete else "Track link not verified"
+        detail.append(f"{description}: {unlinked}")
     if links:
         detail.append(", ".join(links))
     return f"Admission: {kind}" + ("; " + "; ".join(detail) if detail else "")

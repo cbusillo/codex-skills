@@ -2331,7 +2331,9 @@ def cmd_claim(args: argparse.Namespace) -> None:
         if not admission:
             return ""
         track = None
+        complete = True
         limitations: list[str] = []
+        read_failures: list[dict[str, Any]] = []
         if admission == "milestone":
             def read_parent(parent_repo: str, parent_number: int) -> dict[str, Any] | None:
                 try:
@@ -2342,30 +2344,41 @@ def cmd_claim(args: argparse.Namespace) -> None:
                         return None
                     raise
 
-            try:
-                track, complete = github_plan_claim.admission_track(
-                    (issue_repo, number), issue_repo.split("/")[0],
-                    read_issue=lambda node_repo, node_number: get_issue(str(node_number), node_repo)[1],
-                    read_parent=read_parent,
-                    read_blocking=lambda node_repo, node_number: collect_paged_rest_items(
+            def graph_read(surface: str, node_repo: str, node_number: int) -> Any:
+                # Recover only admission reads; independent claim guards still run.
+                try:
+                    if surface == "issue":
+                        return get_issue(str(node_number), node_repo)[1]
+                    if surface == "parent":
+                        return read_parent(node_repo, node_number)
+                    return collect_paged_rest_items(
                         f"/repos/{node_repo}/issues/{node_number}/dependencies/blocking",
-                        query={}, bucket="rest_core", step_prefix="claim_admission_blocking")[1],
-                    limitations=limitations,
-                )
-            except PlanError:
-                # Only this advisory graph read can use an explicit explanation.
-                # All ownership, actor, wait and native-blocker checks still run.
-                complete = False
-                limitations.append("graph_read_unavailable")
+                        query={}, bucket="rest_core", step_prefix="claim_admission_blocking")[1]
+                except PlanError as graph_error:
+                    if "graph_read_unavailable" not in limitations:
+                        limitations.append("graph_read_unavailable")
+                    read_failures.append({"repo": node_repo, "number": node_number, "surface": surface,
+                                          "status": (graph_error.api_result or {}).get("status")})
+                    return {} if surface == "issue" else None if surface == "parent" else []
+
+            track, complete = github_plan_claim.admission_track(
+                (issue_repo, number), issue_repo.split("/")[0],
+                read_issue=lambda node_repo, node_number: graph_read("issue", node_repo, node_number),
+                read_parent=lambda node_repo, node_number: graph_read("parent", node_repo, node_number),
+                read_blocking=lambda node_repo, node_number: graph_read("blocking", node_repo, node_number),
+                limitations=limitations,
+            )
             if not track and not admission_unlinked:
                 raise ClassifiedPlanError(
                     "claim_admission_unlinked",
                     "Milestone admission needs this issue linked into its milestone's Track graph (a sub-issue or blocker "
                     "of the Track or of work already in its graph). Link it with gh-plan.py link, or pass "
                     "--admission-unlinked REASON" + ("" if complete else "; graph limitations: " + ", ".join(limitations)),
-                    payload={"graph_walk_complete": complete, "graph_limitations": limitations},
+                    payload={"graph_walk_complete": complete, "graph_limitations": limitations,
+                             "graph_read_failures": read_failures},
                 )
-        record = github_plan_claim.admission_text(admission, admission_links, track=track, unlinked=admission_unlinked)
+        record = github_plan_claim.admission_text(admission, admission_links, track=track,
+                                                 unlinked=admission_unlinked, graph_complete=complete)
         if limitations and not track:
             record += "; graph verification incomplete: " + ", ".join(limitations)
         return record + "\n\n"

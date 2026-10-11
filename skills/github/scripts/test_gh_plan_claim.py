@@ -2803,7 +2803,34 @@ class ClaimTests(unittest.TestCase):
             self.args.admission_unlinked = "The Director's Track lives in director/direction, a different account"
             self.run_claim()
         self.assertIn(self.args.admission_unlinked, self.comments[-1]["body"])
+        self.assertIn("Track link not verified:", self.comments[-1]["body"])
         self.assertIn("graph verification incomplete: cross_owner_direction_account", self.comments[-1]["body"])
+
+    def test_unreadable_side_branch_does_not_hide_a_reachable_track(self):
+        self.args.admission = "milestone"
+        self.targets["9"] = self.TRACK
+        original_issue, original_pages = self.get_issue, self.read_pages
+
+        def issue(ref, repo):
+            if str(ref) == "8":
+                raise PLAN.PlanError("Side branch unavailable", api_result={"status": 502})
+            return original_issue(ref, repo)
+
+        def parent(_method, path, **_):
+            linked = {"42": "owner/product/issues/3", "3": "owner/direction/issues/9"}.get(path.split("/")[-2])
+            return "bot", {"html_url": "https://github.com/" + linked} if linked else None
+
+        def pages(path, **kwargs):
+            if path.endswith("/blocking"):
+                return "bot", [{"html_url": "https://github.com/owner/product/issues/8"}] if "/42/" in path else []
+            return original_pages(path, **kwargs)
+
+        with patch.object(self, "get_issue", side_effect=issue), \
+                patch.object(self, "read_api", side_effect=parent), \
+                patch.object(self, "read_pages", side_effect=pages):
+            self.run_claim()
+        self.assertIn("reaches https://github.com/owner/direction/issues/9", self.comments[-1]["body"])
+        self.assertNotIn("graph verification incomplete", self.comments[-1]["body"])
 
     def unavailable_admission_read(self, surface, *, route=None):
         self.args.admission = "milestone"
@@ -2842,10 +2869,13 @@ class ClaimTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "claim_admission_unlinked")
                 self.assertFalse(caught.exception.payload["graph_walk_complete"])
                 self.assertIn("graph_read_unavailable", caught.exception.payload["graph_limitations"])
+                self.assertEqual(caught.exception.payload["graph_read_failures"][0]["surface"], surface)
+                self.assertEqual(caught.exception.payload["graph_read_failures"][0]["status"], 403)
                 self.assert_no_writes()
                 self.args.admission_unlinked = "The Track graph is not readable by this repository App"
                 self.unavailable_admission_read(surface)
                 self.assertIn(self.args.admission_unlinked, self.comments[-1]["body"])
+                self.assertIn("Track link not verified:", self.comments[-1]["body"])
                 self.assertIn("graph verification incomplete: graph_read_unavailable", self.comments[-1]["body"])
 
     def test_admission_explanation_preserves_independent_refusals(self):
@@ -2867,8 +2897,14 @@ class ClaimTests(unittest.TestCase):
                     def initial_read(*_):
                         raise PLAN.PlanError("Initial issue authentication failed", api_result={"status": 401})
                     self.get_issue = initial_read
-                with self.assertRaises(PLAN.PlanError):
+                with self.assertRaises(PLAN.PlanError) as caught:
                     self.unavailable_admission_read("parent")
+                if refusal in ("ownership", "human_claim", "artifact"):
+                    self.assertEqual(caught.exception.code, "claim_conflict")
+                elif refusal == "initial_read":
+                    self.assertEqual(caught.exception.api_result["status"], 401)
+                else:
+                    self.assertIn("resolved native blockers", str(caught.exception))
                 self.assert_no_writes()
 
     def test_admission_explanation_does_not_recover_write_authentication_failure(self):

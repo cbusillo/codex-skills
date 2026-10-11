@@ -175,7 +175,7 @@ per repository; the
 per-repository reminder line only fires when a session happens to open inside
 an adopted repository whose audit is stale.
 
-Also run the daily procedure's owner-wide `direction`-label search once during
+Also run the daily procedure's account-wide `direction`-label search once during
 the weekly audit, including when this session holds no daily turn. Judge each
 result under `escalation_open` below, even in an unadopted repository or one
 without a recent push. Reuse results already judged in this session and report
