@@ -3,6 +3,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+import base64
+import hashlib
 import importlib.util
 import json
 import os
@@ -36,12 +38,20 @@ class PreparePythonProjectTest(unittest.TestCase):
     @staticmethod
     def wheel(directory, version):
         name = "inspection_fixture"
+        info = f"{name}-{version}.dist-info"
+        files = {
+            f"{name}.py": f"VERSION = {version!r}\n",
+            f"{info}/METADATA": f"Metadata-Version: 2.1\nName: inspection-fixture\nVersion: {version}\n",
+            f"{info}/WHEEL": "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        }
+        records = []
         with zipfile.ZipFile(directory / f"{name}-{version}-py3-none-any.whl", "w") as wheel:
-            wheel.writestr(f"{name}.py", f"VERSION = {version!r}\n")
-            info = f"{name}-{version}.dist-info"
-            wheel.writestr(f"{info}/METADATA", f"Metadata-Version: 2.1\nName: inspection-fixture\nVersion: {version}\n")
-            wheel.writestr(f"{info}/WHEEL", "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
-            wheel.writestr(f"{info}/RECORD", "")
+            for path, source in files.items():
+                content = source.encode("utf-8")
+                digest = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode("ascii")
+                wheel.writestr(path, content)
+                records.append(f"{path},sha256={digest},{len(content)}\n")
+            wheel.writestr(f"{info}/RECORD", "".join(records) + f"{info}/RECORD,,\n")
 
     def test_script_sdk_resolves_imports_updates_and_refuses_conflicting_pins(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -55,7 +65,9 @@ class PreparePythonProjectTest(unittest.TestCase):
 
             def installed_version():
                 return subprocess.check_output(
-                    [str(interpreter), "-c", "import inspection_fixture; print(inspection_fixture.VERSION)"],
+                    # Same-sized fixture versions can be replaced within one
+                    # filesystem timestamp tick; avoid persisting stale bytecode.
+                    [str(interpreter), "-B", "-c", "import inspection_fixture; print(inspection_fixture.VERSION)"],
                     text=True,
                 ).strip()
 
