@@ -1095,6 +1095,9 @@ class WatchLoopTests(unittest.TestCase):
             ("error: GitHub App authentication helper returned an invalid response; "
              "refusing GitHub command", False),
             ("error: gh-with-env-token requires uv or GH_WITH_ENV_TOKEN_PYTHON", False),
+            ("/path/gh-with-env-token: line 45: gh: command not found", False),
+            ("unknown flag: --include", False),
+            ("Traceback (most recent call last):\nKeyError: app_id", False),
             ("permission denied", False),
             ("bad credentials", False),
         ):
@@ -1113,6 +1116,24 @@ class WatchLoopTests(unittest.TestCase):
                 self.assertEqual(healthy.writes, [1] if expected else [])
                 self.assertEqual(len(sleeps), 2 if expected else 0)
                 self.assertEqual(events[0]["event"], "pass_failed" if expected else "stop")
+
+    def test_shared_cli_launch_and_execution_errors_stop(self):
+        for failure in (FileNotFoundError(), PermissionError(), OSError()):
+            with self.subTest(failure=type(failure).__name__):
+                with patch.object(watch.github_api.subprocess, "run", side_effect=failure):
+                    provider_result = watch.github_api.call_gh(
+                        "GET", "/repos/example/tool/pulls", gh_cmd="gh",
+                        actor="test-bot", expected_actor="test-bot",
+                        operation="github.pr.view", is_write=False,
+                        failed_step="enqueue_read", conditional_cache=False,
+                    )
+                reader = watch.GitHubReader(gh_cmd="gh", actor="test-bot", expected_actor="test-bot")
+                with patch.object(reader, "_transport_request", return_value=provider_result):
+                    with self.assertRaises(watch.GitHubReadError) as caught:
+                        reader.get_json("/repos/example/tool/pulls", step="enqueue_read")
+                result, calls, sleeps, events = self.run_watch(Mock(side_effect=caught.exception))
+                self.assertEqual((result, calls, sleeps), (1, 1, []))
+                self.assertEqual(events[-1]["payload"]["outcome"], "error")
 
     def test_controller_read_transport_failure_recovers_without_retrying_rejections(self):
         adapter = object.__new__(watch.Live)
