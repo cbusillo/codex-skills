@@ -117,7 +117,7 @@ class TranscriptTests(unittest.TestCase):
                 entry = {"session_id": "fixture", "harness": "claude",
                          "transcript": str(transcript), "supervisor_owned": True}
                 ledger.write_text(json.dumps([entry]))
-                records = [{"sessionId": "fixture", **claude("Safe to exit: yes", stop_reason=reason)}]
+                records: list[dict[str, Any]] = [{"sessionId": "fixture", **claude("Safe to exit: yes", stop_reason=reason)}]
                 transcript.write_text("\n".join(json.dumps(r) for r in records))
                 summary = session_record.summarize(records, "claude")
                 self.assertFalse(summary["at_turn_end"])
