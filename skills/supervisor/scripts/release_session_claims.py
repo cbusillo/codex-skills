@@ -492,6 +492,14 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
         raise PartialRelease(error, report) from error
 
 
+def verified_release_checkout(checkout_root, repo):
+    checkout = checkout_root / repo.split("/")[1]
+    remote = claim.run_read(["git", "remote", "get-url", "origin"], cwd=checkout).strip()
+    if not re.search(rf"[:/]{re.escape(repo)}(?:\.git)?$", remote, re.IGNORECASE):
+        raise ValueError("release checkout must match the canonical repository")
+    return checkout
+
+
 def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_by_repo, checkout_root):
     plans, retained_status = [], []
     reader.deadline_at = time.time() + entry.get("_read_deadline_seconds", 600)
@@ -509,6 +517,7 @@ def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_
             entry.setdefault("_inventory_results", {})[(repo, number, row["claim_comment_id"])] = {
                 "repository": repo, "issue": number, "claim_comment": row["claim_comment_id"],
                 "status": "manual_release_required" if row["claim_comment_id"] in active_ids else "already_released"}
+        checkout = verified_release_checkout(checkout_root, repo) if sources else None
         rows = {}
         for source, related, unresolved in sources:
             if entry.get("_inventory") and not any(row["repo"] == repo and row["issue"] == number
@@ -527,7 +536,7 @@ def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_
             row = {"repository": repo, "pull_request": number,
                    "claim_comments": [source["id"], *related],
                    "status": "manual_release_required", "release_argv": argv,
-                   "dry_run_argv": [*argv, "--dry-run"], "checkout": str(checkout_root / repo.split("/")[1]),
+                   "dry_run_argv": [*argv, "--dry-run"], "checkout": str(checkout),
                    "attestation_body": closure_attestation(entry)}
             rows[(repo, number, source["id"])] = row
         entry.setdefault("_pr_claim_handoffs", {}).update(rows)
@@ -584,9 +593,7 @@ def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_
            and r["claim_comment_id"] not in covered for r in entry.get("_inventory_claims", [])):
         raise ValueError("active inventory follow-up has no selected structured source; obtain its authored exact-ID release")
     if plans:
-        remote = claim.run_read(["git", "remote", "get-url", "origin"], cwd=checkout_root / repo.split("/")[1]).strip()
-        if not re.search(rf"[:/]{re.escape(repo)}(?:\.git)?$", remote, re.IGNORECASE):
-            raise ValueError("release checkout must match the canonical repository")
+        verified_release_checkout(checkout_root, repo)
     return plans, retained_status
 
 

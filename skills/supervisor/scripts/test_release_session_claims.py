@@ -98,6 +98,15 @@ class ReleaseTests(unittest.TestCase):
             self.assertFalse(result["ok"])
             self.assertTrue(result["needs_reconciliation"])
 
+    def test_pr_release_handoff_refuses_a_checkout_for_another_repository(self):
+        handoff = dict(self.reader.get_json.return_value)
+        self.reader.get_json.side_effect = lambda path, **_kw: handoff if "/issues/comments/" in path else {"pull_request": {}, "body": "Bump dependencies"}
+        self.reader.paged_json.return_value = [self.source]
+        with patch.object(helper.claim, "run_read", return_value="https://github.com/other/a.git"):
+            report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
+        self.assertFalse(report["pr_claim_handoffs"])
+        self.assertTrue(report["issue_refusals"])
+
     def test_finished_process_and_safe_verdict(self):
         self.assertTrue(helper.validate_closure(self.entry, "supervisor")["safe_verdict"])
         for rows in ([(123, "other", "zsh")], [(456, "ttys123", "codex")], [(456, "ttys123", "zsh -c work")]):
