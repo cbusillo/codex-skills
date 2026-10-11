@@ -176,6 +176,12 @@ def idle(response, own=()):
         dry.get("queue_order"), list
     ):
         return False
+    if any(
+        reason.endswith(" label ignored: could not read who applied it")
+        for item in dry["queue"]
+        for reason in item["ineligible_reasons"]
+    ):
+        return False
     # Even queued work not yet built belongs to its existing routing actor.
     return set(dry["queue_order"]) <= set(own)
 
@@ -437,10 +443,6 @@ def run_pass(io, args, emit):
                     not dispositions.get(pr["number"], {}).get("ineligible_reasons")
                     or f"missing {target['label']} label"
                     in dispositions[pr["number"]]["ineligible_reasons"]
-                    or any(
-                        reason.endswith(" label ignored: could not read who applied it")
-                        for reason in dispositions[pr["number"]]["ineligible_reasons"]
-                    )
                 )
             ]
             if labeled:

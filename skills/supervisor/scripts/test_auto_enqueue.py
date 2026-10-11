@@ -446,6 +446,21 @@ class EnqueueTests(unittest.TestCase):
         self.assertEqual(fake.writes, [])
         self.assertTrue(any(event == "busy" for event, _ in self.events))
 
+    def test_unknown_label_author_between_writes_stops_batch(self):
+        fake = Fake()
+
+        def before(io):
+            if io.calls == 3:
+                io.pulls[6]["labels"] = [{"name": TARGET["label"]}]
+                io.ineligible[6] = [
+                    f"{TARGET['label']} label ignored: could not read who applied it"
+                ]
+
+        fake.before = before
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [1])
+        self.assertTrue(any(event == "batch_stopped" for event, _ in self.events))
+
     def test_eligible_labeled_member_outside_queue_order_preserves_batch(self):
         fake = Fake()
         fake.pulls[1]["labels"] = [{"name": TARGET["label"]}]
