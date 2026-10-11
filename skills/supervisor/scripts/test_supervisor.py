@@ -915,6 +915,13 @@ class AccountChoiceTests(unittest.TestCase):
             self.assertEqual(list((Path(folder) / "Launch Receipts").iterdir()), [])
 
 
+def account_launch_args(command_file):
+    return argparse.Namespace(
+        command="new", window_id="chosen", command_file=command_file,
+        account_provider="anthropic", account=None, account_config=None,
+    )
+
+
 class TerminalTests(unittest.TestCase):
     def test_codex_daemon_preflight_checks_selected_home_before_tabs_and_receipts(self):
         # Short disposable paths fit macOS's Unix socket path limit.
@@ -1292,10 +1299,7 @@ class TerminalTests(unittest.TestCase):
             child.write_text('#!/bin/sh\nprintf "%s\\n" "$CLAUDE_CONFIG_DIR" "$CLAUDE_ACCOUNT_MOVE_ENABLED" "$1"\n')
             child.chmod(0o700)
             command.write_text("cd / && " + shlex.quote(str(child)) + " 'brief'\n")
-            args = argparse.Namespace(
-                command="new", window_id="chosen", command_file=command,
-                account_provider="anthropic", account=None, account_config=None,
-            )
+            args = account_launch_args(command)
             with (
                 patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                 patch.object(account_choice, "select", return_value=choice),
@@ -1332,8 +1336,7 @@ class TerminalTests(unittest.TestCase):
             tabs = [SimpleNamespace(tab_id=f"tab-{i}", current_session=t) for i, t in enumerate(terminals)]
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(side_effect=tabs))
             app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
-            args = argparse.Namespace(command="new", window_id="chosen", command_file=files,
-                                      account_provider="anthropic", account=None, account_config=None)
+            args = account_launch_args(files)
             with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "load_config", return_value=config), patch.object(account_choice, "read_snapshot", return_value=(snapshot, None)):
                 results = asyncio.run(iterm_tab.operate(app, args))
             self.assertEqual([r["account"]["name"] for r in results], ["spare", "main"])
@@ -1425,11 +1428,13 @@ class TerminalTests(unittest.TestCase):
             choice["storage_root"] = root / "missing-store"
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
             app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
-            args = argparse.Namespace(command="new", window_id="chosen", command_file=path,
-                                      account_provider="anthropic", account=None, account_config=None)
-            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select", return_value=choice):
-                with self.assertRaisesRegex(ValueError, "check write access") as failed:
-                    asyncio.run(iterm_tab.operate(app, args))
+            args = account_launch_args(path)
+            with (
+                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
+                patch.object(account_choice, "select", return_value=choice),
+                self.assertRaisesRegex(ValueError, "check write access") as failed,
+            ):
+                asyncio.run(iterm_tab.operate(app, args))
             window.async_create_tab.assert_not_awaited()
             self.assertNotIn(str(root), str(failed.exception))
             self.assertFalse(choice["storage_root"].exists())
@@ -1454,8 +1459,7 @@ class TerminalTests(unittest.TestCase):
             tabs = [SimpleNamespace(tab_id=f"tab-{i}", current_session=t) for i, t in enumerate(terminals)]
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(side_effect=tabs))
             app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
-            args = argparse.Namespace(command="new", window_id="chosen", command_file=files,
-                                      account_provider="anthropic", account=None, account_config=None)
+            args = account_launch_args(files)
             with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select_batch", return_value=choices), patch.object(account_choice, "record_launch", side_effect=[root / "receipt.json", PermissionError("private-root")]):
                 try:
                     asyncio.run(iterm_tab.operate(app, args))
@@ -1477,8 +1481,7 @@ class TerminalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "launch.txt"
             path.write_text("claude brief")
-            args = argparse.Namespace(command="new", window_id="chosen", command_file=path,
-                                      account_provider="anthropic", account=None, account_config=None)
+            args = account_launch_args(path)
             with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select", return_value=choice), patch.object(account_choice, "record_launch", side_effect=OSError("disk full")), patch.object(account_choice, "prepare_launch"), self.assertRaises(iterm_tab.LaunchFailure):
                 asyncio.run(iterm_tab.operate(app, args))
             terminal.async_send_text.assert_not_awaited()
@@ -1494,11 +1497,13 @@ class TerminalTests(unittest.TestCase):
             tab = SimpleNamespace(tab_id="tab", current_session=terminal)
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(return_value=tab))
             app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
-            args = argparse.Namespace(command="new", window_id="chosen", command_file=path,
-                                      account_provider="anthropic", account=None, account_config=None)
-            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select", return_value=choice):
-                with self.assertRaises(iterm_tab.LaunchFailure) as failed:
-                    asyncio.run(iterm_tab.operate(app, args))
+            args = account_launch_args(path)
+            with (
+                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
+                patch.object(account_choice, "select", return_value=choice),
+                self.assertRaises(iterm_tab.LaunchFailure) as failed,
+            ):
+                asyncio.run(iterm_tab.operate(app, args))
             self.assertEqual(len(list((root / "Launch Receipts").glob("*.json"))), 1)
             self.assertEqual(failed.exception.detail["failed_launch"]["submission"], "unknown")
             self.assertTrue(failed.exception.detail["failed_launch"]["receipt_written"])
@@ -1512,8 +1517,7 @@ class TerminalTests(unittest.TestCase):
             files = [Path(folder) / "first.txt", Path(folder) / "second.txt"]
             files[0].write_text("claude brief")
             files[1].write_text("env CLAUDE_CONFIG_DIR=/other claude")
-            args = argparse.Namespace(command="new", window_id="chosen", command_file=files,
-                                      account_provider="anthropic", account=None, account_config=None)
+            args = account_launch_args(files)
             choices = account_choice.choose_batch("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None, count=2)
             with (
                 patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
