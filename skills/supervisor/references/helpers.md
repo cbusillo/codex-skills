@@ -228,7 +228,8 @@ other drivers and account for already queued/active work. Do not claim that a
 pause file halts an existing candidate. Client-product delivery still follows
 the linked Client Products rules; those rules also link the decision retiring
 the Launchplane landing hold. First-class service holds and atomic admission
-belong to #3327.
+belong to [launchplane#3327](https://github.com/cbusillo/launchplane/issues/3327)
+service admission.
 
 ## Launching and nudging
 

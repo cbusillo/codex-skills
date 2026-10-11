@@ -85,7 +85,7 @@ commands:
     source: skill
     resource_path: scripts/auto_enqueue.py
     example_argv: ["uv", "run", "scripts/auto_enqueue.py", "holds", "--hold-file", "<private-holds.json>", "--pause", "OWNER/REPO"]
-    purpose: Serialize repository pauses and Client release holds with local enqueue passes.
+    purpose: Serialize repository pauses and optional manual release pauses with local enqueue passes.
   - name: supervisor-close-ttys
     source: skill
     resource_path: scripts/close_ttys.py
@@ -283,8 +283,9 @@ for products a Client runs business on.
   replaces this hand ordering once Launchplane's automatic batch flow ships.
 - Once a product's release batch has landed, its release is ready even
   before the invitation posts. From then until the release finishes, land
-  nothing else on that product. The hold on Launchplane landings during Client
-  releases is retired by [Chris's Q160 decision](https://github.com/cbusillo/launchplane/issues/3145#issuecomment-6103873272).
+  nothing else on that product, including through other sessions' drivers.
+  The hold on Launchplane landings during Client releases is retired by the
+  [Director's Q160 decision on launchplane#3145](https://github.com/cbusillo/launchplane/issues/3145#issuecomment-6103873272).
 - Every PR in a repository that feeds a Client release (shared add-ons,
   devkit, images, tenants and the live sites) carries a `## Client test notes`
   section. One missing section, even on a housekeeping PR, blocks the release
