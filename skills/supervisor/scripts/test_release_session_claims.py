@@ -144,6 +144,42 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse(report["claims"])
         self.assertTrue(report["issue_refusals"])
 
+    def test_missing_inventory_claim_and_pr_number_are_reported(self):
+        entry = {**self.entry, "_inventory": True, "safe_exit_yes": True, "still_running": False,
+                 "_inventory_claims": [self.inventory_row()]}
+        handoff = dict(self.reader.get_json.return_value)
+        for issue in ({"body": ""}, {"body": "", "pull_request": {}}):
+            self.reader.get_json.side_effect = lambda path, **_kw: issue if path.endswith("/issues/1") else handoff
+            self.reader.paged_json.return_value = []
+            report = helper.release_session(self.reader, entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
+            self.assertFalse(report["claims"])
+            self.assertTrue(report["issue_refusals"])
+
+    def test_read_description_does_not_make_an_old_receipt_a_write(self):
+        records = helper.session_record.read_jsonl(self.transcript)
+        records.insert(1, {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "read", "input": {
+            "command": "gh api repos/test/a/issues/comments/99 --jq .html_url", "description": "Verify gh-comment issue 1 posted"}}]}})
+        records.insert(2, {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "read", "content": self.entry["handoff_url"]}]}})
+        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
+        self.reader.paged_json.return_value = []
+        with self.assertRaisesRegex(ValueError, "no authored handoff"):
+            helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
+
+    def test_inventory_repo_scope_preserves_excluded_rows(self):
+        log = self.root / "inventory.json"
+        log.write_text(json.dumps([self.inventory_row(), self.inventory_row(repo="test/b", claim_comment_id=2)]))
+        argv = ["helper", "backfill", "--closed-log", str(log), "--supervisor-session", "supervisor",
+                "--owner", "test", "--repo", "test/a", "--checkout-root", str(self.root),
+                "--confirm-session-ended", "--verified-handoff", "--transcript-root", str(self.root)]
+        output = io.StringIO()
+        with patch.object(helper.sys, "argv", argv), \
+                patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
+                patch.object(helper, "release_session", return_value={"session_id": SOURCE["session"], "claims": []}) as run, \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(helper.main(), 1)
+        self.assertEqual(run.call_args.args[4], [("test/a", 1)])
+        self.assertEqual(json.loads(output.getvalue())["reports"][0]["status"], "out_of_scope")
+
     def test_explicit_inventory_pr_with_bad_issue_link_is_preserved_as_refusal(self):
         entry = {**self.entry, "_inventory": True, "safe_exit_yes": True, "still_running": False,
                  "_inventory_claims": [self.inventory_row(retained_pr_url="https://github.com/test/a/pull/12")]}

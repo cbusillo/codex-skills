@@ -297,7 +297,7 @@ def discover_handoff(reader, entry, actor):
         for block in (record.get("message") or {}).get("content") or []:
             if not isinstance(block, dict):
                 continue
-            if block.get("type") == "tool_use" and write_command.search(json.dumps(block.get("input") or {})):
+            if block.get("type") == "tool_use" and write_command.search(str((block.get("input") or {}).get("command") or (block.get("input") or {}).get("cmd") or "")):
                 if block.get("id"):
                     writes.add(block["id"])
             if block.get("type") == "tool_result" and block.get("tool_use_id") in writes and block.get("is_error") is not True:
@@ -422,9 +422,13 @@ def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_
     reader.deadline_at = time.time() + entry.get("_read_deadline_seconds", 600)
     issue = reader.get_json(f"/repos/{repo}/issues/{number}", step="release_canonical_issue")
     if "pull_request" in issue:
+        if entry.get("_inventory"):
+            raise ValueError("inventory names a pull request instead of its canonical issue")
         return [], retained_status
     comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="session_issue_filter")
     if not any(belongs_to_session(c.get("body") or "", entry["session_id"]) for c in comments) and not belongs_to_session(issue.get("body") or "", entry["session_id"]):
+        if entry.get("_inventory"):
+            raise ValueError("inventory source is missing or lacks exact native-session evidence")
         return [], retained_status
     if belongs_to_session(issue.get("body") or "", entry["session_id"]):
         retained_status.append({"repository": repo, "issue": number,
@@ -517,7 +521,10 @@ def apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, 
             raise ValueError("source transcript changed; preserve remaining claims")
         body = (f"Closed session {entry['session_id']}\nEnded at: {entry['ended_at']}\nSafe to exit: yes\n\n"
                 f"Verified handoff ({entry.get('_handoff_provenance', 'Supervisor transcript-verified ledger')}): {entry['handoff_url']}\n")
+        if entry.get("_inventory"):
+            body += "Closure evidence: Supervisor verified inventory; original PID/TTY unavailable. The caller confirms actual session inactivity, including unavailable native peers.\n"
         item = {"repository": repo, "issue": number, "claim_comment": source_id,
+                "related_claim_comments": related,
                 "retained_prs": prs, "attestation_body": body,
                 "release_preflight": "requires a posted attestation; apply previews release-claim before releasing"}
         report["claims"].append(item)
@@ -608,9 +615,13 @@ def main():
                 roots = {h: transcript_roots(h, args.account_config, args.transcript_root) for h in ("codex", "claude")}
                 entries, inventory_reports = backfill_inventory.load(rows, roots)
                 reports.extend(inventory_reports)
+                owned = []
                 for entry in entries:
                     if any(r["repo"].split("/")[0].casefold() != args.owner.casefold() for r in entry["_inventory_claims"]):
-                        raise ValueError("inventory repository is outside the requested owner")
+                        reports.append({"session_id": entry["session_id"], "error": "inventory group includes a repository outside the requested owner", "released": False})
+                    else:
+                        owned.append(entry)
+                entries = owned
             else:
                 entries = [{k: v for k, v in e.items() if not k.startswith("_")}
                            for e in session_record.load_ledger(args.closed_log)]
@@ -642,6 +653,12 @@ def main():
         if not entries:
             raise ValueError("no verified closed sessions; inspect the per-session reports")
         if all(e.get("_inventory") for e in entries):
+            for entry in entries:
+                for row in entry["_inventory_claims"]:
+                    if args.repo and row["repo"] not in args.repo:
+                        reports.append({"session_id": entry["session_id"], "repository": row["repo"], "issue": row["issue"],
+                            "claim_comment": row["claim_comment_id"], "status": "out_of_scope", "released": False,
+                            "error": "preserved outside explicit --repo scope"})
             issues = sorted({(r["repo"], r["issue"]) for e in entries for r in e["_inventory_claims"]
                              if not args.repo or r["repo"] in args.repo})
             repos = sorted({r for r, _ in issues})

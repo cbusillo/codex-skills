@@ -463,7 +463,11 @@ Inventory rows name `repo`, `issue`, `claim_comment_id`, `session_id`, original
 `ended_at`, `safe_exit_yes: true`, `still_running: false`, and optional
 `handoff_url` / `retained_pr_url`. Repeated native sessions are grouped; a bad
 row or conflicting end time preserves that session's entire group. Exact
-claim IDs bound the inventory scope, and already-valid releases are reported.
+source claim IDs bound the inventory scope, and already-valid releases are
+reported. The existing canonical route also includes that source's verified
+same-author, exact-session ownership follow-ups; preview lists those related
+IDs explicitly. Unlisted structured sources are never added. An active
+follow-up without a selected structured source is reported for reconciliation.
 The input file is never rewritten. Use the default read-only preview first.
 
 Historical inventory records lack original PID/TTY data. This is an explicit

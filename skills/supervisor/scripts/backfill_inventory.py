@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 """Normalize the Supervisor's verified STALE-CLAIMS inventory without inventing exit metadata."""
 
 from pathlib import Path
