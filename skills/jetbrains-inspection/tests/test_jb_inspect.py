@@ -1253,6 +1253,8 @@ class BuildContextTest(unittest.TestCase):
             {"version": "3.13", "moduleName": "launchplane", "testRoots": ["../tests"]},
             {"version": "3.13", "moduleName": "launchplane", "extras": ["dev"]},
             {"version": "3.13", "moduleName": "launchplane", "unknown": True},
+            {"version": "3.13", "moduleName": "fixture", "pep723Scripts": ["../script.py"]},
+            {"version": "3.13", "moduleName": "fixture", "pep723Scripts": ["script.py"], "sync": True},
         )
         for python_config in invalid_python_configs:
             with self.subTest(python_config=python_config), tempfile.TemporaryDirectory() as tmp:
@@ -1272,6 +1274,33 @@ class BuildContextTest(unittest.TestCase):
                 raised.exception.payload["error_reason"],
                 "repository_preparation_config_invalid",
             )
+
+    def test_script_preparation_routes_sources_and_hashes_exact_worktree_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = root / "script.py"
+            script.write_text("# /// script\n# dependencies = []\n# ///\n", encoding="utf-8")
+            preparation = jb_inspect.parse_structured_repository_preparation(
+                {"python": {"version": "3.12", "moduleName": "fixture", "pep723Scripts": ["script.py"]}}, {},
+            )
+            argv = preparation["_argv"]
+            self.assertEqual(argv[-2:], ["--pep723-script", "script.py"])
+            before = jb_inspect.repository_preparation_command_hash(argv, root)
+            script.write_text('# /// script\n# dependencies = ["example==1"]\n# ///\n', encoding="utf-8")
+            self.assertNotEqual(before, jb_inspect.repository_preparation_command_hash(argv, root))
+            script.unlink()
+            self.assertNotEqual(before, jb_inspect.repository_preparation_command_hash(argv, root))
+
+    def test_long_script_set_refuses_instead_of_reporting_a_partial_rerun(self):
+        config = {"version": "3.12", "moduleName": "fixture", "pep723Scripts": [
+            f"scripts/{'long-path-' * 5}{index}.py" for index in range(20)
+        ]}
+        with self.assertRaises(jb_inspect.InspectError):
+            jb_inspect.parse_structured_repository_preparation({"python": config}, {})
+        config["pep723Scripts"] = ["scripts/one.py"]
+        preparation = jb_inspect.parse_structured_repository_preparation({"python": config}, {})
+        reported = jb_inspect.bounded_repository_preparation(preparation, target_worktree="/tmp/fixture")
+        self.assertEqual(shlex.split(reported["command"]), preparation["_argv"])
 
     def test_structured_preparation_rejects_outer_generated_state(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1672,6 +1701,36 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
             result = jb_inspect.run_repository_preparation(self.prep_args(), context)
         self.assertIn("--sdk-table", result["command"])
         self.assertIn(str(root / "selected-ide/options/jdk.table.xml"), result["command"])
+
+    def test_long_selected_sdk_table_refuses_before_running_script_preparation(self):
+        temporary, root = self.make_git_worktree()
+        self.addCleanup(temporary.cleanup)
+        script = root / "prepare-python-project.py"
+        script.write_text("pass\n", encoding="utf-8")
+        context = self.make_context(root, ["uv", "run", str(script), "--pep723-script", "one.py"])
+        context["repository_preparation"]["kind"] = "python"
+        context["ide_config_dir"] = str(root.joinpath(*(["deep-ide-config-directory"] * 60)))
+        runner = MagicMock(side_effect=AssertionError("preparation executed"))
+        subprocess_view = Namespace(**vars(subprocess))
+        subprocess_view.Popen = runner
+        with (
+            patch.dict(jb_inspect.__dict__, {"subprocess": subprocess_view}),
+            patch.dict(os.environ, {
+                "JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "",
+                "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent),
+            }),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.run_repository_preparation(self.prep_args(), context)
+        self.assertEqual(
+            raised.exception.payload["error_reason"],
+            jb_inspect.repository_preparation_config_error("fixture").payload["error_reason"],
+        )
+        runner.assert_not_called()
+
+        with patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}):
+            skipped = jb_inspect.run_repository_preparation(self.prep_args(skip_preparation=True), context)
+        self.assertEqual(skipped["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SKIPPED)
 
     def test_lane_flow_resolves_python_sdk_table_before_shared_preparation(self):
         temporary, root = self.make_git_worktree()
