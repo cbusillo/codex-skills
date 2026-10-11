@@ -91,6 +91,7 @@ class Fake:
         self.targets = [copy.deepcopy(TARGET)]
         self.after_label_action = "idle"
         self.ineligible = {}
+        self.scheduler_owns_batch = False
 
     def policies(self, _owner):
         return copy.deepcopy(self.targets)
@@ -122,6 +123,22 @@ class Fake:
         dry["queue_order"] = [
             row["number"] for row in dry["queue"] if not row["ineligible_reasons"]
         ]
+        if self.scheduler_owns_batch and self.writes:
+            # A normal active-candidate observation omits dry_run_result.
+            value["result"] = watch.operator._project_merge_train_result(
+                {
+                    "mode": "dry-run",
+                    "controller_action": "observe_candidate",
+                    "candidate": {
+                        "status": "ready_for_checks",
+                        "entries": [
+                            {"pull_request_number": number, "head_sha": SHA}
+                            for number in self.writes
+                        ],
+                    },
+                }
+            )
+            value["records"] = {"merge_train_batch_candidate_record_id": "active"}
         return value
 
     def get(self, path):
@@ -210,6 +227,131 @@ class EnqueueTests(unittest.TestCase):
     def test_candidate_starts_between_labels_stops_remaining_group(self):
         fake = Fake()
         fake.before = lambda io: setattr(io, "active", bool(io.writes))
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [1])
+
+    def test_scheduler_candidate_from_own_labels_finishes_selected_batch(self):
+        fake = Fake()
+        fake.scheduler_owns_batch = True
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [1, 2, 4, 5])
+        self.assertFalse(any(event == "batch_stopped" for event, _ in self.events))
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [1, 2, 4, 5])
+
+    def test_own_candidate_does_not_hide_new_foreign_queue_labels(self):
+        fake = Fake()
+        fake.scheduler_owns_batch = True
+
+        def before(io):
+            if io.writes:
+                io.pulls[6]["labels"].append({"name": TARGET["label"]})
+
+        fake.before = before
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [1])
+        self.assertTrue(any(event == "batch_stopped" for event, _ in self.events))
+
+    def test_own_candidate_reflow_after_next_label_finishes_batch(self):
+        fake = Fake()
+        fake.scheduler_owns_batch = True
+        original_train = fake.train
+
+        def train(target):
+            value = original_train(target)
+            if len(fake.writes) > 1:
+                value["result"]["controller_action"] = "plan_candidate"
+                value["result"]["dry_run_result"] = response(
+                    fake.pulls.values(), fake.writes
+                )["result"]["dry_run_result"]
+                value["records"] = {
+                    "superseded_merge_train_batch_candidate_record_id": "active"
+                }
+            return value
+
+        fake.train = train
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [1, 2, 4, 5])
+
+    def test_reflow_of_unobserved_candidate_stops_batch(self):
+        fake = Fake()
+        fake.scheduler_owns_batch = True
+        original_train = fake.train
+
+        def train(target):
+            value = original_train(target)
+            if fake.writes:
+                value["result"]["controller_action"] = "plan_candidate"
+                value["records"] = {
+                    "superseded_merge_train_batch_candidate_record_id": "unobserved"
+                }
+            return value
+
+        fake.train = train
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [1])
+
+    def test_own_candidate_retains_each_members_head_labels_and_readiness_guard(self):
+        for changed in ("head", "hold", "readiness"):
+            with self.subTest(changed=changed):
+                fake = Fake()
+                fake.scheduler_owns_batch = True
+
+                def before(io):
+                    if io.writes:
+                        if changed == "head":
+                            io.pulls[2]["head"]["sha"] = "b" * 40
+                        elif changed == "hold":
+                            io.pulls[2]["labels"].append({"name": "merge-blocked"})
+                        else:
+                            io.qualify = False
+
+                fake.before = before
+                self.run_pass(fake)
+                self.assertEqual(fake.writes, [1])
+
+    def test_unrelated_or_incomplete_candidate_evidence_stops_batch(self):
+        for mutation in (
+            lambda value: value["candidate"].update(pull_request_numbers=[6]),
+            lambda value: value["candidate"].update(pull_request_numbers=[]),
+            lambda value: value["candidate"].pop("pull_request_numbers"),
+            lambda value: value["candidate"].update(entries_count=2),
+            lambda value: value["candidate"].update(status="failed"),
+            lambda value: value.update(controller_action="plan_landing"),
+            lambda value: value.update(controller_reconciliation_status="required"),
+            lambda value: value.update(landing_plan={"record_id": "landing"}),
+        ):
+            fake = Fake()
+            fake.scheduler_owns_batch = True
+            original_train = fake.train
+
+            def train(target):
+                value = original_train(target)
+                if fake.writes:
+                    mutation(value["result"])
+                return value
+
+            fake.train = train
+            self.run_pass(fake)
+            self.assertEqual(fake.writes, [1])
+
+    def test_own_candidate_with_fresh_queue_still_checks_member_disposition(self):
+        fake = Fake()
+        fake.scheduler_owns_batch = True
+        original_train = fake.train
+
+        def train(target):
+            value = original_train(target)
+            if fake.writes:
+                value["result"]["dry_run_result"] = response(fake.pulls.values())["result"][
+                    "dry_run_result"
+                ]
+                value["result"]["dry_run_result"]["queue"][1]["ineligible_reasons"] = [
+                    "actor role is not allowed to enqueue"
+                ]
+            return value
+
+        fake.train = train
         self.run_pass(fake)
         self.assertEqual(fake.writes, [1])
 
