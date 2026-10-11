@@ -10,7 +10,18 @@ from datetime import datetime
 
 READY = "Ready for the merge train"
 WAITING = "Engineering ready; waiting for"
-HEAD = re.compile(r"(?im)^Head(?: SHA)?:\s*`?([0-9a-f]{40})`?(?:[.\s]|$)")
+HEAD = re.compile(
+    r"(?im)^Head(?: SHA)?:[ \t]*(?P<marker>\*\*|`)?"
+    r"(?P<sha>[0-9a-f]{40})(?(marker)(?P=marker))(?:[.\s]|$)"
+)
+
+
+def handoff_line(line):
+    """Normalize Ready and renewed waits with the same presentation rules."""
+    line = line.strip().removesuffix(".")
+    if line.startswith("**") and line.endswith("**"):
+        line = line[2:-2].removesuffix(".")
+    return line
 
 
 def handoff_body(head_sha: str, *, waiting_for_client: bool = False) -> str:
@@ -27,10 +38,11 @@ def requires_client_acceptance(pr, check_runs):
     if any(check["name"] == "launchplane/owner-review" for check in check_runs):
         return True
     body = pr.get("body") or ""
-    return bool(
-        re.search(r"(?im)^## (?:Client|Owner) test notes\s*$", body)
-        and not re.search(r"(?im)^Nothing for the Client to test:\s*\S", body)
-    )
+    for heading in re.finditer(r"(?im)^## (?:Client|Owner) test notes[ \t]*\r?$", body):
+        notes = re.split(r"(?m)^## ", body[heading.end():], maxsplit=1)[0].strip()
+        if not re.match(r"(?i)Nothing for the (?:Client|owner) to test\b", notes):
+            return True
+    return False
 
 
 def timestamp(value):
@@ -47,7 +59,7 @@ def latest_ready(pr, comments, trusted):
         if (comment.get("user") or {}).get("login", "").casefold() not in trusted:
             continue
         body = comment.get("body") or ""
-        first = body.splitlines()[0] if body.splitlines() else ""
+        first = handoff_line(body.splitlines()[0]) if body.splitlines() else ""
         if first == READY or first.startswith(WAITING):
             handoffs.append(comment)
     if not handoffs:
@@ -60,4 +72,6 @@ def latest_ready(pr, comments, trusted):
         ),
     )
     body = latest["body"]
-    return body.splitlines()[0] == READY and HEAD.findall(body) == [pr["head"]["sha"]]
+    return handoff_line(body.splitlines()[0]) == READY and [
+        match.group("sha") for match in HEAD.finditer(body)
+    ] == [pr["head"]["sha"]]
