@@ -2735,7 +2735,8 @@ def test_real_wrapper_distinguishes_preflight_refusal_from_unknown_write(monkeyp
 
 
 @pytest.mark.parametrize("termination", ["SIGTERM", "SIGHUP", "SIGKILL", "SIGTERM_then_SIGHUP",
-                                       "SIGTERM_during_launch", "SIGHUP_during_launch"])
+                                       "SIGTERM_during_launch", "SIGHUP_during_launch",
+                                       "SIGTERM_during_timeout_cleanup", "SIGHUP_during_timeout_cleanup"])
 def test_parent_termination_cleans_catchable_commands_and_preserves_unknown(monkeypatch, tmp_path, termination):
     _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
     command = tmp_path / "fake-gh"
@@ -2757,11 +2758,20 @@ def test_parent_termination_cleans_catchable_commands_and_preserves_unknown(monk
     cleanup_started = ctx.Event()
     cleanup_release = ctx.Event()
     launch_release = ctx.Event()
-    if termination.endswith("_during_launch"):
+    if termination.endswith(("_during_launch", "_during_timeout_cleanup")):
         launch = gh_pr_watch.subprocess.Popen
         def paused_launch(*args, **kwargs):
             process = launch(*args, **kwargs)
-            assert launch_release.wait(timeout=3), "driver did not release command launch"
+            if termination.endswith("_during_launch"):
+                assert launch_release.wait(timeout=3), "driver did not release command launch"
+            else:
+                communicate = process.communicate
+                def timed_communication(timeout=None):
+                    if timeout is not None:
+                        assert launch_release.wait(timeout=3), "driver did not release command timeout"
+                        raise gh_pr_watch.subprocess.TimeoutExpired(process.args, timeout)
+                    return communicate()
+                process.communicate = timed_communication
             return process
         monkeypatch.setattr(gh_pr_watch.subprocess, "Popen", paused_launch)
     if termination == "SIGTERM_then_SIGHUP":
@@ -2771,6 +2781,14 @@ def test_parent_termination_cleans_catchable_commands_and_preserves_unknown(monk
             assert cleanup_release.wait(timeout=2), "driver did not deliver the second signal"
             kill_group(pid, sig)
         monkeypatch.setattr(gh_pr_watch.os, "killpg", delayed_cleanup)
+    elif termination.endswith("_during_timeout_cleanup"):
+        driver_pid = os.getpid()
+        kill_group = os.killpg
+        def interrupted_cleanup(pid, sig):
+            if os.getpid() != driver_pid:
+                os.kill(os.getpid(), getattr(gh_pr_watch.signal, termination.split("_", 1)[0]))
+            kill_group(pid, sig)
+        monkeypatch.setattr(gh_pr_watch.os, "killpg", interrupted_cleanup)
     worker = ctx.Process(
         target=lambda: gh_pr_watch.retry_failed_now(argparse.Namespace()),
     )
@@ -2781,7 +2799,8 @@ def test_parent_termination_cleans_catchable_commands_and_preserves_unknown(monk
             assert gh_pr_watch.time.monotonic() < deadline, "offline command did not start"
             gh_pr_watch.time.sleep(0.01)
         first_signal = termination.split("_", 1)[0]
-        os.kill(worker.pid, getattr(gh_pr_watch.signal, first_signal))
+        if not termination.endswith("_during_timeout_cleanup"):
+            os.kill(worker.pid, getattr(gh_pr_watch.signal, first_signal))
         launch_release.set()
         if termination == "SIGTERM_then_SIGHUP":
             assert cleanup_started.wait(timeout=2)

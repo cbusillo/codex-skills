@@ -281,21 +281,24 @@ def command_signal_cleanup():
     """Let catchable parent termination use the same cleanup as interruption."""
     previous = {}
     terminating = False
-    launching = True
+    deferring = True
     pending: int | None = None
     def terminate(termination_signal, _frame):
         nonlocal terminating, pending
         if terminating:
             return
         terminating = True
-        if launching:
+        if deferring:
             pending = termination_signal
             return
         raise SystemExit(128 + termination_signal)
-    def check_termination(*, command_ready=False):
-        nonlocal launching, pending
+    def check_termination(*, command_ready=False, cleanup_started=False):
+        nonlocal deferring, pending
+        if cleanup_started:
+            deferring = True
+            return
         if command_ready:
-            launching = False
+            deferring = False
         if pending is not None:
             termination_signal, pending = pending, None
             raise SystemExit(128 + termination_signal)
@@ -345,6 +348,7 @@ def run_gh_command(cmd, env, timeout, receipt_nonce, check_termination):
             check_termination(command_ready=True)
             stdout, stderr = proc.communicate(timeout=timeout)
         except BaseException:
+            check_termination(cleanup_started=True)
             # The auth wrapper has child processes. Kill the whole command group
             # so an inherited stdout pipe cannot keep communicate/our lock hung.
             try:

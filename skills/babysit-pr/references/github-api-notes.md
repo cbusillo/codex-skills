@@ -211,8 +211,9 @@ On the main thread, SIGTERM and SIGHUP, unless already ignored, use the
 interruption cleanup path: kill
 and reap the command group, restore the parent's signal handlers, and exit while
 retaining submitting intent and budget. Cleanup does not prove no write occurred.
-Catchable termination during process creation is deferred until the parent has
+SIGTERM or SIGHUP during process creation is deferred until the parent has
 the command handle, then uses that same cleanup path.
+Those signals during timeout cleanup are deferred until the command group is reaped.
 An uncatchable SIGKILL or termination
 outside that cleanup path can leave the command alive without its parent-enforced
 ceiling. Its saved unknown intent blocks replay. Identify the outstanding
