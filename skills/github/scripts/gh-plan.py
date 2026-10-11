@@ -2039,7 +2039,8 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                     or pull.get("state") != "open" and not pull.get("merged_at")
                     or any(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != issue["repo"].casefold() for side in ("head", "base"))
                     or not github_plan_claim.pr_issue_reference(pull, issue["number"], repo=issue["repo"], attestation=True)):
-                raise PlanError("Retained PR must independently link the canonical issue and belong to the source automation identity")
+                raise PlanError("Retained PR must independently link the canonical issue and belong to the source automation identity",
+                                payload={"release_refusal_scope": github_plan_release.ISSUE_REFUSAL_SCOPE})
             retained_branches.add(pull["head"]["ref"])
             ended = re.findall(r"(?m)^Ended at: (\S+)$", evidence.get("body") or "")
             if len(ended) != 1:
@@ -2047,7 +2048,8 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             _, head_commit = api_json("GET", f"/repos/{issue['repo']}/commits/{pull['head']['sha']}", bucket="rest_core", failed_step="release_retained_head")
             commit_at = github_plan_release.stamp(head_commit["commit"]["committer"]["date"])
             if commit_at >= github_plan_release.stamp(ended[0]):
-                raise PlanError("Retained PR has commit activity after the cited session-ended evidence")
+                raise PlanError("Retained PR has commit activity after the cited session-ended evidence",
+                                payload={"release_refusal_scope": github_plan_release.ISSUE_REFUSAL_SCOPE})
         release_actor = expected_actor
         if release_actor is None:
             raise PlanError("Release requires the configured source automation identity")
@@ -2087,7 +2089,8 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         raise PlanError(str(exc), failure=exc.failure, api_result=exc.api_result,
             payload={**exc.payload, "completed_steps": completed, "release_comment": result.get("comment", {})}) from exc
     except (ValueError, KeyError, TypeError) as exc:
-        raise PlanError(str(exc), payload={"completed_steps": completed, "release_comment": result.get("comment", {})}) from exc
+        raise PlanError(str(exc), payload={"completed_steps": completed, "release_comment": result.get("comment", {}),
+            "release_refusal_scope": github_plan_release.ISSUE_REFUSAL_SCOPE if isinstance(exc, github_plan_release.IssueReleaseRefusal) else "session_or_unknown"}) from exc
 
 
 def cmd_claim(args: argparse.Namespace) -> None:

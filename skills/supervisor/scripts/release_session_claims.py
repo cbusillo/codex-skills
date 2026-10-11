@@ -41,6 +41,12 @@ class PartialRelease(ValueError):
         self.report = report
 
 
+class ConfirmedIssueRefusal(ValueError):
+    def __init__(self, payload):
+        super().__init__(payload.get("error", "confirmed issue release refusal"))
+        self.payload = payload
+
+
 def verify_closed(entry, supervisor_session):
     if entry.get("supervisor_owned") is not True or entry["session_id"] == supervisor_session:
         raise ValueError("requires another explicitly Supervisor-owned session")
@@ -105,7 +111,7 @@ def transcript_roots(harness, configured, explicit):
     return list(dict.fromkeys(roots))
 
 
-def record_closure(path, entry, supervisor_session):
+def record_closure(path, entry, supervisor_session, *, persist=True):
     """Observe exit now; never replace an older actual closure time on retry."""
     records = session_record.load_ledger(path) if path.exists() else []
     existing = [r for r in records if r["session_id"] == entry["session_id"]]
@@ -121,6 +127,8 @@ def record_closure(path, entry, supervisor_session):
     closed = {**entry, "ended_at": datetime.now(timezone.utc).isoformat(),
               "process_exit_verified": True}
     validate_closure(closed, supervisor_session)
+    if not persist:
+        return closed
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as stream:
         temporary = Path(stream.name)
@@ -158,6 +166,8 @@ def discover(reader, owner, entries, repos=None):
                  if r["full_name"].split("/")[0].casefold() == owner.casefold()]
     if not all(REPO.fullmatch(r) and r.split("/")[0].casefold() == owner.casefold() for r in repos):
         raise ValueError("repository scope must belong to the configured owner")
+    if not repos:
+        raise ValueError("repository inventory contains no repositories for this owner; verify scope and installation coverage")
     sessions = {e["session_id"] for e in entries}
     since = scan_start(entries)
     issues = set()
@@ -261,6 +271,8 @@ def run_release(repo, number, source_id, related, prs, evidence_url, supervisor_
     result = subprocess.run(argv, cwd=checkout, capture_output=True, text=True, timeout=180)
     payload = json.loads(result.stdout)
     if result.returncode or payload.get("ok") is not True or payload.get("outcome_certainty") != "confirmed":
+        if dry_run and payload.get("release_refusal_scope") == release.ISSUE_REFUSAL_SCOPE and "post_release" not in payload.get("completed_steps", []):
+            raise ConfirmedIssueRefusal(payload)
         raise ValueError(f"release-claim did not confirm success; preserve records: {json.dumps(payload)}")
     return payload
 
@@ -344,7 +356,14 @@ def apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, 
             item["evidence_url"] = url
             if validate_closure(entry, supervisor_session) != status:
                 raise ValueError("source transcript changed after attestation; preserve claims")
-            preview = run_release(repo, number, source_id, related, prs, url, supervisor_session, checkout_root, True)
+            try:
+                preview = run_release(repo, number, source_id, related, prs, url, supervisor_session, checkout_root, True)
+            except ConfirmedIssueRefusal as error:
+                if validate_closure(entry, supervisor_session) != status:
+                    raise ValueError("source activity changed after issue refusal; preserve remaining claims") from error
+                item["release_refusal"] = error.payload
+                report["issue_refusals"].append({"repository": repo, "issue": number, "error": str(error)})
+                continue
             item["release_body"] = preview["release_body"]
             if validate_closure(entry, supervisor_session) != status:
                 raise ValueError("source transcript changed after preview; preserve claims")
@@ -397,8 +416,7 @@ def main():
             if args.apply:
                 entries = [record_closure(args.closed_log, entries[0], args.supervisor_session)]
             else:
-                entries = [{**entries[0], "process_exit_verified": True,
-                            "ended_at": datetime.now(timezone.utc).isoformat()}]
+                entries = [record_closure(args.closed_log, entries[0], args.supervisor_session, persist=False)]
         else:
             entries = session_record.load_ledger(args.closed_log)
             entries = [{**e, "_backfill": True} for e in entries]
@@ -430,7 +448,9 @@ def main():
                 reports.append({**report, "error": str(error), "next_action": "inspect records before retry"})
         ok = not any("error" in r or r.get("issue_refusals") for r in reports)
         print(json.dumps({"ok": ok, "reports": reports, "repositories_checked": repos,
-                          "coverage": "explicit scope" if args.repo else "accessible owner repositories"}))
+                          "needs_reconciliation": any(r.get("retained_status_claims") or r.get("issue_refusals") or "error" in r for r in reports),
+                          "coverage": "explicit scope" if args.repo else "accessible repositories under the requested owner",
+                          "outside_scope": "other repository owners and other automation App identities; use their configured evidence-backed release-claim route"}))
         return 0 if ok else 1
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError,
             GitHubReadError, GitHubReadShapeError, CommentError) as error:

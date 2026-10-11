@@ -403,7 +403,8 @@ on Context Panel's selected account, then send `continue`.
    [finished-session shutdown stages](references/helpers.md#finished-session-shutdown-stages)
    describes, before closing the tab. It records the observed exit in the
    private closed-session log, discovers the session's claims across accessible
-   Director repositories, posts the closed-session attestation, and previews then
+   repositories under `--owner` and the configured automation identity, posts the
+   closed-session attestation, and previews then
    applies `gh-plan.py release-claim --role supervisor`, naming retained PRs.
    Load `github` and `github-plan` before that step. Keep incomplete discovery,
    unreleasable claims and uncertain writes in the ledger for reconciliation;

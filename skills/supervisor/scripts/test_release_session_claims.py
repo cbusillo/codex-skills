@@ -85,6 +85,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(first["ended_at"], second["ended_at"])
         self.assertEqual(len(json.loads(log.read_text())), 1)
         self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(helper.record_closure(log, self.entry, "supervisor", persist=False)["ended_at"], first["ended_at"])
         with self.assertRaisesRegex(ValueError, "identity changed"):
             helper.record_closure(log, {**self.entry, "pid": 789}, "supervisor")
 
@@ -107,6 +108,11 @@ class ReleaseTests(unittest.TestCase):
     def test_complete_inventory_failure_does_not_become_empty(self):
         self.reader.paged_json.side_effect = helper.GitHubReadShapeError("partial page")
         with self.assertRaises(helper.GitHubReadShapeError):
+            helper.discover(self.reader, "test", [self.entry])
+
+    def test_empty_owner_inventory_is_not_success(self):
+        self.reader.paged_json.return_value = [{"full_name": "other/repo"}]
+        with self.assertRaisesRegex(ValueError, "no repositories"):
             helper.discover(self.reader, "test", [self.entry])
 
     def test_unrelated_malformed_marker_does_not_block_discovery(self):
@@ -299,6 +305,21 @@ class ReleaseTests(unittest.TestCase):
                 helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, True)
         self.assertEqual(caught.exception.report["claims"][0]["evidence_url"], self.entry["handoff_url"])
         self.assertEqual(run.call_count, 1)
+
+    def test_confirmed_issue_preview_refusal_continues_independent_claim(self):
+        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
+        def remote(_args, *, cwd):
+            return f"https://github.com/test/{cwd.name}.git"
+        def run(*args):
+            if args[0] == "test/a":
+                raise helper.ConfirmedIssueRefusal({"error": "retained work conflict", "release_refusal_scope": helper.release.ISSUE_REFUSAL_SCOPE})
+            return {"release_body": "Released claim 1", "ok": True}
+        with patch.object(helper.claim, "run_read", side_effect=remote), \
+                patch.object(helper, "comment", return_value={"comment": {"url": self.entry["handoff_url"]}}), \
+                patch.object(helper, "run_release", side_effect=run):
+            report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1), ("test/b", 1)], self.root, True)
+        self.assertEqual(report["issue_refusals"][0]["repository"], "test/a")
+        self.assertTrue(report["claims"][1]["release"]["ok"])
 
     def test_live_process_after_attestation_prevents_release(self):
         self.reader.paged_json.side_effect = self.plan_reader

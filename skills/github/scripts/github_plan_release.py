@@ -14,6 +14,11 @@ from typing import Any
 import github_plan_claim as claim
 
 RELEASE_MARKER = "github-plan:abandoned-release "
+ISSUE_REFUSAL_SCOPE = "issue"
+
+
+class IssueReleaseRefusal(ValueError):
+    """This issue's retained work conflicts; closure of the source is still checked separately."""
 
 
 def related_sessions_match(text: str, session: str) -> bool:
@@ -101,7 +106,7 @@ def prepare_release(
     retained_paths = {pathlib.Path(t["path"]).resolve() for t in inventory["worktrees"] if t["branch"] in {record["branch"], *(retained_branches or set())}}
     if any(cwd == root or root in cwd.parents for s in inventory["sessions"]
            for cwd in [pathlib.Path(s.get("cwd") or "/").resolve()] for root in retained_paths):
-        raise ValueError("A live peer is using the source claim's retained worktree")
+        raise IssueReleaseRefusal("A live peer is using the source claim's retained worktree")
     for comment in related:
         if ((comment.get("user") or {}).get("login") != actor or claim.records(comment.get("body") or "")
                 or not re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", comment.get("body") or "")):

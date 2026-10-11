@@ -420,6 +420,11 @@ the maintained `release-claim` preview and apply. The original observed exit
 time survives retries. The log has the ledger's array schema plus `ended_at`
 (timezone-qualified ISO timestamp) and `process_exit_verified: true`; retain
 the native transcript path, PID/TTY and exact issue-comment `handoff_url`.
+Repeat finish previews use the existing log's original closure time. If a
+session truly resumes and closes again, verify its new PID/TTY, transcript and
+handoff, then use a fresh `--closed-log` file for that newly observed closure;
+preserve the prior log unchanged. A corrected handoff can likewise use a fresh
+verified log rather than silently rewriting earlier evidence.
 No transcript text or process arguments are posted. Checkouts must already
 exist as `<checkout-root>/<repository-name>` with the matching origin; the
 release command runs there for that repository's ownership inventory and never
@@ -476,11 +481,21 @@ then add `--apply`. For disposable live trials only, repeat `--repo OWNER/REPO`
 to scope discovery; that result reports explicit scope rather than all-repository
 coverage. Test only self-created throwaway issues/claims, never real stale claims.
 On a refusal or uncertain write, preserve posted attestations/releases and
-inspect their readback before recovery. Already valid releases are skipped;
+their returned diagnostics. Only a confirmed issue-scoped dry-run refusal may
+continue to independent claims after fresh closure verification. Source-session
+uncertainty and uncertain writes stop that session's remaining release steps.
+The shared release helper owns this classification; it is not inferred from
+error wording.
+Inspect their readback before recovery. Already valid releases are skipped;
 unchanged attestations and releases use the shared transport's body deduplication.
 Keep unfinished reconciliation in the ledger. `retained_status_claims` explicitly names Current Status markers that still
 need reconciliation or the supported `--resume-from` handoff route. The helper
 does not rewrite those fields.
+`needs_reconciliation` distinguishes successful ownership releases from a
+completely reconciled planning record. Empty repository scope refuses. Output
+also explicitly excludes other `--owner` values and automation App identities;
+use those repositories' configured evidence-backed release route under existing
+posting authority, without changing identity settings or using a personal fallback.
 Then perform the guarded tab-close
 step below (the verified exact-tab route from #1627/#1629 applies once landed).
 

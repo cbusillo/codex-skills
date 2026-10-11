@@ -114,6 +114,19 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(PLAN.PlanError, "open issue"):
             self.f.run_claim()
 
+    def test_retained_peer_refusal_is_isolated_but_live_source_is_not(self):
+        self.f.inventory["worktrees"] = [{"branch": fixtures.OTHER["branch"], "path": "/source"}]
+        self.f.inventory["sessions"] = [{"sessionId": "different-session", "cwd": "/source"}]
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_release()
+        self.assertEqual(caught.exception.payload["release_refusal_scope"], release.ISSUE_REFUSAL_SCOPE)
+        self.f.assert_no_writes()
+        self.f.inventory["sessions"] = [{"sessionId": fixtures.OTHER["session"], "cwd": "/source"}]
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_release()
+        self.assertNotEqual(caught.exception.payload["release_refusal_scope"], release.ISSUE_REFUSAL_SCOPE)
+        self.f.assert_no_writes()
+
     def test_related_followup_session_must_match_source_closure(self):
         for field in ("Session: {}", "**Session:** `{}`", "> Session: {}", "Session: {}.", "Session: {} (capacity work)", "Session ID: {}", "Native session ID: {}", "session={}", "session_id: {}", "sessionId: {}", "Session-ID: {}", "Thread ID: {}", "Session — {}", "| Session | {} |", "Session: {}; PR #99", "(Session: {})"):
             for session in ("session-b", "different-native-session"):
