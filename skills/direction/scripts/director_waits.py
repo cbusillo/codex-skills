@@ -77,6 +77,8 @@ def wait_rows(repo, issues, terms, owner, now) -> list[dict[str, Any]]:
             since = None  # A status-wide start cannot date one of several waits.
         verified = next((record.get("last_verified") for record in records if record.get("last_verified")), None)
         last_verified = parse_date(verified)
+        missing_date_basis = ("verification_commit_only" if verified and re.fullmatch(r"[0-9a-fA-F]{7,40}", verified.strip())
+                              else "verification_unparseable" if verified else "verification_missing")
         rows.append({
             "repo": repo, "number": issue["number"], "title": issue.get("title"),
             "url": issue.get("html_url"), "waiting_for": wait[0], "wait_kind": wait[1],
@@ -88,7 +90,7 @@ def wait_rows(repo, issues, terms, owner, now) -> list[dict[str, Any]]:
             "last_verified_raw": verified,
             "verification_age_days": max(0, (now - last_verified).total_seconds() / 86400) if last_verified else None,
             "possibly_stale": last_verified is None or bool(since and last_verified < since),
-            "staleness_basis": ("verification_unparseable" if verified else "verification_missing") if last_verified is None else
+            "staleness_basis": missing_date_basis if last_verified is None else
                 "verification_predates_wait" if since and last_verified < since else None,
             "verification_unknown": last_verified is None,
         })
@@ -109,7 +111,7 @@ def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting f
         try:
             response = reader.request("GET", path_with_query("/search/issues", {
                 "q": query, "per_page": min(bound, 100), "page": page,
-                "sort": "created", "order": "asc"}), step=f"director_wait_search_page_{page}", bucket="search")
+                "sort": "created", "order": "desc"}), step=f"director_wait_search_page_{page}", bucket="search")
             payload = response.body
             if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
                 raise GitHubReadShapeError("search response omitted items")

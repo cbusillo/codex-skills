@@ -172,7 +172,7 @@ class WaitTests(unittest.TestCase):
                                           ["Director"], "owner", NOW)[0]
             self.assertFalse(row["possibly_stale"])
         row = director_waits.wait_rows("owner/repo", [issue(extra="Last verified: abc1234")], ["Director"], "owner", NOW)[0]
-        self.assertEqual(row["staleness_basis"], "verification_unparseable")
+        self.assertEqual(row["staleness_basis"], "verification_commit_only")
         self.assertEqual(row["last_verified_raw"], "abc1234")
 
     def test_qualified_owner_phrase_preserves_current_director_and_inline_start(self):
