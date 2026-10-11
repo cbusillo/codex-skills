@@ -13,6 +13,9 @@ resources:
   - path: scripts/direction_mark.py
     kind: script
     description: Records the end of a daily turn in the local marker and the shared turn record the session-start reminder reads; audits are stamped by the audit script itself.
+  - path: scripts/director_waits.py
+    kind: script
+    description: Lists every visible open Director wait independently of labels or posted questions, with age and stale-verification evidence.
 commands:
   - name: direction-audit
     source: skill
@@ -24,6 +27,11 @@ commands:
     resource_path: scripts/direction_mark.py
     example_argv: ["uv", "run", "scripts/direction_mark.py", "turn", "--repo", "OWNER/REPO"]
     purpose: Records the daily turn and the repository it covered for the shared reminder.
+  - name: direction-director-waits
+    source: skill
+    resource_path: scripts/director_waits.py
+    example_argv: ["uv", "run", "scripts/director_waits.py", "--owner", "OWNER"]
+    purpose: Read all visible open Director waits with age and possible staleness, without stamping a turn or audit.
 ---
 
 # Direction
@@ -152,12 +160,50 @@ helper (load `github-plan` first):
 uv run <skill-dir>/../github/scripts/gh-plan.py search "user:OWNER label:direction" --state open --limit 1000
 ```
 
+Also read the full Director-wait list, including issues without a `direction`
+or `plan:waiting` label and waits that already have a posted question:
+
+```bash
+uv run <skill-dir>/scripts/director_waits.py --owner OWNER
+```
+
+It uses two Director-wide GitHub issue searches for open issue bodies containing
+`Waiting for` or `Parked until`, then applies the shared human-attention classifier locally with
+the optional people index for the Director's names. This reads wait records
+across repositories; it does not audit their direction files or milestones.
+Report every wait and its `wait_age_days` (unknown without an explicit start).
+`possibly_stale` flags missing/unparseable verification or verification before
+the wait began; `staleness_basis` explains which. A wait verified after it began
+is not stale merely because it is older. `verification_age_days` exposes old
+verification even when the wait start is unknown; there is no automatic age
+threshold. Read flagged records before relying on
+them; these fields do not prove whether a wait was resolved. `recorded_at`
+anchors unknown-age records without inventing their start; `last_verified_raw`
+preserves unparseable evidence. Multiple waits without attributable starts have
+unknown age. An unqualified `Owner` names the Director; an upstream or product
+`owner` does not without a known Director identity in that wait.
+The report does not settle a question or release a hold. `--director-name` adds
+known aliases when no people index supplies them; missing/ambiguous alias
+coverage stays explicit in `people_status`, `director_names` and `errors`.
+`complete` describes only the accessible indexed search, whose indexing may lag
+live records. Missing access is not proof of coverage of private repositories.
+The Waiting-for search includes template records saying None; the cap applies
+to all matching open issues before local classification. Search timeouts, missing
+metadata, changed totals, duplicates, result bounds
+and quota/deadline failures report incomplete coverage. Each search has a limit of
+1,000 issues; a larger `--issue-limit` cannot bypass GitHub's ceiling.
+This full list is separate from the unasked-question radar, which filters for
+waiting labels and absence of an open question.
+Exit 1 means coverage is incomplete; retain the returned rows and report the
+gap instead of treating them as an empty inventory.
+
 Use the starting repository's GitHub account for `OWNER`; do not pass `--repo`, which
 would narrow the search. The list covers issues visible to the configured
 reader; successful search does not prove access to every repository. Report an
 unavailable search or a count reaching the limit as incomplete, not an empty
-or complete list. This is one cross-repository list, with no
-per-repository reads or copied repository inventory. The daily marker records
+or complete list. The direction-label search remains one cross-repository list;
+the Director-wait reader supplies the separate indexed wait list without
+copying repository lists into guidance. The daily marker records
 the starting repository covered; one turn clears the daily reminder on every
 machine, without claiming that other repositories were checked.
 
