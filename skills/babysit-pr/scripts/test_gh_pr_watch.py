@@ -2957,7 +2957,8 @@ def test_interrupted_command_launch_preserves_termination_and_restores_handlers(
 
 
 @pytest.mark.parametrize("termination_signal", [signal.SIGTERM, signal.SIGHUP])
-def test_signal_during_handler_restoration_is_preserved(monkeypatch, termination_signal):
+@pytest.mark.parametrize("command_ready", [False, True])
+def test_signal_during_handler_restoration_is_preserved(monkeypatch, termination_signal, command_ready):
     ctx = multiprocessing.get_context("fork")
     restoration_reached = ctx.Event()
     def attempt():
@@ -2970,8 +2971,8 @@ def test_signal_during_handler_restoration_is_preserved(monkeypatch, termination
             return restore(signum, handler)
         monkeypatch.setattr(gh_pr_watch.signal, "signal", signal_during_restore)
         try:
-            with gh_pr_watch.command_signal_cleanup():
-                pass
+            with gh_pr_watch.command_signal_cleanup() as check_termination:
+                check_termination(command_ready=command_ready)
         except SystemExit:
             assert {sig: signal.getsignal(sig) for sig in handlers} == handlers
             raise
