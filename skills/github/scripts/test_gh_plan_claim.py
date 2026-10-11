@@ -897,6 +897,54 @@ class ClaimTests(unittest.TestCase):
                 with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
                 self.assertEqual(self.events.count("post"), 1)
 
+    def test_refresh_accepts_compact_pr_handoff_with_verified_source(self):
+        # PR #<n> already worked; keep it as the compatibility control.
+        for spelling in ("PR{number}", "PR #{number}"):
+            with self.subTest(spelling=spelling):
+                self.setUp()
+                self.refresh_fixture()
+                self.comments[-1]["body"] = (
+                    "Released claim 1\n\nSource delivered "
+                    + spelling.format(number=99) + " and " + spelling.format(number=100)
+                    + "; Supervisor continues CI."
+                )
+                before = copy.deepcopy((self.pulls, self.inventory))
+                self.run_claim()
+                output = self.emitted.call_args.args[0]
+                self.assertTrue(output["ok"])
+                self.assertEqual(output["claim"]["refresh_pr"], self.args.refresh_pr)
+                self.assertEqual(before, (self.pulls, self.inventory))
+
+    def test_compact_pr_handoff_keeps_release_author_and_ownership_guards(self):
+        for change in ("no_release", "foreign_handoff", "active_claim"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.refresh_fixture()
+                self.comments[-1]["body"] = "Released claim 1\n\nSource delivered PR99 and PR100."
+                self.assertEqual(CLAIM.handoff_pr_numbers(
+                    self.comments[-1]["body"], issue_repo=self.args.repo, target_repo=self.args.repo), {99, 100})
+                if change == "no_release":
+                    self.comments[-1]["body"] = "Source delivered PR99 and PR100."
+                elif change == "foreign_handoff":
+                    self.comments[-1]["user"]["login"] = "stranger"
+                else:
+                    self.compete()
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                evidence = caught.exception.payload["competing_evidence"]
+                self.assertEqual([(item["source"], item["id"]) for item in evidence],
+                                 [("comment", 4 if change == "active_claim" else 1)])
+                self.assert_no_writes()
+
+    def test_compact_pr_handoff_is_local_and_does_not_match_other_identifiers(self):
+        for text in ("PR99", "PR #99"):
+            self.assertEqual(CLAIM.handoff_pr_numbers(text, issue_repo="owner/repo", target_repo="other/repo"), set())
+        for text in ("somePR99", "PR99suffix", "other/repo/PR99", "PR0", "PR099",
+                     "cs-pr99-split", "phase-PR99", "cs.pr99", "PR99-split"):
+            with self.subTest(text=text):
+                self.assertEqual(CLAIM.handoff_pr_numbers(text, issue_repo="owner/repo", target_repo="owner/repo"), set())
+
     def test_refresh_requires_all_evidence_flags(self):
         for flag in ("handoff_comment", "resume_from"):
             with self.subTest(flag=flag):
