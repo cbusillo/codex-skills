@@ -88,6 +88,16 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(self.f.emitted.call_args.args[0]["record_kind"], "pr")
         self.assertEqual(self.f.issue["user"]["login"], "dependabot[bot]")
 
+    def test_closed_unmerged_pr_can_release_its_ended_session_without_reopening(self):
+        self.pr_setup()
+        self.f.issue["state"] = "closed"
+        self.f.pulls[0]["state"] = "closed"
+        self.run_release()
+        self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
+        self.assertEqual(self.f.issue["state"], "closed")
+        with self.assertRaises(PLAN.PlanError):
+            self.f.run_claim()
+
     def test_pr_attestation_new_activity_live_peer_or_changed_evidence_refuses(self):
         for mode in ("commit", "peer", "evidence"):
             with self.subTest(mode=mode):

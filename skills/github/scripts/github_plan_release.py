@@ -83,10 +83,10 @@ def check_retained_pr(pull, head_commit, *, repo, number, actor, ended, subject_
     if stamp(head_commit["commit"]["committer"]["date"]) >= stamp(ended):
         raise ValueError("Retained PR has commit activity after the cited session-ended evidence")
     if subject_pr is not None and pull.get("number") == subject_pr:
-        if (pull.get("state") != "open" and not pull.get("merged_at")
+        if (pull.get("state") not in {"open", "closed"}
                 or any(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != repo.casefold()
                        for side in ("head", "base"))):
-            raise IssueReleaseRefusal("PR claim's work record must remain a same-repository open or merged PR")
+            raise IssueReleaseRefusal("PR claim's work record must remain a same-repository open or closed PR")
         return
     if ((pull.get("user") or {}).get("login") != actor
             or pull.get("state") != "open" and not pull.get("merged_at")

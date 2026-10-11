@@ -274,6 +274,14 @@ class ClaimTests(unittest.TestCase):
             self.run_claim()
         self.assert_no_writes()
 
+    def test_pr_disappearing_from_open_inventory_keeps_readback_recovery(self):
+        self.pr_fixture()
+        self.after_post = lambda: self.pulls.clear()
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.payload["claim_recovery"]["release_own_claim"]["comment_id"], 1)
+        self.assertIn("current open PR", str(caught.exception))
+
     def compete(self, record=None):
         if record is None:
             record = OTHER

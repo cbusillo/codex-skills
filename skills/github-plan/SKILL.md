@@ -247,8 +247,9 @@ active issue labels and continuing background jobs do not lift a hold.
    For an authorized PR-only conflict refresh of a finished session, claim its
    canonical open planning issue with `--refresh-pr`, `--resume-from`, and
    `--handoff-comment`; read Planning: Claim for the exact released-handoff
-   proof and supported route before using these flags. Direct PR claims remain
-   unsupported. Active ownership still refuses.
+   proof and supported route before using these flags. For PR-only work, use
+   [Planning: Claim](../github/references/cli-reference.md#planning-claim).
+   Active ownership still refuses.
    For ordinary successor work before a retained PR can be refreshed, use
    `--resume-from` with `--handoff-comment` and omit `--refresh-pr`. Read
    Planning: Claim for the exact released multi-branch handoff proof; all

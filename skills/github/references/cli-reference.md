@@ -650,7 +650,9 @@ work record; local source branches/worktrees and live peers remain competing
 evidence unless owned or covered by an exact authored release. `--resume-from`
 works for released PR claims; `--refresh-pr` and `--handoff-comment` keep their
 canonical-issue contract. `release-claim` accepts the same PR references and
-checks its current head activity against the closed-session attestation.
+checks its current head activity against the closed-session attestation. A closed
+PR can release ended ownership without reopening it; a new claim still needs
+an open record.
 
 Agent routing and the session override are defined in
 [Agent Assignment](../../github-plan/SKILL.md#agent-assignment). `next` and
