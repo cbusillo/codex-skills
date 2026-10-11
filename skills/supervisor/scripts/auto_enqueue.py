@@ -443,24 +443,27 @@ def transient_read_error(error):
         return 500 <= error.code < 600
     if isinstance(error, GitHubReadError):
         failure = error.result.failure
+        # Legacy failures without HTTP status include both transport and setup
+        # errors under the shared cause. Require positive transport evidence.
         return bool(
             failure
             and failure.retryable
-            and error.result.failed_step != "subprocess_launch"
+            and failure.cause in {"deadline_exceeded", "network_provider_failure"}
+            and not re.search(
+                r"^error:|failed to launch GitHub CLI|GitHub CLI execution failed",
+                failure.message,
+                re.IGNORECASE | re.MULTILINE,
+            )
             and (
                 failure.cause == "deadline_exceeded"
-                or (
-                    failure.cause == "network_provider_failure"
-                    and (
-                        500 <= error.result.status < 600
-                        or re.search(
-                            r"connection (?:reset|refused)|timed? out|timeout|"
-                            r"unexpected EOF|network is unreachable|dial tcp|"
-                            r"temporary failure in name resolution|no such host",
-                            failure.message,
-                            re.IGNORECASE,
-                        )
-                    )
+                or 500 <= error.result.status < 600
+                or re.search(
+                    r"connection (?:reset|refused)|timed? out|timeout|"
+                    r"\bEOF\b|error connecting to|network is unreachable|dial tcp|"
+                    r"temporary failure in name resolution|no such host|"
+                    r"GitHub returned a non-JSON provider response",
+                    failure.message,
+                    re.IGNORECASE,
                 )
             )
         )

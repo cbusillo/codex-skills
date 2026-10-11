@@ -1002,6 +1002,66 @@ class WatchLoopTests(unittest.TestCase):
         self.assertEqual(events[-1]["payload"]["completed_passes"], 0)
         self.assertEqual(events[-1]["payload"]["failed_passes"], 1)
 
+    def test_shared_read_errors_without_status_recover_on_fresh_pass(self):
+        for message in (
+            'Get "https://private.invalid": EOF',
+            "error connecting to api.github.com",
+            "invalid character '<' looking for beginning of value",
+        ):
+            with self.subTest(message=message):
+                provider_result = watch.github_api.legacy_process_result(
+                    1, "", message, operation="github.pr.view", is_write=False,
+                    failed_step="enqueue_read",
+                )
+                # Exercise the real reader's exception, not a hand-made cause.
+                reader = watch.GitHubReader(gh_cmd="gh", actor="test-bot", expected_actor="test-bot")
+                with patch.object(reader, "_transport_request", return_value=provider_result):
+                    with self.assertRaises(watch.GitHubReadError) as caught:
+                        reader.get_json("/repos/example/tool/pulls", step="enqueue_read")
+                failed = Fake(count=1)
+                failed.pages = Mock(side_effect=caught.exception)
+                healthy = Fake(count=1)
+                result, calls, sleeps, events = self.run_watch(Mock(side_effect=[failed, healthy]))
+                self.assertEqual((result, calls), (0, 2))
+                self.assertEqual([call.args[0] for call in sleeps], [4, 4])
+                self.assertEqual(failed.writes, [])
+                self.assertEqual(healthy.writes, [1])
+                self.assertEqual(events[0]["event"], "pass_failed")
+                self.assertEqual(events[0]["payload"]["cause"], "GitHubReadError")
+                self.assertNotIn(message, json.dumps(events))
+
+    def test_shared_read_error_after_label_dispatch_never_replays(self):
+        provider_result = watch.github_api.legacy_process_result(
+            1, "", 'Get "https://private.invalid": EOF',
+            operation="github.pr.view", is_write=False, failed_step="enqueue_read",
+        )
+        error = watch.GitHubReadError("private", result=provider_result, diagnostics={})
+        for stage in ("dispatch", "readback", "later_read"):
+            with self.subTest(stage=stage):
+                fake = Fake()
+                if stage == "dispatch":
+                    fake.label = Mock(side_effect=error)
+                elif stage == "readback":
+                    adapter = object.__new__(watch.Live)
+                    adapter.deadline = 10_000
+                    adapter.pages = Mock(side_effect=error)
+                    fake.label = adapter.label
+                else:
+                    def before(io):
+                        if io.writes:
+                            raise error
+
+                    fake.before = before
+                with patch.object(
+                    watch.github_api, "call_gh_with_retry", return_value=api_result("confirmed"),
+                ) as write:
+                    result, calls, sleeps, events = self.run_watch(lambda _deadline: fake)
+                self.assertEqual((result, calls, sleeps), (1, 1, []))
+                self.assertEqual(write.call_count, int(stage == "readback"))
+                self.assertEqual(fake.writes, [1] if stage == "later_read" else [])
+                self.assertEqual([event["event"] for event in events if event["event"] == "pass_failed"], [])
+                self.assertEqual(events[-1]["payload"]["cause"], "GitHubReadError")
+
     def test_once_reports_failed_read_without_retry_or_success(self):
         result, calls, sleeps, events = self.run_watch(
             Mock(side_effect=urllib.error.URLError("private")), once=True,
@@ -1028,17 +1088,26 @@ class WatchLoopTests(unittest.TestCase):
         for message, expected in (
             ("i/o timeout", True),
             ("connection reset by peer", True),
+            ("GitHub CLI execution failed (OSError)", False),
             ("Failed to launch GitHub CLI (FileNotFoundError)", False),
-            ("local wrapper configuration is missing", False),
+            ("error: incomplete GitHub App configuration; set GITHUB_APP_ID "
+             "GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH", False),
+            ("error: reader fallback requires the configured main GitHub App", False),
+            ("error: GitHub App authentication helper returned an invalid response; "
+             "refusing GitHub command", False),
+            ("error: gh-with-env-token requires uv or GH_WITH_ENV_TOKEN_PYTHON", False),
+            ("/path/gh-with-env-token: line 45: gh: command not found", False),
+            ("unknown flag: --include", False),
+            ("Traceback (most recent call last):\nKeyError: app_id", False),
             ("permission denied", False),
             ("bad credentials", False),
         ):
             with self.subTest(message=message):
-                failure = watch.github_api.classify_legacy_failure(message)
                 error = watch.GitHubReadError(
                     "read failed", diagnostics={},
-                    result=watch.github_api.ApiResult(
-                        ok=False, status=0, body=None, failure=failure,
+                    result=watch.github_api.legacy_process_result(
+                        1, "", message, operation="github.pr.view", is_write=False,
+                        failed_step="enqueue_read",
                     ),
                 )
                 healthy = Fake(count=1)
@@ -1048,6 +1117,24 @@ class WatchLoopTests(unittest.TestCase):
                 self.assertEqual(healthy.writes, [1] if expected else [])
                 self.assertEqual(len(sleeps), 2 if expected else 0)
                 self.assertEqual(events[0]["event"], "pass_failed" if expected else "stop")
+
+    def test_shared_cli_launch_and_execution_errors_stop(self):
+        for failure in (FileNotFoundError(), PermissionError(), OSError()):
+            with self.subTest(failure=type(failure).__name__):
+                with patch.object(watch.github_api.subprocess, "run", side_effect=failure):
+                    provider_result = watch.github_api.call_gh(
+                        "GET", "/repos/example/tool/pulls", gh_cmd="gh",
+                        actor="test-bot", expected_actor="test-bot",
+                        operation="github.pr.view", is_write=False,
+                        failed_step="enqueue_read", conditional_cache=False,
+                    )
+                reader = watch.GitHubReader(gh_cmd="gh", actor="test-bot", expected_actor="test-bot")
+                with patch.object(reader, "_transport_request", return_value=provider_result):
+                    with self.assertRaises(watch.GitHubReadError) as caught:
+                        reader.get_json("/repos/example/tool/pulls", step="enqueue_read")
+                result, calls, sleeps, events = self.run_watch(Mock(side_effect=caught.exception))
+                self.assertEqual((result, calls, sleeps), (1, 1, []))
+                self.assertEqual(events[-1]["payload"]["outcome"], "error")
 
     def test_controller_read_transport_failure_recovers_without_retrying_rejections(self):
         adapter = object.__new__(watch.Live)

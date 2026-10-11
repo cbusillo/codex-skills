@@ -184,6 +184,8 @@ The loop defaults to a 30-minute wall-clock bound and five-minute cadence;
 `--once`, `--interval`, and `--deadline-seconds` configure it. Re-arm through the
 harness's scheduler, or choose a longer explicit deadline for continuous use.
 Before any enqueue write starts in a pass, a transient network read failure
+(including retryable `GitHubReadError` with EOF, connection-establishment or
+non-JSON provider evidence even without an HTTP status)
 emits `pass_failed` and ends only that pass. The watcher waits its normal interval
 and reads fresh state again within its deadline; `--once` reports the failed pass
 and exits nonzero. Other failures, or any failure during or after an enqueue write
