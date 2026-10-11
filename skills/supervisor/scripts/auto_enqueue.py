@@ -476,25 +476,20 @@ def transient_read_error(error):
         return 500 <= error.code < 600
     if isinstance(error, GitHubReadError):
         failure = error.result.failure
+        # The shared helper can classify transport failures without an HTTP
+        # status (for example EOF or a non-JSON provider response). Its retry
+        # classification owns that decision, rather than a network phrase list.
+        # Legacy CLI setup errors can share that cause; keep them terminal.
         return bool(
             failure
             and failure.retryable
             and error.result.failed_step != "subprocess_launch"
-            and (
-                failure.cause == "deadline_exceeded"
-                or (
-                    failure.cause == "network_provider_failure"
-                    and (
-                        500 <= error.result.status < 600
-                        or re.search(
-                            r"connection (?:reset|refused)|timed? out|timeout|"
-                            r"unexpected EOF|network is unreachable|dial tcp|"
-                            r"temporary failure in name resolution|no such host",
-                            failure.message,
-                            re.IGNORECASE,
-                        )
-                    )
-                )
+            and failure.cause in {"deadline_exceeded", "network_provider_failure"}
+            and not re.search(
+                r"failed to launch GitHub CLI|GitHub CLI execution failed|"
+                r"configuration.*missing",
+                failure.message,
+                re.IGNORECASE,
             )
         )
     return isinstance(

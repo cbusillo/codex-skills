@@ -1001,6 +1001,66 @@ class WatchLoopTests(unittest.TestCase):
         self.assertEqual(events[-1]["payload"]["completed_passes"], 0)
         self.assertEqual(events[-1]["payload"]["failed_passes"], 1)
 
+    def test_shared_read_errors_without_status_recover_on_fresh_pass(self):
+        for message in (
+            'Get "https://private.invalid": EOF',
+            "error connecting to api.github.com",
+            "invalid character '<' looking for beginning of value",
+        ):
+            with self.subTest(message=message):
+                provider_result = watch.github_api.legacy_process_result(
+                    1, "", message, operation="github.pr.view", is_write=False,
+                    failed_step="enqueue_read",
+                )
+                # Exercise the real reader's exception, not a hand-made cause.
+                reader = watch.GitHubReader(gh_cmd="gh", actor="test-bot", expected_actor="test-bot")
+                with patch.object(reader, "_transport_request", return_value=provider_result):
+                    with self.assertRaises(watch.GitHubReadError) as caught:
+                        reader.get_json("/repos/example/tool/pulls", step="enqueue_read")
+                failed = Fake(count=1)
+                failed.pages = Mock(side_effect=caught.exception)
+                healthy = Fake(count=1)
+                result, calls, sleeps, events = self.run_watch(Mock(side_effect=[failed, healthy]))
+                self.assertEqual((result, calls), (0, 2))
+                self.assertEqual([call.args[0] for call in sleeps], [4, 4])
+                self.assertEqual(failed.writes, [])
+                self.assertEqual(healthy.writes, [1])
+                self.assertEqual(events[0]["event"], "pass_failed")
+                self.assertEqual(events[0]["payload"]["cause"], "GitHubReadError")
+                self.assertNotIn(message, json.dumps(events))
+
+    def test_shared_read_error_after_label_dispatch_never_replays(self):
+        provider_result = watch.github_api.legacy_process_result(
+            1, "", 'Get "https://private.invalid": EOF',
+            operation="github.pr.view", is_write=False, failed_step="enqueue_read",
+        )
+        error = watch.GitHubReadError("private", result=provider_result, diagnostics={})
+        for stage in ("dispatch", "readback", "later_read"):
+            with self.subTest(stage=stage):
+                fake = Fake()
+                if stage == "dispatch":
+                    fake.label = Mock(side_effect=error)
+                elif stage == "readback":
+                    adapter = object.__new__(watch.Live)
+                    adapter.deadline = 10_000
+                    adapter.pages = Mock(side_effect=error)
+                    fake.label = adapter.label
+                else:
+                    def before(io):
+                        if io.writes:
+                            raise error
+
+                    fake.before = before
+                with patch.object(
+                    watch.github_api, "call_gh_with_retry", return_value=api_result("confirmed"),
+                ) as write:
+                    result, calls, sleeps, events = self.run_watch(lambda _deadline: fake)
+                self.assertEqual((result, calls, sleeps), (1, 1, []))
+                self.assertEqual(write.call_count, int(stage == "readback"))
+                self.assertEqual(fake.writes, [1] if stage == "later_read" else [])
+                self.assertEqual([event["event"] for event in events if event["event"] == "pass_failed"], [])
+                self.assertEqual(events[-1]["payload"]["cause"], "GitHubReadError")
+
     def test_once_reports_failed_read_without_retry_or_success(self):
         result, calls, sleeps, events = self.run_watch(
             Mock(side_effect=urllib.error.URLError("private")), once=True,
@@ -1027,6 +1087,7 @@ class WatchLoopTests(unittest.TestCase):
         for message, expected in (
             ("i/o timeout", True),
             ("connection reset by peer", True),
+            ("GitHub CLI execution failed (OSError)", False),
             ("Failed to launch GitHub CLI (FileNotFoundError)", False),
             ("local wrapper configuration is missing", False),
             ("permission denied", False),
