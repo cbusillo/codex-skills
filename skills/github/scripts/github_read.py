@@ -719,6 +719,7 @@ def normalize_check_run(item: dict[str, Any]) -> dict[str, Any]:
         "checkSuiteId": (item.get("check_suite") or {}).get("id"),
         "headSha": item.get("head_sha"),
         "appSlug": (item.get("app") or {}).get("slug"),
+        "appId": (item.get("app") or {}).get("id"),
         "runId": run_id,
         "jobId": job_id,
     }

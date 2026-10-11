@@ -125,6 +125,104 @@ does not launch agents, post messages, grant access or widen briefs. New issue
 bodies, inline review comments and Discussions are outside this bounded comment
 feed; the existing work rollup still supplies broader discussion coverage.
 
+## Interim auto-enqueue watcher
+
+Q154 approved [codex-skills#1623](https://github.com/cbusillo/codex-skills/issues/1623#issuecomment-6103248251).
+This Supervisor helper removes manual detection of ready handoffs. Executing
+sessions still hand off and do not enqueue. Launchplane owns the queue and
+landing; [launchplane#3327](https://github.com/cbusillo/launchplane/issues/3327)
+owns replacing this interim helper with service admission.
+
+Use one private hold record for the run, shared by every local watcher and
+pause update. Before initialization, identify Client products and shared release
+inputs from Launchplane's product records and the current Supervisor handoff.
+Mark those repositories coordinated: they stay on the existing product landing
+path, including engineering-only work. This list expresses the Supervisor's
+delivery holds, never enrollment, branch names or enqueue labels.
+
+```sh
+uv run skills/supervisor/scripts/auto_enqueue.py holds --hold-file <private-holds.json> --init --coordinated-repo OWNER/CLIENT-REPO --coordinated-repo OWNER/SHARED-REPO
+uv run skills/supervisor/scripts/auto_enqueue.py --owner OWNER --control-plane-repo OWNER/CONTROL --hold-file <private-holds.json> --once
+```
+
+Initialization refuses an existing record. Missing or malformed hold state stops
+the watcher. Its fields are `paused_repositories` and `coordinated_repositories`
+(repository lists), plus `client_releases` (objects with `repository` and a
+`ready` or `open` status). Reuse the same record through takeover; reconcile it
+with the handoff before rearming. Do not maintain another per-session copy.
+
+Record a release hold **before** its batch lands and becomes ready, including
+before its invitation posts. Ready/open Client release entries pause both that
+product and the explicitly supplied control-plane repository. The hold command
+waits for the current repository's enqueue section before acknowledging the
+update. Between repositories, a pause update can win the lock and make the
+watcher's next nonblocking acquisition stop safely. Finish the hold update and
+reconcile any already emitted enqueue events before rearming the watcher.
+After the release finishes, clear that entry; ordinary pauses remain independent.
+
+```sh
+uv run skills/supervisor/scripts/auto_enqueue.py holds --hold-file <private-holds.json> --pause OWNER/REPO
+uv run skills/supervisor/scripts/auto_enqueue.py holds --hold-file <private-holds.json> --resume OWNER/REPO
+uv run skills/supervisor/scripts/auto_enqueue.py holds --hold-file <private-holds.json> --release-ready OWNER/CLIENT-REPO
+uv run skills/supervisor/scripts/auto_enqueue.py holds --hold-file <private-holds.json> --release-finished OWNER/CLIENT-REPO
+```
+
+Preview is the default. After inspecting it, use `--apply` under the run's
+existing Supervisor enqueue authority. Without `--repo`, scan every enrolled
+target owned by `--owner`; repeat `--repo` to narrow the scan. The active
+Launchplane policy supplies enrollment, base branches, enqueue labels and the
+policy revision. Repository metadata is never consulted for those facts.
+The loop defaults to a 30-minute wall-clock bound and five-minute cadence;
+`--once`, `--interval`, and `--deadline-seconds` configure it. Re-arm through the
+harness's scheduler, or choose a longer explicit deadline for continuous use.
+One failed repository/train read or uncertain write stops the run for reconciliation,
+preserving already queued work. Reads use the shared GitHub cache, quota reserve
+and retry deadline. No separate retry loop or human-auth fallback is added.
+
+A ready handoff starts with the standalone `Ready for the merge train` line and
+includes one `Head: <full SHA>` field matching the PR's current head. The latest
+handoff by creation/edit time from its author, or a Supervisor explicitly listed with
+`--handoff-login`, wins. The `Engineering ready; waiting for ...` form invalidates
+an earlier Ready. Missing/stale heads, drafts, blocking train dispositions,
+current-head change requests and unavailable checks do not enqueue. A file
+inventory changed during reading skips that PR; other ready members continue.
+An unavailable Client review scope holds that PR rather than bypassing acceptance.
+Required checks are read from current branch protection and
+matched to their configured App. A Client review label, request check, or real
+Client test notes (including legacy `## Owner test notes`) additionally requires an accepted current-head decision
+read from Launchplane, even when a ready comment claims acceptance. Client prose
+is never emitted. Coordinated repositories remain held regardless of acceptance.
+
+The oldest eligible PR anchors a group; additional members share at least one
+of its top-level areas. Renames count both source and destination; root files
+form one area. `--max-batch-size` defaults to four. Area grouping is a routing
+heuristic; Launchplane's combined candidate checks still prove compatibility.
+An active candidate, reconciliation, landing, or preexisting queue preserves
+that repository's batch. Each write rechecks policy, pauses, train state, current
+head and readiness. A behind-base single-member queue awaiting the train's
+branch update can still accumulate this watcher's group before any stored
+candidate exists; the watcher never updates that branch itself.
+If a candidate starts during the group, remaining PRs wait
+for another pass. Repeated passes never extend an already queued group.
+
+The helper emits JSONL `batch`, `held`, `busy`, `skipped`, `enqueued`, and
+`driver_handoff` events. Busy diagnostics include queue dispositions and labeled
+PR numbers when available. A blocked labeled PR deliberately holds the
+repository until the Supervisor reconciles it; busy alone never means a healthy
+candidate is progressing. Skipped events identify PRs whose head readiness or
+file inventory was not proved. The handoff contains the maintained driver's argv and labeled member
+numbers. Run that driver using the Supervisor's normal background monitoring,
+one driver per train; verify every intended member's eventual landing. The
+watcher does not merge, update branches, deploy or send Client invitations.
+
+The local lock serializes this watcher's labels and pause updates. It does not
+lock Launchplane's scheduler, another host, or manual queue writers. Service
+state can change after a read and before a GitHub label: this interim helper is
+not an atomic admission fence. Keep the Supervisor's existing release-window
+coordination, pause other drivers, and account for already queued/active work
+before protecting a release. Do not claim that a pause file halts an existing
+candidate. First-class service holds and atomic admission belong to #3327.
+
 ## Launching and nudging
 
 ```sh
