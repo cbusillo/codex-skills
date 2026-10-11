@@ -98,12 +98,13 @@ def read_holds(path):
     return data
 
 
-def held(data, repo, control_plane):
-    names = data["paused_repositories"] + data["coordinated_repositories"]
-    if data["client_releases"]:
-        names += [control_plane] + [
-            item["repository"] for item in data["client_releases"]
-        ]
+def held(data, repo):
+    # A Client release pauses only its own product (Q160, launchplane#3145).
+    names = (
+        data["paused_repositories"]
+        + data["coordinated_repositories"]
+        + [item["repository"] for item in data["client_releases"]]
+    )
     return repo.casefold() in {name.casefold() for name in names}
 
 
@@ -391,7 +392,7 @@ def run_pass(io, args, emit):
         if selected and repo.casefold() not in selected:
             continue
         with hold_lock(args.hold_file):
-            if held(read_holds(args.hold_file), repo, args.control_plane_repo):
+            if held(read_holds(args.hold_file), repo):
                 emit("held", {"repository": repo})
                 continue
             response = io.train(target)
@@ -485,7 +486,7 @@ def run_pass(io, args, emit):
             for item in batch:
                 # Recheck policy, pause, active state, exact head and all readiness at each write.
                 if target not in io.policies(args.owner) or held(
-                    read_holds(args.hold_file), repo, args.control_plane_repo
+                    read_holds(args.hold_file), repo
                 ):
                     raise ValueError("policy or hold changed")
                 fresh = io.train(target)
@@ -613,7 +614,6 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--owner", required=True)
     parser.add_argument("--repo", action="append", default=[])
-    parser.add_argument("--control-plane-repo", required=True)
     parser.add_argument("--hold-file", required=True, type=Path)
     parser.add_argument("--handoff-login", action="append", default=[])
     parser.add_argument("--max-batch-size", type=int, default=4)
@@ -625,7 +625,7 @@ def main(argv=None):
     if not args.owner or any(
         not REPO.fullmatch(repo)
         or repo.split("/")[0].casefold() != args.owner.casefold()
-        for repo in args.repo + [args.control_plane_repo]
+        for repo in args.repo
     ):
         parser.error("repositories must belong to the configured Director")
     if args.max_batch_size < 1 or any(

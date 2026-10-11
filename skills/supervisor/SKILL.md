@@ -79,7 +79,7 @@ commands:
   - name: supervisor-auto-enqueue
     source: skill
     resource_path: scripts/auto_enqueue.py
-    example_argv: ["uv", "run", "scripts/auto_enqueue.py", "--owner", "OWNER", "--control-plane-repo", "OWNER/CONTROL", "--hold-file", "<private-holds.json>", "--once"]
+    example_argv: ["uv", "run", "scripts/auto_enqueue.py", "--owner", "OWNER", "--hold-file", "<private-holds.json>", "--once"]
     purpose: Preview stable batches from active Launchplane policy; apply only under the Supervisor's existing enqueue authority.
   - name: supervisor-enqueue-holds
     source: skill
