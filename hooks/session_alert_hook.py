@@ -14,6 +14,9 @@ import sys
 from pathlib import Path
 from typing import Mapping
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from agent_activity import hook_activity
+
 
 def events_path(env: Mapping[str, str]) -> Path:
     # Host-specific CODEX_HOME/CLAUDE_CONFIG_DIR would split the shared stream.
@@ -69,7 +72,9 @@ def append_notice(path: Path, record: dict) -> None:
 
 def main() -> int:
     try:
-        record = notice(json.load(sys.stdin), os.environ)
+        payload = json.load(sys.stdin)
+        hook_activity(payload, dict(os.environ))
+        record = notice(payload, os.environ)
         if record is not None:
             append_notice(events_path(os.environ), record)
     except (OSError, ValueError):

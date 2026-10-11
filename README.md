@@ -579,6 +579,10 @@ reports how real sessions on both harnesses load the owning skill.
 
 ### Session alerts
 
+For count-only run lifecycle events in Context Panel's App Group, see the
+[agent activity producer](docs/agent-activity.md). It shares this hook but keeps
+its activity contract separate from the advisory alerts below.
+
 Inline dotfiles hook configurations can preview `--refresh-instructions --show-diff` and replace managed alert entries in place with the generated `catalog_alert_toml` in their authoritative `config.toml` source. Remove obsolete duplicate alert groups while retaining unrelated hooks, group positions, and native trust. Refresh recognizes current inline alerts without writing that source. Regular configurations can use the hook-only migration described above.
 
 The same catalog hook source registers advisory `Stop` alerts on both harnesses
