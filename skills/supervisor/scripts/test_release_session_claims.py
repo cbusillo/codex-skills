@@ -120,6 +120,24 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(entry["handoff_url"], self.entry["handoff_url"])
         self.assertEqual(self.reader.get_json.call_count, 1)
 
+    def test_legacy_shell_array_preserves_bound_write_receipt(self):
+        records = helper.session_record.read_jsonl(self.transcript)
+        records.insert(1, {"payload": {"type": "function_call", "call_id": "write",
+            "arguments": json.dumps({"command": ["bash", "-lc", "gh-comment issue 1 --body-file handoff.md"]})}})
+        records.insert(2, {"payload": {"type": "function_call_output", "call_id": "write",
+            "output": json.dumps({"comment_action": "created", "comment": {"url": self.entry["handoff_url"]}})}})
+        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
+        found, _ = helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
+        self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
+
+    def test_progress_note_does_not_become_exact_session_closeout(self):
+        for text in ("source-session: tests completed", "Other session handed off; source-session still running",
+                     "Engineering handoff\nSession: another-session\nAlso source-session"):
+            self.reader.paged_json.return_value = [comment(10, text)]
+            with self.assertRaisesRegex(ValueError, "no authored handoff"):
+                helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None,
+                    "_handoff_thread": ("test/a", 1)}, ACTOR)
+
     def test_legacy_abbreviated_write_receipt_and_unbound_final_link(self):
         records = helper.session_record.read_jsonl(self.transcript)
         records.insert(1, {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "write", "input": {"command": "gh-comment -R test/a --body-file handoff.md issue 1 | rg url"}}]}})
@@ -218,7 +236,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(report["issue_refusals"])
 
     def test_shared_bot_summary_needs_exact_native_id_and_original_timestamp(self):
-        bound = {**comment(10, "Engineering handoff for source-session"),
+        bound = {**comment(10, "Engineering handoff\nSession: source-session"),
                  "html_url": "https://github.com/test/a/issues/1#issuecomment-10",
                  "issue_url": "https://api.github.com/repos/test/a/issues/1"}
         self.reader.paged_json.return_value = [bound, comment(11, "Same shared bot; another session")]
@@ -493,6 +511,16 @@ class ReleaseTests(unittest.TestCase):
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 self.assertEqual(helper.main(), 1)
             self.assertEqual(run.call_count, 2)
+
+    def test_issue_refused_in_preflight_gets_no_attestation(self):
+        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
+        with patch.object(helper.claim, "run_read", return_value="https://github.com/test/a.git"), \
+                patch.object(helper, "preview_guards", side_effect=helper.release.IssueReleaseRefusal("wrong issue")), \
+                patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run:
+            report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, True)
+        self.assertTrue(report["issue_refusals"])
+        write.assert_not_called()
+        run.assert_not_called()
 
     def test_session_wide_preflight_checks_every_plan_before_first_write(self):
         self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]

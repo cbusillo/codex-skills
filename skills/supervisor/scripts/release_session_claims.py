@@ -288,6 +288,10 @@ def discover_handoff(reader, entry, actor):
     outputs = []
     writes = set()
     def is_comment_write(command):
+        if isinstance(command, list) and all(isinstance(part, str) for part in command):
+            command = command[-1] if len(command) >= 3 and command[-2] in {"-c", "-lc"} and Path(command[0]).name in {"bash", "sh", "zsh"} else shlex.join(command)
+        if not isinstance(command, str):
+            return False
         try:
             lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|\n")
             lexer.whitespace_split = True
@@ -406,9 +410,10 @@ def discover_handoff(reader, entry, actor):
         comments = cache[(repo, number)]
         for evidence in reversed(comments):
             text = evidence.get("body") or ""
-            if ((evidence.get("user") or {}).get("login") == actor and entry["session_id"] in text
+            if ((evidence.get("user") or {}).get("login") == actor and re.search(rf"(?im)^(?:Native[ _-]*)?Session(?:[ _-]*ID)?[ \t]*[:=][ \t]*{re.escape(entry["session_id"])}[ \t]*$", text)
+                    and release.related_sessions_match(text, entry["session_id"])
                     and not text.startswith("Claimed by ") and not claim.records(text)
-                    and re.search(r"(?im)^(?:\*\*)?(?:Safe to exit: yes|Ready for the merge train|Engineering ready)|\b(?:handoff|handed off|engineering complete|completed)\b", text)
+                    and re.search(r"(?im)^(?:\*\*)?(?:Safe to exit: yes|Ready for the merge train|Engineering ready|(?:Engineering )?handoff\b|handed off\b|engineering complete\b|completed\b)", text)
                     and release.stamp(evidence.get("updated_at") or evidence.get("created_at")) <= release.stamp(entry["ended_at"])):
                 url = evidence["html_url"]
                 checked = handoff(reader, {**entry, "handoff_url": url}, actor)
@@ -584,8 +589,14 @@ def preview_guards(entry, *, reader, repo, number, source_id, related, prs, body
 def apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, apply, report, reader):
     if apply:
         # Session-wide refusals must be known before the first claim is released.
-        apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, False,
-                    {"claims": [], "issue_refusals": []}, reader)
+        preflight = {"claims": [], "issue_refusals": []}
+        apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, False, preflight, reader)
+        refused = {(item["repository"], item["issue"], item["claim_comment"])
+                   for item in preflight["claims"] if item["release_preflight"].get("status") == "refused"}
+        report["issue_refusals"].extend(preflight["issue_refusals"])
+        report["claims"].extend(item for item in preflight["claims"]
+                                if (item["repository"], item["issue"], item["claim_comment"]) in refused)
+        plans = [plan for plan in plans if plan[:3] not in refused]
     for repo, number, source_id, related, prs in plans:
         if validate_closure(entry, supervisor_session) != status:
             raise ValueError("source transcript changed; preserve remaining claims")
