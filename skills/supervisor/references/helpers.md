@@ -110,9 +110,12 @@ helper reads one since-scoped repository issue-comment listing per pass
 (including PR timeline comments), paginating through the shared reader within
 the wall-clock deadline. It uses the shared bulk quota reserve, identity,
 conditional cache and retry policy; no separate quota probe or history scan.
-A failed, partial or malformed read preserves that repository's watermark,
-reports an error and exits for Supervisor reconciliation. Wait until a reported
-quota retry time before re-arming; increase the bounded deadline when a historical
+A failed, partial or malformed read preserves that repository's watermark.
+The bounded invocation reports an error and exits for Supervisor reconciliation.
+With `--persistent`, notices remain in the log and retryable reads recover after
+the normal interval or the reported quota retry time, whichever is later.
+Authentication, malformed-response and other nonretryable failures still stop.
+Wait until a reported quota retry time before a manual restart; increase the bounded deadline when a historical
 catch-up cannot finish. Partial pages never advance past a failed read.
 Successful repositories
 advance to the pass start, with a one-second overlap on their next read.
@@ -226,7 +229,8 @@ A controller disposition of `dependency update needs agent review` may enter
 qualification: a current-head Ready from a trusted agent supplies
 that review; the dependency author's own comment cannot. Name the reviewing
 agent's login with `--handoff-login`; repeat it for additional trusted reviewers.
-The automation account `shiny-code-app[bot]` is trusted by default, including its
+The configured automation login (from the GitHub identity helper, falling back
+to `shiny-code-app[bot]`) is trusted by default, including its
 reviews on Dependabot and Actions-bot PRs. Additional logins extend that default
 across the scoped repositories. Other controller holds still block.
 An unavailable Client review scope holds that PR rather than bypassing acceptance.
@@ -319,7 +323,7 @@ credential sources. A configuration has this shape, with all four entries:
       "restart_seconds": 60
     },
     "foreign": {
-      "argv": ["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/foreign_watch.py", "--owner", "OWNER", "--repo", "OWNER/REPO", "--own-login", "OWNER", "--own-login", "shiny-code-app[bot]", "--state", "/private/foreign-state.json"],
+      "argv": ["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/foreign_watch.py", "--owner", "OWNER", "--repo", "OWNER/REPO", "--own-login", "OWNER", "--own-login", "shiny-code-app[bot]", "--launchplane-login", "DELIVERY-LOGIN", "--state", "/private/foreign-state.json", "--persistent"],
       "cwd": "/runtime/catalog",
       "restart_seconds": 60
     },
@@ -373,15 +377,21 @@ tail -n 40 /private/supervisor-services/logs/enqueue.stderr.log
 
 Repeat for the other jobs. Their log names are `<service>.jsonl` and
 `<service>.stderr.log` under the render output's `logs/`. Read foreign notices
-there during checks; restarting a successful notice exit retains its watermark.
+there during checks; `--persistent` keeps watching after notices and retains its watermark.
 Rotate logs during a stopped maintenance window when needed.
 
 Clean bounded exits restart after `restart_seconds`. Transient enqueue reads
 already recover inside `auto_enqueue.py`, without an extra wrapper. Any nonzero
 exit or launch/configuration failure emits `reconciliation_required` and stops
 that service: launchd does not blindly replay uncertain writes or bypass quota
-retry times. Read the helper output and canonical records, respect any retry
-time, and resolve the cause before restarting a stopped job with
+retry times. A private `<config>.<service>.reconcile` marker also preserves a
+failed or interrupted command across login, reboot and fresh bootstrap. The
+runner writes it before starting a child and removes it only after exit 0, so
+a forced runner kill cannot silently resume a command. Read the helper output
+and canonical records, respect any retry time, verify prior children have ended,
+and resolve the cause. Then clear that service's marker under its lock with
+`uv run /runtime/catalog/skills/supervisor/scripts/services.py clear --config /private/supervisor-services.json --service enqueue`
+before restarting a stopped job with
 `launchctl kickstart "gui/$(id -u)/com.codex-skills.supervisor.enqueue"`.
 Do not use `kickstart -k` to displace a running service.
 

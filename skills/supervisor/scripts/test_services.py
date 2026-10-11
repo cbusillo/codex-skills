@@ -42,7 +42,7 @@ class ServicesTests(unittest.TestCase):
             "p = Path('passes.txt')\n"
             "previous = p.read_text() if p.exists() else ''\n"
             "p.write_text(previous + 'pass\\n')\n"
-            "raise SystemExit(4 if previous.count('pass') == 2 else 0)\n"
+            "raise SystemExit(4 if previous.count('pass') >= 2 else 0)\n"
         )
         self.save()
         catalog = Path(__file__).resolve().parents[3]
@@ -59,6 +59,19 @@ class ServicesTests(unittest.TestCase):
         self.assertEqual([row["exit_code"] for row in events if row["event"] == "completed"],
                          [0, 0, 4])
         self.assertEqual(events[-1]["event"], "reconciliation_required")
+        again = subprocess.run(job["ProgramArguments"], cwd=job["WorkingDirectory"],
+                               capture_output=True, text=True, timeout=15)
+        self.assertEqual(again.returncode, 1)
+        self.assertEqual((self.root / "passes.txt").read_text().splitlines(), ["pass"] * 3)
+        cleared = subprocess.run(
+            [sys.executable, str(Path(services.__file__)), "clear", "--config",
+             str(self.config), "--service", "enqueue"], capture_output=True, timeout=5,
+        )
+        self.assertEqual(cleared.returncode, 0)
+        resumed = subprocess.run(job["ProgramArguments"], cwd=job["WorkingDirectory"],
+                                 capture_output=True, timeout=15)
+        self.assertEqual(resumed.returncode, 1)
+        self.assertEqual(len((self.root / "passes.txt").read_text().splitlines()), 4)
 
     def test_sigterm_stops_active_child_and_leaves_no_restart(self):
         self.fixture.write_text(
@@ -68,9 +81,11 @@ class ServicesTests(unittest.TestCase):
             "while True: time.sleep(0.1)\n"
         )
         self.save()
+        output = services.render(self.config, Path(__file__).resolve().parents[3], self.root / "jobs")
+        with (output / f"{services.LABEL_PREFIX}.foreign.plist").open("rb") as stream:
+            job = plistlib.load(stream)
         runner = subprocess.Popen(
-            [sys.executable, str(Path(services.__file__)), "run", "--config",
-             str(self.config), "--service", "foreign"],
+            job["ProgramArguments"], cwd=job["WorkingDirectory"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         self.addCleanup(lambda: runner.kill() if runner.poll() is None else None)
@@ -84,6 +99,40 @@ class ServicesTests(unittest.TestCase):
         self.assertTrue((self.root / "terminated").exists())
         self.assertEqual(sum(json.loads(line)["event"] == "started"
                              for line in stdout.splitlines()), 1)
+        self.assertFalse(services.reconciliation_marker(self.config, "foreign").exists())
+
+    def test_killed_child_requires_explicit_reconciliation_before_restart(self):
+        self.fixture.write_text("import os\nimport signal\nos.kill(os.getpid(), signal.SIGTERM)\n")
+        self.save()
+        argv = [sys.executable, str(Path(services.__file__)), "run", "--config",
+                str(self.config), "--service", "drive"]
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(services.reconciliation_marker(self.config, "drive").exists())
+        restarted = subprocess.run(argv, capture_output=True, text=True, timeout=5)
+        self.assertEqual(restarted.returncode, 1)
+        self.assertNotIn("started", [json.loads(line)["event"] for line in restarted.stdout.splitlines()])
+
+    def test_stopping_unhandled_child_retains_marker(self):
+        self.fixture.write_text(
+            "from pathlib import Path\nimport time\nPath('started').touch()\ntime.sleep(30)\n"
+        )
+        self.save()
+        argv = [sys.executable, str(Path(services.__file__)), "run", "--config",
+                str(self.config), "--service", "enqueue"]
+        runner = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: runner.kill() if runner.poll() is None else None)
+        until = time.monotonic() + 5
+        while not (self.root / "started").exists() and time.monotonic() < until:
+            time.sleep(0.01)
+        self.assertTrue((self.root / "started").exists())
+        runner.terminate()
+        stdout, _stderr = runner.communicate(timeout=5)
+        self.assertEqual(runner.returncode, 1)
+        self.assertTrue(services.reconciliation_marker(self.config, "enqueue").exists())
+        events = [json.loads(line) for line in stdout.splitlines()]
+        self.assertEqual(events[-1]["event"], "reconciliation_required")
+        self.assertLess(events[-1]["exit_code"], 0)
 
     def test_duplicate_service_refuses_before_launch(self):
         self.save()

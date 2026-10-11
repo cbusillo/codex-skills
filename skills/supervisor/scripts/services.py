@@ -74,7 +74,7 @@ def render(config_path, catalog, output):
             "ProgramArguments": [config["uv"], "run", "--no-project", str(runner),
                                  "run", "--config", str(config_path), "--service", name],
             "WorkingDirectory": str(catalog.resolve()),
-            "EnvironmentVariables": {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+            "EnvironmentVariables": {"PATH": f"{Path(config['uv']).parent}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
             "RunAtLoad": True,
             "KeepAlive": False,
             "ExitTimeOut": 30,
@@ -123,16 +123,26 @@ def stop_child(child):
         child.wait()
 
 
-def supervise(settings, stopped):
+def reconciliation_marker(config_path, name):
+    return config_path.with_name(f"{config_path.name}.{name}.reconcile")
+
+
+def supervise(settings, stopped, marker):
     """Keep successful bounded jobs running; preserve failures for the Supervisor."""
     while not stopped.is_set():
+        # Survives a runner crash, forced stop or host restart mid-command.
+        marker.touch(mode=0o600)
         child = subprocess.Popen(settings["argv"], cwd=settings["cwd"], start_new_session=True)
         emit("started", pid=child.pid)
         try:
             while child.poll() is None:
                 if stopped.wait(0.25):
                     stop_child(child)
-                    emit("stopped")
+                    emit("stopped", exit_code=child.returncode)
+                    if child.returncode:
+                        emit("reconciliation_required", exit_code=child.returncode)
+                        return 1
+                    marker.unlink()
                     return 0
             code = child.returncode
         finally:
@@ -141,6 +151,7 @@ def supervise(settings, stopped):
         if code:
             emit("reconciliation_required", exit_code=code)
             return 1
+        marker.unlink()
         stopped.wait(settings["restart_seconds"])
     return 0
 
@@ -155,19 +166,32 @@ def main(argv=None):
     run = sub.add_parser("run", help="launchd entry point")
     run.add_argument("--config", type=Path, required=True)
     run.add_argument("--service", choices=SERVICES, required=True)
+    clear = sub.add_parser("clear", help="clear a stop marker after reconciliation")
+    clear.add_argument("--config", type=Path, required=True)
+    clear.add_argument("--service", choices=SERVICES, required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "render":
             emit("rendered", directory=str(render(args.config, args.catalog, args.output)))
             return 0
         settings = load_config(args.config)["services"][args.service]
+        config_path = args.config.resolve()
+        marker = reconciliation_marker(config_path, args.service)
+        if args.command == "clear":
+            with service_lock(config_path, args.service):
+                marker.unlink(missing_ok=True)
+                emit("reconciled", service=args.service)
+            return 0
         stopped = threading.Event()
         previous = {}
         for sig in (signal.SIGTERM, signal.SIGINT):
             previous[sig] = signal.signal(sig, lambda _sig, _frame: stopped.set())
         try:
-            with service_lock(args.config.resolve(), args.service):
-                return supervise(settings, stopped)
+            with service_lock(config_path, args.service):
+                if marker.exists():
+                    emit("reconciliation_required", reason="previous command did not finish cleanly")
+                    return 1
+                return supervise(settings, stopped, marker)
         finally:
             for sig, handler in previous.items():
                 signal.signal(sig, handler)
