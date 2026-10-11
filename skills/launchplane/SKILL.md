@@ -708,22 +708,12 @@ and watching stay delegated to `github_workflow_babysit.py`, and raw protected
 workflow dispatch is not allowed. Source projected HTTP paths from the vendored
 operation map rather than adding duplicate literals.
 
-The privileged-policy-propose, merge-train policy read and import, repository inventory, product expected configuration,
-generic-web deploy-recovery, live-target-runtime sync, Odoo addon-settings, integration-allowances,
-testing-hold, product-repository-identity, product-environment-read,
-product-activity-read, protected-artifacts-read, product-profile-read, path-check,
-preview-history-read,
-reconcile-requests-read, product-secret-bindings-read,
-target-replacement-operation-read, target-replacement-plan-read, `product-owner-*`,
-`product-image-repository-*`, `dokploy-target-create-compose-*`,
-`dokploy-target-complete-compose-source-*`, `dokploy-target-reconcile-compose-domain-*`,
-`dokploy-target-prune-compose-domain-*`, `production-backup-authority-*`,
-`private-health-endpoint-*`, `health-monitoring-*`, product-promotion-status-read and
-product-promotion-dry-run commands are explicit bounded local
-extensions because the vendored public
-operation projection does not contain their routes. Do not describe them as contract-backed. If a later artifact adds those
-routes, migrate them deliberately and remove the local-extension entries instead
-of retaining parallel sources of truth.
+Commands listed under `LOCAL_EXTENSION_ROUTES` in
+`scripts/launchplane_contract.py` are explicit bounded local extensions: the
+vendored public operation projection does not contain their routes, so do not
+describe them as contract-backed. If a later artifact adds those routes, migrate
+them deliberately and remove the local-extension entries instead of retaining
+parallel sources of truth.
 
 ### Agent Policy Proposals
 

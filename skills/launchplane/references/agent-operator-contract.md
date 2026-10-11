@@ -1,29 +1,14 @@
 # Vendored Agent/Admin Contract
 
 `agent-operator-contract.json` is the public-safe Launchplane contract consumed
-by this skill. Its current identity is:
-
-- schema version: `1`
-- normalization version: `1`
-- semantic digest: `09a2898eb22c1aa2f25054b4f5d43755b05190a35f19c63cb11e0c2a6e31fd05`
-- non-gating source provenance: `1fa6aa122374dff65ba26195f1cd3bfcf77839a7`
-- operation count: `19`
-
-This artifact is byte-identical to the published
-[Launchplane contract at ce4f7f32](https://github.com/cbusillo/launchplane/blob/ce4f7f32f0ff766f9226903775d3928ccb195de1/contracts/agent-operator-contract.json).
-It includes the terminal enrollment, private credential claim, ordinary session
-and finite-job operations. The embedded source provenance records the exporter
-checkout; the published commit above identifies this retrieved artifact. Neither
-provenance nor a matching contract grants runtime authority. Private claims are
-consumed only by the private ordinary-agent adapter, outside the generic
-agent-visible admin helper.
-
-This refresh removes the retired change-impact policy operations and projects
-`apply_odoo_addon_settings`, which was previously a local helper extension.
-The product-config, governance and product-retirement schema fingerprints also
-changed, and stable-lane repair now binds its reusable workflow. Local Odoo
-private-file, secret-binding, reviewed-plan and idempotency controls remain in
-place. Contract freshness does not establish deployed runtime compatibility.
+by this skill. It is retrieved byte-for-byte from Launchplane's published
+`contracts/agent-operator-contract.json`; the vendoring commit names the
+Launchplane commit it came from. The artifact itself owns its identity:
+schema and normalization versions, semantic digest, source provenance and
+operations. The conformance gate below prints them. Neither provenance nor a
+matching contract grants runtime authority. Private claims are consumed only by
+the private ordinary-agent adapter, outside the generic agent-visible admin
+helper. Contract freshness does not establish deployed runtime compatibility.
 
 Run the offline conformance gate from the `launchplane` skill directory with:
 
@@ -71,12 +56,18 @@ does not grant runtime authority or change helper permissions, and it must not
 block ordinary Launchplane helper reads.
 
 The commands listed under `LOCAL_EXTENSION_ROUTES` in
-`scripts/launchplane_contract.py` (named in the SKILL.md Agent/Admin Contract
-section), plus the private Client-review reader,
-are currently bounded local extensions because they are consumed by local helpers but are not present
-in the upstream public operation projection. The validator keeps these explicit
-and fails if an upstream artifact later projects the same routes, forcing a
-deliberate migration instead of silently maintaining two sources of truth.
+`scripts/launchplane_contract.py`, plus the private Client-review reader, are
+bounded local extensions: local helpers consume them, but the upstream public
+operation projection does not contain them. The validator fails if an upstream
+artifact later projects the same routes, forcing a deliberate migration instead
+of silently maintaining two sources of truth.
+
+Every projected operation must be covered exactly once: by a projected helper
+command, a protected workflow, the read-only governance projection, the
+ordinary-agent clients, or Launchplane's own bounded client. The validator's
+operation coverage in `scripts/launchplane_contract.py` owns that
+classification; a newly projected operation fails the gate until it is
+assigned deliberately.
 
 The helper also tracks three internal routes outside the projected command count:
 the read-before-write `GET /v1/work-graph/merge-train/policy-targets`, the
