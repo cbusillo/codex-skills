@@ -609,6 +609,7 @@ graph with `gh-plan.py link`, or pass `--admission-unlinked "<why not yet>"`.
 The walk verifies Tracks in the claimed repository account's `OWNER/direction`.
 A Track in another account's direction repository is a reported graph
 limitation; use the explicit explanation when that is the Director's graph.
+Completeness is bounded by the configured reader's link visibility.
 Unreadable admission graph nodes or relationships also accept that explanation
 and record incomplete verification. Ownership, actor authentication, waits and
 native blockers retain their independent refusals.

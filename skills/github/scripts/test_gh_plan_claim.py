@@ -2939,8 +2939,24 @@ class ClaimTests(unittest.TestCase):
                       "(Track: CM website live, milestone `CM website live and used`)", self.comments[-1]["body"])
         self.setUp()
         self.admit("milestone", unlinked="the Track issue is not created yet")
-        self.assertIn("Admission: milestone; not linked into a milestone Track graph: the Track issue is not created yet",
+        self.assertIn("Admission: milestone; no Track link found in the readable graph: the Track issue is not created yet",
                       self.comments[-1]["body"])
+
+    def test_recovered_linked_claim_uses_the_found_track_instead_of_stale_explanation(self):
+        track = {"url": "https://github.com/owner/direction/issues/9", "title": "Track: Release", "milestone": "Release"}
+        self.admit("milestone", track=track, unlinked="Previous graph read failed")
+        self.assertIn("reaches " + track["url"], self.comments[-1]["body"])
+        self.assertNotIn("Previous graph read failed", self.comments[-1]["body"])
+
+    def test_artifact_conflict_is_reported_before_admission_link_suggestions(self):
+        self.args.admission = "milestone"
+        self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": OTHER["branch"]}]
+        with patch.object(CLAIM, "admission_track") as walk:
+            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        walk.assert_not_called()
+        self.assert_no_writes()
 
     def test_repeat_stop_needs_both_occurrences_and_spare_capacity_is_named(self):
         first = "https://github.com/owner/repo/issues/5"

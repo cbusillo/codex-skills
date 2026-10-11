@@ -843,7 +843,8 @@ def admission_track(
                 and (issue.get("milestone") or {}).get("state", "open") == "open"):
             # The claim knows the repository account, not its cross-owner Director.
             # Do not certify a foreign Track or report its graph fully verified.
-            limits.append("cross_owner_direction_account")
+            if "cross_owner_direction_account" not in limits:
+                limits.append("cross_owner_direction_account")
         if (key[0] == direction and str(issue.get("title") or "").startswith("Track:") and milestone
                 and (issue.get("milestone") or {}).get("state", "open") == "open"):
             return {"url": f"https://github.com/{repo}/issues/{number}", "title": issue.get("title"),
@@ -861,8 +862,8 @@ def admission_text(kind: str, links: list[str], *, track: dict[str, Any] | None 
     detail = []
     if track:
         detail.append(f"reaches {track['url']} ({track['title']}, milestone `{track['milestone']}`)")
-    if unlinked:
-        description = "not linked into a milestone Track graph" if graph_complete else "Track link not verified"
+    if unlinked and not track:
+        description = "no Track link found in the readable graph" if graph_complete else "Track link not verified"
         detail.append(f"{description}: {unlinked}")
     if links:
         detail.append(", ".join(links))

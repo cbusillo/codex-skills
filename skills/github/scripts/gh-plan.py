@@ -2404,7 +2404,6 @@ def cmd_claim(args: argparse.Namespace) -> None:
             claim = {key: owned[0][key] for key in claim}
         retained = github_plan_claim.retained_branch(comments, args.resume_from) if args.resume_from else None
         check_native_blockers()
-        admission_record = admission_line()
         retained_branches = handoff_preflight(comments, status)
         inventory = github_plan_claim.local_inventory(target_repo, number)
         _, pulls = collect_paged_rest_items(
@@ -2420,6 +2419,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
                                                        status_sessions=set(github_plan_claim.released_status_lines(status, comments).values()))
         if conflicts:
             refuse(conflicts)
+        admission_record = admission_line()
         completed.append("ownership_preflight")
         actor, gh_cmd, expected_actor = comment_route()
         wait_receipt = ("\n\nRetained PR waits verified for this step:\n" + "\n".join(
