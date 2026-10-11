@@ -1008,13 +1008,15 @@ class TabCloseTests(unittest.TestCase):
         choice = {"provider": "anthropic", "env": {}}
         with tempfile.TemporaryDirectory() as folder:
             probe = Path(folder) / "probe"
-            probe.write_text('#!/bin/sh\nprintf "%s %s" "$$" "$CLAUDE_ACCOUNT_MOVE_ENABLED"\n')
+            probe.write_text('#!/bin/sh\nprintf "%s\\n" "$$" "$CLAUDE_ACCOUNT_MOVE_ENABLED" "$1"\n')
             probe.chmod(0o700)
-            command = iterm_tab.with_account(f"exec {shlex.quote(str(probe))}", choice)
+            brief = "brief has && ; exec in text"
+            command = iterm_tab.with_account(
+                f"cd / && exec {shlex.quote(str(probe))} {shlex.quote(brief)}", choice)
             child = subprocess.Popen(["/bin/sh", "-c", command], stdout=subprocess.PIPE, text=True)
             output, _ = child.communicate(timeout=5)
             self.assertEqual(child.returncode, 0)
-            self.assertEqual(output.split(), [str(child.pid), "1"])
+            self.assertEqual(output.splitlines(), [str(child.pid), "1", brief])
 
     def test_returning_claude_launch_does_not_mark_later_commands(self):
         choice = {"provider": "anthropic", "env": {}}
