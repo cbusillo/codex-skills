@@ -14,9 +14,10 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from aiohttp import web
+from aiohttp import web, WSMsgType
 
 from agent_activity import ActivityStore, atomic_json, home_key, hook_activity, uuid7
 from observe_agent_activity import CodexObserver, project_claude, claude_poll
@@ -183,6 +184,12 @@ class ActivityTests(unittest.TestCase):
         self.assertFalse((self.store.events / f"codex-skills-{old['eventID']}.json").exists())
         self.assertTrue(foreign.exists() and malformed.exists() and redirect.is_symlink())
         self.assertEqual(target.read_text(), 'preserved')
+        abandoned = str(uuid.uuid4())
+        self.store.emit(ACCOUNT, 'claude', abandoned, 'working', 'claude-hook', now=now - dt.timedelta(days=2))
+        private_path = self.store.private / f"{self.store.key(ACCOUNT, 'claude', abandoned)}.json"
+        self.assertTrue(private_path.exists())
+        self.store.prune(now)
+        self.assertFalse(private_path.exists())
 
     def test_hook_processes_share_run_state_without_controlling_turn(self):
         hook = Path(__file__).resolve().parents[1] / 'hooks' / 'session_alert_hook.py'
@@ -203,6 +210,24 @@ class ActivityTests(unittest.TestCase):
 
 
 class ObserverTests(unittest.IsolatedAsyncioTestCase):
+    async def test_overflow_is_a_recoverable_source_gap(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            store = ActivityStore(root / 'panel', root / 'private')
+            observer = CodexObserver(store, 'openai-a', root)
+            observer.queue = asyncio.Queue(maxsize=1)
+
+            class Frames:
+                def __aiter__(self):
+                    return self
+
+                async def __anext__(self):
+                    return SimpleNamespace(type=WSMsgType.TEXT, data=json.dumps({'method': 'thread/closed', 'params': {'threadId': SESSION}}))
+
+            observer.ws = Frames()
+            with self.assertRaises(ValueError):
+                await observer.receive()
+
     async def test_claude_reads_multiple_pipe_chunks_before_projecting(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder).resolve()
@@ -260,10 +285,11 @@ class ObserverTests(unittest.IsolatedAsyncioTestCase):
                     else:
                         self.fail(f'unexpected request {method}')
                         raise AssertionError('unexpected observer request')
-                    await ws.send_json({'id': data['id'], 'result': result})
                     if method == 'thread/turns/list' and not terminal.is_set():
                         await ws.send_json({'id': data['id'], 'method': 'item/commandExecution/requestApproval',
                                             'params': {'threadId': SESSION, 'command': SECRET}})
+                    await ws.send_json({'id': data['id'], 'result': result})
+                    if method == 'thread/turns/list' and not terminal.is_set():
                         await ws.send_json({'method': 'item/agentMessage/delta', 'params': {'delta': SECRET}})
                         terminal.set()
                         await ws.send_json({'method': 'thread/status/changed', 'params': {'threadId': SESSION, 'status': {'type': 'idle'}}})
