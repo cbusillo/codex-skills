@@ -314,6 +314,7 @@ Default to PR-backed implementation work.
 
 Use `Closes #123` by default when the PR's merge completes the issue's
 deliverable. Use `Refs #123` when the PR delivers only part of a multi-PR issue.
+Qualify either keyword as `OWNER/repo#N` when its issue is in another repository.
 Superseded or competing PRs also retain non-closing references under the
 [canonical implementation procedure](#superseded-or-competing-prs).
 
@@ -343,7 +344,7 @@ the exception does not require a split.
 The session responsible for landing owns the issue readback: the Supervisor
 after an assigned handoff, otherwise the executing session. After a merge-train
 batch lands, that session reads back the referenced issues and links the
-landing evidence, including the parents holding later proof. Link a split
+landing evidence, including the parents holding later proof. Link a
 deliverable's parent from the PR with `Refs #parent` (or `Refs OWNER/repo#N`
 for a parent in another repository) so that handoff retains
 the remaining work and its next actor. If `Closes` did not fire, follow github-plan's
