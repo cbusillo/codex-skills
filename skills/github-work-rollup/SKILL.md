@@ -116,6 +116,11 @@ Choose mode by the requested data:
 - `standup`: open backlog plus recent activity/completions; prefer for active
   work, blockers, next-work questions, and working-session briefs.
 
+Work rollup searches and repository inventories exclude archived repositories by
+default. Pass `--include-archived` to `github_work_rollup.py` or
+`github_unanswered_comments.py` to include them. Explicit `--thread` attention
+reads retain their full history.
+
 Repository collection follows mode; subject searches stay window-bound in every
 mode to avoid unbounded people searches. `limit_items` only trims display
 examples. Counts and manager/executive volume language use collected rows;

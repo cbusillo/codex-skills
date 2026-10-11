@@ -867,6 +867,8 @@ class FakeGitHub:
         self.calls: list[str] = []
 
     def __call__(self, command: list[str]) -> object:
+        if command[1:3] == ["repo", "view"]:
+            return {"isArchived": False}
         endpoint = command[2]
         self.calls.append(endpoint)
         if endpoint == "user":

@@ -22,6 +22,7 @@ sys.path.insert(0, str(SKILLS / "github/scripts"))
 sys.path.insert(0, str(SKILLS / "github-work-rollup/scripts"))
 from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args, path_with_query
 import github_direction_next
+import github_repository_scope as repository_scope
 import github_unanswered_comments as attention
 
 
@@ -97,8 +98,8 @@ def wait_rows(repo, issues, terms, owner, now) -> list[dict[str, Any]]:
     return rows
 
 
-def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting for") -> dict[str, Any]:
-    query = f'user:{owner} is:issue is:open in:body "{phrase}"'
+def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting for", *, include_archived=False) -> dict[str, Any]:
+    query = repository_scope.search_query(f'user:{owner} is:issue is:open in:body "{phrase}"', include_archived=include_archived)
     result = {"waits": [], "complete": False, "errors": [],
               "repositories_with_matches": [], "query": query, "total_count": None,
               "scope": "Open issue bodies in the Director's repositories visible to GitHub Search; search indexing may lag live records"}
@@ -156,10 +157,10 @@ def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting f
     return result
 
 
-def collect(reader, owner, terms, now, issue_limit=1000) -> dict[str, Any]:
+def collect(reader, owner, terms, now, issue_limit=1000, *, include_archived=False) -> dict[str, Any]:
     # Two scoped searches cover both supported status fields without relying
     # on provider-specific boolean query parsing or visiting each repository.
-    reports = [collect_query(reader, owner, terms, now, issue_limit, phrase)
+    reports = [collect_query(reader, owner, terms, now, issue_limit, phrase, include_archived=include_archived)
                for phrase in ("Waiting for", "Parked until")]
     rows = {(row["repo"], row["number"]): row for report in reports for row in report["waits"]}
     return {"waits": sorted(rows.values(), key=lambda row: (row["repo"], row["number"])),
@@ -172,6 +173,7 @@ def collect(reader, owner, terms, now, issue_limit=1000) -> dict[str, Any]:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    repository_scope.add_include_archived_argument(parser)
     parser.add_argument("--owner", required=True)
     parser.add_argument("--director-name", action="append", default=[])
     parser.add_argument("--issue-limit", type=int, default=1000)
@@ -185,7 +187,7 @@ def main():
     reader = GitHubReader(operation="github.direction.director_waits", strict_actor=True,
                           gh_prefix_args=automation_only_gh_prefix_args(),
                           deadline_at=time.time() + args.deadline_seconds)
-    result = collect(reader, args.owner, terms, datetime.now(timezone.utc), args.issue_limit)
+    result = collect(reader, args.owner, terms, datetime.now(timezone.utc), args.issue_limit, include_archived=args.include_archived)
     if (people["status"] == "error" or people["director_ambiguous"]
             or (not people["director_names"] and not args.director_name)):
         result["complete"] = False

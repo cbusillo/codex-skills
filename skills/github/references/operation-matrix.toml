@@ -594,7 +594,7 @@ entrypoint = "direction/scripts/director_waits.py"
 intent = "List every visible open issue whose current wait names the Director, with explicit age and verification evidence."
 current_transport = "rest_api"
 selected_transport = "rest_api"
-endpoint_or_command = "Paged GET /search/issues?q=user:{owner} is:issue is:open in:body Waiting for or Parked until"
+endpoint_or_command = "Paged GET /search/issues; Director wait qualifiers plus archive scope from github_repository_scope.search_query"
 quota_bucket = "search"
 actor_policy = "automation_required"
 mutation_class = "read"
@@ -602,7 +602,7 @@ idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "paged_read"
 retained_graphql_rationale = "No GraphQL; two Director-wide issue searches use bounded REST reads with explicit search coverage."
-source_refs = ["direction/scripts/director_waits.py:collect", "direction/scripts/director_waits.py:wait_rows"]
+source_refs = ["github/scripts/github_repository_scope.py:search_query", "direction/scripts/director_waits.py:collect", "direction/scripts/director_waits.py:wait_rows"]
 test_refs = ["direction/scripts/test_director_waits.py:test_all_status_labels_and_asked_questions_are_included", "direction/scripts/test_director_waits.py:test_search_metadata_limits_and_partial_failure_preserve_rows"]
 
 [[operations]]
@@ -846,7 +846,7 @@ entrypoint = "github/scripts/gh-plan.py search"
 intent = "Search issues and return compact normalized planning results."
 current_transport = "rest_api"
 selected_transport = "rest_api"
-endpoint_or_command = "Paged GET /search/issues?q={query}+is:issue; add repo:{repo} only for an unscoped query or explicit --repo; conditional is:open/is:closed qualifier; honor --limit"
+endpoint_or_command = "Paged GET /search/issues; query scope from cmd_search and archive scope from github_repository_scope.search_query; honor --limit"
 quota_bucket = "search"
 actor_policy = "automation_required"
 mutation_class = "read"
@@ -854,8 +854,8 @@ idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "paged_read"
 retained_graphql_rationale = "No retained GraphQL transport; the REST issue search endpoint preserves planning discovery while using the search bucket explicitly."
-source_refs = ["github/scripts/gh-plan.py:cmd_search", "github/scripts/gh-plan.py:collect_paged_rest_items"]
-test_refs = ["github/scripts/test_gh_plan_search.py:SearchTests", "github/scripts/validate-gh-plan.py:test_plan_search_uses_search_bucket_and_conditional_state", "github/scripts/validate-gh-plan.py:test_plan_paged_rest_failure_receives_completed_page_evidence", "github/scripts/validate-gh-plan.py:test_plan_rest_command_context_and_limit_validation", "skill-creator/evaluations/exec-harness/fake-gh-plan-search.json", "github/scripts/validate-operation-matrix.py:self-test"]
+source_refs = ["github/scripts/github_repository_scope.py:search_query", "github/scripts/gh-plan.py:cmd_search", "github/scripts/gh-plan.py:collect_paged_rest_items"]
+test_refs = ["github/scripts/test_gh_plan_search.py:SearchTests", "github/scripts/validate-gh-plan.py:test_plan_search_uses_search_bucket_and_conditional_state", "github/scripts/validate-gh-plan.py:test_plan_paged_rest_failure_receives_completed_page_evidence", "github/scripts/validate-gh-plan.py:test_plan_rest_command_context_and_limit_validation", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.plan.show"
@@ -888,7 +888,7 @@ entrypoint = "github/scripts/gh-plan.py create"
 intent = "Create a durable plan with optional agent-family assignment and label setup before shared issue creation."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "Paged GET /search/issues exact-title dedupe; paged REST label ensure; shared POST /repos/{repo}/issues with fingerprint reconciliation; optional retained gh project item-add/item-edit"
+endpoint_or_command = "Paged GET /search/issues exact-title dedupe with archive scope from github_repository_scope.search_query; paged REST label ensure; shared POST /repos/{repo}/issues with fingerprint reconciliation; optional retained gh project item-add/item-edit"
 quota_bucket = "mixed"
 actor_policy = "automation_required_for_writes"
 mutation_class = "create"
@@ -896,8 +896,8 @@ idempotency = "non_idempotent"
 retry_eligibility = "conditional"
 reconciliation_strategy = "dedupe_then_create"
 retained_graphql_rationale = "GraphQL is retained only for optional Project sync; selected issue dedupe, label ensure, and issue creation use REST, while Project failures remain non-blocking warnings."
-source_refs = ["github/scripts/gh-plan.py:cmd_create", "github/scripts/gh-plan.py:find_existing_plan_issues", "github/scripts/gh-plan.py:ensure_labels", "github/scripts/github_issue.py:create_issue"]
-test_refs = ["github/scripts/test_github_agent.py", "github/scripts/validate-gh-plan.py:test_create_uses_rest_dedupe_and_shared_issue_create", "github/scripts/validate-gh-plan.py:test_create_dedupes_exact_rest_search_without_writes", "github/scripts/validate-gh-plan.py:test_create_issue_failure_preserves_compound_recovery_evidence", "github/scripts/validate-gh-plan.py:test_create_surfaces_reconciled_shared_issue_evidence", "github/scripts/validate-gh-plan.py:test_create_reports_issue_when_project_sync_fails", "github/scripts/validate-gh-plan.py:test_create_reports_stale_project_as_non_blocking_warning", "github/scripts/validate-gh-plan.py:test_create_reports_project_auth_denied_as_non_blocking_warning", "github/scripts/validate-gh-plan.py:test_create_supports_waiting_plan_status", "github/scripts/test_github_issue.py:test_create_unknown_outcome_returns_unique_reconciled_issue", "github/scripts/test_github_issue.py:test_unknown_retry_enabled_issue_create_fails_closed_after_no_match", "github/scripts/test_github_issue.py:test_rejected_retry_enabled_issue_create_can_retry", "skill-creator/evaluations/exec-harness/fake-gh-plan-create.json", "github/scripts/validate-operation-matrix.py:self-test"]
+source_refs = ["github/scripts/gh-plan.py:cmd_create", "github/scripts/gh-plan.py:find_existing_plan_issues", "github/scripts/github_repository_scope.py:search_query", "github/scripts/gh-plan.py:ensure_labels", "github/scripts/github_issue.py:create_issue"]
+test_refs = ["github/scripts/test_github_agent.py", "github/scripts/validate-gh-plan.py:test_create_uses_rest_dedupe_and_shared_issue_create", "github/scripts/validate-gh-plan.py:test_create_dedupes_exact_rest_search_without_writes", "github/scripts/validate-gh-plan.py:test_create_issue_failure_preserves_compound_recovery_evidence", "github/scripts/validate-gh-plan.py:test_create_surfaces_reconciled_shared_issue_evidence", "github/scripts/validate-gh-plan.py:test_create_reports_issue_when_project_sync_fails", "github/scripts/validate-gh-plan.py:test_create_reports_stale_project_as_non_blocking_warning", "github/scripts/validate-gh-plan.py:test_create_reports_project_auth_denied_as_non_blocking_warning", "github/scripts/validate-gh-plan.py:test_create_supports_waiting_plan_status", "github/scripts/test_github_issue.py:test_create_unknown_outcome_returns_unique_reconciled_issue", "github/scripts/test_github_issue.py:test_unknown_retry_enabled_issue_create_fails_closed_after_no_match", "github/scripts/test_github_issue.py:test_rejected_retry_enabled_issue_create_can_retry", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.plan.claim"

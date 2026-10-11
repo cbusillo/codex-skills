@@ -167,6 +167,11 @@ or `plan:waiting` label and waits that already have a posted question:
 uv run <skill-dir>/scripts/director_waits.py --owner OWNER
 ```
 
+Cross-repository searches and audit repository discovery exclude archived repositories
+by default. Add `--include-archived` to `gh-plan.py search`, `director_waits.py`,
+or `direction_audit.py` for historical results. An explicitly named archived
+repository still reports frozen history in the stale-wait audit.
+
 It uses two Director-wide GitHub issue searches for open issue bodies containing
 `Waiting for` or `Parked until`, then applies the shared human-attention classifier locally with
 the optional people index for the Director's names. This reads wait records
