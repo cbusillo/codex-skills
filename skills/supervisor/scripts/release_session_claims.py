@@ -466,6 +466,8 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
         entry, handoff_record = discover_handoff(reader, entry, actor)
     plans = []
     retained_status = []
+    entry["_releaser_session"] = supervisor_session
+    entry["_pr_claim_handoffs"] = {}
     pulls_by_repo = {}
     handoff_prs = set(re.findall(r"https://github\.com/[^/\s]+/[^/\s]+/pull/[1-9]\d*", handoff_record.get("body") or ""))
     refused = []
@@ -482,6 +484,7 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
               "retained_status_claims": retained_status, "issue_refusals": refused,
               "inventory_claims": list(entry.get("_inventory_results", {}).values()),
               "handoff_url": entry["handoff_url"],
+              "pr_claim_handoffs": list(entry.get("_pr_claim_handoffs", {}).values()),
               "closure_evidence": "Supervisor verified inventory; original PID/TTY unavailable" if entry.get("_inventory") else "matched PID/TTY log"}
     try:
         return apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, apply, report, reader)
@@ -494,8 +497,23 @@ def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_
     reader.deadline_at = time.time() + entry.get("_read_deadline_seconds", 600)
     issue = reader.get_json(f"/repos/{repo}/issues/{number}", step="release_canonical_issue")
     if "pull_request" in issue:
-        if entry.get("_inventory"):
-            raise ValueError("inventory names a pull request instead of its canonical issue")
+        sources = active_claims(reader, repo, number, entry["session_id"], actor)
+        for source, related, unresolved in sources:
+            if unresolved:
+                raise ValueError("PR ownership follow-ups need verified exact-ID releases")
+            argv = ["uv", "run", str(GITHUB / "gh-plan.py"), "--repo", repo,
+                    "release-claim", f"https://github.com/{repo}/pull/{number}",
+                    "--claim-comment", str(source["id"]),
+                    "--evidence-comment", "<verified-closed-session-attestation-url>",
+                    "--role", "supervisor", "--session", entry.get("_releaser_session", "<supervisor-native-session>"),
+                    "--confirm-session-ended"]
+            for related_id in related:
+                argv.extend(["--related-claim-comment", str(related_id)])
+            row = {"repository": repo, "pull_request": number,
+                   "claim_comments": [source["id"], *related],
+                   "status": "manual_release_required", "release_argv": argv,
+                   "attestation_body": closure_attestation(entry)}
+            entry.setdefault("_pr_claim_handoffs", {})[(repo, number, source["id"])] = row
         return [], retained_status
     comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="session_issue_filter")
     if not any(belongs_to_session(c.get("body") or "", entry["session_id"]) for c in comments) and not belongs_to_session(issue.get("body") or "", entry["session_id"]):
@@ -587,6 +605,14 @@ def preview_guards(entry, *, reader, repo, number, source_id, related, prs, body
             "requires_command_preflight_after_posting": True, "session_coverage": local.get("session_coverage")}
 
 
+def closure_attestation(entry):
+    body = (f"Closed session {entry['session_id']}\nEnded at: {entry['ended_at']}\nSafe to exit: yes\n\n"
+            f"Handoff context ({entry.get('_handoff_provenance', 'Supervisor transcript-verified ledger')}): {entry['handoff_url']}\n")
+    if entry.get("_inventory"):
+        body += "Closure evidence: Supervisor verified inventory; original PID/TTY unavailable. The caller confirms actual session inactivity, including unavailable native peers.\n"
+    return body
+
+
 def apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, apply, report, reader):
     if apply:
         # Session-wide refusals must be known before the first claim is released.
@@ -601,10 +627,7 @@ def apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, 
     for repo, number, source_id, related, prs in plans:
         if validate_closure(entry, supervisor_session) != status:
             raise ValueError("source transcript changed; preserve remaining claims")
-        body = (f"Closed session {entry['session_id']}\nEnded at: {entry['ended_at']}\nSafe to exit: yes\n\n"
-                f"Handoff context ({entry.get('_handoff_provenance', 'Supervisor transcript-verified ledger')}): {entry['handoff_url']}\n")
-        if entry.get("_inventory"):
-            body += "Closure evidence: Supervisor verified inventory; original PID/TTY unavailable. The caller confirms actual session inactivity, including unavailable native peers.\n"
+        body = closure_attestation(entry)
         item = {"repository": repo, "issue": number, "claim_comment": source_id,
                 "related_claim_comments": related,
                 "retained_prs": prs, "attestation_body": body,

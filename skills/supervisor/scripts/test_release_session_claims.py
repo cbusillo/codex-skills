@@ -60,6 +60,25 @@ class ReleaseTests(unittest.TestCase):
         self.inventory.start()
         self.addCleanup(self.inventory.stop)
 
+    def test_bulk_release_reports_active_pr_claim_with_supported_manual_route(self):
+        handoff = dict(self.reader.get_json.return_value)
+        self.reader.get_json.side_effect = lambda path, **_kw: handoff if "/issues/comments/" in path else {"number": 1, "pull_request": {}, "body": "Bump dependencies"}
+        self.reader.paged_json.return_value = [self.source]
+        report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
+        self.assertEqual(report["pr_claim_handoffs"][0]["claim_comments"], [self.source["id"]])
+        route = report["pr_claim_handoffs"][0]["release_argv"]
+        self.assertIn("release-claim", route)
+        self.assertIn("https://github.com/test/a/pull/1", route)
+        self.assertIn("--evidence-comment", route)
+        self.assertEqual(report["claims"], [])
+
+    def test_bulk_release_does_not_report_a_pr_claim_already_authored_released(self):
+        handoff = dict(self.reader.get_json.return_value)
+        self.reader.get_json.side_effect = lambda path, **_kw: handoff if "/issues/comments/" in path else {"number": 1, "pull_request": {}, "body": "Bump dependencies"}
+        self.reader.paged_json.return_value = [self.source, comment(2, "Released claim 1")]
+        report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
+        self.assertEqual(report["pr_claim_handoffs"], [])
+
     def test_finished_process_and_safe_verdict(self):
         self.assertTrue(helper.validate_closure(self.entry, "supervisor")["safe_verdict"])
         for rows in ([(123, "other", "zsh")], [(456, "ttys123", "codex")], [(456, "ttys123", "zsh -c work")]):

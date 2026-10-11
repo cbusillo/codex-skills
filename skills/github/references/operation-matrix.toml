@@ -2391,5 +2391,5 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "babysit-pr/scripts/gh_pr_watch.py" = "525c8e788ce94396d37512b98e2ea1122a7d9c037c72c7bdd939d0e28f38512c"
 "direction/scripts/direction_audit.py" = "3eea2010ae6c4a4391663f55c565522a7a29b992a3fd48415150c345c72829a9"
 "github/scripts/github_plan_claim.py" = "da85372adcedc7367cb086b7c5207d80944815c7b49faa02424c24ebb055e35a"
-"github/scripts/github_plan_release.py" = "e66c5af6c20ce09fdfb48d0aa39bf30738b70a9a3d2201ef30d3a93d5d79501d"
+"github/scripts/github_plan_release.py" = "6e044fb754305ead4c2231db1660aa1a5134c20c89887cf3f514e4f7a5d6cab9"
 "github/scripts/github_request_usage.py" = "e79e4658e4f37c954d45aec6bb41d84bd0a582a076a924bf0057adc5c5e4eeca"

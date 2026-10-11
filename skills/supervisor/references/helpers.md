@@ -505,6 +505,15 @@ uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <priv
 ```
 
 Default is a read-only inventory preview of claim IDs, retained PRs and attestation bodies.
+PR-only claims appear in `pr_claim_handoffs`, with exact claim IDs, the verified
+closure's `attestation_body`, and `release_argv`. They stay owned until that
+route succeeds; an empty automatic `claims` list does not mean all ownership
+was released. Post the supplied attestation on the PR through `gh-comment`,
+put its returned URL in the command's evidence slot, then run the supported
+`release-claim` dry run and apply from that repository's checkout. The same
+source-branch activity, author, closure and peer checks apply. Resolve these
+handoffs before calling session ownership cleanup complete.
+
 It does not assert release preflight success: that check needs a posted
 attestation, and apply previews the maintained release helper before releasing.
 Repeat with `--apply` after inspecting it. Apply records the newly observed exit
