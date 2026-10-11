@@ -1025,6 +1025,7 @@ class TabCloseTests(unittest.TestCase):
             capture_output=True, text=True, timeout=5, check=True)
         self.assertEqual(result.stdout, "1 unset")
         for text in ('cd / && exec claude brief',
+                     'cd / &&exec claude "brief has && punctuation"',
                      '. /integration && exec claude "brief has ; punctuation"'):
             self.assertIsNotNone(iterm_tab.scoped_exec(text))
         for text in ('claude "exec task"', 'exec claude task; printf later',

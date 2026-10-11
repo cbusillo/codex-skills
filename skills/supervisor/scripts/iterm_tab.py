@@ -203,19 +203,30 @@ def check_codex_daemon(choice):
 
 def scoped_exec(command_text):
     """Scope the marker to a final simple exec without exporting into the shell."""
-    prefix, separator, final = command_text.rpartition("&&")
-    lexer = shlex.shlex(final, posix=True, punctuation_chars=";&|()")
+    lexer = shlex.shlex(command_text, posix=True, punctuation_chars=";&|()")
     lexer.whitespace_split = True
     try:
-        words = list(lexer)
+        words = []
+        for token in lexer:
+            if token and all(c in ";&|()" for c in token):
+                if token != "&&":
+                    return None
+                words = []
+            else:
+                words.append(token)
     except ValueError:
         return None
     if (len(words) < 2 or words[0] != "exec" or words[1].startswith("-")
-            or any(token and all(c in ";&|()" for c in token) for token in words)
-            or not re.match(r"^\s*exec\s+", final)):
+            or any(token and all(c in ";&|()" for c in token) for token in words)):
         return None
-    final = re.sub(r"^(\s*)exec\s+", r"\1exec env CLAUDE_ACCOUNT_MOVE_ENABLED=1 ", final, count=1)
-    return prefix + separator + final
+    for match in reversed(list(re.finditer(r"\bexec\s+", command_text))):
+        try:
+            if shlex.split(command_text[match.start():]) == words:
+                return (command_text[:match.end()] + "env CLAUDE_ACCOUNT_MOVE_ENABLED=1 "
+                        + command_text[match.end():])
+        except ValueError:
+            continue
+    return None
 
 
 def with_account(command_text, choice):
@@ -291,10 +302,10 @@ async def close_session(app, session_id, ledger):
         return session, (window.window_id, tab.tab_id, tty, jobs, prompt.unique_id)
 
     _, before = await verify()
-    session, after = await verify()
+    closing_session, after = await verify()
     if after != before:
         raise ValueError("terminal state changed during verification; tab kept")
-    await session.async_close(force=False)
+    await closing_session.async_close(force=False)
     return {"session_id": session_id, "close_requested": True, "readback_required": True}
 
 
