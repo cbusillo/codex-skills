@@ -290,8 +290,10 @@ async def close_session(app, session_id, ledger):
             raise ValueError("terminal TTY differs from launch ledger")
         rows = inventory()
         jobs = [row for row in rows if row[1] == tty]
-        if not jobs or any(not idle_terminal_command(row[2]) for row in jobs):
-            raise ValueError("process remains or TTY inventory is uncertain; tab kept")
+        if not jobs:
+            raise ValueError("no processes match this TTY; preserve ended or uncertain tab and report its profile setting")
+        if any(not idle_terminal_command(row[2]) for row in jobs):
+            raise ValueError("process remains on this TTY; tab kept")
         if isinstance(entry.get("pid"), int) and any(row[0] == entry["pid"] for row in rows):
             raise ValueError("recorded agent PID remains or was reused; tab kept")
         prompt = await iterm2.async_get_last_prompt(app.connection, session_id)
@@ -466,6 +468,8 @@ def main():
             parser.exit(1, "launch failed; inspect the reported tabs before retrying\n")
         except (ValueError, OSError, subprocess.SubprocessError) as error:
             parser.exit(1, f"refused: {error}\n")
+        except iterm2.rpc.RPCException:
+            parser.exit(1, "iTerm RPC failed; preserve the target and read list before any retry\n")
 
     iterm2.run_until_complete(connected)
 

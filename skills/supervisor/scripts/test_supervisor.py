@@ -1013,7 +1013,8 @@ class TabCloseTests(unittest.TestCase):
             brief = "brief has && ; exec in text"
             command = iterm_tab.with_account(
                 f"cd / && exec {shlex.quote(str(probe))} {shlex.quote(brief)}", choice)
-            child = subprocess.Popen(["/bin/sh", "-c", command], stdout=subprocess.PIPE, text=True)
+            child = subprocess.Popen(["/bin/sh", "-c", command], stdout=subprocess.PIPE, text=True,
+                env={k: v for k, v in os.environ.items() if k != "CLAUDE_ACCOUNT_MOVE_ENABLED"})
             output, _ = child.communicate(timeout=5)
             self.assertEqual(child.returncode, 0)
             self.assertEqual(output.splitlines(), [str(child.pid), "1", brief])

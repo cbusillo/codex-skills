@@ -397,7 +397,8 @@ on Context Panel's selected account, then send `continue`.
    the tab. If it is still running or its identity is uncertain, keep the tab
    open and record the next action in the ledger.
 
-5. After the process-exit wait, preview `close_ttys.py` with the verified
+5. After the process-exit wait, read `list`. If the exact session is gone,
+   record that the tab already closed. For a surviving idle shell, preview `close_ttys.py` with the verified
    handoff and input flags, then use `iterm_tab.py close --session-id <exact-iterm-id>
    --ledger <private-ledger.json>`. It checks the launch ledger, rejects split
    tabs, and rechecks the TTY processes and native shell prompt twice before
@@ -405,6 +406,8 @@ on Context Panel's selected account, then send `continue`.
    uncertain close rather than retrying. Missing shell input proof preserves
    the tab; read the [native shell-input setup](references/helpers.md#native-shell-input-proof)
    for the supported launch-shell setup, without changing the Director's profile.
+   If a retained ended session has no TTY processes, preserve it and report the
+   profile setting; do not force-close it or change the Director's setting.
 
 ## Handoff Shape
 

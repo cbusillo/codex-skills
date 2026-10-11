@@ -378,22 +378,26 @@ and split tabs refuse. Never add a Director's tab to the Supervisor ledger.
 
 The close command requires iTerm's native shell integration to report an
 editing prompt whose entire command is empty. Missing/unknown input refuses;
-screen appearance and `--verified-input` are not substitutes. For Supervisor
-launches that may leave an outer shell, source iTerm's bundled integration in
-that shell before the agent invocation. On Chris-Studio's zsh launch shells,
-keep the launch file on one line, with the integration source followed by the
-existing final `exec` invocation:
+screen appearance and `--verified-input` are not substitutes for the close
+command's native proof. A successful final `exec` normally ends the terminal;
+after the exit wait, use `list` and record closure if the exact session is gone.
+Native prompt proof is needed only for a surviving idle outer shell, such as
+an older returning launch or a failed `exec`. On Chris-Studio's zsh shells,
+the standalone integration source command is:
 
 ```sh
-. /Applications/iTerm.app/Contents/Resources/iterm2_shell_integration.zsh && exec claude <authorized arguments>
+. /Applications/iTerm.app/Contents/Resources/iterm2_shell_integration.zsh
 ```
 
 Use the installed integration for the launch shell and actual app location on
-other hosts. This changes only that Supervisor launch shell, never `.zshrc` or
-an iTerm profile. For an already idle Supervisor shell without integration,
-verify the exact target and empty input under the shutdown procedure before
-sending just the integration source command with `send`; read back the new empty prompt before
-closing. Preserve the tab if that verification is unavailable.
+other hosts. This changes only that Supervisor shell, never `.zshrc` or an
+iTerm profile. Before bootstrapping an already idle Supervisor shell, perform
+the shutdown procedure's manual input inspection and Director-text preservation
+steps, then send just this source command with `send --verified-target`.
+This manual check authorizes only bootstrap, not closure; read back the new
+native empty prompt before closing. Preserve the tab if input is uncertain.
+If an ended session is retained with no TTY processes, preserve it and report
+the profile setting instead of force-closing or changing the Director's setting.
 
 Claude launches with a final simple `exec` use `exec env` to pass the account-move
 opt-in only to the agent that replaces the launch shell. Returning
