@@ -20,14 +20,16 @@ import time
 import urllib.error
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT.parent))
 sys.path.insert(0, str(ROOT / "github/scripts"))
-import github_api
-from github_read import (
+from skills.github.scripts import github_api
+from skills.github.scripts.ready_handoff import latest_ready, requires_client_acceptance
+from skills.github.scripts.github_read import (
     GitHubReader,
     GitHubReadError,
     GitHubReadShapeError,
@@ -45,20 +47,10 @@ spec.loader.exec_module(operator)
 spec = importlib.util.spec_from_file_location(
     "enqueue_review", LP / "launchplane-owner-review.py"
 )
-review = importlib.util.module_from_spec(spec)
+review: Any = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(review)
 
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
-READY = "Ready for the merge train"
-WAITING = "Engineering ready; waiting for"
-HEAD = re.compile(r"(?im)^Head(?: SHA)?:\s*`?([0-9a-f]{40})`?(?:[.\s]|$)")
-
-
-def timestamp(value):
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        raise ValueError("timestamp lacks timezone")
-    return parsed.timestamp()
 
 
 @contextmanager
@@ -107,30 +99,6 @@ def held(data, repo):
         + [item["repository"] for item in data["client_releases"]]
     )
     return repo.casefold() in {name.casefold() for name in names}
-
-
-def latest_ready(pr, comments, trusted):
-    """A renewed wait invalidates Ready; a push requires a new explicit head."""
-    handoffs = []
-    for comment in comments:
-        if (comment.get("user") or {}).get("login", "").casefold() not in trusted:
-            continue
-        body = comment.get("body") or ""
-        first = body.splitlines()[0] if body.splitlines() else ""
-        if first == READY or first.startswith(WAITING):
-            handoffs.append(comment)
-    if not handoffs:
-        return False
-    latest = max(
-        handoffs,
-        key=lambda item: (
-            timestamp(item.get("updated_at") or item["created_at"]),
-            item["id"],
-        ),
-    )
-    body = latest["body"]
-    heads = HEAD.findall(body)
-    return body.splitlines()[0] == READY and heads == [pr["head"]["sha"]]
 
 
 def areas(files):
@@ -429,16 +397,7 @@ class Live:
                     or any(item["state"] != "success" for item in statuses)
                 ):
                     return False
-        needs_acceptance = "owner-review" in labels or any(
-            item["name"] == "launchplane/owner-review" for item in checks["checkRuns"]
-        )
-        # Real Client notes without their review label stay on the coordinated path (Q155).
-        if re.search(r"(?im)^## (?:Client|Owner) test notes\s*$", pr.get("body") or ""):
-            if not re.search(
-                r"(?im)^Nothing for the Client to test:\s*\S", pr.get("body") or ""
-            ):
-                needs_acceptance = True
-        if needs_acceptance and not self.acceptance(repo, pr):
+        if requires_client_acceptance(pr, checks["checkRuns"]) and not self.acceptance(repo, pr):
             return False
         return True
 

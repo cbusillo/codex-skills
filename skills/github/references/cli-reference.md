@@ -400,6 +400,8 @@ also include the shared `api_result` diagnostics envelope.
   Head workflows are read even before their first job check exists; unfinished
   or failed runs count as pending or failed evidence. Unavailable Actions
   reads report incomplete counts rather than a complete empty inventory.
+- `scripts/gh-pr.py ready <pr> [--waiting-for-client] [--allow-no-checks]`: Read current-head
+  checks and post the [ready handoff](#ready-handoffs) through automation auth.
 - `scripts/gh-pr.py update-branch <pr> [--wait-seconds 0..60]`: Merge the base
   into the PR branch after the ownership and authorization checks in
   [Merge Readiness](repo-workflow.md#merge-readiness), through the automation
@@ -446,6 +448,51 @@ neutralizes `Closes`/`Fixes`/`Resolves` references in the
 stale body, closes the PR so future agents do not treat it as mergeable, and can
 delete the unused remote task branch when `--delete-branch` is explicitly
 requested.
+
+### Ready Handoffs
+
+When the task authorizes a Supervisor handoff, use
+`uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
+instead of hand-writing a merge-train
+comment. The helper reads the current head, check runs, legacy statuses and
+workflow executions, refuses incomplete, pending or failing evidence, and
+refuses a draft, closed PR or `merge-blocked`. It rechecks the head and labels
+before posting through the shared comment writer. This is a handoff to the
+assigned routing agent; it applies no enqueue label and performs no merge.
+Other review and task authorization requirements still apply.
+
+An empty check inventory refuses until GitHub registers checks for the head.
+For a repository with no CI checks configured, add `--allow-no-checks` after
+verifying its required local gates. This never bypasses a pending, failing or
+unavailable check or the watcher's required-check verification.
+
+The shared `github/scripts/ready_handoff.py` module owns the format and parser
+used by `supervisor/scripts/auto_enqueue.py`. A ready comment has exactly:
+
+```text
+Ready for the merge train
+
+Head: <full 40-character current head SHA>
+```
+
+A later push needs a fresh `ready` call. For required Client acceptance that
+does not yet cover the current head, use `ready <pr> --waiting-for-client`.
+It posts `Engineering ready; waiting for the Client's acceptance` with the head
+and permits only pending `launchplane/owner-review` checks; every other pending
+check, unfinished workflow and every failure still refuses. A normal ready
+handoff requiring Client acceptance (review label, request check or real Client
+test notes) requires a successful current-head
+`launchplane/owner-review` check. The watcher independently verifies the saved
+Client decision before enqueueing. Read-back and uncertain-comment recovery
+use the [shared retry policy](#shared-retry-policy); do not replay an unknown write.
+
+To withdraw an earlier Ready after a renewed hold, defect or change request
+(including while CI is pending or failing), use
+`gh-pr.py --repo OWNER/REPO comment <pr> --body-file <file>` with
+`Engineering ready; waiting for <actual wait reason>` as the first line.
+This invalidates the earlier Ready without enqueueing; name the actual wait,
+using the Client's acceptance only when that is the wait. Resume with `ready`
+once the hold, checks and any required acceptance permit it.
 
 ### Security Signal Reads
 
