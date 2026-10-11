@@ -164,6 +164,11 @@ def script_paths(repo: Path, scripts: list[str]) -> list[str]:
 def prepare_script_environment(repo: Path, python: str, scripts: list[str]) -> None:
     paths = script_paths(repo, scripts)
     with tempfile.TemporaryDirectory(prefix="inspection-pep723-") as temporary:
+        for index, path in enumerate(paths):
+            if Path(path).name == "setup.py":
+                script_input = Path(temporary) / f"pep723-{index}.py"
+                script_input.write_bytes(Path(path).read_bytes())
+                paths[index] = str(script_input)
         resolved = Path(temporary) / "requirements.txt"
         result = subprocess.run(
             ["uv", "pip", "compile", "--python-version", python, "--no-header",

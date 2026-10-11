@@ -123,6 +123,9 @@ Successful preparation writes a bounded durable receipt under the helper cache.
 For repositories of standalone scripts, structured `prepare.python.pep723Scripts`
 accepts up to 25 worktree-relative script paths. The generator reads their
 PEP 723 metadata through uv's native script support. Select scripts whose
+metadata supplies inspection dependencies. A script named `setup.py` is
+compiled from a temporary copy with a script filename so uv reads its PEP 723
+metadata instead of treating it as setuptools project metadata. Select scripts whose
 dependencies cover the inspected files; update the set when that scope adds
 dependencies. The generator resolves their
 `dependencies` arrays together with `uv pip compile`

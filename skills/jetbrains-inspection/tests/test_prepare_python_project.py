@@ -48,7 +48,7 @@ class PreparePythonProjectTest(unittest.TestCase):
             repo = Path(temporary).resolve()
             for version in ["1.0", "2.0"]:
                 self.wheel(repo, version)
-            first = self.write_script(repo, "one.py", ["inspection-fixture==1.0"])
+            first = self.write_script(repo, "setup.py", ["inspection-fixture==1.0"])
             self.write_script(repo, "two.py", ["inspection-fixture==1.0"])
             python = f"{sys.version_info.major}.{sys.version_info.minor}"
             interpreter = repo / ".venv/bin/python"
@@ -60,12 +60,12 @@ class PreparePythonProjectTest(unittest.TestCase):
                 ).strip()
 
             with patch.dict(os.environ, {"UV_NO_INDEX": "true", "UV_FIND_LINKS": str(repo)}):
-                prepare_python_project.prepare_script_environment(repo, python, ["one.py", "two.py"])
+                prepare_python_project.prepare_script_environment(repo, python, ["setup.py", "two.py"])
                 self.assertEqual(installed_version(), "1.0")
                 self.write_script(repo, "two.py", ["inspection-fixture==2.0"])
                 before = first.read_bytes()
                 with self.assertRaisesRegex(RuntimeError, "could not be resolved"):
-                    prepare_python_project.prepare_script_environment(repo, python, ["one.py", "two.py"])
+                    prepare_python_project.prepare_script_environment(repo, python, ["setup.py", "two.py"])
                 self.assertEqual(installed_version(), "1.0")
                 self.assertEqual(first.read_bytes(), before)
                 prepare_python_project.prepare_script_environment(repo, python, ["two.py"])
