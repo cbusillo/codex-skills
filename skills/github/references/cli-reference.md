@@ -344,6 +344,15 @@ fallback. Mixed diagnostics, partial output, and transport failures retain
 unknown-write reconciliation; a generic validation phrase is not rejection
 evidence.
 
+For `github.pr.create`, the exact `could not add label: 'LABEL' not found`
+diagnostic with no stdout is a confirmed `validation_error` / `not_started`:
+the CLI rejected metadata before submitting the PR. Repair the requested label
+only within existing authorization, read back the label and all-state PRs for
+the same head/base, and issue a new create only after verifying the rejected
+preflight and absence of a matching PR. No automatic replay or identity fallback
+is offered. Mixed diagnostics, partial/create-stage output, and the same text
+without a PR-create operation retain conservative failure handling.
+
 Schema version 2 of `references/operation-matrix.toml` is the machine-readable source of truth for
 each public helper operation's live and selected transport, quota bucket, actor
 policy, idempotency/retry posture, reconciliation strategy, and retained

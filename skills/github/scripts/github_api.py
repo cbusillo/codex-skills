@@ -1331,6 +1331,7 @@ def classify_legacy_failure(
     is_write: bool = False,
     command_started: bool = True,
     rate_limit_result: Optional[ApiResult] = None,
+    operation: Optional[str] = None,
 ) -> FailureDetail:
     """Classify a legacy gh failure, preferring structured evidence when present."""
     if stdout:
@@ -1362,6 +1363,22 @@ def classify_legacy_failure(
         retryable = False
         fallback_eligible = False
         write_outcome = not_started
+    elif (
+        is_write and command_started and operation == "github.pr.create"
+        and not stdout.strip()
+        and re.fullmatch(r"could not add label: '[^'\r\n]+' not found", stderr.strip())
+    ):
+        cause = "validation_error"
+        disposition = "stop"
+        retryable = False
+        fallback_eligible = False
+        write_outcome = not_started
+        message += (
+            "; PR creation was not started. Repair the requested label only within existing "
+            "authorization, then read back the label and all-state PRs for the same head/base. "
+            "If no matching PR exists and the rejected preflight is verified, issue a new "
+            "gh-pr.py create; do not replay automatically."
+        )
     elif is_write and command_started and not stdout.strip() and _is_pr_create_validation_refusal(stderr):
         cause = "validation_error"
         disposition = "stop"
@@ -1488,6 +1505,7 @@ def legacy_process_result(
         is_write=is_write,
         command_started=command_started,
         rate_limit_result=rate_limit_result,
+        operation=operation,
     )
     resolved_completed_steps: list[str] = []
     for step in [*outer_completed_steps, *failure.completed_steps]:
