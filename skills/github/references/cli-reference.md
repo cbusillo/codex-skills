@@ -451,14 +451,20 @@ requested.
 
 ### Ready Handoffs
 
-Use `uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
-within the task's landing authorization instead of hand-writing a merge-train
+When the task authorizes a Supervisor handoff, use
+`uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
+instead of hand-writing a merge-train
 comment. The helper reads the current head, check runs, legacy statuses and
 workflow executions, refuses incomplete, pending or failing evidence, and
 refuses a draft, closed PR or `merge-blocked`. It rechecks the head and labels
 before posting through the shared comment writer. This is a handoff to the
 assigned routing agent; it applies no enqueue label and performs no merge.
 Other review and task authorization requirements still apply.
+
+An empty check inventory refuses until GitHub registers checks for the head.
+For a repository with no CI checks configured, add `--allow-no-checks` after
+verifying its required local gates. This never bypasses a pending, failing or
+unavailable check or the watcher's required-check verification.
 
 The shared `github/scripts/ready_handoff.py` module owns the format and parser
 used by `supervisor/scripts/auto_enqueue.py`. A ready comment has exactly:
@@ -479,6 +485,12 @@ test notes) requires a successful current-head
 `launchplane/owner-review` check. The watcher independently verifies the saved
 Client decision before enqueueing. Read-back and uncertain-comment recovery
 use the [shared retry policy](#shared-retry-policy); do not replay an unknown write.
+
+To withdraw an earlier Ready while CI is pending or failing, use
+`gh-pr.py --repo OWNER/REPO comment <pr> --body-file <file>` with
+`Engineering ready; waiting for the Client's acceptance` as the first line.
+This invalidates the earlier Ready without enqueueing; explain the renewed wait
+in the following paragraph. Resume with `ready` once checks and acceptance permit it.
 
 ### Security Signal Reads
 

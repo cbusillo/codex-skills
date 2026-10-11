@@ -194,7 +194,7 @@ queued work. Reads retain the shared GitHub cache, quota reserve and request ret
 deadline; no human-auth fallback is added. The deadline `stop` event reports
 completed and failed pass counts so an outage throughout the watch is visible.
 
-Within their task's landing authorization, sessions use the installed GitHub
+When the task authorizes a Supervisor handoff, sessions use the installed GitHub
 skill's helper: `uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
 (or `--waiting-for-client`), following the GitHub
 [ready handoff contract](../../github/references/cli-reference.md#ready-handoffs).

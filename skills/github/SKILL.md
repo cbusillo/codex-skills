@@ -894,7 +894,7 @@ Use PRs for all non-trivial changes.
   [repository cleanup](../references/repo-cleanup.md), after confirming no
   issue, PR, session, or runtime depends on them.
 - **Handoffs**: Put recovery-critical handoff content in the owning issue or
-  PR. For a Supervisor handoff within the task's landing authorization, use
+  PR. When the task authorizes a Supervisor handoff, use
   `uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`;
   use `--waiting-for-client` until a required Client acceptance covers the
   current head. Read [ready handoffs](references/cli-reference.md#ready-handoffs)

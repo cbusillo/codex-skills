@@ -207,11 +207,12 @@ records that run.
    ([codex-skills#1535](https://github.com/cbusillo/codex-skills/issues/1535)).
    Briefs give the installed GitHub skill's helper path and tell sessions to use
    `uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
-   within the task's landing authorization,
+   when the task authorizes a Supervisor handoff,
    instead of writing the handoff comment, adding `--waiting-for-client` until
    required Client acceptance covers the current head. Link the
    [ready handoff contract](../github/references/cli-reference.md#ready-handoffs);
-   a renewed wait needs that variant, and a push needs a fresh `ready` call.
+   a renewed wait follows that contract's withdrawal route, and a push needs
+   a fresh `ready` call.
    Anchor each brief, sweeps and checks included, on an issue in the same
    repository. Tell read-only checks not to claim it, so two of them on one
    issue do not clash.

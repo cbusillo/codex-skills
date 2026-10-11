@@ -21,6 +21,7 @@ import urllib.error
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -46,7 +47,7 @@ spec.loader.exec_module(operator)
 spec = importlib.util.spec_from_file_location(
     "enqueue_review", LP / "launchplane-owner-review.py"
 )
-review = importlib.util.module_from_spec(spec)
+review: Any = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(review)
 
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")

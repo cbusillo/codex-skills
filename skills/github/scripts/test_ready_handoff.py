@@ -71,7 +71,7 @@ class Reader:
 class ReadyTests(unittest.TestCase):
     def setUp(self):
         self.reader = Reader()
-        self.args = argparse.Namespace(repo=REPO, pr="1", waiting_for_client=False)
+        self.args = argparse.Namespace(repo=REPO, pr="1", waiting_for_client=False, allow_no_checks=False)
         self.reader_patch = patch.object(helper.github_read_core, "GitHubReader", return_value=self.reader)
         self.writer_patch = patch.object(helper.github_comment_core, "comment", return_value={"ok": True, "url": "fixture"})
         self.reader_factory = self.reader_patch.start()
@@ -97,9 +97,23 @@ class ReadyTests(unittest.TestCase):
         self.assertEqual(result["headSha"], SHA)
         self.assertEqual(comment["body"], f"{READY}\n\nHead: {SHA}")
         self.assertTrue(latest_ready(self.reader.pr, [comment], {"engineer"}))
+        provider_comment = {**comment, "body": helper.github_api_core.body_with_operation_marker(comment["body"], "fixture")}
+        self.assertTrue(latest_ready(self.reader.pr, [provider_comment], {"engineer"}))
         self.assertIs(self.reader_factory.call_args.kwargs["cache_enabled"], False)
         self.reader.pr["head"]["sha"] = "b" * 40
         self.assertFalse(latest_ready(self.reader.pr, [comment], {"engineer"}))
+        self.assertFalse(latest_ready(self.reader.pr, [provider_comment], {"engineer"}))
+
+    def test_empty_checks_wait_for_ci_with_supported_no_ci_route(self):
+        self.reader.checks = []
+        self.refuse()
+        self.args.allow_no_checks = True
+        self.post()
+
+    def test_no_ci_option_never_bypasses_pending_checks(self):
+        self.args.allow_no_checks = True
+        self.reader.checks[0]["status"] = "queued"
+        self.refuse()
 
     def test_pending_and_failed_checks_refuse(self):
         for status, conclusion in (("queued", None), ("in_progress", None), ("completed", "failure"), ("completed", "cancelled")):

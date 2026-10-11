@@ -275,6 +275,7 @@ def parse_args() -> argparse.Namespace:
     p = sub.add_parser("ready", help="Post the current-head merge-train handoff after checking engineering readiness.")
     p.add_argument("pr", help="PR number, URL, or branch.")
     p.add_argument("--waiting-for-client", action="store_true", help="Post Engineering ready; waiting for the Client's acceptance. Only pending launchplane/owner-review checks may remain.")
+    p.add_argument("--allow-no-checks", action="store_true", help="Permit an empty check inventory only when the repository has no CI checks configured.")
     p.set_defaults(func=cmd_ready)
 
     p = sub.add_parser("checks", help="Show check runs and commit statuses via REST.")
@@ -536,6 +537,8 @@ def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
         or summary["unfinishedWorkflowRunCount"]
     ):
         raise PrHelperError("PR checks are pending or failing", repo=repo, pr=number, summary=summary)
+    if not (summary["checkRunCount"] or summary["statusCount"]) and not args.allow_no_checks:
+        raise PrHelperError("No checks exist for this head yet; wait for CI, or use --allow-no-checks for a repository with no CI checks configured", repo=repo, pr=number)
     # Bypass coalesced view caches: renewed holds and Client notes must be fresh.
     current = cmd_view(target, cache_enabled=False, include_body=True)["pr"]
     validate_ready_pr(current, repo=repo, number=number)

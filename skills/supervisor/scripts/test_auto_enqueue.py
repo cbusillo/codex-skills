@@ -18,7 +18,7 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 import auto_enqueue as watch
-from ready_handoff import READY, WAITING
+from skills.github.scripts.ready_handoff import READY, WAITING
 
 REPO = "example/tool"
 CLIENT = "example/client-product"
