@@ -36,6 +36,7 @@ if str(IDENTITY_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(IDENTITY_SCRIPT_DIR))
 import github_identity
 import github_direction_next
+import github_repository_scope as repository_scope
 
 
 def load_sibling_module(name: str, path: Path) -> Any:
@@ -120,6 +121,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Report external issue and PR comments that still need the owner's attention."
     )
+    repository_scope.add_include_archived_argument(parser)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="Optional GitHub work rollup YAML config.")
     parser.add_argument("--repo", action="append", default=[], help="OWNER/REPO. May be repeated.")
     parser.add_argument("--repo-owner", action="append", default=[], help="Owner whose non-archived repos should be scanned.")
@@ -191,6 +193,7 @@ def resolve_settings(
         "until": until.astimezone(timezone.utc),
         "window_label": window_label,
         "limit_repos": args.limit_repos,
+        "include_archived": bool(getattr(args, "include_archived", False)),
         "people_index": args.people_index or (Path(str(config["people_index"])) if config.get("people_index") else None),
     }
 
@@ -262,7 +265,12 @@ def unique_threads(values: Any) -> list[tuple[str, int]]:
 
 
 def resolve_repositories(settings: dict[str, Any]) -> list[str]:
-    repositories = [*settings["repositories"], *(repo for repo, _ in settings["threads"])]
+    repositories = repository_scope.filter_named_repositories(
+        settings["repositories"],
+        lambda repo: run_json([GH, "repo", "view", repo, "--json", "isArchived"]),
+        include_archived=settings.get("include_archived", False),
+    )
+    repositories.extend(repo for repo, _ in settings["threads"])
     for owner in settings["repo_owners"]:
         payload = run_json(
             [
@@ -285,10 +293,10 @@ def resolve_repositories(settings: dict[str, Any]) -> list[str]:
         visible_repositories = [
             str(item["nameWithOwner"])
             for item in payload
-            if isinstance(item, dict) and not item.get("isArchived") and item.get("nameWithOwner")
+            if isinstance(item, dict) and repository_scope.includes_repository(item, include_archived=settings.get("include_archived", False)) and item.get("nameWithOwner")
         ]
         if not visible_repositories:
-            raise rollup.RollupError(f"Repository owner scope {owner!r} resolved to no visible non-archived repositories.")
+            raise rollup.RollupError(f"Repository owner scope {owner!r} resolved to no visible repositories in the selected archive scope.")
         repositories.extend(
             visible_repositories
         )

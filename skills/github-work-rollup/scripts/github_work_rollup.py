@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
@@ -27,6 +28,9 @@ import yaml  # type: ignore[import-untyped]
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parents[1]
+sys.path.insert(0, str(ROOT / "github/scripts"))
+import github_repository_scope as repository_scope
+
 GH = os.environ.get("GITHUB_WORK_ROLLUP_GH") or str(ROOT / "github/scripts/gh-with-env-token")
 DEFAULT_CONFIG = ROOT / ".local/github-work-rollup.yaml"
 DEFAULT_PEOPLE_INDEX = ROOT / ".local/people.yaml"
@@ -91,6 +95,7 @@ class ExecutiveWorkstream:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Collect a read-only GitHub work rollup.")
+    repository_scope.add_include_archived_argument(parser)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="Optional local YAML config.")
     parser.add_argument("--repo", action="append", default=[], help="OWNER/REPO. May be repeated.")
     parser.add_argument("--repo-owner", action="append", default=[], help="Owner/org whose repos should be scanned.")
@@ -185,6 +190,7 @@ def resolve_settings(args: argparse.Namespace, config: dict[str, Any]) -> dict[s
         "output_path": str(args.output or config.get("output_path") or ""),
         "include_external_activity": bool(args.include_external_activity or config.get("include_external_activity")),
         "include_bots": bool(args.include_bots or config.get("include_bots")),
+        "include_archived": bool(getattr(args, "include_archived", False)),
         "noise_filters": config.get("noise_filters") if isinstance(config.get("noise_filters"), dict) else {},
         "priority_sections": config.get("priority_sections") if isinstance(config.get("priority_sections"), list) else [],
         "limit_repos": args.limit_repos,
@@ -697,7 +703,7 @@ def github_preflight(settings: dict[str, Any]) -> dict[str, Any]:
     if owners:
         scope_commands.append([GH, "repo", "list", owners[0], "--limit", "1", "--json", "nameWithOwner"])
     if subjects and not repos and not owners:
-        scope_commands.append([GH, "api", "--method", "GET", "search/issues", "-f", f"q=author:{subjects[0]}", "-f", "per_page=1"])
+        scope_commands.append([GH, "api", "--method", "GET", "search/issues", "-f", "q=" + repository_scope.search_query(f"author:{subjects[0]}", include_archived=settings.get("include_archived", False)), "-f", "per_page=1"])
     for command in scope_commands:
         result = run(command)
         checks.append(command_summary(command, result))
@@ -707,14 +713,26 @@ def github_preflight(settings: dict[str, Any]) -> dict[str, Any]:
 
 
 def resolve_repositories(settings: dict[str, Any]) -> list[str]:
-    repos = list(settings["repositories"])
+    def read_metadata(repo):
+        command = [GH, "repo", "view", repo, "--json", "isArchived"]
+        result = run(command)
+        if result.returncode != 0:
+            raise RollupError(f"Unable to read archive state for {repo}: {trim(result.stderr or result.stdout)}")
+        metadata = json.loads(result.stdout or "{}")
+        if not isinstance(metadata, dict):
+            raise RollupError(f"Invalid repository metadata for {repo}")
+        return metadata
+
+    repos = repository_scope.filter_named_repositories(
+        settings["repositories"], read_metadata, include_archived=settings.get("include_archived", False),
+    )
     for owner in settings["repo_owners"]:
         command = [GH, "repo", "list", owner, "--limit", str(settings["limit_repos"]), "--json", "nameWithOwner,isArchived"]
         result = run(command)
         if result.returncode != 0:
             raise RollupError(f"Unable to list repositories for {owner}: {trim(result.stderr or result.stdout)}")
         for entry in json.loads(result.stdout or "[]"):
-            if isinstance(entry, dict) and not entry.get("isArchived") and isinstance(entry.get("nameWithOwner"), str):
+            if isinstance(entry, dict) and repository_scope.includes_repository(entry, include_archived=settings.get("include_archived", False)) and isinstance(entry.get("nameWithOwner"), str):
                 repos.append(entry["nameWithOwner"])
     return unique(repos)
 
@@ -1048,7 +1066,8 @@ def collect_subject_items(settings: dict[str, Any]) -> list[dict[str, Any]]:
     )
     for subject in settings["subjects"]:
         for qualifier in ("author", "commenter", "mentions"):
-            query = f"{qualifier}:{subject} updated:>={since_day}"
+            query = repository_scope.search_query(f"{qualifier}:{subject} updated:>={since_day}",
+                                                  include_archived=settings.get("include_archived", False))
             fetched_for_query = 0
             page = 1
             while fetched_for_query < collection_limit:

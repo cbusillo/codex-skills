@@ -204,6 +204,10 @@ Assign new issues with `gh-plan.py create ... --agent claude|codex` or
 exists and rejects conflicting family labels. It never infers an assignment
 from the authoring harness.
 
+Searches, `index`, and global `next` repository discovery exclude archived repositories
+by default. Add `--include-archived` to the command to include historical work.
+Explicit issue reads and linked dependency evidence remain available.
+
 ## Choose Work
 
 Check known repository-wide Director holds before selection or implementation;

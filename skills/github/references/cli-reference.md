@@ -592,11 +592,13 @@ or Project focus state.
   `OPEN` or `CLOSED` values.
   Inventory output includes freshly read `repository.archived` (boolean or
   null) and `repository.disposition` (`current`, `frozen_historical`, or
-  `unknown`), also attached to each plan row. Archived rows stay in the inventory
-  as frozen history; their active-looking labels do not establish current work.
+  `unknown`), also attached to each plan row. Archived repositories return no plan
+  rows by default; `--include-archived` restores their frozen history.
   Unavailable or missing archive metadata preserves the rows with unknown context.
 - `search <query>`: Search issues through the REST search endpoint with an
-  `is:issue` constraint. Add the current repository only when the query has no
+  `is:issue` constraint. Archived repositories are excluded by default;
+  `--include-archived` preserves the caller's archive qualifiers instead.
+  Add the current repository only when the query has no
   positive `repo:`, `org:`, or `user:` scope; an explicit global `--repo` always
   adds its repository qualifier. GitHub ORs multiple `repo:` qualifiers, so
   this can widen a query that already names another repository.

@@ -24,6 +24,7 @@ from typing import Any, NoReturn, Optional
 
 import github_api as github_api_core
 import github_read
+import github_repository_scope as repository_scope
 import github_comment as github_comment_core
 import github_issue as github_issue_core
 import github_milestone as github_milestone_core
@@ -1039,7 +1040,7 @@ def find_existing_plan_issues(
     escaped_title = title.replace("\\", "\\\\").replace('"', '\\"')
     actor, items = collect_paged_rest_items(
         "/search/issues",
-        query={"q": f'"{escaped_title}" in:title repo:{repo} is:issue'},
+        query={"q": repository_scope.search_query(f'"{escaped_title}" in:title repo:{repo} is:issue')},
         bucket="search",
         step_prefix="dedupe_plan_issues",
         limit=100,
@@ -1855,6 +1856,8 @@ def cmd_index(args: argparse.Namespace) -> None:
     except PlanError as exc:
         next_source_error(exc)
         context = github_read.repository_disposition(None)
+    if not repository_scope.includes_repository(context, include_archived=getattr(args, "include_archived", False)):
+        items = []
     emit({"ok": True, "actor": actor, "repo": repo, "repository": context,
           "count": len(items), "plans": [{**item, "repository": context} for item in items]})
 
@@ -1873,7 +1876,8 @@ def cmd_search(args: argparse.Namespace) -> None:
     page_metadata: list[dict[str, Any]] = []
     actor, data = collect_paged_rest_items(
         "/search/issues",
-        query={"q": " ".join(part for part in query_parts if part)},
+        query={"q": repository_scope.search_query(" ".join(part for part in query_parts if part),
+                                                  include_archived=getattr(args, "include_archived", False))},
         bucket="search",
         step_prefix="search_plan_issues",
         limit=args.limit,
@@ -3382,7 +3386,7 @@ def discover_direction_work(
         reason = None
         if name.split("/")[0].casefold() != coverage["owner"].casefold():
             reason = "other_owner"
-        elif repository.get("archived") or repository.get("disabled"):
+        elif not repository_scope.includes_repository(repository, include_archived=getattr(args, "include_archived", False)) or repository.get("disabled"):
             reason = "archived_or_disabled"
         elif repository.get("has_issues") is False:
             reason = "issues_disabled"
@@ -4983,12 +4987,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p = sub.add_parser("index", help="Compact plan issue index, no bodies")
+    repository_scope.add_include_archived_argument(p)
     p.add_argument("--state", default="open", choices=["open", "closed", "all"])
     p.add_argument("--limit", type=positive_limit, default=20)
     p.add_argument("--label")
     p.set_defaults(func=cmd_index)
 
     p = sub.add_parser("search", help="Compact issue search, no bodies")
+    repository_scope.add_include_archived_argument(p)
     p.add_argument("query")
     p.add_argument("--state", default="all", choices=["open", "closed", "all"])
     p.add_argument("--limit", type=positive_limit, default=20)
@@ -5073,6 +5079,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_deps)
 
     p = sub.add_parser("next", help="Rank the next actionable durable plans")
+    repository_scope.add_include_archived_argument(p)
     p.add_argument("--agent", choices=github_agent.FAMILIES, help="Running family; defaults to harness detection")
     p.add_argument("--milestone", help="Limit selection to one milestone by number or title")
     p.add_argument("--limit", type=positive_limit, default=5,

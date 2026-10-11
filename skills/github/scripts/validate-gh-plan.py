@@ -1213,9 +1213,9 @@ def test_plan_search_uses_search_bucket_and_conditional_state() -> None:
         plan.cmd_search(types.SimpleNamespace(repo="owner/repo", query="roadmap", state="all", limit=5))
 
     open_query = calls[0]["query"]["q"][0]
-    assert open_query == "roadmap repo:owner/repo is:issue is:open", open_query
+    assert {"roadmap", "repo:owner/repo", "is:issue", "is:open"}.issubset(open_query.split()), open_query
     all_query = calls[2]["query"]["q"][0]
-    assert all_query == "roadmap repo:owner/repo is:issue", all_query
+    assert {"roadmap", "repo:owner/repo", "is:issue"}.issubset(all_query.split()), all_query
     assert "is:open" not in all_query and "is:closed" not in all_query
     open_payload = json.loads(open_output.getvalue())
     assert open_payload["count"] == 101, open_payload
@@ -1595,7 +1595,8 @@ def test_create_uses_rest_dedupe_and_shared_issue_create() -> None:
         api_calls.append({"method": method, "path": path, "payload": request_payload, "kwargs": kwargs, "query": query})
         if method == "GET" and parsed.path == "/search/issues":
             assert kwargs["bucket"] == "search", kwargs
-            assert query["q"] == ['"Durable plan" in:title repo:owner/repo is:issue'], query
+            assert '"Durable plan" in:title' in query["q"][0], query
+            assert {"repo:owner/repo", "is:issue"}.issubset(query["q"][0].split()), query
             return "automation-gh", {"total_count": 0, "incomplete_results": False, "items": []}
         if method == "GET" and parsed.path == "/repos/owner/repo/labels":
             return "automation-gh", [{"name": "plan"}, {"name": "plan:active"}]

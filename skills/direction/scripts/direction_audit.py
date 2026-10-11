@@ -32,6 +32,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_read
+import github_repository_scope as repository_scope
 from skills.direction.scripts import direction_mark
 
 REQUIRED_HEADINGS = ("Purpose", "Stop Boundaries", "Journey", "Retired", "Milestones")
@@ -1539,7 +1540,7 @@ def own_project_label(repo: str) -> str:
     return str(planning_config(repo)["labels"]["own_project"])
 
 
-def owner_repositories(owner: str, *, fetch: Callable[[list[str]], Any]) -> tuple[dict[str, dict[str, Any]], bool]:
+def owner_repositories(owner: str, *, fetch: Callable[[list[str]], Any], include_archived: bool = False) -> tuple[dict[str, dict[str, Any]], bool]:
     """The owner's repositories the reader can see, and whether the listing was cut short."""
     try:
         listed, cut = fetch_paginated("installation/repositories", fetch=fetch, key="repositories")
@@ -1552,11 +1553,12 @@ def owner_repositories(owner: str, *, fetch: Callable[[list[str]], Any]) -> tupl
     return {
         str(item.get("full_name")).casefold(): item for item in listed
         if str(((item.get("owner") or {}).get("login")) or "").casefold() == owner.casefold()
+        and repository_scope.includes_repository(item, include_archived=include_archived)
     }, cut
 
 
 def active_unadopted_report(
-    direction_repo: str, since: dt.datetime, *, fetch: Callable[[list[str]], Any],
+    direction_repo: str, since: dt.datetime, *, fetch: Callable[[list[str]], Any], include_archived: bool = False,
 ) -> dict[str, Any]:
     """Stale waits and gate wording for active repositories without a DIRECTION.md.
 
@@ -1567,7 +1569,7 @@ def active_unadopted_report(
     owner = direction_repo.split("/")[0]
     unavailable: list[dict[str, str]] = []
     rows: list[dict[str, Any]] = []
-    repos, cut = owner_repositories(owner, fetch=fetch)
+    repos, cut = owner_repositories(owner, fetch=fetch, include_archived=include_archived)
     if cut:
         unavailable.append({"source": "repositories", "reason": "page_limit"})
     try:
@@ -1581,7 +1583,7 @@ def active_unadopted_report(
         meta = repos[key]
         name = str(meta.get("full_name"))
         pushed = _parse_time(meta.get("pushed_at"))
-        if meta.get("archived") or (pushed is not None and pushed < since) or key == direction_repo.casefold():
+        if (pushed is not None and pushed < since) or key == direction_repo.casefold():
             continue
         try:
             if merged_direction(name, fetch=fetch) is not None:
@@ -1616,7 +1618,7 @@ def active_unadopted_report(
 
 
 def fetch_capacity(
-    direction_repo: str, since: dt.datetime, until: dt.datetime, *, fetch: Callable[[list[str]], Any],
+    direction_repo: str, since: dt.datetime, until: dt.datetime, *, fetch: Callable[[list[str]], Any], include_archived: bool = False,
 ) -> tuple[dict[str, Any], list[str]]:
     """Read merged direction, its Track graph and per-repository listings."""
     owner = direction_repo.split("/")[0].casefold()
@@ -1629,7 +1631,7 @@ def fetch_capacity(
         truncated.append("capacity_own_projects")
     tracked_issues, graph_errors = tracked_capacity_issues(direction_repo, text or "", since, fetch=fetch)
     truncated.extend(graph_errors)
-    repos, cut = owner_repositories(owner, fetch=fetch)
+    repos, cut = owner_repositories(owner, fetch=fetch, include_archived=include_archived)
     if cut:
         truncated.append("capacity_repositories")
     def older(field: str) -> Callable[[dict[str, Any]], bool]:
@@ -1665,10 +1667,6 @@ def fetch_capacity(
         name = str(meta.get("full_name"))
         pushed = _parse_time(meta.get("pushed_at"))
         quiet = pushed is not None and pushed < since
-        updated = _parse_time(meta.get("updated_at"))
-        if meta.get("archived") and updated is not None and updated < since:
-            # Archiving updates the repository, so it was read-only all window.
-            continue
         try:
             # A merge pushes to the base branch, so a repository with no push
             # since the window opened has no merged pull request in it.
@@ -1706,6 +1704,7 @@ def fetch_capacity(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    repository_scope.add_include_archived_argument(parser)
     parser.add_argument("--repo", help="OWNER/REPO; defaults to the origin remote of the current checkout")
     parser.add_argument("--owner", help="login treated as the owner; defaults to the repo owner")
     parser.add_argument("--automation", help="automation login allowed to create milestones; defaults to the wrapper's account")
@@ -1788,10 +1787,10 @@ def main(argv: list[str] | None = None) -> int:
         unadopted = None
         if repo.split("/")[1].casefold() == "direction":
             shared = cached_reads(fetch)
-            capacity, cut = fetch_capacity(repo, audit_since, now, fetch=shared)
+            capacity, cut = fetch_capacity(repo, audit_since, now, fetch=shared, include_archived=args.include_archived)
             truncated.extend(cut)
             capacity["milestone_outcomes"] = milestone_outcomes(repo, direction_text or "", audit_since, now, fetch=shared)
-            unadopted = active_unadopted_report(repo, audit_since, fetch=shared)
+            unadopted = active_unadopted_report(repo, audit_since, fetch=shared, include_archived=args.include_archived)
     except AuditError as exc:
         error: dict[str, Any] = {"ok": False, "error": str(exc)}
         if args.gh == str(WRAPPER):

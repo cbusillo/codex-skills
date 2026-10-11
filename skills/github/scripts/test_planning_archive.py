@@ -31,7 +31,7 @@ def issue(number: int, **fields: Any) -> dict[str, Any]:
 
 class ArchiveTests(unittest.TestCase):
     def test_index_retains_rows_and_refreshes_archive_metadata(self) -> None:
-        args = PLAN.build_parser().parse_args(["--repo", "owner/history", "index"])
+        args = PLAN.build_parser().parse_args(["--repo", "owner/history", "index", "--include-archived"])
         emit = Mock()
         read = Mock(side_effect=[("automation-gh", {"archived": True}),
                                  ("automation-gh", {"archived": False})])

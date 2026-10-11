@@ -1,0 +1,4 @@
+[
+  {"full_name": "owner/current", "owner": {"login": "owner"}, "archived": false, "number": 1},
+  {"full_name": "owner/retired", "owner": {"login": "owner"}, "archived": true, "number": 2}
+]
