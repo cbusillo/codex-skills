@@ -55,11 +55,16 @@ def no_wait_reason(reason: str, *, field: str) -> bool:
         r"\b(?:review|depend\w*|clarification|director|owner|client)\b", note,
     ):
         return False
-    # A person named as the next actor contradicts the claimed absence of a wait.
-    if re.search(r"\b(?:acts next|next actor is|answers)\b", note) and not re.search(
-        r"\b(?:agent|supervisor|engineering)\b", note,
+    # Check each action's subject, rather than allowing an agent mentioned in
+    # a later clause to hide the person who must act first.
+    for action in re.finditer(
+        r"(?:^|[;.,]\s*)(?:(?:the )?next actor is ([^;.,]+)|"
+        r"([^;.,]+?)\s+(?:acts next\b|answers?\b|to\s+[a-z][\w-]*)|"
+        r"([^;.,]+?)['’]s\s+(?:answer|go-ahead)\b)", note,
     ):
-        return False
+        actor = next(group for group in action.groups() if group is not None)
+        if not re.fullmatch(r"(?:(?:an?|the|executing|next)\s+)*(?:agent|supervisor|engineering)", actor):
+            return False
     return True
 
 

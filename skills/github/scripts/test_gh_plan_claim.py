@@ -2592,6 +2592,7 @@ class ClaimTests(unittest.TestCase):
             "Blocked by: No native issue blocker; engineering qualification remains.\nWaiting for: None; an agent acts next, so keep plan:active.",
             "Blocked by: No native issue blocker recorded for the offline repair.\nWaiting for: None; source validation is agent work.",
             "Blocked by: None; independent of the installer.\nWaiting for: Nothing. Engineering can proceed.",
+            "Blocked by: None.\nWaiting for: None; engineering to test the copy.",
             "**Blocked by:** None.\n**Waiting for:** None.",
         )
         for status in statuses:
@@ -2661,6 +2662,11 @@ class ClaimTests(unittest.TestCase):
             "Blocked by: None.\nWaiting for: None; Justin to confirm if the copy is final.",
             "Blocked by: None; only if the Client confirms scope.",
             "Blocked by: None.\nWaiting for: None; Chris acts next.",
+            "Blocked by: None.\nWaiting for: None; Justin to confirm the copy.",
+            "Blocked by: None.\nWaiting for: None; Chris to test on the device.",
+            "Blocked by: None.\nWaiting for: None; Justin's go-ahead on pricing.",
+            "Blocked by: None.\nWaiting for: None; Justin's answer on Q3.",
+            "Blocked by: None.\nWaiting for: None; Chris acts next; agent work follows.",
             "Blocked by: None.\nWaiting for: None; the Director answers Q3.",
             "Blocked by: None.\nWaiting for: None; on hold for the Q4 plan.",
             "Blocked by: No native issue blocker; text blocker #45 still open.",
