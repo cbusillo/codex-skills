@@ -666,8 +666,9 @@ holder prose is checked independently. A `Blocked by:` GitHub issue URL followed
 by `(actively owned by WORKER)` identifies that linked issue's holder only when
 its repository/number differs from both the requested issue and its canonical
 GitHub issue URL. Likewise, a clause whose subject is another issue's
-reference (`#N`, `OWNER/REPO#N` or its issue URL) and which ends at one
-`owned by WORKER` holder names that issue's holder, such as `#3314 Q151 was
+reference (`#N`, `OWNER/REPO#N` or its issue URL), with that reference as the
+only subject of a verb that runs into one `owned by WORKER` holder ending the
+clause, names that issue's holder, such as `#3314 Q151 was
 approved and is owned by LP-3314-D1;`. Missing issue identity,
 same-issue ownership, `this issue`, a plural or second subject, and additional
 holders remain ambiguous. These exclusions
