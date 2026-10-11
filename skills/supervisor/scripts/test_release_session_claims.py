@@ -1,0 +1,185 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""Disposable transcripts and GitHub adapters exercise session claim release."""
+
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import Mock, patch
+
+import release_session_claims as helper
+
+ACTOR = "test-automation[bot]"
+SOURCE = {"worker": "trial", "session": "source-session", "branch": "work/trial",
+          "claimed_at": "2026-01-01T00:00:00Z"}
+
+
+def comment(number, body, author=ACTOR):
+    return {"id": number, "body": body, "user": {"login": author},
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}
+
+
+class ReleaseTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.transcript = self.root / "trial.jsonl"
+        self.transcript.write_text("\n".join(json.dumps(r) for r in [
+            {"type": "session_meta", "timestamp": "2026-01-01T00:00:00Z",
+             "payload": {"id": SOURCE["session"]}},
+            {"timestamp": "2026-01-01T00:01:00Z", "payload": {
+                "type": "agent_message", "message": "Finished.\nSafe to exit: yes"}},
+            {"timestamp": "2026-01-01T00:01:01Z", "payload": {"type": "task_complete"}},
+        ]) + "\n")
+        self.entry = {"session_id": SOURCE["session"], "harness": "codex",
+                      "transcript": str(self.transcript), "pid": 123, "tty": "ttys123",
+                      "supervisor_owned": True, "process_exit_verified": True,
+                      "ended_at": "2026-01-01T00:02:00Z",
+                      "handoff_url": "https://github.com/test/a/issues/1#issuecomment-99"}
+        self.source = comment(1, "Claimed by trial\n\n" + helper.claim.marker(SOURCE))
+        self.reader = Mock()
+        self.reader.get_json.return_value = {**comment(99, "Handoff"),
+            "issue_url": "https://api.github.com/repos/test/a/issues/1"}
+        self.inventory = patch.object(helper, "inventory", return_value=[])
+        self.inventory.start()
+        self.addCleanup(self.inventory.stop)
+
+    def test_finished_process_and_safe_verdict(self):
+        self.assertTrue(helper.validate_closure(self.entry, "supervisor")["safe_verdict"])
+        for rows in ([(123, "other", "zsh")], [(456, "ttys123", "codex")], [(456, "ttys123", "zsh -c work")]):
+            with self.subTest(rows=rows), patch.object(helper, "inventory", return_value=rows):
+                with self.assertRaisesRegex(ValueError, "remains"):
+                    helper.validate_closure(self.entry, "supervisor")
+
+    def test_uncertain_identity_and_unverified_closure_refuse(self):
+        for changes in ({"supervisor_owned": False}, {"pid": True}, {"tty": None},
+                        {"process_exit_verified": False}, {"ended_at": "2026-01-01T00:02:00"}):
+            with self.subTest(changes=changes), self.assertRaises((ValueError, TypeError)):
+                helper.validate_closure({**self.entry, **changes}, "supervisor")
+        with self.assertRaises(ValueError):
+            helper.validate_closure(self.entry, SOURCE["session"])
+
+    def test_conditional_verdict_and_resumed_transcript_refuse(self):
+        original = self.transcript.read_text()
+        self.transcript.write_text(original.replace("Safe to exit: yes", "Safe to exit: yes, if CI passes"))
+        with self.assertRaisesRegex(ValueError, "unqualified"):
+            helper.validate_closure(self.entry, "supervisor")
+        self.transcript.write_text(original.replace("00:01:01", "00:03:00"))
+        with self.assertRaisesRegex(ValueError, "resumed"):
+            helper.validate_closure(self.entry, "supervisor")
+
+    def test_closure_retry_preserves_actual_end(self):
+        log = self.root / "closed.json"
+        first = helper.record_closure(log, self.entry, "supervisor")
+        second = helper.record_closure(log, self.entry, "supervisor")
+        self.assertEqual(first["ended_at"], second["ended_at"])
+        self.assertEqual(len(json.loads(log.read_text())), 1)
+        self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+        with self.assertRaisesRegex(ValueError, "identity changed"):
+            helper.record_closure(log, {**self.entry, "pid": 789}, "supervisor")
+
+    def test_cross_repository_discovery_includes_closed_issue_comments(self):
+        def paged(path, **kwargs):
+            if path == "/installation/repositories":
+                return [{"full_name": "test/a"}, {"full_name": "test/b"}, {"full_name": "other/c"}]
+            self.assertIn("since", kwargs["required_query_params"])
+            repo = path.split("/")[3]
+            return [{**self.source, "issue_url": f"https://api.github.com/repos/test/{repo}/issues/1"}]
+        self.reader.paged_json.side_effect = paged
+        issues, repos = helper.discover(self.reader, "test", [self.entry])
+        self.assertEqual(issues, [("test/a", 1), ("test/b", 1)])
+        self.assertEqual(repos, ["test/a", "test/b"])
+        with self.assertRaises(ValueError):
+            helper.discover(self.reader, "test", [self.entry], ["other/c"])
+
+    def test_complete_inventory_failure_does_not_become_empty(self):
+        self.reader.paged_json.side_effect = helper.GitHubReadShapeError("partial page")
+        with self.assertRaises(helper.GitHubReadShapeError):
+            helper.discover(self.reader, "test", [self.entry])
+
+    def test_exact_authored_release_and_legacy_release_are_respected(self):
+        for body in ("Released claim 1", "Released by trial"):
+            self.reader.paged_json.return_value = [self.source, comment(2, body)]
+            self.assertEqual(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR), [])
+        for body, author in (("Released claim 1 if done", ACTOR), ("Released claim 1", "other")):
+            self.reader.paged_json.return_value = [self.source, comment(2, body, author)]
+            self.assertEqual(len(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)), 1)
+
+    def test_foreign_claim_and_unstructured_source_report_without_release(self):
+        self.reader.paged_json.return_value = [{**self.source, "user": {"login": "human"}}]
+        with self.assertRaisesRegex(ValueError, "another identity"):
+            helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
+        self.reader.paged_json.return_value = [comment(2, "Claimed by trial\nSession: source-session")]
+        with self.assertRaisesRegex(ValueError, "hand-written"):
+            helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
+
+    def test_related_followup_is_passed_to_existing_release_gate(self):
+        self.reader.paged_json.return_value = [self.source, comment(2, "Claimed by trial\nSession: source-session")]
+        found = helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
+        self.assertEqual(found[0][1], [2])
+
+    def plan_reader(self, path, **_kwargs):
+        if path.endswith("/pulls"):
+            return [{"html_url": "https://github.com/test/a/pull/5", "head": {"ref": SOURCE["branch"]}}]
+        return [self.source]
+
+    def test_dry_run_finds_retained_pr_without_writes(self):
+        self.reader.paged_json.side_effect = self.plan_reader
+        with patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run:
+            report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
+        write.assert_not_called()
+        run.assert_not_called()
+        self.assertEqual(report["claims"][0]["retained_prs"], ["https://github.com/test/a/pull/5"])
+        self.assertTrue(report["claims"][0]["attestation_body"].startswith("Closed session source-session\nEnded at: 2026-01-01T00:02:00Z\nSafe to exit: yes\n"))
+
+    def test_apply_posts_attestation_previews_then_releases(self):
+        self.reader.paged_json.side_effect = self.plan_reader
+        calls = []
+        def write(*_args, **_kwargs):
+            calls.append("attestation")
+            return {"comment": {"url": self.entry["handoff_url"]}}
+        def run(*args):
+            calls.append("preview" if args[-1] else "release")
+            return {"release_body": "Released claim 1", "ok": True}
+        with patch.object(helper.claim, "run_read", return_value="https://github.com/test/a.git"), \
+                patch.object(helper, "comment", side_effect=write), patch.object(helper, "run_release", side_effect=run):
+            report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, True)
+        self.assertEqual(calls, ["attestation", "preview", "release"])
+        self.assertTrue(report["claims"][0]["release"]["ok"])
+
+    def test_partial_preview_failure_retains_attestation_and_stops(self):
+        self.reader.paged_json.side_effect = self.plan_reader
+        with patch.object(helper.claim, "run_read", return_value="https://github.com/test/a.git"), \
+                patch.object(helper, "comment", return_value={"comment": {"url": self.entry["handoff_url"]}}), \
+                patch.object(helper, "run_release", side_effect=ValueError("still live")) as run:
+            with self.assertRaises(helper.PartialRelease) as caught:
+                helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, True)
+        self.assertEqual(caught.exception.report["claims"][0]["evidence_url"], self.entry["handoff_url"])
+        self.assertEqual(run.call_count, 1)
+
+    def test_live_process_after_attestation_prevents_release(self):
+        self.reader.paged_json.side_effect = self.plan_reader
+        def write(*_args, **_kwargs):
+            self.transcript.write_text(self.transcript.read_text() + json.dumps({"payload": {"type": "task_started"}}) + "\n")
+            return {"comment": {"url": self.entry["handoff_url"]}}
+        with patch.object(helper.claim, "run_read", return_value="https://github.com/test/a.git"), \
+                patch.object(helper, "comment", side_effect=write), patch.object(helper, "run_release") as run:
+            with self.assertRaises(helper.PartialRelease):
+                helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, True)
+        run.assert_not_called()
+
+    def test_wrong_checkout_refuses_before_attestation(self):
+        self.reader.paged_json.side_effect = self.plan_reader
+        with patch.object(helper.claim, "run_read", return_value="https://github.com/other/a.git"), patch.object(helper, "comment") as write:
+            with self.assertRaisesRegex(ValueError, "checkout"):
+                helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, True)
+        write.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

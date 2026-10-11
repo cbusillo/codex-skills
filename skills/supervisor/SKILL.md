@@ -37,6 +37,9 @@ resources:
   - path: scripts/close_ttys.py
     kind: script
     description: Dry-run closing an exact tab after its agent process has exited.
+  - path: scripts/release_session_claims.py
+    kind: script
+    description: Record verified closure, discover remaining claims across owner repositories and release them through the planning helper; includes closed-log backfill.
   - path: references/helpers.md
     kind: reference
     description: Private ledger schema, helper usage and shutdown stages.
@@ -91,6 +94,11 @@ commands:
     resource_path: scripts/close_ttys.py
     example_argv: ["uv", "run", "scripts/close_ttys.py", "--ledger", "<ledger.json>", "--session-id", "<id>", "--verified-handoff", "--verified-input"]
     purpose: Preview closing a tab after its agent process exited.
+  - name: supervisor-release-session-claims
+    source: skill
+    resource_path: scripts/release_session_claims.py
+    example_argv: ["uv", "run", "scripts/release_session_claims.py", "finish", "--ledger", "<ledger.json>", "--closed-log", "<closed.json>", "--session-id", "<native-id>", "--supervisor-session", "<native-id>", "--owner", "OWNER", "--checkout-root", "<checkouts>", "--confirm-session-ended", "--verified-handoff"]
+    purpose: Preview remaining claims after transcript, issue handoff and actual process exit verification.
 policy:
   command_policies:
     - id: prefer-session-helper-for-iterm-typing
@@ -391,6 +399,20 @@ on Context Panel's selected account, then send `continue`.
    Use a bounded wait for that session's process to end. Verify it ended before closing
    the tab. If it is still running or its identity is uncertain, keep the tab
    open and record the next action in the ledger.
+5. After verified process exit, run `release_session_claims.py finish` as
+   [finished-session shutdown stages](references/helpers.md#finished-session-shutdown-stages)
+   describes, before closing the tab. It records the observed exit in the
+   private closed-session log, discovers the session's claims across accessible
+   owner repositories, posts the closed-session attestation, and previews then
+   applies `gh-plan.py release-claim --role supervisor`, naming retained PRs.
+   Load `github` and `github-plan` before that step. Keep incomplete discovery,
+   unreleasable claims and uncertain writes in the ledger for reconciliation;
+   never report claims released without confirmed readback. A running session,
+   foreign identity or missing unqualified verdict is reported, never released.
+   Use the helper's `backfill` mode for already-ended sessions with original
+   verified closure times and transcript/issue handoffs in that log. It never
+   treats log age, a merged PR or an idle tab as closure evidence. Preserve
+   status, waits, blockers and retained artifacts; release is ownership only.
 
 ## Handoff Shape
 

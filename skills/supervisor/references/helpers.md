@@ -385,6 +385,63 @@ to verify the entire input is empty. Send `/exit` or `/quit` with `send --text`
 only after that check, then wait a bounded time for the matched process to end.
 Update the ledger's handoff URL from the actual issue record.
 
+Before closing the verified-finished tab, discover and release its remaining
+claims. Read [Planning: Claim](../../github/references/cli-reference.md#planning-claim)
+and its Abandoned automation claims section first. The current Supervisor must
+verify the transcript handoff and actual process exit, including hosts/peers
+the helpers cannot inventory. The helper rechecks the exact native transcript,
+unqualified safe verdict, matched PID and TTY before every release. It does not
+send exit commands or change issue status, waits, blockers, branches or worktrees.
+
+```sh
+uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <private-ledger.json> --closed-log <private-closed.json> --session-id <finished-native-id> --supervisor-session <current-native-id> --owner OWNER --checkout-root <existing-checkout-directory> --confirm-session-ended --verified-handoff
+```
+
+Default is a read-only preview of claim IDs, retained PRs and attestation bodies.
+Repeat with `--apply` after inspecting it. Apply records the newly observed exit
+time in a private JSON log, posts/readbacks the required `Closed session` /
+`Ended at:` / `Safe to exit: yes` attestation on each canonical issue, then runs
+the maintained `release-claim` preview and apply. The original observed exit
+time survives retries. The log has the ledger's array schema plus `ended_at`
+(timezone-qualified ISO timestamp) and `process_exit_verified: true`; retain
+the native transcript path, PID/TTY and exact issue-comment `handoff_url`.
+No transcript text or process arguments are posted. Checkouts must already
+exist as `<checkout-root>/<repository-name>` with the matching origin; the
+release command runs there for that repository's ownership inventory and never
+edits the checkout. A missing or mismatched checkout leaves claims untouched.
+
+Discovery pages the automation installation's owner repositories and their
+issue comments since the earliest timestamp in the source transcripts,
+including closed issues. It reads each matching canonical discussion, honors
+existing valid authored releases through the shared ownership classifier, and
+names source-branch or handoff-retained PRs. Partial inventory is an error, not
+an empty result. Unstructured source claims need an authored exact-ID release;
+structured claims and their related ownership follow-ups use `release-claim`.
+The shared bot login alone never identifies a session. Native session coverage
+remains explicit in the release receipts; missing peer APIs are covered only
+by the Supervisor's actual transcript/closure verification.
+
+For the one-time STALE-CLAIMS backfill, copy only transcript-verified records
+from the Supervisor's existing private closed-session log into this schema.
+Use the original actual closure timestamps; neither conversion time nor
+attestation posting time substitutes for them. If a record lacks a matched
+transcript, unqualified safe verdict, original closure proof or handoff URL,
+report it for reconciliation instead of inventing evidence.
+
+```sh
+uv run skills/supervisor/scripts/release_session_claims.py backfill --closed-log <private-closed.json> --supervisor-session <current-native-id> --owner OWNER --checkout-root <existing-checkout-directory> --confirm-session-ended --verified-handoff
+```
+
+Use `--session-id` to reconcile one logged session; inspect the default preview,
+then add `--apply`. For disposable live trials only, repeat `--repo OWNER/REPO`
+to scope discovery; that result reports explicit scope rather than all-repository
+coverage. Test only self-created throwaway issues/claims, never real stale claims.
+On a refusal or uncertain write, preserve posted attestations/releases and
+inspect their readback before recovery. Already valid releases are skipped;
+unchanged attestations and releases use the shared transport's body deduplication.
+Keep unfinished reconciliation in the ledger. Then perform the guarded tab-close
+step below (the verified exact-tab route from #1627/#1629 applies once landed).
+
 ```sh
 uv run skills/supervisor/scripts/close_ttys.py --ledger <private-ledger.json> --session-id <native-id> --verified-handoff --verified-input
 uv run skills/supervisor/scripts/close_ttys.py --ledger <private-ledger.json> --session-id <native-id> --verified-handoff --verified-input --apply
