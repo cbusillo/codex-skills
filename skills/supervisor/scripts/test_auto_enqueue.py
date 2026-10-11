@@ -92,6 +92,7 @@ class Fake:
         self.after_label_action = "idle"
         self.ineligible = {}
         self.scheduler_owns_batch = False
+        self.candidate_status = "ready_for_checks"
 
     def policies(self, _owner):
         return copy.deepcopy(self.targets)
@@ -125,20 +126,28 @@ class Fake:
         ]
         if self.scheduler_owns_batch and self.writes:
             # A normal active-candidate observation omits dry_run_result.
-            value["result"] = watch.operator._project_merge_train_result(
-                {
-                    "mode": "dry-run",
-                    "controller_action": "observe_candidate",
-                    "candidate": {
-                        "status": "ready_for_checks",
-                        "entries": [
-                            {"pull_request_number": number, "head_sha": SHA}
-                            for number in self.writes
-                        ],
+            value = watch.operator.summarize_success(
+                operation="merge-train-controller-run-once",
+                request={"repository": REPO},
+                provider_payload={
+                    "status": "accepted",
+                    "records": {"merge_train_batch_candidate_record_id": "active"},
+                    "result": {
+                        "mode": "dry-run",
+                        "controller_action": "observe_candidate",
+                        "candidate": {
+                            "status": self.candidate_status,
+                            "base_sha": SHA,
+                            "candidate_ref": "launchplane/train/example/batch",
+                            "candidate_sha": "c" * 40,
+                            "entries": [
+                                {"pull_request_number": number, "head_sha": SHA}
+                                for number in self.writes
+                            ],
+                        },
                     },
-                }
+                },
             )
-            value["records"] = {"merge_train_batch_candidate_record_id": "active"}
         return value
 
     def get(self, path):
@@ -239,6 +248,43 @@ class EnqueueTests(unittest.TestCase):
         self.run_pass(fake)
         self.assertEqual(fake.writes, [1, 2, 4, 5])
 
+    def test_own_candidate_planning_building_and_passed_states_continue(self):
+        for candidate_status in ("planned", "building", "passed"):
+            with self.subTest(candidate_status=candidate_status):
+                fake = Fake()
+                fake.scheduler_owns_batch = True
+                fake.candidate_status = candidate_status
+                self.run_pass(fake)
+                self.assertEqual(fake.writes, [1, 2, 4, 5])
+
+    def test_own_scheduler_candidate_preserves_unchanged_held_labels(self):
+        fake = Fake()
+        fake.scheduler_owns_batch = True
+        fake.pulls[6]["labels"] = [
+            {"name": TARGET["label"]}, {"name": "merge-blocked"}
+        ]
+        fake.ineligible[6] = ["held by merge-blocked label"]
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [1, 2, 4, 5])
+        self.assertEqual(fake.pulls[6]["labels"][1]["name"], "merge-blocked")
+
+    def test_own_scheduler_candidate_stops_when_held_labels_change(self):
+        fake = Fake()
+        fake.scheduler_owns_batch = True
+        fake.pulls[6]["labels"] = [
+            {"name": TARGET["label"]}, {"name": "merge-blocked"}
+        ]
+        fake.ineligible[6] = ["held by merge-blocked label"]
+
+        def before(io):
+            if io.writes:
+                io.pulls[6]["labels"] = [{"name": TARGET["label"]}]
+
+        fake.before = before
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [1])
+        self.assertTrue(any(event == "batch_stopped" for event, _ in self.events))
+
     def test_own_candidate_does_not_hide_new_foreign_queue_labels(self):
         fake = Fake()
         fake.scheduler_owns_batch = True
@@ -320,6 +366,12 @@ class EnqueueTests(unittest.TestCase):
             lambda value: value.update(controller_action="plan_landing"),
             lambda value: value.update(controller_reconciliation_status="required"),
             lambda value: value.update(landing_plan={"record_id": "landing"}),
+            lambda value: value.update(stack_collapse_plan={"record_id": "stack"}),
+            lambda value: value.update(active_record_id="lease"),
+            lambda value: value.update(error={"code": "failure"}),
+            lambda value: value.update(
+                dry_run_result={"queue": [], "queue_order": []}
+            ),
         ):
             fake = Fake()
             fake.scheduler_owns_batch = True

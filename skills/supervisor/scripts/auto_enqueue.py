@@ -171,7 +171,11 @@ def idle(response, own=()):
         "controller_reconciliation_status"
     ):
         return False
-    dry = result.get("dry_run_result") or {}
+    return own_queue(result.get("dry_run_result") or {}, own)
+
+
+def own_queue(dry, own):
+    """A fresh queue may contain only this pass's labels with known authors."""
     if not isinstance(dry.get("queue"), list) or not isinstance(
         dry.get("queue_order"), list
     ):
@@ -228,6 +232,10 @@ def own_candidate(response, own, candidate_records=()):
         )
         and len(set(members)) == len(members) == candidate.get("entries_count")
         and set(members) <= set(own)
+        and (
+            "dry_run_result" not in result
+            or own_queue(result["dry_run_result"], own)
+        )
     )
 
 
@@ -499,6 +507,11 @@ def run_pass(io, args, emit):
                     },
                 )
                 continue
+            held_labels = {
+                pr["number"]: sorted(label["name"] for label in pr["labels"])
+                for pr in pulls
+                if target["label"] in {label["name"] for label in pr["labels"]}
+            }
             candidates = []
             for listed in pulls:
                 if listed["number"] not in author_allowed:
@@ -572,7 +585,7 @@ def run_pass(io, args, emit):
                     == [f"missing {target['label']} label"]
                     for row in entries
                 )
-                if continuing and not entries:
+                if continuing and "dry_run_result" not in (fresh.get("result") or {}):
                     allowed = (
                         sorted(label["name"] for label in pr["labels"]) == item["labels"]
                         and pr.get("mergeable") is not False
@@ -582,6 +595,8 @@ def run_pass(io, args, emit):
                 if continuing and any(
                     other["number"] not in own
                     and target["label"] in {label["name"] for label in other["labels"]}
+                    and sorted(label["name"] for label in other["labels"])
+                    != held_labels.get(other["number"])
                     for other in io.pages(f"/repos/{repo}/pulls", state="open")
                 ):
                     continuing = False
