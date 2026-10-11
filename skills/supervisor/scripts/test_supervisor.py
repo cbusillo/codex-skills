@@ -1143,21 +1143,27 @@ class TerminalTests(unittest.TestCase):
         command = iterm_tab.append_brief("cd /work/sh && exec codex --add-dir /work/zsh", "task")
         self.assertEqual(shlex.split(command)[-1], "task")
 
+    def test_quoted_settings_keep_shell_punctuation_as_data(self):
+        for settings in ('claude --allowedTools="Bash(git status)"', "codex -c key='a;b'",
+                         "codex -c key='a #b'", "cd '/work/space dir' && exec codex"):
+            with self.subTest(settings=settings):
+                command = iterm_tab.append_brief(settings, "task")
+                self.assertEqual(shlex.split(command)[-1], "task")
+
     def test_google_brief_uses_native_interactive_prompt(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             child = root / "agy"
-            child.write_text('#!/bin/sh\nprintf "%s\\n" "$#" "$1"\n')
+            child.write_text(f'#!{sys.executable}\nimport argparse\n'
+                             'parser = argparse.ArgumentParser()\n'
+                             'parser.add_argument("-i", "--prompt-interactive", required=True)\n'
+                             'print(parser.parse_args().prompt_interactive, end="")\n')
             child.chmod(0o700)
             brief = "--Start here\n\tKeep these details literal."
             command = iterm_tab.append_brief(shlex.quote(str(child)), brief)
             result = subprocess.run(["/bin/sh", "-c", command], capture_output=True,
                                     text=True, check=True)
-            argument = result.stdout.split("\n", 1)[1].removesuffix("\n")
-            option, value = argument.split("=", 1)
-            self.assertEqual(option, "--prompt-interactive")
-            self.assertEqual(value, brief)
-            self.assertEqual(result.stdout.splitlines()[0], "1")
+            self.assertEqual(result.stdout, brief)
 
     def test_brief_reaches_agent_as_one_literal_argument(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -1857,7 +1863,7 @@ class TerminalTests(unittest.TestCase):
         app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "launch.txt"
-            path.write_text("bad\tcommand")
+            path.write_text("codex --remote unix://\x1b")
             args = argparse.Namespace(
                 command="new", window_id="chosen", command_file=path, brief_file=fixture_briefs(path)
             )

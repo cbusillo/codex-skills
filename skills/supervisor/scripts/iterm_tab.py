@@ -45,14 +45,15 @@ def select_session(app, session_id):
     return matches[0]
 
 
-def validate_text(text):
-    if not text or any(ord(c) < 32 and c not in "\n\t" for c in text):
+def validate_text(text, allow_tabs=False):
+    allowed = "\n\t" if allow_tabs else "\n"
+    if not text or any(ord(c) < 32 and c not in allowed for c in text):
         raise ValueError("text must be nonempty with no terminal control characters")
 
 
 def append_brief(command_text, brief):
     """Append a literal prompt only to a direct invocation, optionally after cd."""
-    lexer = shlex.shlex(command_text, posix=False, punctuation_chars=";&|()<>")
+    lexer = shlex.shlex(command_text, posix=True, punctuation_chars=";&|()<>")
     lexer.whitespace_split = True
     lexer.commenters = ""
     tokens = list(lexer)
@@ -63,11 +64,11 @@ def append_brief(command_text, brief):
         raise ValueError(reason)
     if "&&" in tokens:
         separator = tokens.index("&&")
-        directory = shlex.split(" ".join(tokens[:separator]))
+        directory = tokens[:separator]
         if len(directory) != 2 or directory[0] != "cd":
             raise ValueError(reason)
         tokens = tokens[separator + 1:]
-    words = shlex.split(" ".join(tokens))
+    words = tokens
     while words and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0])
                      or words[0] in {"exec", "command", "nohup", "time", "env"}):
         words = words[1:]
@@ -77,8 +78,8 @@ def append_brief(command_text, brief):
     return command_text + prompt_option + shlex.quote(brief)
 
 
-async def send(session, text, submit=True):
-    validate_text(text)
+async def send(session, text, submit=True, allow_tabs=False):
+    validate_text(text, allow_tabs=allow_tabs)
     if "\n" in text or "\t" in text:
         text = "\x1b[200~" + text + "\x1b[201~"
     await session.async_send_text(text, suppress_broadcast=True)
@@ -415,7 +416,7 @@ async def operate(app, args):
         for brief in briefs:
             if not brief.strip():
                 raise ValueError("brief must be nonempty")
-            validate_text(brief)
+            validate_text(brief, allow_tabs=True)
         choices = [None] * len(files)
         if getattr(args, "account_provider", None):
             if len(files) == 1:
@@ -454,7 +455,7 @@ async def operate(app, args):
                     account_choice.record_launch(choice)
                     progress["receipt_written"] = True
                 progress.update(submission="unknown", phase="submit_command")
-                await send(session, command_text)
+                await send(session, command_text, allow_tabs=True)
             except Exception as error:
                 raise LaunchFailure(results, progress, error) from error
             result = {"window_id": windows[0].window_id,
