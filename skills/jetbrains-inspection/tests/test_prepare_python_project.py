@@ -100,7 +100,7 @@ class PreparePythonProjectTest(unittest.TestCase):
     def test_rendered_project_model_uses_sdk_and_test_root(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
-            with patch.object(prepare_python_project.Path, "home", return_value=repo.parent):
+            with patch("pathlib.Path.home", return_value=repo.parent):
                 files = prepare_python_project.render_project_files(repo, "codex-skills", ["jetbrains-inspection/tests"])
 
         module = files[repo / ".idea" / "codex-skills.iml"]
@@ -111,7 +111,8 @@ class PreparePythonProjectTest(unittest.TestCase):
         self.assertIn("codex-skills.iml", files[repo / ".idea" / "modules.xml"])
         self.assertIn("project-jdk-name=", files[repo / ".idea" / "misc.xml"])
 
-    def sdk_table(self, path, entries):
+    @staticmethod
+    def sdk_table(path, entries):
         root = ElementTree.Element("application")
         component = ElementTree.SubElement(root, "component", name="ProjectJdkTable")
         for name, home, kind in entries:
@@ -130,7 +131,7 @@ class PreparePythonProjectTest(unittest.TestCase):
                 ("wrong", str(repo / ".venv/bin/python"), "JavaSDK"),
                 ("other", str(home / "other/.venv/bin/python"), "Python SDK"),
             ])
-            with patch.object(prepare_python_project.Path, "home", return_value=home):
+            with patch("pathlib.Path.home", return_value=home):
                 name = prepare_python_project.registered_sdk_name(repo / ".venv", table)
             self.assertEqual(name, "uv (repo) & Python")
             files = prepare_python_project.render_project_files(repo, "repo", [], name)
@@ -161,7 +162,7 @@ class PreparePythonProjectTest(unittest.TestCase):
             with (
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--repo", str(repo), "--python", "3.12",
                                            "--module-name", "fixture", "--sdk-table", str(table)]),
-                patch.object(prepare_python_project, "validate_existing_venv"),
+                patch.dict(prepare_python_project.__dict__, {"validate_existing_venv": lambda *_: None}),
             ):
                 self.assertEqual(prepare_python_project.main(), 0)
             misc = ElementTree.parse(repo / ".idea/misc.xml").getroot()
@@ -188,7 +189,7 @@ class PreparePythonProjectTest(unittest.TestCase):
             prepare_python_project.atomic_write(path, "same\n")
             before = path.stat().st_mtime_ns
             real_replace = prepare_python_project.os.replace
-            with patch.object(prepare_python_project.os, "replace", wraps=real_replace) as replace_file:
+            with patch("os.replace", wraps=real_replace) as replace_file:
                 prepare_python_project.atomic_write(path, "same\n")
                 replace_file.assert_not_called()
                 self.assertEqual(path.stat().st_mtime_ns, before)

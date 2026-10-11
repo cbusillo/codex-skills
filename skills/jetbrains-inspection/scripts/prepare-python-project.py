@@ -48,11 +48,11 @@ def render_project_files(
     repo: Path, module_name: str, test_roots: list[str], sdk_name: str | None = None,
 ) -> dict[Path, str]:
     idea = repo / ".idea"
-    sdk_name = html.escape(sdk_name or sdk_name_for(repo / ".venv", Path.home()), quote=True)
+    sdk_name = html.escape(sdk_name or sdk_name_for(repo / ".venv", Path.home()))
     safe_module_name = "".join(character if character.isalnum() or character in "-_" else "-" for character in module_name)
     module_file = idea / f"{safe_module_name}.iml"
     source_folders = "\n".join(
-        f'      <sourceFolder url="file://$MODULE_DIR$/{html.escape(root, quote=True)}" isTestSource="true" />'
+        f'      <sourceFolder url="file://$MODULE_DIR$/{html.escape(root)}" isTestSource="true" />'
         for root in test_roots
     )
     module_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
@@ -113,14 +113,12 @@ def ensure_ignored_outputs(repo: Path, paths: list[Path]) -> None:
             ["git", "-C", str(repo), "ls-files", "--error-unmatch", "--", relative_path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            check=False,
         )
         if tracked.returncode == 0:
             raise RuntimeError(f"preparation output must not be tracked: {relative_path}")
         ignore_probe = f"{relative_path}/.prepare-check" if path.name == ".venv" else relative_path
         ignored = subprocess.run(
             ["git", "-C", str(repo), "check-ignore", "--no-index", "-q", "--", ignore_probe],
-            check=False,
         )
         if ignored.returncode != 0:
             raise RuntimeError(f"preparation output is not ignored: {relative_path}")
@@ -204,7 +202,6 @@ def main() -> int:
         ["git", "-C", str(repo), "rev-parse", "--git-dir"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        check=False,
     )
     if git_check.returncode != 0:
         parser.error(f"not a Git worktree: {repo}")
