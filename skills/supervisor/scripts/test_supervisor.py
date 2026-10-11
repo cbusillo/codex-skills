@@ -915,6 +915,107 @@ class AccountChoiceTests(unittest.TestCase):
             self.assertEqual(list((Path(folder) / "Launch Receipts").iterdir()), [])
 
 
+class TabCloseTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.ledger = Path(self.folder.name) / "ledger.json"
+        self.entry = {"supervisor_owned": True, "iterm_session_id": "owned",
+                      "tty": "ttys001", "window_id": "supervisor", "tab_id": "tab"}
+        self.ledger.write_text(json.dumps([self.entry]))
+        self.session = SimpleNamespace(session_id="owned", async_close=AsyncMock(),
+                                       async_get_variable=AsyncMock(return_value="/dev/ttys001"))
+        self.tab = SimpleNamespace(tab_id="tab", sessions=[self.session])
+        self.window = SimpleNamespace(window_id="supervisor", tabs=[self.tab])
+        self.app = SimpleNamespace(connection=object(), terminal_windows=[self.window],
+                                   async_refresh=AsyncMock())
+        self.prompt = SimpleNamespace(state="editing", command="", unique_id="prompt")
+        self.api = SimpleNamespace(PromptState=SimpleNamespace(EDITING="editing"),
+                                   async_get_last_prompt=AsyncMock(return_value=self.prompt))
+        self.rows = [(20, "ttys001", "-zsh"), (21, "ttys001", "/usr/bin/login -fpl user")]
+        self.addCleanup(patch.stopall)
+        patch.dict("sys.modules", {"iterm2": self.api}).start()
+        self.inventory = patch.object(close_ttys, "inventory", return_value=self.rows).start()
+
+    def close(self, identity="owned"):
+        return asyncio.run(iterm_tab.close_session(self.app, identity, self.ledger))
+
+    def test_only_owned_idle_empty_exact_tab_closes_nonforce(self):
+        self.assertTrue(self.close()["close_requested"])
+        self.session.async_close.assert_awaited_once_with(force=False)
+        self.assertEqual(self.inventory.call_count, 2)
+        self.assertEqual(self.api.async_get_last_prompt.await_count, 2)
+
+    def test_refuses_missing_duplicate_director_or_moved_identity(self):
+        for entries in ([], [self.entry, self.entry],
+                        [{**self.entry, "supervisor_owned": False}],
+                        [{**self.entry, "tty": "ttys999"}],
+                        [{**self.entry, "window_id": "director"}],
+                        [{**self.entry, "tab_id": "other"}]):
+            with self.subTest(entries=entries):
+                self.ledger.write_text(json.dumps(entries))
+                with self.assertRaises(ValueError):
+                    self.close()
+        self.ledger.write_text(json.dumps([self.entry]))
+        with self.assertRaises(ValueError):
+            self.close("own")
+        self.session.async_close.assert_not_awaited()
+
+    def test_refuses_split_tab_jobs_scripts_or_uncertain_inventory(self):
+        self.tab.sessions.append(SimpleNamespace(session_id="other"))
+        with self.assertRaisesRegex(ValueError, "split"):
+            self.close()
+        self.tab.sessions.pop()
+        for rows in ([], [(20, "ttys002", "-zsh")],
+                     self.rows + [(99, "ttys001", "codex")],
+                     self.rows + [(99, "ttys001", "sleep 60")],
+                     [(20, "ttys001", "zsh -c task")]):
+            with self.subTest(rows=rows):
+                self.inventory.return_value = rows
+                with self.assertRaises(ValueError):
+                    self.close()
+        self.session.async_close.assert_not_awaited()
+
+    def test_refuses_input_unknown_prompt_and_changes_before_close(self):
+        for prompt in (None, SimpleNamespace(state="running", command=""),
+                       SimpleNamespace(state="editing", command="typed text"),
+                       SimpleNamespace(state="editing", command=" "),
+                       SimpleNamespace(state="editing", command=None)):
+            with self.subTest(prompt=prompt):
+                self.api.async_get_last_prompt.return_value = prompt
+                with self.assertRaises(ValueError):
+                    self.close()
+        self.api.async_get_last_prompt.return_value = self.prompt
+        self.inventory.side_effect = [self.rows, self.rows + [(99, "ttys001", "codex")]]
+        with self.assertRaises(ValueError):
+            self.close()
+        self.inventory.side_effect = None
+        self.api.async_get_last_prompt.side_effect = [self.prompt,
+            SimpleNamespace(state="editing", command="", unique_id="new")]
+        with self.assertRaisesRegex(ValueError, "changed"):
+            self.close()
+        self.session.async_close.assert_not_awaited()
+
+    def test_reused_recorded_agent_pid_preserves_tab(self):
+        self.ledger.write_text(json.dumps([{**self.entry, "pid": 99}]))
+        self.inventory.return_value = self.rows + [(99, "ttys999", "codex")]
+        with self.assertRaisesRegex(ValueError, "PID"):
+            self.close()
+        self.session.async_close.assert_not_awaited()
+
+    def test_claude_exec_replaces_launch_shell(self):
+        choice = {"provider": "anthropic", "env": {}}
+        with tempfile.TemporaryDirectory() as folder:
+            probe = Path(folder) / "probe"
+            probe.write_text('#!/bin/sh\nprintf "%s %s" "$$" "$CLAUDE_ACCOUNT_MOVE_ENABLED"\n')
+            probe.chmod(0o700)
+            command = iterm_tab.with_account(f"exec {shlex.quote(str(probe))}", choice)
+            child = subprocess.Popen(["/bin/sh", "-c", command], stdout=subprocess.PIPE, text=True)
+            output, _ = child.communicate(timeout=5)
+            self.assertEqual(child.returncode, 0)
+            self.assertEqual(output.split(), [str(child.pid), "1"])
+
+
 class TerminalTests(unittest.TestCase):
     def test_codex_daemon_preflight_checks_selected_home_before_tabs_and_receipts(self):
         # Short disposable paths fit macOS's Unix socket path limit.

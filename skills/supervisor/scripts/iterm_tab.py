@@ -222,11 +222,62 @@ def with_account(command_text, choice):
     if settings:
         prefixes.append(f"export {settings}")
     if choice["provider"] == "anthropic":
-        command_text = "( export CLAUDE_ACCOUNT_MOVE_ENABLED=1; " + command_text + "\n)"
+        prefixes.append("export CLAUDE_ACCOUNT_MOVE_ENABLED=1")
     return " && ".join([*prefixes, command_text])
 
 
+async def close_session(app, session_id, ledger):
+    """Close one owned, unsplit tab only with current idle-shell/input proof."""
+    # Loaded here because close_ttys also uses this module's exact selector.
+    from close_ttys import inventory, idle_terminal_command
+    import iterm2
+
+    entries = json.loads(ledger.read_text(encoding="utf-8"))
+    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+        raise ValueError("ledger must contain session objects")
+    matches = [e for e in entries if e.get("iterm_session_id") == session_id]
+    if len(matches) != 1 or matches[0].get("supervisor_owned") is not True:
+        raise ValueError("exact session is not uniquely Supervisor-owned in the launch ledger")
+    entry = matches[0]
+
+    async def verify():
+        await app.async_refresh()
+        session = select_session(app, session_id)
+        tabs = [(w, t) for w in app.terminal_windows for t in w.tabs
+                if any(s.session_id == session_id for s in t.sessions)]
+        if len(tabs) != 1 or len(tabs[0][1].sessions) != 1:
+            raise ValueError("split or ambiguous tab; tab kept")
+        window, tab = tabs[0]
+        for key, value in (("window_id", window.window_id), ("tab_id", tab.tab_id)):
+            if key in entry and entry[key] != value:
+                raise ValueError("terminal location differs from launch ledger")
+        tty = (await session.async_get_variable("tty") or "").removeprefix("/dev/")
+        if not tty or tty != entry.get("tty", "").removeprefix("/dev/"):
+            raise ValueError("terminal TTY differs from launch ledger")
+        rows = inventory()
+        jobs = [row for row in rows if row[1] == tty]
+        if not jobs or any(not idle_terminal_command(row[2]) for row in jobs):
+            raise ValueError("process remains or TTY inventory is uncertain; tab kept")
+        if isinstance(entry.get("pid"), int) and any(row[0] == entry["pid"] for row in rows):
+            raise ValueError("recorded agent PID remains or was reused; tab kept")
+        prompt = await iterm2.async_get_last_prompt(app.connection, session_id)
+        if prompt is None or prompt.state != iterm2.PromptState.EDITING:
+            raise ValueError("empty input cannot be proved; shell integration must report an editing prompt")
+        if prompt.command != "":
+            raise ValueError("input line is not empty; tab kept")
+        return session, (window.window_id, tab.tab_id, tty, jobs, prompt.unique_id)
+
+    _, before = await verify()
+    session, after = await verify()
+    if after != before:
+        raise ValueError("terminal state changed during verification; tab kept")
+    await session.async_close(force=False)
+    return {"session_id": session_id, "close_requested": True, "readback_required": True}
+
+
 async def operate(app, args):
+    if args.command == "close":
+        return await close_session(app, args.session_id, args.ledger)
     if args.command == "list":
         result = []
         for window in app.terminal_windows:
@@ -343,6 +394,10 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list")
     commands.add_parser("window")
+    close = commands.add_parser("close")
+    close.add_argument("--session-id", required=True)
+    close.add_argument("--ledger", type=Path, required=True,
+                       help="private Supervisor launch ledger; Director-owned entries refuse")
     new = commands.add_parser("new")
     new.add_argument("--window-id", required=True)
     new.add_argument("--command-file", type=Path, action="append", required=True,
@@ -375,7 +430,7 @@ def main():
         except LaunchFailure as error:
             print(json.dumps(error.detail, indent=2))
             parser.exit(1, "launch failed; inspect the reported tabs before retrying\n")
-        except (ValueError, OSError) as error:
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
             parser.exit(1, f"refused: {error}\n")
 
     iterm2.run_until_complete(connected)

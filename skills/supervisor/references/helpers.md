@@ -368,6 +368,38 @@ login, including the desktop app's.
 
 ## Finished-session shutdown stages
 
+### Native shell-input proof
+
+`iterm_tab.py close --session-id <exact-iterm-id> --ledger <private-ledger.json>`
+requires one matching `supervisor_owned: true` launch-ledger entry with its
+`iterm_session_id` and `tty`. Include the `window_id` and `tab_id` from launch
+output when available; they are checked too. Director-owned or ambiguous entries
+and split tabs refuse. Never add a Director's tab to the Supervisor ledger.
+
+The close command requires iTerm's native shell integration to report an
+editing prompt whose entire command is empty. Missing/unknown input refuses;
+screen appearance and `--verified-input` are not substitutes. For Supervisor
+launches that may leave an outer shell, source iTerm's bundled integration in
+that shell before the agent invocation. On Chris-Studio's zsh launch shells,
+the launch file can start with:
+
+```sh
+. /Applications/iTerm.app/Contents/Resources/iterm2_shell_integration.zsh
+```
+
+Use the installed integration for the launch shell and actual app location on
+other hosts. This changes only that Supervisor launch shell, never `.zshrc` or
+an iTerm profile. For an already idle Supervisor shell without integration,
+verify the exact target and empty input under the shutdown procedure before
+sending this source command with `send`; read back the new empty prompt before
+closing. Preserve the tab if that verification is unavailable.
+
+Claude launches export the account-move opt-in in the launch shell, so an
+explicit `exec` replaces that shell instead of a subshell. The Director's iTerm
+profile still decides whether an ended terminal closes automatically.
+
+### Verify and close
+
 `finished_map.py` offers candidates only. Its conservative last-line parser
 rejects quoted, negated, conditional and aborted verdicts. The shared parser used
 by status, candidates and terminal closure ignores one complete trailing
@@ -387,7 +419,7 @@ Update the ledger's handoff URL from the actual issue record.
 
 ```sh
 uv run skills/supervisor/scripts/close_ttys.py --ledger <private-ledger.json> --session-id <native-id> --verified-handoff --verified-input
-uv run skills/supervisor/scripts/close_ttys.py --ledger <private-ledger.json> --session-id <native-id> --verified-handoff --verified-input --apply
+uv run skills/supervisor/scripts/iterm_tab.py close --session-id <exact-iterm-id> --ledger <private-ledger.json>
 ```
 
 The two flags attest the Supervisor checked the issue handoff and empty input

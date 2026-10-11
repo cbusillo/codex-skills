@@ -91,6 +91,11 @@ commands:
     resource_path: scripts/close_ttys.py
     example_argv: ["uv", "run", "scripts/close_ttys.py", "--ledger", "<ledger.json>", "--session-id", "<id>", "--verified-handoff", "--verified-input"]
     purpose: Preview closing a tab after its agent process exited.
+  - name: supervisor-iterm-close
+    source: skill
+    resource_path: scripts/iterm_tab.py
+    example_argv: ["uv", "run", "scripts/iterm_tab.py", "close", "--session-id", "<exact-iterm-id>", "--ledger", "<private-ledger.json>"]
+    purpose: Close one Supervisor-owned tab after current process and empty-input proof.
 policy:
   command_policies:
     - id: prefer-session-helper-for-iterm-typing
@@ -391,6 +396,15 @@ on Context Panel's selected account, then send `continue`.
    Use a bounded wait for that session's process to end. Verify it ended before closing
    the tab. If it is still running or its identity is uncertain, keep the tab
    open and record the next action in the ledger.
+
+5. After the process-exit wait, preview `close_ttys.py` with the verified
+   handoff and input flags, then use `iterm_tab.py close --session-id <exact-iterm-id>
+   --ledger <private-ledger.json>`. It checks the launch ledger, rejects split
+   tabs, and rechecks the TTY processes and native shell prompt twice before
+   one non-force close. Read `list` once to confirm disappearance; preserve an
+   uncertain close rather than retrying. Missing shell input proof preserves
+   the tab; read the [native shell-input setup](references/helpers.md#native-shell-input-proof)
+   for the supported launch-shell setup, without changing the Director's profile.
 
 ## Handoff Shape
 
