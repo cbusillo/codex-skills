@@ -66,6 +66,19 @@ def linked_worktree(checkout: Path, linked: Path) -> Path:
 
 
 class CommandPolicyHookTests(unittest.TestCase):
+    def test_launchplane_data_is_allowed_but_invocations_are_blocked(self) -> None:
+        for command in (
+            "uv run python -c 'import json; print({\"repository\": \"launchplane\"})'",
+            "printf '%s' launchplane",
+            "rg launchplane settings.json",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(bash(command).returncode, 0)
+        for command in ("launchplane status", "uv run launchplane status",
+                        "printf '%s' launchplane && launchplane status"):
+            with self.subTest(command=command):
+                self.assertEqual(bash(command).returncode, 2)
+
     def test_repository_exports_are_scoped_to_real_checkouts_and_worktrees(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

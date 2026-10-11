@@ -50,6 +50,19 @@ def validate_text(text):
         raise ValueError("text must be nonempty with no terminal control characters")
 
 
+def append_brief(command_text, brief):
+    """Append a literal prompt only to a direct invocation, optionally after cd."""
+    lexer = shlex.shlex(command_text, posix=False, punctuation_chars=";&|()<>")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    tokens = list(lexer)
+    if (not tokens or tokens[-1] == "&&" or "\n" in command_text
+            or any(token.startswith("#") or Path(token.strip("'\"")).name in {"sh", "bash", "zsh", "fish", "eval"}
+                   or (all(c in ";&|()<>" for c in token) and token != "&&") for token in tokens)):
+        raise ValueError("brief delivery needs a direct agent invocation; use cd PATH && exec AGENT SETTINGS")
+    return command_text + " -- " + shlex.quote(brief)
+
+
 async def send(session, text, submit=True):
     validate_text(text)
     if "\n" in text:
@@ -229,7 +242,7 @@ def scoped_exec(command_text):
     return None
 
 
-def with_account(command_text, choice):
+def with_account(command_text, choice, brief=None):
     """Prefix one agent invocation with the chosen account's environment."""
     if "\n" in command_text:
         raise ValueError("account selection needs a one-line launch command")
@@ -241,6 +254,8 @@ def with_account(command_text, choice):
     if conflicts:
         raise ValueError(f"launch file already sets {', '.join(sorted(conflicts))}; "
                          "remove those settings and use --account for an explicit override")
+    if brief is not None:
+        command_text = append_brief(command_text, brief)
     settings = " ".join(
         f"{key}={shlex.quote(os.path.expanduser(value))}"
         for key, value in choice["env"].items()
@@ -376,6 +391,19 @@ async def operate(app, args):
         command_texts = [path.read_text(encoding="utf-8").rstrip("\n") for path in files]
         for text in command_texts:
             validate_text(text)
+        brief_files = getattr(args, "brief_file", None)
+        if not brief_files:
+            raise ValueError("new launches require --brief-file; put the prompt in that file")
+        brief_files = brief_files if isinstance(brief_files, list) else [brief_files]
+        if len(brief_files) != len(files):
+            raise ValueError("provide one --brief-file per --command-file, in launch order")
+        briefs = [path.read_text(encoding="utf-8") for path in brief_files]
+        for brief in briefs:
+            if not brief.strip():
+                raise ValueError("brief must be nonempty")
+            validate_text(brief)
+        for text, brief in zip(command_texts, briefs):
+            append_brief(text, brief)
         choices = [None] * len(files)
         if getattr(args, "account_provider", None):
             if len(files) == 1:
@@ -384,13 +412,16 @@ async def operate(app, args):
                 choices = account_choice.select_batch(
                     args.account_provider, args.account_config, args.account, count=len(files)
                 )
-            command_texts = [with_account(text, choice) for text, choice in zip(command_texts, choices)]
+            command_texts = [with_account(text, choice, brief)
+                             for text, choice, brief in zip(command_texts, choices, briefs)]
         elif getattr(args, "account", None):
             raise ValueError("--account needs --account-provider")
         elif any(account_settings(text, account_choice.ACCOUNT_VARIABLES.values())
                  for text in command_texts):
             raise ValueError("account settings need --account-provider; remove them from the launch file "
                              "and use --account for an explicit override")
+        else:
+            command_texts = [append_brief(text, brief) for text, brief in zip(command_texts, briefs)]
         if choices[0]:
             for choice in choices:
                 check_codex_daemon(choice)
@@ -437,7 +468,9 @@ def main():
     new = commands.add_parser("new")
     new.add_argument("--window-id", required=True)
     new.add_argument("--command-file", type=Path, action="append", required=True,
-                     help="repeat for a batch, in launch order")
+                     help="one agent invocation and settings, without its prompt; repeat for a batch")
+    new.add_argument("--brief-file", type=Path, action="append", required=True,
+                     help="nonempty prompt to append as one argument; one per command file, in launch order")
     new.add_argument(
         "--account-provider",
         required=True,

@@ -285,7 +285,7 @@ service admission.
 
 ```sh
 uv run skills/supervisor/scripts/iterm_tab.py window
-uv run skills/supervisor/scripts/iterm_tab.py new --window-id <dedicated-window-id> --command-file <private-launch-file> --account-provider openai
+uv run skills/supervisor/scripts/iterm_tab.py new --window-id <dedicated-window-id> --command-file <private-launch-file> --brief-file <private-brief-file> --account-provider openai
 uv run skills/supervisor/scripts/iterm_tab.py list
 uv run skills/supervisor/scripts/iterm_tab.py read --session-id <iterm-session-id>
 uv run skills/supervisor/scripts/iterm_tab.py send --session-id <iterm-session-id> --text-file <private-message-file> --verified-target
@@ -298,8 +298,18 @@ iTerm hierarchy before launching. A session-wait timeout names the tab for
 inspection. If creation returns no tab identity, run `list` and inspect first;
 the tab may still exist. Do not create another tab or replay the launch without
 checking it. `window` still restores the previous tab after creation.
-Launch files contain the exact brief and model settings already authorized,
-without the Discord channels flag.
+Launch files contain one direct agent invocation and its already authorized
+model settings, without a prompt or the Discord channels flag. Put the exact
+brief in a separate UTF-8 file and pass `--brief-file`; the launcher reads it
+and appends it as one quoted prompt argument. For example, a launch file can
+contain `cd /absolute/repository && exec codex --remote unix://`, with the task
+text in the brief file. Shell wrappers, trailing operators and shell comments
+refuse because appending a prompt to them may not deliver it to the agent.
+Empty, whitespace-only, missing or unreadable briefs
+refuse before account selection, daemon startup, tabs or launch receipts.
+For a batch, repeat both file options in matching launch order; every brief
+is checked before the first launch. Do not put a shell text substitution in the
+launch file to load the prompt.
 After the catalog's [pinned Chrome server](https://github.com/cbusillo/codex-skills/blob/main/README.md#chrome-across-claude-account-homes)
 is installed for the selected Claude home, omit `--chrome` from launch files:
 the user MCP entry already supplies those tools regardless of the session account.
@@ -338,9 +348,8 @@ in launch output. Never apply a reset; Chris does that.
 
 The helper exports the account's `env` ahead of the command, including an agent
 started after `cd`. A command that sets or unsets account variables refuses, including through
-common shell wrappers. Keep brief text separate from shell settings: quote it
-with `shlex.quote`, or use a private brief file and a quoted `$(cat <brief-file>)`
-argument for complex text rather than shell-specific ANSI-C quoting.
+common shell wrappers. Keep brief text in `--brief-file`, separate from the
+shell settings in `--command-file`.
 A temporary write probe checks receipt storage before any tab is created; it
 is removed and never counted as a launch. A probe failure names the error type
 and asks for write access to the reader's storage root. Each receipt is written
@@ -357,8 +366,8 @@ List and read these tabs before retrying, rather than replaying the whole batch.
 # Read-only previews; these do not write receipts.
 uv run skills/supervisor/scripts/account_choice.py --provider anthropic
 uv run skills/supervisor/scripts/account_choice.py --provider openai --count 3
-uv run skills/supervisor/scripts/iterm_tab.py new --window-id <id> --command-file <launch-file> --account-provider anthropic
-uv run skills/supervisor/scripts/iterm_tab.py new --window-id <id> --command-file <first-launch> --command-file <second-launch> --account-provider openai
+uv run skills/supervisor/scripts/iterm_tab.py new --window-id <id> --command-file <launch-file> --brief-file <brief-file> --account-provider anthropic
+uv run skills/supervisor/scripts/iterm_tab.py new --window-id <id> --command-file <first-launch> --brief-file <first-brief> --command-file <second-launch> --brief-file <second-brief> --account-provider openai
 ```
 
 Read the returned account, source and reason before recording the session.
