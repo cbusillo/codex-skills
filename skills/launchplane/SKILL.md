@@ -1114,8 +1114,10 @@ verification.
   [helper contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads).
 - `GET /v1/product-profiles/{product}`: Bounded local-extension read
   (`product-profile-read --product`) for who a product's Client is and its
-  `production_use`: `prelaunch` skips Client release review, while `live` and
-  `unknown` require it. It also returns the display name, driver, repository,
+  `production_use` and `release_on_acceptance` metadata. For release authority,
+  follow the [release rule](../references/role-words.md#release-rule) and read
+  service-owned evidence with `product-promotion-status-read`. It also returns
+  the display name, driver, repository,
   lifecycle state and lane contexts and instances. Images, URLs, workflows and
   expected configuration are dropped.
 - `GET /v1/products/{product}/path-check`: Bounded local-extension read

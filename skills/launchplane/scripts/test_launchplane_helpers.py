@@ -3302,16 +3302,24 @@ def test_product_profile_read_returns_owner_and_production_use_only() -> None:
 
 
 @pytest.mark.parametrize(
-    "mode", ["held", "promote", "promote_with_rollback_drill", "director_standing"]
+    "mode", write_action.PRODUCT_RELEASE_ON_ACCEPTANCE_MODES
 )
-def test_product_profile_read_reports_release_on_acceptance(mode: str) -> None:
+@pytest.mark.parametrize("production_use", write_action.PRODUCT_PRODUCTION_USES)
+def test_product_profile_read_reports_service_metadata_only(mode: str, production_use: str) -> None:
     response = _product_profile_response()
-    cast(dict[str, Any], response["profile"])["release_on_acceptance"] = mode
-    status, payload, _calls = _run_product_read(
+    profile = cast(dict[str, Any], response["profile"])
+    profile.update(release_on_acceptance=mode, production_use=production_use)
+    status, payload, calls = _run_product_read(
         ["product-profile-read", "--product", "example-product"], response
     )
     assert status == 0
     assert payload["result"]["release_on_acceptance"] == mode
+    assert payload["result"]["production_use"] == production_use
+    assert payload["summary"] == {
+        "launchplane_status": response["status"],
+        "trace_id": response["trace_id"],
+    }
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("mode", ["invalid", "", None, False, 1, [], {}])
