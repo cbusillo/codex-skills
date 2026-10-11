@@ -110,6 +110,10 @@ Caller selectors are checked with the shared public-text safety validator before
 configuration or provider reads. Token-shaped or local-path selectors return an
 `invalid` envelope with an empty request and a generic `invalid_request` warning;
 the original input is never echoed, including when context is unconfigured.
+Local-path checks include named-home prefixes, file URLs, and parent-directory
+components with either slash style, after public-text whitespace normalization.
+GitHub token recognition is shared through `launchplane_safety.TOKEN_PATTERNS`
+by caller validation and provider-output projection.
 
 Skills must treat every status except `available` as optional context absence.
 
