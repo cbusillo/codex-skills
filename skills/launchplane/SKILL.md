@@ -591,8 +591,14 @@ policy:
           argv_prefix: ["launchplane", "service", "audit-config-authority"]
         - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "odoo-ownership", "check"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "ci", "postgres-integration"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "action-pins", "check"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "action-pins", "update"]
       action: require_preferred
-      message: Do not assume a global `launchplane` binary on ordinary workstations. Use the bundled helpers unless you are explicitly on a host-only Launchplane context with a repo-provided command.
+      message: Do not assume a global `launchplane` binary on ordinary workstations. Use the bundled helpers unless you are explicitly on a host-only Launchplane context with a repo-provided command. A repository gate in a Launchplane checkout is allowed only when the hook can see that checkout; Codex hooks see the session directory, not a command's `workdir`, so start the command with `cd /absolute/checkout && `.
       preferred:
         - kind: script
           path: scripts/launchplane-context.py
@@ -622,13 +628,17 @@ policy:
 
 The source-only `service export-openapi`, `service export-agent-contract`,
 `service export-owner-control-contract`, `service audit-config-authority`,
-`odoo-ownership check`, and `ci unittest-shard local|plan|run` gates may run
-through `uv run [--extra dev] launchplane` in a verified `cbusillo/launchplane`
-checkout or linked worktree, including frontend contract generation. Use the
-tool's working directory or a single literal absolute `cd <checkout> &&` prefix.
-Other shell directory/project overrides retain the block. PostgreSQL integration
-commands that target a database and all live/admin CLI commands retain their
-helper route below. Consumers without
+`odoo-ownership check`, `action-pins check|update`, and
+`ci unittest-shard local|plan|run` gates may run through
+`uv run [--extra dev] launchplane` in a verified `cbusillo/launchplane`
+checkout or linked worktree, including frontend contract generation.
+`ci postgres-integration` may run there too when the command itself names a
+loopback database through `--database-url` or a leading
+`LAUNCHPLANE_TEST_POSTGRES_URL=`. Use the session's working directory or a
+single literal absolute `cd <checkout> &&` prefix; on Codex, an exec `workdir`
+is not visible to the hook, so use the `cd` prefix. Other shell
+directory/project overrides retain the block. All live/admin CLI commands
+retain their helper route below. Consumers without
 repository-exception support keep the original block; do not bypass it through
 an alternate entry point.
 

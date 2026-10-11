@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import ipaddress
 import json
 import re
 import shlex
@@ -48,6 +49,7 @@ import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 # Resolve through the install link so the catalog is found wherever it is linked from.
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +57,7 @@ CATALOG = ROOT / "skills"
 SIMULATOR = CATALOG / "skill-creator" / "scripts" / "validate-command-policy-simulator.py"
 CODE_HOME_SKILLS = "$CODE_HOME/skills/"
 OPERATORS = re.compile(r"^[;&|()\n]+$")
+REPOSITORY_SLUG = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*/launchplane")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 TRANSPARENT = {"command", "exec", "time", "nohup"}
 SHELL_KEYWORDS = {"{", "!", "if", "then", "elif", "else", "do", "while", "until"}
@@ -63,6 +66,15 @@ SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
 GH_WRAPPER_FLAGS = {"--print-auth-account", "--require-automation-auth"}
 ENV_VALUE_FLAGS = {"-u", "--unset", "-C", "--chdir"}
 UV_VALUE_FLAGS = {"--python", "-p", "--extra", "--group", "--project", "--directory", "--with", "--with-editable", "--with-requirements"}
+# A gate whose checkout-root option takes `.` as data, not the shell `.` source command.
+DOT_ROOT_OPTIONS = {
+    "--control-plane-root": ["launchplane", "service", "audit-config-authority"],
+    "--repo-root": ["launchplane", "action-pins"],
+}
+POSTGRES_GATE = ["launchplane", "ci", "postgres-integration"]
+POSTGRES_URL_VARIABLE = "LAUNCHPLANE_TEST_POSTGRES_URL="
+# libpq reads these query parameters as the server to connect to, overriding the URL host.
+POSTGRES_HOST_OVERRIDES = {"host", "hostaddr", "service"}
 
 
 def load_simulator() -> ModuleType:
@@ -369,6 +381,28 @@ def describe(policy: dict[str, Any], skill: str, argv: list[str]) -> str:
     return "\n".join(lines)
 
 
+def loopback_database(url: str) -> bool:
+    """A PostgreSQL URL whose only server is this machine, so the gate cannot reach a shared database."""
+    try:
+        parts = urlsplit(url)
+        if not parts.scheme.startswith("postgres") or POSTGRES_HOST_OVERRIDES & {key.lower() for key in parse_qs(parts.query)}:
+            return False
+        return parts.hostname == "localhost" or ipaddress.ip_address(parts.hostname or "").is_loopback
+    except ValueError:
+        return False
+
+
+def names_loopback_database(argv: list[str]) -> bool:
+    """The PostgreSQL gate runs only against a database the command itself names; an inherited one is unseen."""
+    urls = [token.removeprefix(POSTGRES_URL_VARIABLE) for token in argv if token.startswith(POSTGRES_URL_VARIABLE)]
+    for index, token in enumerate(argv):
+        if token == "--database-url":
+            urls.append(argv[index + 1] if index + 1 < len(argv) else "")
+        elif token.startswith("--database-url="):
+            urls.append(token.removeprefix("--database-url="))
+    return bool(urls) and all(loopback_database(url) for url in urls)
+
+
 def exception_cwd(shell: str, cwd: Path) -> Path | None:
     """Accept the tool cwd or one literal leading cd joined by success-only &&.
 
@@ -409,24 +443,31 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
                     return None
                 return exception_cwd(tokens[index + 1], cwd)
         return None
-    for token in tokens:
+    for position, token in enumerate(tokens):
         if token in {"cd", "pushd", "popd", "eval", "source", "--active", "--no-project"} or Path(token).name in SHELLS:
             return None
+        if token.startswith(POSTGRES_URL_VARIABLE) and loopback_database(token.removeprefix(POSTGRES_URL_VARIABLE)):
+            continue
         if token.startswith("-C") or ASSIGNMENT.match(token) or token.split("=", 1)[0] in {"-C", "--chdir", "--directory", "--project", "--with", "--with-editable", "--with-requirements"}:
             return None
-        if Path(token).name == "launchplane" and token != "launchplane":
+        # A path ending in launchplane is another executable; `--repository OWNER/launchplane` names this one.
+        repository_slug = tokens[position - 1:position] == ["--repository"] and REPOSITORY_SLUG.fullmatch(token)
+        if Path(token).name == "launchplane" and token != "launchplane" and not repository_slug:
             return None
     for argv in commands:
         while argv and argv[0] in TRANSPARENT | {"builtin"}:
             argv = argv[1:]
         normalized = unwrap(argv)
+        if normalized and normalized[0][:3] == POSTGRES_GATE and not names_loopback_database(argv):
+            return None
         for index, token in enumerate(argv):
-            if token == "." and not (
-                index > 0 and argv[index - 1] == "--control-plane-root"
-                and normalized and normalized[0][:3] == ["launchplane", "service", "audit-config-authority"]
-            ):
+            gate = DOT_ROOT_OPTIONS.get(argv[index - 1]) if index > 0 else None
+            if token == "." and not (gate and normalized and normalized[0][:len(gate)] == gate):
                 return None
-        if "launchplane" in argv and argv[:2] != ["uv", "run"]:
+        command = argv
+        while command and command[0].startswith(POSTGRES_URL_VARIABLE):
+            command = command[1:]
+        if "launchplane" in command and command[:2] != ["uv", "run"]:
             return None
     return cwd if cwd.is_absolute() else None
 

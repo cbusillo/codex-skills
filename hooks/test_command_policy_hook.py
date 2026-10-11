@@ -84,6 +84,8 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "launchplane ci unittest-shard run --shard-count 2 --shard-index 0",
                 "launchplane service audit-config-authority --control-plane-root .",
                 "launchplane odoo-ownership check --workspace-root ..",
+                "launchplane action-pins check --repo-root . --revision HEAD --repository cbusillo/launchplane",
+                "launchplane action-pins update --release-sha 0123abc",
             )
             for command in commands:
                 with self.subTest(command=command):
@@ -207,6 +209,8 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "launchplane service audit-config-authority-other",
                 "launchplane odoo-ownership other-command",
                 "launchplane odoo-targets replacement-plan",
+                "launchplane action-pins report --revision HEAD --repository cbusillo/launchplane",
+                "launchplane action-pins check --repo-root . --revision HEAD --repository /global/bin/launchplane",
                 "launchplane merge-train run-once",
                 "launchplane service start",
             ):
@@ -214,6 +218,39 @@ class CommandPolicyHookTests(unittest.TestCase):
                     self.assertEqual(bash("uv run --extra dev " + command, checkout).returncode, 2)
             self.assertEqual(bash("launchplane ci unittest-shard local", checkout).returncode, 2)
             self.assertEqual(bash("uv run --project /other launchplane ci unittest-shard local", checkout).returncode, 2)
+
+    def test_postgres_gate_runs_only_against_a_named_loopback_database(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True)
+            gate = "uv run --extra dev launchplane ci postgres-integration"
+            local = "postgresql+psycopg://test:test@127.0.0.1:55432/postgres"
+            for line in (
+                "LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " " + gate,
+                gate + " --database-url " + local,
+                gate + " --database-url=postgresql://test@localhost/postgres",
+                gate + " --database-url 'postgresql://test@[::1]:5432/postgres?options=-c%20statement_timeout%3D5s'",
+                "cd " + shlex.quote(str(checkout)) + " && LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " " + gate,
+            ):
+                with self.subTest(line=line):
+                    self.assertEqual(bash(line, checkout).returncode, 0)
+            for line in (
+                gate,  # An inherited database URL is invisible to the hook.
+                gate + " --database-url",
+                gate + " --database-url postgresql://test@db.example.com/postgres",
+                gate + " --database-url 'postgresql://test@127.0.0.1/postgres?host=db.example.com'",
+                gate + " --database-url 'postgresql://test@127.0.0.1/postgres?service=shared'",
+                gate + " --database-url postgresql://test@127.0.0.1,db.example.com/postgres",
+                gate + " --database-url postgresql://test@127.0.0.1.example.com/postgres",
+                "LAUNCHPLANE_TEST_POSTGRES_URL=postgresql://test@db.example.com/postgres " + gate + " --database-url " + local,
+                "LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " " + gate + " --database-url postgresql://test@db.example.com/postgres",
+                "LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " uv run launchplane service start",
+                "LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " UV_PROJECT=/other " + gate,
+            ):
+                with self.subTest(line=line):
+                    self.assertEqual(bash(line, checkout).returncode, 2)
+            self.assertEqual(bash("LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " " + gate, Path(directory).parent).returncode, 2)
 
     def test_gate_batches_keep_newline_and_substitution_live_commands_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
