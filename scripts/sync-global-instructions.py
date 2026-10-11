@@ -325,12 +325,12 @@ def write_codex_hooks(outputs: HookOutputs, codex: Path, catalog: Path = ROOT) -
     return receipt
 
 
-def synchronize_instructions(content: str, destinations: list[Path], *, write: bool, local_source_missing: bool = False, allow_missing_local: bool = False, refresh_targets: set[Path] | None = None) -> list[dict[str, str]]:
+def synchronize_instructions(content: str, destinations: list[Path], *, write: bool, local_source_missing: bool = False, allow_missing_local: bool = False, refresh_targets: dict[Path, bytes] | None = None) -> list[dict[str, str]]:
     """Preserve linked instruction sources while synchronizing regular outputs."""
     linked = {}
     regular = []
     refreshed = {}
-    refresh_targets = refresh_targets or set()
+    refresh_targets = refresh_targets or {}
     targets = {path.resolve() for path in destinations if path.is_symlink()}
     for path in destinations:
         if path.resolve() in targets:
@@ -354,7 +354,7 @@ def synchronize_instructions(content: str, destinations: list[Path], *, write: b
             regular.append(path)
     outputs = {Path(entry["path"]): entry for entry in synchronize(
         content, regular, write=write, local_source_missing=local_source_missing,
-        allow_missing_local=allow_missing_local)}
+        allow_missing_local=allow_missing_local, expected_previous=refresh_targets)}
     for path, target in refreshed.items():
         outputs[path] = {**outputs[target], "path": str(path), "target": str(target)}
     outputs.update(linked)

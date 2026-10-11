@@ -50,6 +50,17 @@ def catalog_skills_directory(path: Path) -> bool:
     return resolved.name == "skills" and (resolved.parent / "instructions" / "global.md").is_file() and (resolved.parent / "scripts" / "sync-global-instructions.py").is_file()
 
 
+def committed_shared_sources(sync) -> list[str]:
+    """Return bounded committed sources for recognizing older generated outputs."""
+    bases = []
+    history = subprocess.run(["git", "--no-optional-locks", "-C", str(ROOT), "log", "-50", "--format=%H", "--", "instructions/global.md"], capture_output=True, text=True, timeout=30)
+    for revision in history.stdout.splitlines() if history.returncode == 0 else []:
+        old = subprocess.run(["git", "--no-optional-locks", "-C", str(ROOT), "show", f"{revision}:instructions/global.md"], capture_output=True, text=True, timeout=30)
+        if old.returncode == 0:
+            bases.append("\n\n".join(filter(None, (sync.HEADER, old.stdout.strip()))) + "\n")
+    return bases
+
+
 def personal_source(sync, destinations: list[Path], local: Path, *, new_destinations: set[Path] | None = None) -> str:
     """Import unmanaged text; generated documents require their known catalog prefix."""
     content = safe_file(local).strip()
@@ -64,11 +75,7 @@ def personal_source(sync, destinations: list[Path], local: Path, *, new_destinat
     if not previous_base and any(text.startswith(sync.HEADER) and text != known for text in texts.values()):
         # On first adoption, identify the longest committed shared source before
         # interpreting the remainder as private text, including source trims.
-        history = subprocess.run(["git", "--no-optional-locks", "-C", str(ROOT), "log", "-50", "--format=%H", "--", "instructions/global.md"], capture_output=True, text=True, timeout=30)
-        for revision in history.stdout.splitlines() if history.returncode == 0 else []:
-            old = subprocess.run(["git", "--no-optional-locks", "-C", str(ROOT), "show", f"{revision}:instructions/global.md"], capture_output=True, text=True, timeout=30)
-            if old.returncode == 0:
-                bases.append("\n\n".join(filter(None, (sync.HEADER, old.stdout.strip()))) + "\n")
+        bases.extend(committed_shared_sources(sync))
     for path, text in texts.items():
         if not text or text == known:
             continue
@@ -168,15 +175,25 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
     known_outputs = {content}
     if previous_base:
         known_outputs.add("\n\n".join(filter(None, (previous_base.strip(), personal.strip()))) + "\n")
-    refresh_targets = set()
+    generated_hashes = previous_installation.get("generated_instruction_hashes", {})
+    if not isinstance(generated_hashes, dict):
+        raise ValueError("Invalid generated instruction hashes in catalog installation receipt")
+    refresh_targets = {}
+    historical_outputs = None
     for path in destinations:
         target = path.resolve()
         if target not in preserved_targets or target.is_relative_to(ROOT.resolve()):
             continue
         text = safe_file(path, instruction=True)
-        if text in known_outputs and (text == content or str(path) not in hashes
-                                     or hashlib.sha256(text.encode()).hexdigest() == hashes[str(path)]):
-            refresh_targets.add(target)
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        recognized = text in known_outputs or (text.startswith(sync.HEADER) and generated_hashes.get(str(path)) == digest)
+        if not recognized and text.startswith(sync.HEADER):
+            if historical_outputs is None:
+                historical_outputs = {"\n\n".join(filter(None, (base.strip(), personal.strip()))) + "\n"
+                                      for base in committed_shared_sources(sync)}
+            recognized = text in historical_outputs
+        if recognized and (text == content or str(path) not in hashes or digest == hashes[str(path)]):
+            refresh_targets[target] = text.encode()
     # All destinations are inspected before any mutation.
     instruction_preview = sync.synchronize_instructions(content, destinations, write=False, refresh_targets=refresh_targets)
     hooks, hook_preview = None, []
@@ -340,7 +357,11 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                                    "scheduled_updater": scheduled, "scheduled_at": scheduled_at,
                                    "updater_plist": str(launch_path) if scheduled else None,
                                    "shared_source_sha256": hashlib.sha256(shared_source.encode()).hexdigest(),
-                                   "instruction_hashes": {entry["path"]: entry["sha256"] for entry in outputs}}, indent=2) + "\n"
+                                   "instruction_hashes": {entry["path"]: entry["sha256"] for entry in outputs},
+                                   "generated_instruction_hashes": {entry["path"]: entry["sha256"] for entry in outputs
+                                        if entry["state"] in ("written", "current")
+                                        and (Path(entry["path"]).resolve() not in preserved_targets
+                                             or Path(entry["path"]).resolve() in refresh_targets)}}, indent=2) + "\n"
         sync.synchronize(installation, [installation_path], write=True)
         if hook_outputs:
             outputs += sync.write_codex_hooks(hook_outputs, codex, catalog=ROOT)

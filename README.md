@@ -47,8 +47,10 @@ changed instruction files are backed up. Existing symlinked instruction files
 are read for initial adoption. Recognized generated targets are refreshed during
 installation and scheduled updates, with a backup of changed target content;
 the links remain intact, including account homes sharing one target. Recognition
-uses the current or previously installed shared source and the authoritative
-private source, with recorded hashes protecting against hand edits. Targets
+uses current, previously installed, or committed shared sources with the
+authoritative private source. Receipts distinguish generated outputs the installer
+managed from skipped sources, so private-source edits propagate through links
+while hand edits remain protected. Targets
 inside the catalog checkout are preserved.
 Unmanaged personal targets stay unchanged. Later edits to those linked sources
 stay in their external source; to propagate them into regular outputs, update

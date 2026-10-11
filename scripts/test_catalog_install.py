@@ -206,6 +206,68 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(target.read_bytes(), original)
         self.assertEqual(path.readlink(), target)
 
+    def test_generated_links_refresh_after_private_source_changes(self):
+        self.install()
+        path = self.codex / "AGENTS.md"
+        target = self.root / "generated.md"
+        target.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(target)
+        self.install()
+        local = self.catalog / ".local" / "global-instructions.md"
+        local.write_text("New private rule.\n")
+        self.install()
+        self.assertIn("New private rule.", target.read_text())
+        self.assertEqual(target.read_text(), (self.claude / "CLAUDE.md").read_text())
+
+    def test_legacy_link_multiple_catalog_updates_behind_is_recognized_from_history(self):
+        command("git", "init", "-q", cwd=self.catalog)
+        command("git", "config", "user.name", "Fixture", cwd=self.catalog)
+        command("git", "config", "user.email", "fixture@example.invalid", cwd=self.catalog)
+        command("git", "add", "instructions/global.md", cwd=self.catalog)
+        command("git", "commit", "-qm", "original source", cwd=self.catalog)
+        self.install()
+        target = self.root / "generated.md"
+        target.write_bytes((self.codex / "AGENTS.md").read_bytes())
+        # Model the old installer: its receipt records skipped content and the
+        # newest shared source while the actual linked output remains stale.
+        source = self.catalog / "instructions" / "global.md"
+        for text in ("Intermediate source.\n", "Newest source.\n"):
+            source.write_text(text)
+            command("git", "commit", "-qam", "source update", cwd=self.catalog)
+            self.install()
+        path = self.codex / "AGENTS.md"
+        path.unlink()
+        path.symlink_to(target)
+        receipt_path = self.catalog / ".local" / "catalog-install.json"
+        receipt = json.loads(receipt_path.read_text())
+        receipt.pop("generated_instruction_hashes", None)
+        receipt["instruction_hashes"][str(path)] = installer.hashlib.sha256(target.read_bytes()).hexdigest()
+        receipt_path.write_text(json.dumps(receipt))
+        self.install()
+        self.assertIn("Newest source.", target.read_text())
+        self.assertEqual(path.readlink(), target)
+
+    def test_target_edit_between_preview_and_apply_refuses_overwrite(self):
+        self.install()
+        path = self.codex / "AGENTS.md"
+        target = self.root / "generated.md"
+        target.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(target)
+        (self.catalog / "instructions" / "global.md").write_text("New source.\n")
+        original = target.read_text()
+        synchronize = self.sync.synchronize_instructions
+        def concurrent_edit(content, destinations, **kwargs):
+            if kwargs["write"]:
+                target.write_text(original + "Concurrent hand edit.\n")
+            return synchronize(content, destinations, **kwargs)
+        with mock.patch.object(self.sync, "synchronize_instructions", side_effect=concurrent_edit):
+            with self.assertRaisesRegex(ValueError, "changed since"):
+                self.install()
+        self.assertIn("Concurrent hand edit.", target.read_text())
+        self.assertEqual(path.readlink(), target)
+
     def test_linked_source_edits_are_preserved_and_private_source_can_propagate_them(self):
         target = self.root / "personal-instructions.md"
         target.write_text("Old personal rule.\n")
