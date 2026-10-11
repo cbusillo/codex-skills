@@ -161,8 +161,24 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         text = safe_file(path, instruction=True)
         if path.resolve() not in preserved_targets and str(path) in hashes and hashlib.sha256(text.encode()).hexdigest() != hashes[str(path)] and text != content:
             raise ValueError(f"Installed instructions changed: {path}; preserve the edits in {local}, preview scripts/sync-global-instructions.py, write the reconciled output and rerun")
+    # Refresh only identifiable generated targets, never external personal sources
+    # or catalog files. The prior shared source plus authoritative private source
+    # proves what the old generated content means; a header or receipt alone does not.
+    previous_base = safe_file(ROOT / ".local" / "catalog-global-source.md")
+    known_outputs = {content}
+    if previous_base:
+        known_outputs.add("\n\n".join(filter(None, (previous_base.strip(), personal.strip()))) + "\n")
+    refresh_targets = set()
+    for path in destinations:
+        target = path.resolve()
+        if target not in preserved_targets or target.is_relative_to(ROOT.resolve()):
+            continue
+        text = safe_file(path, instruction=True)
+        if text in known_outputs and (text == content or str(path) not in hashes
+                                     or hashlib.sha256(text.encode()).hexdigest() == hashes[str(path)]):
+            refresh_targets.add(target)
     # All destinations are inspected before any mutation.
-    instruction_preview = sync.synchronize_instructions(content, destinations, write=False)
+    instruction_preview = sync.synchronize_instructions(content, destinations, write=False, refresh_targets=refresh_targets)
     hooks, hook_preview = None, []
     hook_path = codex / "hooks.json"
     hook_previous = None
@@ -314,7 +330,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         for path, target in pending:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.symlink_to(target, target_is_directory=True)
-        outputs = sync.synchronize_instructions(content, destinations, write=True)
+        outputs = sync.synchronize_instructions(content, destinations, write=True, refresh_targets=refresh_targets)
         sync.synchronize(base, [ROOT / ".local" / "catalog-global-source.md"], write=True)
         scheduled = updater or (previous_installation.get("scheduled_updater", False) and launch_path.is_file())
         scheduled_at = previous_installation.get("scheduled_at") if previous_installation.get("scheduled_updater") and launch_path.is_file() else None
