@@ -243,7 +243,7 @@ class InstallTests(unittest.TestCase):
         original = target.read_bytes()
         (self.catalog / "instructions" / "global.md").write_text("New shared rule.\n")
         for unavailable in (target, target.parent):
-            with self.subTest(unavailable=unavailable), mock.patch.object(installer.os, "access", side_effect=lambda p, mode: p != unavailable.resolve()):
+            with self.subTest(unavailable=unavailable), mock.patch("os.access", side_effect=lambda p, mode: p != unavailable.resolve()):
                 self.assertEqual(self.install(write=False)["outputs"][1]["state"], "skipped")
                 self.install()
                 self.assertEqual(target.read_bytes(), original)
@@ -306,7 +306,7 @@ class InstallTests(unittest.TestCase):
             if kwargs["write"]:
                 target.write_text(original + "Concurrent hand edit.\n")
             return synchronize(content, destinations, **kwargs)
-        with mock.patch.object(self.sync, "synchronize_instructions", side_effect=concurrent_edit):
+        with mock.patch.dict(self.sync.__dict__, {"synchronize_instructions": concurrent_edit}):
             with self.assertRaisesRegex(ValueError, "changed since"):
                 self.install()
         self.assertIn("Concurrent hand edit.", target.read_text())
