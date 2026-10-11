@@ -5,12 +5,14 @@
 """Normalize the Supervisor's verified STALE-CLAIMS inventory without inventing exit metadata."""
 
 from pathlib import Path
+from typing import Any
 import re
 import session_record
 
 
-def load(rows, roots_by_harness):
-    grouped, reports = {}, []
+def load(rows, roots_by_harness) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    reports: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError("inventory rows must be objects")

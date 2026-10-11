@@ -467,7 +467,7 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
         if entry.get("_inventory") and (repo, number) not in {(r["repo"], r["issue"]) for r in entry["_inventory_claims"]}:
             continue
         try:
-            issue_plans, status_claims = plan_issue(reader, repo, number, entry, actor, handoff_prs, pulls_by_repo, checkout_root, apply)
+            issue_plans, status_claims = plan_issue(reader, repo, number, entry, actor, handoff_prs, pulls_by_repo, checkout_root)
             plans.extend(issue_plans)
             retained_status.extend(status_claims)
         except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError, GitHubReadError, GitHubReadShapeError) as error:
@@ -483,7 +483,7 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
         raise PartialRelease(error, report) from error
 
 
-def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_by_repo, checkout_root, apply):
+def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_by_repo, checkout_root):
     plans, retained_status = [], []
     reader.deadline_at = time.time() + entry.get("_read_deadline_seconds", 600)
     issue = reader.get_json(f"/repos/{repo}/issues/{number}", step="release_canonical_issue")
