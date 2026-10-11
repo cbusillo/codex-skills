@@ -14,7 +14,7 @@ import urllib.error
 from email.message import Message
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import auto_enqueue as watch
 
@@ -908,6 +908,147 @@ class QualificationTests(unittest.TestCase):
         ):
             with self.assertRaises(ValueError):
                 watch.Live.label(self.io, TARGET, 1)
+
+
+class WatchLoopTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "holds.json"
+        self.path.write_text(json.dumps({
+            "paused_repositories": [],
+            "coordinated_repositories": [],
+            "client_releases": [],
+        }))
+
+    def run_watch(self, factory, *, once=False, duration=8):
+        now = [0.0]
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        argv = [
+            "--owner", "example", "--hold-file", str(self.path), "--apply",
+            "--interval", "4", "--deadline-seconds", str(duration),
+        ]
+        if once:
+            argv.append("--once")
+        with (
+            patch.object(watch, "Live", side_effect=factory) as live,
+            patch.object(watch.time, "time", side_effect=lambda: now[0]),
+            patch.object(watch.time, "sleep", side_effect=sleep) as sleeps,
+            patch("builtins.print") as output,
+        ):
+            result = watch.main(argv)
+        events = [json.loads(call.args[0]) for call in output.call_args_list]
+        return result, live.call_count, sleeps.call_args_list, events
+
+    def test_transient_reads_end_only_pass_then_fresh_pass_enqueues(self):
+        github_error = watch.GitHubReadError(
+            "private provider detail",
+            result=watch.github_api.ApiResult(
+                ok=False, status=503, body=None,
+                failure=watch.github_api.FailureDetail(
+                    cause="network_provider_failure", message="private",
+                    retryable=True, fallback_eligible=False, disposition="retry",
+                ),
+            ),
+            diagnostics={},
+        )
+        for error in (
+            urllib.error.HTTPError("https://private.invalid", 503, "private", Message(), None),
+            urllib.error.URLError("private"),
+            TimeoutError("private"),
+            ConnectionResetError("private"),
+            github_error,
+        ):
+            for stage in ("initialize", "scan", "before_write"):
+                with self.subTest(error=type(error).__name__, stage=stage):
+                    failed = Fake(count=1)
+                    healthy = Fake(count=1)
+                    if stage == "scan":
+                        failed.pages = Mock(side_effect=error)
+                    elif stage == "before_write":
+                        def before(io):
+                            if io.calls == 2:
+                                raise error
+
+                        failed.before = before
+                    factory = Mock(side_effect=[
+                        error if stage == "initialize" else failed, healthy,
+                    ])
+                    result, calls, sleeps, events = self.run_watch(factory)
+                    self.assertEqual(result, 0)
+                    self.assertEqual(calls, 2)
+                    self.assertEqual([call.args[0] for call in sleeps], [4, 4])
+                    self.assertEqual(failed.writes, [])
+                    self.assertEqual(healthy.writes, [1])
+                    self.assertEqual(
+                        sum(event["event"] == "pass_failed" for event in events), 1,
+                    )
+                    self.assertEqual(events[-1]["payload"]["outcome"], "deadline")
+                    self.assertNotIn("private", json.dumps(events))
+
+    def test_retry_sleep_is_bounded_by_deadline(self):
+        result, calls, sleeps, events = self.run_watch(
+            Mock(side_effect=TimeoutError()), duration=2,
+        )
+        self.assertEqual(result, 0)
+        self.assertEqual(calls, 1)
+        self.assertEqual(sleeps[0].args, (2,))
+        self.assertEqual(events[-1]["payload"]["outcome"], "deadline")
+
+    def test_once_reports_failed_read_without_retry_or_success(self):
+        result, calls, sleeps, events = self.run_watch(
+            Mock(side_effect=urllib.error.URLError("private")), once=True,
+        )
+        self.assertEqual((result, calls, sleeps), (1, 1, []))
+        self.assertEqual([event["event"] for event in events], ["pass_failed"])
+
+    def test_nontransient_read_failures_still_stop(self):
+        for error in (
+            urllib.error.HTTPError("https://private.invalid", 403, "private", Message(), None),
+            FileNotFoundError("private"),
+            ValueError("private"),
+            watch.GitHubReadShapeError("private"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                result, calls, sleeps, events = self.run_watch(
+                    Mock(side_effect=error),
+                )
+                self.assertEqual((result, calls, sleeps), (1, 1, []))
+                self.assertEqual(events[-1]["payload"]["outcome"], "error")
+                self.assertNotIn("private", json.dumps(events))
+
+    def test_uncertain_label_write_or_failed_readback_stops_without_replay(self):
+        for certainty in ("unknown", "confirmed"):
+            with self.subTest(certainty=certainty):
+                fake = Fake(count=1)
+                adapter = object.__new__(watch.Live)
+                adapter.deadline = 10_000
+                adapter.pages = Mock(side_effect=urllib.error.URLError("private"))
+                fake.label = adapter.label
+                with patch.object(
+                    watch.github_api, "call_gh_with_retry", return_value=api_result(certainty),
+                ) as write:
+                    result, calls, sleeps, events = self.run_watch(lambda _deadline: fake)
+                self.assertEqual((result, calls, sleeps), (1, 1, []))
+                self.assertEqual(write.call_count, 1)
+                self.assertEqual(adapter.pages.call_count, int(certainty == "confirmed"))
+                self.assertEqual(events[-1]["payload"]["outcome"], "error")
+
+    def test_transient_read_after_confirmed_label_stops_remaining_batch(self):
+        fake = Fake()
+
+        def before(io):
+            if io.writes:
+                raise ConnectionResetError("private")
+
+        fake.before = before
+        result, calls, sleeps, events = self.run_watch(lambda _deadline: fake)
+        self.assertEqual((result, calls, sleeps), (1, 1, []))
+        self.assertEqual(fake.writes, [1])
+        self.assertEqual(events[-1]["payload"]["outcome"], "error")
 
 
 if __name__ == "__main__":

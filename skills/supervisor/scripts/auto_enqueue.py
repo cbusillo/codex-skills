@@ -19,6 +19,7 @@ import tempfile
 import time
 import urllib.error
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -443,7 +444,29 @@ class Live:
             raise ValueError("enqueue label readback failed")
 
 
-def run_pass(io, args, emit):
+@dataclass
+class PassState:
+    write_started: bool = False
+
+
+def transient_read_error(error):
+    if isinstance(error, urllib.error.HTTPError):
+        return 500 <= error.code < 600
+    if isinstance(error, GitHubReadError):
+        failure = error.result.failure
+        return bool(
+            failure
+            and failure.cause == "network_provider_failure"
+            and failure.retryable
+        )
+    return isinstance(
+        error,
+        (urllib.error.URLError, TimeoutError, ConnectionError, subprocess.TimeoutExpired),
+    )
+
+
+def run_pass(io, args, emit, *, state=None):
+    state = PassState() if state is None else state
     targets = io.policies(args.owner)
     selected = {repo.casefold() for repo in args.repo}
     for target in targets:
@@ -620,6 +643,8 @@ def run_pass(io, args, emit):
                     )
                     if record:
                         candidate_records.add(record)
+                # Mark before dispatch: a raised transport error cannot prove no write.
+                state.write_started = True
                 io.label(target, item["number"])
                 own.append(item["number"])
                 emit(
@@ -749,7 +774,18 @@ def main(argv=None):
 
     try:
         while time.time() < deadline:
-            run_pass(Live(deadline), args, emit)
+            state = PassState()
+            try:
+                run_pass(Live(deadline), args, emit, state=state)
+            except (OSError, GitHubReadError, subprocess.TimeoutExpired) as error:
+                if state.write_started or not transient_read_error(error):
+                    raise
+                emit(
+                    "pass_failed",
+                    {"cause": type(error).__name__, "action": "retry next interval"},
+                )
+                if args.once:
+                    return 1
             if args.once:
                 break
             time.sleep(min(args.interval, max(0, deadline - time.time())))
