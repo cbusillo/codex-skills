@@ -19,7 +19,7 @@ from unittest.mock import patch
 import auto_enqueue as watch
 
 REPO = "example/tool"
-CONTROL = "example/controller"
+CLIENT = "example/client-product"
 SHA = "a" * 40
 TARGET = {
     "repo": REPO,
@@ -146,7 +146,6 @@ class EnqueueTests(unittest.TestCase):
         self.args = argparse.Namespace(
             owner="example",
             repo=[],
-            control_plane_repo=CONTROL,
             hold_file=self.path,
             handoff_login=[],
             max_batch_size=4,
@@ -216,9 +215,14 @@ class EnqueueTests(unittest.TestCase):
                 self.run_pass(fake)
                 self.assertEqual(fake.writes, [])
                 self.holds[key] = []
-        self.holds["client_releases"] = [{"repository": REPO, "status": "ready"}]
-        self.assertTrue(watch.held(self.holds, CONTROL, CONTROL))
-        self.assertFalse(watch.held(self.holds, "example/independent", CONTROL))
+
+    def test_client_release_pauses_only_its_product(self):
+        self.holds["client_releases"] = [{"repository": CLIENT, "status": "open"}]
+        self.save()
+        self.assertTrue(watch.held(self.holds, CLIENT))
+        fake = Fake()
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [1, 2, 4, 5])
 
     def test_missing_or_invalid_holds_refuse_before_effect(self):
         for value in ("{}", "{", '{"paused_repositories": []}'):
@@ -291,17 +295,17 @@ class EnqueueTests(unittest.TestCase):
                     pass
         inode = self.path.with_name(self.path.name + ".lock").stat().st_ino
         watch.edit_holds(["--hold-file", str(self.path), "--release-ready", REPO])
-        self.assertTrue(watch.held(watch.read_holds(self.path), CONTROL, CONTROL))
+        self.assertTrue(watch.held(watch.read_holds(self.path), REPO))
         watch.edit_holds(
             ["--hold-file", str(self.path), "--release-finished", REPO, "--pause", REPO]
         )
-        self.assertFalse(watch.held(watch.read_holds(self.path), CONTROL, CONTROL))
-        self.assertTrue(watch.held(watch.read_holds(self.path), REPO, CONTROL))
+        self.assertEqual(watch.read_holds(self.path)["client_releases"], [])
+        self.assertTrue(watch.held(watch.read_holds(self.path), REPO))
         self.assertEqual(
             self.path.with_name(self.path.name + ".lock").stat().st_ino, inode
         )
         watch.edit_holds(["--hold-file", str(self.path), "--resume", REPO.upper()])
-        self.assertFalse(watch.held(watch.read_holds(self.path), REPO, CONTROL))
+        self.assertFalse(watch.held(watch.read_holds(self.path), REPO))
 
     def test_latest_wait_stale_head_missing_head_and_untrusted_ready_refuse(self):
         self.assertTrue(watch.latest_ready(pr(), [comment()], {"engineer"}))

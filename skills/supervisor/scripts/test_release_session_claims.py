@@ -165,6 +165,14 @@ class ReleaseTests(unittest.TestCase):
         self.reader.paged_json.return_value = [{**self.source, "user": {"login": "human"}}]
         with self.assertRaisesRegex(ValueError, "another identity"):
             helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
+
+    def test_released_source_with_unreleased_followup_requires_reconciliation(self):
+        self.reader.paged_json.return_value = [self.source,
+            comment(2, "Claimed by trial\nSession: source-session"), comment(3, "Released claim 1")]
+        with self.assertRaisesRegex(ValueError, "hand-written claim 2"):
+            helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
+        self.reader.paged_json.return_value.append(comment(4, "Released claim 2"))
+        self.assertEqual(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR), [])
         self.reader.paged_json.return_value = [comment(2, "Claimed by trial\nSession: source-session")]
         with self.assertRaisesRegex(ValueError, "hand-written"):
             helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)

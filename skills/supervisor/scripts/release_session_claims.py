@@ -227,7 +227,8 @@ def active_claims(reader, repo, number, session, actor):
                 and belongs_to_session(c.get("body") or "", session)
                 and not any(r["session"] == session and re.match(
                     rf"Claimed by {re.escape(r['worker'])}(?:\s|$)", c.get("body") or "")
-                    for source in comments for r in claim.records(source.get("body") or ""))):
+                    for source in comments if source["id"] in active_ids
+                    for r in claim.records(source.get("body") or ""))):
             # The existing release route requires a structured source. Never
             # invent one or release an older hand-written source by worker alias.
             raise ValueError(f"hand-written claim {c['id']} needs its authored exact-ID release")
@@ -304,7 +305,7 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
         raise PartialRelease(error, report) from error
 
 
-def plan_issue(reader, repo, number, entry, actor, handoff_prs, pulls_by_repo, checkout_root, apply):
+def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_by_repo, checkout_root, apply):
     plans, retained_status = [], []
     reader.deadline_at = time.time() + entry.get("_read_deadline_seconds", 600)
     issue = reader.get_json(f"/repos/{repo}/issues/{number}", step="release_canonical_issue")
@@ -321,7 +322,7 @@ def plan_issue(reader, repo, number, entry, actor, handoff_prs, pulls_by_repo, c
         if repo not in pulls_by_repo:
             pulls_by_repo[repo] = reader.paged_json(f"/repos/{repo}/pulls", params={"state": "open"}, step_prefix="retained_session_prs")
         pulls = list(pulls_by_repo[repo])
-        mentioned = handoff_prs | ({record["refresh_pr"]} if record.get("refresh_pr") else set())
+        mentioned: set[str] = handoff_prs | ({record["refresh_pr"]} if record.get("refresh_pr") else set())
         for url in sorted(mentioned):
             match = re.fullmatch(rf"https://github\.com/{re.escape(repo)}/pull/([1-9]\d*)", url)
             if match and not any(p["html_url"] == url for p in pulls):

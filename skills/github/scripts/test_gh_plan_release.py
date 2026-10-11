@@ -278,6 +278,20 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotEqual(caught.exception.payload.get("release_refusal_scope"), release.ISSUE_REFUSAL_SCOPE)
         self.f.assert_no_writes()
 
+    def test_issue_refusal_cannot_mask_post_closure_commit_activity(self):
+        for peer in (False, True):
+            self.refresh_setup()
+            self.f.pulls[0]["head"]["ref"] = fixtures.OTHER["branch"]
+            self.f.pulls[0]["body"] = "See #42"
+            self.commit_date = "2026-10-02T01:00:00Z"
+            if peer:
+                self.f.inventory["worktrees"] = [{"branch": fixtures.OTHER["branch"], "path": "/source"}]
+                self.f.inventory["sessions"] = [{"sessionId": "different-session", "cwd": "/source"}]
+            with self.assertRaisesRegex(PLAN.PlanError, "commit activity after") as caught:
+                self.run_release()
+            self.assertNotEqual(caught.exception.payload.get("release_refusal_scope"), release.ISSUE_REFUSAL_SCOPE)
+            self.f.assert_no_writes()
+
     def test_untrusted_or_example_receipt_does_not_poison_claims(self):
         for text in ("<!-- " + release.RELEASE_MARKER + "bad -->", "```\n<!-- " + release.RELEASE_MARKER + "bad -->\n```"):
             with self.subTest(text=text):

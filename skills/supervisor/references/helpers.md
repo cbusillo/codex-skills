@@ -142,7 +142,7 @@ delivery holds, never enrollment, branch names or enqueue labels.
 
 ```sh
 uv run skills/supervisor/scripts/auto_enqueue.py holds --hold-file <private-holds.json> --init --coordinated-repo OWNER/CLIENT-REPO --coordinated-repo OWNER/SHARED-REPO
-uv run skills/supervisor/scripts/auto_enqueue.py --owner OWNER --control-plane-repo OWNER/CONTROL --hold-file <private-holds.json> --once
+uv run skills/supervisor/scripts/auto_enqueue.py --owner OWNER --hold-file <private-holds.json> --once
 ```
 
 Initialization refuses an existing record. Missing or malformed hold state stops
@@ -151,10 +151,18 @@ the watcher. Its fields are `paused_repositories` and `coordinated_repositories`
 `ready` or `open` status). Reuse the same record through takeover; reconcile it
 with the handoff before rearming. Do not maintain another per-session copy.
 
-Record a release hold **before** its batch lands and becomes ready, including
-before its invitation posts. Ready/open Client release entries pause both that
-product and the explicitly supplied control-plane repository. The hold command
-waits for the current repository's enqueue section before acknowledging the
+Client-product batching remains coordinated as the
+[Client Products rules](../SKILL.md#client-products) require. The watcher's
+`client_releases` entries are an optional manual pause control, not a required
+step for Client releases; leave them empty for normal routing. A ready/open
+entry pauses only the named product's own landings, never Launchplane or any
+other repository. A coordinated product is already held, so ordinary product
+coordination needs no such entry.
+During takeover, use the handoff to distinguish deliberate manual pauses from
+entries created only for the retired Launchplane hold. Clear only the latter
+before rearming, keeping the product coordinated in the same command:
+`--release-finished OWNER/CLIENT-REPO --coordinated-repo OWNER/CLIENT-REPO`.
+The hold command waits for the current repository's enqueue section before acknowledging the
 update. Between repositories, a pause update can win the lock and make the
 watcher's next nonblocking acquisition stop safely. Finish the hold update and
 reconcile any already emitted enqueue events before rearming the watcher.
@@ -218,10 +226,13 @@ watcher does not merge, update branches, deploy or send Client invitations.
 The local lock serializes this watcher's labels and pause updates. It does not
 lock Launchplane's scheduler, another host, or manual queue writers. Service
 state can change after a read and before a GitHub label: this interim helper is
-not an atomic admission fence. Keep the Supervisor's existing release-window
-coordination, pause other drivers, and account for already queued/active work
-before protecting a release. Do not claim that a pause file halts an existing
-candidate. First-class service holds and atomic admission belong to #3327.
+not an atomic admission fence. When using an optional manual pause, coordinate
+other drivers and account for already queued/active work. Do not claim that a
+pause file halts an existing candidate. Client-product delivery still follows
+the linked Client Products rules; those rules also link the decision retiring
+the Launchplane landing hold. First-class service holds and atomic admission
+belong to [launchplane#3327](https://github.com/cbusillo/launchplane/issues/3327)
+service admission.
 
 ## Launching and nudging
 

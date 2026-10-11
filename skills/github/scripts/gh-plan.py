@@ -2028,9 +2028,14 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         # refusal can be classified as independent issue work.
         if expected_actor is None:
             raise PlanError("Release requires the configured source automation identity")
-        github_plan_release.prepare_release(source, evidence, comments, inventory,
-            actor=expected_actor, role=args.role, releaser_session=args.session,
-            evidence_url=args.evidence_comment, retained_prs=args.retained_pr, related=related)
+        issue_refusal = None
+        try:
+            github_plan_release.prepare_release(source, evidence, comments, inventory,
+                actor=expected_actor, role=args.role, releaser_session=args.session,
+                evidence_url=args.evidence_comment, retained_prs=args.retained_pr, related=related)
+        except github_plan_release.IssueReleaseRefusal as error:
+            # Finish every source-activity check before isolating a peer refusal.
+            issue_refusal = error
         _, open_pulls = collect_paged_rest_items(f"/repos/{issue['repo']}/pulls", query={"state": "open"},
             bucket="rest_core", step_prefix="release_source_branch_prs")
         branch_prs = [f"https://github.com/{issue['repo']}/pull/{p['number']}" for p in open_pulls
@@ -2046,8 +2051,8 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                     or pull.get("state") != "open" and not pull.get("merged_at")
                     or any(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != issue["repo"].casefold() for side in ("head", "base"))
                     or not github_plan_claim.pr_issue_reference(pull, issue["number"], repo=issue["repo"], attestation=True)):
-                raise PlanError("Retained PR must independently link the canonical issue and belong to the source automation identity",
-                                payload={"release_refusal_scope": github_plan_release.ISSUE_REFUSAL_SCOPE})
+                issue_refusal = github_plan_release.IssueReleaseRefusal(
+                    "Retained PR must independently link the canonical issue and belong to the source automation identity")
             retained_branches.add(pull["head"]["ref"])
             ended = re.findall(r"(?m)^Ended at: (\S+)$", evidence.get("body") or "")
             if len(ended) != 1:
@@ -2056,6 +2061,8 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             commit_at = github_plan_release.stamp(head_commit["commit"]["committer"]["date"])
             if commit_at >= github_plan_release.stamp(ended[0]):
                 raise PlanError("Retained PR has commit activity after the cited session-ended evidence")
+        if issue_refusal is not None:
+            raise issue_refusal
         release_actor = expected_actor
         if release_actor is None:
             raise PlanError("Release requires the configured source automation identity")
