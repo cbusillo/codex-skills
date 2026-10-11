@@ -393,8 +393,17 @@ Keep planning state separate from PR execution state:
   when the repo documents a manual tester workflow, usually in `qaLabels`.
 - `own-project` marks a PR, or the issue it links, as work for one of the
   own projects in the overall direction's Order when its repository is not on
-  that list, such as garage or lab work in an infrastructure repository. The
-  weekly direction audit counts it as own; `gh-plan.py ensure-labels` creates it.
+  that list, such as lab or house work in an infrastructure repository. The
+  direction skill owns [capacity classification](../../direction/SKILL.md#weekly-audit).
+  At PR creation, check the work
+  against the merged overall direction's Order. For own-project work in a
+  mixed repository, pass `gh-pr.py --repo OWNER/REPO create --label own-project`
+  alongside the other creation arguments, unless a linked issue already
+  carries that label or belongs to an Order-listed own-project repository.
+  If the label is missing, run `gh-plan.py --repo OWNER/REPO ensure-labels`
+  first. For an existing PR, use `gh-pr.py --repo OWNER/REPO edit NUMBER
+  --add-label own-project`. Keep the classification list in the overall
+  direction; do not classify every PR in a mixed repository as own.
 - A merge-train enqueue label is the readiness signal recorded in Launchplane's
   active policy (often `ready-to-merge`). It does not replace a fresh PR read, passing required checks,
   review accounting, and merge authorization as defined in

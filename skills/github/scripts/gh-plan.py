@@ -2331,6 +2331,9 @@ def cmd_claim(args: argparse.Namespace) -> None:
         if not admission:
             return ""
         track = None
+        complete = True
+        limitations: list[str] = []
+        read_failures: list[dict[str, Any]] = []
         if admission == "milestone":
             def read_parent(parent_repo: str, parent_number: int) -> dict[str, Any] | None:
                 try:
@@ -2341,23 +2344,44 @@ def cmd_claim(args: argparse.Namespace) -> None:
                         return None
                     raise
 
+            def graph_read(surface: str, node_repo: str, node_number: int) -> Any:
+                # Recover only admission reads; independent claim guards still run.
+                try:
+                    if surface == "issue":
+                        return get_issue(str(node_number), node_repo)[1]
+                    if surface == "parent":
+                        return read_parent(node_repo, node_number)
+                    return collect_paged_rest_items(
+                        f"/repos/{node_repo}/issues/{node_number}/dependencies/blocking",
+                        query={}, bucket="rest_core", step_prefix="claim_admission_blocking")[1]
+                except PlanError as graph_error:
+                    if "graph_read_unavailable" not in limitations:
+                        limitations.append("graph_read_unavailable")
+                    read_failures.append({"repo": node_repo, "number": node_number, "surface": surface,
+                                          "status": (graph_error.api_result or {}).get("status")})
+                    return {} if surface == "issue" else None if surface == "parent" else []
+
             track, complete = github_plan_claim.admission_track(
                 (issue_repo, number), issue_repo.split("/")[0],
-                read_issue=lambda node_repo, node_number: get_issue(str(node_number), node_repo)[1],
-                read_parent=read_parent,
-                read_blocking=lambda node_repo, node_number: collect_paged_rest_items(
-                    f"/repos/{node_repo}/issues/{node_number}/dependencies/blocking",
-                    query={}, bucket="rest_core", step_prefix="claim_admission_blocking")[1],
+                read_issue=lambda node_repo, node_number: graph_read("issue", node_repo, node_number),
+                read_parent=lambda node_repo, node_number: graph_read("parent", node_repo, node_number),
+                read_blocking=lambda node_repo, node_number: graph_read("blocking", node_repo, node_number),
+                limitations=limitations,
             )
             if not track and not admission_unlinked:
                 raise ClassifiedPlanError(
                     "claim_admission_unlinked",
                     "Milestone admission needs this issue linked into its milestone's Track graph (a sub-issue or blocker "
                     "of the Track or of work already in its graph). Link it with gh-plan.py link, or pass "
-                    "--admission-unlinked REASON" + ("" if complete else "; the graph walk hit its node limit"),
-                    payload={"graph_walk_complete": complete},
+                    "--admission-unlinked REASON" + ("" if complete else "; graph limitations: " + ", ".join(limitations)),
+                    payload={"graph_walk_complete": complete, "graph_limitations": limitations,
+                             "graph_read_failures": read_failures},
                 )
-        return github_plan_claim.admission_text(admission, admission_links, track=track, unlinked=admission_unlinked) + "\n\n"
+        record = github_plan_claim.admission_text(admission, admission_links, track=track,
+                                                 unlinked=admission_unlinked, graph_complete=complete)
+        if limitations and not track:
+            record += "; graph verification incomplete: " + ", ".join(limitations)
+        return record + "\n\n"
 
     def check_native_blockers() -> None:
         _, blockers = collect_paged_rest_items(
@@ -2380,7 +2404,6 @@ def cmd_claim(args: argparse.Namespace) -> None:
             claim = {key: owned[0][key] for key in claim}
         retained = github_plan_claim.retained_branch(comments, args.resume_from) if args.resume_from else None
         check_native_blockers()
-        admission_record = admission_line()
         retained_branches = handoff_preflight(comments, status)
         inventory = github_plan_claim.local_inventory(target_repo, number)
         _, pulls = collect_paged_rest_items(
@@ -2396,6 +2419,9 @@ def cmd_claim(args: argparse.Namespace) -> None:
                                                        status_sessions=set(github_plan_claim.released_status_lines(status, comments).values()))
         if conflicts:
             refuse(conflicts)
+        _, comment_owners = github_plan_claim.discussion_evidence("", comments, claim)
+        comment_recorded = any(record.get("_legacy") != "yes" for record in comment_owners)
+        admission_record = "" if comment_recorded else admission_line()
         completed.append("ownership_preflight")
         actor, gh_cmd, expected_actor = comment_route()
         wait_receipt = ("\n\nRetained PR waits verified for this step:\n" + "\n".join(
@@ -2413,8 +2439,6 @@ def cmd_claim(args: argparse.Namespace) -> None:
             + (f"\n\nWait resolution: {args.wait_resolved}" if args.wait_resolved else "")
             + "\n\nPrevious Current Status:\n" + "\n".join("> " + line for line in previous_status.splitlines())
         )
-        _, comment_owners = github_plan_claim.discussion_evidence("", comments, claim)
-        comment_recorded = any(record.get("_legacy") != "yes" for record in comment_owners)
         if not comment_recorded:
             claim_comment = github_comment_core.comment(
                 "issue", number, text, repo=issue_repo, gh_cmd=gh_cmd,
