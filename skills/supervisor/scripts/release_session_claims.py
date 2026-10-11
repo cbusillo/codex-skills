@@ -47,7 +47,7 @@ def verify_closed(entry, supervisor_session):
     if type(pid) is not int or pid <= 0 or not isinstance(tty, str) or not tty:
         raise ValueError("closure requires the matched process PID and TTY")
     rows = inventory()
-    if any(p == pid or t == tty and not idle_terminal_command(c) for p, t, c in rows):
+    if any(p == pid or (not entry.get("_backfill") and t == tty and not idle_terminal_command(c)) for p, t, c in rows):
         raise ValueError("source PID or work on its TTY remains; preserve its claims")
     status = session_record.session_status(entry)
     if not status["safe_verdict"]:
@@ -117,7 +117,12 @@ def discover(reader, owner, entries, repos=None):
                                      params={"since": since}, required_query_params={"since": since})
         for c in comments:
             body = c.get("body") or ""
-            structured = any(r["session"] in sessions for r in claim.records(body))
+            if not any(s in body for s in sessions):
+                continue
+            try:
+                structured = any(r["session"] in sessions for r in claim.records(body))
+            except ValueError as error:
+                raise ValueError(f"unreadable claim at {c.get('html_url')}: {error}") from error
             legacy = claim.has_ownership_assertion(body) and any(
                 re.search(rf"(?m)^Session: {re.escape(s)}[ \t]*$", body) for s in sessions)
             if structured or legacy:
@@ -162,11 +167,18 @@ def active_claims(reader, repo, number, session, actor):
             if (c.get("user") or {}).get("login") != actor:
                 raise ValueError("session has a claim held by another identity; report without releasing")
             record = release.source_record(c)
-            related = [r["id"] for r in comments if r["id"] in active_ids
+            related = [r["id"] for r in comments[comments.index(c) + 1:] if r["id"] in active_ids
                        and not claim.records(r.get("body") or "")
                        and re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", r.get("body") or "")
-                       and (r.get("user") or {}).get("login") == actor]
-            sources.append((c, related))
+                       and (r.get("user") or {}).get("login") == actor
+                       and re.search(rf"(?m)^Session: {re.escape(session)}[ \t]*$", r.get("body") or "")]
+            unresolved = [r["id"] for r in comments if r["id"] in active_ids and r["id"] not in related
+                          and not claim.records(r.get("body") or "")
+                          and re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", r.get("body") or "")
+                          and (r.get("user") or {}).get("login") == actor
+                          and (re.search(rf"(?m)^Session: {re.escape(session)}[ \t]*$", r.get("body") or "")
+                               or not re.search(r"(?im)^Session(?:[ _-]*ID)?:", r.get("body") or ""))]
+            sources.append((c, related, unresolved))
     return sources
 
 
@@ -203,15 +215,26 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
     status = validate_closure(entry, supervisor_session)
     handoff_record = handoff(reader, entry, actor)
     plans = []
+    pulls_by_repo = {}
+    handoff_prs = set(re.findall(r"https://github\.com/[^/\s]+/[^/\s]+/pull/[1-9]\d*", handoff_record.get("body") or ""))
     for repo, number in issues:
-        for source, related in active_claims(reader, repo, number, entry["session_id"], actor):
+        for source, related, unresolved in active_claims(reader, repo, number, entry["session_id"], actor):
             record = release.source_record(source)
-            pulls = reader.paged_json(f"/repos/{repo}/pulls", params={"state": "open"}, step_prefix="retained_session_prs")
+            if repo not in pulls_by_repo:
+                pulls_by_repo[repo] = reader.paged_json(f"/repos/{repo}/pulls", params={"state": "open"}, step_prefix="retained_session_prs")
+            pulls = list(pulls_by_repo[repo])
+            mentioned = handoff_prs | ({record["refresh_pr"]} if record.get("refresh_pr") else set())
+            for url in sorted(mentioned):
+                match = re.fullmatch(rf"https://github\.com/{re.escape(repo)}/pull/([1-9]\d*)", url)
+                if match and not any(p["html_url"] == url for p in pulls):
+                    pulls.append(reader.get_json(f"/repos/{repo}/pulls/{match[1]}", step="handoff_retained_pr"))
             prs = [p["html_url"] for p in pulls if (p.get("head") or {}).get("ref") == record["branch"]
                    or (p["html_url"] == record.get("refresh_pr")
-                       or p["html_url"] in (handoff_record.get("body") or ""))
+                       or p["html_url"] in handoff_prs)
                    and claim.pr_issue_reference(p, number, repo=repo, attestation=True)]
             plans.append((repo, number, source["id"], related, prs))
+            if unresolved:
+                raise ValueError(f"ownership follow-ups {unresolved} lack a verified source/session relationship; obtain authored exact-ID releases")
     report = {"session_id": entry["session_id"], "claims": [], "dry_run": not apply}
     for repo, _, _, _, _ in plans:
         checkout = checkout_root / repo.split("/")[1]
@@ -232,7 +255,8 @@ def apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, 
         body = (f"Closed session {entry['session_id']}\nEnded at: {entry['ended_at']}\nSafe to exit: yes\n\n"
                 f"Transcript-verified handoff: {entry['handoff_url']}\n")
         item = {"repository": repo, "issue": number, "claim_comment": source_id,
-                "retained_prs": prs, "attestation_body": body}
+                "retained_prs": prs, "attestation_body": body,
+                "release_preflight": "requires a posted attestation; apply previews release-claim before releasing"}
         report["claims"].append(item)
         if apply:
             result = comment("issue", number, body, repo=repo, expected_actor=actor,
@@ -262,6 +286,7 @@ def main():
     parser.add_argument("--confirm-session-ended", action="store_true")
     parser.add_argument("--verified-handoff", action="store_true")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--deadline-seconds", type=int, default=600)
     args = parser.parse_args()
     reports = []
     lock_stream = None
@@ -275,6 +300,8 @@ def main():
                 raise ValueError("another closure/release operation owns this log") from error
         if not args.confirm_session_ended or not args.verified_handoff:
             raise ValueError("Supervisor must verify actual process exit and transcript/issue handoff")
+        if args.deadline_seconds <= 0:
+            raise ValueError("discovery deadline must be positive")
         actor = github_identity.automation_login()
         if not actor:
             raise ValueError("requires the configured automation identity")
@@ -292,20 +319,35 @@ def main():
                             "ended_at": datetime.now(timezone.utc).isoformat()}]
         else:
             entries = session_record.load_ledger(args.closed_log)
+            entries = [{**e, "_backfill": True} for e in entries]
             if args.session_id:
                 entries = [e for e in entries if e["session_id"] == args.session_id]
             if not entries:
                 raise ValueError("closed-session log has no matching records")
+        verified = []
         for entry in entries:
-            validate_closure(entry, args.supervisor_session)
-        reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 180)
+            try:
+                validate_closure(entry, args.supervisor_session)
+                verified.append(entry)
+            except (ValueError, KeyError, TypeError, OSError) as error:
+                reports.append({"session_id": entry["session_id"], "error": str(error), "released": False})
+        entries = verified
+        reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + args.deadline_seconds)
+        if not entries:
+            raise ValueError("no verified closed sessions; inspect the per-session reports")
         issues, repos = discover(reader, args.owner, entries, args.repo)
         for entry in entries:
-            reports.append(release_session(reader, entry, actor, args.supervisor_session, issues,
-                                            args.checkout_root, args.apply))
-        print(json.dumps({"ok": True, "reports": reports, "repositories_checked": repos,
+            try:
+                reports.append(release_session(reader, entry, actor, args.supervisor_session, issues,
+                                                args.checkout_root, args.apply))
+            except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError,
+                    GitHubReadError, GitHubReadShapeError, CommentError) as error:
+                report = error.report if isinstance(error, PartialRelease) else {"session_id": entry["session_id"]}
+                reports.append({**report, "error": str(error), "next_action": "inspect records before retry"})
+        ok = not any("error" in r for r in reports)
+        print(json.dumps({"ok": ok, "reports": reports, "repositories_checked": repos,
                           "coverage": "explicit scope" if args.repo else "accessible owner repositories"}))
-        return 0
+        return 0 if ok else 1
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError,
             GitHubReadError, GitHubReadShapeError, CommentError) as error:
         if isinstance(error, PartialRelease):

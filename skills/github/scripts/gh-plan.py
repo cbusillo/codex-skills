@@ -1947,9 +1947,9 @@ def cmd_show(args: argparse.Namespace) -> None:
     emit({"ok": True, "actor": actor, "issue": result})
 
 
-def claim_snapshot(ref: str, repo: str) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:
+def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:
     _, issue = get_issue(ref, repo)
-    if issue.get("state") != "open" or "pull_request" in issue:
+    if issue.get("state") not in ({"open", "closed"} if allow_closed else {"open"}) or "pull_request" in issue:
         raise PlanError("Claim requires an open issue")
     sections, provenance = read_plan_sections(issue)
     _, comments = collect_paged_rest_items(
@@ -2009,7 +2009,7 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
     # Fresh-read before writing and again after posting. Native peer coverage
     # stays explicit; the caller attests closure for hosts without peer APIs.
     def preflight():
-        issue, _status, comments, _can_update = claim_snapshot(args.issue, repo)
+        issue, _status, comments, _can_update = claim_snapshot(args.issue, repo, allow_closed=True)
         source = next((c for c in comments if c.get("id") == args.claim_comment), None)
         if source is None:
             raise PlanError("Source claim is missing from the canonical issue")

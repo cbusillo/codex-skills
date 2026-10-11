@@ -397,7 +397,9 @@ send exit commands or change issue status, waits, blockers, branches or worktree
 uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <private-ledger.json> --closed-log <private-closed.json> --session-id <finished-native-id> --supervisor-session <current-native-id> --owner OWNER --checkout-root <existing-checkout-directory> --confirm-session-ended --verified-handoff
 ```
 
-Default is a read-only preview of claim IDs, retained PRs and attestation bodies.
+Default is a read-only inventory preview of claim IDs, retained PRs and attestation bodies.
+It does not assert release preflight success: that check needs a posted
+attestation, and apply previews the maintained release helper before releasing.
 Repeat with `--apply` after inspecting it. Apply records the newly observed exit
 time in a private JSON log, posts/readbacks the required `Closed session` /
 `Ended at:` / `Safe to exit: yes` attestation on each canonical issue, then runs
@@ -410,13 +412,15 @@ exist as `<checkout-root>/<repository-name>` with the matching origin; the
 release command runs there for that repository's ownership inventory and never
 edits the checkout. A missing or mismatched checkout leaves claims untouched.
 
-Discovery pages the automation installation's owner repositories and their
+Discovery pages the automation installation's Director repositories and their
 issue comments since the earliest timestamp in the source transcripts,
 including closed issues. It reads each matching canonical discussion, honors
 existing valid authored releases through the shared ownership classifier, and
 names source-branch or handoff-retained PRs. Partial inventory is an error, not
 an empty result. Unstructured source claims need an authored exact-ID release;
 structured claims and their related ownership follow-ups use `release-claim`.
+Automatic follow-up selection requires an exact native `Session:` field and
+ordering after the structured source; a reused worker token alone is not evidence.
 The shared bot login alone never identifies a session. Native session coverage
 remains explicit in the release receipts; missing peer APIs are covered only
 by the Supervisor's actual transcript/closure verification.
@@ -424,7 +428,11 @@ by the Supervisor's actual transcript/closure verification.
 For the one-time STALE-CLAIMS backfill, copy only transcript-verified records
 from the Supervisor's existing private closed-session log into this schema.
 Use the original actual closure timestamps; neither conversion time nor
-attestation posting time substitutes for them. If a record lacks a matched
+attestation posting time substitutes for them. Backfill still requires the
+recorded PID to be absent and the transcript unchanged; another job on a reused
+historical TTY does not identify the source session. Normal finish checks all
+jobs on the matched current TTY. Invalid records are reported per session while
+independent verified sessions proceed. If a record lacks a matched
 transcript, unqualified safe verdict, original closure proof or handoff URL,
 report it for reconciliation instead of inventing evidence.
 
@@ -432,6 +440,11 @@ report it for reconciliation instead of inventing evidence.
 uv run skills/supervisor/scripts/release_session_claims.py backfill --closed-log <private-closed.json> --supervisor-session <current-native-id> --owner OWNER --checkout-root <existing-checkout-directory> --confirm-session-ended --verified-handoff
 ```
 
+The read deadline defaults to ten minutes; `--deadline-seconds` sets a bounded
+longer window for a larger historical inventory. Each repository's open PR list
+is reused within a session; exact handoff URLs also identify merged retained PRs.
+The command uses the currently configured automation identity only; claims by
+another App or a human are reported and preserved, with no identity fallback.
 Use `--session-id` to reconcile one logged session; inspect the default preview,
 then add `--apply`. For disposable live trials only, repeat `--repo OWNER/REPO`
 to scope discovery; that result reports explicit scope rather than all-repository

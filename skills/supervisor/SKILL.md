@@ -39,7 +39,7 @@ resources:
     description: Dry-run closing an exact tab after its agent process has exited.
   - path: scripts/release_session_claims.py
     kind: script
-    description: Record verified closure, discover remaining claims across owner repositories and release them through the planning helper; includes closed-log backfill.
+    description: Record verified closure, discover remaining claims across Director repositories and release them through the planning helper; includes closed-log backfill.
   - path: references/helpers.md
     kind: reference
     description: Private ledger schema, helper usage and shutdown stages.
@@ -403,7 +403,7 @@ on Context Panel's selected account, then send `continue`.
    [finished-session shutdown stages](references/helpers.md#finished-session-shutdown-stages)
    describes, before closing the tab. It records the observed exit in the
    private closed-session log, discovers the session's claims across accessible
-   owner repositories, posts the closed-session attestation, and previews then
+   Director repositories, posts the closed-session attestation, and previews then
    applies `gh-plan.py release-claim --role supervisor`, naming retained PRs.
    Load `github` and `github-plan` before that step. Keep incomplete discovery,
    unreleasable claims and uncertain writes in the ledger for reconciliation;

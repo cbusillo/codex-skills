@@ -777,7 +777,9 @@ history. Available native sessions are
 checked and their coverage is returned. `--confirm-session-ended` records the
 caller's transcript/closure verification, including peers or hosts unavailable
 to the helper; partial inventory alone is never closure evidence. The command
-leaves issue status, waits, blockers, branches and worktrees intact. Use
+leaves issue status, waits, blockers, branches and worktrees intact. A verified
+closed-session release accepts an open or closed canonical issue without
+reopening it; creating a new claim still requires an open issue. Use
 `--resume-from` for an identical stale structured Current Status marker; other
 status ownership still needs its supported reconciliation. Closing a landed
 prerequisite and proving its finish line is separate from release: `next` and

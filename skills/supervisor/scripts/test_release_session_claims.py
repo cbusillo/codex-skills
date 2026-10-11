@@ -6,6 +6,8 @@
 """Disposable transcripts and GitHub adapters exercise session claim release."""
 
 import json
+import contextlib
+import io
 from pathlib import Path
 import tempfile
 import unittest
@@ -102,6 +104,40 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaises(helper.GitHubReadShapeError):
             helper.discover(self.reader, "test", [self.entry])
 
+    def test_unrelated_malformed_marker_does_not_block_discovery(self):
+        self.reader.paged_json.return_value = [{"body": "<!-- github-plan:claim invalid -->"}]
+        self.assertEqual(helper.discover(self.reader, "test", [self.entry], ["test/a"])[0], [])
+        self.reader.paged_json.return_value = [{"body": "source-session\n<!-- github-plan:claim invalid -->", "html_url": "trial-comment"}]
+        with self.assertRaisesRegex(ValueError, "trial-comment"):
+            helper.discover(self.reader, "test", [self.entry], ["test/a"])
+
+    def test_backfill_reused_tty_is_not_source_identity_but_pid_still_refuses(self):
+        old = {**self.entry, "_backfill": True}
+        with patch.object(helper, "inventory", return_value=[(456, "ttys123", "codex")]):
+            self.assertTrue(helper.validate_closure(old, "supervisor")["safe_verdict"])
+            with self.assertRaises(ValueError):
+                helper.validate_closure(self.entry, "supervisor")
+        with patch.object(helper, "inventory", return_value=[(123, "other", "codex")]):
+            with self.assertRaises(ValueError):
+                helper.validate_closure(old, "supervisor")
+
+    def test_backfill_reports_bad_record_and_continues_verified_session(self):
+        entries = [{**self.entry, "session_id": "bad-session", "process_exit_verified": False}, self.entry]
+        argv = ["helper", "backfill", "--closed-log", str(self.root / "closed.json"),
+                "--owner", "test", "--checkout-root", str(self.root), "--supervisor-session", "supervisor",
+                "--confirm-session-ended", "--verified-handoff"]
+        output = io.StringIO()
+        with patch.object(helper.sys, "argv", argv), patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
+                patch.object(helper.session_record, "load_ledger", return_value=entries), \
+                patch.object(helper, "discover", return_value=([], ["test/a"])), \
+                patch.object(helper, "release_session", return_value={"session_id": "source-session", "claims": []}) as run, \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(helper.main(), 1)
+        self.assertEqual(run.call_count, 1)
+        result = json.loads(output.getvalue())
+        self.assertIn("error", result["reports"][0])
+        self.assertEqual(result["reports"][1]["session_id"], "source-session")
+
     def test_exact_authored_release_and_legacy_release_are_respected(self):
         for body in ("Released claim 1", "Released by trial"):
             self.reader.paged_json.return_value = [self.source, comment(2, body)]
@@ -123,6 +159,18 @@ class ReleaseTests(unittest.TestCase):
         found = helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
         self.assertEqual(found[0][1], [2])
 
+    def test_related_alias_without_exact_session_or_before_source_is_not_released(self):
+        for body in ("Claimed by trial", "Claimed by trial\nSession: another-session"):
+            self.reader.paged_json.return_value = [self.source, comment(2, body)]
+            self.assertEqual(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)[0][1], [])
+        self.reader.paged_json.return_value = [comment(2, "Claimed by trial\nSession: source-session"), self.source]
+        self.assertEqual(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)[0][1], [])
+
+    def test_unavailable_or_foreign_handoff_is_not_accepted(self):
+        self.reader.get_json.return_value["user"]["login"] = "human"
+        with self.assertRaisesRegex(ValueError, "handoff identity"):
+            helper.handoff(self.reader, self.entry, ACTOR)
+
     def plan_reader(self, path, **_kwargs):
         if path.endswith("/pulls"):
             return [{"html_url": "https://github.com/test/a/pull/5", "head": {"ref": SOURCE["branch"]}}]
@@ -136,6 +184,19 @@ class ReleaseTests(unittest.TestCase):
         run.assert_not_called()
         self.assertEqual(report["claims"][0]["retained_prs"], ["https://github.com/test/a/pull/5"])
         self.assertTrue(report["claims"][0]["attestation_body"].startswith("Closed session source-session\nEnded at: 2026-01-01T00:02:00Z\nSafe to exit: yes\n"))
+
+    def test_exact_handoff_pr_url_does_not_select_shorter_pr_number(self):
+        self.reader.get_json.return_value["body"] = "Retained PR: https://github.com/test/a/pull/12"
+        named = {"html_url": "https://github.com/test/a/pull/12", "number": 12,
+                 "body": "Refs #1", "head": {"ref": "other-branch"}}
+        handoff = dict(self.reader.get_json.return_value)
+        self.reader.get_json.side_effect = lambda path, **_kw: named if path.endswith("/pulls/12") else handoff
+        def paged(path, **_kwargs):
+            return [{"html_url": "https://github.com/test/a/pull/1", "head": {"ref": "other-branch"}}] if path.endswith("/pulls") else [self.source]
+        self.reader.paged_json.side_effect = paged
+        with patch.object(helper.claim, "pr_issue_reference", return_value=True):
+            report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
+        self.assertEqual(report["claims"][0]["retained_prs"], [named["html_url"]])
 
     def test_apply_posts_attestation_previews_then_releases(self):
         self.reader.paged_json.side_effect = self.plan_reader

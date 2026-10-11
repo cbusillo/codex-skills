@@ -106,6 +106,14 @@ class ReleaseTests(unittest.TestCase):
         self.run_release()
         self.successor()
 
+    def test_release_closed_issue_without_reopening_or_enabling_new_claim(self):
+        self.f.issue["state"] = "closed"
+        self.run_release()
+        self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
+        self.assertEqual(self.f.issue["state"], "closed")
+        with self.assertRaisesRegex(PLAN.PlanError, "open issue"):
+            self.f.run_claim()
+
     def test_related_followup_session_must_match_source_closure(self):
         for field in ("Session: {}", "**Session:** `{}`", "> Session: {}", "Session: {}.", "Session: {} (capacity work)", "Session ID: {}", "Native session ID: {}", "session={}", "session_id: {}", "sessionId: {}", "Session-ID: {}", "Thread ID: {}", "Session — {}", "| Session | {} |", "Session: {}; PR #99", "(Session: {})"):
             for session in ("session-b", "different-native-session"):
