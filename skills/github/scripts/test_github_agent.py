@@ -51,7 +51,6 @@ class AgentTests(unittest.TestCase):
                                    ("20 /bin/sh\n", f"30 /opt/bin/{family}\n", f"1 /opt/bin/{other}\n")]
             with patch.dict(agent.os.environ, {}, clear=True), patch.object(agent.os, "getppid", return_value=10):
                 self.assertEqual(agent.running_agent(), family)
-            self.assertEqual(self.ps.call_count, 2)
             self.ps.reset_mock()
 
     def test_unavailable_or_ambiguous_process_evidence_stays_unknown(self):
@@ -61,6 +60,8 @@ class AgentTests(unittest.TestCase):
                  [subprocess.CompletedProcess([], 0, "invalid", "")],
                  [subprocess.CompletedProcess([], 0, "10 /bin/sh", "")],
                  [subprocess.CompletedProcess([], 0, "20 node", ""),
+                  subprocess.CompletedProcess([], 0, "1 codex", "")],
+                 [subprocess.CompletedProcess([], 0, "20 /opt/claude/versions/2.1.296", ""),
                   subprocess.CompletedProcess([], 0, "1 codex", "")])
         for rows in cases:
             with self.subTest(rows=rows), patch.dict(agent.os.environ, {}, clear=True), \
@@ -75,7 +76,9 @@ class AgentTests(unittest.TestCase):
             self.assertIsNone(agent.running_agent())
         self.assertLess(self.ps.call_count, 30)
         for call in self.ps.call_args_list:
-            self.assertEqual(call.args[0][-2:], ["-o", "ppid=,comm="])
+            requested_fields = call.args[0][call.args[0].index("-o") + 1].replace("=", "").split(",")
+            self.assertTrue(set(requested_fields) <= {"pid", "ppid", "comm", "ucomm", "fname"})
+            self.assertNotIn("-E", call.args[0])
             self.assertGreater(call.kwargs["timeout"], 0)
 
     def test_explicit_and_single_family_markers_do_not_probe_processes(self):

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import subprocess
+import time
 from typing import Any, Mapping
 
 FAMILIES = ("claude", "codex")
@@ -23,14 +25,16 @@ def ancestor_agent() -> str | None:
     """Resolve inherited markers from the nearest native harness, without argv."""
     pid = os.getppid()
     seen: set[int] = set()
+    deadline = time.monotonic() + 1.0
     for _ in range(12):
-        if pid <= 1 or pid in seen:
+        remaining = deadline - time.monotonic()
+        if pid <= 1 or pid in seen or remaining <= 0:
             break
         seen.add(pid)
         try:
             result = subprocess.run(
                 ["ps", "-p", str(pid), "-o", "ppid=,comm="],
-                capture_output=True, text=True, timeout=0.1,
+                capture_output=True, text=True, timeout=min(0.5, remaining),
             )
             if result.returncode:
                 break
@@ -41,9 +45,9 @@ def ancestor_agent() -> str | None:
         name = Path(executable).name
         if name in FAMILIES:
             return name
-        # A script-hosted inner agent may hide behind its runtime executable.
-        # Do not mistake its outer native harness for the current worker.
-        if name in {"node", "nodejs", "bun", "deno"}:
+        # Unknown native names and script-hosted agents may hide an inner
+        # harness. Traverse only the shells/launchers used to run our helpers.
+        if name not in {"sh", "zsh", "bash", "dash", "fish", "uv"} and not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", name):
             break
     return None
 
