@@ -46,7 +46,9 @@ in the ignored `.local/global-instructions.md` and included in both outputs;
 changed instruction files are backed up. Existing symlinked instruction files
 are read for initial adoption. Recognized generated targets are refreshed during
 installation and scheduled updates, with a backup of changed target content;
-the links remain intact, including account homes sharing one target. Recognition
+the links remain intact, including account homes sharing one target. Generated
+content in a linked dotfiles file is refreshed in place too; backups are written
+beside the target with owner-only permissions. Recognition
 uses current, previously installed, or committed shared sources with the
 authoritative private source. Receipts distinguish generated outputs the installer
 managed from skipped sources, so private-source edits propagate through links

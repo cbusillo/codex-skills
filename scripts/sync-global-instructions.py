@@ -370,7 +370,7 @@ def synchronize(content: str, destinations: list[Path], *, write: bool, local_so
             raise ValueError(f"Refusing a symlink or non-file destination: {path}")
         old = path.read_bytes() if path.exists() else None
         if expected_previous is not None and path in expected_previous and old != expected_previous[path]:
-            raise ValueError(f"Destination changed since hook preview: {path}")
+            raise ValueError(f"Destination changed since preview: {path}")
         previous[path] = old
         if old is not None and old != desired and local_source_missing and not allow_missing_local:
             msg = f"Local source is missing and {path.name} would change. {MISSING_LOCAL_RECOVERY}"

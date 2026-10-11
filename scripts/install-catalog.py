@@ -185,7 +185,8 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         if target not in preserved_targets or target.is_relative_to(ROOT.resolve()):
             continue
         text = safe_file(path, instruction=True)
-        digest = hashlib.sha256(text.encode()).hexdigest()
+        inspected = target.read_bytes()
+        digest = hashlib.sha256(inspected).hexdigest()
         recognized = text in known_outputs or (text.startswith(sync.HEADER) and generated_hashes.get(str(path)) == digest)
         if not recognized and text.startswith(sync.HEADER):
             if historical_outputs is None:
@@ -193,7 +194,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                                       for base in committed_shared_sources(sync)}
             recognized = text in historical_outputs
         if recognized and (text == content or str(path) not in hashes or digest == hashes[str(path)]):
-            refresh_targets[target] = text.encode()
+            refresh_targets[target] = inspected
     # All destinations are inspected before any mutation.
     instruction_preview = sync.synchronize_instructions(content, destinations, write=False, refresh_targets=refresh_targets)
     hooks, hook_preview = None, []

@@ -206,6 +206,21 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(target.read_bytes(), original)
         self.assertEqual(path.readlink(), target)
 
+    def test_linked_generated_crlf_target_refreshes_with_raw_backup(self):
+        self.install()
+        path = self.codex / "AGENTS.md"
+        target = self.root / "generated.md"
+        original = path.read_bytes().replace(b"\n", b"\r\n")
+        target.write_bytes(original)
+        path.unlink()
+        path.symlink_to(target)
+        self.assertEqual(self.install(write=False)["outputs"][1]["state"], "would_write")
+        self.assertEqual(target.read_bytes(), original)
+        self.install()
+        self.assertEqual(target.read_bytes(), (self.claude / "CLAUDE.md").read_bytes())
+        self.assertEqual(list(target.parent.glob("generated.md.backup-*"))[0].read_bytes(), original)
+        self.assertEqual(path.readlink(), target)
+
     def test_generated_links_refresh_after_private_source_changes(self):
         self.install()
         path = self.codex / "AGENTS.md"
