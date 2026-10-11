@@ -2576,7 +2576,6 @@ def _project_product_profile(value: object) -> dict[str, object]:
         raise LaunchplaneSafetyError("invalid_response")
     production_use = source.get("production_use") or "unknown"
     if production_use not in PRODUCT_PRODUCTION_USES:
-        # Only prelaunch skips Owner review; an unknown class must not read as either.
         raise LaunchplaneSafetyError("invalid_response")
     release_on_acceptance = source.get("release_on_acceptance", "held")
     if (
@@ -4876,7 +4875,7 @@ def _summarize_product_read(
     provider_payload: dict[str, Any],
     result_key: str,
     project: Any,
-    recommendation: str,
+    recommendation: str | None = None,
 ) -> dict[str, object]:
     if any(str(key) not in {"status", "trace_id", result_key} for key in provider_payload):
         raise LaunchplaneSafetyError("unsafe_response_shape")
@@ -4886,8 +4885,9 @@ def _summarize_product_read(
     payload["summary"] = {
         "launchplane_status": status,
         "trace_id": public_trace_id(provider_payload.get("trace_id")),
-        "recommendation": recommendation,
     }
+    if recommendation is not None:
+        payload["summary"]["recommendation"] = recommendation
     assert_public_safe_shape(payload["summary"])
     return payload
 
@@ -4991,10 +4991,6 @@ def summarize_product_profile_read(
         provider_payload=provider_payload,
         result_key="profile",
         project=_project_product_profile,
-        recommendation=(
-            "production_use prelaunch skips Owner release review; live and unknown "
-            "both require it."
-        ),
     )
 
 

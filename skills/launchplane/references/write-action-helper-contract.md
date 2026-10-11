@@ -201,8 +201,10 @@ local extensions until the vendored artifact is refreshed.
 - `product-profile-read --product` calls `GET /v1/product-profiles/{product}`
   and returns the product's Client GitHub login and review label, `production_use`,
   `release_on_acceptance`, lifecycle state, display name, driver, repository and
-  lanes (context and instance only). `prelaunch` is the only value that skips Client release
-  review. `release_on_acceptance` is `held`, `promote`,
+  lanes (context and instance only). The summary contains service status and trace
+  provenance only. For release authority, follow the
+  [release rule](../../references/role-words.md#release-rule) and read service-owned
+  evidence with `product-promotion-status-read`. `release_on_acceptance` is `held`, `promote`,
   `promote_with_rollback_drill` or `director_standing`, as defined in
   [Launchplane's release review](https://github.com/cbusillo/launchplane/blob/main/docs/release-review.md#acceptance-starts-the-release).
   An omitted field reads as `held`; any other value or type fails the whole
