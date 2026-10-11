@@ -455,13 +455,14 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
 
     def test_live_reconcile_only_runs_for_the_catalog_repository(self) -> None:
         io = train_drive.live_io(1.0)
-        catalog = subprocess.run(
-            ["git", "-C", str(SCRIPT_DIR), "config", "--get", "remote.origin.url"], capture_output=True, text=True
-        ).stdout.strip().removesuffix(".git").replace(":", "/").split("/")
-        with patch.object(train_drive, "_run_json", return_value={"status": "already_current"}) as run:
+        origin = subprocess.CompletedProcess([], 0, stdout="git@github.com:fixture/catalog.git\n", stderr="")
+        with (
+            patch.object(train_drive.subprocess, "run", return_value=origin),
+            patch.object(train_drive, "_run_json", return_value={"status": "already_current"}) as run,
+        ):
             self.assertIsNone(io.reconcile("someone-else/app", "a" * 40))
             run.assert_not_called()
-            receipt = io.reconcile(f"{catalog[-2]}/{catalog[-1]}", "a" * 40)
+            receipt = io.reconcile("fixture/catalog", "a" * 40)
         self.assertEqual(receipt, {"status": "already_current"})
         self.assertIn("--landing-sha", run.call_args.args[0])
 

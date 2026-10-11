@@ -478,9 +478,9 @@ Post it on the pilot issue as one comment:
   spent by the train and its drivers' polling; current measured capacity is
   tracked in
   [codex-skills#1191](https://github.com/cbusillo/codex-skills/issues/1191).
-- After a host restart, start each account's Codex app-server daemon (the
-  launcher's refusal names the command), re-run train candidate jobs that a
-  runner shutdown killed (not a code failure), restart the driver, and
+- After a host restart, the launcher starts each selected account's Codex
+  app-server daemon and names the failure if startup fails. Re-run train
+  candidate jobs that a runner shutdown killed (not a code failure), restart the driver, and
   recreate session-only watchers and checks.
 - Shared CI runners saturate; private repositories run CI on self-hosted
   runners.
