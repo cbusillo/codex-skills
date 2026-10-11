@@ -94,8 +94,10 @@ on its inherited home, allowing its ordinary wait-for-reset fallback.
    message file, send it once with `--session-id` and `--verified-target`, then
    read back. Never replay an uncertain send or start a second copy of the
    transcript while the old process runs.
-3. Verify the replacement occupies the same tab with resume arguments for the
-   same UUID. Native re-exec can replace the process image while retaining its
+3. Read back the same tab and resume arguments for the same UUID, then use the
+   resume receipt below to prove the move completed. Tab, PID and argv alone
+   cannot prove a relaunch if the original launch already used `--resume`.
+   Native re-exec can replace the process image while retaining its
    PID; PID disappearance is not required and PID continuity alone does not
    prove resume. If the PID changes, verify the old process ended before
    accepting the replacement. Never launch another copy to obtain this proof. Read
@@ -170,7 +172,12 @@ form or detached-service sessions. Qualify the actual launch shape separately
 before using it for moves.
 
 `/tui` saves a user renderer preference and is not a qualified drop-in account
-move. Keep this probe in disposable homes. Restrictions such as
+move. Keep this probe in disposable homes. The wrapper recognizes a pending
+move by session UUID: any matching native `--resume` launch,
+including a renderer switch, can attempt that move. Do not use an unrelated
+relaunch to bypass qualification or recovery; use the existing verified
+cancellation step when continuation in place makes the request obsolete.
+Launch restrictions such as
 `--setting-sources` can make the native command refuse to relaunch; preserve
 that refusal rather than dropping restrictions. Before live rollout on another
 version, qualify the actual move command in throwaway sessions.

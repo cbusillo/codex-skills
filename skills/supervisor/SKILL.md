@@ -351,8 +351,8 @@ for products a Client runs business on.
 ## Move Rate-Limited Claude Sessions
 
 For an enrolled Supervisor Claude session with a pending rate-limit move, read
-[account moves](references/claude-account-moves.md) for the qualified relaunch
-route and its terminal, transcript and account readbacks before sending input.
+[account moves](references/claude-account-moves.md) for relaunch qualification
+and its terminal, transcript and account readbacks before sending input.
 
 ## Close Finished Sessions On Every Check
 
