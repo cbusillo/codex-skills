@@ -1583,7 +1583,9 @@ def active_unadopted_report(
         meta = repos[key]
         name = str(meta.get("full_name"))
         pushed = _parse_time(meta.get("pushed_at"))
-        if (pushed is not None and pushed < since) or key == direction_repo.casefold():
+        # This report is about active adoption; historical scope must not
+        # turn a frozen repository into active work.
+        if not repository_scope.includes_repository(meta) or (pushed is not None and pushed < since) or key == direction_repo.casefold():
             continue
         try:
             if merged_direction(name, fetch=fetch) is not None:

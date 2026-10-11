@@ -128,6 +128,14 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(len(repos), len(REPOS))
         self.assertFalse(cut)
 
+    def test_attention_configured_archives_do_not_fall_back_to_checkout(self):
+        settings = {"repositories": ["owner/retired"], "repo_owners": [], "threads": [], "explicit_scope": False}
+        with patch.object(attention, "run_json", return_value={"isArchived": True}), patch.object(attention, "current_repository") as current:
+            with self.assertRaises(rollup.RollupError):
+                attention.resolve_repositories(settings)
+        current.assert_not_called()
+        self.assertEqual(settings["excluded_archived_repositories"], ["owner/retired"])
+
     def test_plan_index_archived_repository_is_opt_in(self):
         for included in (False, True):
             with self.subTest(included=included):
