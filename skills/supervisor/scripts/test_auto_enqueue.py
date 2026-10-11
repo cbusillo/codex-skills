@@ -239,6 +239,34 @@ class EnqueueTests(unittest.TestCase):
             next(data["prs"] for event, data in self.events if event == "batch"), [1, 2]
         )
 
+    def test_agent_reviewed_dependency_update_can_enqueue(self):
+        fake = Fake(count=1)
+        fake.pulls[1]["user"]["login"] = "dependabot[bot]"
+        fake.ineligible[1] = ["dependency update needs agent review"]
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [1])
+
+    def test_dependency_review_never_bypasses_another_controller_hold(self):
+        for hold in ("actor role is not allowed to enqueue", "held by merge-blocked label"):
+            with self.subTest(hold=hold):
+                fake = Fake(count=1)
+                fake.ineligible[1] = ["dependency update needs agent review", hold]
+                self.run_pass(fake)
+                self.assertEqual(fake.writes, [])
+
+    def test_conflicting_pr_is_skipped_before_qualification(self):
+        fake = Fake(count=1)
+        fake.pulls[1]["mergeable"] = False
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        self.assertTrue(any(event == "skipped" and data.get("reason") == "conflicting" for event, data in self.events))
+
+    def test_conflict_appearing_before_label_stops_batch(self):
+        fake = Fake(count=1)
+        fake.before = lambda io: io.pulls[1].update(mergeable=False) if io.calls > 1 else None
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+
     def test_active_candidate_keeps_all_arrivals_unlabeled(self):
         fake = Fake()
         fake.active = True
@@ -809,6 +837,20 @@ class QualificationTests(unittest.TestCase):
     def test_green_required_check_is_bound_to_expected_app(self):
         self.assertTrue(self.qualified())
         self.checks["checkRuns"][0]["appId"] = 99
+        self.assertFalse(self.qualified())
+
+    def test_dependency_author_handoff_needs_explicit_trusted_agent(self):
+        self.pull["user"]["login"] = "dependabot[bot]"
+        self.comments = [comment(login="dependabot[bot]")]
+        self.assertFalse(self.qualified())
+        self.comments = [comment(login="engineer")]
+        self.assertFalse(self.qualified())
+        self.assertTrue(self.io.qualified(TARGET, self.pull, {"engineer"}))
+        self.pull["head"]["sha"] = "b" * 40
+        self.assertFalse(self.io.qualified(TARGET, self.pull, {"engineer"}))
+
+    def test_conflicting_github_pr_refuses_even_with_green_checks(self):
+        self.pull["mergeable"] = False
         self.assertFalse(self.qualified())
 
     def test_missing_pending_failed_unavailable_required_checks_refuse(self):

@@ -183,6 +183,36 @@ class ReadyTests(unittest.TestCase):
         self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: automated tooling."
         self.post()
 
+    def test_ready_format_variants_keep_exact_head_requirement(self):
+        for first in (f"{READY}.", f"**{READY}**", f"**{READY}.**"):
+            for head in (SHA, f"`{SHA}`", f"**{SHA}**"):
+                with self.subTest(first=first, head=head):
+                    ready = {"body": f"{first}\n\nHead: {head}", "user": {"login": "engineer"}, "id": 1, "created_at": "2026-01-01T00:00:00Z"}
+                    self.assertTrue(latest_ready(self.reader.pr, [ready], {"engineer"}))
+                    self.assertFalse(latest_ready(self.reader.pr, [ready], {"someone-else"}))
+                    pushed = {**self.reader.pr, "head": {"sha": "b" * 40}}
+                    self.assertFalse(latest_ready(pushed, [ready], {"engineer"}))
+                    waiting = {**ready, "id": 2, "body": handoff_body(SHA, waiting_for_client=True)}
+                    self.assertFalse(latest_ready(self.reader.pr, [ready, waiting], {"engineer"}))
+
+    def test_ready_requires_one_full_head_even_with_formatting(self):
+        for head_line in ("", f"Head: {SHA[:8]}", f"Head: {SHA}a", f"Head: **{SHA}**a", f"Head: **{SHA}`", f"Head: {SHA}\nHead: **{SHA}**"):
+            with self.subTest(head_line=head_line):
+                ready = {"body": f"**{READY}**\n\n{head_line}", "user": {"login": "engineer"}, "id": 1, "created_at": "2026-01-01T00:00:00Z"}
+                self.assertFalse(latest_ready(self.reader.pr, [ready], {"engineer"}))
+
+    def test_nothing_to_test_punctuation_variants_preserve_acceptance_gates(self):
+        for heading in ("Client", "Owner"):
+            for punctuation in (":", ";", "."):
+                for explanation in ("", " Automated tooling."):
+                    with self.subTest(heading=heading, punctuation=punctuation, explanation=explanation):
+                        self.reader.pr["body"] = f"## {heading} test notes\nNothing for the Client to test{punctuation}{explanation}"
+                        self.reader.pr["labels"] = []
+                        self.post()
+                        self.writer.reset_mock()
+                        self.reader.pr["labels"] = [{"name": "owner-review"}]
+                        self.refuse()
+
     def test_client_rejection_still_refuses_waiting_handoff(self):
         self.args.waiting_for_client = True
         self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "completed", "conclusion": "failure"})

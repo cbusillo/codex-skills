@@ -211,6 +211,12 @@ handoff by creation/edit time from its author, or a Supervisor explicitly listed
 an earlier Ready. Missing/stale heads, drafts, blocking train dispositions,
 current-head change requests and unavailable checks do not enqueue. A file
 inventory changed during reading skips that PR; other ready members continue.
+The shared parser accepts a trailing period or bold readiness line, a bold full
+head SHA, and `:`, `;` or `.` after `Nothing for the Client to test`.
+Conflicting PRs are skipped before selection and rechecked before labeling.
+A controller disposition of `dependency update needs agent review` may enter
+qualification: a current-head Ready from an explicitly trusted agent supplies
+that review; Dependabot's own comment cannot. Other controller holds still block.
 An unavailable Client review scope holds that PR rather than bypassing acceptance.
 Required checks are read from current branch protection and
 matched to their configured App. A Client review label, request check, or real

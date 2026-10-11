@@ -10,7 +10,20 @@ from datetime import datetime
 
 READY = "Ready for the merge train"
 WAITING = "Engineering ready; waiting for"
-HEAD = re.compile(r"(?im)^Head(?: SHA)?:\s*`?([0-9a-f]{40})`?(?:[.\s]|$)")
+HEAD = re.compile(
+    r"(?im)^Head(?: SHA)?:[ \t]*(?P<marker>\*\*|`)?"
+    r"(?P<sha>[0-9a-f]{40})(?(marker)(?P=marker))(?:[.\s]|$)"
+)
+
+
+def ready_line(line):
+    """Accept presentation variants without broadening the readiness statement."""
+    line = line.strip()
+    if line.endswith("."):
+        line = line[:-1]
+    if line.startswith("**") and line.endswith("**"):
+        line = line[2:-2]
+    return line.removesuffix(".") == READY
 
 
 def handoff_body(head_sha: str, *, waiting_for_client: bool = False) -> str:
@@ -29,7 +42,7 @@ def requires_client_acceptance(pr, check_runs):
     body = pr.get("body") or ""
     return bool(
         re.search(r"(?im)^## (?:Client|Owner) test notes\s*$", body)
-        and not re.search(r"(?im)^Nothing for the Client to test:\s*\S", body)
+        and not re.search(r"(?im)^Nothing for the Client to test[:;.](?:[ \t]+[^\n]*)?[ \t]*$", body)
     )
 
 
@@ -48,7 +61,7 @@ def latest_ready(pr, comments, trusted):
             continue
         body = comment.get("body") or ""
         first = body.splitlines()[0] if body.splitlines() else ""
-        if first == READY or first.startswith(WAITING):
+        if ready_line(first) or first.startswith(WAITING):
             handoffs.append(comment)
     if not handoffs:
         return False
@@ -60,4 +73,6 @@ def latest_ready(pr, comments, trusted):
         ),
     )
     body = latest["body"]
-    return body.splitlines()[0] == READY and HEAD.findall(body) == [pr["head"]["sha"]]
+    return ready_line(body.splitlines()[0]) and [
+        match.group("sha") for match in HEAD.finditer(body)
+    ] == [pr["head"]["sha"]]

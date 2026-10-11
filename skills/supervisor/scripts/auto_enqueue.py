@@ -352,13 +352,16 @@ class Live:
             pr.get("state") != "open"
             or pr.get("draft") is not False
             or pr["base"]["ref"] != target["base"]
+            or pr.get("mergeable") is False
         ):
             return False
         labels = {item["name"].casefold() for item in pr["labels"]}
         if target["label"].casefold() in labels:
             return False
         comments = self.pages(f"/repos/{repo}/issues/{number}/comments")
-        trusted = {pr["user"]["login"].casefold()} | extra_trusted
+        author = pr["user"]["login"].casefold()
+        # A dependency bot cannot supply the agent review of its own update.
+        trusted = extra_trusted if author == "dependabot[bot]" else {author} | extra_trusted
         if not latest_ready(pr, comments, trusted):
             return False
         reviews = self.pages(f"/repos/{repo}/pulls/{number}/reviews")
@@ -500,6 +503,14 @@ def exception_message(error):
     return f"{type(error).__name__}: details withheld"
 
 
+def needs_ready_handoff(row, target):
+    """These two missing prerequisites are proved by qualification before writing."""
+    return bool(row["ineligible_reasons"]) and set(row["ineligible_reasons"]) <= {
+        f"missing {target['label']} label",
+        "dependency update needs agent review",
+    }
+
+
 def run_pass(io, args, emit, *, state=None):
     state = PassState() if state is None else state
     targets = io.policies(args.owner)
@@ -534,7 +545,7 @@ def run_pass(io, args, emit, *, state=None):
             author_allowed = {
                 item["number"]
                 for item in queue
-                if item["ineligible_reasons"] == [f"missing {target['label']} label"]
+                if needs_ready_handoff(item, target)
             }
             pulls = io.pages(f"/repos/{repo}/pulls", state="open")
             # Active candidates were checked above. Only controller-proven
@@ -580,6 +591,9 @@ def run_pass(io, args, emit, *, state=None):
                 if listed["number"] not in author_allowed:
                     continue
                 pr = io.get(f"/repos/{repo}/pulls/{listed['number']}")
+                if pr.get("mergeable") is False:
+                    emit("skipped", {"repository": repo, "pr": pr["number"], "reason": "conflicting"})
+                    continue
                 if io.qualified(target, pr, set(args.handoff_login)):
                     files = io.pages(f"/repos/{repo}/pulls/{pr['number']}/files")
                     if len(files) != pr["changed_files"] or not files:
@@ -644,8 +658,7 @@ def run_pass(io, args, emit, *, state=None):
                 allowed = any(
                     row["number"] == item["number"]
                     and row["head_sha"] == item["head"]
-                    and row["ineligible_reasons"]
-                    == [f"missing {target['label']} label"]
+                    and needs_ready_handoff(row, target)
                     for row in entries
                 )
                 if continuing and "dry_run_result" not in (fresh.get("result") or {}):
@@ -668,6 +681,7 @@ def run_pass(io, args, emit, *, state=None):
                     or any(not idle(io.train(other)) for other in others)
                     or not allowed
                     or pr["head"]["sha"] != item["head"]
+                    or pr.get("mergeable") is False
                     or not io.qualified(target, pr, set(args.handoff_login))
                 ):
                     emit("batch_stopped", {"repository": repo, "labeled": own})
