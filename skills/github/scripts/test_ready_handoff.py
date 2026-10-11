@@ -227,6 +227,18 @@ class ReadyTests(unittest.TestCase):
         self.reader.pr["body"] = "## Owner test notes\nNothing for the owner to test"
         self.post()
 
+    def test_no_test_marker_outside_or_after_real_notes_never_exempts(self):
+        for body in (
+            "Nothing for the owner to test\n\n## Client test notes\nTry the preview.",
+            "## Client test notes\nTry the preview.\nNothing for the Client to test.",
+            "## Client test notes\nTry the preview.\n\n## History\nNothing for the owner to test",
+            "## Client test notes\n\n## History\nNothing for the Client to test.",
+            "## Client test notes\nNothing for the owner to test\n\n## Owner test notes\nTry the preview.",
+        ):
+            with self.subTest(body=body):
+                self.reader.pr["body"] = body
+                self.refuse()
+
     def test_client_rejection_still_refuses_waiting_handoff(self):
         self.args.waiting_for_client = True
         self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "completed", "conclusion": "failure"})

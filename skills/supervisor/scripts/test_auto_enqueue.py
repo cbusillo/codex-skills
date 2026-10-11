@@ -240,13 +240,6 @@ class EnqueueTests(unittest.TestCase):
             next(data["prs"] for event, data in self.events if event == "batch"), [1, 2]
         )
 
-    def test_agent_reviewed_dependency_update_can_enqueue(self):
-        fake = Fake(count=1)
-        fake.pulls[1]["user"]["login"] = "dependabot[bot]"
-        fake.ineligible[1] = [watch.DEPENDENCY_REVIEW]
-        self.run_pass(fake)
-        self.assertEqual(fake.writes, [1])
-
     def test_dependency_enqueue_runs_live_trust_head_and_check_qualification(self):
         self.args.handoff_login = ["engineer"]
         for scenario in ("trusted", "author", "stale", "pending"):
@@ -271,6 +264,34 @@ class EnqueueTests(unittest.TestCase):
                 with patch.object(watch, "pull_request_checks", return_value=checks):
                     self.run_pass(fake)
                 self.assertEqual(fake.writes, [1] if scenario == "trusted" else [])
+
+    def test_dependency_review_is_rechecked_before_label(self):
+        self.args.handoff_login = ["engineer"]
+        fake = Fake(count=1)
+        fake.pulls[1]["user"]["login"] = "renovate[bot]"
+        fake.ineligible[1] = [watch.DEPENDENCY_REVIEW]
+        comments = [comment(login="engineer")]
+        # The agent deletes its handoff between scan and write. The dependency
+        # author's replacement comment cannot supply that missing agent review.
+        def delete_agent_handoff(io):
+            if io.calls > 1:
+                comments[:] = [comment(login="renovate[bot]")]
+
+        fake.before = delete_agent_handoff
+        live = object.__new__(watch.Live)
+        live.reader = object()
+        live.get = lambda _path: {"checks": [{"context": "CI", "app_id": 7}]}
+        live.pages = lambda path: [] if path.endswith("/reviews") else comments
+        live.acceptance = lambda *_args: False
+        fake.qualified = live.qualified
+        checks = {
+            "summary": {"countsComplete": True, "unavailableComponents": [], "failingCount": 0, "pendingCount": 0, "unfinishedWorkflowRunCount": 0},
+            "checkRuns": [{"name": "CI", "status": "completed", "conclusion": "success", "appId": 7}],
+            "statuses": [],
+        }
+        with patch.object(watch, "pull_request_checks", return_value=checks):
+            self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
 
     def test_dependency_review_never_bypasses_another_controller_hold(self):
         for hold in ("actor role is not allowed to enqueue", "held by merge-blocked label"):

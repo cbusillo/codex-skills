@@ -212,8 +212,9 @@ an earlier Ready. Missing/stale heads, drafts, blocking train dispositions,
 current-head change requests and unavailable checks do not enqueue. A file
 inventory changed during reading skips that PR; other ready members continue.
 The shared parser normalizes trailing periods and bold markers on both Ready
-and renewed waits, accepts a bold full head SHA, and recognizes the current and
-legacy nothing-to-test markers without requiring particular punctuation.
+and renewed waits, accepts a bold full head SHA, and recognizes current and
+legacy nothing-to-test markers at the start of the test-notes section without
+requiring particular punctuation.
 Conflicting or unknown-mergeability PRs are skipped before selection and
 rechecked before labeling.
 A controller disposition of `dependency update needs agent review` may enter

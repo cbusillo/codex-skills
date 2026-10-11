@@ -38,10 +38,11 @@ def requires_client_acceptance(pr, check_runs):
     if any(check["name"] == "launchplane/owner-review" for check in check_runs):
         return True
     body = pr.get("body") or ""
-    return bool(
-        re.search(r"(?im)^## (?:Client|Owner) test notes\s*$", body)
-        and not re.search(r"(?im)^Nothing for the (?:Client|owner) to test\b", body)
-    )
+    for heading in re.finditer(r"(?im)^## (?:Client|Owner) test notes[ \t]*\r?$", body):
+        notes = re.split(r"(?m)^## ", body[heading.end():], maxsplit=1)[0].strip()
+        if not re.match(r"(?i)Nothing for the (?:Client|owner) to test\b", notes):
+            return True
+    return False
 
 
 def timestamp(value):
