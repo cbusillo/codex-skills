@@ -176,6 +176,12 @@ def idle(response, own=()):
         dry.get("queue_order"), list
     ):
         return False
+    if any(
+        reason.endswith(" label ignored: could not read who applied it")
+        for item in dry["queue"]
+        for reason in item["ineligible_reasons"]
+    ):
+        return False
     # Even queued work not yet built belongs to its existing routing actor.
     return set(dry["queue_order"]) <= set(own)
 
@@ -401,15 +407,15 @@ def run_pass(io, args, emit):
                 for other in targets
                 if other["repo"].casefold() == repo.casefold() and other != target
             ]
-            if not idle(response) or any(not idle(io.train(other)) for other in others):
+            responses = [response] + [io.train(other) for other in others]
+            if any(not idle(value) for value in responses):
+                busy_result = response.get("result") or {}
                 emit(
                     "busy",
                     {
                         "repository": repo,
-                        "action": response.get("result", {}).get("controller_action"),
-                        "queue": response.get("result", {})
-                        .get("dry_run_result", {})
-                        .get("queue", []),
+                        "action": busy_result.get("controller_action"),
+                        "queue": busy_result.get("dry_run_result", {}).get("queue", []),
                     },
                 )
                 continue
@@ -420,11 +426,23 @@ def run_pass(io, args, emit):
                 if item["ineligible_reasons"] == [f"missing {target['label']} label"]
             }
             pulls = io.pages(f"/repos/{repo}/pulls", state="open")
-            # Any already labeled PR preserves the existing batch, even if currently ineligible.
+            # Active candidates were checked above. Only controller-proven
+            # ineligible PRs can be ignored here; absent or stale inventory stays
+            # busy. Include other enrolled bases without dropping stack children.
+            dispositions = {
+                item["number"]: item
+                for value in responses
+                for item in value["result"]["dry_run_result"]["queue"]
+            }
             labeled = [
                 pr["number"]
                 for pr in pulls
                 if target["label"] in {label["name"] for label in pr["labels"]}
+                and (
+                    not dispositions.get(pr["number"], {}).get("ineligible_reasons")
+                    or f"missing {target['label']} label"
+                    in dispositions[pr["number"]]["ineligible_reasons"]
+                )
             ]
             if labeled:
                 emit(

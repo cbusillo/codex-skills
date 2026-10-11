@@ -211,16 +211,26 @@ head and readiness. A behind-base single-member queue awaiting the train's
 branch update can still accumulate this watcher's group before any stored
 candidate exists; the watcher never updates that branch itself.
 If a candidate starts during the group, remaining PRs wait
-for another pass. Repeated passes never extend an already queued group.
+for another pass. The watcher never adds arrivals to an already queued group;
+clearing a previously labeled PR's hold can still change the train's membership.
 
 The helper emits JSONL `batch`, `held`, `busy`, `skipped`, `enqueued`, and
 `driver_handoff` events. Busy diagnostics include queue dispositions and labeled
-PR numbers when available. A blocked labeled PR deliberately holds the
-repository until the Supervisor reconciles it; busy alone never means a healthy
+PR numbers when available. Once the controller proves there is no active
+candidate, reconciliation, landing or eligible queue, labeled PRs it reports
+as ineligible do not hold the repository busy. Their labels stay in place;
+the train still owns their holds. Dispositions cover all enrolled bases in
+the repository. Labeled PRs absent from that inventory, or still reported as
+missing their enqueue label or lacking label-author evidence, preserve the
+batch until their state is known. Labeled stack children absent from the
+inventory remain on the Supervisor's coordinated stack path.
+Clearing a hold rejoins the current queue and may rebuild an active candidate.
+Busy alone never means a healthy
 candidate is progressing. Skipped events identify PRs whose head readiness or
 file inventory was not proved. The handoff contains the maintained driver's argv and labeled member
 numbers. Run that driver using the Supervisor's normal background monitoring,
-one driver per train; verify every intended member's eventual landing. The
+one driver per train. Stop an earlier driver for that train before
+starting the new handoff; verify every intended member's eventual landing. The
 watcher does not merge, update branches, deploy or send Client invitations.
 
 The local lock serializes this watcher's labels and pause updates. It does not
