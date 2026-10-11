@@ -12,6 +12,7 @@ import base64
 import json
 import multiprocessing
 import os
+import signal
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -2734,7 +2735,9 @@ def test_real_wrapper_distinguishes_preflight_refusal_from_unknown_write(monkeyp
         assert pending["1"]["outcome"] == "submitting"
 
 
-@pytest.mark.parametrize("termination", ["SIGTERM", "SIGHUP", "SIGKILL", "SIGTERM_then_SIGHUP"])
+@pytest.mark.parametrize("termination", ["SIGTERM", "SIGHUP", "SIGKILL", "SIGTERM_then_SIGHUP",
+                                       "SIGTERM_during_launch", "SIGHUP_during_launch",
+                                       "SIGTERM_during_timeout_cleanup", "SIGHUP_during_timeout_cleanup"])
 def test_parent_termination_cleans_catchable_commands_and_preserves_unknown(monkeypatch, tmp_path, termination):
     _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
     command = tmp_path / "fake-gh"
@@ -2744,8 +2747,9 @@ def test_parent_termination_cleans_catchable_commands_and_preserves_unknown(monk
     # Publish whole counters so reads cannot land between truncation and write.
     ticking = ("import pathlib,time; p=pathlib.Path({!r}); q=p.with_suffix('.next'); n=0\n"
                "while True:\n n+=1; q.write_text(str(n)); q.replace(p); time.sleep(0.02)\n")
-    command.write_text(f"#!{sys.executable}\nimport os,subprocess,sys\n"
-                       f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+    command.write_text(f"#!{sys.executable}\nimport os,pathlib,subprocess,sys\n"
+                       f"p=pathlib.Path({str(pid_file)!r}); q=p.with_suffix('.next')\n"
+                       "q.write_text(str(os.getpid())); q.replace(p)\n"
                        f"subprocess.Popen([sys.executable, '-c', {ticking.format(str(descendant))!r}])\n"
                        + ticking.format(str(heartbeat)))
     command.chmod(0o700)
@@ -2753,13 +2757,39 @@ def test_parent_termination_cleans_catchable_commands_and_preserves_unknown(monk
     monkeypatch.setattr(gh_pr_watch, "COMMAND_TIMEOUT_SECONDS", 5.0)
     ctx = multiprocessing.get_context("fork")
     cleanup_started = ctx.Event()
+    cleanup_release = ctx.Event()
+    launch_release = ctx.Event()
+    if termination.endswith(("_during_launch", "_during_timeout_cleanup")):
+        launch = gh_pr_watch.subprocess.Popen
+        def paused_launch(*args, **kwargs):
+            process = launch(*args, **kwargs)
+            if termination.endswith("_during_launch"):
+                assert launch_release.wait(timeout=3), "driver did not release command launch"
+            else:
+                communicate = process.communicate
+                def timed_communication(timeout=None):
+                    if timeout is not None:
+                        assert launch_release.wait(timeout=3), "driver did not release command timeout"
+                        raise gh_pr_watch.subprocess.TimeoutExpired(process.args, timeout)
+                    return communicate()
+                process.communicate = timed_communication
+            return process
+        monkeypatch.setattr(gh_pr_watch.subprocess, "Popen", paused_launch)
     if termination == "SIGTERM_then_SIGHUP":
         kill_group = os.killpg
         def delayed_cleanup(pid, sig):
             cleanup_started.set()
-            gh_pr_watch.time.sleep(0.3)
+            assert cleanup_release.wait(timeout=2), "driver did not deliver the second signal"
             kill_group(pid, sig)
         monkeypatch.setattr(gh_pr_watch.os, "killpg", delayed_cleanup)
+    elif termination.endswith("_during_timeout_cleanup"):
+        driver_pid = os.getpid()
+        kill_group = os.killpg
+        def interrupted_cleanup(pid, sig):
+            if os.getpid() != driver_pid:
+                os.kill(os.getpid(), getattr(gh_pr_watch.signal, termination.split("_", 1)[0]))
+            kill_group(pid, sig)
+        monkeypatch.setattr(gh_pr_watch.os, "killpg", interrupted_cleanup)
     worker = ctx.Process(
         target=lambda: gh_pr_watch.retry_failed_now(argparse.Namespace()),
     )
@@ -2769,13 +2799,19 @@ def test_parent_termination_cleans_catchable_commands_and_preserves_unknown(monk
         while not (heartbeat.exists() and descendant.exists()):
             assert gh_pr_watch.time.monotonic() < deadline, "offline command did not start"
             gh_pr_watch.time.sleep(0.01)
-        first_signal = "SIGTERM" if termination == "SIGTERM_then_SIGHUP" else termination
-        os.kill(worker.pid, getattr(gh_pr_watch.signal, first_signal))
+        first_signal = termination.split("_", 1)[0]
+        if not termination.endswith("_during_timeout_cleanup"):
+            os.kill(worker.pid, getattr(gh_pr_watch.signal, first_signal))
+        launch_release.set()
         if termination == "SIGTERM_then_SIGHUP":
             assert cleanup_started.wait(timeout=2)
             os.kill(worker.pid, gh_pr_watch.signal.SIGHUP)
+            cleanup_release.set()
         worker.join(timeout=2)
-        assert not worker.is_alive()
+        assert not worker.is_alive(), "watcher did not finish signal cleanup"
+        expected_exit = (-gh_pr_watch.signal.SIGKILL if termination == "SIGKILL"
+                         else 128 + getattr(gh_pr_watch.signal, first_signal))
+        assert worker.exitcode == expected_exit, "watcher bypassed its signal cleanup handler"
         gh_pr_watch.time.sleep(0.1)
         before = (heartbeat.read_text(), descendant.read_text())
         if termination == "SIGKILL":
@@ -2800,6 +2836,8 @@ def test_parent_termination_cleans_catchable_commands_and_preserves_unknown(monk
         monkeypatch.setattr(gh_pr_watch, "gh_text", lambda *_a, **_kw: pytest.fail("unknown write replay"))
         assert gh_pr_watch.retry_failed_now(argparse.Namespace())["reason"] == "rerun_outcome_pending"
     finally:
+        cleanup_release.set()
+        launch_release.set()
         if worker.is_alive():
             worker.kill()
             worker.join(timeout=2)
@@ -2879,13 +2917,86 @@ def test_command_restores_parent_signal_handlers(monkeypatch):
     assert {sig: gh_pr_watch.signal.getsignal(sig) for sig in before} == before
 
 
+@pytest.mark.parametrize("termination_signal", [gh_pr_watch.signal.SIGTERM, gh_pr_watch.signal.SIGHUP])
+@pytest.mark.parametrize("stage", ["before_launch", "failed_launch"])
+def test_interrupted_command_launch_preserves_termination_and_restores_handlers(monkeypatch, termination_signal, stage):
+    ctx = multiprocessing.get_context("fork")
+    launch_attempted = ctx.Event()
+    launch_failed = ctx.Event()
+    def interrupted_launch(*_args, **_kwargs):
+        launch_attempted.set()
+        assert stage == "failed_launch", "cancelled command was launched"
+        os.kill(os.getpid(), termination_signal)
+        launch_failed.set()
+        raise FileNotFoundError("offline command disappeared during launch")
+    monkeypatch.setattr(gh_pr_watch.subprocess, "Popen", interrupted_launch)
+    if stage == "before_launch":
+        run_command = gh_pr_watch.run_gh_command
+        def cancel_before_launch(*args, **kwargs):
+            os.kill(os.getpid(), termination_signal)
+            return run_command(*args, **kwargs)
+        monkeypatch.setattr(gh_pr_watch, "run_gh_command", cancel_before_launch)
+    def attempt():
+        handlers = {sig: gh_pr_watch.signal.getsignal(sig) for sig in (gh_pr_watch.signal.SIGTERM, gh_pr_watch.signal.SIGHUP)}
+        try:
+            gh_pr_watch.gh_text(["offline"])
+        except SystemExit:
+            assert {sig: gh_pr_watch.signal.getsignal(sig) for sig in handlers} == handlers
+            raise
+    worker = ctx.Process(target=attempt)
+    try:
+        worker.start()
+        worker.join(timeout=2)
+        assert worker.exitcode == 128 + termination_signal
+        assert launch_attempted.is_set() == (stage == "failed_launch")
+        assert launch_failed.is_set() == (stage == "failed_launch")
+    finally:
+        if worker.is_alive():
+            worker.kill()
+            worker.join(timeout=2)
+
+
+@pytest.mark.parametrize("termination_signal", [signal.SIGTERM, signal.SIGHUP])
+@pytest.mark.parametrize("command_ready", [False, True])
+def test_signal_during_handler_restoration_is_preserved(monkeypatch, termination_signal, command_ready):
+    ctx = multiprocessing.get_context("fork")
+    restoration_reached = ctx.Event()
+    def attempt():
+        handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP)}
+        restore = signal.signal
+        def signal_during_restore(signum, handler):
+            if signum == signal.SIGTERM and handler == handlers[signum]:
+                restoration_reached.set()
+                os.kill(os.getpid(), termination_signal)
+            return restore(signum, handler)
+        monkeypatch.setattr(gh_pr_watch.signal, "signal", signal_during_restore)
+        try:
+            with gh_pr_watch.command_signal_cleanup() as check_termination:
+                check_termination(command_ready=command_ready)
+        except SystemExit:
+            assert {sig: signal.getsignal(sig) for sig in handlers} == handlers
+            raise
+    worker = ctx.Process(target=attempt)
+    try:
+        worker.start()
+        worker.join(timeout=2)
+        assert restoration_reached.is_set()
+        assert worker.exitcode == 128 + termination_signal
+    finally:
+        if worker.is_alive():
+            worker.kill()
+            worker.join(timeout=2)
+
+
 def test_ignored_hangup_keeps_running_command_and_confirms_write(monkeypatch, tmp_path):
     _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
     pid_file = tmp_path / "command.pid"
+    release = tmp_path / "release-command"
     command = tmp_path / "fake-gh"
-    command.write_text(f"#!{sys.executable}\nimport os,time\n"
-                       f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
-                       "time.sleep(0.4)\n")
+    command.write_text(f"#!{sys.executable}\nimport os,pathlib,time\n"
+                       f"p=pathlib.Path({str(pid_file)!r}); q=p.with_suffix('.next')\n"
+                       "q.write_text(str(os.getpid())); q.replace(p)\n"
+                       f"while not pathlib.Path({str(release)!r}).exists(): time.sleep(0.01)\n")
     command.chmod(0o700)
     monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(command))
     ctx = multiprocessing.get_context("fork")
@@ -2903,9 +3014,13 @@ def test_ignored_hangup_keeps_running_command_and_confirms_write(monkeypatch, tm
             assert gh_pr_watch.time.monotonic() < deadline
             gh_pr_watch.time.sleep(0.01)
         os.kill(worker.pid, gh_pr_watch.signal.SIGHUP)
+        release.touch()
+        # Drain the result before joining so the queue feeder cannot hold exit.
+        completed_result = results.get(timeout=2)
         worker.join(timeout=2)
+        assert not worker.is_alive(), "watcher did not finish the released command"
         assert worker.exitcode == 0, "ignored hangup terminated the watcher"
-        assert results.get(timeout=1)["reason"] == "rerun_triggered"
+        assert completed_result["reason"] == "rerun_triggered"
         assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "confirmed"
     finally:
         if worker.is_alive():
