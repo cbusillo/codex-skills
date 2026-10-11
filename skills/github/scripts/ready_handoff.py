@@ -16,14 +16,12 @@ HEAD = re.compile(
 )
 
 
-def ready_line(line):
-    """Accept presentation variants without broadening the readiness statement."""
-    line = line.strip()
-    if line.endswith("."):
-        line = line[:-1]
+def handoff_line(line):
+    """Normalize Ready and renewed waits with the same presentation rules."""
+    line = line.strip().removesuffix(".")
     if line.startswith("**") and line.endswith("**"):
-        line = line[2:-2]
-    return line.removesuffix(".") == READY
+        line = line[2:-2].removesuffix(".")
+    return line
 
 
 def handoff_body(head_sha: str, *, waiting_for_client: bool = False) -> str:
@@ -42,7 +40,7 @@ def requires_client_acceptance(pr, check_runs):
     body = pr.get("body") or ""
     return bool(
         re.search(r"(?im)^## (?:Client|Owner) test notes\s*$", body)
-        and not re.search(r"(?im)^Nothing for the Client to test[:;.](?:[ \t]+[^\n]*)?[ \t]*$", body)
+        and not re.search(r"(?im)^Nothing for the (?:Client|owner) to test\b", body)
     )
 
 
@@ -60,8 +58,8 @@ def latest_ready(pr, comments, trusted):
         if (comment.get("user") or {}).get("login", "").casefold() not in trusted:
             continue
         body = comment.get("body") or ""
-        first = body.splitlines()[0] if body.splitlines() else ""
-        if ready_line(first) or first.startswith(WAITING):
+        first = handoff_line(body.splitlines()[0]) if body.splitlines() else ""
+        if first == READY or first.startswith(WAITING):
             handoffs.append(comment)
     if not handoffs:
         return False
@@ -73,6 +71,6 @@ def latest_ready(pr, comments, trusted):
         ),
     )
     body = latest["body"]
-    return ready_line(body.splitlines()[0]) and [
+    return handoff_line(body.splitlines()[0]) == READY and [
         match.group("sha") for match in HEAD.finditer(body)
     ] == [pr["head"]["sha"]]

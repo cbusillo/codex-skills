@@ -51,6 +51,7 @@ review: Any = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(review)
 
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+DEPENDENCY_REVIEW = "dependency update needs agent review"
 
 
 class WatchError(ValueError):
@@ -346,13 +347,13 @@ class Live:
             and decision["head_sha"] == pr["head"]["sha"]
         )
 
-    def qualified(self, target, pr, extra_trusted):
+    def qualified(self, target, pr, extra_trusted, agent_review_required=False):
         repo, number = target["repo"], pr["number"]
         if (
             pr.get("state") != "open"
             or pr.get("draft") is not False
             or pr["base"]["ref"] != target["base"]
-            or pr.get("mergeable") is False
+            or pr.get("mergeable") is not True
         ):
             return False
         labels = {item["name"].casefold() for item in pr["labels"]}
@@ -360,8 +361,12 @@ class Live:
             return False
         comments = self.pages(f"/repos/{repo}/issues/{number}/comments")
         author = pr["user"]["login"].casefold()
-        # A dependency bot cannot supply the agent review of its own update.
-        trusted = extra_trusted if author == "dependabot[bot]" else {author} | extra_trusted
+        # The controller's dependency disposition, rather than a bot name,
+        # decides whether a distinct trusted agent must review the update.
+        trusted = (
+            extra_trusted - {author}
+            if agent_review_required else {author} | extra_trusted
+        )
         if not latest_ready(pr, comments, trusted):
             return False
         reviews = self.pages(f"/repos/{repo}/pulls/{number}/reviews")
@@ -507,7 +512,7 @@ def needs_ready_handoff(row, target):
     """These two missing prerequisites are proved by qualification before writing."""
     return bool(row["ineligible_reasons"]) and set(row["ineligible_reasons"]) <= {
         f"missing {target['label']} label",
-        "dependency update needs agent review",
+        DEPENDENCY_REVIEW,
     }
 
 
@@ -543,7 +548,7 @@ def run_pass(io, args, emit, *, state=None):
                 continue
             queue = response["result"]["dry_run_result"]["queue"]
             author_allowed = {
-                item["number"]
+                item["number"]: item
                 for item in queue
                 if needs_ready_handoff(item, target)
             }
@@ -591,10 +596,19 @@ def run_pass(io, args, emit, *, state=None):
                 if listed["number"] not in author_allowed:
                     continue
                 pr = io.get(f"/repos/{repo}/pulls/{listed['number']}")
-                if pr.get("mergeable") is False:
-                    emit("skipped", {"repository": repo, "pr": pr["number"], "reason": "conflicting"})
+                if pr.get("mergeable") is not True:
+                    emit("skipped", {
+                        "repository": repo,
+                        "pr": pr["number"],
+                        "reason": "conflicting" if pr.get("mergeable") is False
+                        else "mergeability_unknown",
+                    })
                     continue
-                if io.qualified(target, pr, set(args.handoff_login)):
+                agent_review_required = (
+                    DEPENDENCY_REVIEW
+                    in author_allowed[pr["number"]]["ineligible_reasons"]
+                )
+                if io.qualified(target, pr, set(args.handoff_login), agent_review_required):
                     files = io.pages(f"/repos/{repo}/pulls/{pr['number']}/files")
                     if len(files) != pr["changed_files"] or not files:
                         emit(
@@ -613,6 +627,7 @@ def run_pass(io, args, emit, *, state=None):
                             "created_at": pr["created_at"],
                             "areas": areas(files),
                             "labels": sorted(label["name"] for label in pr["labels"]),
+                            "agent_review_required": agent_review_required,
                         }
                     )
                 else:
@@ -664,7 +679,7 @@ def run_pass(io, args, emit, *, state=None):
                 if continuing and "dry_run_result" not in (fresh.get("result") or {}):
                     allowed = (
                         sorted(label["name"] for label in pr["labels"]) == item["labels"]
-                        and pr.get("mergeable") is not False
+                        and pr.get("mergeable") is True
                     )
                 # A scheduler may not yet have incorporated another actor's label
                 # into its candidate. Do not extend that actor's queue either.
@@ -681,8 +696,15 @@ def run_pass(io, args, emit, *, state=None):
                     or any(not idle(io.train(other)) for other in others)
                     or not allowed
                     or pr["head"]["sha"] != item["head"]
-                    or pr.get("mergeable") is False
-                    or not io.qualified(target, pr, set(args.handoff_login))
+                    or pr.get("mergeable") is not True
+                    or not io.qualified(
+                        target, pr, set(args.handoff_login),
+                        item["agent_review_required"] or any(
+                            row["number"] == item["number"]
+                            and DEPENDENCY_REVIEW in row["ineligible_reasons"]
+                            for row in entries
+                        ),
+                    )
                 ):
                     emit("batch_stopped", {"repository": repo, "labeled": own})
                     break
