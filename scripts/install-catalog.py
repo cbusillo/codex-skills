@@ -166,7 +166,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
     hooks, hook_preview = None, []
     hook_path = codex / "hooks.json"
     hook_previous = None
-    hook_outputs = {}
+    hook_outputs = None
     if not refresh_instructions and not skip_codex_hooks:
         hook_outputs = sync.prepare_codex_hooks(codex, catalog=ROOT)
         hook_preview = [entry for path, text in hook_outputs.items() for entry in sync.synchronize(text, [path], write=False)]
