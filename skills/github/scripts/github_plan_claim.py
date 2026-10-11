@@ -814,16 +814,17 @@ ISSUE_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/(
 
 def admission_track(
     start: tuple[str, int], owner: str, *, read_issue: Any, read_parent: Any, read_blocking: Any,
-    max_nodes: int = 50,
+    max_nodes: int = 50, limitations: list[str] | None = None,
 ) -> tuple[dict[str, Any] | None, bool]:
     """The milestone Track this issue reaches through parents and the issues it blocks.
 
     Returns the Track and whether the walk was complete. A Track is an issue
     titled `Track:` with an open milestone in OWNER/direction, the graph the
-    weekly audit counts as milestone work. Open milestones there are the
-    listed ones; a closed one is history and admits nothing.
+    weekly audit counts as milestone work. A closed milestone is history and
+    admits nothing; work selection owns the Director's listed priorities.
     """
     direction = f"{owner}/direction".casefold()
+    limits = limitations if limitations is not None else []
     pending = [start]
     seen: set[tuple[str, int]] = set()
     while pending:
@@ -832,10 +833,18 @@ def admission_track(
         if key in seen:
             continue
         if len(seen) >= max_nodes:
+            limits.append("node_limit")
             return None, False
         seen.add(key)
         issue = read_issue(repo, number)
         milestone = (issue.get("milestone") or {}).get("title")
+        if (key[0] != direction and key[0].endswith("/direction")
+                and str(issue.get("title") or "").startswith("Track:") and milestone
+                and (issue.get("milestone") or {}).get("state", "open") == "open"):
+            # The claim knows the repository account, not its cross-owner Director.
+            # Do not certify a foreign Track or report its graph fully verified.
+            if "cross_owner_direction_account" not in limits:
+                limits.append("cross_owner_direction_account")
         if (key[0] == direction and str(issue.get("title") or "").startswith("Track:") and milestone
                 and (issue.get("milestone") or {}).get("state", "open") == "open"):
             return {"url": f"https://github.com/{repo}/issues/{number}", "title": issue.get("title"),
@@ -844,16 +853,18 @@ def admission_track(
             match = ISSUE_URL.fullmatch(str((linked or {}).get("html_url") or ""))
             if match:
                 pending.append((match[1], int(match[2])))
-    return None, True
+    return None, not limits
 
 
-def admission_text(kind: str, links: list[str], *, track: dict[str, Any] | None = None, unlinked: str | None = None) -> str:
+def admission_text(kind: str, links: list[str], *, track: dict[str, Any] | None = None,
+                   unlinked: str | None = None, graph_complete: bool = True) -> str:
     """The claim comment's admission line."""
     detail = []
     if track:
         detail.append(f"reaches {track['url']} ({track['title']}, milestone `{track['milestone']}`)")
-    if unlinked:
-        detail.append(f"not linked into a milestone Track graph: {unlinked}")
+    if unlinked and not track:
+        description = "no Track link found in the readable graph" if graph_complete else "Track link not verified"
+        detail.append(f"{description}: {unlinked}")
     if links:
         detail.append(", ".join(links))
     return f"Admission: {kind}" + ("; " + "; ".join(detail) if detail else "")
