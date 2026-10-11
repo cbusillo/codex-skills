@@ -2024,6 +2024,13 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                 raise PlanError("Related ownership comment is missing or repeats the structured source")
             related.append(related_comment)
         source_branch = github_plan_release.source_record(source)["branch"]
+        # Check source identity, closure and native peers before a retained-PR
+        # refusal can be classified as independent issue work.
+        if expected_actor is None:
+            raise PlanError("Release requires the configured source automation identity")
+        github_plan_release.prepare_release(source, evidence, comments, inventory,
+            actor=expected_actor, role=args.role, releaser_session=args.session,
+            evidence_url=args.evidence_comment, retained_prs=args.retained_pr, related=related)
         _, open_pulls = collect_paged_rest_items(f"/repos/{issue['repo']}/pulls", query={"state": "open"},
             bucket="rest_core", step_prefix="release_source_branch_prs")
         branch_prs = [f"https://github.com/{issue['repo']}/pull/{p['number']}" for p in open_pulls

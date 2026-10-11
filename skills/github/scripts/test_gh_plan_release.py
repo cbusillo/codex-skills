@@ -126,6 +126,11 @@ class ReleaseTests(unittest.TestCase):
             self.run_release()
         self.assertNotEqual(caught.exception.payload["release_refusal_scope"], release.ISSUE_REFUSAL_SCOPE)
         self.f.assert_no_writes()
+        self.f.inventory["sessions"] = [{"cwd": "/source"}]
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_release()
+        self.assertNotEqual(caught.exception.payload["release_refusal_scope"], release.ISSUE_REFUSAL_SCOPE)
+        self.f.assert_no_writes()
 
     def test_related_followup_session_must_match_source_closure(self):
         for field in ("Session: {}", "**Session:** `{}`", "> Session: {}", "Session: {}.", "Session: {} (capacity work)", "Session ID: {}", "Native session ID: {}", "session={}", "session_id: {}", "sessionId: {}", "Session-ID: {}", "Thread ID: {}", "Session — {}", "| Session | {} |", "Session: {}; PR #99", "(Session: {})"):

@@ -104,9 +104,12 @@ def prepare_release(
     if any(s.get("sessionId") == record["session"] for s in inventory["sessions"]):
         raise ValueError("Source session is still visible in the active native session inventory")
     retained_paths = {pathlib.Path(t["path"]).resolve() for t in inventory["worktrees"] if t["branch"] in {record["branch"], *(retained_branches or set())}}
-    if any(cwd == root or root in cwd.parents for s in inventory["sessions"]
-           for cwd in [pathlib.Path(s.get("cwd") or "/").resolve()] for root in retained_paths):
-        raise IssueReleaseRefusal("A live peer is using the source claim's retained worktree")
+    peers = [s for s in inventory["sessions"]
+             if any(cwd == root or root in cwd.parents
+                    for cwd in [pathlib.Path(s.get("cwd") or "/").resolve()] for root in retained_paths)]
+    if peers:
+        refusal = IssueReleaseRefusal if all(s.get("sessionId") and s["sessionId"] != record["session"] for s in peers) else ValueError
+        raise refusal("A live peer is using the source claim's retained worktree")
     for comment in related:
         if ((comment.get("user") or {}).get("login") != actor or claim.records(comment.get("body") or "")
                 or not re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", comment.get("body") or "")):
