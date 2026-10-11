@@ -4,6 +4,12 @@ Read when diagnosing auto-open, ownership, retry, cleanup, trust, or IDE-selecti
 problems, or changing the helper lifecycle. Commands and paths below are relative
 to the `jetbrains-inspection` skill directory.
 
+Compact assessment diagnostics retain `endpoint`, `http_status`, and
+`response_code` from transport failures, including each configured IDE lane.
+For `invalid_api_response`, use the HTTP status to distinguish an HTTP rejection
+from a malformed successful response before investigating request size or plugin
+behavior. Response bodies are not included. A failed request remains UNKNOWN.
+
 Plugins advertising `ide_memory_diagnostic_version: 1` expose a project-free
 `memory` endpoint. Before opening a project or triggering inspection, and after
 a failed endpoint request or UNKNOWN wait/problems response, the helper probes
