@@ -666,12 +666,12 @@ holder prose is checked independently. A `Blocked by:` GitHub issue URL followed
 by `(actively owned by WORKER)` identifies that linked issue's holder only when
 its repository/number differs from both the requested issue and its canonical
 GitHub issue URL. Likewise, a clause whose subject is another issue's
-reference (`#N`, `OWNER/REPO#N` or its issue URL), followed by at most six
-plain words without punctuation and a verb that runs into one `owned by WORKER`
-holder ending the clause, names that issue's holder, such as `#3314 Q151 was
-approved and is owned by LP-3314-D1;`. Missing issue identity,
-same-issue ownership, `this issue`, a possessive, punctuation or a joining word
-before the verb, and additional holders remain ambiguous. These exclusions
+reference (`#N`, `OWNER/REPO#N` or its issue URL) in the narrow shape
+`REF [Q151] [was approved today and] is owned by WORKER`, with that one holder
+ending the clause, names that issue's holder, such as `#3314 Q151 was approved
+today and is owned by LP-3314-D1;`. Missing issue identity,
+same-issue ownership, any other wording before the holder (a possessive,
+punctuation, another subject) and additional holders remain ambiguous. These exclusions
 do not resolve waits, native blockers or competing comments. Retained-PR status
 ownership remains conservative during refresh; all status-history exclusions apply
 only to the issue's own status.

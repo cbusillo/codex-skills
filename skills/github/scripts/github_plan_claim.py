@@ -414,9 +414,8 @@ def current_ownership_text(
         r"\((actively owned by [\w.-]+)\)(?=\.(?:\s|$)|\s*$)", other_issue, status,
     )
     # A clause whose subject is another issue names that issue's holder, e.g.
-    # launchplane#3318: "#3314 Q151 ... is owned by LP-3314-D1; ...". Only a
-    # single holder ending the clause qualifies; this issue's own identity,
-    # "this issue/task" or a second keyword keeps the clause conservative.
+    # launchplane#3318: "#3314 Q151 was approved today and is owned by
+    # LP-3314-D1; ...". Only a single holder ending the clause qualifies.
     reference = r"(?:https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*|(?:[\w.-]+/[\w.-]+)?#[1-9]\d*)"
     holder = r"[\w-]+(?:\.[\w-]+)*"
     clause = re.compile(
@@ -428,16 +427,15 @@ def current_ownership_text(
     def other_clause(match: re.Match[str]) -> str:
         identity = issue_identity(match.group("ref"), repo)
         body = match.group("body")
-        # The reference must stay the holder's only subject: a few plain words,
-        # then a verb running straight into "owned by". The one joiner allowed
-        # is "and is"; punctuation or another joiner keeps it ambiguous.
-        verb = re.search(r"(?:\s+and)?\s+(?:is|was|remains|has been)(?:\s+(?:now|still|actively))?$", body)
-        lead_words = body[:verb.start()] if verb else ""
-        if (identity is None or identity in identities or verb is None
-                or not re.fullmatch(r"(?: [A-Za-z0-9]+){0,6}", lead_words)
-                or re.search(r"\b(?:and|or|but|nor|while|whereas|so|then|which|that|who|whose|when|where|because|"
-                             r"since|after|before|until|as|with|plus|owned|claimed|this|here|are|were|both|also|too)\b",
-                             lead_words, re.IGNORECASE)):
+        # The reference must stay the holder's only subject. Accept only the
+        # narrow shape "REF [Q151] [was approved today and] is owned by", so a
+        # second subject ("yet the repair is") stays ambiguous.
+        subject_only = re.fullmatch(
+            r"(?: [A-Z]+\d+)?"
+            r"(?: (?:is|was) (?:approved|merged|closed|landed|complete|completed|done|ready|open|released)"
+            r"(?: (?:today|now|earlier|yesterday))? and)?"
+            r" (?:is|was|remains|has been)(?: (?:now|still|actively))?", body)
+        if identity is None or identity in identities or not subject_only:
             return match.group()
         return match.group("lead") + match.group("ref") + body
     return clause.sub(other_clause, status)

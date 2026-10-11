@@ -2264,7 +2264,8 @@ class ClaimTests(unittest.TestCase):
 
     def test_other_issue_holder_sentence_does_not_claim_this_issue(self):
         # launchplane#3318, LP-3318-Q: Last verified names #3314's holder.
-        for ref in ("#3314", "owner/repo#3314", "https://github.com/owner/repo/issues/3314", "owner/other#42"):
+        for ref in ("#3314", "owner/repo#3314", "https://github.com/owner/repo/issues/3314", "owner/other#42",
+                    "Issue #3314"):
             with self.subTest(ref=ref):
                 self.setUp()
                 self.issue["body"] += (f"Last verified: October 10, 2026. {ref} Q151 was approved today and is owned by "
@@ -2288,7 +2289,9 @@ class ClaimTests(unittest.TestCase):
                          "#3314’s follow-up is owned by LP-D1.",
                          "#3314 is complete — the follow-up is owned by LP-D1.",
                          "#3314 is complete: the follow-up is owned by LP-D1.",
-                         "#3314 (the follow-up) is owned by LP-D1."):
+                         "#3314 (the follow-up) is owned by LP-D1.",
+                         "#3314 is complete yet the repair is owned by LP-D1.",
+                         "#3314 is complete and the repair is owned by LP-D1."):
             with self.subTest(sentence=sentence):
                 self.setUp()
                 self.issue["body"] += "Last verified: October 10, 2026. " + sentence + "\n"
