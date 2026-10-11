@@ -51,12 +51,10 @@ not a cache or task artifact. If it is missing, uninstall still removes matching
 enrollment settings and hooks without recreating the directory. Write enrollment creates it and its managed `process-wrapper` entrypoint. Protect this directory
 as private session evidence: requests contain working and transcript paths, but
 never error strings, tokens or credentials. Only sessions carrying `CLAUDE_ACCOUNT_MOVE_ENABLED=1` record or execute moves.
-The Supervisor terminal launcher contains this marker in a subshell when its
-Anthropic invocation returns. A final simple `exec` invocation instead uses
-`exec env` to pass it only to the agent that replaces the launch shell; there is no outer shell left
-after the agent exits. Use that final `exec` form for Supervisor launch files.
-Sessions without the
-marker remain inert. Before enabling service-hosted sessions, qualify whether
+The [Supervisor terminal launcher](../scripts/iterm_tab.py) supplies this marker
+only for its Anthropic invocation; it does not persist in a returning tab shell.
+Sessions without the marker remain inert.
+Before enabling service-hosted sessions, qualify whether
 Claude's detached service propagates the marker to unrelated sessions; this
 branch does not establish that isolation. Leave the Director's sessions alone.
 With no pending move, the wrapper execs the inherited command, arguments and
@@ -88,11 +86,25 @@ on its inherited home, allowing its ordinary wait-for-reset fallback.
    sessions alone. Status contains private paths; do not paste it publicly.
 2. Using the [terminal helper](helpers.md#launching-and-nudging), read the exact
    tab. Verify it is at an idle prompt with no turn running and an empty input
-   line. Preserve input whose author is uncertain. Write `/restart` to a private
+   line. Preserve input whose author is uncertain. Use `/restart` only after
+   its availability and wrapper/resume behavior have been qualified on the
+   running version under [Version qualification](#version-qualification).
+   If it reports `Unknown command`, keep the session and pending request in
+   place and hand off qualification; do not force a vendor feature flag or
+   substitute a settings-changing command in a real home.
+   If the session later continues in place after reset, use step 5's verified
+   cancellation before a later relaunch, so the old request cannot move it.
+   Write `/restart` to a private
    message file, send it once with `--session-id` and `--verified-target`, then
    read back. Never replay an uncertain send or start a second copy of the
    transcript while the old process runs.
-3. Verify the old process ended and the replacement occupies the same tab. Read
+3. Read back the same tab and resume arguments for the same UUID, then use the
+   resume receipt below to prove the move completed. Tab, PID and argv alone
+   cannot prove a relaunch if the original launch already used `--resume`.
+   Native re-exec can replace the process image while retaining its
+   PID; PID disappearance is not required and PID continuity alone does not
+   prove resume. If the PID changes, verify the old process ended before
+   accepting the replacement. Never launch another copy to obtain this proof. Read
    move status: `<session-id>.resumed.json` must say `resumed`, naming the same
    UUID and selected account. This receipt names the configured account/home; it does not authenticate the
    account identity. It is written only by `SessionStart`
@@ -138,9 +150,41 @@ replaces that session's previous attempt and clears its old resume receipt.
 
 [Process wrappers](https://code.claude.com/docs/en/corporate-launcher) and
 [StopFailure](https://code.claude.com/docs/en/hooks#stopfailure) are documented.
-The approved design verified `/restart` preserving the session through the
-wrapper in Claude Code 2.1.294 by source reading; `/restart` remains undocumented.
-Before live rollout on another version, qualify that route in throwaway homes.
+The approved design read `/restart`'s resume path in Claude Code 2.1.294;
+source reading did not qualify command availability or native execution.
+In 2.1.296, `/restart` registration additionally requires an eligible native
+interactive launch and vendor feature enablement. A process wrapper does not
+enable the command. The bounded `Unknown command` observation and current
+qualification evidence belong to [#1634](https://github.com/cbusillo/codex-skills/issues/1634);
+they do not establish a vendor-wide defect or identify every prior probe's
+feature state.
+An exec pass-through wrapper retains the native binary's install identity;
+it neither supplies vendor enablement nor inherently excludes an otherwise
+eligible native launch. This record does not qualify `/restart` account moves.
+
+The documented [renderer switch](https://code.claude.com/docs/en/fullscreen#enable-fullscreen-rendering)
+provides a disposable lifecycle probe: start a conversation in an isolated
+home through `exec env`, with a pass-through process wrapper; run `/tui` to
+identify the renderer, then switch to the other renderer. Record the exact tab,
+TTY, PID/PPID, cwd and wrapper argv before/after, the resumed UUID and visible
+idle prompt, and verify the next request carries the earlier conversation.
+The 2.1.296 probe on #1634 retained the PID, terminal and transcript through the
+wrapper's `--resume` invocation. It used a local fake API, so it proves native
+lifecycle and conversation forwarding, not signed-in inference or an account move.
+It qualifies that exec launch shape only, not the launcher's returning subshell
+form or detached-service sessions. Qualify the actual launch shape separately
+before using it for moves.
+
+`/tui` saves a user renderer preference and is not a qualified drop-in account
+move. Keep this probe in disposable homes. The wrapper recognizes a pending
+move by session UUID: any matching native `--resume` launch,
+including a renderer switch, can attempt that move. Do not use an unrelated
+relaunch to bypass qualification or recovery; use the existing verified
+cancellation step when continuation in place makes the request obsolete.
+Launch restrictions such as
+`--setting-sources` can make the native command refuse to relaunch; preserve
+that refusal rather than dropping restrictions. Before live rollout on another
+version, qualify the actual move command in throwaway sessions.
 Before live enrollment, also qualify detached-service marker inheritance,
 managed/CLI credential overrides and actual restart cwd/argv on that version.
 These fixture tests cannot prove a signed-in model turn across accounts.
