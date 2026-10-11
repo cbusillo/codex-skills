@@ -88,6 +88,10 @@ already granted for this run.
 
 ## Foreign-post notices
 
+For ongoing runs, use the [persistent services](#persistent-supervisor-services)
+below and read their logs during checks. The bounded invocation here remains
+available for a one-off check.
+
 ```sh
 uv run skills/supervisor/scripts/foreign_watch.py --owner OWNER --repo OWNER/REPO --own-login OWN-LOGIN --own-login AUTOMATION-LOGIN --launchplane-login DELIVERY-LOGIN --state <private-watch-state.json> --deadline-seconds 1800
 ```
@@ -106,9 +110,12 @@ helper reads one since-scoped repository issue-comment listing per pass
 (including PR timeline comments), paginating through the shared reader within
 the wall-clock deadline. It uses the shared bulk quota reserve, identity,
 conditional cache and retry policy; no separate quota probe or history scan.
-A failed, partial or malformed read preserves that repository's watermark,
-reports an error and exits for Supervisor reconciliation. Wait until a reported
-quota retry time before re-arming; increase the bounded deadline when a historical
+A failed, partial or malformed read preserves that repository's watermark.
+The bounded invocation reports an error and exits for Supervisor reconciliation.
+With `--persistent`, notices remain in the log and retryable reads recover after
+the normal interval or the reported quota retry time, whichever is later.
+Authentication, malformed-response and other nonretryable failures still stop.
+Wait until a reported quota retry time before a manual restart; increase the bounded deadline when a historical
 catch-up cannot finish. Partial pages never advance past a failed read.
 Successful repositories
 advance to the pass start, with a one-second overlap on their next read.
@@ -181,8 +188,9 @@ target owned by `--owner`; repeat `--repo` to narrow the scan. The active
 Launchplane policy supplies enrollment, base branches, enqueue labels and the
 policy revision. Repository metadata is never consulted for those facts.
 The loop defaults to a 30-minute wall-clock bound and five-minute cadence;
-`--once`, `--interval`, and `--deadline-seconds` configure it. Re-arm through the
-harness's scheduler, or choose a longer explicit deadline for continuous use.
+`--once`, `--interval`, and `--deadline-seconds` configure it. For ongoing runs,
+the [persistent service](#persistent-supervisor-services) restarts clean deadline
+exits; check its status and logs instead of re-arming it in each session.
 Before any enqueue write starts in a pass, a transient network read failure
 (including retryable `GitHubReadError` with EOF, connection-establishment or
 non-JSON provider evidence even without an HTTP status)
@@ -218,11 +226,13 @@ requiring particular punctuation.
 Conflicting or unknown-mergeability PRs are skipped before selection and
 rechecked before labeling.
 A controller disposition of `dependency update needs agent review` may enter
-qualification: a current-head Ready from an explicitly trusted agent supplies
+qualification: a current-head Ready from a trusted agent supplies
 that review; the dependency author's own comment cannot. Name the reviewing
-agent's login with `--handoff-login`; repeat it for each trusted reviewer.
-This existing option trusts those reviewers across the scoped repositories;
-without it, dependency-review PRs remain unqueued. Other controller holds still block.
+agent's login with `--handoff-login`; repeat it for additional trusted reviewers.
+The configured automation login (from the GitHub identity helper, falling back
+to `shiny-code-app[bot]`) is trusted by default, including its
+reviews on Dependabot and Actions-bot PRs. Additional logins extend that default
+across the scoped repositories. Other controller holds still block.
 An unavailable Client review scope holds that PR rather than bypassing acceptance.
 Required checks are read from current branch protection and
 matched to their configured App. A Client review label, request check, or real
@@ -280,6 +290,117 @@ the linked Client Products rules; those rules also link the decision retiring
 the Launchplane landing hold. First-class service holds and atomic admission
 belong to [launchplane#3327](https://github.com/cbusillo/launchplane/issues/3327)
 service admission.
+
+## Persistent Supervisor services
+
+On the Director's Mac, launchd owns four jobs: enqueue, drive, foreign and
+throughput. They survive Supervisor session restarts and start again at login.
+The Supervisor installs and starts them after review; an executing session
+prepares and tests the helper without installing or starting these services.
+Use the installed runtime catalog, not a task worktree, as their source.
+
+Keep one private configuration at a stable location, reusing the same hold and
+foreign-watch state files across takeovers. Each service takes the existing
+bounded command as an argument array, an absolute working directory and a
+delay between successful runs. The runner uses no shell, copies no credentials,
+and preserves the command's output in its log. Use absolute executable and
+script paths: launchd does not inherit a terminal's directory or shell setup.
+Do not put secrets in this configuration; helpers use their existing private
+credential sources. A configuration has this shape, with all four entries:
+
+```json
+{
+  "uv": "/absolute/path/to/uv",
+  "services": {
+    "enqueue": {
+      "argv": ["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/auto_enqueue.py", "--owner", "OWNER", "--hold-file", "/private/holds.json", "--apply"],
+      "cwd": "/runtime/catalog",
+      "restart_seconds": 60
+    },
+    "drive": {
+      "argv": ["/absolute/path/to/uv", "run", "/private/existing-bounded-drive-loop.py"],
+      "cwd": "/runtime/catalog",
+      "restart_seconds": 60
+    },
+    "foreign": {
+      "argv": ["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/foreign_watch.py", "--owner", "OWNER", "--repo", "OWNER/REPO", "--own-login", "OWNER", "--own-login", "shiny-code-app[bot]", "--launchplane-login", "DELIVERY-LOGIN", "--state", "/private/foreign-state.json", "--persistent"],
+      "cwd": "/runtime/catalog",
+      "restart_seconds": 60
+    },
+    "throughput": {
+      "argv": ["/absolute/path/to/uv", "run", "/private/existing-throughput-snapshot.py"],
+      "cwd": "/runtime/catalog",
+      "restart_seconds": 300
+    }
+  }
+}
+```
+
+Replace the example paths and scope with the current Supervisor handoff's
+commands. The drive entry runs the existing bounded loop calling the maintained
+train driver, one driver per repository. It does not replace Launchplane's
+controller or take over another driver. [launchplane#3419](https://github.com/cbusillo/launchplane/issues/3419)
+owns moving that scheduling into Launchplane. The throughput entry runs the
+existing count snapshot; its stdout accumulates in the throughput log. Keep
+those commands at durable private paths. Preview enqueue first under the
+existing authority described above before configuring its `--apply` command.
+
+Before first startup, verify the previous deadline loops and their children
+have ended, and reconcile their unread output. Before changing a running
+configuration or rendering replacement jobs, stop these jobs and verify their
+children have exited. A per-service lock prevents duplicate runners sharing
+one configuration; the existing watcher and driver locks retain their own
+scope. A second configuration is not a takeover route.
+
+Render only (writes private plists and empty log directories, never installs):
+
+```sh
+uv run /runtime/catalog/skills/supervisor/scripts/services.py render --catalog /runtime/catalog --config /private/supervisor-services.json --output /private/supervisor-services
+```
+
+After reviewing those jobs, the Supervisor starts each with:
+
+```sh
+launchctl bootstrap "gui/$(id -u)" /private/supervisor-services/com.codex-skills.supervisor.enqueue.plist
+```
+
+Repeat for `drive`, `foreign` and `throughput`. To start automatically after a
+Mac login, the Supervisor places the reviewed plists in `~/Library/LaunchAgents/`
+and bootstraps those paths instead. Session takeovers reuse the loaded jobs;
+do not bootstrap another set or re-arm deadline loops. During each check:
+
+```sh
+launchctl print "gui/$(id -u)/com.codex-skills.supervisor.enqueue"
+tail -n 40 /private/supervisor-services/logs/enqueue.jsonl
+tail -n 40 /private/supervisor-services/logs/enqueue.stderr.log
+```
+
+Repeat for the other jobs. Their log names are `<service>.jsonl` and
+`<service>.stderr.log` under the render output's `logs/`. Read foreign notices
+there during checks; `--persistent` keeps watching after notices and retains its watermark.
+Rotate logs during a stopped maintenance window when needed.
+
+Clean bounded exits restart after `restart_seconds`. Transient enqueue reads
+already recover inside `auto_enqueue.py`, without an extra wrapper. Any nonzero
+exit or launch/configuration failure emits `reconciliation_required` and stops
+that service: launchd does not blindly replay uncertain writes or bypass quota
+retry times. A private `<config>.<service>.reconcile` marker also preserves a
+failed or interrupted command across login, reboot and fresh bootstrap. The
+runner writes it before starting a child and removes it only after exit 0, so
+a forced runner kill cannot silently resume a command. Read the helper output
+and canonical records, respect any retry time, verify prior children have ended,
+and resolve the cause. Then clear that service's marker under its lock with
+`uv run /runtime/catalog/skills/supervisor/scripts/services.py clear --config /private/supervisor-services.json --service enqueue`
+before restarting a stopped job with
+`launchctl kickstart "gui/$(id -u)/com.codex-skills.supervisor.enqueue"`.
+Do not use `kickstart -k` to displace a running service.
+
+To stop, use `launchctl bootout "gui/$(id -u)/com.codex-skills.supervisor.enqueue"`
+and repeat for the other jobs. SIGTERM reaches the runner, which terminates its
+active child process group and waits for exit before returning. Verify the
+job is absent and its children have ended. To keep it stopped after login,
+remove only its reviewed plist from `~/Library/LaunchAgents/`; retain the
+configuration, holds, watch state and logs for takeover or reconciliation.
 
 ## Launching and nudging
 
