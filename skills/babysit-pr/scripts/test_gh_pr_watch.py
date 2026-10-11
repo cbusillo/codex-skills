@@ -2898,16 +2898,42 @@ def test_command_restores_parent_signal_handlers(monkeypatch):
 
 
 @pytest.mark.parametrize("termination_signal", [gh_pr_watch.signal.SIGTERM, gh_pr_watch.signal.SIGHUP])
-def test_failed_command_launch_preserves_pending_termination_and_restores_handlers(monkeypatch, termination_signal):
-    before = {sig: gh_pr_watch.signal.getsignal(sig) for sig in (gh_pr_watch.signal.SIGTERM, gh_pr_watch.signal.SIGHUP)}
+@pytest.mark.parametrize("stage", ["before_launch", "failed_launch"])
+def test_interrupted_command_launch_preserves_termination_and_restores_handlers(monkeypatch, termination_signal, stage):
+    ctx = multiprocessing.get_context("fork")
+    launch_attempted = ctx.Event()
+    launch_failed = ctx.Event()
     def interrupted_launch(*_args, **_kwargs):
+        launch_attempted.set()
+        assert stage == "failed_launch", "cancelled command was launched"
         os.kill(os.getpid(), termination_signal)
+        launch_failed.set()
         raise FileNotFoundError("offline command disappeared during launch")
     monkeypatch.setattr(gh_pr_watch.subprocess, "Popen", interrupted_launch)
-    with pytest.raises(SystemExit) as stopped:
-        gh_pr_watch.gh_text(["offline"])
-    assert stopped.value.code == 128 + termination_signal
-    assert {sig: gh_pr_watch.signal.getsignal(sig) for sig in before} == before
+    if stage == "before_launch":
+        run_command = gh_pr_watch.run_gh_command
+        def cancel_before_launch(*args, **kwargs):
+            os.kill(os.getpid(), termination_signal)
+            return run_command(*args, **kwargs)
+        monkeypatch.setattr(gh_pr_watch, "run_gh_command", cancel_before_launch)
+    def attempt():
+        handlers = {sig: gh_pr_watch.signal.getsignal(sig) for sig in (gh_pr_watch.signal.SIGTERM, gh_pr_watch.signal.SIGHUP)}
+        try:
+            gh_pr_watch.gh_text(["offline"])
+        except SystemExit:
+            assert {sig: gh_pr_watch.signal.getsignal(sig) for sig in handlers} == handlers
+            raise
+    worker = ctx.Process(target=attempt)
+    try:
+        worker.start()
+        worker.join(timeout=2)
+        assert worker.exitcode == 128 + termination_signal
+        assert launch_attempted.is_set() == (stage == "failed_launch")
+        assert launch_failed.is_set() == (stage == "failed_launch")
+    finally:
+        if worker.is_alive():
+            worker.kill()
+            worker.join(timeout=2)
 
 
 def test_ignored_hangup_keeps_running_command_and_confirms_write(monkeypatch, tmp_path):
@@ -2938,11 +2964,11 @@ def test_ignored_hangup_keeps_running_command_and_confirms_write(monkeypatch, tm
         os.kill(worker.pid, gh_pr_watch.signal.SIGHUP)
         release.touch()
         # Drain the result before joining so the queue feeder cannot hold exit.
-        result = results.get(timeout=2)
+        completed_result = results.get(timeout=2)
         worker.join(timeout=2)
         assert not worker.is_alive(), "watcher did not finish the released command"
         assert worker.exitcode == 0, "ignored hangup terminated the watcher"
-        assert result["reason"] == "rerun_triggered"
+        assert completed_result["reason"] == "rerun_triggered"
         assert gh_pr_watch.load_state(path)[0]["pending_reruns_by_sha"]["abc123"]["1"]["outcome"] == "confirmed"
     finally:
         if worker.is_alive():
