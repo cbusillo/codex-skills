@@ -295,7 +295,8 @@ Default to PR-backed implementation work.
 - Do not create a separate issue for the same focused implementation by
   default. Create or update an issue when work is not ready for code, needs
   product/design/ops discussion, was discovered out of scope, or spans multiple
-  PRs.
+  PRs, or needs splitting under
+  [issue closing and post-merge proof](#issue-closing-and-post-merge-proof).
 - Search existing open and recently closed issues before creating a new issue.
 - When picking up an existing issue, read its comments before acting on the
   title or body. Comments are often the newest source of scope, constraints,
@@ -322,8 +323,9 @@ the evidence there; completing an implementation issue does not complete that
 parent or authorize a release. If later proof has no parent or milestone,
 retain the existing issue as the parent and split out the PR-sized
 implementation deliverable before opening its closing PR. When a milestone
-holds the proof, include its next actor and required evidence in the exit
-criteria and verify them before closing it under the
+holds the proof, keep its next action, actor, questions and evidence on its
+existing parent or `Track:` issue, linked from the milestone description.
+Preserve the agreed exit criteria and verify the proof before closing it under the
 [milestone contract](../../github-plan/references/milestones.md).
 Open a new issue for a post-merge check only
 when that check fails, after searching for an existing issue for the failure.
@@ -339,7 +341,9 @@ this condition is met; a separate implementation issue may close on merge.
 The session responsible for landing owns the issue readback: the Supervisor
 after an assigned handoff, otherwise the executing session. After a merge-train
 batch lands, that session reads back the referenced issues and links the
-landing evidence. If `Closes` did not fire, follow github-plan's
+landing evidence, including the parents holding later proof. Link a split
+deliverable's parent from the PR with `Refs #parent` so that handoff retains
+the remaining work and its next actor. If `Closes` did not fire, follow github-plan's
 [Close Or Hand Off](../../github-plan/SKILL.md#close-or-hand-off) to reconcile
 the completed issue. Comment with the remaining action when its finish line
 is not met; never force closure or bypass the reporter exception.

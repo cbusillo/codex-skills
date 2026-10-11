@@ -45,9 +45,9 @@ under GitHub's
 The parent issue or milestone remains open until the result a person can see
 is real: the lane reads green, the record reads back, the feature runs.
 When the remaining steps are ordinary engineering within the task's authority,
-deploy it, switch it on, and read it back yourself. Record the next action and
-who takes it on the parent; ask the Director there when their action or decision
-is needed. Before recording a split or handoff, read github-plan's
+deploy it, switch it on, and read it back yourself. Record the next action,
+who takes it, and any Director question on the issue holding later proof.
+Before recording a split or handoff, read github-plan's
 [Status Labels](../github-plan/SKILL.md#status-labels).
 Never substitute a comment for required proof, and never leave an issue open
 waiting on nobody.

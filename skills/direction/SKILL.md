@@ -144,8 +144,8 @@ Director asks; that is execution.
    retire, and a direction pull request when the file itself must change. The
    Director decides in chat; record the decision on GitHub the same session,
    on an issue that records the completed decision or names the remaining
-   action and who takes it, under
-   [issue closing and post-merge proof](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof).
+   action and who takes it, under github-plan's
+   [Close Or Hand Off](../github-plan/SKILL.md#close-or-hand-off).
 4. End with what the executing agent should see on GitHub when it next runs
    `next`, so the handoff needs no copy and paste.
 
