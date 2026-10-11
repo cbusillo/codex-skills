@@ -409,14 +409,13 @@ def run_pass(io, args, emit):
             ]
             responses = [response] + [io.train(other) for other in others]
             if any(not idle(value) for value in responses):
+                busy_result = response.get("result") or {}
                 emit(
                     "busy",
                     {
                         "repository": repo,
-                        "action": response.get("result", {}).get("controller_action"),
-                        "queue": response.get("result", {})
-                        .get("dry_run_result", {})
-                        .get("queue", []),
+                        "action": busy_result.get("controller_action"),
+                        "queue": busy_result.get("dry_run_result", {}).get("queue", []),
                     },
                 )
                 continue

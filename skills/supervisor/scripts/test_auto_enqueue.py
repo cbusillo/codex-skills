@@ -200,6 +200,13 @@ class EnqueueTests(unittest.TestCase):
         self.run_pass(fake)
         self.assertEqual(fake.writes, [])
 
+    def test_unavailable_controller_with_null_result_stays_busy(self):
+        fake = Fake()
+        fake.train = lambda _target: {"status": "unavailable", "result": None}
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        self.assertTrue(any(event == "busy" for event, _ in self.events))
+
     def test_candidate_starts_between_labels_stops_remaining_group(self):
         fake = Fake()
         fake.before = lambda io: setattr(io, "active", bool(io.writes))
