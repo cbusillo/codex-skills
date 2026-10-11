@@ -1416,6 +1416,46 @@ def test_controller_conflict_probe_rejects_malformed_and_unsafe_evidence() -> No
     assert _run_controller_response(response)[0] == 1
 
 
+@pytest.mark.parametrize("section", ["result", "records"])
+def test_controller_rejected_response_names_unknown_key(section: str) -> None:
+    response: dict[str, Any] = {
+        "status": "accepted", "trace_id": "launchplane_req_diagnostic", "records": {},
+        "result": {"controller_action": "land_batch"},
+    }
+    response[section]["historical_stack_child_label_status"] = "private-fixture-value"
+    response[section]["later_unknown_field"] = "another-private-value"
+    status, payload = _run_controller_response(response, mutate=True)
+    assert status == 1 and payload["status"] == "invalid"
+    assert payload["result"] == {} and payload["records"] == {}
+    assert payload["warnings"][0]["code"] == "unsafe_response_shape"
+    assert payload["summary"]["projection_error_code"] == "unsafe_response_shape"
+    assert payload["summary"]["unrecognized_key"] == "historical_stack_child_label_status"
+    assert payload["summary"]["trace_id"] == response["trace_id"]
+    assert "Read the PR and controller state before any retry" in payload["summary"]["recommendation"]
+    assert "private-fixture-value" not in json.dumps(payload)
+    assert "another-private-value" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("key", ["https://private.example/path", "Bearer private-fixture-value", "ghp_privatefixture", "client_secret", "x" * 81])
+def test_controller_rejected_response_omits_unsafe_unknown_key(key: str) -> None:
+    response = {"status": "accepted", "records": {}, "result": {key: "private-fixture-value"}}
+    status, payload = _run_controller_response(response, mutate=True)
+    assert status == 1 and payload["status"] == "invalid"
+    assert payload["summary"]["projection_error_code"] == "unsafe_response_shape"
+    assert "unrecognized_key" not in payload["summary"]
+    assert key not in json.dumps(payload)
+
+
+def test_controller_rejected_response_names_bad_value() -> None:
+    response = {"status": "accepted", "records": {}, "result": {"controller_action": []}}
+    status, payload = _run_controller_response(response, mutate=True)
+    assert status == 1 and payload["status"] == "invalid"
+    assert payload["summary"]["projection_error_code"] == "invalid_response"
+    assert payload["warnings"][0]["code"] == "invalid_response"
+    assert "unrecognized_key" not in payload["summary"]
+    assert "Read the PR and controller state before any retry" in payload["summary"]["recommendation"]
+
+
 def test_controller_rejected_response_keeps_only_safe_trace_and_code() -> None:
     for code_source in ("top", "error", "blocking_reason"):
         response: dict[str, Any] = {
@@ -3302,16 +3342,24 @@ def test_product_profile_read_returns_owner_and_production_use_only() -> None:
 
 
 @pytest.mark.parametrize(
-    "mode", ["held", "promote", "promote_with_rollback_drill", "director_standing"]
+    "mode", write_action.PRODUCT_RELEASE_ON_ACCEPTANCE_MODES
 )
-def test_product_profile_read_reports_release_on_acceptance(mode: str) -> None:
+@pytest.mark.parametrize("production_use", write_action.PRODUCT_PRODUCTION_USES)
+def test_product_profile_read_reports_service_metadata_only(mode: str, production_use: str) -> None:
     response = _product_profile_response()
-    cast(dict[str, Any], response["profile"])["release_on_acceptance"] = mode
-    status, payload, _calls = _run_product_read(
+    profile = cast(dict[str, Any], response["profile"])
+    profile.update(release_on_acceptance=mode, production_use=production_use)
+    status, payload, calls = _run_product_read(
         ["product-profile-read", "--product", "example-product"], response
     )
     assert status == 0
     assert payload["result"]["release_on_acceptance"] == mode
+    assert payload["result"]["production_use"] == production_use
+    assert payload["summary"] == {
+        "launchplane_status": response["status"],
+        "trace_id": response["trace_id"],
+    }
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("mode", ["invalid", "", None, False, 1, [], {}])
@@ -5094,7 +5142,18 @@ def test_context_projection_contract_and_secret_shape() -> None:
 
 
 @pytest.mark.parametrize("selector", ["--repo", "--branch"])
-@pytest.mark.parametrize("value", ["ghp_" + "A" * 40, "/private/synthetic-path", "C:\\private\\synthetic-path", "~/synthetic-path"])
+@pytest.mark.parametrize("value", [
+    *[prefix + "A" * 40 for prefix in ("ghp_", "ghs_", "gho_", "ghu_", "ghr_", "github_pat_")],
+    "/private/synthetic-path",
+    "C:\\private\\synthetic-path",
+    "~/synthetic-path",
+    "~fixture/synthetic-path",
+    "file:///private/synthetic-path",
+    "../../private/synthetic-path",
+    "work/../synthetic-path",
+    "..\\..\\private\\synthetic-path",
+    "  ~fixture/synthetic-path  ",
+])
 def test_context_entrypoint_omits_unsafe_request_selectors(selector: str, value: str) -> None:
     args = ["--repo", "example/repo"] if selector == "--branch" else []
     result = run_helper("launchplane-context.py", [*args, selector, value])
@@ -5102,6 +5161,17 @@ def test_context_entrypoint_omits_unsafe_request_selectors(selector: str, value:
     assert result["payload"]["status"] == "invalid"
     assert result["payload"]["request"] == {}
     assert value not in json.dumps(result["payload"])
+
+
+@pytest.mark.parametrize("prefix", ["ghp_", "ghs_", "gho_", "ghu_", "ghr_", "github_pat_"])
+def test_shared_safety_rejects_and_redacts_github_tokens(prefix: str) -> None:
+    synthetic_token = prefix + "A" * 40
+    for validator in (safety.public_summary_string, safety.public_identifier, safety.public_trace_id):
+        with pytest.raises(safety.LaunchplaneSafetyError):
+            validator(synthetic_token)
+    with pytest.raises(safety.LaunchplaneSafetyError):
+        safety.assert_public_safe_shape({"summary": [synthetic_token]})
+    assert safety.public_operator_text("Review " + synthetic_token) == "Review [redacted]"
 
 
 def test_context_valid_request_selectors_keep_optional_fallback() -> None:

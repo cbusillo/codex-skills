@@ -201,8 +201,10 @@ local extensions until the vendored artifact is refreshed.
 - `product-profile-read --product` calls `GET /v1/product-profiles/{product}`
   and returns the product's Client GitHub login and review label, `production_use`,
   `release_on_acceptance`, lifecycle state, display name, driver, repository and
-  lanes (context and instance only). `prelaunch` is the only value that skips Client release
-  review. `release_on_acceptance` is `held`, `promote`,
+  lanes (context and instance only). The summary contains service status and trace
+  provenance only. For release authority, follow the
+  [release rule](../../references/role-words.md#release-rule) and read service-owned
+  evidence with `product-promotion-status-read`. `release_on_acceptance` is `held`, `promote`,
   `promote_with_rollback_drill` or `director_standing`, as defined in
   [Launchplane's release review](https://github.com/cbusillo/launchplane/blob/main/docs/release-review.md#acceptance-starts-the-release).
   An omitted field reads as `held`; any other value or type fails the whole
@@ -1237,7 +1239,15 @@ binding metadata. Secret record ids, provider target details, actor identities,
 instructions, raw findings, and arbitrary nested dictionaries are not copied.
 
 Unexpected successful provider shapes fail closed as `invalid_response` rather
-than being recursively sanitized. Summary fields, including `trace_id`, must be
+than being recursively sanitized. For an accepted controller reply that cannot
+be projected, `summary.projection_error_code` and the warning code retain the
+local `LaunchplaneSafetyError` code (such as `unsafe_response_shape` or
+`invalid_response`). `summary.unrecognized_key` names the first unknown result
+or record key only when it is a public-safe plain identifier of at most 80
+characters. No rejected value is emitted. Independently validated service error
+codes and trace IDs remain available; read the PR and controller state before
+retrying a mutating pass, which may already have completed.
+Summary fields, including `trace_id`, must be
 compact safe identifiers or bounded safe text. Keys or nested payloads that look
 like secrets, credentials, cookies, tokens, plaintext values, private keys,
 opaque values, raw requests, provider env, or headers are not copied into output.

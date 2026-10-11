@@ -1241,6 +1241,16 @@ def test_legacy_write_rate_limit_is_rejected_and_retryable() -> None:
     assert failure.retryable is True
 
 
+def test_missing_label_requires_pr_create_context() -> None:
+    for operation in ("github.pr.create", "github.pr.edit", "github.api.call", None):
+        failure = _api.classify_legacy_failure(
+            "could not add label: 'owner-review' not found",
+            is_write=True, operation=operation,
+        )
+        assert failure.write_outcome == ("not_started" if operation == "github.pr.create" else "unknown"), failure
+        assert failure.retryable is False and failure.fallback_eligible is False, failure
+
+
 def test_legacy_unknown_rate_limit_uses_probe_bucket() -> None:
     probe = _api.ApiResult(
         ok=True,
@@ -3028,6 +3038,7 @@ def main() -> None:
         test_legacy_process_result_merges_outer_and_delegated_failure_evidence,
         test_call_gh_preserves_delegated_failure_and_outer_context,
         test_legacy_write_rate_limit_is_rejected_and_retryable,
+        test_missing_label_requires_pr_create_context,
         test_legacy_unknown_rate_limit_uses_probe_bucket,
         test_legacy_graphql_rate_limit_uses_probe_reset,
         test_legacy_provider_bucket_replaces_requested_bucket,

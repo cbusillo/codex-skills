@@ -1331,6 +1331,7 @@ def classify_legacy_failure(
     is_write: bool = False,
     command_started: bool = True,
     rate_limit_result: Optional[ApiResult] = None,
+    operation: Optional[str] = None,
 ) -> FailureDetail:
     """Classify a legacy gh failure, preferring structured evidence when present."""
     if stdout:
@@ -1358,6 +1359,16 @@ def classify_legacy_failure(
         write_outcome = not_started
     elif "would run as" in lowered and "expected" in lowered:
         cause = "actor_mismatch"
+        disposition = "stop"
+        retryable = False
+        fallback_eligible = False
+        write_outcome = not_started
+    elif (
+        is_write and command_started and operation == "github.pr.create"
+        and not stdout.strip()
+        and re.fullmatch(r"could not add label: '[^'\r\n]+' not found", stderr.strip())
+    ):
+        cause = "validation_error"
         disposition = "stop"
         retryable = False
         fallback_eligible = False
@@ -1488,6 +1499,7 @@ def legacy_process_result(
         is_write=is_write,
         command_started=command_started,
         rate_limit_result=rate_limit_result,
+        operation=operation,
     )
     resolved_completed_steps: list[str] = []
     for step in [*outer_completed_steps, *failure.completed_steps]:
