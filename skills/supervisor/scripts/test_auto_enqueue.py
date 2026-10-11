@@ -436,6 +436,32 @@ class EnqueueTests(unittest.TestCase):
         self.assertTrue(any(event == "busy" for event, _ in self.events))
         self.assertFalse(any(event == "batch" for event, _ in self.events))
 
+    def test_unknown_label_author_preserves_batch(self):
+        fake = Fake()
+        fake.pulls[1]["labels"] = [{"name": TARGET["label"]}]
+        fake.ineligible[1] = [
+            f"{TARGET['label']} label ignored: could not read who applied it"
+        ]
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        self.assertTrue(any(event == "busy" for event, _ in self.events))
+
+    def test_eligible_labeled_member_outside_queue_order_preserves_batch(self):
+        fake = Fake()
+        fake.pulls[1]["labels"] = [{"name": TARGET["label"]}]
+        original_train = fake.train
+
+        def truncated_order(target):
+            value = original_train(target)
+            value["result"]["dry_run_result"]["queue_order"] = []
+            return value
+
+        fake.train = truncated_order
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        busy = next(data for event, data in self.events if event == "busy")
+        self.assertEqual(busy["labeled"], [1])
+
     def test_held_labels_on_other_enrolled_base_allow_next_batch(self):
         fake = Fake()
         fake.targets.append({**TARGET, "base": "release"})

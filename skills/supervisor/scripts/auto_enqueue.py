@@ -437,6 +437,10 @@ def run_pass(io, args, emit):
                     not dispositions.get(pr["number"], {}).get("ineligible_reasons")
                     or f"missing {target['label']} label"
                     in dispositions[pr["number"]]["ineligible_reasons"]
+                    or any(
+                        reason.endswith(" label ignored: could not read who applied it")
+                        for reason in dispositions[pr["number"]]["ineligible_reasons"]
+                    )
                 )
             ]
             if labeled:
