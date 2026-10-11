@@ -74,7 +74,7 @@ class ReadyTests(unittest.TestCase):
         self.args = argparse.Namespace(repo=REPO, pr="1", waiting_for_client=False)
         self.reader_patch = patch.object(helper.github_read_core, "GitHubReader", return_value=self.reader)
         self.writer_patch = patch.object(helper.github_comment_core, "comment", return_value={"ok": True, "url": "fixture"})
-        self.reader_patch.start()
+        self.reader_factory = self.reader_patch.start()
         self.writer = self.writer_patch.start()
         self.addCleanup(self.reader_patch.stop)
         self.addCleanup(self.writer_patch.stop)
@@ -97,6 +97,7 @@ class ReadyTests(unittest.TestCase):
         self.assertEqual(result["headSha"], SHA)
         self.assertEqual(comment["body"], f"{READY}\n\nHead: {SHA}")
         self.assertTrue(latest_ready(self.reader.pr, [comment], {"engineer"}))
+        self.assertIs(self.reader_factory.call_args.kwargs["cache_enabled"], False)
         self.reader.pr["head"]["sha"] = "b" * 40
         self.assertFalse(latest_ready(self.reader.pr, [comment], {"engineer"}))
 
@@ -154,6 +155,24 @@ class ReadyTests(unittest.TestCase):
         self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "completed", "conclusion": "success"})
         _, comment = self.post()
         self.assertTrue(latest_ready(self.reader.pr, [comment], {"engineer"}))
+
+    def test_real_client_notes_require_acceptance_without_label(self):
+        for heading in ("Client", "Owner"):
+            with self.subTest(heading=heading):
+                self.reader.pr["body"] = f"## {heading} test notes\nTry the new feature."
+                self.refuse()
+        self.args.waiting_for_client = True
+        _, comment = self.post()
+        self.assertFalse(latest_ready(self.reader.pr, [comment], {"engineer"}))
+
+    def test_nothing_to_test_uses_watcher_exemption(self):
+        self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: automated tooling."
+        self.post()
+
+    def test_client_rejection_still_refuses_waiting_handoff(self):
+        self.args.waiting_for_client = True
+        self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "completed", "conclusion": "failure"})
+        self.refuse()
 
     def test_cli_selects_ready_and_waiting_variant(self):
         with patch("sys.argv", ["gh-pr.py", "--repo", REPO, "ready", "1", "--waiting-for-client"]):

@@ -20,6 +20,19 @@ def handoff_body(head_sha: str, *, waiting_for_client: bool = False) -> str:
     return f"{first}\n\nHead: {head_sha}"
 
 
+def requires_client_acceptance(pr, check_runs):
+    """Keep the producer and watcher on the same Client-review path."""
+    if any(label["name"].casefold() == "owner-review" for label in pr["labels"]):
+        return True
+    if any(check["name"] == "launchplane/owner-review" for check in check_runs):
+        return True
+    body = pr.get("body") or ""
+    return bool(
+        re.search(r"(?im)^## (?:Client|Owner) test notes\s*$", body)
+        and not re.search(r"(?im)^Nothing for the Client to test:\s*\S", body)
+    )
+
+
 def timestamp(value):
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:

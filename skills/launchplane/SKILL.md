@@ -996,7 +996,7 @@ merge-train-controller-run-once` instead of open-coding the route. Mutating
   labels when the task does not authorize train entry. A held child stays unlabeled or draft, and that stops the stack. Do not
   hand-collapse stacks in GitHub.
 - **Supervisor Handoff**: When a task assigns routing to a Supervisor, use
-  `uv run ../github/scripts/gh-pr.py ready <pr>`
+  `uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
   instead of writing the ready comment. Add `--waiting-for-client` until a
   required Client acceptance covers the current head. Read the GitHub
   [ready handoff contract](../github/references/cli-reference.md#ready-handoffs)

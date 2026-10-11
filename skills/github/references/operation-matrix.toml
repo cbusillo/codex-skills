@@ -426,7 +426,7 @@ entrypoint = "github/scripts/gh-pr.py ready"
 intent = "Read current-head engineering checks and post a ready or Client-waiting handoff."
 current_transport = "rest_api"
 selected_transport = "rest_api"
-endpoint_or_command = "GET /repos/{repo}/pulls/{number}; GET /repos/{repo}/commits/{sha}/check-runs; GET /repos/{repo}/commits/{sha}/statuses; GET /repos/{repo}/commits/{sha}/status; paged GET /repos/{repo}/actions/runs?head_sha={sha}; paged GET /repos/{repo}/actions/runs/{run_id}/jobs?filter=latest; POST /repos/{repo}/issues/{number}/comments"
+endpoint_or_command = "GET /repos/{repo}/pulls/{number}; GET /repos/{repo}/commits/{sha}/check-runs; GET /repos/{repo}/commits/{sha}/statuses; GET /repos/{repo}/commits/{sha}/status; paged GET /repos/{repo}/actions/runs?head_sha={sha}; paged GET /repos/{repo}/actions/runs/{run_id}/jobs?filter=latest; GET /user; paged GET /repos/{repo}/issues/{number}/comments; POST /repos/{repo}/issues/{number}/comments"
 quota_bucket = "rest_core"
 actor_policy = "automation_required_for_writes"
 mutation_class = "comment"
@@ -434,7 +434,7 @@ idempotency = "non_idempotent"
 retry_eligibility = "conditional"
 reconciliation_strategy = "operation_marker"
 retained_graphql_rationale = "No retained GraphQL transport; reuses REST checks and shared comment reconciliation."
-source_refs = ["github/scripts/gh-pr.py:cmd_ready", "github/scripts/gh-pr.py:validate_ready_pr", "github/scripts/ready_handoff.py:latest_ready"]
+source_refs = ["github/scripts/gh-pr.py:cmd_ready", "github/scripts/gh-pr.py:validate_ready_pr", "github/scripts/ready_handoff.py:latest_ready", "github/scripts/ready_handoff.py:requires_client_acceptance"]
 test_refs = ["github/scripts/test_ready_handoff.py", "supervisor/scripts/test_auto_enqueue.py:test_latest_wait_stale_head_missing_head_and_untrusted_ready_refuse"]
 
 [[operations]]

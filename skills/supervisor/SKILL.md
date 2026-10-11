@@ -205,7 +205,9 @@ records that run.
    waiting for the Client's acceptance" until the Client accepts its current
    head, and "Ready for the merge train" only after
    ([codex-skills#1535](https://github.com/cbusillo/codex-skills/issues/1535)).
-   Briefs tell sessions to use `uv run skills/github/scripts/gh-pr.py ready <pr>`
+   Briefs give the installed GitHub skill's helper path and tell sessions to use
+   `uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
+   within the task's landing authorization,
    instead of writing the handoff comment, adding `--waiting-for-client` until
    required Client acceptance covers the current head. Link the
    [ready handoff contract](../github/references/cli-reference.md#ready-handoffs);

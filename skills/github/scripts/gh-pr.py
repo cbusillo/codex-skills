@@ -23,7 +23,7 @@ import github_api as github_api_core
 import github_comment as github_comment_core
 import github_read as github_read_core
 import github_identity
-from ready_handoff import handoff_body
+from ready_handoff import handoff_body, requires_client_acceptance
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -322,11 +322,11 @@ def read_operation() -> str:
     return CURRENT_OPERATION
 
 
-def cmd_view(args: argparse.Namespace) -> dict[str, Any]:
+def cmd_view(args: argparse.Namespace, *, cache_enabled: bool = True, include_body: bool = False) -> dict[str, Any]:
     repo, number = resolve_pr(args.repo, args.pr)
     reader = github_read_core.GitHubReader(
         gh_cmd=GH, expected_actor=EXPECTED_ACTOR, operation=read_operation(),
-        cache_enabled=True,
+        cache_enabled=cache_enabled,
     )
     try:
         pr = reader.get_json(f"/repos/{repo}/pulls/{number}", step="pull_request")
@@ -335,8 +335,11 @@ def cmd_view(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(pr, dict):
         raise PrHelperError("PR metadata response was not an object", diagnostics=reader.diagnostics(), repo=repo, pr=number)
     record_retry_summary(reader.retry_summary())
+    normalized = normalize_pr(pr)
+    if include_body:
+        normalized["body"] = pr.get("body") or ""
     return {
-        "ok": True, "repo": repo, "pr": normalize_pr(pr),
+        "ok": True, "repo": repo, "pr": normalized,
         "actor": reader.actor, "expected_actor": reader.expected_actor,
         **merge_observations(pr), "diagnostics": reader.diagnostics(),
     }
@@ -511,7 +514,8 @@ def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
 
 def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
     repo, number = resolve_pr(args.repo, args.pr)
-    checks = cmd_checks(args)
+    target = argparse.Namespace(repo=repo, pr=str(number))
+    checks = cmd_checks(target)
     pr = checks["pr"]
     summary = checks["summary"]
     validate_ready_pr(pr, repo=repo, number=number)
@@ -532,22 +536,19 @@ def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
         or summary["unfinishedWorkflowRunCount"]
     ):
         raise PrHelperError("PR checks are pending or failing", repo=repo, pr=number, summary=summary)
-    client_review = [check for check in checks["checkRuns"] if check.get("name") == "launchplane/owner-review"]
-    if not args.waiting_for_client and (
-        client_review or any(label["name"] == "owner-review" for label in pr["labels"])
-    ):
+    # Bypass coalesced view caches: renewed holds and Client notes must be fresh.
+    current = cmd_view(target, cache_enabled=False, include_body=True)["pr"]
+    validate_ready_pr(current, repo=repo, number=number)
+    if current["headRefOid"] != checks["headSha"] or current["labels"] != pr["labels"]:
+        raise PrHelperError("PR head or labels changed during readiness checks; read it again", repo=repo, pr=number)
+    if not args.waiting_for_client and requires_client_acceptance(current, checks["checkRuns"]):
         if not any(
             check.get("name") == "launchplane/owner-review"
             and check.get("status") == "completed"
             and check.get("conclusion") == "success"
-            for check in client_review
+            for check in checks["checkRuns"]
         ):
             raise PrHelperError("Client acceptance is not confirmed; use --waiting-for-client", repo=repo, pr=number)
-    # A push or renewed hold during check collection must not receive a ready comment.
-    current = cmd_view(args)["pr"]
-    validate_ready_pr(current, repo=repo, number=number)
-    if current["headRefOid"] != checks["headSha"] or current["labels"] != pr["labels"]:
-        raise PrHelperError("PR head or labels changed during readiness checks; read it again", repo=repo, pr=number)
     try:
         body = handoff_body(checks["headSha"], waiting_for_client=args.waiting_for_client)
     except ValueError as exc:
@@ -1038,7 +1039,7 @@ CLOSING_REFERENCE_RE = re.compile(
 CLOSING_ISSUE_URL_RE = re.compile(
     r"\b("
     + "|".join(CLOSING_KEYWORDS)
-    + r")\s+(https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(\d+))(?:\b|(?=[?#]))",
+    + r")\s+(https://github[.]com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(\d+))(?:\b|(?=[?#]))",
     re.IGNORECASE,
 )
 
@@ -1245,7 +1246,7 @@ def resolve_repo(explicit: Optional[str]) -> str:
     if explicit:
         return explicit
     remote = run_git(["remote", "get-url", "origin"])
-    match = re.search(r"github\.com[:/]([^/]+)/([^/.]+)(?:\.git)?$", remote.strip())
+    match = re.search(r"github[.]com[:/]([^/]+)/([^/.]+)(?:[.]git)?$", remote.strip())
     if match:
         return f"{match.group(1)}/{match.group(2)}"
     data = gh_json(["repo", "view", "--json", "nameWithOwner"])

@@ -451,7 +451,8 @@ requested.
 
 ### Ready Handoffs
 
-Use `uv run scripts/gh-pr.py ready <pr>` instead of hand-writing a merge-train
+Use `uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
+within the task's landing authorization instead of hand-writing a merge-train
 comment. The helper reads the current head, check runs, legacy statuses and
 workflow executions, refuses incomplete, pending or failing evidence, and
 refuses a draft, closed PR or `merge-blocked`. It rechecks the head and labels
@@ -473,7 +474,8 @@ does not yet cover the current head, use `ready <pr> --waiting-for-client`.
 It posts `Engineering ready; waiting for the Client's acceptance` with the head
 and permits only pending `launchplane/owner-review` checks; every other pending
 check, unfinished workflow and every failure still refuses. A normal ready
-handoff with `owner-review` set requires a successful current-head
+handoff requiring Client acceptance (review label, request check or real Client
+test notes) requires a successful current-head
 `launchplane/owner-review` check. The watcher independently verifies the saved
 Client decision before enqueueing. Read-back and uncertain-comment recovery
 use the [shared retry policy](#shared-retry-policy); do not replay an unknown write.
