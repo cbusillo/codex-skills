@@ -841,23 +841,47 @@ def artifact_evidence(
     inventory_repo: str | None = None,
     recorded_branches: set[str] | None = None,
     status_sessions: set[str] | None = None,
+    subject_pr: int | None = None,
 ) -> list[dict[str, Any]]:
     conflicts = []
     local_references = inventory_repo is None or inventory_repo.casefold() == repo.casefold()
     def permitted(candidate_branch: str) -> bool:
         return (own_record and candidate_branch == claim["branch"]) or candidate_branch == retained or candidate_branch in (retained_branches or set())
 
+    subject_branch = None
+    if subject_pr is not None:
+        subject = next((p for p in pulls if p["number"] == subject_pr), None)
+        if subject is None or subject.get("state") != "open":
+            raise ValueError("Claim requires the current open PR in the ownership inventory")
+        subject_branch = (subject.get("head") or {}).get("ref")
+        if not subject_branch:
+            raise ValueError("PR source branch is unavailable")
+        if any(((subject.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != repo.casefold()
+               for side in ("head", "base")):
+            raise ValueError("PR-scoped work requires a same-repository head and base; use its canonical issue for a fork")
+        # The PR and its remote head are the work record. Local source artifacts
+        # still need owned/released provenance, even with nonnumeric names.
+        for branch in inventory["local_branches"]:
+            if branch == subject_branch and not permitted(branch):
+                conflicts.append({"source": "local_branches", "branch": branch, "certainty": "current_or_stale"})
+        for tree in inventory["worktrees"]:
+            if tree["branch"] == subject_branch and not permitted(tree["branch"]):
+                conflicts.append({"source": "worktree", **tree, "certainty": "current_or_stale"})
+
     for source in ("local_branches", "remote_branches"):
         for branch in inventory[source]:
-            if local_references and references_issue(branch, number) and not permitted(branch):
+            if (local_references and (references_issue(branch, number) or (subject_pr is not None and branch in (recorded_branches or set()))) and not permitted(branch)
+                    and not (subject_pr is not None and source == "remote_branches" and branch == subject_branch)):
                 conflicts.append({"source": source, "branch": branch, "certainty": "current_or_stale"})
     for tree in inventory["worktrees"]:
-        if local_references and references_issue(tree["branch"] + "/" + pathlib.Path(tree["path"]).name, number):
+        if local_references and (references_issue(tree["branch"] + "/" + pathlib.Path(tree["path"]).name, number)
+                                or subject_pr is not None and tree["branch"] in (recorded_branches or set())):
             if not permitted(tree["branch"]):
                 conflicts.append({"source": "worktree", **tree, "certainty": "current_or_stale"})
     paths = {str(pathlib.Path(t["path"]).resolve()) for t in inventory["worktrees"]}
     retained_paths = {str(pathlib.Path(t["path"]).resolve()) for t in inventory["worktrees"]
-                      if t["branch"] == retained or t["branch"] in (retained_branches or set())}
+                      if t["branch"] == retained or t["branch"] in (retained_branches or set())
+                      or subject_pr is not None and t["branch"] == subject_branch}
     for session in inventory["sessions"]:
         if session.get("sessionId") == claim["session"]:
             continue
@@ -868,6 +892,8 @@ def artifact_evidence(
             conflicts.append({"source": "claude_session", "session": session.get("sessionId"),
                               "state": session.get("state") or session.get("status")})
     for pull in pulls:
+        if pull["number"] == subject_pr:
+            continue
         branch = (pull.get("head") or {}).get("ref", "")
         if (pr_issue_reference(pull, number, repo=repo, local_references=local_references)
                 or branch in (recorded_branches or set())

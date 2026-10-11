@@ -76,6 +76,34 @@ class ReleaseTests(unittest.TestCase):
             patch.object(github_comment, "comment", autospec=True, side_effect=self.post):
             PLAN.cmd_release_claim(self.args)
 
+    def pr_setup(self):
+        self.f.pr_fixture("dependabot[bot]")
+        self.f.pulls[0]["head"]["sha"] = "a" * 40
+
+    def test_pr_closed_session_attestation_releases_and_allows_successor(self):
+        self.pr_setup()
+        self.run_release()
+        self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
+        self.successor()
+        self.assertEqual(self.f.emitted.call_args.args[0]["record_kind"], "pr")
+        self.assertEqual(self.f.issue["user"]["login"], "dependabot[bot]")
+
+    def test_pr_attestation_new_activity_live_peer_or_changed_evidence_refuses(self):
+        for mode in ("commit", "peer", "evidence"):
+            with self.subTest(mode=mode):
+                self.setUp()
+                self.pr_setup()
+                if mode == "commit":
+                    self.commit_date = "2026-10-02T01:00:00Z"
+                elif mode == "peer":
+                    self.f.inventory["worktrees"] = [{"branch": self.f.pulls[0]["head"]["ref"], "path": "/pr-source"}]
+                    self.f.inventory["sessions"] = [{"sessionId": "peer", "cwd": "/pr-source"}]
+                else:
+                    self.evidence["user"]["login"] = "stranger"
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_release()
+                self.f.assert_no_writes()
+
     def test_release_routes_source_identity_without_relaxing_author_checks(self):
         client_actor = "fixture-client[bot]"
         for source in (self.f.comments[0], self.evidence):

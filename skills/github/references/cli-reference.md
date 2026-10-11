@@ -636,6 +636,22 @@ uv run <skill-dir>/scripts/gh-plan.py claim <issue> \
   --branch work/<task-slug> --next-action "<action>"
 ```
 
+For PR-only work, including Dependabot fixes and bare PRs, pass the PR number,
+`OWNER/REPO#N`, or its exact `https://github.com/OWNER/REPO/pull/N` URL to the same
+command. A PR claim uses the same structured comment, ownership/readback,
+exact-author release and closed-session attestation rules below. Its result
+identifies `record_kind: pr` and `current_status_location: claim_comment`;
+it preserves the PR body and labels and creates no tracking issue. Put recovery
+status in a `## Current Status` comment; the latest such comment and the body
+status are checked for holds. When a PR links a canonical implementation issue,
+claim that issue instead. PR-scoped claims require a same-repository head and
+base; forks use a canonical planning issue. The PR's remote source head is its
+work record; local source branches/worktrees and live peers remain competing
+evidence unless owned or covered by an exact authored release. `--resume-from`
+works for released PR claims; `--refresh-pr` and `--handoff-comment` keep their
+canonical-issue contract. `release-claim` accepts the same PR references and
+checks its current head activity against the closed-session attestation.
+
 Agent routing and the session override are defined in
 [Agent Assignment](../../github-plan/SKILL.md#agent-assignment). `next` and
 `claim` accept `--agent claude|codex`; `claim --agent-override REASON` records an
@@ -860,7 +876,7 @@ caller's transcript/closure verification, including peers or hosts unavailable
 to the helper; partial inventory alone is never closure evidence. The command
 leaves issue status, waits, blockers, branches and worktrees intact. A verified
 closed-session release accepts an open or closed canonical issue without
-reopening it; creating a new claim still requires an open issue.
+reopening it; creating a new claim still requires an open issue or PR.
 `release_refusal_scope` distinguishes the release helper's confirmed retained-work
 refusals for one issue from a source-session or unknown failure. A Supervisor may
 continue independent claims after an issue-scoped dry-run refusal and fresh closure
@@ -1051,8 +1067,8 @@ with a normal fast-forward refspec (`task-branch:pr-head-branch`) under the
 brief's authority; never check out the PR branch in two worktrees or force-push.
 Recheck its live head before integrating and pushing so a concurrent update
 is preserved. Then release the new issue claim
-with its exact comment ID. Direct `claim <PR>` remains unsupported; the
-canonical issue is the durable ownership and status record.
+with its exact comment ID. This refresh route keeps the canonical issue as its
+durable ownership and status record; PR-only claims use [Planning: Claim](#planning-claim).
 
 A refused write/readback race includes `claim_recovery.release_own_claim` when
 this invocation posted a claim. Post its exact `Released claim <comment-id>`

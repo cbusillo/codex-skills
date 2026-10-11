@@ -149,6 +149,131 @@ class ClaimTests(unittest.TestCase):
                 patch.object(PLAN.github_issue_core, "edit_issue", side_effect=self.labels):
             PLAN.cmd_claim(self.args)
 
+    def pr_fixture(self, author=TEST_BOT):
+        self.issue.update(pull_request={}, html_url="https://github.com/owner/repo/pull/42")
+        self.issue["user"] = {"login": author}
+        self.issue["body"] = "Bump dependencies" if author == "dependabot[bot]" else "Repair the tool"
+        self.pulls = [{"number": 42, "state": "open", "user": {"login": author},
+                       "title": self.issue["title"], "body": self.issue["body"],
+                       "head": {"ref": "dependabot/python" if author == "dependabot[bot]" else "work/tool-repair",
+                                "repo": {"full_name": "owner/repo"}},
+                       "base": {"repo": {"full_name": "owner/repo"}}}]
+
+    def test_dependabot_pr_can_be_claimed_without_a_tracking_issue(self):
+        self.pr_fixture("dependabot[bot]")
+        original = copy.deepcopy(self.issue)
+        self.inventory["remote_branches"] = [self.pulls[0]["head"]["ref"]]
+        self.run_claim()
+        result = self.emitted.call_args.args[0]
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["record_kind"], "pr")
+        self.assertEqual(self.issue, original)
+        self.assertEqual(self.post_route, ("pr", 42, "owner/repo"))
+        self.assertTrue(CLAIM.same_owner(CLAIM.records(self.comments[-1]["body"])[0], result["claim"]))
+        self.run_claim()
+        self.assertEqual(len(self.comments), 1)
+
+    def test_bare_pr_can_be_claimed_and_keeps_its_description_and_labels(self):
+        self.pr_fixture()
+        original = copy.deepcopy(self.issue)
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.assertEqual(self.issue, original)
+        self.assertEqual(self.post_route[0], "pr")
+
+    def test_pr_competing_claim_and_source_worktree_refuse_before_writing(self):
+        for competing in ("claim", "worktree"):
+            with self.subTest(competing=competing):
+                self.setUp()
+                self.pr_fixture()
+                if competing == "claim":
+                    self.compete()
+                else:
+                    self.inventory["worktrees"] = [{"branch": self.pulls[0]["head"]["ref"], "path": "/source"}]
+                with self.assertRaises(PLAN.ClassifiedPlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+
+    def test_pr_closing_during_claim_retains_recovery(self):
+        self.pr_fixture()
+        self.after_post = lambda: self.issue.update(state="closed")
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.payload["claim_recovery"]["release_own_claim"]["comment_id"], 1)
+        self.assertNotIn("status", self.events)
+        self.assertNotIn("labels", self.events)
+
+    def test_pr_with_canonical_issue_cannot_bypass_that_issues_claim(self):
+        self.pr_fixture()
+        self.pulls[0]["body"] = "Closes #99"
+        self.targets["99"] = {**copy.deepcopy(self.issue), "number": 99}
+        del self.targets["99"]["pull_request"]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_issue_record_required")
+        self.assert_no_writes()
+
+    def test_pr_source_worktree_appearing_on_readback_stops_with_release_receipt(self):
+        self.pr_fixture()
+        self.after_post = lambda: self.inventory["worktrees"].append(
+            {"branch": self.pulls[0]["head"]["ref"], "path": "/new-source"})
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.payload["claim_recovery"]["release_own_claim"]["comment_id"], 1)
+
+    def test_pr_exact_author_release_allows_successor_and_foreign_release_does_not(self):
+        for author in (TEST_BOT, "stranger"):
+            with self.subTest(author=author):
+                self.setUp()
+                self.pr_fixture()
+                self.comments = [
+                    {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
+                    {"id": 2, "body": "Released claim 1", "user": {"login": author}},
+                ]
+                self.args.resume_from = 1
+                if author == TEST_BOT:
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                else:
+                    with self.assertRaises(PLAN.PlanError):
+                        self.run_claim()
+                    self.assert_no_writes()
+
+    def test_claim_accepts_pr_url_and_issue_parser_remains_issue_only(self):
+        args = PLAN.build_parser().parse_args(["claim", "https://github.com/owner/repo/pull/42",
+            "--worker", OWNER["worker"], "--session", OWNER["session"], "--branch", OWNER["branch"],
+            "--next-action", "Repair"])
+        self.assertEqual(PLAN.claim_reference(args).issue, "owner/repo#42")
+        with self.assertRaises(PLAN.PlanError):
+            PLAN.issue_ref(args.issue, "owner/repo")
+
+    def test_pr_comment_wait_and_fork_require_supported_resolution(self):
+        for mode in ("wait", "fork"):
+            with self.subTest(mode=mode):
+                self.setUp()
+                self.pr_fixture()
+                if mode == "wait":
+                    self.comments.append({"id": 1, "body": "## Current Status\n\nWaiting for: Chris's test.", "user": {"login": TEST_BOT}})
+                else:
+                    self.pulls[0]["head"]["repo"]["full_name"] = "stranger/repo"
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+                if mode == "wait":
+                    self.args.wait_resolved = "Chris recorded acceptance of this head on the issue."
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_pr_other_peer_on_owned_nonnumeric_branch_still_refuses(self):
+        self.pr_fixture()
+        self.args.branch = self.pulls[0]["head"]["ref"]
+        self.comments = [{"id": 1, "body": CLAIM.marker({**OWNER, "branch": self.args.branch}), "user": {"login": TEST_BOT}}]
+        self.inventory["worktrees"] = [{"branch": self.args.branch, "path": "/pr-source"}]
+        self.inventory["sessions"] = [{"sessionId": "other-peer", "cwd": "/pr-source"}]
+        with self.assertRaises(PLAN.ClassifiedPlanError):
+            self.run_claim()
+        self.assert_no_writes()
+
     def compete(self, record=None):
         if record is None:
             record = OTHER
