@@ -264,7 +264,9 @@ Common top-level keys:
   inspection profile, and scope. Optional `prepare` may be an exact idempotent
   command string or a structured `python` object. Structured Python preparation
   resolves the skill-owned project helper, creates a worktree-local `.venv` and
-  `.idea` model, and can run `uv sync` with bounded extras. Put
+  `.idea` model. Use `sync` for a root Python project or `pep723Scripts` for
+  standalone scripts; [inspection configuration](../../jetbrains-inspection/references/inspection-config.md)
+  owns the dependency-source options, bounds, conflicts and receipt validation. Put
   `requiredGeneratedState` inside the structured `python` object; command-string
   preparation retains the outer sibling field for backward compatibility.
   `agent-inspect`, `inspect`, and `inspect-closeout` execute preparation in the
