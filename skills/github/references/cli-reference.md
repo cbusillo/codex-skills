@@ -981,8 +981,8 @@ adopted or mutated there.
 
 The source claim and handoff must be on that planning issue. The source author
 must have posted an exact-ID release as described above before or in the handoff, and
-the handoff must name the target PR. A same-repository `#123`, qualified
-`OWNER/REPO#123`, or full PR URL identifies it; cross-repository handoffs require
+the handoff must name the target PR. A same-repository `#123`, `PR123`, or
+`PR #123`, qualified `OWNER/REPO#123`, or full PR URL identifies it; cross-repository handoffs require
 a qualified reference. The open PR must independently link the planning issue
 and use a head and base in the PR's repository; fork refreshes are not supported.
 The issue and target PR's recorded waits still require verified resolution.

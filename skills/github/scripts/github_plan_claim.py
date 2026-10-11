@@ -713,6 +713,8 @@ def handoff_pr_numbers(text: str, *, issue_repo: str, target_repo: str) -> set[i
     numbers = {int(m.group(1)) for m in re.finditer(qualified, text, re.IGNORECASE)}
     if issue_repo.casefold() == target_repo.casefold():
         numbers.update(int(m.group(1)) for m in re.finditer(r"(?<![\w/#])#([1-9]\d*)(?!\d)", text))
+        numbers.update(int(m.group(1)) for m in re.finditer(
+            r"(?<![\w/#])PR([1-9]\d*)(?!\w)", text, re.IGNORECASE))
     return numbers
 
 
