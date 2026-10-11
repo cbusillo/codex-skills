@@ -1493,6 +1493,18 @@ def run_pr_write(args: list[str], **payload: Any) -> subprocess.CompletedProcess
     operation = f"github.pr.{str(payload.get('operation') or 'write').replace('-', '_')}"
     proc, result = run_gh_with_retry(args, operation=operation, is_write=True)
     if not result.ok:
+        if (
+            operation == "github.pr.create" and result.failure is not None
+            and result.failure.cause == "validation_error"
+            and result.failure.write_outcome == "not_started"
+            and re.fullmatch(r"could not add label: '[^'\r\n]+' not found", result.failure.message)
+        ):
+            result.failure.message += (
+                "; PR creation was not started. Repair the requested label only within existing "
+                "authorization, then read back the label and all-state PRs for the same head/base. "
+                "If no matching PR exists and the rejected preflight is verified, issue a new "
+                "gh-pr.py create; do not replay automatically."
+            )
         raise PrHelperError(
             "PR write failed",
             failure=result.failure,

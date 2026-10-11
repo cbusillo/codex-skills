@@ -1373,12 +1373,6 @@ def classify_legacy_failure(
         retryable = False
         fallback_eligible = False
         write_outcome = not_started
-        message += (
-            "; PR creation was not started. Repair the requested label only within existing "
-            "authorization, then read back the label and all-state PRs for the same head/base. "
-            "If no matching PR exists and the rejected preflight is verified, issue a new "
-            "gh-pr.py create; do not replay automatically."
-        )
     elif is_write and command_started and not stdout.strip() and _is_pr_create_validation_refusal(stderr):
         cause = "validation_error"
         disposition = "stop"
