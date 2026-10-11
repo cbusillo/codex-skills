@@ -238,6 +238,16 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(result["sessions"], [{"session": "claude-native", "http_requests": 2, "primary_requests": 2}])
         self.assertEqual(len(result["consumers"]), 2)
 
+    def test_ambiguous_receipt_attribution_does_not_probe_processes(self):
+        with patch.dict(os.environ, {"GITHUB_REQUEST_SESSION": "", "CODEX_THREAD_ID": "worker",
+                                   "CLAUDE_CODE_SESSION_ID": "supervisor", "CLAUDECODE": "1"}), \
+                patch.object(subprocess, "run", side_effect=AssertionError("unexpected process probe")):
+            usage.record_response(method="GET", path="/repos/example/app", status=200, headers={},
+                                  operation="github.read", actor="fixture-bot", now=1000)
+        result = usage.report(since=0, now=1100)
+        self.assertEqual(sum(row["http_requests"] for row in result["consumers"]), 1)
+        self.assertEqual(result["sessions"], [])
+
     def test_unreadable_input_does_not_crash_or_hide_other_ledgers(self):
         root = pathlib.Path(self.directory.name)
         usage.record_response(method="GET", path="/repos/example/app", status=200, headers={},
