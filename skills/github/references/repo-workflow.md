@@ -337,16 +337,22 @@ For a Client's or outside reporter's issue, do not close on merge alone. Leave
 a validation comment and close only after the reporter/current user confirms
 the result or explicitly asks. Keep closing keywords off that issue until
 this condition is met; a separate implementation issue may close on merge.
+Without a separate implementation issue, use `Refs` for the reporter's issue;
+the exception does not require a split.
 
 The session responsible for landing owns the issue readback: the Supervisor
 after an assigned handoff, otherwise the executing session. After a merge-train
 batch lands, that session reads back the referenced issues and links the
 landing evidence, including the parents holding later proof. Link a split
-deliverable's parent from the PR with `Refs #parent` so that handoff retains
+deliverable's parent from the PR with `Refs #parent` (or `Refs OWNER/repo#N`
+for a parent in another repository) so that handoff retains
 the remaining work and its next actor. If `Closes` did not fire, follow github-plan's
 [Close Or Hand Off](../../github-plan/SKILL.md#close-or-hand-off) to reconcile
 the completed issue. Comment with the remaining action when its finish line
 is not met; never force closure or bypass the reporter exception.
+Reconcile durable plan metadata under the same Close Or Hand Off procedure
+even when GitHub already auto-closed the issue; auto-close does not settle its
+Current Status, planning labels or Project Status.
 
 ### Superseded Or Competing PRs
 
