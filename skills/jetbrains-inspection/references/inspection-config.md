@@ -120,6 +120,24 @@ missing, configure the worktree interpreter in the selected IDE and rerun
 preparation. Read-only commands never invoke the provisioning operation.
 
 Successful preparation writes a bounded durable receipt under the helper cache.
+For repositories of standalone scripts, structured `prepare.python.pep723Scripts`
+accepts up to 25 worktree-relative script paths. The generator reads their
+PEP 723 `dependencies` arrays and resolves them together with `uv pip compile`
+for the selected Python version before changing the worktree SDK. Resolution
+failure, including conflicting pins, stops preparation with a diagnostic naming
+the script set. `uv pip sync` installs the resolved set into `.venv`, removing
+dependencies from previous sets. Use a compatible set for the inspection;
+keep dependency pins in script metadata rather than copying them into config.
+This option is separate from root-project `sync` and cannot be combined with it
+or its `extras`. For example:
+
+```json
+{"python": {"version": "3.12", "moduleName": "scripts", "pep723Scripts": ["scripts/install.py", "scripts/test_install.py"]}}
+```
+
+Script contents participate in receipt validation, so changing their metadata
+or removing a configured script invalidates preparation reuse.
+
 The receipt is reused only when the command/configuration hashes, exact worktree
 identity, post-preparation Git state, and required generated state still match.
 For structured Python, required state always includes the generated module,

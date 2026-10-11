@@ -4,10 +4,13 @@
 # dependencies = []
 # ///
 import importlib.util
+import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from xml.etree import ElementTree
 from pathlib import Path
 from unittest.mock import patch
@@ -21,6 +24,72 @@ SPEC.loader.exec_module(prepare_python_project)
 
 
 class PreparePythonProjectTest(unittest.TestCase):
+    @staticmethod
+    def write_script(repo, name, dependencies):
+        path = repo / name
+        path.write_text(
+            '# /// script\n# dependencies = ' + json.dumps(dependencies) + '\n# ///\n',
+            encoding="utf-8",
+        )
+        return path
+
+    @staticmethod
+    def wheel(directory, version):
+        name = "inspection_fixture"
+        with zipfile.ZipFile(directory / f"{name}-{version}-py3-none-any.whl", "w") as wheel:
+            wheel.writestr(f"{name}.py", f"VERSION = {version!r}\n")
+            info = f"{name}-{version}.dist-info"
+            wheel.writestr(f"{info}/METADATA", f"Metadata-Version: 2.1\nName: inspection-fixture\nVersion: {version}\n")
+            wheel.writestr(f"{info}/WHEEL", "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
+            wheel.writestr(f"{info}/RECORD", "")
+
+    def test_script_sdk_resolves_imports_updates_and_refuses_conflicting_pins(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary).resolve()
+            for version in ["1.0", "2.0"]:
+                self.wheel(repo, version)
+            first = self.write_script(repo, "one.py", ["inspection-fixture==1.0"])
+            self.write_script(repo, "two.py", ["inspection-fixture==1.0"])
+            python = f"{sys.version_info.major}.{sys.version_info.minor}"
+            interpreter = repo / ".venv/bin/python"
+
+            def installed_version():
+                return subprocess.check_output(
+                    [str(interpreter), "-c", "import inspection_fixture; print(inspection_fixture.VERSION)"],
+                    text=True,
+                ).strip()
+
+            with patch.dict(os.environ, {"UV_NO_INDEX": "true", "UV_FIND_LINKS": str(repo)}):
+                prepare_python_project.prepare_script_environment(repo, python, ["one.py", "two.py"])
+                self.assertEqual(installed_version(), "1.0")
+                self.write_script(repo, "two.py", ["inspection-fixture==2.0"])
+                before = first.read_bytes()
+                with self.assertRaisesRegex(RuntimeError, "could not be resolved together"):
+                    prepare_python_project.prepare_script_environment(repo, python, ["one.py", "two.py"])
+                self.assertEqual(installed_version(), "1.0")
+                self.assertEqual(first.read_bytes(), before)
+                prepare_python_project.prepare_script_environment(repo, python, ["two.py"])
+                self.assertEqual(installed_version(), "2.0")
+                self.write_script(repo, "two.py", [])
+                prepare_python_project.prepare_script_environment(repo, python, ["two.py"])
+                result = subprocess.run([str(interpreter), "-c", "import inspection_fixture"], capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_script_metadata_and_paths_fail_visibly(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary).resolve()
+            path = self.write_script(repo, "script.py", ["one==1", "one==1"])
+            self.assertEqual(prepare_python_project.script_paths(repo, ["script.py"]), [str(path)])
+            for source in ["pass\n", "# /// script\n# dependencies = []\n",
+                           '# /// script\n# dependencies = "one"\n# ///\n',
+                           path.read_text() * 2]:
+                path.write_text(source, encoding="utf-8")
+                with self.assertRaises(RuntimeError):
+                    prepare_python_project.prepare_script_environment(repo, "3.12", ["script.py"])
+            for name in ["../outside.py", str(repo / "script.py")]:
+                with self.assertRaisesRegex(RuntimeError, "inside the worktree"):
+                    prepare_python_project.script_paths(repo, [name])
+
     def test_sdk_name_uses_home_relative_form(self):
         self.assertEqual(
             prepare_python_project.sdk_name_for(Path("/Users/example/work/.venv"), Path("/Users/example")),

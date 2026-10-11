@@ -1017,6 +1017,7 @@ def parse_structured_repository_preparation(
         "testRoots",
         "sync",
         "extras",
+        "pep723Scripts",
         "requiredGeneratedState",
     }
     unknown_keys = sorted(set(python) - allowed_keys)
@@ -1052,6 +1053,15 @@ def parse_structured_repository_preparation(
         raise repository_preparation_config_error(
             "qualityGate.inspection.prepare.python.sync must be a boolean."
         )
+    scripts = normalize_repository_preparation_paths(
+        python.get("pep723Scripts", []),
+        field_name="qualityGate.inspection.prepare.python.pep723Scripts",
+        maximum=25,
+    )
+    if scripts and sync:
+        raise repository_preparation_config_error(
+            "qualityGate.inspection.prepare.python.pep723Scripts and sync are separate dependency sources."
+        )
     extras = python.get("extras", [])
     if not isinstance(extras, list) or len(extras) > MAX_REPOSITORY_PREPARATION_EXTRAS:
         raise repository_preparation_config_error(
@@ -1086,6 +1096,8 @@ def parse_structured_repository_preparation(
         argv.append("--sync")
     for extra in normalized_extras:
         argv.extend(("--extra", extra))
+    for script_path in scripts:
+        argv.extend(("--pep723-script", script_path))
     generated_state = list(dict.fromkeys([
         *generated_state, ".venv", f".idea/{module_name}.iml", ".idea/modules.xml", ".idea/misc.xml",
     ]))
@@ -1179,14 +1191,24 @@ def repository_preparation_sdk_table(context: dict[str, Any]) -> Path | None:
     return Path(config_dir) / "options" / "jdk.table.xml" if config_dir else None
 
 
-def repository_preparation_command_hash(argv: list[str]) -> str:
+def repository_preparation_command_hash(argv: list[str], target: Path | None = None) -> str:
     helper_sha256 = None
     sdk_table_sha256 = None
+    script_hashes = {}
     if len(argv) >= 3 and Path(argv[2]).name == "prepare-python-project.py":
         try:
             helper_sha256 = hashlib.sha256(Path(argv[2]).read_bytes()).hexdigest()
         except OSError:
             helper_sha256 = "unavailable"
+        for index, argument in enumerate(argv[:-1]):
+            if argument == "--pep723-script":
+                script_path = argv[index + 1]
+                try:
+                    script_hashes[script_path] = hashlib.sha256(
+                        ((target or Path.cwd()) / script_path).read_bytes()
+                    ).hexdigest()
+                except OSError:
+                    script_hashes[script_path] = "unavailable"
         if "--sdk-table" in argv:
             try:
                 sdk_table = Path(argv[argv.index("--sdk-table") + 1])
@@ -1195,7 +1217,8 @@ def repository_preparation_command_hash(argv: list[str]) -> str:
                 sdk_table_sha256 = "unavailable"
     return stable_value_hash(
         json.dumps(
-            {"argv": argv, "helper_sha256": helper_sha256, "sdk_table_sha256": sdk_table_sha256},
+            {"argv": argv, "helper_sha256": helper_sha256, "sdk_table_sha256": sdk_table_sha256,
+             "pep723_script_sha256": script_hashes},
             sort_keys=True,
             separators=(",", ":"),
         )
@@ -1358,7 +1381,7 @@ def repository_preparation_receipt_matches(
     target = repository_preparation_target(context)
     return (
         receipt.get("schema_version") == REPOSITORY_PREPARATION_RECEIPT_SCHEMA_VERSION
-        and receipt.get("command_sha256") == repository_preparation_command_hash(argv)
+        and receipt.get("command_sha256") == repository_preparation_command_hash(argv, target)
         and receipt.get("config_sha256") == repository_preparation_config_hash(context)
         and receipt.get("worktree_identity_hash") == stable_value_hash(str(target))
         and receipt.get("post_git_snapshot_sha256") == canonical_json_sha256(status_snapshot)
@@ -1416,7 +1439,7 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
         if sdk_table is not None:
             argv = [*argv, "--sdk-table", str(sdk_table)]
             preparation["command"] = shlex.join(argv)
-    preparation["command_sha256"] = repository_preparation_command_hash(argv)
+    preparation["command_sha256"] = repository_preparation_command_hash(argv, target)
     preparation["config_sha256"] = repository_preparation_config_hash(context)
     preparation["worktree_identity_hash"] = stable_value_hash(str(target))
     preparation["required_generated_state"] = repository_preparation_generated_state(context)

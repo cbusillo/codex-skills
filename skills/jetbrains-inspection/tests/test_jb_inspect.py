@@ -1253,6 +1253,8 @@ class BuildContextTest(unittest.TestCase):
             {"version": "3.13", "moduleName": "launchplane", "testRoots": ["../tests"]},
             {"version": "3.13", "moduleName": "launchplane", "extras": ["dev"]},
             {"version": "3.13", "moduleName": "launchplane", "unknown": True},
+            {"version": "3.13", "moduleName": "fixture", "pep723Scripts": ["../script.py"]},
+            {"version": "3.13", "moduleName": "fixture", "pep723Scripts": ["script.py"], "sync": True},
         )
         for python_config in invalid_python_configs:
             with self.subTest(python_config=python_config), tempfile.TemporaryDirectory() as tmp:
@@ -1272,6 +1274,22 @@ class BuildContextTest(unittest.TestCase):
                 raised.exception.payload["error_reason"],
                 "repository_preparation_config_invalid",
             )
+
+    def test_script_preparation_routes_sources_and_hashes_exact_worktree_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = root / "script.py"
+            script.write_text("# /// script\n# dependencies = []\n# ///\n", encoding="utf-8")
+            preparation = jb_inspect.parse_structured_repository_preparation(
+                {"python": {"version": "3.12", "moduleName": "fixture", "pep723Scripts": ["script.py"]}}, {},
+            )
+            argv = preparation["_argv"]
+            self.assertEqual(argv[-2:], ["--pep723-script", "script.py"])
+            before = jb_inspect.repository_preparation_command_hash(argv, root)
+            script.write_text('# /// script\n# dependencies = ["example==1"]\n# ///\n', encoding="utf-8")
+            self.assertNotEqual(before, jb_inspect.repository_preparation_command_hash(argv, root))
+            script.unlink()
+            self.assertNotEqual(before, jb_inspect.repository_preparation_command_hash(argv, root))
 
     def test_structured_preparation_rejects_outer_generated_state(self):
         with tempfile.TemporaryDirectory() as tmp:
