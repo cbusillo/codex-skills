@@ -483,13 +483,11 @@ def transient_read_error(error):
         return bool(
             failure
             and failure.retryable
-            and error.result.failed_step != "subprocess_launch"
             and failure.cause in {"deadline_exceeded", "network_provider_failure"}
             and not re.search(
-                r"failed to launch GitHub CLI|GitHub CLI execution failed|"
-                r"configuration.*missing",
+                r"^error:|failed to launch GitHub CLI|GitHub CLI execution failed",
                 failure.message,
-                re.IGNORECASE,
+                re.IGNORECASE | re.MULTILINE,
             )
         )
     return isinstance(

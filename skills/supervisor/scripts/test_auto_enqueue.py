@@ -1089,16 +1089,21 @@ class WatchLoopTests(unittest.TestCase):
             ("connection reset by peer", True),
             ("GitHub CLI execution failed (OSError)", False),
             ("Failed to launch GitHub CLI (FileNotFoundError)", False),
-            ("local wrapper configuration is missing", False),
+            ("error: incomplete GitHub App configuration; set GITHUB_APP_ID "
+             "GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH", False),
+            ("error: reader fallback requires the configured main GitHub App", False),
+            ("error: GitHub App authentication helper returned an invalid response; "
+             "refusing GitHub command", False),
+            ("error: gh-with-env-token requires uv or GH_WITH_ENV_TOKEN_PYTHON", False),
             ("permission denied", False),
             ("bad credentials", False),
         ):
             with self.subTest(message=message):
-                failure = watch.github_api.classify_legacy_failure(message)
                 error = watch.GitHubReadError(
                     "read failed", diagnostics={},
-                    result=watch.github_api.ApiResult(
-                        ok=False, status=0, body=None, failure=failure,
+                    result=watch.github_api.legacy_process_result(
+                        1, "", message, operation="github.pr.view", is_write=False,
+                        failed_step="enqueue_read",
                     ),
                 )
                 healthy = Fake(count=1)
