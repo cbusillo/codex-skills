@@ -428,15 +428,16 @@ def current_ownership_text(
     def other_clause(match: re.Match[str]) -> str:
         identity = issue_identity(match.group("ref"), repo)
         body = match.group("body")
-        # The reference must stay the holder's only subject: the verb runs
-        # straight into "owned by", and the one joiner allowed is "and is",
-        # never "and the follow-up is".
+        # The reference must stay the holder's only subject: a few plain words,
+        # then a verb running straight into "owned by". The one joiner allowed
+        # is "and is"; punctuation or another joiner keeps it ambiguous.
         verb = re.search(r"(?:\s+and)?\s+(?:is|was|remains|has been)(?:\s+(?:now|still|actively))?$", body)
+        lead_words = body[:verb.start()] if verb else ""
         if (identity is None or identity in identities or verb is None
-                or re.search(r",|\b(?:and|or|but|nor|while|whereas|so|then|which|that|who|whose|when|where|because|"
+                or not re.fullmatch(r"(?: [A-Za-z0-9]+){0,6}", lead_words)
+                or re.search(r"\b(?:and|or|but|nor|while|whereas|so|then|which|that|who|whose|when|where|because|"
                              r"since|after|before|until|as|with|plus|owned|claimed|this|here|are|were|both|also|too)\b",
-                             body[:verb.start()], re.IGNORECASE)
-                or any(issue_identity(ref, repo) in identities for ref in re.findall(reference, body))):
+                             lead_words, re.IGNORECASE)):
             return match.group()
         return match.group("lead") + match.group("ref") + body
     return clause.sub(other_clause, status)
