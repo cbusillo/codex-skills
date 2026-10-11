@@ -1953,8 +1953,8 @@ def cmd_show(args: argparse.Namespace) -> None:
 
 def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:
     _, issue = get_issue(ref, repo)
-    if issue.get("state") not in ({"open", "closed"} if allow_closed else {"open"}) or "pull_request" in issue:
-        raise PlanError("Claim requires an open issue")
+    if issue.get("state") not in ({"open", "closed"} if allow_closed else {"open"}):
+        raise PlanError("Claim requires an open issue or pull request")
     sections, provenance = read_plan_sections(issue)
     _, comments = collect_paged_rest_items(
         f"/repos/{issue['repo']}/issues/{issue['number']}/comments",
@@ -1964,7 +1964,7 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[
     for release_comment, receipt in github_plan_release.receipts(comments):
         valid = False
         try:
-            evidence_match = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/issues/([1-9]\d*)#issuecomment-([1-9]\d*)", receipt["evidence_url"])
+            evidence_match = github_plan_release.COMMENT_URL.fullmatch(receipt["evidence_url"])
             if evidence_match:
                 evidence_repo, evidence_number, evidence_id = evidence_match.groups()
                 _, evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}", bucket="rest_core", failed_step="claim_release_evidence")
@@ -1978,13 +1978,19 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[
             pass
         if not valid:
             comments = [github_plan_release.without_release(c) if c.get("id") == release_comment.get("id") else c for c in comments]
-    can_update = provenance["section_updates_allowed"] and provenance["ownership"] != "contributor_unmanaged"
-    return issue, sections.get("Current Status", ""), comments, can_update
+    can_update = "pull_request" not in issue and provenance["section_updates_allowed"] and provenance["ownership"] != "contributor_unmanaged"
+    status = sections.get("Current Status", "")
+    if "pull_request" in issue:
+        comment_status = next((section_map(c.get("body") or "").get("Current Status", "")
+                               for c in reversed(comments) if "Current Status" in section_map(c.get("body") or "")), "")
+        status = "\n\n".join(part for part in (status, comment_status) if part)
+    return issue, status, comments, can_update
 
 
 def cmd_release_claim(args: argparse.Namespace) -> None:
     """Release a closed session through the same maintained comment transport."""
     repo = default_repo(args.repo)
+    args = claim_reference(args)
     actor, gh_cmd, expected_actor = comment_route()
     if not expected_actor or not args.confirm_session_ended:
         raise PlanError("Release requires configured automation auth and --confirm-session-ended after verifying closure")
@@ -2001,9 +2007,9 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         if override and override.casefold() != selected_actor.casefold():
             raise PlanError(f"Release would run as '{selected_actor}', expected '{override}'")
         expected_actor = selected_actor
-    evidence_match = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/issues/([1-9]\d*)#issuecomment-([1-9]\d*)", args.evidence_comment)
+    evidence_match = github_plan_release.COMMENT_URL.fullmatch(args.evidence_comment)
     if not evidence_match:
-        raise PlanError("Evidence must be an exact GitHub issue-comment URL")
+        raise PlanError("Evidence must be an exact GitHub issue or PR timeline-comment URL")
     evidence_repo, evidence_number, evidence_id = evidence_match.groups()
     _, evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}", bucket="rest_core", failed_step="release_evidence")
     if evidence.get("issue_url") != f"https://api.github.com/repos/{evidence_repo}/issues/{evidence_number}":
@@ -2040,7 +2046,28 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             bucket="rest_core", step_prefix="release_source_branch_prs")
         branch_prs = [f"https://github.com/{source_issue['repo']}/pull/{p['number']}" for p in open_pulls
             if (p.get("head") or {}).get("ref") == source_branch]
-        checked_prs = list(dict.fromkeys([*args.retained_pr, *branch_prs]))
+        subject_pr = "pull_request" in source_issue
+        subject_url = f"https://github.com/{source_issue['repo']}/pull/{source_issue['number']}"
+        if subject_pr:
+            # The claim's branch identifies source-session activity. A separate
+            # Dependabot work-record branch may advance after that session ends.
+            ended = re.findall(r"(?m)^Ended at: (\S+)$", evidence.get("body") or "")
+            source_ref = None
+            try:
+                _, source_ref = api_json("GET",
+                    f"/repos/{source_issue['repo']}/git/ref/heads/{urllib.parse.quote(source_branch, safe='')}",
+                    bucket="rest_core", failed_step="release_claim_branch")
+            except PlanError as branch_error:
+                if (plan_error_status(branch_error) != 404
+                        or source_branch in source_inventory["remote_branches"]):
+                    raise
+            if source_ref is not None:
+                _, source_commit = api_json("GET",
+                    f"/repos/{source_issue['repo']}/commits/{source_ref['object']['sha']}",
+                    bucket="rest_core", failed_step="release_claim_branch_commit")
+                if github_plan_release.stamp(source_commit["commit"]["committer"]["date"]) >= github_plan_release.stamp(ended[0]):
+                    raise PlanError("Claimed source branch has commit activity after the cited session-ended evidence")
+        checked_prs = list(dict.fromkeys([*args.retained_pr, *branch_prs, *([subject_url] if subject_pr else [])]))
         retained_branches = set()
         for url in checked_prs:
             match = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/([1-9]\d*)", url)
@@ -2054,7 +2081,8 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             _, head_commit = api_json("GET", f"/repos/{source_issue['repo']}/commits/{pull['head']['sha']}", bucket="rest_core", failed_step="release_retained_head")
             try:
                 github_plan_release.check_retained_pr(pull, head_commit, repo=source_issue["repo"],
-                    number=source_issue["number"], actor=expected_actor, ended=ended[0])
+                    number=source_issue["number"], actor=expected_actor, ended=ended[0],
+                    subject_pr=source_issue["number"] if subject_pr else None, source_branch=source_branch)
             except github_plan_release.IssueReleaseRefusal as retained_error:
                 issue_refusal = retained_error
         release_actor = expected_actor
@@ -2102,9 +2130,16 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             "release_refusal_scope": github_plan_release.ISSUE_REFUSAL_SCOPE if isinstance(exc, github_plan_release.IssueReleaseRefusal) else "session_or_unknown"}) from exc
 
 
+def claim_reference(args: argparse.Namespace) -> argparse.Namespace:
+    """Accept a canonical PR URL on claim/release without broadening issue commands."""
+    match = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/([1-9]\d*)", args.issue.strip())
+    return argparse.Namespace(**{**vars(args), "issue": f"{match[1]}#{match[2]}"}) if match else args
+
+
 def cmd_claim(args: argparse.Namespace) -> None:
     """Claim; a plain claim held only by a released handoff's retained work
     reruns once as that handoff's ordinary successor, with all of its checks."""
+    args = claim_reference(args)
     try:
         claim_once(args)
     except ClassifiedPlanError as refusal:
@@ -2177,6 +2212,7 @@ def claim_once(args: argparse.Namespace) -> None:
     claim_comment: dict[str, Any] = {}
     inventory: dict[str, Any] = {}
     previous_status = ""
+    record_kind = "issue"
     retained_waits: dict[int, str] | None = None
     previous_wait_labels: set[str] = set()
     planning_checkout = getattr(args, "planning_checkout", None)
@@ -2431,6 +2467,8 @@ def claim_once(args: argparse.Namespace) -> None:
         )
 
     def check_native_blockers() -> None:
+        if record_kind == "pr":
+            return  # GitHub native issue dependencies do not exist on PRs.
         _, blockers = collect_paged_rest_items(
             f"/repos/{issue_repo}/issues/{number}/dependencies/blocked_by",
             query={}, bucket="rest_core", step_prefix="claim_blockers",
@@ -2438,8 +2476,45 @@ def claim_once(args: argparse.Namespace) -> None:
         if any(blocker.get("state") != "closed" for blocker in blockers):
             raise PlanError("Claim requires resolved native blockers; preserve blocked planning state")
 
+    def check_pr_artifacts(status_to_check: str, current_comments: list[dict[str, Any]]) -> None:
+        if record_kind != "pr":
+            return
+        fresh_inventory = github_plan_claim.local_inventory(target_repo, number)
+        _, fresh_pulls = collect_paged_rest_items(
+            f"/repos/{target_repo}/pulls", query={"state": "open"},
+            bucket="rest_core", step_prefix="claim_pr_readback",
+        )
+        subject = next((p for p in fresh_pulls if p["number"] == number), None)
+        if subject is not None:
+            text = (subject.get("title") or "") + "\n" + (subject.get("body") or "")
+            links = re.findall(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/([1-9]\d*)|(?<![\w/])([\w.-]+/[\w.-]+)#([1-9]\d*)|(?<![\w/])#([1-9]\d*)", text)
+            for url_repo, url_number, qualified_repo, qualified_number, bare_number in links:
+                linked_repo = url_repo or qualified_repo or issue_repo
+                linked_number = int(url_number or qualified_number or bare_number)
+                if linked_repo.casefold() == issue_repo.casefold() and linked_number == number:
+                    continue
+                if not github_plan_claim.pr_issue_reference(subject, linked_number, repo=linked_repo,
+                                                            local_references=linked_repo.casefold() == issue_repo.casefold()):
+                    continue
+                _, linked = get_issue(str(linked_number), linked_repo)
+                if "pull_request" not in linked:
+                    raise ClassifiedPlanError("claim_issue_record_required",
+                        "PR has a canonical implementation issue; claim that issue instead",
+                        payload={"canonical_issue": f"https://github.com/{linked_repo}/issues/{linked_number}"})
+        _, own = github_plan_claim.discussion_evidence("", current_comments, claim)
+        conflicts = github_plan_claim.artifact_evidence(
+            fresh_inventory, fresh_pulls, number, claim, own_record=bool(own), repo=issue_repo,
+            subject_pr=number, retained=retained,
+            recorded_branches=github_plan_claim.recorded_claim_branches(status_to_check, current_comments),
+        )
+        if conflicts:
+            refuse(conflicts)
+
     try:
         issue, status, comments, can_update = claim_snapshot(args.issue, repo)
+        record_kind = "pr" if "pull_request" in issue else "issue"
+        if record_kind == "pr" and (refresh_pr or handoff_id):
+            raise PlanError("PR-scoped claims use --resume-from for released ownership; --refresh-pr and --handoff-comment require a canonical issue")
         previous_status = status
         previous_wait_labels = set(normalize_labels(issue.get("labels"))) & {config["labels"][key] for key in ("waiting", "blocked")}
         check_agent(issue)
@@ -2458,6 +2533,7 @@ def claim_once(args: argparse.Namespace) -> None:
             bucket="rest_core", step_prefix="claim_open_prs",
         )
         conflicts = github_plan_claim.artifact_evidence(inventory, pulls, number, claim,
+                                                       subject_pr=number if record_kind == "pr" else None,
                                                        own_record=bool(owned), retained=retained, repo=issue_repo,
                                                        retained_branches=retained_branches,
                                                        retained_repo=target_repo if handoff_id else None,
@@ -2466,6 +2542,7 @@ def claim_once(args: argparse.Namespace) -> None:
                                                        status_sessions=set(github_plan_claim.released_status_lines(status, comments).values()))
         if conflicts:
             refuse_or_route(conflicts, comments)
+        check_pr_artifacts(status, comments)
         _, comment_owners = github_plan_claim.discussion_evidence("", comments, claim)
         comment_recorded = any(record.get("_legacy") != "yes" for record in comment_owners)
         admission_record = "" if comment_recorded else admission_line()
@@ -2488,7 +2565,7 @@ def claim_once(args: argparse.Namespace) -> None:
         )
         if not comment_recorded:
             claim_comment = github_comment_core.comment(
-                "issue", number, text, repo=issue_repo, gh_cmd=gh_cmd,
+                record_kind, number, text, repo=issue_repo, gh_cmd=gh_cmd,
                 expected_actor=expected_actor, operation=CURRENT_OPERATION,
                 completed_steps=completed, failed_step="post_claim", dedupe_body=True,
             )
@@ -2500,6 +2577,7 @@ def claim_once(args: argparse.Namespace) -> None:
         if conflicts:
             refuse(conflicts)
         check_status_peers(status, comments)
+        check_pr_artifacts(status, comments)
         check_wait(issue, status)
         check_issue_holds(issue, status)
         check_native_blockers()
@@ -2526,25 +2604,27 @@ def claim_once(args: argparse.Namespace) -> None:
             rest_edit_issue(issue_repo, number, body=body)
             completed.append("update_current_status")
         label_map = config["labels"]
-        label_result = github_issue_core.edit_issue(
-            number, repo=issue_repo, add_labels=[label_map["active"]],
-            remove_labels=[label_map[key] for key in (("stale", "done") if handoff_id and not refresh_pr
-                                                     else ("waiting", "stale", "done", "blocked"))
-                           if label_map[key] in normalize_labels(issue.get("labels"))],
-            gh_cmd=gh_cmd, expected_actor=expected_actor, operation=CURRENT_OPERATION,
-        )
-        completed.append("update_labels")
-        actor = label_result.get("actor") or actor
+        if record_kind == "issue":
+            label_result = github_issue_core.edit_issue(
+                number, repo=issue_repo, add_labels=[label_map["active"]],
+                remove_labels=[label_map[key] for key in (("stale", "done") if handoff_id and not refresh_pr
+                                                         else ("waiting", "stale", "done", "blocked"))
+                               if label_map[key] in normalize_labels(issue.get("labels"))],
+                gh_cmd=gh_cmd, expected_actor=expected_actor, operation=CURRENT_OPERATION,
+            )
+            completed.append("update_labels")
+            actor = label_result.get("actor") or actor
         final, final_status, final_comments, _ = claim_snapshot(args.issue, repo)
         check_agent(final)
         conflicts, observed = github_plan_claim.discussion_evidence(final_status, final_comments, claim, resume_from=args.resume_from, repo=issue_repo, number=number, issue_url=final.get("html_url"))
         if conflicts:
             refuse(conflicts)
         check_status_peers(final_status, final_comments)
+        check_pr_artifacts(final_status, final_comments)
         check_issue_holds(final, final_status)
         check_native_blockers()
         handoff_preflight(final_comments, final_status)
-        if not observed or label_map["active"] not in normalize_labels(final.get("labels")):
+        if not observed or (record_kind == "issue" and label_map["active"] not in normalize_labels(final.get("labels"))):
             raise PlanError("Claim metadata was not visible on final readback")
         if can_update and not any(github_plan_claim.same_owner(record, claim)
                                   for record in github_plan_claim.records(final_status)):
@@ -2580,7 +2660,7 @@ def claim_once(args: argparse.Namespace) -> None:
                 write_outcome="unknown", completed_steps=completed,
             )
         raise
-    emit({"ok": True, "actor": actor, "claim": claim, "claim_comment": claim_comment, "issue": compact_issue(final),
+    emit({"ok": True, "actor": actor, "record_kind": record_kind, "claim": claim, "claim_comment": claim_comment, "issue": compact_issue(final),
           "current_status_location": "issue_body" if can_update else "claim_comment",
           "previous_current_status": previous_status,
           "session_coverage": inventory["session_coverage"], "exclusive_lock": False,
@@ -5018,7 +5098,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_release_claim)
 
-    p = sub.add_parser("claim", help="Recheck, record, and read back issue ownership before work")
+    p = sub.add_parser("claim", help="Recheck, record, and read back issue or PR ownership before work")
     p.add_argument("issue")
     p.add_argument("--agent", choices=github_agent.FAMILIES, help="Running family; defaults to harness detection")
     p.add_argument("--agent-override", metavar="REASON", help="Record an explicit Director override for this session")
