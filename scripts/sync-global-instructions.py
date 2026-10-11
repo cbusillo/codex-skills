@@ -325,18 +325,25 @@ def write_codex_hooks(outputs: HookOutputs, codex: Path, catalog: Path = ROOT) -
     return receipt
 
 
-def synchronize_instructions(content: str, destinations: list[Path], *, write: bool, local_source_missing: bool = False, allow_missing_local: bool = False) -> list[dict[str, str]]:
+def synchronize_instructions(content: str, destinations: list[Path], *, write: bool, local_source_missing: bool = False, allow_missing_local: bool = False, refresh_targets: dict[Path, bytes] | None = None) -> list[dict[str, str]]:
     """Preserve linked instruction sources while synchronizing regular outputs."""
     linked = {}
     regular = []
+    refreshed = {}
+    refresh_targets = refresh_targets or {}
     targets = {path.resolve() for path in destinations if path.is_symlink()}
     for path in destinations:
         if path.resolve() in targets:
             if not path.is_file():
                 raise ValueError(f"Refusing a symlink or non-file destination: {path}")
+            if path.resolve() in refresh_targets:
+                refreshed[path] = path.resolve()
+                if path.resolve() not in regular:
+                    regular.append(path.resolve())
+                continue
             text = path.read_text()
             state = "current" if text == content else "skipped" if text.startswith(HEADER) else "preserved"
-            linked[path] = {"path": str(path), "sha256": hashlib.sha256(text.encode()).hexdigest(),
+            linked[path] = {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                             "state": state,
                             "reason": "Symlink and target preserved; update the instruction source separately"}
             if text != content:
@@ -347,7 +354,9 @@ def synchronize_instructions(content: str, destinations: list[Path], *, write: b
             regular.append(path)
     outputs = {Path(entry["path"]): entry for entry in synchronize(
         content, regular, write=write, local_source_missing=local_source_missing,
-        allow_missing_local=allow_missing_local)}
+        allow_missing_local=allow_missing_local, expected_previous=refresh_targets)}
+    for path, target in refreshed.items():
+        outputs[path] = {**outputs[target], "path": str(path), "target": str(target)}
     outputs.update(linked)
     return [outputs[path] for path in destinations]
 
@@ -361,7 +370,7 @@ def synchronize(content: str, destinations: list[Path], *, write: bool, local_so
             raise ValueError(f"Refusing a symlink or non-file destination: {path}")
         old = path.read_bytes() if path.exists() else None
         if expected_previous is not None and path in expected_previous and old != expected_previous[path]:
-            raise ValueError(f"Destination changed since hook preview: {path}")
+            raise ValueError(f"Destination changed since preview: {path}")
         previous[path] = old
         if old is not None and old != desired and local_source_missing and not allow_missing_local:
             msg = f"Local source is missing and {path.name} would change. {MISSING_LOCAL_RECOVERY}"

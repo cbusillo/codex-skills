@@ -123,7 +123,7 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(target.stat().st_mtime_ns, before.st_mtime_ns)
         self.assertFalse(list(self.root.rglob("*.backup-*")))
 
-    def test_linked_catalog_instructions_keep_actual_receipt_hash_when_source_updates(self):
+    def test_linked_catalog_instructions_refresh_target_and_receipt_when_source_updates(self):
         self.install()
         path = self.claude / "CLAUDE.md"
         target = self.root / "generated-instructions.md"
@@ -133,15 +133,184 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(self.install(write=False)["outputs"][0]["state"], "current")
         original = target.read_bytes()
         (self.catalog / "instructions" / "global.md").write_text("# Shared\nNew catalog instruction.\n")
-        self.assertEqual(self.install(write=False)["outputs"][0]["state"], "skipped")
+        self.assertEqual(self.install(write=False)["outputs"][0]["state"], "would_write")
         self.install()
         receipt = json.loads((self.catalog / ".local" / "catalog-install.json").read_text())
-        self.assertEqual(receipt["instruction_hashes"][str(path)], installer.hashlib.sha256(original).hexdigest())
+        self.assertEqual(receipt["instruction_hashes"][str(path)], installer.hashlib.sha256(target.read_bytes()).hexdigest())
         self.assertIn("New catalog instruction.", (self.codex / "AGENTS.md").read_text())
         self.install()
         self.assertEqual(self.install(write=False)["unmanaged_instruction_sources"], [])
         self.assertEqual(path.readlink(), target)
+        self.assertIn("New catalog instruction.", target.read_text())
+        self.assertEqual(list(self.root.rglob("generated-instructions.md.backup-*"))[0].read_bytes(), original)
+
+    def test_account_home_links_share_one_generated_target_through_install_and_refresh(self):
+        self.install()
+        target = self.codex / "AGENTS.md"
+        original = target.read_bytes()
+        homes = [self.home / ".codex-accounts" / name for name in ("first", "second", "third")]
+        for home in homes:
+            home.mkdir(parents=True)
+            (home / "AGENTS.md").symlink_to(target)
+        installer.install(self.home, homes[0], self.claude, write=True, updater=False)
+        source = self.catalog / "instructions" / "global.md"
+        source.write_text("# Shared\nUpdated account rule.\n")
+        preview = installer.install(self.home, homes[0], self.claude, write=False, updater=False)
+        self.assertEqual(preview["outputs"][1]["state"], "would_write")
         self.assertEqual(target.read_bytes(), original)
+        installer.install(self.home, homes[0], self.claude, write=True, updater=False, refresh_instructions=True)
+        expected = self.sync.render(source, self.catalog / ".local" / "global-instructions.md")
+        for home in homes:
+            self.assertEqual((home / "AGENTS.md").read_text(), expected)
+            self.assertEqual((home / "AGENTS.md").readlink(), target)
+        backups = list(target.parent.glob("AGENTS.md.backup-*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), original)
+        before = target.stat().st_mtime_ns
+        installer.install(self.home, homes[0], self.claude, write=True, updater=False)
+        self.assertEqual(target.stat().st_mtime_ns, before)
+        self.assertEqual(list(target.parent.glob("AGENTS.md.backup-*")), backups)
+        self.assertEqual((self.claude / "CLAUDE.md").read_text(), expected)
+
+    def test_generated_target_shared_by_both_outputs_is_refreshed_once(self):
+        self.install()
+        target = self.claude / "CLAUDE.md"
+        path = self.codex / "AGENTS.md"
+        path.unlink()
+        path.symlink_to(target)
+        (self.catalog / "instructions" / "global.md").write_text("New shared rule.\n")
+        self.install()
+        self.assertEqual(path.readlink(), target)
+        self.assertIn("New shared rule.", target.read_text())
+        self.assertEqual(len(list(target.parent.glob("CLAUDE.md.backup-*"))), 1)
+        self.install()
+        self.assertEqual(len(list(target.parent.glob("CLAUDE.md.backup-*"))), 1)
+
+    def test_generated_link_hand_edit_and_missing_private_source_are_preserved(self):
+        self.install()
+        path = self.codex / "AGENTS.md"
+        target = self.root / "generated.md"
+        target.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(target)
+        target.write_text(target.read_text() + "Hand edit.\n")
+        original = target.read_bytes()
+        (self.catalog / "instructions" / "global.md").write_text("New shared rule.\n")
+        self.assertEqual(self.install(write=False)["outputs"][1]["state"], "skipped")
+        self.install()
+        self.install()
+        self.assertEqual(target.read_bytes(), original)
+        (self.catalog / ".local" / "global-instructions.md").unlink()
+        with self.assertRaisesRegex(ValueError, "Private instruction source is missing"):
+            self.install()
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(path.readlink(), target)
+
+    def test_linked_generated_crlf_target_refreshes_with_raw_backup(self):
+        self.install()
+        path = self.codex / "AGENTS.md"
+        target = self.root / "generated.md"
+        original = path.read_bytes().replace(b"\n", b"\r\n")
+        target.write_bytes(original)
+        path.unlink()
+        path.symlink_to(target)
+        self.assertEqual(self.install(write=False)["outputs"][1]["state"], "would_write")
+        self.assertEqual(target.read_bytes(), original)
+        self.install()
+        self.assertEqual(target.read_bytes(), (self.claude / "CLAUDE.md").read_bytes())
+        self.assertEqual(list(target.parent.glob("generated.md.backup-*"))[0].read_bytes(), original)
+        self.assertEqual(path.readlink(), target)
+
+    def test_legacy_crlf_receipt_recognizes_stale_generated_link(self):
+        self.install()
+        path = self.codex / "AGENTS.md"
+        target = self.root / "generated.md"
+        target.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+        path.unlink()
+        path.symlink_to(target)
+        (self.catalog / "instructions" / "global.md").write_text("New shared rule.\n")
+        self.install()
+        self.assertIn("New shared rule.", target.read_text())
+        self.assertEqual(path.readlink(), target)
+
+    def test_read_only_generated_targets_are_preserved_without_stopping_install(self):
+        self.install()
+        path = self.codex / "AGENTS.md"
+        target = self.root / "generated.md"
+        target.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(target)
+        original = target.read_bytes()
+        (self.catalog / "instructions" / "global.md").write_text("New shared rule.\n")
+        for unavailable in (target, target.parent):
+            with self.subTest(unavailable=unavailable), mock.patch("os.access", side_effect=lambda p, mode: p != unavailable.resolve()):
+                self.assertEqual(self.install(write=False)["outputs"][1]["state"], "skipped")
+                self.install()
+                self.assertEqual(target.read_bytes(), original)
+                self.assertIn("New shared rule.", (self.claude / "CLAUDE.md").read_text())
+                self.assertEqual(path.readlink(), target)
+
+    def test_generated_links_refresh_after_private_source_changes(self):
+        self.install()
+        path = self.codex / "AGENTS.md"
+        target = self.root / "generated.md"
+        target.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(target)
+        self.install()
+        local = self.catalog / ".local" / "global-instructions.md"
+        local.write_text("New private rule.\n")
+        self.install()
+        self.assertIn("New private rule.", target.read_text())
+        self.assertEqual(target.read_text(), (self.claude / "CLAUDE.md").read_text())
+
+    def test_legacy_link_multiple_catalog_updates_behind_is_recognized_from_history(self):
+        command("git", "init", "-q", cwd=self.catalog)
+        command("git", "config", "user.name", "Fixture", cwd=self.catalog)
+        command("git", "config", "user.email", "fixture@example.invalid", cwd=self.catalog)
+        command("git", "add", "instructions/global.md", cwd=self.catalog)
+        command("git", "commit", "-qm", "original source", cwd=self.catalog)
+        self.install()
+        target = self.root / "generated.md"
+        target.write_bytes((self.codex / "AGENTS.md").read_bytes())
+        # Model the old installer: its receipt records skipped content and the
+        # newest shared source while the actual linked output remains stale.
+        source = self.catalog / "instructions" / "global.md"
+        for text in ("Intermediate source.\n", "Newest source.\n"):
+            source.write_text(text)
+            command("git", "commit", "-qam", "source update", cwd=self.catalog)
+            self.install()
+        path = self.codex / "AGENTS.md"
+        path.unlink()
+        path.symlink_to(target)
+        receipt_path = self.catalog / ".local" / "catalog-install.json"
+        receipt = json.loads(receipt_path.read_text())
+        receipt.pop("generated_instruction_hashes", None)
+        receipt["instruction_hashes"][str(path)] = installer.hashlib.sha256(target.read_bytes()).hexdigest()
+        receipt_path.write_text(json.dumps(receipt))
+        self.install()
+        self.assertIn("Newest source.", target.read_text())
+        self.assertEqual(path.readlink(), target)
+
+    def test_target_edit_between_preview_and_apply_refuses_overwrite(self):
+        self.install()
+        path = self.codex / "AGENTS.md"
+        target = self.root / "generated.md"
+        target.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(target)
+        (self.catalog / "instructions" / "global.md").write_text("New source.\n")
+        original = target.read_text()
+        synchronize = self.sync.synchronize_instructions
+        def concurrent_edit(content, destinations, **kwargs):
+            if kwargs["write"]:
+                target.write_text(original + "Concurrent hand edit.\n")
+            return synchronize(content, destinations, **kwargs)
+        with mock.patch.dict(self.sync.__dict__, {"synchronize_instructions": concurrent_edit}):
+            with self.assertRaisesRegex(ValueError, "changed since"):
+                self.install()
+        self.assertIn("Concurrent hand edit.", target.read_text())
+        self.assertEqual(path.readlink(), target)
 
     def test_linked_source_edits_are_preserved_and_private_source_can_propagate_them(self):
         target = self.root / "personal-instructions.md"
@@ -1069,18 +1238,19 @@ class UpdateTests(unittest.TestCase):
             (self.seed / "instructions" / "global.md").write_text("Next catalog instructions.\n")
             command("git", "commit", "-qam", "next catalog update", cwd=self.seed)
             command("git", "push", "-q", "origin", "main", cwd=self.seed)
-            skipped = runtime.update(self.checkout)
-            self.assertIn("instruction_refresh", skipped)
-            self.assertIn("Catalog notice", runtime.status_line(self.checkout))
-            self.assertIn("instruction refresh was skipped", runtime.status_line(self.checkout))
-            self.assertEqual(target.read_bytes(), original)
+            refreshed = runtime.update(self.checkout)
+            self.assertNotIn("instruction_refresh", refreshed)
+            self.assertEqual(runtime.status_line(self.checkout), "")
+            self.assertIn("Next catalog instructions.", target.read_text())
             self.assertTrue(agents.is_symlink())
+            target.write_text(target.read_text() + "Hand edit.\n")
             hooks.write_text("invalid JSON")
             both = runtime.update(self.checkout)
             self.assertIn("instruction_refresh", both)
             self.assertIn("alert_refresh", both)
             self.assertIn("instruction refresh", runtime.status_line(self.checkout))
             self.assertIn("alert refresh", runtime.status_line(self.checkout))
+            self.assertIn("Hand edit.", target.read_text())
             hooks.write_text('{"hooks": {}}\n')
             target.write_bytes((fixture_home / ".claude" / "CLAUDE.md").read_bytes())
             self.assertNotIn("instruction_refresh", runtime.update(self.checkout))
