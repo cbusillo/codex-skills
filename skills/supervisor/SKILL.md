@@ -283,7 +283,8 @@ for products a Client runs business on.
   replaces this hand ordering once Launchplane's automatic batch flow ships.
 - Once a product's release batch has landed, its release is ready even
   before the invitation posts. From then until the release finishes, land
-  nothing else on that product, including through other sessions' drivers.
+  nothing else on that product, and ask any session running a driver for that
+  product to pause it.
   The hold on Launchplane landings during Client releases is retired by the
   [Director's Q160 decision on launchplane#3145](https://github.com/cbusillo/launchplane/issues/3145#issuecomment-6103873272).
 - Every PR in a repository that feeds a Client release (shared add-ons,
