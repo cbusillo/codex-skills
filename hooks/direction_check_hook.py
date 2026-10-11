@@ -48,11 +48,20 @@ GH_READER = Path(__file__).resolve().parents[1] / "skills" / "github" / "scripts
 OVERALL_REPO = "direction"
 OVERALL_READ_TIMEOUT = 6
 RUNTIME_CATCHUP_TIMEOUT = 5
+# Test seam: fixtures under a loaded parallel gate need more than the session budget.
+RUNTIME_CATCHUP_TIMEOUT_ENV = "DIRECTION_RUNTIME_CATCHUP_TIMEOUT"
 # The shared turn record: one issue in OWNER/direction that direction_mark.py keeps current.
 TURN_RECORD_TAG = "<!-- direction-turn-record -->"
 TURN_RECORD_LINE = re.compile(r"^Last daily turn: (\S+) covering (\S+)$", re.MULTILINE)
 TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 RUNTIME_HELPER = Path("skills/github/scripts/reconcile-runtime-checkout.py")
+
+
+def runtime_catchup_budget() -> float:
+    try:
+        return float(os.environ[RUNTIME_CATCHUP_TIMEOUT_ENV])
+    except (KeyError, ValueError):
+        return RUNTIME_CATCHUP_TIMEOUT
 
 
 def catch_up_runtime(catalog: Path) -> str:
@@ -63,7 +72,7 @@ def catch_up_runtime(catalog: Path) -> str:
     try:
         # run_path reads the script without writing __pycache__ into the runtime.
         reconciler = SimpleNamespace(**runpy.run_path(str(helper)))
-        deadline = time.monotonic() + RUNTIME_CATCHUP_TIMEOUT
+        deadline = time.monotonic() + runtime_catchup_budget()
         token = reconciler.RECONCILIATION_DEADLINE.set(deadline)
         try:
             roots = []
@@ -73,6 +82,9 @@ def catch_up_runtime(catalog: Path) -> str:
                 try:
                     root = reconciler.git_root(path)
                 except (reconciler.GitCommandError, OSError):
+                    if time.monotonic() >= deadline:
+                        # Report the expired budget rather than an unbound catalog.
+                        return f"Catalog catch-up retryable: runtime_catchup_timeout ({catalog})."
                     continue
                 if (root / RUNTIME_HELPER).is_file() and root not in roots:
                     roots.append(root)

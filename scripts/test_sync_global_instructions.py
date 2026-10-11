@@ -243,7 +243,7 @@ class GlobalInstructionsTests(unittest.TestCase):
                 if destinations == [codex / "hooks.json"]:
                     config.write_text(changed)
                 return result
-            with mock.patch.object(sync, "synchronize", side_effect=interrupted):
+            with mock.patch.dict(vars(sync), {"synchronize": interrupted}):
                 with self.assertRaisesRegex(ValueError, "Destination changed"):
                     sync.write_codex_hooks(outputs, codex)
             self.assertEqual(config.read_text(), changed)

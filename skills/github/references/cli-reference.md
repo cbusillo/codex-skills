@@ -599,6 +599,23 @@ before writing. It records the resolution and previous Current Status in the
 claim comment and returns the previous status for recovery. Claim and this
 argument grant no Director decision or permission to lift a repository hold.
 
+When the overall direction's Order admits the work, name the rule with
+`--admission live-breakage|milestone|repeat-stop|spare-capacity`; the claim
+comment records it as an `Admission:` line. `milestone` walks the issue's
+native parent and `blocks` links up to a `Track:` issue with an open milestone
+in `OWNER/direction`, records the Track it reaches, and refuses before writing
+(`claim_admission_unlinked`) when none is reached. Link the issue into that
+graph with `gh-plan.py link`, or pass `--admission-unlinked "<why not yet>"`.
+The walk verifies Tracks in the claimed repository account's `OWNER/direction`.
+A Track in another account's direction repository is a reported graph
+limitation; use the explicit explanation when that is the Director's graph.
+Completeness is bounded by the configured reader's link visibility.
+Unreadable admission graph nodes or relationships also accept that explanation
+and record incomplete verification. Ownership, actor authentication, waits and
+native blockers retain their independent refusals.
+`repeat-stop` needs both occurrences as `--admission-link URL`; any kind may
+add links. Admission records why the work was taken; it grants no authority.
+
 The command checks Current Status and the complete discussion, unresolved
 native blockers, registered worktrees, local branches, live remote heads, open
 PRs, and Claude's native `claude agents --json` session inventory when available.

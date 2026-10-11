@@ -42,9 +42,84 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --no-python-downloads \"${CLAUDE_PLUGIN_ROOT}/hooks/session_alert_hook.py\" || true",
+            "timeout": 3
+          }
+        ]
       }
     ],
     "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --no-python-downloads \"${CLAUDE_PLUGIN_ROOT}/hooks/session_alert_hook.py\" || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --no-python-downloads \"${CLAUDE_PLUGIN_ROOT}/hooks/session_alert_hook.py\" || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --no-python-downloads \"${CLAUDE_PLUGIN_ROOT}/hooks/session_alert_hook.py\" || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --no-python-downloads \"${CLAUDE_PLUGIN_ROOT}/hooks/session_alert_hook.py\" || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --no-python-downloads \"${CLAUDE_PLUGIN_ROOT}/hooks/session_alert_hook.py\" || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --no-python-downloads \"${CLAUDE_PLUGIN_ROOT}/hooks/session_alert_hook.py\" || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
       {
         "hooks": [
           {

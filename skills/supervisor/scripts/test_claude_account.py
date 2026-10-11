@@ -357,6 +357,57 @@ class MoveTests(unittest.TestCase):
         self.assertEqual(cleaned["hooks"]["StopFailure"], [])
         self.assertEqual(cleaned["hooks"]["SessionStart"], [])
 
+    def test_same_filename_foreign_hook_survives_refresh_and_uninstall(self):
+        settings = self.root / "settings.json"
+        foreign = {"type": "command", "command": "/usr/bin/python3 -I /opt/another-tool/claude_account.py hook"}
+        alone = {"matcher": "rate_limit", "hooks": [foreign]}
+        settings.write_text(json.dumps({"hooks": {"StopFailure": [alone]}}))
+        self.assertEqual(account.uninstall(settings)["hooks"]["StopFailure"], [alone])
+        account.install(settings, self.root / "moves", write=True)
+        data = json.loads(settings.read_text())
+        data["hooks"]["SessionStart"][0]["hooks"].append(foreign)
+        settings.write_text(json.dumps(data))
+        account.install(settings, self.root / "moves", write=True, refresh=True)
+        refreshed = json.loads(settings.read_text())
+        self.assertIn(alone, refreshed["hooks"]["StopFailure"])
+        self.assertIn(foreign, refreshed["hooks"]["SessionStart"][0]["hooks"])
+        account.uninstall(settings, write=True)
+        cleaned = json.loads(settings.read_text())
+        self.assertEqual(cleaned["hooks"]["StopFailure"], [alone])
+        self.assertEqual(cleaned["hooks"]["SessionStart"], [{"matcher": "resume", "hooks": [foreign]}])
+
+    def test_unmarked_catalog_hooks_migrate_on_install_and_uninstall(self):
+        settings = self.root / "settings.json"
+        account.install(settings, self.root / "moves", write=True)
+        data = json.loads(settings.read_text())
+        for groups in data["hooks"].values():
+            for group in groups:
+                for handler in group["hooks"]:
+                    handler["command"] = handler["command"].removesuffix(" --enrollment " + account.ENROLLMENT_MARKER)
+        settings.write_text(json.dumps(data))
+        repeated = account.install(settings, self.root / "moves", write=True)
+        for event in ("StopFailure", "SessionStart"):
+            commands = [handler["command"] for group in repeated["hooks"][event] for handler in group["hooks"]]
+            self.assertEqual(len(commands), 1)
+            self.assertTrue(commands[0].endswith("hook --enrollment " + account.ENROLLMENT_MARKER))
+        moved = json.loads(settings.read_text())
+        for group in moved["hooks"]["StopFailure"]:
+            for handler in group["hooks"]:
+                handler["command"] = handler["command"].removesuffix(" --enrollment " + account.ENROLLMENT_MARKER).replace(
+                    str(Path(account.__file__).parents[3]), "/other/catalog")
+        settings.write_text(json.dumps(moved))
+        account.uninstall(settings, write=True)
+        cleaned = json.loads(settings.read_text())
+        self.assertEqual(cleaned["hooks"]["StopFailure"], [])
+        self.assertEqual(cleaned["hooks"]["SessionStart"], [])
+
+    def test_installed_hook_command_accepts_enrollment_marker(self):
+        installed = account.install(self.root / "settings.json", self.root / "moves")
+        command = installed["hooks"]["StopFailure"][0]["hooks"][0]["command"]
+        result = subprocess.run(command, shell=True, input="{}", text=True, capture_output=True,
+                                env={key: value for key, value in os.environ.items() if key != account.ENABLED})
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+
     def test_uninstall_keeps_cached_session_launches_working(self):
         self.record()
         installed = account.install(self.old / "settings.json", self.root / "moves", write=True)

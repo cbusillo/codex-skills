@@ -171,13 +171,72 @@ def idle(response, own=()):
         "controller_reconciliation_status"
     ):
         return False
-    dry = result.get("dry_run_result") or {}
+    return own_queue(result.get("dry_run_result") or {}, own)
+
+
+def own_queue(dry, own):
+    """A fresh queue may contain only this pass's labels with known authors."""
     if not isinstance(dry.get("queue"), list) or not isinstance(
         dry.get("queue_order"), list
     ):
         return False
+    if any(
+        reason.endswith(" label ignored: could not read who applied it")
+        for item in dry["queue"]
+        for reason in item["ineligible_reasons"]
+    ):
+        return False
     # Even queued work not yet built belongs to its existing routing actor.
     return set(dry["queue_order"]) <= set(own)
+
+
+def own_candidate(response, own, candidate_records=()):
+    """Only this pass's confirmed labels may account for a new candidate."""
+    if not own or response.get("status") != "accepted":
+        return False
+    result = response.get("result") or {}
+    if (
+        result.get("mode") != "dry-run"
+        or result.get("controller_action")
+        not in {"plan_candidate", "build_candidate", "observe_candidate"}
+        or result.get("controller_reconciliation_status")
+        or result.get("error")
+        or result.get("active_record_id")
+        or result.get("landing_plan")
+        or result.get("stack_collapse_plan")
+        or any(
+            value
+            for key, value in result.items()
+            if "record_id" in key and key != "merge_train_batch_candidate_record_id"
+        )
+    ):
+        return False
+    for key, value in (response.get("records") or {}).items():
+        if not value or key == "merge_train_batch_candidate_record_id":
+            continue
+        if (
+            key != "superseded_merge_train_batch_candidate_record_id"
+            or value not in candidate_records
+            or result.get("controller_action") != "plan_candidate"
+        ):
+            return False
+    candidate = result.get("candidate") or {}
+    members = candidate.get("pull_request_numbers")
+    return (
+        candidate.get("status") in {"planned", "building", "ready_for_checks", "passed"}
+        and isinstance(members, list)
+        and bool(members)
+        and all(
+            isinstance(number, int) and not isinstance(number, bool)
+            for number in members
+        )
+        and len(set(members)) == len(members) == candidate.get("entries_count")
+        and set(members) <= set(own)
+        and (
+            "dry_run_result" not in result
+            or own_queue(result["dry_run_result"], own)
+        )
+    )
 
 
 class Live:
@@ -401,15 +460,15 @@ def run_pass(io, args, emit):
                 for other in targets
                 if other["repo"].casefold() == repo.casefold() and other != target
             ]
-            if not idle(response) or any(not idle(io.train(other)) for other in others):
+            responses = [response] + [io.train(other) for other in others]
+            if any(not idle(value) for value in responses):
+                busy_result = response.get("result") or {}
                 emit(
                     "busy",
                     {
                         "repository": repo,
-                        "action": response.get("result", {}).get("controller_action"),
-                        "queue": response.get("result", {})
-                        .get("dry_run_result", {})
-                        .get("queue", []),
+                        "action": busy_result.get("controller_action"),
+                        "queue": busy_result.get("dry_run_result", {}).get("queue", []),
                     },
                 )
                 continue
@@ -420,11 +479,23 @@ def run_pass(io, args, emit):
                 if item["ineligible_reasons"] == [f"missing {target['label']} label"]
             }
             pulls = io.pages(f"/repos/{repo}/pulls", state="open")
-            # Any already labeled PR preserves the existing batch, even if currently ineligible.
+            # Active candidates were checked above. Only controller-proven
+            # ineligible PRs can be ignored here; absent or stale inventory stays
+            # busy. Include other enrolled bases without dropping stack children.
+            dispositions = {
+                item["number"]: item
+                for value in responses
+                for item in value["result"]["dry_run_result"]["queue"]
+            }
             labeled = [
                 pr["number"]
                 for pr in pulls
                 if target["label"] in {label["name"] for label in pr["labels"]}
+                and (
+                    not dispositions.get(pr["number"], {}).get("ineligible_reasons")
+                    or f"missing {target['label']} label"
+                    in dispositions[pr["number"]]["ineligible_reasons"]
+                )
             ]
             if labeled:
                 emit(
@@ -436,6 +507,16 @@ def run_pass(io, args, emit):
                     },
                 )
                 continue
+            held_labels = {
+                pr["number"]: sorted(label["name"] for label in pr["labels"])
+                for pr in pulls
+                if target["label"] in {label["name"] for label in pr["labels"]}
+                and any(
+                    f"held by {label['name']} label"
+                    in dispositions[pr["number"]]["ineligible_reasons"]
+                    for label in pr["labels"]
+                )
+            }
             candidates = []
             for listed in pulls:
                 if listed["number"] not in author_allowed:
@@ -459,6 +540,7 @@ def run_pass(io, args, emit):
                             "head": pr["head"]["sha"],
                             "created_at": pr["created_at"],
                             "areas": areas(files),
+                            "labels": sorted(label["name"] for label in pr["labels"]),
                         }
                     )
                 else:
@@ -483,6 +565,7 @@ def run_pass(io, args, emit):
             if not args.apply or not batch:
                 continue
             own = []
+            candidate_records = set()
             for item in batch:
                 # Recheck policy, pause, active state, exact head and all readiness at each write.
                 if target not in io.policies(args.owner) or held(
@@ -491,6 +574,10 @@ def run_pass(io, args, emit):
                     raise ValueError("policy or hold changed")
                 fresh = io.train(target)
                 pr = io.get(f"/repos/{repo}/pulls/{item['number']}")
+                continuing = own_candidate(fresh, own, candidate_records)
+                # Candidate observation can omit the queue. Its unchanged policy,
+                # selected head and labels retain the scan's author admission;
+                # readiness is still read again below before every label write.
                 entries = (
                     (fresh.get("result") or {})
                     .get("dry_run_result", {})
@@ -503,8 +590,23 @@ def run_pass(io, args, emit):
                     == [f"missing {target['label']} label"]
                     for row in entries
                 )
+                if continuing and "dry_run_result" not in (fresh.get("result") or {}):
+                    allowed = (
+                        sorted(label["name"] for label in pr["labels"]) == item["labels"]
+                        and pr.get("mergeable") is not False
+                    )
+                # A scheduler may not yet have incorporated another actor's label
+                # into its candidate. Do not extend that actor's queue either.
+                if continuing and any(
+                    other["number"] not in own
+                    and target["label"] in {label["name"] for label in other["labels"]}
+                    and sorted(label["name"] for label in other["labels"])
+                    != held_labels.get(other["number"])
+                    for other in io.pages(f"/repos/{repo}/pulls", state="open")
+                ):
+                    continuing = False
                 if (
-                    not idle(fresh, own)
+                    not (idle(fresh, own) or continuing)
                     or any(not idle(io.train(other)) for other in others)
                     or not allowed
                     or pr["head"]["sha"] != item["head"]
@@ -512,6 +614,12 @@ def run_pass(io, args, emit):
                 ):
                     emit("batch_stopped", {"repository": repo, "labeled": own})
                     break
+                if continuing:
+                    record = (fresh.get("records") or {}).get(
+                        "merge_train_batch_candidate_record_id"
+                    )
+                    if record:
+                        candidate_records.add(record)
                 io.label(target, item["number"])
                 own.append(item["number"])
                 emit(

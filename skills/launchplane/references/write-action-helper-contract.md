@@ -13,9 +13,8 @@ public-safety, operation semantics, protected workflows, invariant coverage, and
 helper bindings without network access. This is local consistency evidence, not
 proof of upstream freshness.
 
-Merge-train policy read and import, repository inventory, product expected configuration,
-generic-web deploy recovery, Odoo addon settings, and the lane-setup and
-promotion commands below are intentionally listed as bounded local extensions because their
+Commands listed under `LOCAL_EXTENSION_ROUTES` in
+`scripts/launchplane_contract.py` are bounded local extensions because their
 routes are not in the current vendored projection. The conformance gate fails
 if those routes later appear upstream so migration cannot leave duplicate route
 authorities behind.

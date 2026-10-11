@@ -44,17 +44,23 @@ Run without `--write` to preview; add `--show-diff` to inspect instruction chang
 locally (these may include private text). Existing personal instructions are preserved
 in the ignored `.local/global-instructions.md` and included in both outputs;
 changed instruction files are backed up. Existing symlinked instruction files
-are read for initial adoption and reported as current, preserved, or skipped; both the link and
-its target stay unchanged, including a target that is the other selected instruction
-file. Later linked-source edits stay in their external source and do not stop installation.
-To propagate those edits into regular outputs, update `.local/global-instructions.md`
-and rerun the installer; linked files remain under separate management.
-Stale generated linked instructions are reported as skipped, including by scheduled
-refresh. Preview with `--show-diff` to render the changes for the linked source's
-external manager, including when both destinations share one target. Generated
-linked text is preserved without guessing its private remainder; the catalog's
-private source supplies regular outputs. The separate instruction sync command preserves links in the same way,
-so it can reconcile regular outputs while another destination remains linked.
+are read for initial adoption. Recognized generated targets are refreshed during
+installation and scheduled updates, with a backup of changed target content;
+the links remain intact, including account homes sharing one target. Generated
+content in a linked dotfiles file is refreshed in place too; backups are written
+beside the target with owner-only permissions. Recognition
+uses current, previously installed, or committed shared sources with the
+authoritative private source. Receipts distinguish generated outputs the installer
+managed from skipped sources, so private-source edits propagate through links
+while hand edits remain protected. Targets
+inside the catalog checkout and read-only targets are preserved.
+Unmanaged personal targets stay unchanged. Later edits to those linked sources
+stay in their external source; to propagate them into regular outputs, update
+`.local/global-instructions.md` and rerun the installer. Unknown generated linked
+content or hand edits are reported as skipped. Preview with `--show-diff` and
+reconcile the reported source before rerunning. The separate instruction sync
+command preserves links, so it can reconcile regular outputs while another
+destination remains linked.
 Dangling links and non-file targets are refused; restore the external source before retrying.
 Existing unrelated bindings, malformed settings, or generated instructions whose private
 source cannot be identified are reported and left in place. Inspect the reported
@@ -579,6 +585,10 @@ reports how real sessions on both harnesses load the owning skill.
 
 ### Session alerts
 
+For count-only run lifecycle events in Context Panel's App Group, see the
+[agent activity producer](docs/agent-activity.md). It shares this hook but keeps
+its activity contract separate from the advisory alerts below.
+
 Inline dotfiles hook configurations can preview `--refresh-instructions --show-diff` and replace managed alert entries in place with the generated `catalog_alert_toml` in their authoritative `config.toml` source. Remove obsolete duplicate alert groups while retaining unrelated hooks, group positions, and native trust. Refresh recognizes current inline alerts without writing that source. Regular configurations can use the hook-only migration described above.
 
 The same catalog hook source registers advisory `Stop` alerts on both harnesses
@@ -588,7 +598,7 @@ are prompts for a supervisor to check session state, not completion records:
 a Stop hook can run again when another hook continues the turn. The hook never
 returns a continuation, approval, or blocking decision.
 
-Each invocation appends one JSON line to `$CODE_HOME/session-events.jsonl`,
+Each advisory Stop/Interrupt invocation appends one JSON line to `$CODE_HOME/session-events.jsonl`,
 falling back to `~/.code/session-events.jsonl` on either harness. Set `CODE_HOME`
 to the same shared directory for both harnesses when using an override.
 Records contain `schema_version`, `harness`, `session_id`, optional `turn_id`

@@ -151,6 +151,9 @@ sys.path.insert(0, options["script_dir"])
 import local_codex_agent as agent
 
 real_popen = agent.subprocess.Popen
+# The probes before the timed exec start a synthetic Python host; under
+# parallel gate load that can outlast the product's probe budget.
+agent.PROBE_SECONDS = 30.0
 
 def spawn(*args, **kwargs):
     process = real_popen(*args, **kwargs)
@@ -551,7 +554,7 @@ class LocalCodexAgentTests(unittest.TestCase):
                 try:
                     result = subprocess.run(
                         [sys.executable, str(driver), *self.command("--max-seconds", "0.4", "--output-last-message", str(output))[2:]],
-                        input="synthetic private prompt\n", text=True, capture_output=True, timeout=15,
+                        input="synthetic private prompt\n", text=True, capture_output=True, timeout=60,
                     )
                     # Measure enforcement from fixture readiness; Python/probe
                     # startup under host load is bounded by subprocess.run.

@@ -137,11 +137,11 @@ class ClaimTests(unittest.TestCase):
         self.issue["labels"] = [{"name": n} for n in set(names + kwargs["add_labels"])]
         return {"ok": True}
 
-    def run_claim(self):
+    def run_claim(self, *, route=None):
         with patch.multiple(PLAN, default_repo=lambda repo: repo or "owner/repo", get_issue=self.get_issue,
                             EXPECTED_ACTOR=TEST_BOT,
                             collect_paged_rest_items=self.read_pages, rest_edit_issue=self.edit,
-                            comment_route=lambda: ("bot", "bot-gh", TEST_BOT),
+                            comment_route=route or (lambda: ("bot", "bot-gh", TEST_BOT)),
                             load_config=lambda repo, **_: copy.deepcopy(self.configs.get(repo, PLAN.DEFAULT_CONFIG)), emit=self.emitted, api_json=self.read_api), \
                 patch.object(CLAIM, "local_inventory", side_effect=self.inventory_for), \
                 patch.object(PLAN.github_identity, "configured_bot_logins", return_value=[TEST_BOT]), \
@@ -2721,6 +2721,281 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(PLAN.PlanError) as caught:
             self.run_claim()
         self.assertEqual(caught.exception.payload["claim_recovery"]["release_own_claim"]["body"], "Released claim 1")
+
+    # A claim names the Order rule that admits its work; milestone work is linked first.
+    TRACK = {"title": "Track: CM website live", "milestone": {"title": "CM website live and used"}}
+
+    @staticmethod
+    def walk(graph, start=("owner/product", 7), **kwargs):
+        reads = []
+
+        def read_issue(repo, number):
+            reads.append((repo, number))
+            return graph.get((repo, number), {}).get("issue", {"title": "Work"})
+
+        return CLAIM.admission_track(
+            start, "owner", read_issue=read_issue,
+            read_parent=lambda repo, number: graph.get((repo, number), {}).get("parent"),
+            read_blocking=lambda repo, number: graph.get((repo, number), {}).get("blocking", []),
+            **kwargs,
+        ), reads
+
+    def test_walk_reaches_the_track_through_a_parent_and_a_blocked_issue(self):
+        graph = {
+            ("owner/product", 7): {"parent": {"html_url": "https://github.com/owner/product/issues/3"}},
+            ("owner/product", 3): {"blocking": [{"html_url": "https://github.com/owner/direction/issues/9"}]},
+            ("owner/direction", 9): {"issue": self.TRACK},
+        }
+        (track, complete), _ = self.walk(graph)
+        self.assertTrue(complete)
+        self.assertEqual(track["url"], "https://github.com/owner/direction/issues/9")
+        self.assertEqual(track["milestone"], "CM website live and used")
+
+    def test_walk_without_a_track_is_complete_and_unlinked_and_survives_cycles(self):
+        graph = {
+            ("owner/product", 7): {"blocking": [{"html_url": "https://github.com/owner/product/issues/8"}]},
+            ("owner/product", 8): {"parent": {"html_url": "https://github.com/owner/product/issues/7"}},
+            # A Track title outside OWNER/direction, or without a milestone, is not the graph.
+            ("owner/product", 9): {"issue": self.TRACK},
+        }
+        retired = {("owner/product", 7): {"parent": {"html_url": "https://github.com/owner/direction/issues/2"}},
+                   ("owner/direction", 2): {"issue": {**self.TRACK, "milestone": {"title": "Old", "state": "closed"}}}}
+        self.assertEqual(self.walk(retired)[0], (None, True))
+        (track, complete), reads = self.walk(graph)
+        self.assertEqual((track, complete), (None, True))
+        self.assertEqual(reads, [("owner/product", 7), ("owner/product", 8)])
+        limited, _ = self.walk(graph, max_nodes=1)
+        self.assertEqual(limited, (None, False))
+
+    def test_foreign_direction_track_reports_incomplete_instead_of_verified_unlinked(self):
+        graph = {
+            ("owner/product", 7): {"parent": {"html_url": "https://github.com/director/direction/issues/9"}},
+            ("director/direction", 9): {"issue": self.TRACK},
+        }
+        limitations = []
+        self.assertEqual(self.walk(graph, limitations=limitations)[0], (None, False))
+        self.assertIn("cross_owner_direction_account", limitations)
+
+    def test_cross_owner_product_can_still_reach_the_repository_owners_track(self):
+        graph = {
+            ("owner/product", 7): {"parent": {"html_url": "https://github.com/client/product/issues/8"}},
+            ("client/product", 8): {"blocking": [{"html_url": "https://github.com/owner/direction/issues/9"}]},
+            ("owner/direction", 9): {"issue": self.TRACK},
+        }
+        (track, complete), _ = self.walk(graph)
+        self.assertTrue(complete)
+        self.assertEqual(track["url"], "https://github.com/owner/direction/issues/9")
+
+    def test_foreign_track_claim_reports_its_limitation_and_records_explanation(self):
+        self.args.admission = "milestone"
+        self.targets["9"] = self.TRACK
+
+        def parent(_method, path, **_):
+            return "bot", ({"html_url": "https://github.com/director/direction/issues/9"}
+                           if path.endswith("/42/parent") else None)
+
+        with patch.object(self, "read_api", side_effect=parent):
+            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                self.run_claim()
+            self.assertFalse(caught.exception.payload["graph_walk_complete"])
+            self.assertIn("cross_owner_direction_account", caught.exception.payload["graph_limitations"])
+            self.assert_no_writes()
+            self.args.admission_unlinked = "The Director's Track lives in director/direction, a different account"
+            self.run_claim()
+        self.assertIn(self.args.admission_unlinked, self.comments[-1]["body"])
+        self.assertIn("Track link not verified:", self.comments[-1]["body"])
+        self.assertIn("graph verification incomplete: cross_owner_direction_account", self.comments[-1]["body"])
+
+    def test_unreadable_side_branch_does_not_hide_a_reachable_track(self):
+        self.args.admission = "milestone"
+        self.targets["9"] = self.TRACK
+        original_issue, original_pages = self.get_issue, self.read_pages
+
+        def issue(ref, repo):
+            if str(ref) == "8":
+                raise PLAN.PlanError("Side branch unavailable", api_result={"status": 502})
+            return original_issue(ref, repo)
+
+        def parent(_method, path, **_):
+            linked = {"42": "owner/product/issues/3", "3": "owner/direction/issues/9"}.get(path.split("/")[-2])
+            return "bot", {"html_url": "https://github.com/" + linked} if linked else None
+
+        def pages(path, **kwargs):
+            if path.endswith("/blocking"):
+                return "bot", [{"html_url": "https://github.com/owner/product/issues/8"}] if "/42/" in path else []
+            return original_pages(path, **kwargs)
+
+        with patch.object(self, "get_issue", side_effect=issue), \
+                patch.object(self, "read_api", side_effect=parent), \
+                patch.object(self, "read_pages", side_effect=pages):
+            self.run_claim()
+        self.assertIn("reaches https://github.com/owner/direction/issues/9", self.comments[-1]["body"])
+        self.assertNotIn("graph verification incomplete", self.comments[-1]["body"])
+
+    def unavailable_admission_read(self, surface, *, route=None):
+        self.args.admission = "milestone"
+        error = PLAN.PlanError("Graph unavailable", api_result={"status": 403})
+        original_issue, original_pages = self.get_issue, self.read_pages
+
+        def issue(ref, repo):
+            # Initial issue/ownership reads succeed; the linked node is unreadable.
+            if surface == "issue" and str(ref) == "9":
+                raise error
+            return original_issue(ref, repo)
+
+        def api(_method, _path, **_):
+            if surface == "parent":
+                raise error
+            return "bot", {"html_url": "https://github.com/owner/direction/issues/9"}
+
+        def pages(path, **kwargs):
+            if path.endswith("/blocking"):
+                if surface == "blocking":
+                    raise error
+                return "bot", []
+            return original_pages(path, **kwargs)
+
+        with patch.object(self, "get_issue", side_effect=issue), \
+                patch.object(self, "read_api", side_effect=api), \
+                patch.object(self, "read_pages", side_effect=pages):
+            self.run_claim(route=route)
+
+    def test_unavailable_admission_reads_refuse_or_use_explicit_explanation(self):
+        for surface in ("issue", "parent", "blocking"):
+            with self.subTest(surface=surface):
+                self.setUp()
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.unavailable_admission_read(surface)
+                self.assertEqual(caught.exception.code, "claim_admission_unlinked")
+                self.assertFalse(caught.exception.payload["graph_walk_complete"])
+                self.assertIn("graph_read_unavailable", caught.exception.payload["graph_limitations"])
+                self.assertEqual(caught.exception.payload["graph_read_failures"][0]["surface"], surface)
+                self.assertEqual(caught.exception.payload["graph_read_failures"][0]["status"], 403)
+                self.assert_no_writes()
+                self.args.admission_unlinked = "The Track graph is not readable by this repository App"
+                self.unavailable_admission_read(surface)
+                self.assertIn(self.args.admission_unlinked, self.comments[-1]["body"])
+                self.assertIn("Track link not verified:", self.comments[-1]["body"])
+                self.assertIn("graph verification incomplete: graph_read_unavailable", self.comments[-1]["body"])
+
+    def test_admission_explanation_preserves_independent_refusals(self):
+        for refusal in ("ownership", "blocker", "human_claim", "artifact", "initial_read"):
+            with self.subTest(refusal=refusal):
+                self.setUp()
+                self.args.admission_unlinked = "Graph is unreadable"
+                if refusal == "ownership":
+                    self.compete()
+                elif refusal == "blocker":
+                    self.blockers = [{"state": "open"}]
+                elif refusal == "human_claim":
+                    self.issue["user"]["login"] = "human"
+                    self.comments = [{"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": "human"}}]
+                elif refusal == "artifact":
+                    self.inventory["local_branches"] = ["work/other-42"]
+                    self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": "work/other-42"}]
+                else:
+                    def initial_read(*_):
+                        raise PLAN.PlanError("Initial issue authentication failed", api_result={"status": 401})
+                    self.get_issue = initial_read
+                with self.assertRaises(PLAN.PlanError) as caught:
+                    self.unavailable_admission_read("parent")
+                if refusal in ("ownership", "human_claim", "artifact"):
+                    self.assertEqual(caught.exception.code, "claim_conflict")
+                elif refusal == "initial_read":
+                    self.assertEqual(caught.exception.api_result["status"], 401)
+                else:
+                    self.assertIn("resolved native blockers", str(caught.exception))
+                self.assert_no_writes()
+
+    def test_admission_explanation_does_not_recover_write_authentication_failure(self):
+        self.args.admission_unlinked = "The graph reader is unavailable"
+
+        def rejected_actor():
+            raise PLAN.PlanError("Automation authentication failed", api_result={"status": 401})
+
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.unavailable_admission_read("parent", route=rejected_actor)
+        self.assertEqual(caught.exception.api_result["status"], 401)
+        self.assert_no_writes()
+
+    def admit(self, kind, links=(), unlinked=None, track=None, complete=True):
+        self.args.admission, self.args.admission_link, self.args.admission_unlinked = kind, list(links), unlinked
+        with patch.object(CLAIM, "admission_track", return_value=(track, complete)) as walk:
+            self.run_claim()
+        return walk
+
+    def test_unlinked_milestone_claim_refuses_before_any_write(self):
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.admit("milestone")
+        self.assertEqual(caught.exception.code, "claim_admission_unlinked")
+        self.assert_no_writes()
+
+    def test_linked_or_explained_milestone_claim_records_its_admission(self):
+        track = {"url": "https://github.com/owner/direction/issues/9", "title": "Track: CM website live",
+                 "milestone": "CM website live and used"}
+        walk = self.admit("milestone", track=track)
+        self.assertEqual(walk.call_args.args[:2], (("owner/repo", 42), "owner"))
+        self.assertIn("Admission: milestone; reaches https://github.com/owner/direction/issues/9 "
+                      "(Track: CM website live, milestone `CM website live and used`)", self.comments[-1]["body"])
+        self.setUp()
+        self.admit("milestone", unlinked="the Track issue is not created yet")
+        self.assertIn("Admission: milestone; no Track link found in the readable graph: the Track issue is not created yet",
+                      self.comments[-1]["body"])
+
+    def test_recovered_linked_claim_uses_the_found_track_instead_of_stale_explanation(self):
+        track = {"url": "https://github.com/owner/direction/issues/9", "title": "Track: Release", "milestone": "Release"}
+        self.admit("milestone", track=track, unlinked="Previous graph read failed")
+        self.assertIn("reaches " + track["url"], self.comments[-1]["body"])
+        self.assertNotIn("Previous graph read failed", self.comments[-1]["body"])
+
+    def test_partial_claim_recovery_reuses_its_existing_admission_without_another_walk(self):
+        self.args.admission = "milestone"
+        track = {"url": "https://github.com/owner/direction/issues/9", "title": "Track: Release", "milestone": "Release"}
+        with patch.object(CLAIM, "admission_track", return_value=(track, True)), \
+                patch.object(self, "edit", side_effect=PLAN.PlanError("Status write failed")):
+            with self.assertRaises(PLAN.PlanError):
+                self.run_claim()
+        original = copy.deepcopy(self.comments)
+        with patch.object(CLAIM, "admission_track", side_effect=PLAN.PlanError("Graph now unavailable")) as walk:
+            self.run_claim()
+        walk.assert_not_called()
+        self.assertEqual(self.comments, original)
+        self.assertIn("reaches " + track["url"], self.comments[-1]["body"])
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_artifact_conflict_is_reported_before_admission_link_suggestions(self):
+        self.args.admission = "milestone"
+        self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": OTHER["branch"]}]
+        with patch.object(CLAIM, "admission_track") as walk:
+            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        walk.assert_not_called()
+        self.assert_no_writes()
+
+    def test_repeat_stop_needs_both_occurrences_and_spare_capacity_is_named(self):
+        first = "https://github.com/owner/repo/issues/5"
+        for links in ((), (first,), (first, first)):
+            self.setUp()
+            with self.assertRaises(PLAN.PlanError):
+                self.admit("repeat-stop", links)
+            self.assert_no_writes()
+        self.setUp()
+        self.admit("repeat-stop", (first, "https://github.com/owner/other/pull/6"))
+        self.assertIn(f"Admission: repeat-stop; {first}, https://github.com/owner/other/pull/6", self.comments[-1]["body"])
+        self.setUp()
+        walk = self.admit("spare-capacity")
+        walk.assert_not_called()
+        self.assertIn("Admission: spare-capacity\n", self.comments[-1]["body"])
+
+    def test_admission_details_require_the_kind_they_describe(self):
+        for kind, links, unlinked in ((None, ("https://github.com/owner/repo/issues/5",), None),
+                                      ("spare-capacity", (), "reason"),
+                                      ("milestone", ("not a url",), None)):
+            self.setUp()
+            with self.assertRaises(PLAN.PlanError):
+                self.admit(kind, links, unlinked)
+            self.assert_no_writes()
 
 
 if __name__ == "__main__":

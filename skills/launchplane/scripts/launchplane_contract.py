@@ -188,6 +188,17 @@ EXPECTED_OPERATION_CONTRACTS = {
         "idempotency": "apply",
         "reviewed_evidence": ["reviewed_plan_digest"],
     },
+    "reconcile_legacy_generic_web_preview": {
+        "method": "POST",
+        "supported_surfaces": ["agent_helper", "service_api"],
+        "modes": ["inspect", "plan", "apply"],
+        "idempotency": "plan_and_apply",
+        "reviewed_evidence": [
+            "reviewed_plan",
+            "expected_plan_digest",
+            "plan_idempotency_key",
+        ],
+    },
     "read_governance_projection": {
         "method": "GET",
         "supported_surfaces": ["read_only_service", "operator_ui"],
@@ -778,6 +789,8 @@ def _validate_operation_coverage(
         for expected in EXPECTED_PROTECTED_WORKFLOWS.values()
     }
     read_only_operations = {"read_governance_projection"}
+    # Launchplane's own bounded client serves these; this skill does not wrap them.
+    producer_client_operations = {"reconcile_legacy_generic_web_preview"}
     ordinary_operations = {
         "admit_ordinary_agent_job",
         "read_ordinary_agent_job",
@@ -792,6 +805,7 @@ def _validate_operation_coverage(
         helper_operations,
         workflow_operations,
         read_only_operations,
+        producer_client_operations,
         ordinary_operations,
     )
     covered: set[str] = set()
