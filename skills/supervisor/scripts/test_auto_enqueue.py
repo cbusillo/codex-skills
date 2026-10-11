@@ -69,6 +69,7 @@ def response(pulls, own=(), **result) -> dict[str, Any]:
                         "head_sha": p["head"]["sha"],
                         "ineligible_reasons": []
                         if p["number"] in own
+                        or TARGET["label"] in {label["name"] for label in p["labels"]}
                         else [f"missing {TARGET['label']} label"],
                     }
                     for p in pulls
@@ -419,6 +420,47 @@ class EnqueueTests(unittest.TestCase):
         self.run_pass(fake)
         self.assertEqual(fake.writes, [])
         self.assertTrue(any(event == "busy" for event, _ in self.events))
+
+    def test_label_added_after_controller_read_preserves_batch(self):
+        fake = Fake()
+        self.args.apply = False
+        original_pages = fake.pages
+
+        def label_during_read(path, **params):
+            fake.pulls[1]["labels"] = [{"name": TARGET["label"]}]
+            return original_pages(path, **params)
+
+        fake.pages = label_during_read
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        self.assertTrue(any(event == "busy" for event, _ in self.events))
+        self.assertFalse(any(event == "batch" for event, _ in self.events))
+
+    def test_held_labels_on_other_enrolled_base_allow_next_batch(self):
+        fake = Fake()
+        fake.targets.append({**TARGET, "base": "release"})
+        fake.pulls[2]["base"]["ref"] = "release"
+        for number in (1, 2):
+            fake.pulls[number]["labels"] = [{"name": TARGET["label"]}]
+            fake.ineligible[number] = ["held by merge-blocked label"]
+        original_train = fake.train
+
+        def scoped(target):
+            value = original_train(target)
+            dry = value["result"]["dry_run_result"]
+            dry["queue"] = [
+                row
+                for row in dry["queue"]
+                if fake.pulls[row["number"]]["base"]["ref"] == target["base"]
+            ]
+            dry["queue_order"] = [
+                row["number"] for row in dry["queue"] if not row["ineligible_reasons"]
+            ]
+            return value
+
+        fake.train = scoped
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [3])
 
     def test_an_edited_wait_invalidates_a_later_created_ready(self):
         waiting = comment(f"{watch.WAITING} the Client's acceptance")

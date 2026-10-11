@@ -401,7 +401,8 @@ def run_pass(io, args, emit):
                 for other in targets
                 if other["repo"].casefold() == repo.casefold() and other != target
             ]
-            if not idle(response) or any(not idle(io.train(other)) for other in others):
+            responses = [response] + [io.train(other) for other in others]
+            if any(not idle(value) for value in responses):
                 emit(
                     "busy",
                     {
@@ -421,13 +422,22 @@ def run_pass(io, args, emit):
             }
             pulls = io.pages(f"/repos/{repo}/pulls", state="open")
             # Active candidates were checked above. Only controller-proven
-            # ineligible PRs can be ignored here; absent inventory stays busy.
-            dispositions = {item["number"]: item for item in queue}
+            # ineligible PRs can be ignored here; absent or stale inventory stays
+            # busy. Include other enrolled bases without dropping stack children.
+            dispositions = {
+                item["number"]: item
+                for value in responses
+                for item in value["result"]["dry_run_result"]["queue"]
+            }
             labeled = [
                 pr["number"]
                 for pr in pulls
                 if target["label"] in {label["name"] for label in pr["labels"]}
-                and not dispositions.get(pr["number"], {}).get("ineligible_reasons")
+                and (
+                    not dispositions.get(pr["number"], {}).get("ineligible_reasons")
+                    or f"missing {target['label']} label"
+                    in dispositions[pr["number"]]["ineligible_reasons"]
+                )
             ]
             if labeled:
                 emit(

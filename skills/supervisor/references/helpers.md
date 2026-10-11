@@ -218,8 +218,11 @@ The helper emits JSONL `batch`, `held`, `busy`, `skipped`, `enqueued`, and
 PR numbers when available. Once the controller proves there is no active
 candidate, reconciliation, landing or eligible queue, labeled PRs it reports
 as ineligible do not hold the repository busy. Their labels stay in place;
-the train still owns their holds. Labeled PRs absent from that inventory
-preserve the batch until their state is known. Busy alone never means a healthy
+the train still owns their holds. Dispositions cover all enrolled bases in
+the repository. Labeled PRs absent from that inventory, or still reported as
+missing their enqueue label, preserve the batch until their state is known.
+Clearing a hold rejoins the current queue and may rebuild an active candidate.
+Busy alone never means a healthy
 candidate is progressing. Skipped events identify PRs whose head readiness or
 file inventory was not proved. The handoff contains the maintained driver's argv and labeled member
 numbers. Run that driver using the Supervisor's normal background monitoring,
