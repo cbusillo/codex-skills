@@ -850,7 +850,14 @@ history. Available native sessions are
 checked and their coverage is returned. `--confirm-session-ended` records the
 caller's transcript/closure verification, including peers or hosts unavailable
 to the helper; partial inventory alone is never closure evidence. The command
-leaves issue status, waits, blockers, branches and worktrees intact. Use
+leaves issue status, waits, blockers, branches and worktrees intact. A verified
+closed-session release accepts an open or closed canonical issue without
+reopening it; creating a new claim still requires an open issue.
+`release_refusal_scope` distinguishes the release helper's confirmed retained-work
+refusals for one issue from a source-session or unknown failure. A Supervisor may
+continue independent claims after an issue-scoped dry-run refusal and fresh closure
+verification; an uncertain write or source-session failure preserves the remaining claims.
+Use
 `--resume-from` for an identical stale structured Current Status marker; other
 status ownership still needs its supported reconciliation. Closing a landed
 prerequisite and proving its finish line is separate from release: `next` and

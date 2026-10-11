@@ -281,22 +281,41 @@ def command_signal_cleanup():
     """Let catchable parent termination use the same cleanup as interruption."""
     previous = {}
     terminating = False
+    deferring = True
+    pending: int | None = None
     def terminate(termination_signal, _frame):
-        nonlocal terminating
+        nonlocal terminating, pending
         if terminating:
             return
         terminating = True
+        if deferring:
+            pending = termination_signal
+            return
         raise SystemExit(128 + termination_signal)
+    def check_termination(*, command_ready=False, cleanup_started=False):
+        nonlocal deferring, pending
+        if cleanup_started:
+            deferring = True
+            return
+        if command_ready:
+            deferring = False
+        if pending is not None:
+            termination_signal, pending = pending, None
+            raise SystemExit(128 + termination_signal)
     if threading.current_thread() is threading.main_thread():
         for signum in (signal.SIGTERM, signal.SIGHUP):
             handler = signal.getsignal(signum)
             if handler != signal.SIG_IGN:
                 previous[signum] = signal.signal(signum, terminate)
     try:
-        yield
+        yield check_termination
     finally:
-        for signum, handler in previous.items():
-            signal.signal(signum, handler)
+        deferring = True
+        try:
+            for signum, handler in previous.items():
+                signal.signal(signum, handler)
+        finally:
+            check_termination()
 
 
 def gh_text(args, repo=None):
@@ -316,17 +335,21 @@ def gh_text(args, repo=None):
     # Let managed preflight reads refuse before our process-group ceiling.
     # Reserve a short interval for the wrapper to report that refusal.
     env["GITHUB_RETRY_DEADLINE_AT"] = str(time.time() + timeout - min(2.0, timeout / 2))
-    with command_signal_cleanup():
-        return run_gh_command(cmd, env, timeout, receipt_nonce)
+    with command_signal_cleanup() as check_termination:
+        return run_gh_command(cmd, env, timeout, receipt_nonce, check_termination)
 
 
-def run_gh_command(cmd, env, timeout, receipt_nonce):
+def run_gh_command(cmd, env, timeout, receipt_nonce, check_termination):
     try:
+        check_termination()
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, start_new_session=True, env=env)
         try:
+            # A signal during Popen must wait until its child can be cleaned up.
+            check_termination(command_ready=True)
             stdout, stderr = proc.communicate(timeout=timeout)
         except BaseException:
+            check_termination(cleanup_started=True)
             # The auth wrapper has child processes. Kill the whole command group
             # so an inherited stdout pipe cannot keep communicate/our lock hung.
             try:
