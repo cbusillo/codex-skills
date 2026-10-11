@@ -1436,7 +1436,7 @@ def test_controller_rejected_response_names_unknown_key(section: str) -> None:
     assert "another-private-value" not in json.dumps(payload)
 
 
-@pytest.mark.parametrize("key", ["https://private.example/path", "Bearer private-fixture-value", "ghp_privatefixture", "x" * 81])
+@pytest.mark.parametrize("key", ["https://private.example/path", "Bearer private-fixture-value", "ghp_privatefixture", "client_secret", "x" * 81])
 def test_controller_rejected_response_omits_unsafe_unknown_key(key: str) -> None:
     response = {"status": "accepted", "records": {}, "result": {key: "private-fixture-value"}}
     status, payload = _run_controller_response(response, mutate=True)

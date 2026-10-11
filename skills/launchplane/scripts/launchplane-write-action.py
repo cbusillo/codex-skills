@@ -744,7 +744,11 @@ class _UnknownResponseField(LaunchplaneSafetyError):
     def __init__(self, key: object) -> None:
         super().__init__("unsafe_response_shape")
         self.unrecognized_key = ""
-        if isinstance(key, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", key):
+        if (
+            isinstance(key, str)
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", key)
+            and not is_denied_key(key)
+        ):
             try:
                 assert_public_safe_shape(key)
                 self.unrecognized_key = key
