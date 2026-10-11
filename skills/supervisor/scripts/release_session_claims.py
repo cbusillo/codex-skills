@@ -14,6 +14,7 @@ import fcntl
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -286,7 +287,31 @@ def discover_handoff(reader, entry, actor):
     # Shared-bot comments merely read by the source are not its handoff.
     outputs = []
     writes = set()
-    write_command = re.compile(r"(?:gh-comment|github_comment\.py|gh-pr\.py\s+comment)\b[^\n;]*\b(?:issue|pr)?\s*[1-9]\d*")
+    def is_comment_write(command):
+        try:
+            lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|\n")
+            lexer.whitespace_split = True
+            lexer.whitespace = " \t\r"
+            tokens = list(lexer)
+        except ValueError:
+            return False
+        executable = True
+        for index, token in enumerate(tokens):
+            if token in {";", "&&", "||", "|", "\n"}:
+                executable = True
+                continue
+            if not executable:
+                continue
+            name = Path(token).name
+            if name in {"uv", "run", "python", "python3", "env"} or token.startswith("-") or re.match(r"\w+=", token):
+                continue
+            executable = False
+            tail = tokens[index + 1:]
+            if name in {"gh-comment", "github_comment.py"}:
+                return any(t in {"issue", "pr"} and i + 1 < len(tail) and tail[i + 1].isdigit() for i, t in enumerate(tail))
+            if name == "gh-pr.py" and tail[:1] == ["comment"]:
+                return True
+        return False
     for record in records:
         payload = record.get("payload") or {}
         arguments = payload.get("arguments") or payload.get("input") or ""
@@ -302,7 +327,7 @@ def discover_handoff(reader, entry, actor):
         # Historical fixtures/native direct calls may contain the shell command itself.
         if not command and not isinstance(structured, dict) and payload.get("name") in {"exec_command", "functions.exec_command"}:
             command = str(arguments)
-        if payload.get("type") in {"function_call", "custom_tool_call"} and write_command.search(command):
+        if payload.get("type") in {"function_call", "custom_tool_call"} and is_comment_write(command):
             if payload.get("call_id"):
                 writes.add(payload["call_id"])
         if payload.get("type") in {"function_call_output", "custom_tool_call_output"} and payload.get("call_id") in writes:
@@ -310,7 +335,7 @@ def discover_handoff(reader, entry, actor):
         for block in (record.get("message") or {}).get("content") or []:
             if not isinstance(block, dict):
                 continue
-            if block.get("type") == "tool_use" and write_command.search(str((block.get("input") or {}).get("command") or (block.get("input") or {}).get("cmd") or "")):
+            if block.get("type") == "tool_use" and is_comment_write(str((block.get("input") or {}).get("command") or (block.get("input") or {}).get("cmd") or "")):
                 if block.get("id"):
                     writes.add(block["id"])
             if block.get("type") == "tool_result" and block.get("tool_use_id") in writes and block.get("is_error") is not True:
@@ -356,8 +381,8 @@ def discover_handoff(reader, entry, actor):
         text = evidence.get("body") or ""
         if (release.stamp(evidence.get("updated_at") or evidence.get("created_at")) <= release.stamp(entry["ended_at"])
                 and not text.startswith("Claimed by ") and not claim.records(text)
-                and (url in receipt_urls or entry["session_id"] in text)):
-            provenance = "native comment-write receipt" if url in receipt_urls else "exact-ID handoff"
+                and (url in entry.get("_handoffs", []) or url in receipt_urls or entry["session_id"] in text)):
+            provenance = "Supervisor verified inventory handoff" if url in entry.get("_handoffs", []) else "native comment-write receipt" if url in receipt_urls else "exact-ID handoff"
             return {**entry, "handoff_url": url, "_handoff_provenance": provenance}, evidence
     # A summary without a transcript URL must name the exact native ID.
     threads = {(r["repo"], r["issue"]) for r in entry.get("_inventory_claims", [])}
@@ -366,12 +391,18 @@ def discover_handoff(reader, entry, actor):
     for repo, number in sorted(threads):
         cache = entry.get("_handoff_cache", {})
         if (repo, number) not in cache:
-            cache[(repo, number)] = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="backfill_handoff")
+            try:
+                cache[(repo, number)] = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="backfill_handoff")
+            except GitHubReadError as error:
+                if getattr(error.result, "status", None) in {403, 404}:
+                    continue
+                raise
         comments = cache[(repo, number)]
         for evidence in reversed(comments):
             text = evidence.get("body") or ""
             if ((evidence.get("user") or {}).get("login") == actor and entry["session_id"] in text
                     and not text.startswith("Claimed by ") and not claim.records(text)
+                    and re.search(r"(?im)^(?:\*\*)?(?:Safe to exit: yes|Ready for the merge train|Engineering ready)|\b(?:handoff|handed off|engineering complete|completed)\b", text)
                     and release.stamp(evidence.get("updated_at") or evidence.get("created_at")) <= release.stamp(entry["ended_at"])):
                 url = evidence["html_url"]
                 checked = handoff(reader, {**entry, "handoff_url": url}, actor)
@@ -415,6 +446,7 @@ def run_release(repo, number, source_id, related, prs, evidence_url, supervisor_
 
 
 def release_session(reader, entry, actor, supervisor_session, issues, checkout_root, apply):
+    reader.deadline_at = time.time() + entry.get("_read_deadline_seconds", 600)
     status = validate_closure(entry, supervisor_session)
     if entry.get("handoff_url"):
         handoff_record = handoff(reader, entry, actor)

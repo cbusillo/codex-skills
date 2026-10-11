@@ -401,7 +401,8 @@ claims. Read [Planning: Claim](../../github/references/cli-reference.md#planning
 and its Abandoned automation claims section first. The current Supervisor must
 verify the transcript handoff and actual process exit, including hosts/peers
 the helpers cannot inventory. The helper rechecks the exact native transcript,
-unqualified safe verdict, matched PID and TTY before every release. It also
+unqualified safe verdict and native activity before every release; normal
+finish and full closure ledgers also recheck their recorded PID/TTY. It also
 checks exact-ID resumed harness processes and matching native transcripts in
 all account homes from the existing Supervisor account configuration. Newer
 native records, including a resumed session's metadata, invalidate closure.
