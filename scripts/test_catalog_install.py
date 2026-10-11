@@ -895,7 +895,7 @@ class InstallTests(unittest.TestCase):
                 edited = True
             return real_sync(content, destinations, **kwargs)
 
-        with mock.patch.object(self.sync, "synchronize", side_effect=synchronize):
+        with mock.patch.dict(vars(self.sync), {"synchronize": synchronize}):
             receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
         self.assertTrue(edited)
         self.assertEqual(json.loads(hook_path.read_text()), changed)

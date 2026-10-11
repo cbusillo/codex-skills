@@ -585,6 +585,10 @@ reports how real sessions on both harnesses load the owning skill.
 
 ### Session alerts
 
+For count-only run lifecycle events in Context Panel's App Group, see the
+[agent activity producer](docs/agent-activity.md). It shares this hook but keeps
+its activity contract separate from the advisory alerts below.
+
 Inline dotfiles hook configurations can preview `--refresh-instructions --show-diff` and replace managed alert entries in place with the generated `catalog_alert_toml` in their authoritative `config.toml` source. Remove obsolete duplicate alert groups while retaining unrelated hooks, group positions, and native trust. Refresh recognizes current inline alerts without writing that source. Regular configurations can use the hook-only migration described above.
 
 The same catalog hook source registers advisory `Stop` alerts on both harnesses
@@ -594,7 +598,7 @@ are prompts for a supervisor to check session state, not completion records:
 a Stop hook can run again when another hook continues the turn. The hook never
 returns a continuation, approval, or blocking decision.
 
-Each invocation appends one JSON line to `$CODE_HOME/session-events.jsonl`,
+Each advisory Stop/Interrupt invocation appends one JSON line to `$CODE_HOME/session-events.jsonl`,
 falling back to `~/.code/session-events.jsonl` on either harness. Set `CODE_HOME`
 to the same shared directory for both harnesses when using an override.
 Records contain `schema_version`, `harness`, `session_id`, optional `turn_id`
