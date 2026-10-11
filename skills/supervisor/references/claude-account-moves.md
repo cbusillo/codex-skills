@@ -53,6 +53,8 @@ as private session evidence: requests contain working and transcript paths, but
 never error strings, tokens or credentials. Only sessions carrying `CLAUDE_ACCOUNT_MOVE_ENABLED=1` record or execute moves.
 The [Supervisor terminal launcher](../scripts/iterm_tab.py) supplies this marker
 only for its Anthropic invocation; it does not persist in a returning tab shell.
+Use a final simple `exec` form for Supervisor launch files; the
+[launch-shell setup](helpers.md#native-shell-input-proof) describes its marker scope.
 Sessions without the marker remain inert.
 Before enabling service-hosted sessions, qualify whether
 Claude's detached service propagates the marker to unrelated sessions; this
