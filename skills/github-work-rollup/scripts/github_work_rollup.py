@@ -17,7 +17,6 @@ import os
 import re
 import subprocess
 import sys
-import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
@@ -515,6 +514,8 @@ def collect_rollup(settings: dict[str, Any]) -> dict[str, Any]:
     preflight = github_preflight(settings)
     repos = resolve_repositories(settings)
     if not repos and not settings["subjects"]:
+        if settings["repositories"] or settings["repo_owners"]:
+            raise RollupError("No repositories remain in the selected archive scope. Use --include-archived to include archived repositories.")
         raise RollupError("No repositories or subjects configured. Pass --repo, --repo-owner, or --subject.")
     settings = settings.copy()
     settings["resolved_repositories"] = repos
@@ -726,6 +727,9 @@ def resolve_repositories(settings: dict[str, Any]) -> list[str]:
     repos = repository_scope.filter_named_repositories(
         settings["repositories"], read_metadata, include_archived=settings.get("include_archived", False),
     )
+    for repo in settings["repositories"]:
+        if repo not in repos:
+            add_collection_warning(settings, f"Excluded archived repository {repo}; use --include-archived to include it.")
     for owner in settings["repo_owners"]:
         command = [GH, "repo", "list", owner, "--limit", str(settings["limit_repos"]), "--json", "nameWithOwner,isArchived"]
         result = run(command)

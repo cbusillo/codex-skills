@@ -68,7 +68,7 @@ def args(**overrides: object) -> argparse.Namespace:
 
 
 def preflight_response(command: list[str]) -> subprocess.CompletedProcess[str] | None:
-    if command[1:3] == ["repo", "view"] and command[-1] == "isArchived":
+    if command[1:3] == ["repo", "view"] and "isArchived" in command[-1].split(","):
         return completed(command, {"isArchived": False})
     if command[1:] == ["--check"]:
         return completed(command, "GitHub automation actor: example-user (source: configured_token)\n")

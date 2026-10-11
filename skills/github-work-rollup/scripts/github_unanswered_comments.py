@@ -265,9 +265,14 @@ def unique_threads(values: Any) -> list[tuple[str, int]]:
 
 
 def resolve_repositories(settings: dict[str, Any]) -> list[str]:
+    def read_metadata(repo):
+        metadata = run_json([GH, "repo", "view", repo, "--json", "isArchived"])
+        if not isinstance(metadata, dict):
+            raise rollup.RollupError(f"Invalid repository metadata for {repo}")
+        return metadata
+
     repositories = repository_scope.filter_named_repositories(
-        settings["repositories"],
-        lambda repo: run_json([GH, "repo", "view", repo, "--json", "isArchived"]),
+        settings["repositories"], read_metadata,
         include_archived=settings.get("include_archived", False),
     )
     repositories.extend(repo for repo, _ in settings["threads"])
@@ -302,7 +307,7 @@ def resolve_repositories(settings: dict[str, Any]) -> list[str]:
         )
     if not repositories:
         if settings["explicit_scope"]:
-            raise rollup.RollupError("The explicit repository scope resolved to no repositories.")
+            raise rollup.RollupError("The explicit repository scope resolved to no repositories; use --include-archived for archived repositories.")
         repositories.append(current_repository())
     return rollup.unique(repositories)
 

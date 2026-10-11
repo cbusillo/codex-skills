@@ -81,6 +81,13 @@ class ArchiveTests(unittest.TestCase):
             rows = rollup.collect_subject_items(settings)
         self.assertEqual(len(rows), 1)
 
+    def test_archived_only_rollup_names_the_opt_in_and_mixed_scope_warns(self):
+        settings = {"repositories": ["owner/retired"], "repo_owners": [], "subjects": []}
+        with patch.object(rollup, "github_preflight", return_value={}), patch.object(rollup, "run", return_value=subprocess.CompletedProcess([], 0, '{"isArchived": true}', "")):
+            with self.assertRaisesRegex(rollup.RollupError, "include-archived"):
+                rollup.collect_rollup(settings)
+        self.assertTrue(any("owner/retired" in warning for warning in settings["collection_warnings"]))
+
     def test_direction_repository_discovery_excludes_archived(self):
         repos, cut = direction_audit.owner_repositories("owner", fetch=lambda command: {"repositories": REPOS})
         self.assertFalse(cut)
