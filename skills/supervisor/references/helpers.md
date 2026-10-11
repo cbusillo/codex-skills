@@ -158,6 +158,10 @@ step for Client releases; leave them empty for normal routing. A ready/open
 entry pauses only the named product's own landings, never Launchplane or any
 other repository. A coordinated product is already held, so ordinary product
 coordination needs no such entry.
+During takeover, use the handoff to distinguish deliberate manual pauses from
+entries created only for the retired Launchplane hold. Clear only the latter
+before rearming, keeping the product coordinated in the same command:
+`--release-finished OWNER/CLIENT-REPO --coordinated-repo OWNER/CLIENT-REPO`.
 The hold command waits for the current repository's enqueue section before acknowledging the
 update. Between repositories, a pause update can win the lock and make the
 watcher's next nonblocking acquisition stop safely. Finish the hold update and
