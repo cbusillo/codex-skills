@@ -2419,7 +2419,9 @@ def cmd_claim(args: argparse.Namespace) -> None:
                                                        status_sessions=set(github_plan_claim.released_status_lines(status, comments).values()))
         if conflicts:
             refuse(conflicts)
-        admission_record = admission_line()
+        _, comment_owners = github_plan_claim.discussion_evidence("", comments, claim)
+        comment_recorded = any(record.get("_legacy") != "yes" for record in comment_owners)
+        admission_record = "" if comment_recorded else admission_line()
         completed.append("ownership_preflight")
         actor, gh_cmd, expected_actor = comment_route()
         wait_receipt = ("\n\nRetained PR waits verified for this step:\n" + "\n".join(
@@ -2437,8 +2439,6 @@ def cmd_claim(args: argparse.Namespace) -> None:
             + (f"\n\nWait resolution: {args.wait_resolved}" if args.wait_resolved else "")
             + "\n\nPrevious Current Status:\n" + "\n".join("> " + line for line in previous_status.splitlines())
         )
-        _, comment_owners = github_plan_claim.discussion_evidence("", comments, claim)
-        comment_recorded = any(record.get("_legacy") != "yes" for record in comment_owners)
         if not comment_recorded:
             claim_comment = github_comment_core.comment(
                 "issue", number, text, repo=issue_repo, gh_cmd=gh_cmd,

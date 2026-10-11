@@ -820,8 +820,8 @@ def admission_track(
 
     Returns the Track and whether the walk was complete. A Track is an issue
     titled `Track:` with an open milestone in OWNER/direction, the graph the
-    weekly audit counts as milestone work. Open milestones there are the
-    listed ones; a closed one is history and admits nothing.
+    weekly audit counts as milestone work. A closed milestone is history and
+    admits nothing; work selection owns the Director's listed priorities.
     """
     direction = f"{owner}/direction".casefold()
     limits = limitations if limitations is not None else []

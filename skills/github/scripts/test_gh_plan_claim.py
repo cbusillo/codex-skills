@@ -2948,6 +2948,21 @@ class ClaimTests(unittest.TestCase):
         self.assertIn("reaches " + track["url"], self.comments[-1]["body"])
         self.assertNotIn("Previous graph read failed", self.comments[-1]["body"])
 
+    def test_partial_claim_recovery_reuses_its_existing_admission_without_another_walk(self):
+        self.args.admission = "milestone"
+        track = {"url": "https://github.com/owner/direction/issues/9", "title": "Track: Release", "milestone": "Release"}
+        with patch.object(CLAIM, "admission_track", return_value=(track, True)), \
+                patch.object(self, "edit", side_effect=PLAN.PlanError("Status write failed")):
+            with self.assertRaises(PLAN.PlanError):
+                self.run_claim()
+        original = copy.deepcopy(self.comments)
+        with patch.object(CLAIM, "admission_track", side_effect=PLAN.PlanError("Graph now unavailable")) as walk:
+            self.run_claim()
+        walk.assert_not_called()
+        self.assertEqual(self.comments, original)
+        self.assertIn("reaches " + track["url"], self.comments[-1]["body"])
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
     def test_artifact_conflict_is_reported_before_admission_link_suggestions(self):
         self.args.admission = "milestone"
         self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": OTHER["branch"]}]
