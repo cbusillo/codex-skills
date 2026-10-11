@@ -1,0 +1,246 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""Count-only lifecycle projection shared by hooks and the passive observer."""
+from __future__ import annotations
+
+import datetime as dt
+import fcntl
+import hashlib
+import json
+import os
+import re
+import stat
+import tempfile
+import uuid
+from pathlib import Path
+
+PRODUCER = "codex-skills"
+STATES = {"working", "attention", "quiet", "completed", "failed", "cancelled"}
+TERMINAL = {"completed", "failed", "cancelled"}
+SOURCES = {"codex-status", "codex-turn", "claude-hook", "claude-inventory"}
+OWN_FILE = re.compile(r"^codex-skills-[0-9a-f-]{36}[.]json$")
+LEASE_SECONDS = 90
+
+
+def timestamp(now: dt.datetime) -> str:
+    return now.astimezone(dt.timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def uuid7(now: dt.datetime, previous: object = None) -> str:
+    # RFC 9562: 48-bit millisecond timestamp, version 7, variant 10, random tail.
+    bits = int(now.timestamp() * 1000) << 80 | (uuid.uuid4().int & ((1 << 80) - 1))
+    value = (bits & ~(15 << 76) & ~(3 << 62)) | 7 << 76 | 2 << 62
+    prior = native_id(previous)
+    if prior and uuid.UUID(prior).version == 7:
+        old = uuid.UUID(prior).int
+        if old >> 80 == value >> 80:
+            value = max(value, old + 1)
+    return str(uuid.UUID(int=value))
+
+
+def native_id(value: object) -> str | None:
+    """Only UUID identities cross the boundary; free-form IDs never become content."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        return None
+
+
+def account_id(value: object, harness: str) -> bool:
+    provider = {"codex": "openai", "claude": "anthropic"}.get(harness)
+    return bool(provider and isinstance(value, str) and re.fullmatch(rf"{provider}-[0-9a-f]{{1,64}}", value))
+
+
+def directory(path: Path) -> Path:
+    path = path.expanduser()
+    if not path.is_absolute():
+        raise ValueError("activity directory must be absolute")
+    # Reject redirection at every existing component, including the store root.
+    for parent in (*reversed(path.parents), path):
+        if parent.is_symlink():
+            raise ValueError("activity directory contains a symlink")
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not path.is_dir():
+        raise ValueError("activity destination is not a directory")
+    return path
+
+
+def atomic_json(path: Path, data: dict) -> None:
+    encoded = json.dumps(data, separators=(",", ":")).encode()
+    if len(encoded) > 1024:
+        raise ValueError("activity record exceeds 1 KB")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".activity-", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def read_json(path: Path) -> dict:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 1024:
+            raise ValueError("invalid activity record")
+        value = json.loads(os.read(fd, 1025))
+        if not isinstance(value, dict):
+            raise ValueError("invalid activity object")
+        return value
+    finally:
+        os.close(fd)
+
+
+class ActivityStore:
+    def __init__(self, root: Path, private: Path):
+        self.events = directory(root / "Agent Activity")
+        self.private = directory(private / "agent-activity")
+
+    @staticmethod
+    def key(account: str, harness: str, session: str) -> str:
+        return hashlib.sha256(f"{account}:{harness}:{session}".encode()).hexdigest()
+
+    def emit(self, account: str, harness: str, session: object, state: str, source: str,
+             *, run: object = None, parent: object = None, agent: object = None,
+             attention: str | None = None, start: bool = False,
+             renew_only: bool = False,
+             now: dt.datetime | None = None) -> dict | None:
+        session = native_id(session)
+        if not session or not account_id(account, harness) or state not in STATES or source not in SOURCES:
+            return None
+        if attention not in (None, "approval", "input"):
+            return None
+        key = self.key(account, harness, session)
+        fd = os.open(self.private / f"{key[:2]}.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ValueError("activity lock is not a regular file")
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            now = now or dt.datetime.now(dt.timezone.utc)
+            path = self.private / f"{key}.json"
+            try:
+                previous = read_json(path)
+            except FileNotFoundError:
+                previous = {}
+            old_state = previous.get("state")
+            if state == "quiet" and old_state in TERMINAL | {"quiet"}:
+                return None
+            if renew_only and old_state in TERMINAL:
+                # Hook execution may still read busy after Stop. Never reopen it.
+                return None
+            run_id = native_id(run)
+            if not run_id:
+                run_id = str(uuid.uuid4()) if start or not previous else previous.get("runID")
+            if not native_id(run_id):
+                return None
+            if state in TERMINAL and not previous and not native_id(run):
+                return None  # An end without a start is not a known run.
+            if state in TERMINAL and old_state == state and previous.get("runID") == run_id:
+                return None
+            record = {"schemaVersion": 1, "eventID": uuid7(now, previous.get("eventID")), "producerID": PRODUCER,
+                      "harness": harness, "accountID": account, "sessionID": session,
+                      "runID": run_id, "parentSessionID": native_id(parent) or native_id(previous.get("parentSessionID")),
+                      "agentID": native_id(agent) or native_id(previous.get("agentID")), "state": state,
+                      "attentionKind": attention if state == "attention" else None,
+                      "outcomeSource": source, "observedAt": timestamp(now),
+                      "leaseExpiresAt": timestamp(now + dt.timedelta(seconds=LEASE_SECONDS))}
+            atomic_json(self.events / f"{PRODUCER}-{record['eventID']}.json", record)
+            atomic_json(path, record)
+            return record
+        finally:
+            os.close(fd)
+
+    def prune(self, now: dt.datetime | None = None) -> None:
+        now = now or dt.datetime.now(dt.timezone.utc)
+        for path in self.events.iterdir():
+            if not OWN_FILE.fullmatch(path.name) or path.is_symlink():
+                continue
+            try:
+                record = read_json(path)
+                observed = dt.datetime.fromisoformat(record["observedAt"].replace("Z", "+00:00"))
+                if record.get("producerID") == PRODUCER and now - observed >= dt.timedelta(days=1):
+                    path.unlink()
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        for path in self.private.glob("*.json"):
+            if not re.fullmatch(r"[0-9a-f]{64}[.]json", path.name) or path.is_symlink():
+                continue
+            fd = None
+            try:
+                fd = os.open(self.private / f"{path.stem[:2]}.lock", os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                record = read_json(path)
+                observed = dt.datetime.fromisoformat(record["observedAt"].replace("Z", "+00:00"))
+                if record.get("producerID") == PRODUCER and now - observed >= dt.timedelta(days=1):
+                    path.unlink()
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            finally:
+                if fd is not None:
+                    os.close(fd)
+
+
+def home_key(harness: str, env: dict) -> str:
+    key = "CODEX_HOME" if harness == "codex" else "CLAUDE_CONFIG_DIR"
+    default = ".codex" if harness == "codex" else ".claude"
+    home = Path(env.get(key) or Path.home() / default).expanduser().resolve()
+    return hashlib.sha256(f"{harness}:{home}".encode()).hexdigest()
+
+
+def hook_activity(payload: object, env: dict) -> None:
+    if not isinstance(payload, dict) or env.get("AGENT_ACTIVITY_DISABLED") == "1":
+        return
+    harness = env.get("CODEX_SKILLS_HARNESS", "claude")
+    if harness not in ("codex", "claude"):
+        return
+    event = payload.get("hook_event_name")
+    events = {"UserPromptSubmit": "working", "Stop": "quiet", "StopFailure": "failed",
+              "Interrupt": "cancelled", "Notification": "attention", "PermissionRequest": "attention",
+              "SubagentStart": "working", "SubagentStop": "quiet", "SessionEnd": "quiet"}
+    if event not in events:
+        return
+    private = Path(env.get("CODE_HOME") or Path.home() / ".code").expanduser()
+    try:
+        binding = read_json(private / "agent-activity" / f"binding-{home_key(harness, env)}.json")
+    except FileNotFoundError:
+        return  # Observer has not mapped this home to the launch-receipt account.
+    if not account_id(binding.get("accountID"), harness):
+        return
+    if not isinstance(binding.get("storageRoot"), str) or not Path(binding["storageRoot"]).is_absolute():
+        return
+    # Codex outcomes come from the daemon, avoiding hook/observer duplicate runs.
+    if harness == "codex":
+        return
+    attention = None
+    if event == "Notification":
+        attention = {"permission_prompt": "approval", "elicitation_dialog": "input"}.get(payload.get("notification_type"))
+        if attention is None:
+            return
+    elif event == "PermissionRequest":
+        attention = "approval"
+    session = native_id(payload.get("session_id"))
+    if not session:
+        return
+    parent = agent = None
+    raw_agent = payload.get("agent_id")
+    if raw_agent is not None or event in ("SubagentStart", "SubagentStop"):
+        if not isinstance(raw_agent, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", raw_agent):
+            return
+        parent = session
+        agent = str(uuid.uuid5(uuid.UUID(session), raw_agent))
+        session = agent
+    store = ActivityStore(Path(binding["storageRoot"]), private)
+    # Stop/SubagentStop can be continued by another hook. Even later idle cannot distinguish
+    # completion from an interrupted continuation; native background done can.
+    store.emit(binding["accountID"], harness, session, events[event], "claude-hook",
+               parent=parent, agent=agent, attention=attention,
+               start=event in ("UserPromptSubmit", "SubagentStart"))
