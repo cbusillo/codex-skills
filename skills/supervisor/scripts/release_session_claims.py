@@ -85,6 +85,8 @@ def verify_closed(entry, supervisor_session):
 def validate_closure(entry, supervisor_session):
     if entry.get("process_exit_verified") is not True:
         raise ValueError("closed-session log lacks verified process exit")
+    if not isinstance(entry.get("ended_at"), str) or re.search(r"\s", entry["ended_at"]):
+        raise ValueError("closure requires a single timezone-qualified ISO timestamp")
     ended = release.stamp(entry["ended_at"])
     if ended > datetime.now(timezone.utc):
         raise ValueError("closure timestamp is in the future")
@@ -123,7 +125,8 @@ def transcript_roots(harness, configured, explicit):
 
 def record_closure(path, entry, supervisor_session, *, persist=True):
     """Observe exit now; never replace an older actual closure time on retry."""
-    records = session_record.load_ledger(path) if path.exists() else []
+    records = [{k: v for k, v in e.items() if not k.startswith("_")}
+               for e in session_record.load_ledger(path)] if path.exists() else []
     existing = [r for r in records if r["session_id"] == entry["session_id"]]
     if existing:
         if any(existing[0].get(k) != entry.get(k) for k in (
@@ -281,17 +284,50 @@ def discover_handoff(reader, entry, actor):
             for child in value:
                 yield from strings(child)
     # Shared-bot comments merely read by the source are not its handoff.
-    history = []
+    outputs = []
+    writes = set()
+    write_command = re.compile(r"(?:gh-comment|github_comment\.py|gh-pr\.py\s+comment)\b[^\n;]*\b(?:issue|pr)?\s*[1-9]\d*")
     for record in records:
-        for text in strings(record):
-            if re.search(r'"comment_action"\s*:\s*"(?:created|updated)"', text):
-                history.append(text)
-    history.append(session_record.session_status(entry)["last_text"])
-    history = "\n".join(history)
-    urls = list(dict.fromkeys(re.findall(HANDOFF.pattern, history)))
+        payload = record.get("payload") or {}
+        if payload.get("type") in {"function_call", "custom_tool_call"} and write_command.search(str(payload.get("arguments") or payload.get("input") or "")):
+            if payload.get("call_id"):
+                writes.add(payload["call_id"])
+        if payload.get("type") in {"function_call_output", "custom_tool_call_output"} and payload.get("call_id") in writes:
+            outputs.extend(strings(payload.get("output")))
+        for block in (record.get("message") or {}).get("content") or []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use" and write_command.search(json.dumps(block.get("input") or {})):
+                if block.get("id"):
+                    writes.add(block["id"])
+            if block.get("type") == "tool_result" and block.get("tool_use_id") in writes and block.get("is_error") is not True:
+                outputs.extend(strings(block.get("content")))
+    receipt_urls = []
+    decoder = json.JSONDecoder()
+    for text in outputs:
+        # Consume complete envelopes, not URLs embedded in a subsequent read's body.
+        cursor = 0
+        while (start := text.find("{", cursor)) >= 0:
+            try:
+                value, length = decoder.raw_decode(text[start:])
+                cursor = start + length
+            except ValueError:
+                cursor = start + 1
+                continue
+            if isinstance(value, dict) and value.get("comment_action") in {"created", "updated"}:
+                url = (value.get("comment") or {}).get("url")
+                if isinstance(url, str) and HANDOFF.fullmatch(url):
+                    receipt_urls.append(url)
+        # Older helpers were commonly piped to grep url; accept a single URL.
+        legacy = list(dict.fromkeys(re.findall(HANDOFF.pattern, text)))
+        if len(legacy) == 1 and "{" not in text:
+            repo, number, comment_id = legacy[0]
+            receipt_urls.append(f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}")
+    final_text = session_record.session_status(entry)["last_text"]
+    final_urls = [f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}"
+                  for repo, number, comment_id in re.findall(HANDOFF.pattern, final_text)]
     candidates = [*entry.get("_handoffs", []),
-                  *(f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}"
-                    for repo, number, comment_id in reversed(urls))]
+                  *reversed(receipt_urls), *reversed(final_urls)]
     for url in dict.fromkeys(candidates):
         match = HANDOFF.fullmatch(url)
         if not match:
@@ -300,11 +336,16 @@ def discover_handoff(reader, entry, actor):
             evidence = handoff(reader, {**entry, "handoff_url": url}, actor)
         except ValueError:
             continue
+        except GitHubReadError as error:
+            if getattr(error.result, "status", None) in {403, 404}:
+                continue
+            raise
         text = evidence.get("body") or ""
         if (release.stamp(evidence.get("updated_at") or evidence.get("created_at")) <= release.stamp(entry["ended_at"])
                 and not text.startswith("Claimed by ") and not claim.records(text)
-                and (url in history or entry["session_id"] in text)):
-            return {**entry, "handoff_url": url}, evidence
+                and (url in receipt_urls or entry["session_id"] in text)):
+            provenance = "native comment-write receipt" if url in receipt_urls else "exact-ID handoff"
+            return {**entry, "handoff_url": url, "_handoff_provenance": provenance}, evidence
     # A summary without a transcript URL must name the exact native ID.
     threads = {(r["repo"], r["issue"]) for r in entry.get("_inventory_claims", [])}
     if entry.get("_handoff_thread"):
@@ -321,7 +362,7 @@ def discover_handoff(reader, entry, actor):
                     and release.stamp(evidence.get("updated_at") or evidence.get("created_at")) <= release.stamp(entry["ended_at"])):
                 url = evidence["html_url"]
                 checked = handoff(reader, {**entry, "handoff_url": url}, actor)
-                return {**entry, "handoff_url": url}, checked
+                return {**entry, "handoff_url": url, "_handoff_provenance": "exact-ID summary"}, checked
     raise ValueError("no authored handoff bound to the exact native transcript/session; reconcile this session")
 
 
@@ -408,14 +449,17 @@ def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_
             pulls_by_repo[repo] = reader.paged_json(f"/repos/{repo}/pulls", params={"state": "open"}, step_prefix="retained_session_prs")
         pulls = list(pulls_by_repo[repo])
         mentioned: set[str] = handoff_prs | ({record["refresh_pr"]} if record.get("refresh_pr") else set())
-        mentioned.update(r["retained_pr_url"] for r in entry.get("_inventory_claims", [])
-                         if r["repo"] == repo and r["issue"] == number and r.get("retained_pr_url"))
+        inventory_prs = {r["retained_pr_url"] for r in entry.get("_inventory_claims", [])
+                         if r["repo"] == repo and r["issue"] == number and r.get("retained_pr_url")}
+        if any(not re.fullmatch(rf"https://github\.com/{re.escape(repo)}/pull/([1-9]\d*)", url) for url in inventory_prs):
+            raise ValueError("inventory retained PR must be an exact same-repository URL")
+        mentioned.update(inventory_prs)
         for url in sorted(mentioned):
             match = re.fullmatch(rf"https://github\.com/{re.escape(repo)}/pull/([1-9]\d*)", url)
             if match and not any(p["html_url"] == url for p in pulls):
                 pulls.append(reader.get_json(f"/repos/{repo}/pulls/{match[1]}", step="handoff_retained_pr"))
         prs = [p["html_url"] for p in pulls
-               if (p.get("head") or {}).get("ref") == record["branch"]
+               if p["html_url"] in inventory_prs or (p.get("head") or {}).get("ref") == record["branch"]
                or (p["html_url"] in mentioned and (p.get("user") or {}).get("login") == actor
                    and (p.get("state") == "open" or p.get("merged_at"))
                    and claim.pr_issue_reference(p, number, repo=repo, attestation=True))]
@@ -424,6 +468,10 @@ def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_
             raise ValueError(f"ownership follow-ups {unresolved} lack a verified source/session relationship; obtain authored exact-ID releases")
     if not plans and retained_status and not any(claim.records(c.get("body") or "") for c in comments):
         raise ValueError("status-only ownership has no structured source; reconcile its authored ownership record")
+    covered = {identifier for _, _, source_id, related, _ in plans for identifier in [source_id, *related]}
+    if any(r["repo"] == repo and r["issue"] == number and r["claim_comment_id"] in active_ids
+           and r["claim_comment_id"] not in covered for r in entry.get("_inventory_claims", [])):
+        raise ValueError("active inventory follow-up has no selected structured source; obtain its authored exact-ID release")
     if plans:
         remote = claim.run_read(["git", "remote", "get-url", "origin"], cwd=checkout_root / repo.split("/")[1]).strip()
         if not re.search(rf"[:/]{re.escape(repo)}(?:\.git)?$", remote, re.IGNORECASE):
@@ -431,13 +479,13 @@ def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_
     return plans, retained_status
 
 
-def preview_guards(entry, *, reader, repo, number, source_id, related, prs, body, actor, supervisor_session):
+def preview_guards(entry, *, reader, repo, number, source_id, related, prs, body, actor, supervisor_session, checkout_root):
     comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="preview_source_activity")
     source = next(c for c in comments if c["id"] == source_id)
     related_comments = [c for c in comments if c["id"] in related]
     if len(related_comments) != len(related):
         raise ValueError("related ownership changed during preview")
-    local = claim.local_inventory(repo, number)
+    local = claim.local_inventory(repo, number, cwd=checkout_root / repo.split("/")[1])
     now = datetime.now(timezone.utc).isoformat()
     prospective = {"body": body, "user": {"login": actor}, "created_at": now, "updated_at": now}
     branches = set()
@@ -468,7 +516,7 @@ def apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, 
         if validate_closure(entry, supervisor_session) != status:
             raise ValueError("source transcript changed; preserve remaining claims")
         body = (f"Closed session {entry['session_id']}\nEnded at: {entry['ended_at']}\nSafe to exit: yes\n\n"
-                f"Transcript-verified handoff: {entry['handoff_url']}\n")
+                f"Verified handoff ({entry.get('_handoff_provenance', 'Supervisor transcript-verified ledger')}): {entry['handoff_url']}\n")
         item = {"repository": repo, "issue": number, "claim_comment": source_id,
                 "retained_prs": prs, "attestation_body": body,
                 "release_preflight": "requires a posted attestation; apply previews release-claim before releasing"}
@@ -477,7 +525,7 @@ def apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, 
             try:
                 item["release_preflight"] = preview_guards(entry, reader=reader, repo=repo,
                     number=number, source_id=source_id, related=related, prs=prs, body=body,
-                    actor=actor, supervisor_session=supervisor_session)
+                    actor=actor, supervisor_session=supervisor_session, checkout_root=checkout_root)
             except release.IssueReleaseRefusal as error:
                 item["release_preflight"] = {"status": "refused", "error": str(error)}
                 report["issue_refusals"].append({"repository": repo, "issue": number, "error": str(error)})
@@ -544,7 +592,8 @@ def main():
         if args.mode == "finish":
             if not args.ledger or not args.session_id:
                 raise ValueError("finish requires --ledger and one --session-id")
-            entries = [e for e in session_record.load_ledger(args.ledger) if e["session_id"] == args.session_id]
+            entries = [{k: v for k, v in e.items() if not k.startswith("_")}
+                       for e in session_record.load_ledger(args.ledger) if e["session_id"] == args.session_id]
             if len(entries) != 1:
                 raise ValueError("native session must match exactly one ledger entry")
             entries[0]["_transcript_roots"] = transcript_roots(entries[0]["harness"], args.account_config, args.transcript_root)
@@ -563,7 +612,8 @@ def main():
                     if any(r["repo"].split("/")[0].casefold() != args.owner.casefold() for r in entry["_inventory_claims"]):
                         raise ValueError("inventory repository is outside the requested owner")
             else:
-                entries = session_record.load_ledger(args.closed_log)
+                entries = [{k: v for k, v in e.items() if not k.startswith("_")}
+                           for e in session_record.load_ledger(args.closed_log)]
             entries = [{**e, "_backfill": True} for e in entries]
             if args.session_id:
                 entries = [e for e in entries if e["session_id"] == args.session_id]

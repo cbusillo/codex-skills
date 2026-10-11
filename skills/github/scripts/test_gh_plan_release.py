@@ -292,6 +292,17 @@ class ReleaseTests(unittest.TestCase):
             self.assertNotEqual(caught.exception.payload.get("release_refusal_scope"), release.ISSUE_REFUSAL_SCOPE)
             self.f.assert_no_writes()
 
+    def test_issue_refusal_cannot_mask_live_peer_on_a_retained_branch(self):
+        self.refresh_setup()
+        retained = self.f.pulls[0]
+        retained["body"] = "Part of #42"
+        self.f.inventory["worktrees"] = [{"branch": retained["head"]["ref"], "path": "/retained"}]
+        self.f.inventory["sessions"] = [{"sessionId": "different-session", "cwd": "/retained/subdir"}]
+        with self.assertRaisesRegex(PLAN.PlanError, "live peer") as caught:
+            self.run_release()
+        self.assertNotEqual(caught.exception.payload.get("release_refusal_scope"), release.ISSUE_REFUSAL_SCOPE)
+        self.f.assert_no_writes()
+
     def test_untrusted_or_example_receipt_does_not_poison_claims(self):
         for text in ("<!-- " + release.RELEASE_MARKER + "bad -->", "```\n<!-- " + release.RELEASE_MARKER + "bad -->\n```"):
             with self.subTest(text=text):

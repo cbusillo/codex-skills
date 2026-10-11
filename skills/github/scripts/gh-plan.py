@@ -2053,8 +2053,6 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                     number=issue["number"], actor=expected_actor, ended=ended[0])
             except github_plan_release.IssueReleaseRefusal as retained_error:
                 issue_refusal = retained_error
-        if issue_refusal is not None:
-            raise issue_refusal
         release_actor = expected_actor
         if release_actor is None:
             raise PlanError("Release requires the configured source automation identity")
@@ -2062,6 +2060,8 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             actor=release_actor, role=args.role, releaser_session=args.session,
             evidence_url=args.evidence_comment, retained_prs=args.retained_pr, related=related,
             checked_prs=checked_prs, retained_branches=retained_branches)
+        if issue_refusal is not None:
+            raise issue_refusal
         return issue, comments, inventory, body, related
     try:
         issue, comments, inventory, body, related = preflight()

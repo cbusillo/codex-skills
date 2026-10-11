@@ -93,15 +93,69 @@ class ReleaseTests(unittest.TestCase):
             self.assertFalse(entries)
             self.assertTrue(reports)
 
+    def test_finish_does_not_trust_inventory_flags_from_a_ledger(self):
+        ledger, log = self.root / "ledger.json", self.root / "closed.json"
+        ledger.write_text(json.dumps([{**self.entry, "pid": None, "_inventory": True,
+                                      "safe_exit_yes": True, "still_running": False}]))
+        argv = ["helper", "finish", "--ledger", str(ledger), "--closed-log", str(log),
+                "--session-id", SOURCE["session"], "--supervisor-session", "supervisor",
+                "--owner", "test", "--checkout-root", str(self.root), "--confirm-session-ended",
+                "--verified-handoff", "--transcript-root", str(self.root)]
+        with patch.object(helper.sys, "argv", argv), \
+                patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
+                patch.object(helper, "comment") as write, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(helper.main(), 1)
+        write.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "single timezone"):
+            helper.validate_closure({**self.entry, "ended_at": "2026-01-01 00:02:00+00:00"}, "supervisor")
+
     def test_handoff_discovery_uses_native_comment_write_not_shared_bot_read(self):
         receipt = json.dumps({"comment_action": "created", "comment": {"url": self.entry["handoff_url"]}})
         records = helper.session_record.read_jsonl(self.transcript)
-        records.insert(1, {"timestamp": "2026-01-01T00:00:30Z", "payload": {"type": "function_call_output", "output": receipt}})
+        records.insert(1, {"timestamp": "2026-01-01T00:00:20Z", "payload": {"type": "function_call", "call_id": "write", "arguments": "gh-comment issue 1 --body-file handoff.md"}})
+        records.insert(2, {"timestamp": "2026-01-01T00:00:30Z", "payload": {"type": "function_call_output", "call_id": "write", "output": receipt}})
         records.insert(2, {"timestamp": "2026-01-01T00:00:40Z", "payload": {"type": "function_call_output", "output": "Read https://github.com/test/a/issues/1#issuecomment-123"}})
         self.transcript.write_text("\n".join(json.dumps(r) for r in records))
         entry, _ = helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
         self.assertEqual(entry["handoff_url"], self.entry["handoff_url"])
         self.assertEqual(self.reader.get_json.call_count, 1)
+
+    def test_legacy_abbreviated_write_receipt_and_unbound_final_link(self):
+        records = helper.session_record.read_jsonl(self.transcript)
+        records.insert(1, {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "write", "input": {"command": "gh-comment -R test/a --body-file handoff.md issue 1 | rg url"}}]}})
+        records.insert(2, {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "write", "content": f'"url":"{self.entry["handoff_url"]}"\n0', "is_error": False}]}})
+        # This models receipt shapes only; harness identity and safe exit remain Codex.
+        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
+        found, _ = helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
+        self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
+        records = helper.session_record.read_jsonl(self.transcript)
+        records[2]["message"]["content"][0]["tool_use_id"] = "unrelated-read"
+        records[-2]["payload"]["message"] = f"See {self.entry['handoff_url']}\nSafe to exit: yes"
+        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
+        self.reader.paged_json.return_value = []
+        with self.assertRaisesRegex(ValueError, "no authored handoff"):
+            helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
+
+    def test_unplanned_active_inventory_followup_is_not_an_all_clear(self):
+        entry = {**self.entry, "_inventory": True, "safe_exit_yes": True, "still_running": False,
+                 "_inventory_claims": [self.inventory_row(claim_comment_id=2)]}
+        self.reader.paged_json.return_value = [self.source, comment(2, "Claimed by trial\nSession: source-session")]
+        report = helper.release_session(self.reader, entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
+        self.assertFalse(report["claims"])
+        self.assertTrue(report["issue_refusals"])
+
+    def test_explicit_inventory_pr_with_bad_issue_link_is_preserved_as_refusal(self):
+        entry = {**self.entry, "_inventory": True, "safe_exit_yes": True, "still_running": False,
+                 "_inventory_claims": [self.inventory_row(retained_pr_url="https://github.com/test/a/pull/12")]}
+        named = self.pull(12, "other-branch")
+        named["body"] = "Part of #1"
+        handoff = dict(self.reader.get_json.return_value)
+        self.reader.get_json.side_effect = lambda path, **_kw: self.head_commit() if "/commits/" in path else named if "/pulls/" in path else handoff
+        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
+        report = helper.release_session(self.reader, entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
+        self.assertEqual(report["claims"][0]["retained_prs"], [named["html_url"]])
+        self.assertEqual(report["claims"][0]["release_preflight"]["status"], "refused")
+        self.assertTrue(report["issue_refusals"])
 
     def test_shared_bot_summary_needs_exact_native_id_and_original_timestamp(self):
         bound = {**comment(10, "Engineering handoff for source-session"),
