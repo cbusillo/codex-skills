@@ -170,7 +170,7 @@ def prepare_script_environment(repo: Path, python: str, scripts: list[str]) -> N
         result = subprocess.run(
             ["uv", "pip", "compile", "--python-version", python, "--no-header",
              "--output-file", str(resolved), *paths],
-            cwd=repo, capture_output=True, text=True, check=False,
+            cwd=repo, capture_output=True, text=True,
         )
         if result.returncode:
             raise RuntimeError(
