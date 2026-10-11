@@ -86,6 +86,7 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "launchplane odoo-ownership check --workspace-root ..",
                 "launchplane action-pins check --repo-root . --revision HEAD --repository cbusillo/launchplane",
                 "launchplane action-pins update --release-sha 0123abc",
+                "launchplane action-pins check --repo-root . --revision HEAD --repository=cbusillo/launchplane",
             )
             for command in commands:
                 with self.subTest(command=command):
@@ -211,6 +212,7 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "launchplane odoo-targets replacement-plan",
                 "launchplane action-pins report --revision HEAD --repository cbusillo/launchplane",
                 "launchplane action-pins check --repo-root . --revision HEAD --repository /global/bin/launchplane",
+                "launchplane action-pins check --repo-root . --revision HEAD --repository=/global/bin/launchplane",
                 "launchplane merge-train run-once",
                 "launchplane service start",
             ):
@@ -248,11 +250,13 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " " + gate + " --database-url postgresql://test@db.example.com/postgres",
                 "LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " uv run launchplane service start",
                 "LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " UV_PROJECT=/other " + gate,
+                "uv run --env-file=.env --extra dev launchplane ci postgres-integration --database-url " + local,
+                "uv run --env-file .env --extra dev launchplane ci postgres-integration --database-url " + local,
             ):
                 with self.subTest(line=line):
                     self.assertEqual(bash(line, checkout).returncode, 2)
             self.assertEqual(bash("LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " " + gate, Path(directory).parent).returncode, 2)
-            for name in ("PGHOSTADDR", "PGSERVICE"):
+            for name in ("PGHOSTADDR", "PGSERVICE", "UV_ENV_FILE"):
                 with self.subTest(variable=name), mock.patch.dict(os.environ, {name: "db.example.com"}):
                     self.assertEqual(bash(gate + " --database-url " + local, checkout).returncode, 2)
 

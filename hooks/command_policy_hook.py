@@ -66,7 +66,7 @@ SHELLS = {"sh", "bash", "zsh"}
 SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
 GH_WRAPPER_FLAGS = {"--print-auth-account", "--require-automation-auth"}
 ENV_VALUE_FLAGS = {"-u", "--unset", "-C", "--chdir"}
-UV_VALUE_FLAGS = {"--python", "-p", "--extra", "--group", "--project", "--directory", "--with", "--with-editable", "--with-requirements"}
+UV_VALUE_FLAGS = {"--python", "-p", "--extra", "--group", "--project", "--directory", "--with", "--with-editable", "--with-requirements", "--env-file"}
 # A gate whose checkout-root option takes `.` as data, not the shell `.` source command.
 DOT_ROOT_OPTIONS = {
     "--control-plane-root": ["launchplane", "service", "audit-config-authority"],
@@ -76,7 +76,8 @@ POSTGRES_GATE = ["launchplane", "ci", "postgres-integration"]
 POSTGRES_URL_VARIABLE = "LAUNCHPLANE_TEST_POSTGRES_URL="
 # libpq reads these query parameters and variables as the server to connect to, overriding the URL host.
 POSTGRES_HOST_OVERRIDES = {"host", "hostaddr", "service"}
-POSTGRES_HOST_VARIABLES = ("PGHOSTADDR", "PGSERVICE")
+# UV_ENV_FILE can set those variables after this check, as `uv run --env-file` can.
+POSTGRES_HOST_VARIABLES = ("PGHOSTADDR", "PGSERVICE", "UV_ENV_FILE")
 
 
 def load_simulator() -> ModuleType:
@@ -453,11 +454,12 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
             return None
         if token.startswith(POSTGRES_URL_VARIABLE) and loopback_database(token.removeprefix(POSTGRES_URL_VARIABLE)):
             continue
-        if token.startswith("-C") or ASSIGNMENT.match(token) or token.split("=", 1)[0] in {"-C", "--chdir", "--directory", "--project", "--with", "--with-editable", "--with-requirements"}:
+        if token.startswith("-C") or ASSIGNMENT.match(token) or token.split("=", 1)[0] in {"-C", "--chdir", "--directory", "--project", "--with", "--with-editable", "--with-requirements", "--env-file"}:
             return None
         # A path ending in launchplane is another executable; `--repository OWNER/launchplane` names this one.
-        repository_slug = tokens[position - 1:position] == ["--repository"] and REPOSITORY_SLUG.fullmatch(token)
-        if Path(token).name == "launchplane" and token != "launchplane" and not repository_slug:
+        repository = token.removeprefix("--repository=") if tokens[position - 1:position] != ["--repository"] else token
+        repository_slug = repository != token or tokens[position - 1:position] == ["--repository"]
+        if Path(token).name == "launchplane" and token != "launchplane" and not (repository_slug and REPOSITORY_SLUG.fullmatch(repository)):
             return None
     for argv in commands:
         while argv and argv[0] in TRANSPARENT | {"builtin"}:
