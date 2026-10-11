@@ -1238,7 +1238,15 @@ binding metadata. Secret record ids, provider target details, actor identities,
 instructions, raw findings, and arbitrary nested dictionaries are not copied.
 
 Unexpected successful provider shapes fail closed as `invalid_response` rather
-than being recursively sanitized. Summary fields, including `trace_id`, must be
+than being recursively sanitized. For an accepted controller reply that cannot
+be projected, `summary.projection_error_code` and the warning code retain the
+local `LaunchplaneSafetyError` code (such as `unsafe_response_shape` or
+`invalid_response`). `summary.unrecognized_key` names the first unknown result
+or record key only when it is a public-safe plain identifier of at most 80
+characters. No rejected value is emitted. Independently validated service error
+codes and trace IDs remain available; read the PR and controller state before
+retrying a mutating pass, which may already have completed.
+Summary fields, including `trace_id`, must be
 compact safe identifiers or bounded safe text. Keys or nested payloads that look
 like secrets, credentials, cookies, tokens, plaintext values, private keys,
 opaque values, raw requests, provider env, or headers are not copied into output.
