@@ -2331,6 +2331,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         if not admission:
             return ""
         track = None
+        limitations: list[str] = []
         if admission == "milestone":
             def read_parent(parent_repo: str, parent_number: int) -> dict[str, Any] | None:
                 try:
@@ -2341,23 +2342,33 @@ def cmd_claim(args: argparse.Namespace) -> None:
                         return None
                     raise
 
-            track, complete = github_plan_claim.admission_track(
-                (issue_repo, number), issue_repo.split("/")[0],
-                read_issue=lambda node_repo, node_number: get_issue(str(node_number), node_repo)[1],
-                read_parent=read_parent,
-                read_blocking=lambda node_repo, node_number: collect_paged_rest_items(
-                    f"/repos/{node_repo}/issues/{node_number}/dependencies/blocking",
-                    query={}, bucket="rest_core", step_prefix="claim_admission_blocking")[1],
-            )
+            try:
+                track, complete = github_plan_claim.admission_track(
+                    (issue_repo, number), issue_repo.split("/")[0],
+                    read_issue=lambda node_repo, node_number: get_issue(str(node_number), node_repo)[1],
+                    read_parent=read_parent,
+                    read_blocking=lambda node_repo, node_number: collect_paged_rest_items(
+                        f"/repos/{node_repo}/issues/{node_number}/dependencies/blocking",
+                        query={}, bucket="rest_core", step_prefix="claim_admission_blocking")[1],
+                    limitations=limitations,
+                )
+            except PlanError:
+                # Only this advisory graph read can use an explicit explanation.
+                # All ownership, actor, wait and native-blocker checks still run.
+                complete = False
+                limitations.append("graph_read_unavailable")
             if not track and not admission_unlinked:
                 raise ClassifiedPlanError(
                     "claim_admission_unlinked",
                     "Milestone admission needs this issue linked into its milestone's Track graph (a sub-issue or blocker "
                     "of the Track or of work already in its graph). Link it with gh-plan.py link, or pass "
-                    "--admission-unlinked REASON" + ("" if complete else "; the graph walk hit its node limit"),
-                    payload={"graph_walk_complete": complete},
+                    "--admission-unlinked REASON" + ("" if complete else "; graph limitations: " + ", ".join(limitations)),
+                    payload={"graph_walk_complete": complete, "graph_limitations": limitations},
                 )
-        return github_plan_claim.admission_text(admission, admission_links, track=track, unlinked=admission_unlinked) + "\n\n"
+        record = github_plan_claim.admission_text(admission, admission_links, track=track, unlinked=admission_unlinked)
+        if limitations and not track:
+            record += "; graph verification incomplete: " + ", ".join(limitations)
+        return record + "\n\n"
 
     def check_native_blockers() -> None:
         _, blockers = collect_paged_rest_items(

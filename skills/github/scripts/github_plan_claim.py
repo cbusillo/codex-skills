@@ -814,7 +814,7 @@ ISSUE_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/(
 
 def admission_track(
     start: tuple[str, int], owner: str, *, read_issue: Any, read_parent: Any, read_blocking: Any,
-    max_nodes: int = 50,
+    max_nodes: int = 50, limitations: list[str] | None = None,
 ) -> tuple[dict[str, Any] | None, bool]:
     """The milestone Track this issue reaches through parents and the issues it blocks.
 
@@ -824,6 +824,7 @@ def admission_track(
     listed ones; a closed one is history and admits nothing.
     """
     direction = f"{owner}/direction".casefold()
+    limits = limitations if limitations is not None else []
     pending = [start]
     seen: set[tuple[str, int]] = set()
     while pending:
@@ -832,10 +833,17 @@ def admission_track(
         if key in seen:
             continue
         if len(seen) >= max_nodes:
+            limits.append("node_limit")
             return None, False
         seen.add(key)
         issue = read_issue(repo, number)
         milestone = (issue.get("milestone") or {}).get("title")
+        if (key[0] != direction and key[0].endswith("/direction")
+                and str(issue.get("title") or "").startswith("Track:") and milestone
+                and (issue.get("milestone") or {}).get("state", "open") == "open"):
+            # The claim knows the repository account, not its cross-owner Director.
+            # Do not certify a foreign Track or report its graph fully verified.
+            limits.append("cross_owner_direction_account")
         if (key[0] == direction and str(issue.get("title") or "").startswith("Track:") and milestone
                 and (issue.get("milestone") or {}).get("state", "open") == "open"):
             return {"url": f"https://github.com/{repo}/issues/{number}", "title": issue.get("title"),
@@ -844,7 +852,7 @@ def admission_track(
             match = ISSUE_URL.fullmatch(str((linked or {}).get("html_url") or ""))
             if match:
                 pending.append((match[1], int(match[2])))
-    return None, True
+    return None, not limits
 
 
 def admission_text(kind: str, links: list[str], *, track: dict[str, Any] | None = None, unlinked: str | None = None) -> str:

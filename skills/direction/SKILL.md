@@ -175,6 +175,12 @@ per repository; the
 per-repository reminder line only fires when a session happens to open inside
 an adopted repository whose audit is stale.
 
+Also run the daily procedure's owner-wide `direction`-label search once during
+the weekly audit, including when this session holds no daily turn. Judge each
+result under `escalation_open` below, even in an unadopted repository or one
+without a recent push. Reuse results already judged in this session and report
+the search's coverage limits as the daily procedure describes.
+
 Each adopted repository's own `DIRECTION.md` and milestones are checked in
 that one weekly audit session. An audit does not count as the Director's daily
 turn. A weekly session records a daily turn only if it also performs the daily
