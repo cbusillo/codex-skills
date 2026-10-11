@@ -28,7 +28,7 @@ def issue(number=1, reason="Director to approve", labels=None, extra=""):
 
 class WaitTests(unittest.TestCase):
     def test_all_status_labels_and_asked_questions_are_included(self):
-        records = [issue(1), issue(2, labels=[{"name": "plan:active"}]),
+        records = [issue(), issue(2, labels=[{"name": "plan:active"}]),
                    issue(3, labels=[{"name": "plan:waiting"}], extra="Owner question: existing question"),
                    issue(4, "Chris to resume", labels=[{"name": "direction"}]),
                    issue(5, "owner to choose")]
@@ -138,7 +138,7 @@ class WaitTests(unittest.TestCase):
         self.assertEqual(len(result["waits"]), 1)
 
     def test_unqualified_owner_within_reason_and_multiple_wait_age(self):
-        records = [issue(1, "decision from the owner on pricing"), issue(2, "approval by the owner"),
+        records = [issue(reason="decision from the owner on pricing"), issue(2, "approval by the owner"),
                    issue(3, "product owner Client, then Director")]
         rows = director_waits.wait_rows("admin/repo", records, ["admin", "owner", "Director"], "admin", NOW)
         self.assertEqual([row["number"] for row in rows], [1, 2])
@@ -165,6 +165,22 @@ class WaitTests(unittest.TestCase):
         row = director_waits.wait_rows("owner/repo", [issue(extra="Last verified: 2026-03-01")],
                                       ["Director"], "owner", NOW)[0]
         self.assertEqual(row["verification_age_days"], (NOW - datetime(2026, 3, 1, tzinfo=timezone.utc)).days)
+
+    def test_common_verification_dates_and_unparseable_basis(self):
+        for date in ("Oct. 5, 2026", "October 5 2026", "10:54 AM ET, Oct 5, 2026"):
+            row = director_waits.wait_rows("owner/repo", [issue(extra="Waiting since: 2026-10-01\nLast verified: " + date)],
+                                          ["Director"], "owner", NOW)[0]
+            self.assertFalse(row["possibly_stale"])
+        row = director_waits.wait_rows("owner/repo", [issue(extra="Last verified: abc1234")], ["Director"], "owner", NOW)[0]
+        self.assertEqual(row["staleness_basis"], "verification_unparseable")
+        self.assertEqual(row["last_verified_raw"], "abc1234")
+
+    def test_qualified_owner_phrase_preserves_current_director_and_inline_start(self):
+        sample = issue(reason="owner to approve once product owner Client accepts; since 2026-10-01",
+                       extra="Waiting for: Client testing; since 2026-09-01")
+        row = director_waits.wait_rows("admin/repo", [sample], ["owner", "Director"], "admin", NOW)[0]
+        self.assertEqual(row["wait_age_days"], 8)
+        self.assertTrue(row["waiting_for"].startswith("owner to approve"))
 
     def test_no_index_reports_alias_gap_and_explicit_name_is_supported(self):
         people = {"status": "ok", "director_names": [], "director_ambiguous": False}

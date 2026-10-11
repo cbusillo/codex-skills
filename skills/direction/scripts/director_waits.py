@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import sys
 import time
+from typing import Any
 
 SKILLS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SKILLS / "github/scripts"))
@@ -34,17 +35,18 @@ def parse_date(value):
             return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
         except ValueError:
             return None
-    month = re.match(r"(?:[A-Za-z]+ \d{1,2}, \d{4}|\d{1,2} [A-Za-z]+ \d{4})", value.strip())
+    month = re.search(r"[A-Za-z]+\.? \d{1,2},? \d{4}|\d{1,2} [A-Za-z]+\.? \d{4}", value.strip())
     if month:
-        for form in ("%B %d, %Y", "%b %d, %Y", "%d %B %Y", "%d %b %Y"):
+        normalized = month[0].replace(".", "").replace(",", "")
+        for form in ("%B %d %Y", "%b %d %Y", "%d %B %Y", "%d %b %Y"):
             try:
-                return datetime.strptime(month[0], form).replace(tzinfo=timezone.utc)
+                return datetime.strptime(normalized, form).replace(tzinfo=timezone.utc)
             except ValueError:
                 continue
     return None
 
 
-def wait_rows(repo, issues, terms, owner, now):
+def wait_rows(repo, issues, terms, owner, now) -> list[dict[str, Any]]:
     rows = []
     for issue in issues:
         if "pull_request" in issue or issue.get("state") != "open":
@@ -59,9 +61,8 @@ def wait_rows(repo, issues, terms, owner, now):
         candidates = []
         for record in records:
             reason = record["waiting_for"]
-            scoped_terms = [term for term in terms if term.casefold() != "owner"] if re.search(
-                r"\b(?:product|upstream|code) owner\b", reason, re.I) else terms
-            kind = None if record["non_external"] else attention.current_director_wait(reason, scoped_terms, {owner.casefold()})
+            classified_reason = re.sub(r"\b(?:product|upstream|code) owner\b", "third party", reason, flags=re.I)
+            kind = None if record["non_external"] else attention.current_director_wait(classified_reason, terms, {owner.casefold()})
             if kind:
                 candidates.append((reason, kind))
         if not candidates:
@@ -69,7 +70,10 @@ def wait_rows(repo, issues, terms, owner, now):
         wait = next((candidate for candidate in candidates if candidate[1] == "decision"), candidates[0])
         evidence = github_direction_next.milestone_wait_evidence(item, status, [])
         since = parse_date(evidence["since"])
-        if sum(not record["no_current_wait"] for record in records) > 1:
+        inline_since = re.search(r";\s*since\s+(.+)$", wait[0], re.I)
+        if inline_since:
+            since = parse_date(inline_since[1])
+        elif sum(not record["no_current_wait"] for record in records) > 1:
             since = None  # A status-wide start cannot date one of several waits.
         verified = next((record.get("last_verified") for record in records if record.get("last_verified")), None)
         last_verified = parse_date(verified)
@@ -84,14 +88,14 @@ def wait_rows(repo, issues, terms, owner, now):
             "last_verified_raw": verified,
             "verification_age_days": max(0, (now - last_verified).total_seconds() / 86400) if last_verified else None,
             "possibly_stale": last_verified is None or bool(since and last_verified < since),
-            "staleness_basis": "verification_unknown" if last_verified is None else
+            "staleness_basis": ("verification_unparseable" if verified else "verification_missing") if last_verified is None else
                 "verification_predates_wait" if since and last_verified < since else None,
             "verification_unknown": last_verified is None,
         })
     return rows
 
 
-def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting for"):
+def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting for") -> dict[str, Any]:
     query = f'user:{owner} is:issue is:open in:body "{phrase}"'
     result = {"waits": [], "complete": False, "errors": [],
               "repositories_with_matches": [], "query": query, "total_count": None,
@@ -150,7 +154,7 @@ def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting f
     return result
 
 
-def collect(reader, owner, terms, now, issue_limit=1000):
+def collect(reader, owner, terms, now, issue_limit=1000) -> dict[str, Any]:
     # Two scoped searches cover both supported status fields without relying
     # on provider-specific boolean query parsing or visiting each repository.
     reports = [collect_query(reader, owner, terms, now, issue_limit, phrase)

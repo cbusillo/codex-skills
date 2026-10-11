@@ -187,7 +187,9 @@ known aliases when no people index supplies them; missing/ambiguous alias
 coverage stays explicit in `people_status`, `director_names` and `errors`.
 `complete` describes only the accessible indexed search, whose indexing may lag
 live records. Missing access is not proof of coverage of private repositories.
-Search timeouts, missing metadata, changed totals, duplicates, result bounds
+The Waiting-for search includes template records saying None; the cap applies
+to all matching open issues before local classification. Search timeouts, missing
+metadata, changed totals, duplicates, result bounds
 and quota/deadline failures report incomplete coverage. Each search has a limit of
 1,000 issues; a larger `--issue-limit` cannot bypass GitHub's ceiling.
 This full list is separate from the unasked-question radar, which filters for
