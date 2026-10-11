@@ -151,9 +151,14 @@ the watcher. Its fields are `paused_repositories` and `coordinated_repositories`
 `ready` or `open` status). Reuse the same record through takeover; reconcile it
 with the handoff before rearming. Do not maintain another per-session copy.
 
-Record a release hold **before** its batch lands and becomes ready, including
-before its invitation posts. Ready/open Client release entries pause both that
-product and the explicitly supplied control-plane repository. The hold command
+Client-product batching remains coordinated as the
+[Client Products rules](../SKILL.md#client-products) require. The watcher's
+`client_releases` entries are an optional manual pause control, not a required
+step for Client releases; leave them empty for normal routing. If explicitly
+selected, ready/open entries pause both the named product and the supplied
+control-plane repository. They therefore also pause Launchplane when it is
+that control plane; ordinary product coordination needs no such entry.
+The hold command
 waits for the current repository's enqueue section before acknowledging the
 update. Between repositories, a pause update can win the lock and make the
 watcher's next nonblocking acquisition stop safely. Finish the hold update and
@@ -218,10 +223,12 @@ watcher does not merge, update branches, deploy or send Client invitations.
 The local lock serializes this watcher's labels and pause updates. It does not
 lock Launchplane's scheduler, another host, or manual queue writers. Service
 state can change after a read and before a GitHub label: this interim helper is
-not an atomic admission fence. Keep the Supervisor's existing release-window
-coordination, pause other drivers, and account for already queued/active work
-before protecting a release. Do not claim that a pause file halts an existing
-candidate. First-class service holds and atomic admission belong to #3327.
+not an atomic admission fence. When using an optional manual pause, coordinate
+other drivers and account for already queued/active work. Do not claim that a
+pause file halts an existing candidate. Client-product delivery still follows
+the linked Client Products rules; those rules also link the decision retiring
+the Launchplane landing hold. First-class service holds and atomic admission
+belong to #3327.
 
 ## Launching and nudging
 
