@@ -300,22 +300,41 @@ Default to PR-backed implementation work.
 - When picking up an existing issue, read its comments before acting on the
   title or body. Comments are often the newest source of scope, constraints,
   decisions, or direction changes.
-- Link PRs with `Refs #123` by default when an external reporter, QA, customer,
-  or shared environment validation is involved. Use `Closes #123` or
-  `Fixes #123` only when auto-close is clearly intended and local/CI evidence
-  can conclusively close the issue.
-- `Refs #123` is deliberately non-closing. It keeps the relationship visible
-  while preserving a required post-merge decision about whether the issue is
-  truly done.
-- Do not close externally reported issues just because a fix PR merged. Leave a
-  validation comment and close only after the reporter/current user confirms or
-  explicitly asks.
+- Size an implementation issue for one PR-sized deliverable and follow
+  [issue closing and post-merge proof](#issue-closing-and-post-merge-proof).
 - When PR work shifts from one-shot diagnosis into repeated CI, review,
   mergeability, or merged/closed follow-through, route that loop to
   `babysit-pr`. This includes after branch updates, rebases, check reruns,
   review-fix pushes, and closeout questions such as whether the PR merged or it
   is safe to exit. Use `babysit-pr --once` for already merged/closed evidence and
   `--watch` while an open PR still needs active follow-through.
+
+### Issue Closing And Post-Merge Proof
+
+Use `Closes #123` by default when the PR's merge completes the issue's
+deliverable. Use `Refs #123` when the PR delivers only part of a multi-PR issue.
+Superseded or competing PRs also retain non-closing references under the
+[canonical implementation procedure](#superseded-or-competing-prs).
+
+Put post-merge steps such as deploy proof, Client acceptance, and observation
+on the parent issue or milestone. Record the next action, who takes it, and
+the evidence there; completing an implementation issue does not complete that
+parent or authorize a release. Open a new issue for a post-merge check only
+when that check fails, after searching for an existing issue for the failure.
+Split old oversized issues into PR-sized deliverables when working them;
+preserve their original requests under the
+[issue ownership rules](issue-templates.md), rather than rewriting them.
+
+For a Client's or outside reporter's issue, do not close on merge alone. Leave
+a validation comment and close only after the reporter/current user confirms
+the result or explicitly asks. Keep closing keywords off that issue until
+this condition is met; a separate implementation issue may close on merge.
+
+After a merge-train batch lands, read back the referenced issues and link the
+landing evidence. If `Closes` did not fire, follow github-plan's
+[Close Or Hand Off](../../github-plan/SKILL.md#close-or-hand-off) to reconcile
+the completed issue. Comment with the remaining action when its finish line
+is not met; never force closure or bypass the reporter exception.
 
 ### Superseded Or Competing PRs
 

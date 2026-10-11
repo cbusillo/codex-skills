@@ -51,8 +51,8 @@ Use `github-plan` before creating or updating design work:
 4. For broad redesigns, use a parent issue plus sub-issues for independent
    surfaces, states, implementation tracks, or validation work.
 5. Use `Current Status` as the recovery point for future sessions.
-6. Link implementation PRs with `Refs #123` unless auto-close is clearly
-   intended and validation can conclusively finish the issue.
+6. Link implementation PRs under GitHub's
+   [issue closing and post-merge proof](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof).
 7. Before closeout, update the issue with accepted direction, evidence,
    remaining work, and stale/related issue cleanup.
 

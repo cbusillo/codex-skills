@@ -39,17 +39,18 @@ for single PRs and stacks; load `launchplane` when it delegates landing to the
 train. Use `babysit-pr` for CI and review follow-through, then complete GitHub's
 [After A Merge](../github/SKILL.md#after-a-merge) procedure after confirmed landing.
 
-Every issue ends done or split. Done means the result a person can see is
-real: the lane reads green, the record reads back, the feature runs. A merge
-alone is not done; when the rest is ordinary engineering, deploy it, switch it
-on, and read it back yourself. Split means you open one issue for what is
-left, naming the next action and who takes it. Ask the Director on that issue
-when their action or decision is needed. Before recording a split or handoff,
-read github-plan's [Status Labels](../github-plan/SKILL.md#status-labels).
-Then close yours, saying the rest moved there. If the result can only show later,
-close on what you can check now and open a small issue to look again. Never close
-with a comment standing in for a step, and never leave an issue open waiting on
-nobody.
+Size implementation issues, choose PR closing language, and place later proof
+under GitHub's
+[issue closing and post-merge proof](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof).
+The parent issue or milestone remains open until the result a person can see
+is real: the lane reads green, the record reads back, the feature runs.
+When the remaining steps are ordinary engineering within the task's authority,
+deploy it, switch it on, and read it back yourself. Record the next action and
+who takes it on the parent; ask the Director there when their action or decision
+is needed. Before recording a split or handoff, read github-plan's
+[Status Labels](../github-plan/SKILL.md#status-labels).
+Never substitute a comment for required proof, and never leave an issue open
+waiting on nobody.
 
 Use [reviews by another model](model-review.md) to decide when a review is
 needed. For milestone work, honor the same authorization and direction stop
