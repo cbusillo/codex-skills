@@ -165,6 +165,19 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no authored handoff"):
             helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
 
+    def test_malformed_historic_command_and_saved_receipt_are_not_writes(self):
+        records = helper.session_record.read_jsonl(self.transcript)
+        records.insert(1, {"payload": {"type": "custom_tool_call", "call_id": "read",
+            "input": 'await tools.exec_command({cmd: "bad\ncommand"})'}})
+        records.insert(2, {"payload": {"type": "function_call", "call_id": "read",
+            "arguments": json.dumps({"cmd": "cat gh-comment issue 1"})}})
+        records.insert(3, {"payload": {"type": "function_call_output", "call_id": "read",
+            "output": json.dumps({"comment_action": "created", "comment": {"url": self.entry["handoff_url"]}})}})
+        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
+        self.reader.paged_json.return_value = []
+        with self.assertRaisesRegex(ValueError, "no authored handoff"):
+            helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
+
     def test_interrupted_handoff_uses_exact_inventory_ownership_context(self):
         entry = {**self.entry, "handoff_url": None, "_inventory_claims": [self.inventory_row()]}
         self.reader.paged_json.return_value = [self.source]
@@ -481,8 +494,20 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(helper.main(), 1)
             self.assertEqual(run.call_count, 2)
 
+    def test_session_wide_preflight_checks_every_plan_before_first_write(self):
+        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
+        with patch.object(helper.claim, "run_read", side_effect=lambda _args, *, cwd: f"https://github.com/test/{cwd.name}.git"), \
+                patch.object(helper, "preview_guards", side_effect=[{"status": "passed_read_only"}, ValueError("later retained head is newer")]), \
+                patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run:
+            with self.assertRaisesRegex(helper.PartialRelease, "later retained head"):
+                helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1), ("test/b", 1)], self.root, True)
+        write.assert_not_called()
+        run.assert_not_called()
+
     def test_apply_posts_attestation_previews_then_releases(self):
         self.reader.paged_json.side_effect = self.plan_reader
+        handoff = dict(self.reader.get_json.return_value)
+        self.reader.get_json.side_effect = lambda path, **_kw: self.head_commit() if "/commits/" in path else self.pull(5, SOURCE["branch"]) if "/pulls/" in path else handoff
         calls = []
         def write(*_args, **_kwargs):
             calls.append("attestation")
@@ -498,6 +523,8 @@ class ReleaseTests(unittest.TestCase):
 
     def test_partial_preview_failure_retains_attestation_and_stops(self):
         self.reader.paged_json.side_effect = self.plan_reader
+        handoff = dict(self.reader.get_json.return_value)
+        self.reader.get_json.side_effect = lambda path, **_kw: self.head_commit() if "/commits/" in path else self.pull(5, SOURCE["branch"]) if "/pulls/" in path else handoff
         with patch.object(helper.claim, "run_read", side_effect=lambda _args, *, cwd: f"https://github.com/test/{cwd.name}.git"), \
                 patch.object(helper, "comment", return_value={"comment": {"url": self.entry["handoff_url"]}}), \
                 patch.object(helper, "run_release", side_effect=ValueError("commit activity after closure")) as run:

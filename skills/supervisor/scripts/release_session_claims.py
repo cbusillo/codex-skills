@@ -323,7 +323,13 @@ def discover_handoff(reader, entry, actor):
         code = structured.get("code", "") if isinstance(structured, dict) else arguments
         if not command and isinstance(code, str):
             literals = re.findall(r'\bcmd\s*:\s*("(?:\\.|[^"\\])*")', code)
-            command = "\n".join(json.loads(literal) for literal in literals)
+            decoded = []
+            for literal in literals:
+                try:
+                    decoded.append(json.loads(literal))
+                except ValueError:
+                    continue  # malformed historic tool text is not a write receipt
+            command = "\n".join(decoded)
         # Historical fixtures/native direct calls may contain the shell command itself.
         if not command and not isinstance(structured, dict) and payload.get("name") in {"exec_command", "functions.exec_command"}:
             command = str(arguments)
@@ -576,6 +582,10 @@ def preview_guards(entry, *, reader, repo, number, source_id, related, prs, body
 
 
 def apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, apply, report, reader):
+    if apply:
+        # Session-wide refusals must be known before the first claim is released.
+        apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, False,
+                    {"claims": [], "issue_refusals": []}, reader)
     for repo, number, source_id, related, prs in plans:
         if validate_closure(entry, supervisor_session) != status:
             raise ValueError("source transcript changed; preserve remaining claims")
