@@ -399,6 +399,10 @@ that existing mapping; without a mapping, repeat `--transcript-root` for every
 known source-harness transcript directory on this host (Codex sessions and
 archived_sessions; Claude projects). Unknown hosts/peers remain the caller's
 verified-closure responsibility, never an inference from missing inventory.
+Check current native task status as well: ID-less resume/picker commands and an
+idle desktop thread may not expose an ID in process arguments or write a new
+transcript yet. `--confirm-session-ended` attests that the source is still ended
+now, including those cases, not merely that the historical log once said so.
 It does not
 send exit commands or change issue status, waits, blockers, branches or worktrees.
 
@@ -422,12 +426,15 @@ release command runs there for that repository's ownership inventory and never
 edits the checkout. A missing or mismatched checkout leaves claims untouched.
 
 Discovery pages the automation installation's Director repositories and their
-issue comments since the earliest timestamp in the source transcripts,
+issue comments and issue bodies since the earliest timestamp in the source transcripts,
 including closed issues. It reads each matching canonical discussion, honors
 existing valid authored releases through the shared ownership classifier, and
 names source-branch or handoff-retained PRs. Partial inventory is an error, not
 an empty result. Unstructured source claims need an authored exact-ID release;
 structured claims and their related ownership follow-ups use `release-claim`.
+Hand-written and status-only ownership are explicitly reported instead of
+silently dropped. Planning refusals are isolated by issue and session, so
+verified independent claims still proceed; `issue_refusals` prevents an all-clear.
 Automatic follow-up selection requires an exact native `Session:` field and
 ordering after the structured source; a reused worker token alone is not evidence.
 The shared bot login alone never identifies a session. Native session coverage
@@ -459,6 +466,9 @@ not consume another session's read budget. PR conversation comments are filtered
 out; deleted or inaccessible attestations invalidate their historical releases.
 Superseded unmerged or foreign handoff PRs are not retained candidates, while
 source-branch PRs still undergo the maintained release safety checks.
+Possible PID reuse remains a conservative refusal. Verify the current native
+identity, then use the documented evidence-backed `release-claim` route for that
+record; never invent a replacement PID or change the original closure timestamp.
 The command uses the currently configured automation identity only; claims by
 another App or a human are reported and preserved, with no identity fallback.
 Use `--session-id` to reconcile one logged session; inspect the default preview,

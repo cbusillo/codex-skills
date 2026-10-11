@@ -9,6 +9,7 @@ import json
 import contextlib
 import io
 import fcntl
+import importlib
 from types import SimpleNamespace
 from pathlib import Path
 import tempfile
@@ -92,6 +93,8 @@ class ReleaseTests(unittest.TestCase):
             if path == "/installation/repositories":
                 return [{"full_name": "test/a"}, {"full_name": "test/b"}, {"full_name": "other/c"}]
             self.assertIn("since", kwargs["required_query_params"])
+            if path.endswith("/issues"):
+                return []
             repo = path.split("/")[3]
             return [{**self.source, "issue_url": f"https://api.github.com/repos/test/{repo}/issues/1"}]
         self.reader.paged_json.side_effect = paged
@@ -311,9 +314,52 @@ class ReleaseTests(unittest.TestCase):
     def test_wrong_checkout_refuses_before_attestation(self):
         self.reader.paged_json.side_effect = self.plan_reader
         with patch.object(helper.claim, "run_read", return_value="https://github.com/other/a.git"), patch.object(helper, "comment") as write:
-            with self.assertRaisesRegex(ValueError, "checkout"):
-                helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, True)
+            report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, True)
+            self.assertIn("checkout", report["issue_refusals"][0]["error"])
         write.assert_not_called()
+
+    def test_discovery_finds_status_only_native_ownership(self):
+        self.reader.paged_json.side_effect = lambda path, **_kw: [{"number": 9, "body": "Claimed by trial\nSession: source-session"}] if path.endswith("/issues") else []
+        self.assertEqual(helper.discover(self.reader, "test", [self.entry], ["test/a"])[0], [("test/a", 9)])
+
+    def test_legacy_and_status_only_sources_are_reported_instead_of_skipped(self):
+        for field in ("Session: source-session", "Session ID: source-session"):
+            self.reader.paged_json.return_value = [comment(2, "Claimed by trial\n" + field)]
+            report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
+            self.assertEqual(len(report["issue_refusals"]), 1)
+            self.assertEqual(report["claims"], [])
+        self.reader.paged_json.return_value = []
+        self.reader.get_json.return_value["body"] = "Claimed by trial\nSession: source-session"
+        report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
+        self.assertIn("status-only", report["issue_refusals"][0]["error"])
+
+    def test_foreign_issue_does_not_block_independent_claim_release(self):
+        foreign = {**self.source, "user": {"login": "human"}}
+        def paged(path, **_kwargs):
+            if path.endswith("/pulls"):
+                return []
+            return [foreign] if "/test/a/" in path else [self.source]
+        self.reader.paged_json.side_effect = paged
+        with patch.object(helper.claim, "run_read", return_value="https://github.com/test/b.git"), \
+                patch.object(helper, "comment", return_value={"comment": {"url": self.entry["handoff_url"]}}) as write, \
+                patch.object(helper, "run_release", return_value={"release_body": "Released claim 1", "ok": True}):
+            report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1), ("test/b", 1)], self.root, True)
+        self.assertEqual(write.call_count, 1)
+        self.assertEqual(report["issue_refusals"][0]["repository"], "test/a")
+        self.assertEqual(report["claims"][0]["repository"], "test/b")
+
+    def test_release_subprocess_argv_is_accepted_by_the_actual_plan_parser(self):
+        plan = importlib.import_module("gh-plan")
+        envelope = {"ok": True, "outcome_certainty": "confirmed"}
+        result = SimpleNamespace(returncode=0, stdout=json.dumps(envelope))
+        with patch.object(helper.subprocess, "run", return_value=result) as run:
+            self.assertEqual(helper.run_release("test/a", 1, 2, [3], ["https://github.com/test/a/pull/4"], self.entry["handoff_url"], "supervisor", self.root, True), envelope)
+        parsed = plan.build_parser().parse_args(run.call_args.args[0][3:])
+        self.assertEqual(parsed.claim_comment, 2)
+        self.assertEqual(parsed.related_claim_comment, [3])
+        self.assertEqual(parsed.retained_pr, ["https://github.com/test/a/pull/4"])
+        self.assertTrue(parsed.confirm_session_ended and parsed.dry_run)
+        self.assertEqual(run.call_args.kwargs["cwd"], self.root / "a")
 
 
 if __name__ == "__main__":
