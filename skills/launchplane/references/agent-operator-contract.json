@@ -312,7 +312,7 @@
         "reviewed_evidence": [
           "reviewed_dry_run"
         ],
-        "schema_fingerprint_sha256": "c605d5d965037d446ffecc51911c4b574e8b6bcd7901dab9116efbc8c4d2f517",
+        "schema_fingerprint_sha256": "c0a87050dda7a2bda39da470365cd035b85ac9f61cda13e6109a28d43e06d02d",
         "supported_surfaces": [
           "agent_helper",
           "operator_ui",
@@ -410,6 +410,39 @@
         "supported_surfaces": [
           "agent_helper",
           "operator_ui",
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "plan_and_apply",
+        "identity_dependencies": [
+          "read_write_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "inspect",
+          "plan",
+          "apply"
+        ],
+        "operation_id": "reconcile_legacy_generic_web_preview",
+        "path": "/v1/previews/legacy-generic-web/reconciliation",
+        "purpose": "Inspect, plan or reconcile one provider-absent legacy generic-web preview.",
+        "response_statuses": [
+          "202",
+          "400",
+          "403",
+          "404",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "reviewed_plan",
+          "expected_plan_digest",
+          "plan_idempotency_key"
+        ],
+        "schema_fingerprint_sha256": "1a5b6056a5f67987eb4fc7ac9b4f242b3b95a1d306599cb72a74a58bff7371b0",
+        "supported_surfaces": [
+          "agent_helper",
           "service_api"
         ]
       },
@@ -561,7 +594,7 @@
           "503"
         ],
         "reviewed_evidence": [],
-        "schema_fingerprint_sha256": "3945a90c02dc3e029b582e983d65710f02b757ac5cf9896987be92e179a4027f",
+        "schema_fingerprint_sha256": "4025e68804098c2980f30b9a9722dc3f47ef2c9afe6bf30ef8243d4d4ee3a4b3",
         "supported_surfaces": [
           "read_only_service",
           "operator_ui"
@@ -593,8 +626,8 @@
   },
   "normalization_version": 1,
   "provenance": {
-    "source_commit_sha": "1fa6aa122374dff65ba26195f1cd3bfcf77839a7"
+    "source_commit_sha": "ede632460946a5b980227f079923703fff64003c"
   },
   "schema_version": 1,
-  "semantic_digest_sha256": "09a2898eb22c1aa2f25054b4f5d43755b05190a35f19c63cb11e0c2a6e31fd05"
+  "semantic_digest_sha256": "2926ccf90b6afeb66331da6af80017ae74cc15d746cb8656c22725c8f59bbd0b"
 }

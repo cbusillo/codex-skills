@@ -6226,7 +6226,8 @@ def active_ide_churn(payload: dict[str, Any]) -> bool:
 
 def ide_churn_present(payload: dict[str, Any]) -> bool:
     status = str(payload.get("status") or payload.get("completion_reason") or "").lower()
-    proof_failures = payload.get("proof_failures") if isinstance(payload.get("proof_failures"), list) else []
+    proof_failures_value = payload.get("proof_failures")
+    proof_failures = proof_failures_value if isinstance(proof_failures_value, list) else []
     return (
         payload.get("indexing") is True
         or payload.get("is_scanning") is True
@@ -7971,7 +7972,8 @@ def logged_attempt_summary(source: dict[str, Any], attempt_index: int, terminal:
 
 def ordered_internal_attempts(payload: dict[str, Any]) -> list[dict[str, Any]]:
     attempts: list[dict[str, Any]] = []
-    retries = payload.get("internal_retries") if isinstance(payload.get("internal_retries"), list) else []
+    retries_value = payload.get("internal_retries")
+    retries = retries_value if isinstance(retries_value, list) else []
     next_index = 0
     for retry in retries:
         if not isinstance(retry, dict):
@@ -7985,7 +7987,8 @@ def ordered_internal_attempts(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def compact_inspection_attempt_diagnostics(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    retries = payload.get("internal_retries") if isinstance(payload.get("internal_retries"), list) else []
+    retries_value = payload.get("internal_retries")
+    retries = retries_value if isinstance(retries_value, list) else []
     if not retries:
         return []
     diagnostics: list[dict[str, Any]] = []

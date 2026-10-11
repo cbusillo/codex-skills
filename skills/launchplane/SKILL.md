@@ -591,8 +591,14 @@ policy:
           argv_prefix: ["launchplane", "service", "audit-config-authority"]
         - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "odoo-ownership", "check"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "ci", "postgres-integration"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "action-pins", "check"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "action-pins", "update"]
       action: require_preferred
-      message: Do not assume a global `launchplane` binary on ordinary workstations. Use the bundled helpers unless you are explicitly on a host-only Launchplane context with a repo-provided command.
+      message: Do not assume a global `launchplane` binary on ordinary workstations. Use the bundled helpers unless you are explicitly on a host-only Launchplane context with a repo-provided command. A repository gate in a Launchplane checkout is allowed only when the hook can see that checkout; Codex hooks see the session directory, not a command's `workdir`, so start the command with `cd /absolute/checkout && `.
       preferred:
         - kind: script
           path: scripts/launchplane-context.py
@@ -622,13 +628,17 @@ policy:
 
 The source-only `service export-openapi`, `service export-agent-contract`,
 `service export-owner-control-contract`, `service audit-config-authority`,
-`odoo-ownership check`, and `ci unittest-shard local|plan|run` gates may run
-through `uv run [--extra dev] launchplane` in a verified `cbusillo/launchplane`
-checkout or linked worktree, including frontend contract generation. Use the
-tool's working directory or a single literal absolute `cd <checkout> &&` prefix.
-Other shell directory/project overrides retain the block. PostgreSQL integration
-commands that target a database and all live/admin CLI commands retain their
-helper route below. Consumers without
+`odoo-ownership check`, `action-pins check|update`, and
+`ci unittest-shard local|plan|run` gates may run through
+`uv run [--extra dev] launchplane` in a verified `cbusillo/launchplane`
+checkout or linked worktree, including frontend contract generation.
+`ci postgres-integration` may run there too when the command itself names a
+loopback database through `--database-url` or a leading
+`LAUNCHPLANE_TEST_POSTGRES_URL=`. Use the session's working directory or a
+single literal absolute `cd <checkout> &&` prefix; on Codex, an exec `workdir`
+is not visible to the hook, so use the `cd` prefix. Other shell
+directory/project overrides retain the block. All live/admin CLI commands
+retain their helper route below. Consumers without
 repository-exception support keep the original block; do not bypass it through
 an alternate entry point.
 
@@ -708,22 +718,12 @@ and watching stay delegated to `github_workflow_babysit.py`, and raw protected
 workflow dispatch is not allowed. Source projected HTTP paths from the vendored
 operation map rather than adding duplicate literals.
 
-The privileged-policy-propose, merge-train policy read and import, repository inventory, product expected configuration,
-generic-web deploy-recovery, live-target-runtime sync, Odoo addon-settings, integration-allowances,
-testing-hold, product-repository-identity, product-environment-read,
-product-activity-read, protected-artifacts-read, product-profile-read, path-check,
-preview-history-read,
-reconcile-requests-read, product-secret-bindings-read,
-target-replacement-operation-read, target-replacement-plan-read, `product-owner-*`,
-`product-image-repository-*`, `dokploy-target-create-compose-*`,
-`dokploy-target-complete-compose-source-*`, `dokploy-target-reconcile-compose-domain-*`,
-`dokploy-target-prune-compose-domain-*`, `production-backup-authority-*`,
-`private-health-endpoint-*`, `health-monitoring-*`, product-promotion-status-read and
-product-promotion-dry-run commands are explicit bounded local
-extensions because the vendored public
-operation projection does not contain their routes. Do not describe them as contract-backed. If a later artifact adds those
-routes, migrate them deliberately and remove the local-extension entries instead
-of retaining parallel sources of truth.
+Commands listed under `LOCAL_EXTENSION_ROUTES` in
+`scripts/launchplane_contract.py` are explicit bounded local extensions: the
+vendored public operation projection does not contain their routes, so do not
+describe them as contract-backed. If a later artifact adds those routes, migrate
+them deliberately and remove the local-extension entries instead of retaining
+parallel sources of truth.
 
 ### Agent Policy Proposals
 
