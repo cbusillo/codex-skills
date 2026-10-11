@@ -183,6 +183,62 @@ class ReadyTests(unittest.TestCase):
         self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: automated tooling."
         self.post()
 
+    def test_ready_format_variants_keep_exact_head_requirement(self):
+        for first in (READY, f"{READY}.", f"**{READY}**", f"**{READY}.**"):
+            for head in (SHA, f"`{SHA}`", f"**{SHA}**"):
+                with self.subTest(first=first, head=head):
+                    ready = {"body": f"{first}\n\nHead: {head}", "user": {"login": "engineer"}, "id": 1, "created_at": "2026-01-01T00:00:00Z"}
+                    self.assertTrue(latest_ready(self.reader.pr, [ready], {"engineer"}))
+                    self.assertFalse(latest_ready(self.reader.pr, [ready], {"someone-else"}))
+                    pushed = {**self.reader.pr, "head": {"sha": "b" * 40}}
+                    self.assertFalse(latest_ready(pushed, [ready], {"engineer"}))
+                    waiting = {**ready, "id": 2, "body": handoff_body(SHA, waiting_for_client=True)}
+                    self.assertFalse(latest_ready(self.reader.pr, [ready, waiting], {"engineer"}))
+
+    def test_bold_renewed_wait_invalidates_formatted_ready(self):
+        ready = {"body": f"**{READY}**\n\nHead: **{SHA}**", "user": {"login": "engineer"}, "id": 1, "created_at": "2026-01-01T00:00:00Z"}
+        for first in ("**Engineering ready; waiting for a defect fix**", "**Engineering ready; waiting for the Client's acceptance.**"):
+            with self.subTest(first=first):
+                waiting = {**ready, "id": 2, "body": f"{first}\n\nHead: {SHA}"}
+                self.assertFalse(latest_ready(self.reader.pr, [ready, waiting], {"engineer"}))
+                waiting["updated_at"] = "2026-01-01T00:05:00Z"
+                newer_ready = {**ready, "id": 3, "created_at": "2026-01-01T00:01:00Z"}
+                self.assertFalse(latest_ready(self.reader.pr, [waiting, newer_ready], {"engineer"}))
+
+    def test_ready_requires_one_full_head_even_with_formatting(self):
+        for head_line in ("", f"Head: {SHA[:8]}", f"Head: {SHA}a", f"Head: **{SHA}**a", f"Head: **{SHA}`", f"Head: {SHA}\nHead: **{SHA}**"):
+            with self.subTest(head_line=head_line):
+                ready = {"body": f"**{READY}**\n\n{head_line}", "user": {"login": "engineer"}, "id": 1, "created_at": "2026-01-01T00:00:00Z"}
+                self.assertFalse(latest_ready(self.reader.pr, [ready], {"engineer"}))
+
+    def test_nothing_to_test_punctuation_variants_preserve_acceptance_gates(self):
+        for heading in ("Client", "Owner"):
+            for punctuation in (":", ";", ".", "", ",", " -"):
+                for explanation in ("", " Automated tooling."):
+                    with self.subTest(heading=heading, punctuation=punctuation, explanation=explanation):
+                        self.reader.pr["body"] = f"## {heading} test notes\nNothing for the Client to test{punctuation}{explanation}"
+                        self.reader.pr["labels"] = []
+                        self.post()
+                        self.writer.reset_mock()
+                        self.reader.pr["labels"] = [{"name": "owner-review"}]
+                        self.refuse()
+
+    def test_legacy_nothing_to_test_marker(self):
+        self.reader.pr["body"] = "## Owner test notes\nNothing for the owner to test"
+        self.post()
+
+    def test_no_test_marker_outside_or_after_real_notes_never_exempts(self):
+        for body in (
+            "Nothing for the owner to test\n\n## Client test notes\nTry the preview.",
+            "## Client test notes\nTry the preview.\nNothing for the Client to test.",
+            "## Client test notes\nTry the preview.\n\n## History\nNothing for the owner to test",
+            "## Client test notes\n\n## History\nNothing for the Client to test.",
+            "## Client test notes\nNothing for the owner to test\n\n## Owner test notes\nTry the preview.",
+        ):
+            with self.subTest(body=body):
+                self.reader.pr["body"] = body
+                self.refuse()
+
     def test_client_rejection_still_refuses_waiting_handoff(self):
         self.args.waiting_for_client = True
         self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "completed", "conclusion": "failure"})

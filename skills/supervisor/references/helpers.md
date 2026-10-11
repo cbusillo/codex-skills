@@ -142,7 +142,7 @@ delivery holds, never enrollment, branch names or enqueue labels.
 
 ```sh
 uv run skills/supervisor/scripts/auto_enqueue.py holds --hold-file <private-holds.json> --init --coordinated-repo OWNER/CLIENT-REPO --coordinated-repo OWNER/SHARED-REPO
-uv run skills/supervisor/scripts/auto_enqueue.py --owner OWNER --hold-file <private-holds.json> --once
+uv run skills/supervisor/scripts/auto_enqueue.py --owner OWNER --hold-file <private-holds.json> --handoff-login AGENT_LOGIN --once
 ```
 
 Initialization refuses an existing record. Missing or malformed hold state stops
@@ -211,6 +211,18 @@ handoff by creation/edit time from its author, or a Supervisor explicitly listed
 an earlier Ready. Missing/stale heads, drafts, blocking train dispositions,
 current-head change requests and unavailable checks do not enqueue. A file
 inventory changed during reading skips that PR; other ready members continue.
+The shared parser normalizes trailing periods and bold markers on both Ready
+and renewed waits, accepts a bold full head SHA, and recognizes current and
+legacy nothing-to-test markers at the start of the test-notes section without
+requiring particular punctuation.
+Conflicting or unknown-mergeability PRs are skipped before selection and
+rechecked before labeling.
+A controller disposition of `dependency update needs agent review` may enter
+qualification: a current-head Ready from an explicitly trusted agent supplies
+that review; the dependency author's own comment cannot. Name the reviewing
+agent's login with `--handoff-login`; repeat it for each trusted reviewer.
+This existing option trusts those reviewers across the scoped repositories;
+without it, dependency-review PRs remain unqueued. Other controller holds still block.
 An unavailable Client review scope holds that PR rather than bypassing acceptance.
 Required checks are read from current branch protection and
 matched to their configured App. A Client review label, request check, or real

@@ -39,6 +39,7 @@ def pr(number=1):
         "base": {"ref": "trunk"},
         "draft": False,
         "state": "open",
+        "mergeable": True,
         "user": {"login": "engineer"},
         "labels": [],
         "body": "",
@@ -238,6 +239,87 @@ class EnqueueTests(unittest.TestCase):
         self.assertEqual(
             next(data["prs"] for event, data in self.events if event == "batch"), [1, 2]
         )
+
+    def test_dependency_enqueue_runs_live_trust_head_and_check_qualification(self):
+        self.args.handoff_login = ["engineer"]
+        for scenario in ("trusted", "author", "stale", "pending"):
+            with self.subTest(scenario=scenario):
+                fake = Fake(count=1)
+                fake.pulls[1]["user"]["login"] = "renovate[bot]"
+                fake.ineligible[1] = [watch.DEPENDENCY_REVIEW]
+                live = object.__new__(watch.Live)
+                live.reader = object()
+                live.get = lambda _path: {"checks": [{"context": "CI", "app_id": 7}]}
+                ready = comment(login="renovate[bot]" if scenario == "author" else "engineer")
+                if scenario == "stale":
+                    ready["body"] = f"{READY}\n\nHead: {'b' * 40}"
+                live.pages = lambda path: [] if path.endswith("/reviews") else [ready]
+                live.acceptance = lambda *_args: False
+                fake.qualified = live.qualified
+                checks = {
+                    "summary": {"countsComplete": True, "unavailableComponents": [], "failingCount": 0, "pendingCount": int(scenario == "pending"), "unfinishedWorkflowRunCount": 0},
+                    "checkRuns": [{"name": "CI", "status": "completed", "conclusion": "success", "appId": 7}],
+                    "statuses": [],
+                }
+                with patch.object(watch, "pull_request_checks", return_value=checks):
+                    self.run_pass(fake)
+                self.assertEqual(fake.writes, [1] if scenario == "trusted" else [])
+
+    def test_dependency_review_is_rechecked_before_label(self):
+        self.args.handoff_login = ["engineer"]
+        fake = Fake(count=1)
+        fake.pulls[1]["user"]["login"] = "renovate[bot]"
+        fake.ineligible[1] = [watch.DEPENDENCY_REVIEW]
+        comments = [comment(login="engineer")]
+        # The agent deletes its handoff between scan and write. The dependency
+        # author's replacement comment cannot supply that missing agent review.
+        def delete_agent_handoff(io):
+            if io.calls > 1:
+                comments[:] = [comment(login="renovate[bot]")]
+
+        fake.before = delete_agent_handoff
+        live = object.__new__(watch.Live)
+        live.reader = object()
+        live.get = lambda _path: {"checks": [{"context": "CI", "app_id": 7}]}
+        live.pages = lambda path: [] if path.endswith("/reviews") else comments
+        live.acceptance = lambda *_args: False
+        fake.qualified = live.qualified
+        checks = {
+            "summary": {"countsComplete": True, "unavailableComponents": [], "failingCount": 0, "pendingCount": 0, "unfinishedWorkflowRunCount": 0},
+            "checkRuns": [{"name": "CI", "status": "completed", "conclusion": "success", "appId": 7}],
+            "statuses": [],
+        }
+        with patch.object(watch, "pull_request_checks", return_value=checks):
+            self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+
+    def test_dependency_review_never_bypasses_another_controller_hold(self):
+        for hold in ("actor role is not allowed to enqueue", "held by merge-blocked label"):
+            with self.subTest(hold=hold):
+                fake = Fake(count=1)
+                fake.ineligible[1] = [watch.DEPENDENCY_REVIEW, hold]
+                self.run_pass(fake)
+                self.assertEqual(fake.writes, [])
+
+    def test_conflicting_pr_is_skipped_before_qualification(self):
+        fake = Fake(count=1)
+        fake.pulls[1]["mergeable"] = False
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        self.assertTrue(any(event == "skipped" and data.get("reason") == "conflicting" for event, data in self.events))
+
+    def test_conflict_appearing_before_label_stops_batch(self):
+        fake = Fake(count=1)
+        fake.before = lambda io: io.pulls[1].update(mergeable=False) if io.calls > 1 else None
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+
+    def test_unknown_mergeability_is_skipped(self):
+        fake = Fake(count=1)
+        fake.pulls[1]["mergeable"] = None
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        self.assertTrue(any(event == "skipped" and data.get("reason") == "mergeability_unknown" for event, data in self.events))
 
     def test_active_candidate_keeps_all_arrivals_unlabeled(self):
         fake = Fake()
@@ -795,6 +877,7 @@ class QualificationTests(unittest.TestCase):
             self.reviews if path.endswith("/reviews") else self.comments
         )
         self.io.acceptance = lambda *_args: False
+        self.agent_review_required = False
         mock = patch.object(
             watch,
             "pull_request_checks",
@@ -804,11 +887,30 @@ class QualificationTests(unittest.TestCase):
         self.addCleanup(mock.stop)
 
     def qualified(self):
-        return self.io.qualified(TARGET, self.pull, set())
+        return self.io.qualified(TARGET, self.pull, set(), self.agent_review_required)
 
     def test_green_required_check_is_bound_to_expected_app(self):
         self.assertTrue(self.qualified())
         self.checks["checkRuns"][0]["appId"] = 99
+        self.assertFalse(self.qualified())
+
+    def test_dependency_author_handoff_needs_explicit_trusted_agent(self):
+        self.agent_review_required = True
+        for author in ("dependabot[bot]", "renovate[bot]"):
+            with self.subTest(author=author):
+                self.pull["head"]["sha"] = SHA
+                self.pull["user"]["login"] = author
+                self.comments = [comment(login=author)]
+                self.assertFalse(self.qualified())
+                self.assertFalse(self.io.qualified(TARGET, self.pull, {author}, True))
+                self.comments = [comment(login="engineer")]
+                self.assertFalse(self.qualified())
+                self.assertTrue(self.io.qualified(TARGET, self.pull, {"engineer"}, True))
+                self.pull["head"]["sha"] = "b" * 40
+                self.assertFalse(self.io.qualified(TARGET, self.pull, {"engineer"}, True))
+
+    def test_conflicting_github_pr_refuses_even_with_green_checks(self):
+        self.pull["mergeable"] = False
         self.assertFalse(self.qualified())
 
     def test_missing_pending_failed_unavailable_required_checks_refuse(self):
