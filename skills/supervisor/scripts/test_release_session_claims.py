@@ -124,10 +124,14 @@ class ReleaseTests(unittest.TestCase):
 
     def test_backfill_reused_tty_is_not_source_identity_but_pid_still_refuses(self):
         old = {**self.entry, "_backfill": True}
-        with patch.object(helper, "inventory", return_value=[(456, "ttys123", "codex")]):
+        with patch.object(helper, "inventory", return_value=[(456, "ttys123", "codex resume different-session")]):
             self.assertTrue(helper.validate_closure(old, "supervisor")["safe_verdict"])
             with self.assertRaises(ValueError):
                 helper.validate_closure(self.entry, "supervisor")
+        for command in ("codex resume --last", "claude -c", "node /bin/claude.js"):
+            with patch.object(helper, "inventory", return_value=[(456, "ttys123", command)]):
+                with self.assertRaisesRegex(ValueError, "unidentified harness"):
+                    helper.validate_closure(old, "supervisor")
         with patch.object(helper, "inventory", return_value=[(123, "other", "codex")]):
             with self.assertRaises(ValueError):
                 helper.validate_closure(old, "supervisor")
@@ -210,9 +214,10 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(report["claims"][0]["retained_prs"], [named["html_url"]])
 
     def test_resumed_harness_with_new_pid_and_tty_refuses_backfill(self):
-        with patch.object(helper, "inventory", return_value=[(456, "another-tty", "codex resume source-session")]):
-            with self.assertRaisesRegex(ValueError, "resumed harness"):
-                helper.validate_closure({**self.entry, "_backfill": True}, "supervisor")
+        for command in ("codex resume source-session", "node /bin/claude --resume source-session", "bun /bin/claude.js --resume=source-session"):
+            with patch.object(helper, "inventory", return_value=[(456, "another-tty", command)]):
+                with self.assertRaisesRegex(ValueError, "resumed harness"):
+                    helper.validate_closure({**self.entry, "_backfill": True}, "supervisor")
 
     def test_unrelated_harness_prompt_quoting_is_not_a_process_parser_error(self):
         with patch.object(helper, "inventory", return_value=[(456, "another-tty", "codex exec don't change anything")]):
@@ -298,11 +303,11 @@ class ReleaseTests(unittest.TestCase):
 
     def test_partial_preview_failure_retains_attestation_and_stops(self):
         self.reader.paged_json.side_effect = self.plan_reader
-        with patch.object(helper.claim, "run_read", return_value="https://github.com/test/a.git"), \
+        with patch.object(helper.claim, "run_read", side_effect=lambda _args, *, cwd: f"https://github.com/test/{cwd.name}.git"), \
                 patch.object(helper, "comment", return_value={"comment": {"url": self.entry["handoff_url"]}}), \
-                patch.object(helper, "run_release", side_effect=ValueError("still live")) as run:
+                patch.object(helper, "run_release", side_effect=ValueError("commit activity after closure")) as run:
             with self.assertRaises(helper.PartialRelease) as caught:
-                helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, True)
+                helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1), ("test/b", 1)], self.root, True)
         self.assertEqual(caught.exception.report["claims"][0]["evidence_url"], self.entry["handoff_url"])
         self.assertEqual(run.call_count, 1)
 

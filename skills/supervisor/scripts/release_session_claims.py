@@ -56,16 +56,20 @@ def verify_closed(entry, supervisor_session):
     rows = inventory()
     if any(p == pid or (not entry.get("_backfill") and t == tty and not idle_terminal_command(c)) for p, t, c in rows):
         raise ValueError("source PID (possibly reused) or work on its TTY remains; preserve claims and verify native identity before the documented manual release-claim route")
-    for _, _, command in rows:
-        if not command.split() or Path(command.split()[0]).name not in {"codex", "claude"}:
-            continue
+    for _, process_tty, command in rows:
         # ps does not preserve shell quoting. Inspect only native resume
         # operands; arbitrary quoted prompt text is neither syntax nor identity.
         argv = command.split()
-        if any(arg in {"resume", "--resume", "-r"} and index + 1 < len(argv)
-               and argv[index + 1].strip("\"'") == entry["session_id"]
-               or arg == f"--resume={entry['session_id']}" for index, arg in enumerate(argv)):
+        resumed_ids = [argv[index + 1].strip("\"'") for index, arg in enumerate(argv)
+                       if arg in {"resume", "--resume", "-r"} and index + 1 < len(argv)]
+        resumed_ids.extend(arg.split("=", 1)[1] for arg in argv if arg.startswith("--resume="))
+        if entry["session_id"] in resumed_ids:
             raise ValueError("source native session is visible in a resumed harness process")
+        harness = any(Path(arg).name in {"codex", "claude", "claude.js"} for arg in argv)
+        if entry.get("_backfill") and process_tty == tty and harness and not (
+            len(resumed_ids) == 1 and resumed_ids[0] and not resumed_ids[0].startswith("-")
+        ):
+            raise ValueError("unidentified harness on the recorded TTY; preserve claims and verify native identity before the documented manual release-claim route")
     status = session_record.session_status(entry)
     if not status["safe_verdict"]:
         raise ValueError("latest transcript lacks an unqualified Safe to exit: yes")

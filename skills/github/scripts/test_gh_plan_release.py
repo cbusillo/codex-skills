@@ -273,7 +273,9 @@ class ReleaseTests(unittest.TestCase):
         self.f.pulls[0]["head"]["ref"] = CLAIM.records(self.f.comments[0]["body"])[0]["branch"]
         self.args.retained_pr = []
         self.commit_date = "2026-10-02T01:00:00Z"
-        with self.assertRaisesRegex(PLAN.PlanError, "commit activity after"): self.run_release()
+        with self.assertRaisesRegex(PLAN.PlanError, "commit activity after") as caught:
+            self.run_release()
+        self.assertNotEqual(caught.exception.payload.get("release_refusal_scope"), release.ISSUE_REFUSAL_SCOPE)
         self.f.assert_no_writes()
 
     def test_untrusted_or_example_receipt_does_not_poison_claims(self):

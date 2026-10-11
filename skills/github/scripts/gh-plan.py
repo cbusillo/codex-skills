@@ -2055,8 +2055,7 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             _, head_commit = api_json("GET", f"/repos/{issue['repo']}/commits/{pull['head']['sha']}", bucket="rest_core", failed_step="release_retained_head")
             commit_at = github_plan_release.stamp(head_commit["commit"]["committer"]["date"])
             if commit_at >= github_plan_release.stamp(ended[0]):
-                raise PlanError("Retained PR has commit activity after the cited session-ended evidence",
-                                payload={"release_refusal_scope": github_plan_release.ISSUE_REFUSAL_SCOPE})
+                raise PlanError("Retained PR has commit activity after the cited session-ended evidence")
         release_actor = expected_actor
         if release_actor is None:
             raise PlanError("Release requires the configured source automation identity")

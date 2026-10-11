@@ -452,7 +452,10 @@ Use the original actual closure timestamps; neither conversion time nor
 attestation posting time substitutes for them. Backfill still requires the
 recorded PID to be absent and the transcript unchanged; another job on a reused
 historical TTY does not identify the source session. Normal finish checks all
-jobs on the matched current TTY. Invalid closure records are reported per session while
+jobs on the matched current TTY. Backfill refuses a harness on that TTY unless
+its resume arguments identify a different session; an unidentified harness
+needs native-identity verification through the documented manual release route.
+Invalid closure records are reported per session while
 independent verified sessions proceed. If a record lacks a matched
 transcript, unqualified safe verdict, original closure proof or handoff URL,
 report it for reconciliation instead of inventing evidence.
