@@ -194,8 +194,11 @@ queued work. Reads retain the shared GitHub cache, quota reserve and request ret
 deadline; no human-auth fallback is added. The deadline `stop` event reports
 completed and failed pass counts so an outage throughout the watch is visible.
 
-A ready handoff starts with the standalone `Ready for the merge train` line and
-includes one `Head: <full SHA>` field matching the PR's current head. The latest
+When the task authorizes a Supervisor handoff, sessions use the installed GitHub
+skill's helper: `uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
+(or `--waiting-for-client`), following the GitHub
+[ready handoff contract](../../github/references/cli-reference.md#ready-handoffs).
+The producer and watcher share `github/scripts/ready_handoff.py`. The latest
 handoff by creation/edit time from its author, or a Supervisor explicitly listed with
 `--handoff-login`, wins. The `Engineering ready; waiting for ...` form invalidates
 an earlier Ready. Missing/stale heads, drafts, blocking train dispositions,
