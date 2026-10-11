@@ -351,9 +351,8 @@ for products a Client runs business on.
 ## Move Rate-Limited Claude Sessions
 
 For an enrolled Supervisor Claude session with a pending rate-limit move, read
-[account moves](references/claude-account-moves.md) before typing `/restart`.
-Verify the exact idle tab, restart it in place, confirm the same session resumed
-on Context Panel's selected account, then send `continue`.
+[account moves](references/claude-account-moves.md) for the qualified relaunch
+route and its terminal, transcript and account readbacks before sending input.
 
 ## Close Finished Sessions On Every Check
 
