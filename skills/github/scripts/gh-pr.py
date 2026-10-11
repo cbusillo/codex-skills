@@ -23,6 +23,7 @@ import github_api as github_api_core
 import github_comment as github_comment_core
 import github_read as github_read_core
 import github_identity
+from ready_handoff import handoff_body
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -39,6 +40,7 @@ PR_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
     "create": ("gh_cli_wrapper", "mixed", True),
     "edit": ("gh_cli_wrapper", "mixed", True),
     "comment": ("rest_api", "rest_core", True),
+    "ready": ("rest_api", "rest_core", True),
     "checks": ("rest_api", "rest_core", False),
     "merge": ("rest_api", "rest_core", True),
     "update-branch": ("rest_api", "rest_core", True),
@@ -269,6 +271,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--expected-updated-at", help="Require this prior updated_at value.")
     p.add_argument("--create-if-none", action="store_true", help="Create a comment when --edit-last finds none.")
     p.set_defaults(func=cmd_comment)
+
+    p = sub.add_parser("ready", help="Post the current-head merge-train handoff after checking engineering readiness.")
+    p.add_argument("pr", help="PR number, URL, or branch.")
+    p.add_argument("--waiting-for-client", action="store_true", help="Post Engineering ready; waiting for the Client's acceptance. Only pending launchplane/owner-review checks may remain.")
+    p.set_defaults(func=cmd_ready)
 
     p = sub.add_parser("checks", help="Show check runs and commit statuses via REST.")
     p.add_argument("pr", nargs="?", help="PR number or URL. Defaults to current branch PR.")
@@ -502,6 +509,60 @@ def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
+    repo, number = resolve_pr(args.repo, args.pr)
+    checks = cmd_checks(args)
+    pr = checks["pr"]
+    summary = checks["summary"]
+    validate_ready_pr(pr, repo=repo, number=number)
+    if (
+        summary.get("countsComplete") is not True
+        or summary.get("countsAreLowerBounds") is not False
+        or summary.get("unavailableComponents")
+    ):
+        raise PrHelperError("PR check evidence is incomplete", repo=repo, pr=number)
+    pending_client = sum(
+        check.get("name") == "launchplane/owner-review"
+        and check.get("status") != "completed"
+        for check in checks["checkRuns"]
+    ) if args.waiting_for_client else 0
+    if (
+        summary["failingCount"]
+        or summary["pendingCount"] > pending_client
+        or summary["unfinishedWorkflowRunCount"]
+    ):
+        raise PrHelperError("PR checks are pending or failing", repo=repo, pr=number, summary=summary)
+    client_review = [check for check in checks["checkRuns"] if check.get("name") == "launchplane/owner-review"]
+    if not args.waiting_for_client and (
+        client_review or any(label["name"] == "owner-review" for label in pr["labels"])
+    ):
+        if not any(
+            check.get("name") == "launchplane/owner-review"
+            and check.get("status") == "completed"
+            and check.get("conclusion") == "success"
+            for check in client_review
+        ):
+            raise PrHelperError("Client acceptance is not confirmed; use --waiting-for-client", repo=repo, pr=number)
+    # A push or renewed hold during check collection must not receive a ready comment.
+    current = cmd_view(args)["pr"]
+    validate_ready_pr(current, repo=repo, number=number)
+    if current["headRefOid"] != checks["headSha"] or current["labels"] != pr["labels"]:
+        raise PrHelperError("PR head or labels changed during readiness checks; read it again", repo=repo, pr=number)
+    try:
+        body = handoff_body(checks["headSha"], waiting_for_client=args.waiting_for_client)
+    except ValueError as exc:
+        raise PrHelperError(str(exc), repo=repo, pr=number) from exc
+    result = shared_comment("pr", repo, number, body, operation=CURRENT_OPERATION)
+    return {**result, "headSha": checks["headSha"], "body": body, "summary": summary}
+
+
+def validate_ready_pr(pr: dict[str, Any], *, repo: str, number: int) -> None:
+    if pr.get("state") != "open" or pr.get("draft") is not False:
+        raise PrHelperError("Ready handoff requires an open, non-draft PR", repo=repo, pr=number)
+    if any(label["name"].casefold() == "merge-blocked" for label in pr["labels"]):
+        raise PrHelperError("PR has merge-blocked set", repo=repo, pr=number)
+
+
 def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
     repo, number = resolve_pr(args.repo, args.pr)
     reader = github_read_core.GitHubReader(
@@ -692,22 +753,22 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
         refreshed = probe.body
         refreshed_head = str((refreshed.get("head") or {}).get("sha") or "")
         merged = bool(refreshed.get("merged")) or bool(refreshed.get("merged_at"))
-        merge_sha = str(refreshed.get("merge_commit_sha") or "")
+        observed_merge_sha = str(refreshed.get("merge_commit_sha") or "")
         details = {
             "head_sha": expected_head_sha,
             "observed_head_sha": refreshed_head or None,
             "merged": merged,
-            "merge_commit_sha": merge_sha or None,
+            "merge_commit_sha": observed_merge_sha or None,
             "state": refreshed.get("state"),
         }
         if not refreshed_head or refreshed_head.casefold() != expected_head_sha.casefold():
             return github_api_core.ReconciliationDecision("ambiguous", details=details)
         if merged:
-            if not FULL_SHA_PATTERN.fullmatch(merge_sha):
+            if not FULL_SHA_PATTERN.fullmatch(observed_merge_sha):
                 return github_api_core.ReconciliationDecision("failed", details=details)
             return github_api_core.ReconciliationDecision(
                 "matched",
-                body={"merged": True, "sha": merge_sha, "message": "Merge confirmed by PR re-read"},
+                body={"merged": True, "sha": observed_merge_sha, "message": "Merge confirmed by PR re-read"},
                 details=details,
             )
         if refreshed.get("state") == "open":
@@ -986,13 +1047,13 @@ def neutralize_issue_closing_keywords(body: str) -> tuple[str, list[dict[str, st
     replacements: list[dict[str, str]] = []
 
     def replace(match: re.Match[str]) -> str:
-        original = match.group(0)
+        original = match.group()
         replacement = f"Refs {match.group(2)}"
         replacements.append({"from": original, "to": replacement})
         return replacement
 
     def replace_url(match: re.Match[str]) -> str:
-        original = match.group(0)
+        original = match.group()
         replacement = f"Refs {match.group(3)}#{match.group(4)}"
         replacements.append({"from": original, "to": replacement})
         return replacement
@@ -1483,7 +1544,8 @@ def read_text_file(path: str, *, preserve_newlines: bool = False, **payload: Any
             if preserve_newlines:
                 return sys.stdin.buffer.read().decode("utf-8")
             return sys.stdin.read()
-        with pathlib.Path(path).open(encoding="utf-8", newline="" if preserve_newlines else None) as stream:
+        newline = "" if preserve_newlines else None
+        with pathlib.Path(path).open(encoding="utf-8", newline=newline) as stream:
             return stream.read()
     except OSError as exc:
         raise PrHelperError("Could not read body file", detail=str(exc), path=path, **payload) from exc
@@ -1518,7 +1580,7 @@ def run_pr_write(args: list[str], **payload: Any) -> subprocess.CompletedProcess
 
 def extract_url(value: str) -> Optional[str]:
     match = re.search(r"https?://\S+", value)
-    return match.group(0) if match else None
+    return match.group() if match else None
 
 
 def gh_json(args: list[str]) -> Any:
@@ -1594,7 +1656,7 @@ def run_gh_with_retry(
                 transport="gh_cli_wrapper",
                 bucket=observed_bucket,
             )
-        result = github_api_core.legacy_process_result(
+        attempt_result = github_api_core.legacy_process_result(
             proc.returncode,
             proc.stdout,
             proc.stderr,
@@ -1607,22 +1669,22 @@ def run_gh_with_retry(
         )
         if (
             probe_allowed
-            and result.failure is not None
-            and result.failure.cause in github_api_core.PRIMARY_RATE_LIMIT_CAUSES
-            and not result.failure.rate_limit
+            and attempt_result.failure is not None
+            and attempt_result.failure.cause in github_api_core.PRIMARY_RATE_LIMIT_CAUSES
+            and not attempt_result.failure.rate_limit
         ):
             probe_timeout = timeout_seconds
             if probe_timeout is not None:
                 probe_timeout -= time.monotonic() - attempt_started
                 if probe_timeout <= 0:
-                    return result
+                    return attempt_result
             probe = github_api_core.rate_limit_probe(
                 gh_cmd=GH,
                 actor=reported_actor,
                 expected_actor=expected_context,
                 timeout_seconds=probe_timeout,
             )
-            result = github_api_core.legacy_process_result(
+            attempt_result = github_api_core.legacy_process_result(
                 proc.returncode,
                 proc.stdout,
                 proc.stderr,
@@ -1634,12 +1696,12 @@ def run_gh_with_retry(
                 bucket=observed_bucket,
                 rate_limit_result=probe,
             )
-        if result.bucket:
-            observed_bucket = result.bucket
-        return result
+        if attempt_result.bucket:
+            observed_bucket = attempt_result.bucket
+        return attempt_result
 
     result = github_api_core.run_with_retry(
-        lambda: attempt(None),
+        lambda: attempt(),
         operation=operation,
         is_write=is_write,
         actor=EXPECTED_ACTOR,

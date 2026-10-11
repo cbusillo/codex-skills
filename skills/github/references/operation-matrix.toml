@@ -417,6 +417,27 @@ test_refs = ["github/scripts/test_github_comment.py:test_append_filters_old_page
 
 
 [[operations]]
+id = "github.pr.ready"
+request_priority = "essential"
+capabilities = ["pull_requests_read", "checks_read", "statuses_read", "actions_read", "pull_requests_write"]
+permission_mode = "fixed"
+permission_note = "Uses existing PR, check, status and Actions reads and the shared automation comment writer; no new grant."
+entrypoint = "github/scripts/gh-pr.py ready"
+intent = "Read current-head engineering checks and post a ready or Client-waiting handoff."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/pulls/{number}; GET /repos/{repo}/commits/{sha}/check-runs; GET /repos/{repo}/commits/{sha}/statuses; GET /repos/{repo}/commits/{sha}/status; paged GET /repos/{repo}/actions/runs?head_sha={sha}; paged GET /repos/{repo}/actions/runs/{run_id}/jobs?filter=latest; POST /repos/{repo}/issues/{number}/comments"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "comment"
+idempotency = "non_idempotent"
+retry_eligibility = "conditional"
+reconciliation_strategy = "operation_marker"
+retained_graphql_rationale = "No retained GraphQL transport; reuses REST checks and shared comment reconciliation."
+source_refs = ["github/scripts/gh-pr.py:cmd_ready", "github/scripts/gh-pr.py:validate_ready_pr", "github/scripts/ready_handoff.py:latest_ready"]
+test_refs = ["github/scripts/test_ready_handoff.py", "supervisor/scripts/test_auto_enqueue.py:test_latest_wait_stale_head_missing_head_and_untrusted_ready_refuse"]
+
+[[operations]]
 id = "github.pr.checks"
 request_priority = "essential"
 capabilities = ["pull_requests_read", "checks_read", "statuses_read", "actions_read"]
@@ -2316,6 +2337,7 @@ degraded_behavior = "Only the owner creates/installs the App in their browser. C
 documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest"
 
 [api_surface_fingerprints]
+"github/scripts/ready_handoff.py" = "c954ac9933f0020900dc7cf85fe84dd51c6796dca4adda896acd9174eebff837"
 "direction/scripts/direction_mark.py" = "c4263dc36bf8f69fda588da59f605b5b354cbfdccbebc673b4bd3c8d326cac50"
 "github/scripts/github_client.py" = "1a1910b5e5ae3cfd421fedce585344bd56b416312bfe0a9cda7222881d543fc6"
 "github/scripts/github_app_setup.py" = "752a8c6d16f8117271700a616a506dabc80528544f5315a1d15d67ab141ec4c4"

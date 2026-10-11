@@ -995,6 +995,12 @@ merge-train-controller-run-once` instead of open-coding the route. Mutating
   with it. Preserve a task's assigned Supervisor handoff instead of applying
   labels when the task does not authorize train entry. A held child stays unlabeled or draft, and that stops the stack. Do not
   hand-collapse stacks in GitHub.
+- **Supervisor Handoff**: When a task assigns routing to a Supervisor, use
+  `uv run ../github/scripts/gh-pr.py ready <pr>`
+  instead of writing the ready comment. Add `--waiting-for-client` until a
+  required Client acceptance covers the current head. Read the GitHub
+  [ready handoff contract](../github/references/cli-reference.md#ready-handoffs)
+  for checks and stale-head handling. The assigned Supervisor owns train entry.
 - **Mutation Gate**: Keep scheduled runners in dry-run mode until the Director
   explicitly selects a mutation pilot. Manual `mutate=true` controller runs are
   appropriate only after dry-run evidence shows the intended queue, candidate,

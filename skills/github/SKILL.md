@@ -145,6 +145,11 @@ commands:
     resource_path: scripts/gh-pr.py
     example_argv: ["scripts/gh-pr.py", "checks", "<pr>"]
     purpose: Reads PR check runs and commit statuses through the helper.
+  - name: github-pr-ready
+    source: skill
+    resource_path: scripts/gh-pr.py
+    example_argv: ["uv", "run", "scripts/gh-pr.py", "ready", "<pr>"]
+    purpose: Posts a checked current-head merge-train handoff; add --waiting-for-client for the Client acceptance wait.
   - name: github-pr-merge
     source: skill
     resource_path: scripts/gh-pr.py
@@ -777,7 +782,7 @@ this file for the full mapping and the `commands` entries. Use raw `gh` only
 for a surface no helper covers, route it through `scripts/gh-with-env-token`,
 and say why.
 
-- **PRs**: `scripts/gh-pr.py view|checks|create|edit|comment|update-branch|merge|supersede`.
+- **PRs**: `scripts/gh-pr.py view|checks|create|edit|comment|ready|update-branch|merge|supersede`.
   `--repo` is global and comes first:
   `uv run scripts/gh-pr.py --repo OWNER/REPO merge 123 --method merge`. To
   create a PR in another repository, run from it or pass `--repo` with an
@@ -889,7 +894,11 @@ Use PRs for all non-trivial changes.
   [repository cleanup](../references/repo-cleanup.md), after confirming no
   issue, PR, session, or runtime depends on them.
 - **Handoffs**: Put recovery-critical handoff content in the owning issue or
-  PR. Local handoff files are scratch unless intentionally committed.
+  PR. Post merge-train readiness with `uv run scripts/gh-pr.py ready <pr>`;
+  use `--waiting-for-client` until a required Client acceptance covers the
+  current head. Read [ready handoffs](references/cli-reference.md#ready-handoffs)
+  for the check and comment contract. Local handoff files are scratch unless
+  intentionally committed.
 
 ## Merging
 
