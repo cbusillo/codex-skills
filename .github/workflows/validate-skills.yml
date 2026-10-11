@@ -60,3 +60,7 @@ jobs:
           if ((elapsed > TIME_BUDGET_SECONDS)); then
             echo "::warning title=CI time budget exceeded::Validation took ${elapsed}s; the budget is ${TIME_BUDGET_SECONDS}s."
           fi
+
+      - name: Warn about change-detector tests
+        if: steps.lane.outputs.run == 'true'
+        run: uv run scripts/check_test_quality.py --repo . --format github

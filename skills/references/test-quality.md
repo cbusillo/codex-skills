@@ -1,0 +1,94 @@
+# Test quality warnings
+
+`scripts/check_test_quality.py` scans tracked test files for likely change
+detectors. Run it with Python 3.12 or newer; it has no third-party dependencies.
+It prints candidates for review and exits zero even when it finds them.
+An unreadable repository or input exits nonzero; a Python parse error becomes
+a visible coverage warning. Do not hide scanner failures with `continue-on-error`.
+
+```sh
+uv run scripts/check_test_quality.py --repo . --format github
+uv run scripts/test_check_test_quality.py
+```
+
+The five rules come from the recorded
+[scan](https://github.com/cbusillo/codex-skills/issues/1692#issuecomment-6113532065):
+
+1. Tracked config values pinned to string literals: hard-failure candidates.
+   Config includes `.github/**`, `pyproject.toml`, lockfiles, Dockerfiles,
+   compose YAML, entitlements, Info.plist and package.json.
+2. Tracked workflows loaded without observable execution: warnings.
+3. Literals asserted against tracked source text or `inspect.getsource`:
+   hard-failure candidates.
+4. Asserted version-shaped tokens also found in tracked non-test files:
+   hard-failure candidates. This includes three-part versions, `>=` specifiers
+   and action `@vN` references.
+5. Catalog-only string assertions against SKILL.md, AGENTS.md or references
+   Markdown: hard-failure candidates. Catalog identity is recognized by the
+   tracked scanner and review-reference paths together.
+
+All classifications still emit warnings and exit zero during this trial.
+Ordinary CLI/error sentence assertions are behavior and stay quiet.
+
+Python uses syntax analysis and simple aliases for file reads and assertions,
+excluding recognizable temporary-directory paths and execution outputs.
+Swift and JavaScript/TypeScript use bounded call and alias patterns for
+config/duplicate-version checks and workflow warnings, including multiline
+calls. The scanner selects
+test directories, Python `test_`/`_test` files, Swift `Tests`/`Test` files and
+JavaScript `.test`/`.spec` files. It reads their current tracked working copies;
+untracked files are excluded.
+
+This is a heuristic, not proof that the assertion is wrong. It cannot follow
+arbitrary data flow or understand every language/test DSL. Foreign-language
+source-text/instruction checks, computed paths, imported loaders with no path
+argument, and custom assertion helpers can escape it. Python execution
+detection is per function, so an unrelated execution in the same test can
+hide a workflow warning. Foreign alias detection is file-wide and conservative.
+Comments and Python string fixtures are ignored. Source-of-truth agreement,
+temporary fixtures and real artifact/immutable-evidence checks remain valid;
+triage candidates using the repository's test rubric. Symlinked files and
+binary/non-UTF-8 files are excluded; the report does not prove complete coverage.
+No blocking mode is enabled: tune false positives before introducing one.
+
+## Wire another repository's CI
+
+1. Check out the consumer repository as usual, then check out this catalog at
+   a reviewed full commit SHA into `.test-quality-catalog`. Use a second
+   `actions/checkout` step; do not copy the scanner into the consumer. Updating
+   the SHA is a deliberate catalog update, not a test literal to assert.
+2. Install Python 3.12 or newer using the consumer's existing setup. Invoke the
+   scanner with the consumer root as `--repo`; the script's location does not
+   select the repository. If using uv, use `uv run --no-project --no-config` so
+   the consumer's dependency setup cannot affect this dependency-free script.
+3. Add the warning step to every CI path that validates tests, including the
+   merge-train candidate path. Keep the consumer's existing runner selection
+   and fork safety. Do not mark warning findings as failures or add this as a
+   new required status check during this trial.
+
+```yaml
+- name: Check out test quality scanner
+  uses: actions/checkout@<consumer-approved-full-action-sha>
+  with:
+    repository: cbusillo/codex-skills
+    ref: <reviewed-full-catalog-commit-sha>
+    path: .test-quality-catalog
+    persist-credentials: false
+- name: Warn about change-detector tests
+  run: python3 .test-quality-catalog/scripts/check_test_quality.py --repo . --format github
+```
+
+4. Run the same command locally and triage each finding. If a whole fixture
+   file is deliberately excluded, use repeatable `--exclude 'path/glob'` and
+   record the reason beside the CI command. Prefer fixing detection over broad
+   exclusions. Use `--format json` for scan counts and examples.
+5. Prove the invocation on a temporary PR with a tracked synthetic test such as
+   `assert product.version == "4.5.6"` and a tracked non-test file defining
+   that version: its line should receive a warning and
+   the step should succeed. Replace it with `assert product.version ==
+   metadata.version`: that warning should disappear. Remove the probe before
+   landing. No tests should inspect or assert the consumer's workflow text.
+
+Launchplane and context-panel need their own CI integration PRs using these
+steps. The guard PR here does not change those repositories. In this catalog,
+the existing validation workflow invokes the local scanner directly.
