@@ -19,25 +19,53 @@ MARKER = "github-plan:claim "
 EMPTY_HOLDERS = {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", "nobody", "no one", "no-one"}
 
 
+def word_pattern(*words: str) -> str:
+    return r"\b(?:" + "|".join(words) + r")\b"
+
+
+# Words that make a clause a precondition, not a later step or a note. A lead
+# clause may say "None before <step>"; a bare "None" note also keeps approvals.
+PRECONDITION_WORDS = ("but", "except", "unless", "until", "if", "once", "after", "however", "pending",
+                      "still", "then", "must", r"wait\w*", r"await\w*", "blocked", "parked",
+                      r"requir\w*", r"need\w*", r"approv\w*", r"prerequisite\w*",
+                      "outstanding", r"sign\w*[\s-]+off")
+LEAD_HOLD_WORDS = word_pattern(*PRECONDITION_WORDS)
+LATER_HOLD_WORDS = word_pattern(*PRECONDITION_WORDS, "before", "first")
+HOLD_WORDS = word_pattern(*PRECONDITION_WORDS, "before", "first", r"authoriz\w*", "decision", r"accept\w*", "hold", "held", "gated", "blocker")
+
+
 def no_wait_reason(reason: str, *, field: str) -> bool:
     """Recognize explicit absence of a wait without discarding wait clauses."""
     reason = reason.strip().casefold().rstrip(" .")
     if reason in {"none", "n/a", "nothing", "-", "no native issue blocker"}:
         return True
-    if field == "Waiting for" and re.fullmatch(
-        r"(?:none|nothing|n/a)[;.]\s*(?:(?:the )?next actor is an agent|an agent acts next|this is agent work)",
-        reason,
-    ):
-        return True
-    # Apart from the exact agent-next forms above, only Blocked by may contain
-    # an explanatory sentence. Other semicolons and wrapped holds still refuse.
-    if re.search(r"\b(?:wait(?:ing)?|await(?:ing)?|pending|parked|blocked|until|unless|except|but|after|requires?|needs?)\b", reason):
-        return False
+    # Parse the explicit absence separately: "blocker" in the no-native-blocker
+    # prefix is not a hold, but the same word in its explanation is.
+    explanation = None
     if field == "Blocked by":
-        return bool(re.fullmatch(r"(?:none|n/a|nothing|no native issue blocker)\.\s+[^;]+", reason))
-    if field == "Waiting for":
-        return bool(re.fullmatch(r"nothing for [\w -]+", reason))
-    return False
+        explanation = re.fullmatch(
+            r"(?:(?:none|n/a|nothing)[.;]\s*|no native issue blocker(?:[.;]\s*|\s+))(.+)", reason,
+        )
+    elif field == "Waiting for":
+        explanation = re.fullmatch(r"(?:none|nothing|n/a)[;.]\s*(.+)|nothing for ([\w -]+)", reason)
+    if not explanation:
+        return False
+    note = next(group for group in explanation.groups() if group is not None)
+    if re.search(HOLD_WORDS, note) or re.search(
+        r"\b(?:review|depend\w*|clarification|director|owner|client)\b", note,
+    ):
+        return False
+    # Check each action's subject, rather than allowing an agent mentioned in
+    # a later clause to hide the person who must act first.
+    for action in re.finditer(
+        r"(?:^|[;.,]\s*)(?:(?:the )?next actor is ([^;.,]+)|"
+        r"([^;.,]+?)\s+(?:acts next\b|answers?\b|to\s+[a-z][\w-]*)|"
+        r"([^;.,]+?)['’]s\s+(?:answer|go-ahead)\b)", note,
+    ):
+        actor = next(group for group in action.groups() if group is not None)
+        if not re.fullmatch(r"(?:(?:an?|the|executing|next)\s+)*(?:agent|supervisor|engineering)", actor):
+            return False
+    return True
 
 
 def marker(claim: dict[str, str]) -> str:

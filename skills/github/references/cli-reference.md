@@ -591,7 +591,10 @@ Claim the exact branch that the worktree helper will create. For
 Verify holds and recorded waits under Choose Work before invoking claim.
 For a recorded wait or parked/blocked/stale/done state, pass
 `--wait-resolved "<existing resolution evidence>"` only after verifying its
-condition or a recorded Director release. Without that evidence the command refuses
+condition or a recorded Director release. Explicit no-wait fields can include
+plain explanations, such as `No native issue blocker recorded for this source
+task` or `None; an executing agent acts next`. Explanations containing wait or
+hold words still require resolution evidence. Without that evidence the command refuses
 before writing. It records the resolution and previous Current Status in the
 claim comment and returns the previous status for recovery. Claim and this
 argument grant no Director decision or permission to lift a repository hold.

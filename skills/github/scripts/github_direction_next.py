@@ -902,19 +902,11 @@ def rank_portfolio_work(
     }
 
 
-def word_pattern(*words: str) -> str:
-    return r"\b(?:" + "|".join(words) + r")\b"
-
-
-# Words that make a clause a precondition, not a later step or a note. A lead
-# clause may say "None before <step>"; a bare "None" note also keeps approvals.
-PRECONDITION_WORDS = ("but", "except", "unless", "until", "if", "once", "after", "however", "pending",
-                      "still", "then", "must", r"wait\w*", r"await\w*", "blocked", "parked",
-                      r"requir\w*", r"need\w*", r"approv\w*", r"prerequisite\w*",
-                      "outstanding", r"sign\w*[\s-]+off")
-LEAD_HOLD_WORDS = word_pattern(*PRECONDITION_WORDS)
-LATER_HOLD_WORDS = word_pattern(*PRECONDITION_WORDS, "before", "first")
-HOLD_WORDS = word_pattern(*PRECONDITION_WORDS, "before", "first", r"authoriz\w*", "decision", r"accept\w*")
+word_pattern = github_plan_claim.word_pattern
+PRECONDITION_WORDS = github_plan_claim.PRECONDITION_WORDS
+LEAD_HOLD_WORDS = github_plan_claim.LEAD_HOLD_WORDS
+LATER_HOLD_WORDS = github_plan_claim.LATER_HOLD_WORDS
+HOLD_WORDS = github_plan_claim.HOLD_WORDS
 
 
 def lead_clause(reason: str) -> tuple[str, str]:
