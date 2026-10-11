@@ -420,11 +420,14 @@ def run_pass(io, args, emit):
                 if item["ineligible_reasons"] == [f"missing {target['label']} label"]
             }
             pulls = io.pages(f"/repos/{repo}/pulls", state="open")
-            # Any already labeled PR preserves the existing batch, even if currently ineligible.
+            # Active candidates were checked above. Only controller-proven
+            # ineligible PRs can be ignored here; absent inventory stays busy.
+            dispositions = {item["number"]: item for item in queue}
             labeled = [
                 pr["number"]
                 for pr in pulls
                 if target["label"] in {label["name"] for label in pr["labels"]}
+                and not dispositions.get(pr["number"], {}).get("ineligible_reasons")
             ]
             if labeled:
                 emit(

@@ -89,6 +89,7 @@ class Fake:
         self.before = lambda _self: None
         self.targets = [copy.deepcopy(TARGET)]
         self.after_label_action = "idle"
+        self.ineligible = {}
 
     def policies(self, _owner):
         return copy.deepcopy(self.targets)
@@ -96,7 +97,7 @@ class Fake:
     def train(self, _target):
         self.calls += 1
         self.before(self)
-        return response(
+        value = response(
             self.pulls.values(),
             self.writes,
             **(
@@ -112,6 +113,15 @@ class Fake:
                 }
             ),
         )
+
+        dry = value["result"]["dry_run_result"]
+        for row in dry["queue"]:
+            if row["number"] in self.ineligible:
+                row["ineligible_reasons"] = self.ineligible[row["number"]]
+        dry["queue_order"] = [
+            row["number"] for row in dry["queue"] if not row["ineligible_reasons"]
+        ]
+        return value
 
     def get(self, path):
         return copy.deepcopy(self.pulls[int(path.rsplit("/", 1)[-1])])
@@ -361,24 +371,54 @@ class EnqueueTests(unittest.TestCase):
         self.assertEqual(fake.writes, [1, 2, 4, 5])
         self.assertTrue(any(event == "driver_handoff" for event, _data in self.events))
 
-    def test_blocked_labeled_pr_reports_its_hold(self):
+    def test_only_held_labeled_prs_allow_the_next_ready_batch(self):
+        fake = Fake()
+        for number, reason in (
+            (1, "held by merge-blocked label"),
+            (2, "actor role is not allowed to enqueue"),
+        ):
+            fake.pulls[number]["labels"] = [{"name": TARGET["label"]}]
+            fake.ineligible[number] = [reason]
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [3])
+        self.assertEqual(fake.pulls[1]["labels"], [{"name": TARGET["label"]}])
+        self.assertEqual(fake.pulls[2]["labels"], [{"name": TARGET["label"]}])
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [3])
+
+    def test_running_candidate_preserves_held_labeled_members(self):
+        fake = Fake()
+        fake.pulls[1]["labels"] = [{"name": TARGET["label"]}]
+        fake.ineligible[1] = ["held by merge-blocked label"]
+        fake.active = True
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        self.assertTrue(any(event == "busy" for event, _ in self.events))
+
+    def test_eligible_labeled_member_preserves_batch_with_held_members(self):
+        fake = Fake()
+        for number in (1, 2):
+            fake.pulls[number]["labels"] = [{"name": TARGET["label"]}]
+        fake.ineligible[1] = ["held by merge-blocked label"]
+        fake.ineligible[2] = []
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        self.assertTrue(any(event == "busy" for event, _ in self.events))
+
+    def test_labeled_member_missing_from_controller_inventory_stays_busy(self):
         fake = Fake()
         fake.pulls[1]["labels"] = [{"name": TARGET["label"]}]
         original_train = fake.train
 
-        def blocked(target):
+        def missing(target):
             value = original_train(target)
-            value["result"]["dry_run_result"]["queue"][0]["ineligible_reasons"] = [
-                "manual hold"
-            ]
+            value["result"]["dry_run_result"]["queue"] = []
             return value
 
-        fake.train = blocked
+        fake.train = missing
         self.run_pass(fake)
-        busy = next(data for event, data in self.events if event == "busy")
-        self.assertEqual(busy["labeled"], [1])
-        self.assertEqual(busy["queue"][0]["ineligible_reasons"], ["manual hold"])
         self.assertEqual(fake.writes, [])
+        self.assertTrue(any(event == "busy" for event, _ in self.events))
 
     def test_an_edited_wait_invalidates_a_later_created_ready(self):
         waiting = comment(f"{watch.WAITING} the Client's acceptance")
