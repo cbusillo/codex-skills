@@ -183,9 +183,11 @@ Apply assignments only after the installed skills support this convention.
 
 `next --agent claude|codex` selects that family and unlabeled issues, and reports
 other-family issues as `assigned_elsewhere`. Without the flag, the helper detects
-the active harness when only one family’s session markers are present. A child
-can inherit its parent’s markers; when both families are present, pass
-`--agent claude|codex` for the actual running family. When detection is unavailable
+the active harness when only one family’s session markers are present. When
+markers conflict or are absent, it checks the bounded parent-process chain for
+the nearest native harness, including Codex's remote app-server daemon. If the
+chain cannot identify the worker, pass `--agent claude|codex` for the actual
+running family. When detection is unavailable
 or both routing labels are present, labeled issues remain excluded; identify the
 running family with `--agent`, or resolve the conflicting assignment.
 

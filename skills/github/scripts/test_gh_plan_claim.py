@@ -10,6 +10,8 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -68,7 +70,8 @@ def format_ownership(text: str) -> tuple[str, ...]:
 class ClaimTests(unittest.TestCase):
     def setUp(self):
         self.args = Namespace(repo="owner/repo", issue="42", worker=OWNER["worker"], session=OWNER["session"],
-                              branch=OWNER["branch"], next_action="Implement the repair", resume_from=None, wait_resolved=None)
+                              branch=OWNER["branch"], next_action="Implement the repair", resume_from=None, wait_resolved=None,
+                              agent="codex")
         self.issue: dict[str, Any] = {"repo": "owner/repo", "number": 42, "title": "Repair", "state": "open",
                       "user": {"login": TEST_BOT}, "labels": [],
                       "body": PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n\n## Objective\n\nKeep me\n\n## Current Status\n\nState: Open, not started.\n"}
@@ -1044,6 +1047,19 @@ class ClaimTests(unittest.TestCase):
                 self.run_claim()
             self.assertIn(f"agent:{other}", str(caught.exception))
             self.assert_no_writes()
+
+    def test_remote_codex_claim_detects_family_without_explicit_agent(self):
+        self.args.agent = None
+        self.issue["labels"] = [{"name": "agent:codex"}]
+        inherited = {"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "supervisor",
+                     "CODEX_THREAD_ID": "worker"}
+        with patch.dict(os.environ, inherited, clear=True), patch.object(os, "getppid", return_value=10), \
+                patch.object(subprocess, "run", return_value=subprocess.CompletedProcess(
+                    [], 0, "1 /opt/app-server/bin/codex\n", "")):
+            self.run_claim()
+        self.assertIn("post", self.events)
+        self.assertIn("status", self.events)
+        self.assertEqual(self.emitted.call_args.args[0]["claim"]["session"], self.args.session)
 
     def test_explicit_agent_override_is_recorded_without_changing_assignment(self):
         self.args.agent = "codex"

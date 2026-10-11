@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
+import subprocess
 from typing import Any, Mapping
 
 FAMILIES = ("claude", "codex")
@@ -15,6 +17,35 @@ LABEL_DEFS = {
     f"agent:{family}": {"color": "1d76db", "description": f"Assigned to the {family.title()} agent family"}
     for family in FAMILIES
 }
+
+
+def ancestor_agent() -> str | None:
+    """Resolve inherited markers from the nearest native harness, without argv."""
+    pid = os.getppid()
+    seen: set[int] = set()
+    for _ in range(12):
+        if pid <= 1 or pid in seen:
+            break
+        seen.add(pid)
+        try:
+            result = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "ppid=,comm="],
+                capture_output=True, text=True, timeout=0.1,
+            )
+            if result.returncode:
+                break
+            parent, executable = result.stdout.strip().split(maxsplit=1)
+            pid = int(parent)
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            break
+        name = Path(executable).name
+        if name in FAMILIES:
+            return name
+        # A script-hosted inner agent may hide behind its runtime executable.
+        # Do not mistake its outer native harness for the current worker.
+        if name in {"node", "nodejs", "bun", "deno"}:
+            break
+    return None
 
 
 def running_agent(explicit: str | None = None, *, environ: Mapping[str, str] | None = None) -> str | None:
@@ -27,7 +58,8 @@ def running_agent(explicit: str | None = None, *, environ: Mapping[str, str] | N
     claude = bool(env.get("CLAUDE_CODE_SESSION_ID") or env.get("CLAUDECODE"))
     if codex != claude:
         return "codex" if codex else "claude"
-    return None
+    # Injected environment fixtures have no corresponding process lineage.
+    return ancestor_agent() if environ is None else None
 
 
 def assignment_labels(labels: list[Any]) -> list[str]:
