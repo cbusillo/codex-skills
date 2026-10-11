@@ -21,6 +21,7 @@ import time
 
 import session_record
 import account_choice
+import backfill_inventory
 from close_ttys import idle_terminal_command, inventory
 
 GITHUB = Path(__file__).resolve().parents[2] / "github/scripts"
@@ -48,10 +49,15 @@ class ConfirmedIssueRefusal(ValueError):
 
 
 def verify_closed(entry, supervisor_session):
-    if entry.get("supervisor_owned") is not True or entry["session_id"] == supervisor_session:
+    historical = entry.get("_inventory") is True
+    if entry["session_id"] == supervisor_session or (
+        not historical and entry.get("supervisor_owned") is not True
+    ):
         raise ValueError("requires another explicitly Supervisor-owned session")
+    if historical and (entry.get("safe_exit_yes") is not True or entry.get("still_running") is not False):
+        raise ValueError("inventory closure requires the Supervisor's verified safe exit and inactivity")
     pid, tty = entry.get("pid"), entry.get("tty")
-    if type(pid) is not int or pid <= 0 or not isinstance(tty, str) or not tty:
+    if not historical and (type(pid) is not int or pid <= 0 or not isinstance(tty, str) or not tty):
         raise ValueError("closure requires the matched process PID and TTY")
     rows = inventory()
     if any(p == pid or (not entry.get("_backfill") and t == tty and not idle_terminal_command(c)) for p, t, c in rows):
@@ -262,6 +268,63 @@ def handoff(reader, entry, actor):
     return evidence
 
 
+def discover_handoff(reader, entry, actor):
+    """Use native transcript links first; never attribute a shared bot by recency alone."""
+    records = session_record.read_jsonl(Path(entry["transcript"]))
+    def strings(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for child in value.values():
+                yield from strings(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from strings(child)
+    # Shared-bot comments merely read by the source are not its handoff.
+    history = []
+    for record in records:
+        for text in strings(record):
+            if re.search(r'"comment_action"\s*:\s*"(?:created|updated)"', text):
+                history.append(text)
+    history.append(session_record.session_status(entry)["last_text"])
+    history = "\n".join(history)
+    urls = list(dict.fromkeys(re.findall(HANDOFF.pattern, history)))
+    candidates = [*entry.get("_handoffs", []),
+                  *(f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}"
+                    for repo, number, comment_id in reversed(urls))]
+    for url in dict.fromkeys(candidates):
+        match = HANDOFF.fullmatch(url)
+        if not match:
+            continue
+        try:
+            evidence = handoff(reader, {**entry, "handoff_url": url}, actor)
+        except ValueError:
+            continue
+        text = evidence.get("body") or ""
+        if (release.stamp(evidence.get("updated_at") or evidence.get("created_at")) <= release.stamp(entry["ended_at"])
+                and not text.startswith("Claimed by ") and not claim.records(text)
+                and (url in history or entry["session_id"] in text)):
+            return {**entry, "handoff_url": url}, evidence
+    # A summary without a transcript URL must name the exact native ID.
+    threads = {(r["repo"], r["issue"]) for r in entry.get("_inventory_claims", [])}
+    if entry.get("_handoff_thread"):
+        threads.add(entry["_handoff_thread"])
+    for repo, number in sorted(threads):
+        cache = entry.get("_handoff_cache", {})
+        if (repo, number) not in cache:
+            cache[(repo, number)] = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="backfill_handoff")
+        comments = cache[(repo, number)]
+        for evidence in reversed(comments):
+            text = evidence.get("body") or ""
+            if ((evidence.get("user") or {}).get("login") == actor and entry["session_id"] in text
+                    and not text.startswith("Claimed by ") and not claim.records(text)
+                    and release.stamp(evidence.get("updated_at") or evidence.get("created_at")) <= release.stamp(entry["ended_at"])):
+                url = evidence["html_url"]
+                checked = handoff(reader, {**entry, "handoff_url": url}, actor)
+                return {**entry, "handoff_url": url}, checked
+    raise ValueError("no authored handoff bound to the exact native transcript/session; reconcile this session")
+
+
 def run_release(repo, number, source_id, related, prs, evidence_url, supervisor_session, checkout_root, dry_run):
     checkout = checkout_root / repo.split("/")[1]
     argv = ["uv", "run", str(GITHUB / "gh-plan.py"), "--repo", repo, "release-claim", str(number),
@@ -284,13 +347,18 @@ def run_release(repo, number, source_id, related, prs, evidence_url, supervisor_
 
 def release_session(reader, entry, actor, supervisor_session, issues, checkout_root, apply):
     status = validate_closure(entry, supervisor_session)
-    handoff_record = handoff(reader, entry, actor)
+    if entry.get("handoff_url"):
+        handoff_record = handoff(reader, entry, actor)
+    else:
+        entry, handoff_record = discover_handoff(reader, entry, actor)
     plans = []
     retained_status = []
     pulls_by_repo = {}
     handoff_prs = set(re.findall(r"https://github\.com/[^/\s]+/[^/\s]+/pull/[1-9]\d*", handoff_record.get("body") or ""))
     refused = []
     for repo, number in issues:
+        if entry.get("_inventory") and (repo, number) not in {(r["repo"], r["issue"]) for r in entry["_inventory_claims"]}:
+            continue
         try:
             issue_plans, status_claims = plan_issue(reader, repo, number, entry, actor, handoff_prs, pulls_by_repo, checkout_root, apply)
             plans.extend(issue_plans)
@@ -298,9 +366,12 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
         except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError, GitHubReadError, GitHubReadShapeError) as error:
             refused.append({"repository": repo, "issue": number, "error": str(error)})
     report = {"session_id": entry["session_id"], "claims": [], "dry_run": not apply,
-              "retained_status_claims": retained_status, "issue_refusals": refused}
+              "retained_status_claims": retained_status, "issue_refusals": refused,
+              "inventory_claims": list(entry.get("_inventory_results", {}).values()),
+              "handoff_url": entry["handoff_url"],
+              "closure_evidence": "Supervisor verified inventory; original PID/TTY unavailable" if entry.get("_inventory") else "matched PID/TTY log"}
     try:
-        return apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, apply, report)
+        return apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, apply, report, reader)
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError, CommentError) as error:
         raise PartialRelease(error, report) from error
 
@@ -317,12 +388,28 @@ def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_
     if belongs_to_session(issue.get("body") or "", entry["session_id"]):
         retained_status.append({"repository": repo, "issue": number,
                                 "next_action": "reconcile Current Status or use the supported --resume-from handoff route"})
-    for source, related, unresolved in active_claims(reader, repo, number, entry["session_id"], actor):
+    sources = active_claims(reader, repo, number, entry["session_id"], actor)
+    active_ids = {identifier for source, related, unresolved in sources for identifier in [source["id"], *related, *unresolved]}
+    for row in entry.get("_inventory_claims", []):
+        if row["repo"] != repo or row["issue"] != number:
+            continue
+        expected = next((c for c in comments if c["id"] == row["claim_comment_id"]), None)
+        if expected is None or (expected.get("user") or {}).get("login") != actor or not belongs_to_session(expected.get("body") or "", entry["session_id"]):
+            raise ValueError("inventory source is missing or lacks exact native-session/author evidence")
+        entry.setdefault("_inventory_results", {})[(repo, number, row["claim_comment_id"])] = {
+            "repository": repo, "issue": number, "claim_comment": row["claim_comment_id"],
+            "status": "active" if row["claim_comment_id"] in active_ids else "already_released"}
+    for source, related, unresolved in sources:
+        if entry.get("_inventory") and not any(r["repo"] == repo and r["issue"] == number
+                and r["claim_comment_id"] == source["id"] for r in entry["_inventory_claims"]):
+            continue
         record = release.source_record(source)
         if repo not in pulls_by_repo:
             pulls_by_repo[repo] = reader.paged_json(f"/repos/{repo}/pulls", params={"state": "open"}, step_prefix="retained_session_prs")
         pulls = list(pulls_by_repo[repo])
         mentioned: set[str] = handoff_prs | ({record["refresh_pr"]} if record.get("refresh_pr") else set())
+        mentioned.update(r["retained_pr_url"] for r in entry.get("_inventory_claims", [])
+                         if r["repo"] == repo and r["issue"] == number and r.get("retained_pr_url"))
         for url in sorted(mentioned):
             match = re.fullmatch(rf"https://github\.com/{re.escape(repo)}/pull/([1-9]\d*)", url)
             if match and not any(p["html_url"] == url for p in pulls):
@@ -337,14 +424,46 @@ def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_
             raise ValueError(f"ownership follow-ups {unresolved} lack a verified source/session relationship; obtain authored exact-ID releases")
     if not plans and retained_status and not any(claim.records(c.get("body") or "") for c in comments):
         raise ValueError("status-only ownership has no structured source; reconcile its authored ownership record")
-    if apply and plans:
+    if plans:
         remote = claim.run_read(["git", "remote", "get-url", "origin"], cwd=checkout_root / repo.split("/")[1]).strip()
         if not re.search(rf"[:/]{re.escape(repo)}(?:\.git)?$", remote, re.IGNORECASE):
             raise ValueError("release checkout must match the canonical repository")
     return plans, retained_status
 
 
-def apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, apply, report):
+def preview_guards(entry, *, reader, repo, number, source_id, related, prs, body, actor, supervisor_session):
+    comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="preview_source_activity")
+    source = next(c for c in comments if c["id"] == source_id)
+    related_comments = [c for c in comments if c["id"] in related]
+    if len(related_comments) != len(related):
+        raise ValueError("related ownership changed during preview")
+    local = claim.local_inventory(repo, number)
+    now = datetime.now(timezone.utc).isoformat()
+    prospective = {"body": body, "user": {"login": actor}, "created_at": now, "updated_at": now}
+    branches = set()
+    issue_refusal = None
+    for url in prs:
+        match = re.fullmatch(rf"https://github\.com/{re.escape(repo)}/pull/([1-9]\d*)", url)
+        if not match:
+            raise ValueError("retained PR is not a same-repository canonical URL")
+        pull = reader.get_json(f"/repos/{repo}/pulls/{match[1]}", step="preview_retained_pr")
+        commit = reader.get_json(f"/repos/{repo}/commits/{pull['head']['sha']}", step="preview_retained_head")
+        try:
+            release.check_retained_pr(pull, commit, repo=repo, number=number, actor=actor, ended=entry["ended_at"])
+        except release.IssueReleaseRefusal as error:
+            issue_refusal = error
+        branches.add(pull["head"]["ref"])
+    # This prospective attestation is never posted or returned as release evidence.
+    release.prepare_release(source, prospective, comments, local, actor=actor,
+        role="supervisor", releaser_session=supervisor_session, evidence_url="unposted preview",
+        retained_prs=prs, related=related_comments, checked_prs=prs, retained_branches=branches)
+    if issue_refusal is not None:
+        raise issue_refusal
+    return {"status": "passed_read_only", "attestation_posted": False,
+            "requires_command_preflight_after_posting": True, "session_coverage": local.get("session_coverage")}
+
+
+def apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, apply, report, reader):
     for repo, number, source_id, related, prs in plans:
         if validate_closure(entry, supervisor_session) != status:
             raise ValueError("source transcript changed; preserve remaining claims")
@@ -354,6 +473,17 @@ def apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, 
                 "retained_prs": prs, "attestation_body": body,
                 "release_preflight": "requires a posted attestation; apply previews release-claim before releasing"}
         report["claims"].append(item)
+        if not apply:
+            try:
+                item["release_preflight"] = preview_guards(entry, reader=reader, repo=repo,
+                    number=number, source_id=source_id, related=related, prs=prs, body=body,
+                    actor=actor, supervisor_session=supervisor_session)
+            except release.IssueReleaseRefusal as error:
+                item["release_preflight"] = {"status": "refused", "error": str(error)}
+                report["issue_refusals"].append({"repository": repo, "issue": number, "error": str(error)})
+            except (ValueError, KeyError, TypeError, StopIteration, OSError, GitHubReadError, GitHubReadShapeError) as error:
+                item["release_preflight"] = {"status": "refused", "error": str(error)}
+                raise ValueError(str(error)) from error
         if apply:
             result = comment("issue", number, body, repo=repo, expected_actor=actor,
                              operation="github.comment.issue", dedupe_body=True)
@@ -391,6 +521,7 @@ def main():
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--deadline-seconds", type=int, default=600)
     parser.add_argument("--account-config", type=Path)
+    parser.add_argument("--handoff-thread", help="fallback summary thread OWNER/REPO#NUMBER; default OWNER/codex-skills#884")
     parser.add_argument("--transcript-root", type=Path, action="append", default=[])
     args = parser.parse_args()
     reports = []
@@ -423,26 +554,49 @@ def main():
             else:
                 entries = [record_closure(args.closed_log, entries[0], args.supervisor_session, persist=False)]
         else:
-            entries = session_record.load_ledger(args.closed_log)
+            rows = json.loads(args.closed_log.read_text())
+            if isinstance(rows, list) and rows and isinstance(rows[0], dict) and "safe_exit_yes" in rows[0]:
+                roots = {h: transcript_roots(h, args.account_config, args.transcript_root) for h in ("codex", "claude")}
+                entries, inventory_reports = backfill_inventory.load(rows, roots)
+                reports.extend(inventory_reports)
+                for entry in entries:
+                    if any(r["repo"].split("/")[0].casefold() != args.owner.casefold() for r in entry["_inventory_claims"]):
+                        raise ValueError("inventory repository is outside the requested owner")
+            else:
+                entries = session_record.load_ledger(args.closed_log)
             entries = [{**e, "_backfill": True} for e in entries]
             if args.session_id:
                 entries = [e for e in entries if e["session_id"] == args.session_id]
             if not entries:
                 raise ValueError("closed-session log has no matching records")
-        entries = [{**e, "_transcript_roots": transcript_roots(e["harness"], args.account_config, args.transcript_root),
+        thread = re.fullmatch(r"([^#]+)#([1-9]\d*)", args.handoff_thread or f"{args.owner}/codex-skills#884")
+        if not thread or not REPO.fullmatch(thread[1]) or thread[1].split("/")[0].casefold() != args.owner.casefold():
+            raise ValueError("handoff thread must be a canonical thread under the requested owner")
+        entries = [{**e, "_handoff_thread": (thread[1], int(thread[2])),
+                    "_transcript_roots": e.get("_transcript_roots") or transcript_roots(e["harness"], args.account_config, args.transcript_root),
                     "_read_deadline_seconds": args.deadline_seconds} for e in entries]
         verified = []
+        handoff_cache = {}
         for entry in entries:
             try:
+                entry["_handoff_cache"] = handoff_cache
                 validate_closure(entry, args.supervisor_session)
                 verified.append(entry)
             except (ValueError, KeyError, TypeError, OSError) as error:
-                reports.append({"session_id": entry["session_id"], "error": str(error), "released": False})
+                reports.append({"session_id": entry["session_id"], "error": str(error), "released": False,
+                                "inventory_claims": [{"repository": r["repo"], "issue": r["issue"],
+                                    "claim_comment": r["claim_comment_id"], "status": "preserved"}
+                                    for r in entry.get("_inventory_claims", [])]})
         entries = verified
         reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + args.deadline_seconds)
         if not entries:
             raise ValueError("no verified closed sessions; inspect the per-session reports")
-        issues, repos = discover(reader, args.owner, entries, args.repo)
+        if all(e.get("_inventory") for e in entries):
+            issues = sorted({(r["repo"], r["issue"]) for e in entries for r in e["_inventory_claims"]
+                             if not args.repo or r["repo"] in args.repo})
+            repos = sorted({r for r, _ in issues})
+        else:
+            issues, repos = discover(reader, args.owner, entries, args.repo)
         for entry in entries:
             try:
                 reports.append(release_session(reader, entry, actor, args.supervisor_session, issues,
@@ -454,7 +608,7 @@ def main():
         ok = not any("error" in r or r.get("issue_refusals") for r in reports)
         print(json.dumps({"ok": ok, "reports": reports, "repositories_checked": repos,
                           "needs_reconciliation": any(r.get("retained_status_claims") or r.get("issue_refusals") or "error" in r for r in reports),
-                          "coverage": "explicit scope" if args.repo else "accessible repositories under the requested owner",
+                          "coverage": "exact verified inventory claims" if all(e.get("_inventory") for e in entries) else "explicit scope" if args.repo else "accessible repositories under the requested owner",
                           "outside_scope": "other repository owners and other automation App identities; use their configured evidence-backed release-claim route"}))
         return 0 if ok else 1
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError,

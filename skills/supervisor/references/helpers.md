@@ -457,8 +457,36 @@ The shared bot login alone never identifies a session. Native session coverage
 remains explicit in the release receipts; missing peer APIs are covered only
 by the Supervisor's actual transcript/closure verification.
 
-For the one-time STALE-CLAIMS backfill, copy only transcript-verified records
-from the Supervisor's existing private closed-session log into this schema.
+For the one-time STALE-CLAIMS backfill, supply either the closed-session ledger
+above or the Supervisor's verified inventory directly as `--closed-log`.
+Inventory rows name `repo`, `issue`, `claim_comment_id`, `session_id`, original
+`ended_at`, `safe_exit_yes: true`, `still_running: false`, and optional
+`handoff_url` / `retained_pr_url`. Repeated native sessions are grouped; a bad
+row or conflicting end time preserves that session's entire group. Exact
+claim IDs bound the inventory scope, and already-valid releases are reported.
+The input file is never rewritten. Use the default read-only preview first.
+
+Historical inventory records lack original PID/TTY data. This is an explicit
+Supervisor closure attestation, not invented process metadata: the caller must
+verify actual inactivity, including ID-less GUI/picker sessions and unknown
+hosts, before using `--confirm-session-ended`. The helper locates native
+transcripts in configured account homes and archives, verifies exact native
+identity and the current safe verdict, and rechecks resume arguments and all
+transcript activity against the original end time. Normal finish still requires
+the matched PID/TTY and Supervisor-owned ledger entry.
+
+Missing handoffs are discovered from the native final response or recorded
+comment-write receipts, then verified against live comment author and dates.
+A fallback source-issue or summary comment must name the exact native ID;
+shared-bot recency alone never qualifies. The summary thread defaults to
+`OWNER/codex-skills#884`; override it with `--handoff-thread OWNER/REPO#NUMBER`.
+Missing/changed handoffs remain reported for reconciliation. Retained PRs in
+the inventory are named alongside source-branch and exact handoff PRs. Preview
+checks the target checkout remote, native peers, ownership activity, retained
+PR identity/links and head dates using the shared canonical guards. It posts
+no attestation/release and cannot prove the later write readback; apply must
+still run canonical `release-claim` preview/apply from each target checkout.
+
 Use the original actual closure timestamps; neither conversion time nor
 attestation posting time substitutes for them. Backfill still requires the
 recorded PID to be absent and the transcript unchanged; another job on a reused

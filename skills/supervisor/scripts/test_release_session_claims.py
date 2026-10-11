@@ -33,6 +33,12 @@ class ReleaseTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        remote = patch.object(helper.claim, "run_read", side_effect=lambda _args, *, cwd: f"https://github.com/test/{cwd.name}.git")
+        remote.start()
+        self.addCleanup(remote.stop)
+        local = patch.object(helper.claim, "local_inventory", return_value={"sessions": [], "worktrees": [], "session_coverage": {}})
+        local.start()
+        self.addCleanup(local.stop)
         self.transcript = self.root / "source-session.jsonl"
         self.transcript.write_text("\n".join(json.dumps(r) for r in [
             {"type": "session_meta", "timestamp": "2026-01-01T00:00:00Z",
@@ -60,6 +66,73 @@ class ReleaseTests(unittest.TestCase):
             with self.subTest(rows=rows), patch.object(helper, "inventory", return_value=rows):
                 with self.assertRaisesRegex(ValueError, "remains"):
                     helper.validate_closure(self.entry, "supervisor")
+
+    def inventory_row(self, **changes):
+        return {"repo": "test/a", "issue": 1, "claim_comment_id": 1,
+                "session_id": SOURCE["session"], "ended_at": self.entry["ended_at"],
+                "safe_exit_yes": True, "still_running": False, "handoff_url": None,
+                "retained_pr_url": None, **changes}
+
+    def test_verified_inventory_groups_claims_without_inventing_pid_or_tty(self):
+        rows = [self.inventory_row(), self.inventory_row(issue=2, claim_comment_id=2), self.inventory_row()]
+        entries, reports = helper.backfill_inventory.load(rows, {"codex": [str(self.root)], "claude": [str(self.root)]})
+        self.assertFalse(reports)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(len(entries[0]["_inventory_claims"]), 2)
+        self.assertNotIn("pid", entries[0])
+        self.assertNotIn("tty", entries[0])
+        self.assertTrue(helper.validate_closure(entries[0], "supervisor")["safe_verdict"])
+        with patch.object(helper, "inventory", return_value=[(789, "different", "node /bin/claude --resume source-session")]):
+            with self.assertRaisesRegex(ValueError, "resumed harness"):
+                helper.validate_closure(entries[0], "supervisor")
+
+    def test_bad_inventory_row_preserves_all_claims_of_that_session(self):
+        for row in (self.inventory_row(still_running=True), self.inventory_row(safe_exit_yes=False),
+                    self.inventory_row(ended_at="2026-01-01T00:04:00Z")):
+            entries, reports = helper.backfill_inventory.load([self.inventory_row(), row], {"codex": [str(self.root)]})
+            self.assertFalse(entries)
+            self.assertTrue(reports)
+
+    def test_handoff_discovery_uses_native_comment_write_not_shared_bot_read(self):
+        receipt = json.dumps({"comment_action": "created", "comment": {"url": self.entry["handoff_url"]}})
+        records = helper.session_record.read_jsonl(self.transcript)
+        records.insert(1, {"timestamp": "2026-01-01T00:00:30Z", "payload": {"type": "function_call_output", "output": receipt}})
+        records.insert(2, {"timestamp": "2026-01-01T00:00:40Z", "payload": {"type": "function_call_output", "output": "Read https://github.com/test/a/issues/1#issuecomment-123"}})
+        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
+        entry, _ = helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
+        self.assertEqual(entry["handoff_url"], self.entry["handoff_url"])
+        self.assertEqual(self.reader.get_json.call_count, 1)
+
+    def test_shared_bot_summary_needs_exact_native_id_and_original_timestamp(self):
+        bound = {**comment(10, "Engineering handoff for source-session"),
+                 "html_url": "https://github.com/test/a/issues/1#issuecomment-10",
+                 "issue_url": "https://api.github.com/repos/test/a/issues/1"}
+        self.reader.paged_json.return_value = [bound, comment(11, "Same shared bot; another session")]
+        self.reader.get_json.return_value = bound
+        row = {**self.entry, "handoff_url": None, "_inventory_claims": [self.inventory_row()]}
+        found, _ = helper.discover_handoff(self.reader, row, ACTOR)
+        self.assertEqual(found["handoff_url"], bound["html_url"])
+        bound["updated_at"] = "2026-01-01T00:03:00Z"
+        with self.assertRaisesRegex(ValueError, "no authored handoff"):
+            helper.discover_handoff(self.reader, row, ACTOR)
+
+    def test_inventory_names_retained_pr_in_dry_run_and_new_head_refuses(self):
+        entry = {**self.entry, "_inventory": True, "safe_exit_yes": True, "still_running": False,
+                 "_inventory_claims": [self.inventory_row(retained_pr_url="https://github.com/test/a/pull/12")]}
+        named = self.pull(12, "other-branch")
+        handoff = dict(self.reader.get_json.return_value)
+        commit = self.head_commit()
+        self.reader.get_json.side_effect = lambda path, **_kw: commit if "/commits/" in path else named if "/pulls/" in path else handoff
+        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
+        with patch.object(helper, "comment") as write, patch.object(helper, "run_release") as command:
+            report = helper.release_session(self.reader, entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
+            self.assertEqual(report["claims"][0]["retained_prs"], [named["html_url"]])
+            self.assertEqual(report["claims"][0]["release_preflight"]["status"], "passed_read_only")
+            commit["commit"]["committer"]["date"] = "2026-01-01T00:03:00Z"
+            with self.assertRaisesRegex(helper.PartialRelease, "commit activity after"):
+                helper.release_session(self.reader, entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
+            write.assert_not_called()
+            command.assert_not_called()
 
     def test_uncertain_identity_and_unverified_closure_refuse(self):
         for changes in ({"supervisor_owned": False}, {"pid": True}, {"tty": None},
@@ -138,6 +211,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_backfill_reports_bad_record_and_continues_verified_session(self):
         entries = [{**self.entry, "session_id": "bad-session", "process_exit_verified": False}, self.entry]
+        (self.root / "closed.json").write_text(json.dumps(entries))
         argv = ["helper", "backfill", "--closed-log", str(self.root / "closed.json"),
                 "--owner", "test", "--checkout-root", str(self.root), "--supervisor-session", "supervisor",
                 "--confirm-session-ended", "--verified-handoff", "--transcript-root", str(self.root)]
@@ -199,8 +273,21 @@ class ReleaseTests(unittest.TestCase):
             return [{"html_url": "https://github.com/test/a/pull/5", "head": {"ref": SOURCE["branch"]}}]
         return [self.source]
 
+    @staticmethod
+    def pull(number, branch):
+        return {"html_url": f"https://github.com/test/a/pull/{number}", "number": number,
+                "body": "Refs #1", "user": {"login": ACTOR}, "state": "open",
+                "head": {"ref": branch, "sha": "fixture-head", "repo": {"full_name": "test/a"}},
+                "base": {"repo": {"full_name": "test/a"}}}
+
+    @staticmethod
+    def head_commit():
+        return {"commit": {"committer": {"date": "2026-01-01T00:01:00Z"}}}
+
     def test_dry_run_finds_retained_pr_without_writes(self):
         self.reader.paged_json.side_effect = self.plan_reader
+        handoff = dict(self.reader.get_json.return_value)
+        self.reader.get_json.side_effect = lambda path, **_kw: self.head_commit() if "/commits/" in path else self.pull(5, SOURCE["branch"]) if "/pulls/" in path else handoff
         with patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run:
             report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
         write.assert_not_called()
@@ -210,10 +297,9 @@ class ReleaseTests(unittest.TestCase):
 
     def test_exact_handoff_pr_url_does_not_select_shorter_pr_number(self):
         self.reader.get_json.return_value["body"] = "Retained PR: https://github.com/test/a/pull/12"
-        named = {"html_url": "https://github.com/test/a/pull/12", "number": 12,
-                 "body": "Refs #1", "head": {"ref": "other-branch"}, "user": {"login": ACTOR}, "state": "open"}
+        named = self.pull(12, "other-branch")
         handoff = dict(self.reader.get_json.return_value)
-        self.reader.get_json.side_effect = lambda path, **_kw: named if path.endswith("/pulls/12") else handoff
+        self.reader.get_json.side_effect = lambda path, **_kw: self.head_commit() if "/commits/" in path else named if path.endswith("/pulls/12") else handoff
         def paged(path, **_kwargs):
             return [{"html_url": "https://github.com/test/a/pull/1", "head": {"ref": "other-branch"}}] if path.endswith("/pulls") else [self.source]
         self.reader.paged_json.side_effect = paged

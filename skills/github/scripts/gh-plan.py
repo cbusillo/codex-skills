@@ -2043,20 +2043,16 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             if not match or match.group(1).casefold() != issue["repo"].casefold():
                 raise PlanError("Retained PR must be an exact same-repository PR URL")
             _, pull = api_json("GET", f"/repos/{issue['repo']}/pulls/{match.group(2)}", bucket="rest_core", failed_step="release_retained_pr")
-            if ((pull.get("user") or {}).get("login") != expected_actor
-                    or pull.get("state") != "open" and not pull.get("merged_at")
-                    or any(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != issue["repo"].casefold() for side in ("head", "base"))
-                    or not github_plan_claim.pr_issue_reference(pull, issue["number"], repo=issue["repo"], attestation=True)):
-                issue_refusal = github_plan_release.IssueReleaseRefusal(
-                    "Retained PR must independently link the canonical issue and belong to the source automation identity")
             retained_branches.add(pull["head"]["ref"])
             ended = re.findall(r"(?m)^Ended at: (\S+)$", evidence.get("body") or "")
             if len(ended) != 1:
                 raise PlanError("Closed-session attestation must record Ended at")
             _, head_commit = api_json("GET", f"/repos/{issue['repo']}/commits/{pull['head']['sha']}", bucket="rest_core", failed_step="release_retained_head")
-            commit_at = github_plan_release.stamp(head_commit["commit"]["committer"]["date"])
-            if commit_at >= github_plan_release.stamp(ended[0]):
-                raise PlanError("Retained PR has commit activity after the cited session-ended evidence")
+            try:
+                github_plan_release.check_retained_pr(pull, head_commit, repo=issue["repo"],
+                    number=issue["number"], actor=expected_actor, ended=ended[0])
+            except github_plan_release.IssueReleaseRefusal as retained_error:
+                issue_refusal = retained_error
         if issue_refusal is not None:
             raise issue_refusal
         release_actor = expected_actor

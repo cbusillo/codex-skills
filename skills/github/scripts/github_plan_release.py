@@ -78,6 +78,17 @@ def check_activity(comments: list[dict[str, Any]], source: dict[str, Any], cutof
             raise ValueError("Source session shows ownership activity after the cited evidence")
 
 
+def check_retained_pr(pull, head_commit, *, repo, number, actor, ended):
+    """One retained-work guard shared by write preflight and read-only planning."""
+    if stamp(head_commit["commit"]["committer"]["date"]) >= stamp(ended):
+        raise ValueError("Retained PR has commit activity after the cited session-ended evidence")
+    if ((pull.get("user") or {}).get("login") != actor
+            or pull.get("state") != "open" and not pull.get("merged_at")
+            or any(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != repo.casefold() for side in ("head", "base"))
+            or not claim.pr_issue_reference(pull, number, repo=repo, attestation=True)):
+        raise IssueReleaseRefusal("Retained PR must independently link the canonical issue and belong to the source automation identity")
+
+
 def prepare_release(
     source: dict[str, Any], evidence: dict[str, Any], comments: list[dict[str, Any]],
     inventory: dict[str, Any], *, actor: str, role: str, releaser_session: str,
