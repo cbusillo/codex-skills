@@ -2135,6 +2135,170 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
         self.assert_no_writes()
 
+    def retained_pr_fixture(self, status: str = ""):
+        """A released source claim whose authored release names its open PR #99."""
+        source = {**OTHER, "branch": "work/retained-42"}
+        self.comments = [
+            {"id": 1, "body": "Claimed by trial-b\n" + CLAIM.marker(source), "user": {"login": TEST_BOT},
+             "created_at": "2026-10-01T00:00:00Z"},
+            {"id": 2, "body": "Released claim 1\n\nHandoff: PR #99 is green; ready for the merge train.",
+             "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:02:00Z"},
+        ]
+        self.pulls = [{"number": 99, "state": "open", "user": {"login": TEST_BOT}, "title": "Repair", "body": "Refs #42",
+                       "head": {"ref": source["branch"], "repo": {"full_name": "owner/repo"}},
+                       "base": {"repo": {"full_name": "owner/repo"}}}]
+        self.targets["99"] = {**copy.deepcopy(self.issue), "number": 99, "pull_request": {}, "body": "Refs #42"}
+        self.target_comments["/repos/owner/repo/issues/99/comments"] = []
+        self.issue["body"] += status
+        return source
+
+    def test_released_handoff_pr_routes_plain_claim_to_successor(self):
+        # launchplane#3145, REC-LP-D1: open PR #3303 retained by released claim 6099392163.
+        self.retained_pr_fixture("Session: unassigned\nBranch: work/retained-42 (retained for open PR #99)\n")
+        self.run_claim()
+        output = self.emitted.call_args.args[0]
+        self.assertTrue(output["ok"])
+        self.assertEqual((output["claim"]["resume_from"], output["claim"]["branch"]), ("1", OWNER["branch"]))
+        self.assertTrue(output["claim"]["retained_handoff"].endswith("#issuecomment-2"))
+
+    def test_released_handoff_route_preserves_real_and_unproved_holders(self):
+        for change in ("unreleased", "foreign_release", "unnamed_pr", "foreign_pr", "second_pr", "live_session",
+                       "second_claim", "status_holder"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.retained_pr_fixture("Session: unassigned\n")
+                if change == "unreleased": self.comments.pop()
+                if change == "foreign_release": self.comments[1]["user"] = {"login": "other"}
+                if change == "unnamed_pr": self.comments[1]["body"] = "Released claim 1\n\nHandoff: source work is green."
+                if change == "foreign_pr": self.pulls[0]["user"] = {"login": "stranger"}
+                if change == "second_pr":
+                    self.pulls.append({**copy.deepcopy(self.pulls[0]), "number": 100,
+                                       "head": {"ref": "work/issue-42-other", "repo": {"full_name": "owner/repo"}}})
+                if change == "live_session": self.inventory["sessions"] = [{"sessionId": "session-b", "cwd": "/unrelated"}]
+                if change == "second_claim": self.compete({**OTHER, "worker": "trial-c", "session": "session-c"})
+                if change == "status_holder": self.issue["body"] += "Owned by trial-c.\n"
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assert_no_writes()
+
+    def test_released_handoff_route_reports_its_refusal_and_waits(self):
+        self.retained_pr_fixture()
+        self.pulls[0]["user"] = {"login": "stranger"}
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+        route = caught.exception.payload["successor_route"]
+        self.assertEqual((route["resume_from"], route["handoff_comment"]), (1, 2))
+        self.assertIn("refused", route)
+        self.setUp()
+        self.retained_pr_fixture()
+        self.targets["99"]["body"] += "\n\n## Current Status\n\nWaiting for: Client acceptance of the preview."
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_wait_unresolved")
+        self.assertEqual(caught.exception.payload["successor_route"], {"resume_from": 1, "handoff_comment": 2})
+        self.assert_no_writes()
+
+    def test_released_holder_state_prose_resumes_and_routes(self):
+        # discord-blue#213, DUI-213-D4: "State: Active; owned by DUI-213-D3. The question-picker slice ...".
+        for flags in ("explicit", "plain"):
+            with self.subTest(flags=flags):
+                self.setUp()
+                source = self.retained_pr_fixture()
+                self.issue["body"] += ("State: Active; owned by trial-b. The question slice is ready in PR #99; "
+                                       "approvals and dashboard remain.\nSession: session-b\nBranch: work/retained-42\n"
+                                       + CLAIM.marker(source) + "\n")
+                if flags == "explicit":
+                    self.args.resume_from, self.args.handoff_comment = 1, 2
+                self.run_claim()
+                self.assertEqual(self.emitted.call_args.args[0]["claim"]["resume_from"], "1")
+
+    def test_released_holder_state_prose_preserves_other_holders(self):
+        released = "State: Active; owned by trial-b. The question slice is ready in PR #99."
+        for state, live in (("State: Active; owned by trial-c. The question slice is ready in PR #99.", False),
+                            ("State: Active; owned by trial-b and trial-c. The slice is ready.", False),
+                            ("State: Active; owned by trial-b. The next slice is owned by trial-c.", False),
+                            (released, True)):
+            with self.subTest(state=state, live=live):
+                self.setUp()
+                source = self.retained_pr_fixture()
+                if live:
+                    self.inventory["sessions"] = [{"sessionId": "session-b", "cwd": "/unrelated"}]
+                self.issue["body"] += state + "\nSession: session-b\n" + CLAIM.marker(source) + "\n"
+                self.args.resume_from, self.args.handoff_comment = 1, 2
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assert_no_writes()
+
+    def test_completed_session_field_is_history_after_exact_release(self):
+        # odoo-docker#113, REC-ODOO-D1: "Completed session: 01a12387-... (ODD-113-D1)."
+        for field in ("Completed session: session-b (trial-b).", "Previous session: session-b"):
+            with self.subTest(field=field):
+                self.setUp()
+                self.released_note_fixture()
+                self.comments.pop(1)
+                self.issue["body"] += f"State: Active; engineering complete, Supervisor handoff.\n{field}\nBranch: work/other-42\n"
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_completed_session_field_preserves_unproved_or_live_holders(self):
+        for change in ("unreleased", "foreign_release", "other_session", "reused_worker", "trailing_prose",
+                       "current_label", "live_session"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.released_note_fixture()
+                self.comments.pop(1)
+                field = "Completed session: session-b (trial-b)."
+                if change == "unreleased": self.comments.pop()
+                if change == "foreign_release": self.comments[-1]["user"]["login"] = "other"
+                if change == "other_session": field = "Completed session: session-x (trial-b)."
+                if change == "reused_worker":
+                    self.comments.append({"id": 4, "body": CLAIM.marker({**OTHER, "session": "reused-session"}),
+                                          "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:03:00Z"})
+                    self.comments.append({"id": 5, "body": "Released claim 4", "user": {"login": TEST_BOT},
+                                          "created_at": "2026-10-01T00:04:00Z"})
+                if change == "trailing_prose": field = "Completed session: session-b (trial-b); trial-c continues."
+                if change == "current_label": field = "Session: session-b (trial-b)."
+                if change == "live_session": self.inventory["sessions"] = [{"sessionId": "session-b", "cwd": "/unrelated"}]
+                self.issue["body"] += field + "\n"
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assert_no_writes()
+
+    def test_other_issue_holder_sentence_does_not_claim_this_issue(self):
+        # launchplane#3318, LP-3318-Q: Last verified names #3314's holder.
+        for ref in ("#3314", "owner/repo#3314", "https://github.com/owner/repo/issues/3314", "owner/other#42",
+                    "Issue #3314"):
+            with self.subTest(ref=ref):
+                self.setUp()
+                self.issue["body"] += (f"Last verified: October 10, 2026. {ref} Q151 was approved today and is owned by "
+                                       "LP-3314-D1; its declined single-Accept recommendation must not be implemented.\n")
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_other_issue_holder_sentence_preserves_this_issue_holders(self):
+        for sentence in ("#42 Q151 was approved today and is owned by LP-D1.",
+                         "https://github.com/owner/repo/issues/42 is owned by LP-D1.",
+                         "#3314 and this issue are owned by LP-D1.",
+                         "#3314 and #42 are owned by LP-D1.",
+                         "#3314 is owned by LP-D1 and LP-D2.",
+                         "Unlike #3314, this work is owned by LP-D1.",
+                         "#3314 is owned by LP-D1; the repair is owned by LP-D2.",
+                         "#3314 is settled. Here it is owned by LP-D1.",
+                         "#3314 is complete and the follow-up is owned by LP-D1.",
+                         "#3314 was closed when the repair was owned by LP-D1.",
+                         "#3314, like the remaining slice, is owned by LP-D1.",
+                         "#3314's follow-up is owned by LP-D1.",
+                         "#3314’s follow-up is owned by LP-D1.",
+                         "#3314 is complete — the follow-up is owned by LP-D1.",
+                         "#3314 is complete: the follow-up is owned by LP-D1.",
+                         "#3314 (the follow-up) is owned by LP-D1.",
+                         "#3314 is complete yet the repair is owned by LP-D1.",
+                         "#3314 is complete and the repair is owned by LP-D1."):
+            with self.subTest(sentence=sentence):
+                self.setUp()
+                self.issue["body"] += "Last verified: October 10, 2026. " + sentence + "\n"
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assert_no_writes()
+
     def test_released_claim_does_not_hold_issue(self):
         self.compete()
         self.comments.append({"body": "Released by trial-b"})

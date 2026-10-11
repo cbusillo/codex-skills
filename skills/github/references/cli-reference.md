@@ -731,15 +731,23 @@ still refuses; there is no worker-alias release. A closed-session release also
 requires the note and its last edit to precede the attested session end. The compound field
 `Session: WORKER / SESSION; executing claim released in the closeout comment.`
 likewise needs the matching structured claim and timestamp-proved exact-ID
-release. Live source sessions are checked again on claim readback whenever that
+release, as does a `Completed`, `Released`, `Previous`, `Prior`, `Former` or
+`Ended session:` field naming only that released session and optionally its own
+worker; a worker token shared by another session's claim, or any other text in
+the field, keeps it ambiguous. Live source sessions are checked again on claim readback whenever that
 historical field is removed. A visible live source session still refuses, and retained artifacts
 keep their independent checks. A quoted replaced `Session:` field in the
 specific stale-field correction sentence is history; other current or uncertain
 holder prose is checked independently. A `Blocked by:` GitHub issue URL followed
 by `(actively owned by WORKER)` identifies that linked issue's holder only when
 its repository/number differs from both the requested issue and its canonical
-GitHub issue URL. Missing issue identity,
-same-issue ownership and additional holders remain ambiguous. These exclusions
+GitHub issue URL. Likewise, a clause whose subject is another issue's
+reference (`#N`, `OWNER/REPO#N` or its issue URL) in the narrow shape
+`REF [Q151] [was approved today and] is owned by WORKER`, with that one holder
+ending the clause, names that issue's holder, such as `#3314 Q151 was approved
+today and is owned by LP-3314-D1;`. Missing issue identity,
+same-issue ownership, any other wording before the holder (a possessive,
+punctuation, another subject) and additional holders remain ambiguous. These exclusions
 do not resolve waits, native blockers or competing comments. Retained-PR status
 ownership remains conservative during refresh; all status-history exclusions apply
 only to the issue's own status.
@@ -882,10 +890,23 @@ Session field or authored exact-ID recovery for those older formats. A distinct 
 evidence; an unstructured claim needs an exact-ID release by its author.
 A hand-written source claim requires its author to post the exact-ID release.
 
+A plain claim (without `--resume-from`) whose only ownership evidence is one
+released structured claim's retained work reruns itself once as that claim's
+ordinary successor below: the claim's exact-ID release must be its first line,
+be newer than the claim, and name the open PR, and the refused evidence may be
+only that PR, that claim's Current Status marker, unstructured status text and
+local branch or worktree artifacts. Every successor check then runs as usual,
+and its claim records `resume_from` and `retained_handoff`. When the rerun
+refuses without writing, the original `claim_conflict` returns with
+`successor_route` naming the IDs tried, its reason and its evidence; a hold it
+finds, such as `claim_wait_unresolved`, is returned with `successor_route` so
+the next attempt can pass the same flags with the resolution evidence.
+
 After a verified retained-work handoff, use `--resume-from <claim-comment-id>`.
 The source must be one structured claim explicitly released by its author.
 An identical structured Current Status marker and its helper-generated active
-worker line and worker/session fields are accepted when the source author's
+worker clause (`State: Active; owned by WORKER`, including when more State
+prose follows it) and worker/session fields are accepted when the source author's
 exact-ID release is newer than both
 the marker's claimed-at time and the source comment's last edit. Missing or
 invalid timestamps remain uncertain ownership. The successor claim replaces
