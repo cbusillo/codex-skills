@@ -35,7 +35,7 @@ from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, aut
 from github_comment import CommentError, comment
 
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
-HANDOFF = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/issues/([1-9]\d*)#issuecomment-([1-9]\d*)")
+HANDOFF = release.COMMENT_URL
 
 
 class PartialRelease(ValueError):
@@ -466,6 +466,8 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
         entry, handoff_record = discover_handoff(reader, entry, actor)
     plans = []
     retained_status = []
+    entry["_releaser_session"] = supervisor_session
+    entry["_pr_claim_handoffs"] = {}
     pulls_by_repo = {}
     handoff_prs = set(re.findall(r"https://github\.com/[^/\s]+/[^/\s]+/pull/[1-9]\d*", handoff_record.get("body") or ""))
     refused = []
@@ -482,6 +484,7 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
               "retained_status_claims": retained_status, "issue_refusals": refused,
               "inventory_claims": list(entry.get("_inventory_results", {}).values()),
               "handoff_url": entry["handoff_url"],
+              "pr_claim_handoffs": list(entry.get("_pr_claim_handoffs", {}).values()),
               "closure_evidence": "Supervisor verified inventory; original PID/TTY unavailable" if entry.get("_inventory") else "matched PID/TTY log"}
     try:
         return apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, apply, report, reader)
@@ -489,13 +492,54 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
         raise PartialRelease(error, report) from error
 
 
+def verified_release_checkout(checkout_root, repo):
+    checkout = checkout_root / repo.split("/")[1]
+    remote = claim.run_read(["git", "remote", "get-url", "origin"], cwd=checkout).strip()
+    if not re.search(rf"[:/]{re.escape(repo)}(?:\.git)?$", remote, re.IGNORECASE):
+        raise ValueError("release checkout must match the canonical repository")
+    return checkout
+
+
 def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_by_repo, checkout_root):
     plans, retained_status = [], []
     reader.deadline_at = time.time() + entry.get("_read_deadline_seconds", 600)
     issue = reader.get_json(f"/repos/{repo}/issues/{number}", step="release_canonical_issue")
     if "pull_request" in issue:
-        if entry.get("_inventory"):
-            raise ValueError("inventory names a pull request instead of its canonical issue")
+        sources = active_claims(reader, repo, number, entry["session_id"], actor)
+        comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="pr_inventory_source")
+        active_ids = {identifier for source, related, unresolved in sources for identifier in [source["id"], *related, *unresolved]}
+        for row in entry.get("_inventory_claims", []):
+            if row["repo"] != repo or row["issue"] != number:
+                continue
+            expected = next((c for c in comments if c["id"] == row["claim_comment_id"]), None)
+            if expected is None or (expected.get("user") or {}).get("login") != actor or not belongs_to_session(expected.get("body") or "", entry["session_id"]):
+                raise ValueError("inventory PR source is missing or lacks exact native-session/author evidence")
+            entry.setdefault("_inventory_results", {})[(repo, number, row["claim_comment_id"])] = {
+                "repository": repo, "issue": number, "claim_comment": row["claim_comment_id"],
+                "status": "manual_release_required" if row["claim_comment_id"] in active_ids else "already_released"}
+        checkout = verified_release_checkout(checkout_root, repo) if sources else None
+        rows = {}
+        for source, related, unresolved in sources:
+            if entry.get("_inventory") and not any(row["repo"] == repo and row["issue"] == number
+                    and row["claim_comment_id"] == source["id"] for row in entry["_inventory_claims"]):
+                raise ValueError("inventory PR source needs its structured claim selected explicitly")
+            if unresolved:
+                raise ValueError("PR ownership follow-ups need verified exact-ID releases")
+            argv = ["uv", "run", str(GITHUB / "gh-plan.py"), "--repo", repo,
+                    "release-claim", f"https://github.com/{repo}/pull/{number}",
+                    "--claim-comment", str(source["id"]),
+                    "--evidence-comment", "<verified-closed-session-attestation-url>",
+                    "--role", "supervisor", "--session", entry.get("_releaser_session", "<supervisor-native-session>"),
+                    "--confirm-session-ended"]
+            for related_id in related:
+                argv.extend(["--related-claim-comment", str(related_id)])
+            row = {"repository": repo, "pull_request": number,
+                   "claim_comments": [source["id"], *related],
+                   "status": "manual_release_required", "release_argv": argv,
+                   "dry_run_argv": [*argv, "--dry-run"], "checkout": str(checkout),
+                   "attestation_body": closure_attestation(entry)}
+            rows[(repo, number, source["id"])] = row
+        entry.setdefault("_pr_claim_handoffs", {}).update(rows)
         return [], retained_status
     comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="session_issue_filter")
     if not any(belongs_to_session(c.get("body") or "", entry["session_id"]) for c in comments) and not belongs_to_session(issue.get("body") or "", entry["session_id"]):
@@ -549,9 +593,7 @@ def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_
            and r["claim_comment_id"] not in covered for r in entry.get("_inventory_claims", [])):
         raise ValueError("active inventory follow-up has no selected structured source; obtain its authored exact-ID release")
     if plans:
-        remote = claim.run_read(["git", "remote", "get-url", "origin"], cwd=checkout_root / repo.split("/")[1]).strip()
-        if not re.search(rf"[:/]{re.escape(repo)}(?:\.git)?$", remote, re.IGNORECASE):
-            raise ValueError("release checkout must match the canonical repository")
+        verified_release_checkout(checkout_root, repo)
     return plans, retained_status
 
 
@@ -587,6 +629,14 @@ def preview_guards(entry, *, reader, repo, number, source_id, related, prs, body
             "requires_command_preflight_after_posting": True, "session_coverage": local.get("session_coverage")}
 
 
+def closure_attestation(entry):
+    body = (f"Closed session {entry['session_id']}\nEnded at: {entry['ended_at']}\nSafe to exit: yes\n\n"
+            f"Handoff context ({entry.get('_handoff_provenance', 'Supervisor transcript-verified ledger')}): {entry['handoff_url']}\n")
+    if entry.get("_inventory"):
+        body += "Closure evidence: Supervisor verified inventory; original PID/TTY unavailable. The caller confirms actual session inactivity, including unavailable native peers.\n"
+    return body
+
+
 def apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, apply, report, reader):
     if apply:
         # Session-wide refusals must be known before the first claim is released.
@@ -601,10 +651,7 @@ def apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, 
     for repo, number, source_id, related, prs in plans:
         if validate_closure(entry, supervisor_session) != status:
             raise ValueError("source transcript changed; preserve remaining claims")
-        body = (f"Closed session {entry['session_id']}\nEnded at: {entry['ended_at']}\nSafe to exit: yes\n\n"
-                f"Handoff context ({entry.get('_handoff_provenance', 'Supervisor transcript-verified ledger')}): {entry['handoff_url']}\n")
-        if entry.get("_inventory"):
-            body += "Closure evidence: Supervisor verified inventory; original PID/TTY unavailable. The caller confirms actual session inactivity, including unavailable native peers.\n"
+        body = closure_attestation(entry)
         item = {"repository": repo, "issue": number, "claim_comment": source_id,
                 "related_claim_comments": related,
                 "retained_prs": prs, "attestation_body": body,
@@ -755,9 +802,9 @@ def main():
                     GitHubReadError, GitHubReadShapeError, CommentError) as error:
                 report = error.report if isinstance(error, PartialRelease) else {"session_id": entry["session_id"]}
                 reports.append({**report, "error": str(error), "next_action": "inspect records before retry"})
-        ok = not any("error" in r or r.get("issue_refusals") for r in reports)
+        ok = not any("error" in r or r.get("issue_refusals") or r.get("pr_claim_handoffs") for r in reports)
         print(json.dumps({"ok": ok, "reports": reports, "repositories_checked": repos,
-                          "needs_reconciliation": any(r.get("retained_status_claims") or r.get("issue_refusals") or "error" in r for r in reports),
+                          "needs_reconciliation": any(r.get("retained_status_claims") or r.get("issue_refusals") or r.get("pr_claim_handoffs") or "error" in r for r in reports),
                           "coverage": "exact verified inventory claims" if all(e.get("_inventory") for e in entries) else "explicit scope" if args.repo else "accessible repositories under the requested owner",
                           "outside_scope": "other repository owners and other automation App identities; use their configured evidence-backed release-claim route"}))
         return 0 if ok else 1

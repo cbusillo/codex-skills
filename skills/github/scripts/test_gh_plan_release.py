@@ -37,6 +37,7 @@ class ReleaseTests(unittest.TestCase):
             related_claim_comment=[], retained_pr=[], dry_run=False)
         self.commit_date = "2026-10-01T23:00:00Z"
         self.evidence_failure = None
+        self.source_branch_date = None
         self.race = lambda: None
 
     @staticmethod
@@ -50,8 +51,13 @@ class ReleaseTests(unittest.TestCase):
             if self.evidence_failure:
                 raise PLAN.PlanError("Evidence unavailable", api_result={"status": self.evidence_failure})
             return "bot", copy.deepcopy(self.evidence)
+        if "/git/ref/heads/" in path:
+            if self.source_branch_date is None:
+                raise PLAN.PlanError("No published source branch", api_result={"status": 404})
+            return "bot", {"object": {"sha": "source-sha"}}
         if "/commits/" in path:
-            return "bot", {"commit": {"committer": {"date": self.commit_date}}}
+            date = self.source_branch_date if path.endswith("/source-sha") else self.commit_date
+            return "bot", {"commit": {"committer": {"date": date}}}
         n = int(path.rsplit("/", 1)[1])
         return "bot", copy.deepcopy(next(p for p in self.f.pulls if p["number"] == n))
 
@@ -75,6 +81,84 @@ class ReleaseTests(unittest.TestCase):
             patch.object(github_plan_claim, "local_inventory", side_effect=self.f.inventory_for), \
             patch.object(github_comment, "comment", autospec=True, side_effect=self.post):
             PLAN.cmd_release_claim(self.args)
+
+    def pr_setup(self):
+        self.f.pr_fixture("dependabot[bot]")
+        self.f.pulls[0]["head"]["sha"] = "a" * 40
+
+    def test_pr_closed_session_attestation_releases_and_allows_successor(self):
+        self.pr_setup()
+        self.run_release()
+        self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
+        self.successor()
+        self.assertEqual(self.f.emitted.call_args.args[0]["record_kind"], "pr")
+        self.assertEqual(self.f.issue["user"]["login"], "dependabot[bot]")
+
+    def test_closed_unmerged_pr_can_release_its_ended_session_without_reopening(self):
+        self.pr_setup()
+        self.f.issue["state"] = "closed"
+        self.f.pulls[0]["state"] = "closed"
+        self.run_release()
+        self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
+        self.assertEqual(self.f.issue["state"], "closed")
+        with self.assertRaises(PLAN.PlanError):
+            self.f.run_claim()
+
+    def test_dependabot_rebase_after_end_does_not_block_release_of_separate_source_branch(self):
+        self.pr_setup()
+        self.commit_date = "2026-10-02T01:00:00Z"
+        self.source_branch_date = "2026-10-01T23:00:00Z"
+        self.run_release()
+        self.successor()
+        self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
+
+    def test_pr_release_still_refuses_new_activity_on_claimed_source_branch(self):
+        for same_branch in (True, False):
+            with self.subTest(same_branch=same_branch):
+                self.setUp()
+                self.pr_setup()
+                if same_branch:
+                    self.f.pulls[0]["head"]["ref"] = fixtures.OTHER["branch"]
+                    self.commit_date = "2026-10-02T01:00:00Z"
+                else:
+                    self.source_branch_date = "2026-10-02T01:00:00Z"
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_release()
+                self.f.assert_no_writes()
+
+    def test_pr_claim_release_preserves_separate_repair_pr_linked_by_canonical_pr_url(self):
+        self.pr_setup()
+        self.source_branch_date = self.commit_date
+        self.f.pulls.append({"number": 99, "state": "open", "user": {"login": BOT},
+            "body": "Refs https://github.com/owner/repo/pull/42", "head": {"ref": fixtures.OTHER["branch"],
+            "sha": "b" * 40, "repo": {"full_name": "owner/repo"}}, "base": {"repo": {"full_name": "owner/repo"}}})
+        self.run_release()
+        self.successor()
+        self.assertEqual(self.f.pulls[1]["state"], "open")
+
+    def test_pr_comment_attestation_url_releases_and_stays_valid_on_claim_readback(self):
+        self.pr_setup()
+        self.args.evidence_comment = self.args.evidence_comment.replace("/issues/884", "/pull/884")
+        self.run_release()
+        self.successor()
+        self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
+
+    def test_pr_attestation_new_activity_live_peer_or_changed_evidence_refuses(self):
+        for mode in ("commit", "peer", "evidence"):
+            with self.subTest(mode=mode):
+                self.setUp()
+                self.pr_setup()
+                if mode == "commit":
+                    self.f.pulls[0]["head"]["ref"] = fixtures.OTHER["branch"]
+                    self.commit_date = "2026-10-02T01:00:00Z"
+                elif mode == "peer":
+                    self.f.inventory["worktrees"] = [{"branch": self.f.pulls[0]["head"]["ref"], "path": "/pr-source"}]
+                    self.f.inventory["sessions"] = [{"sessionId": "peer", "cwd": "/pr-source"}]
+                else:
+                    self.evidence["user"]["login"] = "stranger"
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_release()
+                self.f.assert_no_writes()
 
     def test_release_routes_source_identity_without_relaxing_author_checks(self):
         client_actor = "fixture-client[bot]"
