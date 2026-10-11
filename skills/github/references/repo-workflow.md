@@ -319,7 +319,13 @@ Superseded or competing PRs also retain non-closing references under the
 Put post-merge steps such as deploy proof, Client acceptance, and observation
 on the parent issue or milestone. Record the next action, who takes it, and
 the evidence there; completing an implementation issue does not complete that
-parent or authorize a release. Open a new issue for a post-merge check only
+parent or authorize a release. If later proof has no parent or milestone,
+retain the existing issue as the parent and split out the PR-sized
+implementation deliverable before opening its closing PR. When a milestone
+holds the proof, include its next actor and required evidence in the exit
+criteria and verify them before closing it under the
+[milestone contract](../../github-plan/references/milestones.md).
+Open a new issue for a post-merge check only
 when that check fails, after searching for an existing issue for the failure.
 Split old oversized issues into PR-sized deliverables when working them;
 preserve their original requests under the
@@ -330,7 +336,9 @@ a validation comment and close only after the reporter/current user confirms
 the result or explicitly asks. Keep closing keywords off that issue until
 this condition is met; a separate implementation issue may close on merge.
 
-After a merge-train batch lands, read back the referenced issues and link the
+The session responsible for landing owns the issue readback: the Supervisor
+after an assigned handoff, otherwise the executing session. After a merge-train
+batch lands, that session reads back the referenced issues and links the
 landing evidence. If `Closes` did not fire, follow github-plan's
 [Close Or Hand Off](../../github-plan/SKILL.md#close-or-hand-off) to reconcile
 the completed issue. Comment with the remaining action when its finish line

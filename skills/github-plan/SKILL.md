@@ -502,8 +502,9 @@ including cross-repository dependents, within
 [existing posting authority](#missing-cross-repository-gates). Check remaining
 waits against the landed evidence; update Current Status, labels and native
 relationships under [Status Labels](#status-labels), preserving unresolved waits,
-blockers and Director holds. Close only issues whose finish lines are satisfied; end every other one
-done or split as the [executing loop](../references/executing-loop.md) says.
+blockers and Director holds. Close only issues whose finish lines are satisfied;
+keep remaining work with its next actor under
+[issue closing and post-merge proof](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof).
 Use `gh-plan.py close --comment-file` for durable plan issues.
 
 For closure failures, partial Project synchronization, quota or retry/reconciliation,
