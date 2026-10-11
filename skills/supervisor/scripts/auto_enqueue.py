@@ -313,9 +313,31 @@ class Live:
             text=True,
             timeout=min(180, remaining),
         )
+        payload = json.loads(run.stdout)
+        if not isinstance(payload, dict):
+            raise ValueError("controller response invalid")
         if run.returncode:
+            summary = payload.get("summary") or {}
+            codes = {item["code"] for item in payload.get("warnings", [])}
+            status = summary.get("http_status", 0)
+            if (
+                payload.get("operation") == "merge-train-controller-run-once"
+                and payload.get("request") == {
+                    "repository": target["repo"],
+                    "base_branch": target["base"],
+                    "mutate": False,
+                }
+                and (
+                    500 <= status < 600
+                    or (
+                        payload.get("status") == "unavailable"
+                        and codes & {"provider_unavailable", "client_timeout"}
+                    )
+                )
+            ):
+                raise ConnectionError("controller transient read failure")
             raise ValueError("controller read unavailable")
-        return json.loads(run.stdout)
+        return payload
 
     def acceptance(self, repo, pr):
         args = argparse.Namespace(**vars(self.args), pr=pr["number"], decision_id="")
@@ -456,8 +478,24 @@ def transient_read_error(error):
         failure = error.result.failure
         return bool(
             failure
-            and failure.cause == "network_provider_failure"
             and failure.retryable
+            and error.result.failed_step != "subprocess_launch"
+            and (
+                failure.cause == "deadline_exceeded"
+                or (
+                    failure.cause == "network_provider_failure"
+                    and (
+                        500 <= error.result.status < 600
+                        or re.search(
+                            r"connection (?:reset|refused)|timed? out|timeout|"
+                            r"unexpected EOF|network is unreachable|dial tcp|"
+                            r"temporary failure in name resolution|no such host",
+                            failure.message,
+                            re.IGNORECASE,
+                        )
+                    )
+                )
+            )
         )
     return isinstance(
         error,
@@ -768,6 +806,7 @@ def main(argv=None):
         parser.error("batch size and finite timings must be positive")
     args.handoff_login = [login.casefold() for login in args.handoff_login]
     deadline = time.time() + args.deadline_seconds
+    completed_passes = failed_passes = 0
 
     def emit(event, payload):
         print(json.dumps({"event": event, "payload": payload}), flush=True)
@@ -784,12 +823,22 @@ def main(argv=None):
                     "pass_failed",
                     {"cause": type(error).__name__, "action": "retry next interval"},
                 )
+                failed_passes += 1
                 if args.once:
                     return 1
+            else:
+                completed_passes += 1
             if args.once:
                 break
             time.sleep(min(args.interval, max(0, deadline - time.time())))
-        emit("stop", {"outcome": "complete" if args.once else "deadline"})
+        emit(
+            "stop",
+            {
+                "outcome": "complete" if args.once else "deadline",
+                "completed_passes": completed_passes,
+                "failed_passes": failed_passes,
+            },
+        )
         return 0
     except (
         OSError,

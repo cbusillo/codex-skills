@@ -189,7 +189,8 @@ and reads fresh state again within its deadline; `--once` reports the failed pas
 and exits nonzero. Other failures, or any failure during or after an enqueue write
 in that pass, stop the run for Supervisor reconciliation, preserving already
 queued work. Reads retain the shared GitHub cache, quota reserve and request retry
-deadline; no human-auth fallback is added.
+deadline; no human-auth fallback is added. The deadline `stop` event reports
+completed and failed pass counts so an outage throughout the watch is visible.
 
 A ready handoff starts with the standalone `Ready for the merge train` line and
 includes one `Head: <full SHA>` field matching the PR's current head. The latest
