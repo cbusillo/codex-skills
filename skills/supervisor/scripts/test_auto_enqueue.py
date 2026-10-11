@@ -7,6 +7,7 @@
 
 import argparse
 import copy
+import io
 import json
 import subprocess
 import tempfile
@@ -1144,7 +1145,7 @@ class WatchLoopTests(unittest.TestCase):
             ("provider_unavailable", None, True),
             ("client_timeout", None, True),
             ("service_error", 503, True),
-            ("permission_denied", 403, False),
+            ("authorization_denied", 403, False),
             ("unsafe_redirect", None, False),
         ):
             with self.subTest(code=code):
@@ -1167,6 +1168,30 @@ class WatchLoopTests(unittest.TestCase):
                 self.assertEqual(healthy.writes, [1] if expected else [])
                 self.assertNotIn("private", json.dumps(events))
 
+    def test_actual_controller_denial_projection_stops_even_with_server_status(self):
+        adapter = object.__new__(watch.Live)
+        adapter.deadline = 10_000
+        request = {"repository": REPO, "base_branch": TARGET["base"], "mutate": False}
+        for status in (401, 403, 500):
+            with self.subTest(status=status):
+                error = urllib.error.HTTPError(
+                    "https://example.invalid", status, "denied", Message(),
+                    io.BytesIO(json.dumps({"error": {"code": "authorization_denied"}}).encode()),
+                )
+                self.addCleanup(error.close)
+                payload = watch.operator.summarize_http_error(
+                    operation="merge-train-controller-run-once", request=request, exc=error,
+                )
+                fake = Fake(count=1)
+                fake.train = adapter.train
+                with patch.object(watch.subprocess, "run", return_value=subprocess.CompletedProcess(
+                    [], 1, stdout=json.dumps(payload), stderr="private",
+                )):
+                    result, calls, sleeps, events = self.run_watch(lambda _deadline: fake)
+                self.assertEqual((result, calls, sleeps), (1, 1, []))
+                self.assertEqual(fake.writes, [])
+                self.assertEqual(events[-1]["payload"]["message"], "controller read rejected")
+
     def test_transport_error_during_label_dispatch_never_replays(self):
         fake = Fake(count=1)
         fake.label = Mock(side_effect=ConnectionResetError("private"))
@@ -1174,6 +1199,113 @@ class WatchLoopTests(unittest.TestCase):
         self.assertEqual((result, calls, sleeps), (1, 1, []))
         self.assertEqual(fake.label.call_count, 1)
         self.assertEqual(events[-1]["payload"]["outcome"], "error")
+
+    def test_controller_invalid_or_unavailable_read_recovers(self):
+        adapter = object.__new__(watch.Live)
+        adapter.deadline = 10_000
+        for stdout, returncode in (("not JSON", 1), ("[]", 0), ("{}", 1)):
+            with self.subTest(stdout=stdout, returncode=returncode):
+                failed = Fake(count=1)
+                failed.train = adapter.train
+                healthy = Fake(count=1)
+                with patch.object(watch.subprocess, "run", return_value=subprocess.CompletedProcess(
+                    [], returncode, stdout=stdout, stderr="private provider body",
+                )):
+                    result, calls, sleeps, events = self.run_watch(Mock(side_effect=[failed, healthy]))
+                self.assertEqual((result, calls), (0, 2))
+                self.assertEqual(len(sleeps), 2)
+                self.assertEqual(failed.writes, [])
+                self.assertEqual(healthy.writes, [1])
+                self.assertEqual(events[0]["event"], "pass_failed")
+                self.assertNotIn("private provider body", json.dumps(events))
+
+    def test_missing_admin_configuration_recovers_on_fresh_initialization(self):
+        live_class = watch.Live
+        for settings in (
+            {"service_url": "https://example.invalid", "token": ""},
+            {"service_url": "", "token": ""},
+            {"service_url": "", "token": "test-token"},
+            ValueError("invalid_config"),
+            ValueError("invalid_env_config"),
+        ):
+            with self.subTest(settings=settings):
+                healthy = Fake(count=1)
+
+                def factory(_deadline):
+                    if factory_mock.call_count == 1:
+                        with (
+                            patch.object(watch.operator, "resolve_settings", side_effect=[settings]),
+                            patch.object(watch.operator, "validate_service_url"),
+                        ):
+                            return live_class(_deadline)
+                    return healthy
+
+                factory_mock = Mock(side_effect=factory)
+                result, calls, sleeps, events = self.run_watch(factory_mock)
+                self.assertEqual((result, calls), (0, 2))
+                self.assertEqual(len(sleeps), 2)
+                self.assertEqual(healthy.writes, [1])
+                self.assertEqual(events[0]["event"], "pass_failed")
+
+    def test_write_and_policy_stops_report_the_specific_message(self):
+        for certainty, message in (
+            ("unknown", "enqueue write uncertain; reconcile before restarting"),
+            ("confirmed", "enqueue label readback failed"),
+        ):
+            with self.subTest(certainty=certainty):
+                fake = Fake(count=1)
+                adapter = object.__new__(watch.Live)
+                adapter.deadline = 10_000
+                adapter.pages = Mock(return_value=[])
+                fake.label = adapter.label
+                with patch.object(watch.github_api, "call_gh_with_retry", return_value=api_result(certainty)) as write:
+                    result, calls, sleeps, events = self.run_watch(lambda _deadline: fake)
+                self.assertEqual((result, calls, sleeps), (1, 1, []))
+                self.assertEqual(write.call_count, 1)
+                self.assertEqual(events[-1]["payload"]["message"], message)
+        fake = Fake(count=1)
+        fake.policies = Mock(side_effect=[[TARGET], []])
+        result, calls, sleeps, events = self.run_watch(lambda _deadline: fake)
+        self.assertEqual((result, calls, sleeps), (1, 1, []))
+        self.assertEqual(fake.writes, [])
+        self.assertEqual(events[-1]["payload"]["message"], "policy or hold changed")
+
+    def test_controller_read_recovery_respects_once_and_deadline(self):
+        adapter = object.__new__(watch.Live)
+        adapter.deadline = 10_000
+        for once in (True, False):
+            with self.subTest(once=once):
+                fake = Fake(count=1)
+                fake.train = adapter.train
+                with patch.object(watch.subprocess, "run", return_value=subprocess.CompletedProcess(
+                    [], 1, stdout="{}", stderr="private provider body",
+                )):
+                    result, calls, sleeps, events = self.run_watch(lambda _deadline: fake, once=once, duration=2)
+                self.assertEqual((result, calls), (int(once), 1))
+                self.assertEqual([call.args[0] for call in sleeps], [] if once else [2])
+                self.assertEqual(fake.writes, [])
+                self.assertEqual(events[0]["payload"]["message"], "controller read unavailable")
+                if not once:
+                    self.assertEqual(events[-1]["payload"]["failed_passes"], 1)
+
+    def test_controller_read_failure_after_label_stops_without_replay(self):
+        fake = Fake()
+        adapter = object.__new__(watch.Live)
+        adapter.deadline = 10_000
+        original_train = fake.train
+
+        def train(target):
+            return adapter.train(target) if fake.writes else original_train(target)
+
+        fake.train = train
+        with patch.object(watch.subprocess, "run", return_value=subprocess.CompletedProcess(
+            [], 1, stdout="{}", stderr="private provider body",
+        )):
+            result, calls, sleeps, events = self.run_watch(lambda _deadline: fake)
+        self.assertEqual((result, calls, sleeps), (1, 1, []))
+        self.assertEqual(fake.writes, [1])
+        self.assertEqual(events[-1]["event"], "stop")
+        self.assertEqual(events[-1]["payload"]["message"], "controller read unavailable")
 
     def test_uncertain_label_write_or_failed_readback_stops_without_replay(self):
         for certainty in ("unknown", "confirmed"):

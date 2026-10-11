@@ -53,6 +53,14 @@ spec.loader.exec_module(review)
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
 
+class WatchError(ValueError):
+    """A diagnostic authored by this helper, safe to include in events."""
+
+
+class LaunchplaneReadError(WatchError):
+    """A read-only controller failure; no enqueue outcome is implied."""
+
+
 @contextmanager
 def hold_lock(path, *, blocking=False):
     """Pause updates and all local enqueue passes share one persistent inode."""
@@ -69,14 +77,14 @@ def read_holds(path):
         "coordinated_repositories",
         "client_releases",
     }:
-        raise ValueError("hold record missing or invalid")
+        raise WatchError("hold record missing or invalid")
     for key in ("paused_repositories", "coordinated_repositories"):
         if not isinstance(data[key], list) or any(
             not isinstance(repo, str) or not REPO.fullmatch(repo) for repo in data[key]
         ):
-            raise ValueError("invalid hold repository")
+            raise WatchError("invalid hold repository")
     if not isinstance(data["client_releases"], list):
-        raise ValueError("invalid Client release holds")
+        raise WatchError("invalid Client release holds")
     for release in data["client_releases"]:
         if (
             not isinstance(release, dict)
@@ -87,7 +95,7 @@ def read_holds(path):
                 and release["status"] in {"ready", "open"}
             )
         ):
-            raise ValueError("invalid Client release hold")
+            raise WatchError("invalid Client release hold")
     return data
 
 
@@ -220,10 +228,17 @@ class Live:
             deadline_at=deadline,
         )
         self.args = operator.parse_args(["merge-train-policy-read"])
-        self.settings = operator.resolve_settings(self.args)
+        try:
+            self.settings = operator.resolve_settings(self.args)
+        except ValueError as error:
+            if str(error) not in {"invalid_config", "invalid_env_config"}:
+                raise
+            raise LaunchplaneReadError("Launchplane admin configuration unavailable") from error
+        if not self.settings["service_url"]:
+            raise LaunchplaneReadError("Launchplane admin configuration unavailable")
         operator.validate_service_url(self.settings["service_url"])
         if not self.settings["token"]:
-            raise ValueError("Launchplane admin configuration unavailable")
+            raise LaunchplaneReadError("Launchplane admin configuration unavailable")
 
     def policies(self, owner):
         payload = operator.request_launchplane_read(
@@ -281,13 +296,22 @@ class Live:
             text=True,
             timeout=min(180, remaining),
         )
-        payload = json.loads(run.stdout)
+        try:
+            payload = json.loads(run.stdout)
+        except json.JSONDecodeError as error:
+            raise LaunchplaneReadError("controller response invalid") from error
         if not isinstance(payload, dict):
-            raise ValueError("controller response invalid")
+            raise LaunchplaneReadError("controller response invalid")
         if run.returncode:
             summary = payload.get("summary") or {}
             codes = {item["code"] for item in payload.get("warnings", [])}
             status = summary.get("http_status", 0)
+            if (
+                status in {401, 403}
+                or payload.get("status") in {"unauthorized", "denied"}
+                or codes & {"authorization_denied", "unsafe_redirect"}
+            ):
+                raise WatchError("controller read rejected")
             if (
                 payload.get("operation") == "merge-train-controller-run-once"
                 and payload.get("request") == {
@@ -304,7 +328,7 @@ class Live:
                 )
             ):
                 raise ConnectionError("controller transient read failure")
-            raise ValueError("controller read unavailable")
+            raise LaunchplaneReadError("controller read unavailable")
         return payload
 
     def acceptance(self, repo, pr):
@@ -419,10 +443,10 @@ class Live:
                 "reconciled_applied",
             }
         ):
-            raise ValueError("enqueue write uncertain; reconcile before restarting")
+            raise WatchError("enqueue write uncertain; reconcile before restarting")
         labels = self.pages(f"/repos/{target['repo']}/issues/{number}/labels")
         if target["label"] not in {item["name"] for item in labels}:
-            raise ValueError("enqueue label readback failed")
+            raise WatchError("enqueue label readback failed")
 
 
 @dataclass
@@ -431,6 +455,8 @@ class PassState:
 
 
 def transient_read_error(error):
+    if isinstance(error, LaunchplaneReadError):
+        return True
     if isinstance(error, urllib.error.HTTPError):
         return 500 <= error.code < 600
     if isinstance(error, GitHubReadError):
@@ -463,6 +489,15 @@ def transient_read_error(error):
         error,
         (urllib.error.URLError, TimeoutError, ConnectionError, subprocess.TimeoutExpired),
     )
+
+
+def exception_message(error):
+    """Expose local diagnostics without copying provider bodies or private prose."""
+    if isinstance(error, WatchError):
+        return str(error)
+    if isinstance(error, operator.LaunchplaneSafetyError):
+        return error.code
+    return f"{type(error).__name__}: details withheld"
 
 
 def run_pass(io, args, emit, *, state=None):
@@ -594,7 +629,7 @@ def run_pass(io, args, emit, *, state=None):
                 if target not in io.policies(args.owner) or held(
                     read_holds(args.hold_file), repo
                 ):
-                    raise ValueError("policy or hold changed")
+                    raise WatchError("policy or hold changed")
                 fresh = io.train(target)
                 pr = io.get(f"/repos/{repo}/pulls/{item['number']}")
                 continuing = own_candidate(fresh, own, candidate_records)
@@ -696,7 +731,7 @@ def edit_holds(argv):
     with hold_lock(args.hold_file, blocking=True):
         if args.init:
             if args.hold_file.exists():
-                raise ValueError("hold record already exists")
+                raise WatchError("hold record already exists")
             data = {
                 "paused_repositories": [],
                 "coordinated_repositories": [],
@@ -778,12 +813,18 @@ def main(argv=None):
             state = PassState()
             try:
                 run_pass(Live(deadline), args, emit, state=state)
-            except (OSError, GitHubReadError, subprocess.TimeoutExpired) as error:
+            except (
+                OSError, GitHubReadError, LaunchplaneReadError, subprocess.TimeoutExpired,
+            ) as error:
                 if state.write_started or not transient_read_error(error):
                     raise
                 emit(
                     "pass_failed",
-                    {"cause": type(error).__name__, "action": "retry next interval"},
+                    {
+                        "cause": type(error).__name__,
+                        "message": exception_message(error),
+                        "action": "retry next interval",
+                    },
                 )
                 failed_passes += 1
                 if args.once:
@@ -797,6 +838,7 @@ def main(argv=None):
             "stop",
             {
                 "outcome": "complete" if args.once else "deadline",
+                "message": "single pass completed" if args.once else "watch deadline reached",
                 "completed_passes": completed_passes,
                 "failed_passes": failed_passes,
             },
@@ -818,6 +860,7 @@ def main(argv=None):
             {
                 "outcome": "error",
                 "cause": type(error).__name__,
+                "message": exception_message(error),
                 "action": "Supervisor reconciles the failed pass before restarting",
             },
         )
