@@ -96,8 +96,29 @@ let plist = try loadInfoPlist("Config/App-Info.plist")
             'const pkg = require("../package.json"); expect(pkg.name).toBe("app");',
             'import pkg from "./package.json"; expect(pkg.name).not.toEqual("old");',
             'const pkg = require("./package.json"); assert.strictEqual(pkg.name, "app");',
+            'const pkg = require("./package.json"); expect(pkg.name).toStrictEqual("app");',
         ):
             self.assertIn("pinned-config", self.rules(source, suffix=".ts", paths={"package.json"}))
+        source = 'expect(output).toContain("actions/checkout@v4");'
+        self.assertIn("duplicated-version", self.rules(source, suffix=".ts", versions={"@v4"}))
+
+    def test_path_arguments_and_async_class_methods(self) -> None:
+        source = '''
+class Tests(IsolatedAsyncioTestCase):
+    async def test_workflow(self):
+        config = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertEqual(config, "literal")
+'''
+        self.assertTrue({"pinned-config", "workflow-no-execution"} <= self.rules(
+            source, paths={".github/workflows/ci.yml"}))
+        source = 'with (ROOT / "skills" / "references" / "guide.md").open("r", encoding="utf-8") as file:\n text = file.read()\nself.assertIn("wording", text)'
+        self.assertIn("instruction-text", self.rules(source, paths={"skills/references/guide.md"}, catalog=True))
+
+    def test_tracked_config_fixtures_and_product_execution_are_behavior(self) -> None:
+        source = 'data = json.loads(Path("tests/fixtures/package.json").read_text())\nself.assertEqual(analyze(data).name, "fixture-app")'
+        self.assertEqual(self.rules(source, paths={"tests/fixtures/package.json"}), set())
+        source = 'data = json.loads(Path("package.json").read_text())\nself.assertEqual(analyze(data).name, "fixture-app")'
+        self.assertEqual(self.rules(source, paths={"package.json"}), set())
 
     def test_workflow_execution_keeps_behavior_tests(self) -> None:
         source = '''

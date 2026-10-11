@@ -31,7 +31,9 @@ All classifications still emit warnings and exit zero during this trial.
 Ordinary CLI/error sentence assertions are behavior and stay quiet.
 
 Python uses syntax analysis and simple aliases for file reads and assertions,
-excluding recognizable temporary-directory paths and execution outputs.
+excluding recognizable temporary-directory paths, tracked fixture directories,
+and execution outputs. Data flow stops at opaque product calls; custom readers
+must expose a tracked path argument to be recognized.
 Swift and JavaScript/TypeScript use bounded call and alias patterns for
 config/duplicate-version checks and workflow warnings, including multiline
 calls. The scanner selects
@@ -60,7 +62,10 @@ No blocking mode is enabled: tune false positives before introducing one.
 1. Check out the consumer repository as usual, then check out this catalog at
    a reviewed full commit SHA into `.test-quality-catalog`. Use a second
    `actions/checkout` step; do not copy the scanner into the consumer. Updating
-   the SHA is a deliberate catalog update, not a test literal to assert.
+   the SHA is a deliberate catalog update, not a test literal to assert. The
+   extra checkout is an untracked directory: run the scanner after other
+   linters/clean-tree checks, or add `.test-quality-catalog/` to
+   `.git/info/exclude` and exclude it from any recursive consumer linter.
 2. Install Python 3.12 or newer using the consumer's existing setup. Invoke the
    scanner with the consumer root as `--repo`; the script's location does not
    select the repository. If using uv, use `uv run --no-project --no-config` so

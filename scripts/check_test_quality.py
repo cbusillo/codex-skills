@@ -58,6 +58,8 @@ def is_test(path: str) -> bool:
 
 def kind(path: str, catalog: bool) -> str | None:
     file = Path(path)
+    if any(part.lower() in {"fixtures", "test-fixtures"} for part in file.parts):
+        return None
     if path.startswith(".github/") or file.name in {"pyproject.toml", "package.json"} or (
         file.name.startswith("Dockerfile") or fnmatch.fnmatch(file.name, "docker-compose*.yml")
         or file.suffix in {".lock", ".entitlements"} or file.name.endswith("Info.plist")
@@ -119,7 +121,7 @@ def python_findings(path: str, source: str, tracked: set[str], versions: set[str
             setup = [child for child in node.body if isinstance(child, ast.FunctionDef)
                      and child.name in {"setUp", "setUpClass"}]
             baseline = {**module_aliases, **aliases_for(setup)}
-            scopes.extend((child, baseline) for child in node.body if isinstance(child, ast.FunctionDef))
+            scopes.extend((child, baseline) for child in node.body if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)))
     # Top-level pytest assertions also count.
     scopes.append((ast.Module(body=[node for node in tree.body if not isinstance(
         node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))], type_ignores=[]), module_aliases))
@@ -149,12 +151,23 @@ def python_findings(path: str, source: str, tracked: set[str], versions: set[str
                         return set()
                     if name == "inspect.getsource":
                         return {"<inspect-source>"}
-                    if READ.search(name) and not name.startswith(("json.", "tomllib.", "yaml.", "plistlib.")):
-                        expanded_text = " ".join(ast.unparse(child) for child in expanded(item))
+                    decoder = name.startswith(("json.", "tomllib.", "yaml.", "plistlib."))
+                    if READ.search(name) and not decoder:
+                        path_node = item.func.value if isinstance(item.func, ast.Attribute) and item.func.attr in {
+                            "read_text", "read_bytes", "read", "open"
+                        } else (item.args[0] if item.args else item)
+                        expanded_text = " ".join(ast.unparse(child) for child in expanded(path_node))
                         if not TEMP.search(expanded_text):
-                            paths = match_paths(strings(item), tracked)
+                            paths = match_paths(strings(path_node), tracked)
                             if paths:
                                 return paths
+                        if path_node is not item:
+                            return follow(path_node, seen)
+                        return set()
+                    if not decoder and not (isinstance(item.func, ast.Attribute) and item.func.attr in {
+                        "split", "strip", "decode", "replace", "get", "items", "values"
+                    }):
+                        return set()
                 return set().union(*(follow(child, seen) for child in ast.iter_child_nodes(item)))
             return follow(node)
 
@@ -244,20 +257,20 @@ def foreign_findings(path: str, source: str, tracked: set[str], versions: set[st
                 config_names.add(match.group(1))
     for start, _end, name, body in calls:
         node_assertion = name in {"equal", "strictEqual", "deepStrictEqual"} and cleaned[:start].rstrip().endswith("assert.")
-        if not node_assertion and not re.search(r"assert|expect|toEqual|toBe", name, re.I):
+        if not node_assertion and not re.search(r"assert|expect|toEqual|toBe|toStrictEqual|toContain|toMatch", name, re.I):
             continue
         expected = body.split("==", 1)[-1] if "==" in body else body
         values = [item.group()[1:-1] for item in STRING.finditer(expected)]
         if not values:
             continue
         expression = STRING.sub("", body)
-        if name in {"toEqual", "toBe", "toStrictEqual"}:
+        if name in {"toEqual", "toBe", "toStrictEqual", "toContain", "toMatch"}:
             for _prior_start, prior_end, prior_name, prior_body in reversed(calls):
                 if prior_end <= start and prior_name == "expect" and cleaned[prior_end:start].strip() in {".", ".not."}:
                     expression += " " + STRING.sub("", prior_body)
                     break
         line = cleaned.count("\n", 0, start) + 1
-        if any(re.search(rf"\b{re.escape(alias)}\b", expression) for alias in config_names):
+        if name not in {"toContain", "toMatch"} and any(re.search(rf"\b{re.escape(alias)}\b", expression) for alias in config_names):
             found.add(finding(path, line, "pinned-config"))
         if any(token in versions for value in values for token in VERSION.findall(value)):
             found.add(finding(path, line, "duplicated-version"))
