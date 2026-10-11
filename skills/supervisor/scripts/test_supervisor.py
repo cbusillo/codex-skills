@@ -1133,9 +1133,31 @@ class TabCloseTests(unittest.TestCase):
 class TerminalTests(unittest.TestCase):
     def test_brief_cannot_be_discarded_by_a_comment_or_shell_wrapper(self):
         for command in ("codex --remote unix:// # launch", "bash -c 'codex'",
-                        "codex --remote unix://;", "codex --remote unix:// &&"):
+                        "codex --remote unix://;", "codex --remote unix:// &&",
+                        "codex --remote unix:// && exit", "dash -c 'codex'",
+                        "/bin/ksh -c 'codex'"):
             with self.subTest(command=command), self.assertRaises(ValueError):
                 iterm_tab.append_brief(command, "task")
+
+    def test_settings_paths_do_not_count_as_shell_wrappers(self):
+        command = iterm_tab.append_brief("cd /work/sh && exec codex --add-dir /work/zsh", "task")
+        self.assertEqual(shlex.split(command)[-1], "task")
+
+    def test_google_brief_uses_native_interactive_prompt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            child = root / "agy"
+            child.write_text('#!/bin/sh\nprintf "%s\\n" "$#" "$1"\n')
+            child.chmod(0o700)
+            brief = "--Start here\n\tKeep these details literal."
+            command = iterm_tab.append_brief(shlex.quote(str(child)), brief)
+            result = subprocess.run(["/bin/sh", "-c", command], capture_output=True,
+                                    text=True, check=True)
+            argument = result.stdout.split("\n", 1)[1].removesuffix("\n")
+            option, value = argument.split("=", 1)
+            self.assertEqual(option, "--prompt-interactive")
+            self.assertEqual(value, brief)
+            self.assertEqual(result.stdout.splitlines()[0], "1")
 
     def test_brief_reaches_agent_as_one_literal_argument(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -1146,7 +1168,7 @@ class TerminalTests(unittest.TestCase):
             launch = root / "launch.txt"
             launch.write_text("cd / && exec " + shlex.quote(str(child)))
             brief = root / "brief.txt"
-            content = "--Don't substitute $(touch injected) or `touch injected`\nFollow the issue."
+            content = "--Don't substitute $(touch injected) or `touch injected`\n\tFollow the issue."
             brief.write_text(content)
             args = account_launch_args(launch)
             args.brief_file = [brief]
@@ -1461,7 +1483,7 @@ class TerminalTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as folder:
             command = Path(folder) / "launch.txt"
-            command.write_text("run-authorized-brief\n")
+            command.write_text("codex --remote unix://\n")
             args = argparse.Namespace(
                 command="new", window_id="chosen", command_file=command, brief_file=fixture_briefs(command)
             )
@@ -1470,9 +1492,8 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(result["session_id"], "new")
         window.async_create_tab.assert_awaited_once_with(select=False)
         previous.async_select.assert_not_awaited()
-        self.assertEqual(
-            terminal.async_send_text.await_args_list[0].args, ("run-authorized-brief -- brief",)
-        )
+        self.assertEqual(terminal.async_send_text.await_count, 2)
+        self.assertEqual(terminal.async_send_text.await_args_list[-1].args, ("\r",))
 
     def test_late_session_launches_only_in_refreshed_created_tab(self):
         terminal = SimpleNamespace(session_id="late", async_send_text=AsyncMock())
@@ -1491,7 +1512,7 @@ class TerminalTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as folder:
             command = Path(folder) / "launch.txt"
-            command.write_text("run-authorized-brief\n")
+            command.write_text("codex --remote unix://\n")
             args = argparse.Namespace(command="new", window_id="chosen", command_file=command, brief_file=fixture_briefs(command))
             with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}):
                 result = asyncio.run(iterm_tab.operate(app, args))
@@ -1501,10 +1522,8 @@ class TerminalTests(unittest.TestCase):
         window.async_create_tab.assert_awaited_once_with(select=False)
         previous.async_select.assert_not_awaited()
         previous.async_send_text.assert_not_awaited()
-        self.assertEqual(
-            [call.args for call in terminal.async_send_text.await_args_list],
-            [("run-authorized-brief -- brief",), ("\r",)],
-        )
+        self.assertEqual(terminal.async_send_text.await_count, 2)
+        self.assertEqual(terminal.async_send_text.await_args_list[-1].args, ("\r",))
 
     def test_session_wait_timeout_covers_stalled_refresh(self):
         async def stalled_refresh():
@@ -1537,7 +1556,7 @@ class TerminalTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             command = Path(folder) / "launch.txt"
-            command.write_text("run-authorized-brief\n")
+            command.write_text("codex --remote unix://\n")
             args = argparse.Namespace(command="new", window_id="chosen", command_file=command, brief_file=fixture_briefs(command))
             with (
                 patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),

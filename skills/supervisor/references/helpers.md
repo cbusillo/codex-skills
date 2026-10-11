@@ -303,11 +303,16 @@ model settings, without a prompt or the Discord channels flag. Put the exact
 brief in a separate UTF-8 file and pass `--brief-file`; the launcher reads it
 and appends it as one quoted prompt argument. For example, a launch file can
 contain `cd /absolute/repository && exec codex --remote unix://`, with the task
-text in the brief file. Shell wrappers, trailing operators and shell comments
-refuse because appending a prompt to them may not deliver it to the agent.
+text in the brief file. The supported form is a direct `codex`, `claude` or
+`agy` invocation, optionally preceded by `cd PATH &&` and simple command or
+environment prefixes. `agy` uses its native `--prompt-interactive` option;
+Codex and Claude take one positional prompt after `--`. Keep prompt options
+out of the command file. Shell wrappers, extra commands, trailing operators
+and shell comments refuse because they may discard the prompt.
 Empty, whitespace-only, missing or unreadable briefs
 refuse before account selection, daemon startup, tabs or launch receipts.
-For a batch, repeat both file options in matching launch order; every brief
+Tabs in briefs are allowed and sent through bracketed paste. Other terminal
+control characters refuse. For a batch, repeat both file options in matching launch order; every brief
 is checked before the first launch. Do not put a shell text substitution in the
 launch file to load the prompt.
 After the catalog's [pinned Chrome server](https://github.com/cbusillo/codex-skills/blob/main/README.md#chrome-across-claude-account-homes)

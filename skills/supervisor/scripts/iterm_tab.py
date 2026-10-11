@@ -46,7 +46,7 @@ def select_session(app, session_id):
 
 
 def validate_text(text):
-    if not text or any(ord(c) < 32 and c != "\n" for c in text):
+    if not text or any(ord(c) < 32 and c not in "\n\t" for c in text):
         raise ValueError("text must be nonempty with no terminal control characters")
 
 
@@ -56,16 +56,30 @@ def append_brief(command_text, brief):
     lexer.whitespace_split = True
     lexer.commenters = ""
     tokens = list(lexer)
-    if (not tokens or tokens[-1] == "&&" or "\n" in command_text
-            or any(token.startswith("#") or Path(token.strip("'\"")).name in {"sh", "bash", "zsh", "fish", "eval"}
+    reason = "brief delivery needs a direct agent invocation; use cd PATH && exec AGENT SETTINGS"
+    if (not tokens or "\n" in command_text or tokens.count("&&") > 1
+            or any(token.startswith("#")
                    or (all(c in ";&|()<>" for c in token) and token != "&&") for token in tokens)):
-        raise ValueError("brief delivery needs a direct agent invocation; use cd PATH && exec AGENT SETTINGS")
-    return command_text + " -- " + shlex.quote(brief)
+        raise ValueError(reason)
+    if "&&" in tokens:
+        separator = tokens.index("&&")
+        directory = shlex.split(" ".join(tokens[:separator]))
+        if len(directory) != 2 or directory[0] != "cd":
+            raise ValueError(reason)
+        tokens = tokens[separator + 1:]
+    words = shlex.split(" ".join(tokens))
+    while words and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0])
+                     or words[0] in {"exec", "command", "nohup", "time", "env"}):
+        words = words[1:]
+    if not words or Path(words[0]).name not in {"codex", "claude", "agy"}:
+        raise ValueError(reason)
+    prompt_option = " --prompt-interactive=" if Path(words[0]).name == "agy" else " -- "
+    return command_text + prompt_option + shlex.quote(brief)
 
 
 async def send(session, text, submit=True):
     validate_text(text)
-    if "\n" in text:
+    if "\n" in text or "\t" in text:
         text = "\x1b[200~" + text + "\x1b[201~"
     await session.async_send_text(text, suppress_broadcast=True)
     if submit:
@@ -402,8 +416,6 @@ async def operate(app, args):
             if not brief.strip():
                 raise ValueError("brief must be nonempty")
             validate_text(brief)
-        for text, brief in zip(command_texts, briefs):
-            append_brief(text, brief)
         choices = [None] * len(files)
         if getattr(args, "account_provider", None):
             if len(files) == 1:
