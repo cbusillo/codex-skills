@@ -154,14 +154,10 @@ with the handoff before rearming. Do not maintain another per-session copy.
 Client-product batching remains coordinated as the
 [Client Products rules](../SKILL.md#client-products) require. The watcher's
 `client_releases` entries are an optional manual pause control, not a required
-step for Client releases; leave them empty for normal routing. If explicitly
-selected, ready/open entries pause both the named product and the supplied
-control-plane repository. They therefore also pause Launchplane when it is
-that control plane; ordinary product coordination needs no such entry.
-During takeover, use the handoff to distinguish deliberate manual pauses from
-entries created only for the retired rule. Clear only the latter before rearming,
-preserving product coordination in the same command:
-`--release-finished OWNER/CLIENT-REPO --coordinated-repo OWNER/CLIENT-REPO`.
+step for Client releases; leave them empty for normal routing. A ready/open
+entry pauses only the named product's own landings, never Launchplane or any
+other repository. A coordinated product is already held, so ordinary product
+coordination needs no such entry.
 The hold command waits for the current repository's enqueue section before acknowledging the
 update. Between repositories, a pause update can win the lock and make the
 watcher's next nonblocking acquisition stop safely. Finish the hold update and
