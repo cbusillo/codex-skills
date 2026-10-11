@@ -210,8 +210,16 @@ that repository's batch. Each write rechecks policy, pauses, train state, curren
 head and readiness. A behind-base single-member queue awaiting the train's
 branch update can still accumulate this watcher's group before any stored
 candidate exists; the watcher never updates that branch itself.
-If a candidate starts during the group, remaining PRs wait
-for another pass. The watcher never adds arrivals to an already queued group;
+If the scheduler starts a candidate containing only this pass's confirmed
+labels, the watcher finishes its already selected group. Complete controller
+membership must prove that ownership; unchanged controller-proven blocking
+labels on already held PRs remain in place. A hold without a blocking label
+stops continuation. Another actor's new or changed queued label,
+landing, reconciliation, failed candidate or unavailable evidence stops it.
+Candidate observations can omit the queue: unchanged policy, selected head and
+PR labels retain the scan's author admission while every write still reads
+current readiness. A later pass preserves that candidate and admits no arrivals.
+The watcher never adds arrivals to an already queued group;
 clearing a previously labeled PR's hold can still change the train's membership.
 
 The helper emits JSONL `batch`, `held`, `busy`, `skipped`, `enqueued`, and
