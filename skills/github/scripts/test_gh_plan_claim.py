@@ -1062,18 +1062,25 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(self.emitted.call_args.args[0]["claim"]["session"], self.args.session)
 
     def test_inner_claude_or_unknown_harness_cannot_claim_codex_assignment(self):
-        for executable in ("/opt/bin/claude", "/opt/claude/versions/2.1.296"):
+        for executable, expected in (("/opt/bin/claude", "claude"), ("/opt/claude/versions/2.1.296", None)):
             self.setUp()
             self.args.agent = None
             self.issue["labels"] = [{"name": "agent:codex"}]
-            with patch.dict(os.environ, {"CLAUDECODE": "1", "CODEX_THREAD_ID": "outer"}, clear=True), \
+            original_run = subprocess.run
+            answers = iter([subprocess.CompletedProcess([], 0, f"20 {executable}\n", ""),
+                            subprocess.CompletedProcess([], 0, "1 /opt/bin/codex\n", "")])
+
+            def run(command, **kwargs):
+                return next(answers) if command[0] == "ps" else original_run(command, **kwargs)
+
+            with self.subTest(executable=executable), \
+                    patch.dict(os.environ, {"CLAUDECODE": "1", "CODEX_THREAD_ID": "outer"}, clear=True), \
                     patch.object(os, "getppid", return_value=10), \
-                    patch.object(subprocess, "run", side_effect=[
-                        subprocess.CompletedProcess([], 0, "", ""),  # Git branch validation.
-                        subprocess.CompletedProcess([], 0, f"20 {executable}\n", ""),
-                        subprocess.CompletedProcess([], 0, "1 /opt/bin/codex\n", "")]):
-                with self.assertRaises(PLAN.ClassifiedPlanError):
+                    patch.object(subprocess, "run", side_effect=run):
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
+                self.assertEqual(caught.exception.code, "agent_assignment_mismatch")
+                self.assertEqual(caught.exception.payload["running_agent"], expected)
             self.assert_no_writes()
 
     def test_explicit_agent_override_is_recorded_without_changing_assignment(self):

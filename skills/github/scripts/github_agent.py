@@ -62,7 +62,8 @@ def running_agent(explicit: str | None = None, *, environ: Mapping[str, str] | N
     claude = bool(env.get("CLAUDE_CODE_SESSION_ID") or env.get("CLAUDECODE"))
     if codex != claude:
         return "codex" if codex else "claude"
-    # Injected environment fixtures have no corresponding process lineage.
+    # An explicit environment requests environment-only detection, including
+    # optional receipt accounting that must not add process I/O.
     return ancestor_agent() if environ is None else None
 
 
