@@ -14,12 +14,14 @@ import fcntl
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
 import time
 
 import session_record
+import account_choice
 from close_ttys import idle_terminal_command, inventory
 
 GITHUB = Path(__file__).resolve().parents[2] / "github/scripts"
@@ -49,6 +51,12 @@ def verify_closed(entry, supervisor_session):
     rows = inventory()
     if any(p == pid or (not entry.get("_backfill") and t == tty and not idle_terminal_command(c)) for p, t, c in rows):
         raise ValueError("source PID or work on its TTY remains; preserve its claims")
+    for _, _, command in rows:
+        if not command.split() or Path(command.split()[0]).name not in {"codex", "claude"}:
+            continue
+        argv = shlex.split(command)
+        if entry["session_id"] in argv[1:]:
+            raise ValueError("source native session is visible in a resumed harness process")
     status = session_record.session_status(entry)
     if not status["safe_verdict"]:
         raise ValueError("latest transcript lacks an unqualified Safe to exit: yes")
@@ -64,7 +72,34 @@ def validate_closure(entry, supervisor_session):
     status = verify_closed(entry, supervisor_session)
     if not status["timestamp"] or release.stamp(status["timestamp"]) > ended:
         raise ValueError("transcript resumed after the recorded closure")
+    paths = {Path(entry["transcript"]).resolve()}
+    for root in entry.get("_transcript_roots", []):
+        paths.update(p.resolve() for p in Path(root).rglob(f"*{entry['session_id']}*.jsonl"))
+    for path in paths:
+        other = session_record.session_status({**entry, "transcript": str(path)})
+        records = session_record.read_jsonl(path)
+        if not other["safe_verdict"] or any(
+            release.stamp(r["timestamp"]) > ended for r in records if r.get("timestamp")
+        ):
+            raise ValueError("source resumed or has newer activity in a configured native transcript")
+        if session_record.session_status({**entry, "transcript": str(path)}) != other:
+            raise ValueError("native transcript changed during closure verification")
     return status
+
+
+def transcript_roots(harness, configured, explicit):
+    if explicit:
+        return [str(p.expanduser().resolve()) for p in explicit]
+    config = account_choice.load_config(configured)
+    roots = []
+    for account in config["accounts"]:
+        if account["provider"] == ("openai" if harness == "codex" else "anthropic"):
+            variable = "CODEX_HOME" if harness == "codex" else "CLAUDE_CONFIG_DIR"
+            home = Path(account["env"].get(variable, str(Path.home() / ".claude"))).expanduser()
+            roots.extend([str(home / "sessions"), str(home / "archived_sessions")] if harness == "codex" else [str(home / "projects")])
+    if not roots:
+        raise ValueError("no configured source harness homes; supply --transcript-root for its known native transcript directories")
+    return list(dict.fromkeys(roots))
 
 
 def record_closure(path, entry, supervisor_session):
@@ -81,6 +116,7 @@ def record_closure(path, entry, supervisor_session):
     verify_closed(entry, supervisor_session)
     closed = {**entry, "ended_at": datetime.now(timezone.utc).isoformat(),
               "process_exit_verified": True}
+    validate_closure(closed, supervisor_session)
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as stream:
         temporary = Path(stream.name)
@@ -146,7 +182,9 @@ def active_claims(reader, repo, number, session, actor):
             if evidence.get("issue_url") != f"https://api.github.com/repos/{match[1]}/issues/{match[2]}":
                 raise ValueError("evidence belongs to another issue")
             release.validate_evidence(receipt, evidence, (c.get("user") or {}).get("login", ""))
-        except ValueError:
+        except (ValueError, GitHubReadError) as error:
+            if isinstance(error, GitHubReadError) and getattr(error.result, "status", None) not in {403, 404}:
+                raise
             comments = [release.without_release(r) if r["id"] == c["id"] else r for r in comments]
     conflicts, _ = claim.discussion_evidence("", comments, {
         "session": "", "worker": "", "branch": "", "claimed_at": ""
@@ -215,9 +253,20 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
     status = validate_closure(entry, supervisor_session)
     handoff_record = handoff(reader, entry, actor)
     plans = []
+    retained_status = []
     pulls_by_repo = {}
     handoff_prs = set(re.findall(r"https://github\.com/[^/\s]+/[^/\s]+/pull/[1-9]\d*", handoff_record.get("body") or ""))
     for repo, number in issues:
+        reader.deadline_at = time.time() + entry.get("_read_deadline_seconds", 600)
+        issue = reader.get_json(f"/repos/{repo}/issues/{number}", step="release_canonical_issue")
+        if "pull_request" in issue:
+            continue
+        comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="session_issue_filter")
+        if not any(r["session"] == entry["session_id"] for c in comments for r in claim.records(c.get("body") or "")):
+            continue
+        if any(r["session"] == entry["session_id"] for r in claim.records(issue.get("body") or "")):
+            retained_status.append({"repository": repo, "issue": number,
+                                    "next_action": "reconcile Current Status or use the supported --resume-from handoff route"})
         for source, related, unresolved in active_claims(reader, repo, number, entry["session_id"], actor):
             record = release.source_record(source)
             if repo not in pulls_by_repo:
@@ -228,14 +277,16 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
                 match = re.fullmatch(rf"https://github\.com/{re.escape(repo)}/pull/([1-9]\d*)", url)
                 if match and not any(p["html_url"] == url for p in pulls):
                     pulls.append(reader.get_json(f"/repos/{repo}/pulls/{match[1]}", step="handoff_retained_pr"))
-            prs = [p["html_url"] for p in pulls if (p.get("head") or {}).get("ref") == record["branch"]
-                   or (p["html_url"] == record.get("refresh_pr")
-                       or p["html_url"] in handoff_prs)
-                   and claim.pr_issue_reference(p, number, repo=repo, attestation=True)]
+            prs = [p["html_url"] for p in pulls
+                   if (p.get("head") or {}).get("ref") == record["branch"]
+                   or (p["html_url"] in mentioned and (p.get("user") or {}).get("login") == actor
+                       and (p.get("state") == "open" or p.get("merged_at"))
+                       and claim.pr_issue_reference(p, number, repo=repo, attestation=True))]
             plans.append((repo, number, source["id"], related, prs))
             if unresolved:
                 raise ValueError(f"ownership follow-ups {unresolved} lack a verified source/session relationship; obtain authored exact-ID releases")
-    report = {"session_id": entry["session_id"], "claims": [], "dry_run": not apply}
+    report = {"session_id": entry["session_id"], "claims": [], "dry_run": not apply,
+              "retained_status_claims": retained_status}
     for repo, _, _, _, _ in plans:
         checkout = checkout_root / repo.split("/")[1]
         if apply:
@@ -287,6 +338,8 @@ def main():
     parser.add_argument("--verified-handoff", action="store_true")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--deadline-seconds", type=int, default=600)
+    parser.add_argument("--account-config", type=Path)
+    parser.add_argument("--transcript-root", type=Path, action="append", default=[])
     args = parser.parse_args()
     reports = []
     lock_stream = None
@@ -311,6 +364,7 @@ def main():
             entries = [e for e in session_record.load_ledger(args.ledger) if e["session_id"] == args.session_id]
             if len(entries) != 1:
                 raise ValueError("native session must match exactly one ledger entry")
+            entries[0]["_transcript_roots"] = transcript_roots(entries[0]["harness"], args.account_config, args.transcript_root)
             verify_closed(entries[0], args.supervisor_session)
             if args.apply:
                 entries = [record_closure(args.closed_log, entries[0], args.supervisor_session)]
@@ -324,6 +378,8 @@ def main():
                 entries = [e for e in entries if e["session_id"] == args.session_id]
             if not entries:
                 raise ValueError("closed-session log has no matching records")
+        entries = [{**e, "_transcript_roots": transcript_roots(e["harness"], args.account_config, args.transcript_root),
+                    "_read_deadline_seconds": args.deadline_seconds} for e in entries]
         verified = []
         for entry in entries:
             try:

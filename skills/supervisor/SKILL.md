@@ -89,16 +89,16 @@ commands:
     resource_path: scripts/auto_enqueue.py
     example_argv: ["uv", "run", "scripts/auto_enqueue.py", "holds", "--hold-file", "<private-holds.json>", "--pause", "OWNER/REPO"]
     purpose: Serialize repository pauses and Client release holds with local enqueue passes.
-  - name: supervisor-close-ttys
-    source: skill
-    resource_path: scripts/close_ttys.py
-    example_argv: ["uv", "run", "scripts/close_ttys.py", "--ledger", "<ledger.json>", "--session-id", "<id>", "--verified-handoff", "--verified-input"]
-    purpose: Preview closing a tab after its agent process exited.
   - name: supervisor-release-session-claims
     source: skill
     resource_path: scripts/release_session_claims.py
     example_argv: ["uv", "run", "scripts/release_session_claims.py", "finish", "--ledger", "<ledger.json>", "--closed-log", "<closed.json>", "--session-id", "<native-id>", "--supervisor-session", "<native-id>", "--owner", "OWNER", "--checkout-root", "<checkouts>", "--confirm-session-ended", "--verified-handoff"]
     purpose: Preview remaining claims after transcript, issue handoff and actual process exit verification.
+  - name: supervisor-close-ttys
+    source: skill
+    resource_path: scripts/close_ttys.py
+    example_argv: ["uv", "run", "scripts/close_ttys.py", "--ledger", "<ledger.json>", "--session-id", "<id>", "--verified-handoff", "--verified-input"]
+    purpose: Preview closing a tab after its agent process exited.
 policy:
   command_policies:
     - id: prefer-session-helper-for-iterm-typing

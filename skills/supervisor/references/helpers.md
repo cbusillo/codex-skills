@@ -390,7 +390,16 @@ claims. Read [Planning: Claim](../../github/references/cli-reference.md#planning
 and its Abandoned automation claims section first. The current Supervisor must
 verify the transcript handoff and actual process exit, including hosts/peers
 the helpers cannot inventory. The helper rechecks the exact native transcript,
-unqualified safe verdict, matched PID and TTY before every release. It does not
+unqualified safe verdict, matched PID and TTY before every release. It also
+checks exact-ID resumed harness processes and matching native transcripts in
+all account homes from the existing Supervisor account configuration. Newer
+native records, including a resumed session's metadata, invalidate closure.
+No credentials or account logins are read or changed. `--account-config` selects
+that existing mapping; without a mapping, repeat `--transcript-root` for every
+known source-harness transcript directory on this host (Codex sessions and
+archived_sessions; Claude projects). Unknown hosts/peers remain the caller's
+verified-closure responsibility, never an inference from missing inventory.
+It does not
 send exit commands or change issue status, waits, blockers, branches or worktrees.
 
 ```sh
@@ -431,18 +440,25 @@ Use the original actual closure timestamps; neither conversion time nor
 attestation posting time substitutes for them. Backfill still requires the
 recorded PID to be absent and the transcript unchanged; another job on a reused
 historical TTY does not identify the source session. Normal finish checks all
-jobs on the matched current TTY. Invalid records are reported per session while
+jobs on the matched current TTY. Invalid closure records are reported per session while
 independent verified sessions proceed. If a record lacks a matched
 transcript, unqualified safe verdict, original closure proof or handoff URL,
 report it for reconciliation instead of inventing evidence.
+Malformed ledger schema or duplicate native IDs refuse the whole log; correct
+its format against original evidence before retrying.
 
 ```sh
 uv run skills/supervisor/scripts/release_session_claims.py backfill --closed-log <private-closed.json> --supervisor-session <current-native-id> --owner OWNER --checkout-root <existing-checkout-directory> --confirm-session-ended --verified-handoff
 ```
 
-The read deadline defaults to ten minutes; `--deadline-seconds` sets a bounded
+The discovery read deadline defaults to ten minutes; `--deadline-seconds` sets a bounded
 longer window for a larger historical inventory. Each repository's open PR list
 is reused within a session; exact handoff URLs also identify merged retained PRs.
+Per-issue read windows restart after discovery, so release subprocess time does
+not consume another session's read budget. PR conversation comments are filtered
+out; deleted or inaccessible attestations invalidate their historical releases.
+Superseded unmerged or foreign handoff PRs are not retained candidates, while
+source-branch PRs still undergo the maintained release safety checks.
 The command uses the currently configured automation identity only; claims by
 another App or a human are reported and preserved, with no identity fallback.
 Use `--session-id` to reconcile one logged session; inspect the default preview,
@@ -452,7 +468,10 @@ coverage. Test only self-created throwaway issues/claims, never real stale claim
 On a refusal or uncertain write, preserve posted attestations/releases and
 inspect their readback before recovery. Already valid releases are skipped;
 unchanged attestations and releases use the shared transport's body deduplication.
-Keep unfinished reconciliation in the ledger. Then perform the guarded tab-close
+Keep unfinished reconciliation in the ledger. `retained_status_claims` explicitly names Current Status markers that still
+need reconciliation or the supported `--resume-from` handoff route. The helper
+does not rewrite those fields.
+Then perform the guarded tab-close
 step below (the verified exact-tab route from #1627/#1629 applies once landed).
 
 ```sh
