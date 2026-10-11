@@ -142,7 +142,7 @@ delivery holds, never enrollment, branch names or enqueue labels.
 
 ```sh
 uv run skills/supervisor/scripts/auto_enqueue.py holds --hold-file <private-holds.json> --init --coordinated-repo OWNER/CLIENT-REPO --coordinated-repo OWNER/SHARED-REPO
-uv run skills/supervisor/scripts/auto_enqueue.py --owner OWNER --control-plane-repo OWNER/CONTROL --hold-file <private-holds.json> --once
+uv run skills/supervisor/scripts/auto_enqueue.py --owner OWNER --hold-file <private-holds.json> --once
 ```
 
 Initialization refuses an existing record. Missing or malformed hold state stops
