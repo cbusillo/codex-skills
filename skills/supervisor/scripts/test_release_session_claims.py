@@ -522,7 +522,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(report["claims"][0]["release"]["ok"])
 
     def test_partial_preview_failure_retains_attestation_and_stops(self):
-        self.reader.paged_json.side_effect = self.plan_reader
+        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
         handoff = dict(self.reader.get_json.return_value)
         self.reader.get_json.side_effect = lambda path, **_kw: self.head_commit() if "/commits/" in path else self.pull(5, SOURCE["branch"]) if "/pulls/" in path else handoff
         with patch.object(helper.claim, "run_read", side_effect=lambda _args, *, cwd: f"https://github.com/test/{cwd.name}.git"), \
