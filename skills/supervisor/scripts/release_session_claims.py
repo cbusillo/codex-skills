@@ -289,7 +289,20 @@ def discover_handoff(reader, entry, actor):
     write_command = re.compile(r"(?:gh-comment|github_comment\.py|gh-pr\.py\s+comment)\b[^\n;]*\b(?:issue|pr)?\s*[1-9]\d*")
     for record in records:
         payload = record.get("payload") or {}
-        if payload.get("type") in {"function_call", "custom_tool_call"} and write_command.search(str(payload.get("arguments") or payload.get("input") or "")):
+        arguments = payload.get("arguments") or payload.get("input") or ""
+        try:
+            structured = json.loads(arguments) if isinstance(arguments, str) else arguments
+        except ValueError:
+            structured = None
+        command = (structured.get("cmd") or structured.get("command") or "") if isinstance(structured, dict) else ""
+        code = structured.get("code", "") if isinstance(structured, dict) else arguments
+        if not command and isinstance(code, str):
+            literals = re.findall(r'\bcmd\s*:\s*("(?:\\.|[^"\\])*")', code)
+            command = "\n".join(json.loads(literal) for literal in literals)
+        # Historical fixtures/native direct calls may contain the shell command itself.
+        if not command and not isinstance(structured, dict) and payload.get("name") in {"exec_command", "functions.exec_command"}:
+            command = str(arguments)
+        if payload.get("type") in {"function_call", "custom_tool_call"} and write_command.search(command):
             if payload.get("call_id"):
                 writes.add(payload["call_id"])
         if payload.get("type") in {"function_call_output", "custom_tool_call_output"} and payload.get("call_id") in writes:
@@ -363,6 +376,21 @@ def discover_handoff(reader, entry, actor):
                 url = evidence["html_url"]
                 checked = handoff(reader, {**entry, "handoff_url": url}, actor)
                 return {**entry, "handoff_url": url, "_handoff_provenance": "exact-ID summary"}, checked
+    # Interrupted sessions may have no public closeout. The inventory's original
+    # native ownership record is a recovery context, not a fabricated summary.
+    for row in entry.get("_inventory_claims", []):
+        comments = entry.get("_handoff_cache", {}).get((row["repo"], row["issue"]))
+        if comments is None:
+            comments = reader.paged_json(f"/repos/{row['repo']}/issues/{row['issue']}/comments", step_prefix="backfill_source_context")
+        source = next((c for c in comments if c.get("id") == row["claim_comment_id"]), None)
+        if source is None or (source.get("user") or {}).get("login") != actor:
+            continue
+        parsed = claim.records(source.get("body") or "")
+        if (len(parsed) == 1 and parsed[0]["session"] == entry["session_id"]
+                and release.stamp(source.get("updated_at") or source.get("created_at")) <= release.stamp(entry["ended_at"])):
+            url = source.get("html_url") or f"https://github.com/{row['repo']}/issues/{row['issue']}#issuecomment-{source['id']}"
+            checked = handoff(reader, {**entry, "handoff_url": url}, actor)
+            return {**entry, "handoff_url": url, "_handoff_provenance": "original native ownership record; closeout verified separately"}, checked
     raise ValueError("no authored handoff bound to the exact native transcript/session; reconcile this session")
 
 
@@ -520,7 +548,7 @@ def apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, 
         if validate_closure(entry, supervisor_session) != status:
             raise ValueError("source transcript changed; preserve remaining claims")
         body = (f"Closed session {entry['session_id']}\nEnded at: {entry['ended_at']}\nSafe to exit: yes\n\n"
-                f"Verified handoff ({entry.get('_handoff_provenance', 'Supervisor transcript-verified ledger')}): {entry['handoff_url']}\n")
+                f"Handoff context ({entry.get('_handoff_provenance', 'Supervisor transcript-verified ledger')}): {entry['handoff_url']}\n")
         if entry.get("_inventory"):
             body += "Closure evidence: Supervisor verified inventory; original PID/TTY unavailable. The caller confirms actual session inactivity, including unavailable native peers.\n"
         item = {"repository": repo, "issue": number, "claim_comment": source_id,

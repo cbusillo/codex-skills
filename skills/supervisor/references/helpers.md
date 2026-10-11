@@ -484,7 +484,12 @@ comment-write receipts, then verified against live comment author and dates.
 A fallback source-issue or summary comment must name the exact native ID;
 shared-bot recency alone never qualifies. The summary thread defaults to
 `OWNER/codex-skills#884`; override it with `--handoff-thread OWNER/REPO#NUMBER`.
-Missing/changed handoffs remain reported for reconciliation. Retained PRs in
+An interrupted session with no public closeout can use the inventory's original
+structured ownership comment as recovery context only when its exact native ID,
+author and original timestamp still match. The attestation labels it as an
+ownership record with closeout verified separately; it never invents a source
+summary or publishes the private transcript. Missing/changed source records
+remain reported for reconciliation. Retained PRs in
 the inventory are named alongside source-branch and exact handoff PRs. Preview
 checks the target checkout remote, native peers, ownership activity, retained
 PR identity/links and head dates using the shared canonical guards. It posts

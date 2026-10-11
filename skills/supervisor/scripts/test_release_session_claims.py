@@ -112,7 +112,7 @@ class ReleaseTests(unittest.TestCase):
     def test_handoff_discovery_uses_native_comment_write_not_shared_bot_read(self):
         receipt = json.dumps({"comment_action": "created", "comment": {"url": self.entry["handoff_url"]}})
         records = helper.session_record.read_jsonl(self.transcript)
-        records.insert(1, {"timestamp": "2026-01-01T00:00:20Z", "payload": {"type": "function_call", "call_id": "write", "arguments": "gh-comment issue 1 --body-file handoff.md"}})
+        records.insert(1, {"timestamp": "2026-01-01T00:00:20Z", "payload": {"type": "function_call", "call_id": "write", "arguments": json.dumps({"cmd": "gh-comment issue 1 --body-file handoff.md"})}})
         records.insert(2, {"timestamp": "2026-01-01T00:00:30Z", "payload": {"type": "function_call_output", "call_id": "write", "output": receipt}})
         records.insert(2, {"timestamp": "2026-01-01T00:00:40Z", "payload": {"type": "function_call_output", "output": "Read https://github.com/test/a/issues/1#issuecomment-123"}})
         self.transcript.write_text("\n".join(json.dumps(r) for r in records))
@@ -164,6 +164,17 @@ class ReleaseTests(unittest.TestCase):
         self.reader.paged_json.return_value = []
         with self.assertRaisesRegex(ValueError, "no authored handoff"):
             helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
+
+    def test_interrupted_handoff_uses_exact_inventory_ownership_context(self):
+        entry = {**self.entry, "handoff_url": None, "_inventory_claims": [self.inventory_row()]}
+        self.reader.paged_json.return_value = [self.source]
+        self.reader.get_json.return_value = {**self.source, "issue_url": "https://api.github.com/repos/test/a/issues/1"}
+        found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
+        self.assertEqual(found["handoff_url"], "https://github.com/test/a/issues/1#issuecomment-1")
+        self.assertIn("ownership record", found["_handoff_provenance"])
+        self.source["user"]["login"] = "other-identity"
+        with self.assertRaisesRegex(ValueError, "no authored handoff"):
+            helper.discover_handoff(self.reader, entry, ACTOR)
 
     def test_inventory_repo_scope_preserves_excluded_rows(self):
         log = self.root / "inventory.json"
