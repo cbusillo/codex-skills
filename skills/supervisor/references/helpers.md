@@ -214,7 +214,7 @@ If the scheduler starts a candidate containing only this pass's confirmed
 labels, the watcher finishes its already selected group. Complete controller
 membership must prove that ownership; unchanged controller-proven blocking
 labels on already held PRs remain in place. A hold without a blocking label
-cannot be preserved from a queue-free observation. Another actor's new or changed queued label,
+stops continuation. Another actor's new or changed queued label,
 landing, reconciliation, failed candidate or unavailable evidence stops it.
 Candidate observations can omit the queue: unchanged policy, selected head and
 PR labels retain the scan's author admission while every write still reads
