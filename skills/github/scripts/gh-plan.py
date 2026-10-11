@@ -2099,6 +2099,30 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
 
 
 def cmd_claim(args: argparse.Namespace) -> None:
+    """Claim; a plain claim held only by a released handoff's retained work
+    reruns once as that handoff's ordinary successor, with all of its checks."""
+    try:
+        claim_once(args)
+    except ClassifiedPlanError as refusal:
+        route = refusal.payload.get("successor_route")
+        if refusal.code != "claim_conflict" or not route or refusal.payload.get("completed_steps"):
+            raise
+        routed = argparse.Namespace(**{**vars(args), **route})
+        try:
+            claim_once(routed)
+        except PlanError as routed_error:
+            routed_error.payload["successor_route"] = route
+            # A routed write keeps its own recovery, and a hold the route found
+            # (such as an unresolved wait) is the caller's next step.
+            if (routed_error.payload.get("completed_steps")
+                    or getattr(routed_error, "code", "claim_conflict") != "claim_conflict"):
+                raise
+            refusal.payload["successor_route"] = {**route, "refused": str(routed_error),
+                                                  "competing_evidence": routed_error.payload.get("competing_evidence", [])}
+            raise refusal from routed_error
+
+
+def claim_once(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     issue_repo, number = issue_ref(args.issue, repo)
     claim = {key: getattr(args, key) for key in ("worker", "session", "branch")}
@@ -2391,6 +2415,17 @@ def cmd_claim(args: argparse.Namespace) -> None:
             record += "; graph verification incomplete: " + ", ".join(limitations)
         return record + "\n\n"
 
+    def refuse_or_route(competing_claims: list[dict[str, Any]], route_comments: list[dict[str, Any]]) -> None:
+        """Refuse; before any write, name a released handoff's successor route for cmd_claim to verify."""
+        route = None
+        if not args.resume_from and not handoff_id and not completed:
+            route = github_plan_claim.released_successor_route(competing_claims, route_comments, issue_repo=issue_repo)
+        raise ClassifiedPlanError(
+            "claim_conflict", "Another worker or ambiguous ownership evidence holds this issue; preserve it for owner review",
+            payload={"competing_evidence": competing_claims, "claim_recovery": claim_recovery(),
+                     **({"successor_route": {"resume_from": route[0], "handoff_comment": route[1]}} if route else {})},
+        )
+
     def check_native_blockers() -> None:
         _, blockers = collect_paged_rest_items(
             f"/repos/{issue_repo}/issues/{number}/dependencies/blocked_by",
@@ -2406,7 +2441,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         check_agent(issue)
         conflicts, owned = github_plan_claim.discussion_evidence(status, comments, claim, resume_from=args.resume_from, repo=issue_repo, number=number, issue_url=issue.get("html_url"))
         if conflicts:
-            refuse(conflicts)
+            refuse_or_route(conflicts, comments)
         check_wait(issue, status)
         if owned:
             claim = {key: owned[0][key] for key in claim}
@@ -2426,7 +2461,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
                                                        recorded_branches=github_plan_claim.recorded_claim_branches(status, comments),
                                                        status_sessions=set(github_plan_claim.released_status_lines(status, comments).values()))
         if conflicts:
-            refuse(conflicts)
+            refuse_or_route(conflicts, comments)
         _, comment_owners = github_plan_claim.discussion_evidence("", comments, claim)
         comment_recorded = any(record.get("_legacy") != "yes" for record in comment_owners)
         admission_record = "" if comment_recorded else admission_line()
