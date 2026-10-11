@@ -1116,11 +1116,16 @@ def parse_structured_repository_preparation(
 
 def validate_script_preparation_command(argv: list[str]) -> None:
     if "--pep723-script" in argv and len(shlex.join(argv)) > MAX_REPOSITORY_PREPARATION_COMMAND_LENGTH:
-        raise repository_preparation_config_error(
+        error = repository_preparation_config_error(
             "The PEP 723 preparation command exceeds the command reporting limit. "
             "Choose fewer representative scripts covering the inspected dependencies, or shorten their paths, "
-            "so the complete manual rerun command can be reported."
+            "so the complete manual rerun command, including the selected IDE SDK-table path, can be reported."
         )
+        error.payload["next_action"] = (
+            "Reduce the representative script set or shorten its paths; the selected IDE SDK-table path "
+            "also counts toward the command reporting bound."
+        )
+        raise error
 
 
 def normalize_repository_preparation_paths(
@@ -1450,7 +1455,6 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
         if sdk_table is not None:
             argv = [*argv, "--sdk-table", str(sdk_table)]
             preparation["command"] = shlex.join(argv)
-        validate_script_preparation_command(argv)
     preparation["command_sha256"] = repository_preparation_command_hash(argv, target)
     preparation["config_sha256"] = repository_preparation_config_hash(context)
     preparation["worktree_identity_hash"] = stable_value_hash(str(target))
@@ -1474,6 +1478,7 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
 
     trusted, trusted_roots = repository_preparation_is_trusted(context)
     if not trusted:
+        validate_script_preparation_command(argv)
         preparation["execution_state"] = "blocked"
         preparation["failure_reason"] = "repository_preparation_untrusted"
         preparation["trusted_root_count"] = len(trusted_roots)
@@ -1508,6 +1513,8 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
         preparation["receipt_path"] = str(repository_preparation_receipt_path(context))
         preparation["generated_state_snapshot"] = generated_before
         return preparation
+
+    validate_script_preparation_command(argv)
 
     if state.get("kind") == "python" and (
         shutil.which(str(argv[0])) is None or len(argv) < 3 or not Path(argv[2]).is_file()

@@ -122,8 +122,7 @@ preparation. Read-only commands never invoke the provisioning operation.
 Successful preparation writes a bounded durable receipt under the helper cache.
 For repositories of standalone scripts, structured `prepare.python.pep723Scripts`
 accepts up to 25 worktree-relative script paths. The generator reads their
-PEP 723 metadata through uv's native script support. Select scripts whose
-metadata supplies inspection dependencies. A script named `setup.py` is
+PEP 723 metadata through uv's native script support. A script named `setup.py` is
 compiled from a temporary copy with a script filename so uv reads its PEP 723
 metadata instead of treating it as setuptools project metadata. Select scripts whose
 dependencies cover the inspected files; update the set when that scope adds
@@ -132,7 +131,9 @@ dependencies. The generator resolves their
 for the selected Python version. The complete generated command, including
 the selected SDK-table path, must fit the helper's existing command reporting
 bound; oversized sets fail before execution rather than supplying a partial
-manual rerun. Choose fewer representative scripts covering the inspected
+manual rerun. An explicit preparation skip or a reusable receipt can still
+proceed when only the added SDK-table path makes the runtime command too long.
+Choose fewer representative scripts covering the inspected
 dependencies, or shorter paths, when that diagnostic appears. Resolution runs
 before changing the worktree SDK. Resolution
 failure, including conflicting pins, stops preparation with a diagnostic naming
