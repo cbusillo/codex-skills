@@ -225,7 +225,7 @@ class CommandPolicyHookTests(unittest.TestCase):
             subprocess.run(["git", "init", "-q", str(checkout)], check=True)
             subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True)
             gate = "uv run --extra dev launchplane ci postgres-integration"
-            local = "postgresql+psycopg://test:test@127.0.0.1:55432/postgres"
+            local = "postgresql+psycopg://test@127.0.0.1:55432/postgres"
             for line in (
                 "LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " " + gate,
                 gate + " --database-url " + local,
@@ -243,6 +243,7 @@ class CommandPolicyHookTests(unittest.TestCase):
                 gate + " --database-url 'postgresql://test@127.0.0.1/postgres?service=shared'",
                 gate + " --database-url postgresql://test@127.0.0.1,db.example.com/postgres",
                 gate + " --database-url postgresql://test@127.0.0.1.example.com/postgres",
+                gate + " --database-url 'postgresql://test@127.0.0.1/postgres?application_name=ci#x&host=db.example.com'",
                 "LAUNCHPLANE_TEST_POSTGRES_URL=postgresql://test@db.example.com/postgres " + gate + " --database-url " + local,
                 "LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " " + gate + " --database-url postgresql://test@db.example.com/postgres",
                 "LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " uv run launchplane service start",
@@ -251,6 +252,9 @@ class CommandPolicyHookTests(unittest.TestCase):
                 with self.subTest(line=line):
                     self.assertEqual(bash(line, checkout).returncode, 2)
             self.assertEqual(bash("LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " " + gate, Path(directory).parent).returncode, 2)
+            for name in ("PGHOSTADDR", "PGSERVICE"):
+                with self.subTest(variable=name), mock.patch.dict(os.environ, {name: "db.example.com"}):
+                    self.assertEqual(bash(gate + " --database-url " + local, checkout).returncode, 2)
 
     def test_gate_batches_keep_newline_and_substitution_live_commands_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

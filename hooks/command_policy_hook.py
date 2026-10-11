@@ -43,6 +43,7 @@ import importlib.util
 import io
 import ipaddress
 import json
+import os
 import re
 import shlex
 import sys
@@ -73,8 +74,9 @@ DOT_ROOT_OPTIONS = {
 }
 POSTGRES_GATE = ["launchplane", "ci", "postgres-integration"]
 POSTGRES_URL_VARIABLE = "LAUNCHPLANE_TEST_POSTGRES_URL="
-# libpq reads these query parameters as the server to connect to, overriding the URL host.
+# libpq reads these query parameters and variables as the server to connect to, overriding the URL host.
 POSTGRES_HOST_OVERRIDES = {"host", "hostaddr", "service"}
+POSTGRES_HOST_VARIABLES = ("PGHOSTADDR", "PGSERVICE")
 
 
 def load_simulator() -> ModuleType:
@@ -383,6 +385,9 @@ def describe(policy: dict[str, Any], skill: str, argv: list[str]) -> str:
 
 def loopback_database(url: str) -> bool:
     """A PostgreSQL URL whose only server is this machine, so the gate cannot reach a shared database."""
+    # SQLAlchemy reads a `#` as query text, where urlsplit would hide it as a fragment.
+    if "#" in url or any(os.environ.get(name) for name in POSTGRES_HOST_VARIABLES):
+        return False
     try:
         parts = urlsplit(url)
         if not parts.scheme.startswith("postgres") or POSTGRES_HOST_OVERRIDES & {key.lower() for key in parse_qs(parts.query)}:
