@@ -1416,6 +1416,46 @@ def test_controller_conflict_probe_rejects_malformed_and_unsafe_evidence() -> No
     assert _run_controller_response(response)[0] == 1
 
 
+@pytest.mark.parametrize("section", ["result", "records"])
+def test_controller_rejected_response_names_unknown_key(section: str) -> None:
+    response: dict[str, Any] = {
+        "status": "accepted", "trace_id": "launchplane_req_diagnostic", "records": {},
+        "result": {"controller_action": "land_batch"},
+    }
+    response[section]["historical_stack_child_label_status"] = "private-fixture-value"
+    response[section]["later_unknown_field"] = "another-private-value"
+    status, payload = _run_controller_response(response, mutate=True)
+    assert status == 1 and payload["status"] == "invalid"
+    assert payload["result"] == {} and payload["records"] == {}
+    assert payload["warnings"][0]["code"] == "unsafe_response_shape"
+    assert payload["summary"]["projection_error_code"] == "unsafe_response_shape"
+    assert payload["summary"]["unrecognized_key"] == "historical_stack_child_label_status"
+    assert payload["summary"]["trace_id"] == response["trace_id"]
+    assert "Read the PR and controller state before any retry" in payload["summary"]["recommendation"]
+    assert "private-fixture-value" not in json.dumps(payload)
+    assert "another-private-value" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("key", ["https://private.example/path", "Bearer private-fixture-value", "ghp_privatefixture", "client_secret", "x" * 81])
+def test_controller_rejected_response_omits_unsafe_unknown_key(key: str) -> None:
+    response = {"status": "accepted", "records": {}, "result": {key: "private-fixture-value"}}
+    status, payload = _run_controller_response(response, mutate=True)
+    assert status == 1 and payload["status"] == "invalid"
+    assert payload["summary"]["projection_error_code"] == "unsafe_response_shape"
+    assert "unrecognized_key" not in payload["summary"]
+    assert key not in json.dumps(payload)
+
+
+def test_controller_rejected_response_names_bad_value() -> None:
+    response = {"status": "accepted", "records": {}, "result": {"controller_action": []}}
+    status, payload = _run_controller_response(response, mutate=True)
+    assert status == 1 and payload["status"] == "invalid"
+    assert payload["summary"]["projection_error_code"] == "invalid_response"
+    assert payload["warnings"][0]["code"] == "invalid_response"
+    assert "unrecognized_key" not in payload["summary"]
+    assert "Read the PR and controller state before any retry" in payload["summary"]["recommendation"]
+
+
 def test_controller_rejected_response_keeps_only_safe_trace_and_code() -> None:
     for code_source in ("top", "error", "blocking_reason"):
         response: dict[str, Any] = {
