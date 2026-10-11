@@ -1069,6 +1069,7 @@ class ClaimTests(unittest.TestCase):
             with patch.dict(os.environ, {"CLAUDECODE": "1", "CODEX_THREAD_ID": "outer"}, clear=True), \
                     patch.object(os, "getppid", return_value=10), \
                     patch.object(subprocess, "run", side_effect=[
+                        subprocess.CompletedProcess([], 0, "", ""),  # Git branch validation.
                         subprocess.CompletedProcess([], 0, f"20 {executable}\n", ""),
                         subprocess.CompletedProcess([], 0, "1 /opt/bin/codex\n", "")]):
                 with self.assertRaises(PLAN.ClassifiedPlanError):
