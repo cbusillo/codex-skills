@@ -3,11 +3,16 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+import base64
+import hashlib
 import importlib.util
+import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from xml.etree import ElementTree
 from pathlib import Path
 from unittest.mock import patch
@@ -21,6 +26,83 @@ SPEC.loader.exec_module(prepare_python_project)
 
 
 class PreparePythonProjectTest(unittest.TestCase):
+    @staticmethod
+    def write_script(repo, name, dependencies):
+        path = repo / name
+        path.write_text(
+            '# /// script\n# dependencies = ' + json.dumps(dependencies) + '\n# ///\n',
+            encoding="utf-8",
+        )
+        return path
+
+    @staticmethod
+    def wheel(directory, version):
+        name = "inspection_fixture"
+        info = f"{name}-{version}.dist-info"
+        files = {
+            f"{name}.py": f"VERSION = {version!r}\n",
+            f"{info}/METADATA": f"Metadata-Version: 2.1\nName: inspection-fixture\nVersion: {version}\n",
+            f"{info}/WHEEL": "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        }
+        records = []
+        with zipfile.ZipFile(directory / f"{name}-{version}-py3-none-any.whl", "w") as wheel:
+            for path, source in files.items():
+                content = source.encode("utf-8")
+                digest = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode("ascii")
+                wheel.writestr(path, content)
+                records.append(f"{path},sha256={digest},{len(content)}\n")
+            wheel.writestr(f"{info}/RECORD", "".join(records) + f"{info}/RECORD,,\n")
+
+    def test_script_sdk_resolves_imports_updates_and_refuses_conflicting_pins(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary).resolve()
+            for version in ["1.0", "2.0"]:
+                self.wheel(repo, version)
+            first = self.write_script(repo, "setup.py", ["inspection-fixture==1.0"])
+            self.write_script(repo, "two.py", ["inspection-fixture==1.0"])
+            python = f"{sys.version_info.major}.{sys.version_info.minor}"
+            interpreter = repo / ".venv/bin/python"
+
+            def installed_version():
+                return subprocess.check_output(
+                    # Same-sized fixture versions can be replaced within one
+                    # filesystem timestamp tick; avoid persisting stale bytecode.
+                    [str(interpreter), "-B", "-c", "import inspection_fixture; print(inspection_fixture.VERSION)"],
+                    text=True,
+                ).strip()
+
+            with patch.dict(os.environ, {"UV_NO_INDEX": "true", "UV_FIND_LINKS": str(repo)}):
+                prepare_python_project.prepare_script_environment(repo, python, ["setup.py", "two.py"])
+                self.assertEqual(installed_version(), "1.0")
+                self.write_script(repo, "two.py", ["inspection-fixture==2.0"])
+                before = first.read_bytes()
+                with self.assertRaisesRegex(RuntimeError, "could not be resolved"):
+                    prepare_python_project.prepare_script_environment(repo, python, ["setup.py", "two.py"])
+                self.assertEqual(installed_version(), "1.0")
+                self.assertEqual(first.read_bytes(), before)
+                prepare_python_project.prepare_script_environment(repo, python, ["two.py"])
+                self.assertEqual(installed_version(), "2.0")
+                self.write_script(repo, "two.py", [])
+                prepare_python_project.prepare_script_environment(repo, python, ["two.py"])
+                result = subprocess.run([str(interpreter), "-c", "import inspection_fixture"], capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_script_metadata_and_paths_fail_visibly(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary).resolve()
+            path = self.write_script(repo, "script.py", [])
+            self.assertEqual(prepare_python_project.script_paths(repo, ["script.py"]), [str(path)])
+            for source in ["pass\n", "# /// script\n# dependencies = []\n",
+                           '# /// script\n# dependencies = "one"\n# ///\n',
+                           path.read_text() * 2]:
+                path.write_text(source, encoding="utf-8")
+                with patch.dict(os.environ, {"UV_NO_INDEX": "true"}), self.assertRaises(RuntimeError):
+                    prepare_python_project.prepare_script_environment(repo, "3.12", ["script.py"])
+                self.assertFalse((repo / ".venv").exists())
+            for name in ["../outside.py", str(repo / "script.py")]:
+                with self.assertRaisesRegex(RuntimeError, "inside the worktree"):
+                    prepare_python_project.script_paths(repo, [name])
+
     def test_sdk_name_uses_home_relative_form(self):
         self.assertEqual(
             prepare_python_project.sdk_name_for(Path("/Users/example/work/.venv"), Path("/Users/example")),
@@ -30,7 +112,7 @@ class PreparePythonProjectTest(unittest.TestCase):
     def test_rendered_project_model_uses_sdk_and_test_root(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
-            with patch.object(prepare_python_project.Path, "home", return_value=repo.parent):
+            with patch("pathlib.Path.home", return_value=repo.parent):
                 files = prepare_python_project.render_project_files(repo, "codex-skills", ["jetbrains-inspection/tests"])
 
         module = files[repo / ".idea" / "codex-skills.iml"]
@@ -41,7 +123,8 @@ class PreparePythonProjectTest(unittest.TestCase):
         self.assertIn("codex-skills.iml", files[repo / ".idea" / "modules.xml"])
         self.assertIn("project-jdk-name=", files[repo / ".idea" / "misc.xml"])
 
-    def sdk_table(self, path, entries):
+    @staticmethod
+    def sdk_table(path, entries):
         root = ElementTree.Element("application")
         component = ElementTree.SubElement(root, "component", name="ProjectJdkTable")
         for name, home, kind in entries:
@@ -60,7 +143,7 @@ class PreparePythonProjectTest(unittest.TestCase):
                 ("wrong", str(repo / ".venv/bin/python"), "JavaSDK"),
                 ("other", str(home / "other/.venv/bin/python"), "Python SDK"),
             ])
-            with patch.object(prepare_python_project.Path, "home", return_value=home):
+            with patch("pathlib.Path.home", return_value=home):
                 name = prepare_python_project.registered_sdk_name(repo / ".venv", table)
             self.assertEqual(name, "uv (repo) & Python")
             files = prepare_python_project.render_project_files(repo, "repo", [], name)
@@ -91,7 +174,7 @@ class PreparePythonProjectTest(unittest.TestCase):
             with (
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--repo", str(repo), "--python", "3.12",
                                            "--module-name", "fixture", "--sdk-table", str(table)]),
-                patch.object(prepare_python_project, "validate_existing_venv"),
+                patch.dict(prepare_python_project.__dict__, {"validate_existing_venv": lambda *_: None}),
             ):
                 self.assertEqual(prepare_python_project.main(), 0)
             misc = ElementTree.parse(repo / ".idea/misc.xml").getroot()
@@ -118,7 +201,7 @@ class PreparePythonProjectTest(unittest.TestCase):
             prepare_python_project.atomic_write(path, "same\n")
             before = path.stat().st_mtime_ns
             real_replace = prepare_python_project.os.replace
-            with patch.object(prepare_python_project.os, "replace", wraps=real_replace) as replace_file:
+            with patch("os.replace", wraps=real_replace) as replace_file:
                 prepare_python_project.atomic_write(path, "same\n")
                 replace_file.assert_not_called()
                 self.assertEqual(path.stat().st_mtime_ns, before)

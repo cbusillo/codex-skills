@@ -183,9 +183,14 @@ policy revision. Repository metadata is never consulted for those facts.
 The loop defaults to a 30-minute wall-clock bound and five-minute cadence;
 `--once`, `--interval`, and `--deadline-seconds` configure it. Re-arm through the
 harness's scheduler, or choose a longer explicit deadline for continuous use.
-One failed repository/train read or uncertain write stops the run for reconciliation,
-preserving already queued work. Reads use the shared GitHub cache, quota reserve
-and retry deadline. No separate retry loop or human-auth fallback is added.
+Before any enqueue write starts in a pass, a transient network read failure
+emits `pass_failed` and ends only that pass. The watcher waits its normal interval
+and reads fresh state again within its deadline; `--once` reports the failed pass
+and exits nonzero. Other failures, or any failure during or after an enqueue write
+in that pass, stop the run for Supervisor reconciliation, preserving already
+queued work. Reads retain the shared GitHub cache, quota reserve and request retry
+deadline; no human-auth fallback is added. The deadline `stop` event reports
+completed and failed pass counts so an outage throughout the watch is visible.
 
 A ready handoff starts with the standalone `Ready for the merge train` line and
 includes one `Head: <full SHA>` field matching the PR's current head. The latest

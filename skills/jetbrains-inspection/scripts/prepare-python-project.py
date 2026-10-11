@@ -48,11 +48,11 @@ def render_project_files(
     repo: Path, module_name: str, test_roots: list[str], sdk_name: str | None = None,
 ) -> dict[Path, str]:
     idea = repo / ".idea"
-    sdk_name = html.escape(sdk_name or sdk_name_for(repo / ".venv", Path.home()), quote=True)
+    sdk_name = html.escape(sdk_name or sdk_name_for(repo / ".venv", Path.home()))
     safe_module_name = "".join(character if character.isalnum() or character in "-_" else "-" for character in module_name)
     module_file = idea / f"{safe_module_name}.iml"
     source_folders = "\n".join(
-        f'      <sourceFolder url="file://$MODULE_DIR$/{html.escape(root, quote=True)}" isTestSource="true" />'
+        f'      <sourceFolder url="file://$MODULE_DIR$/{html.escape(root)}" isTestSource="true" />'
         for root in test_roots
     )
     module_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
@@ -113,14 +113,12 @@ def ensure_ignored_outputs(repo: Path, paths: list[Path]) -> None:
             ["git", "-C", str(repo), "ls-files", "--error-unmatch", "--", relative_path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            check=False,
         )
         if tracked.returncode == 0:
             raise RuntimeError(f"preparation output must not be tracked: {relative_path}")
         ignore_probe = f"{relative_path}/.prepare-check" if path.name == ".venv" else relative_path
         ignored = subprocess.run(
             ["git", "-C", str(repo), "check-ignore", "--no-index", "-q", "--", ignore_probe],
-            check=False,
         )
         if ignored.returncode != 0:
             raise RuntimeError(f"preparation output is not ignored: {relative_path}")
@@ -151,6 +149,46 @@ def build_sync_command(python: str, extras: list[str]) -> list[str]:
     return command
 
 
+def script_paths(repo: Path, scripts: list[str]) -> list[str]:
+    paths = []
+    for script in scripts:
+        path = (repo / script).resolve()
+        if Path(script).is_absolute() or ".." in Path(script).parts or not path.is_relative_to(repo):
+            raise RuntimeError(f"PEP 723 script must stay inside the worktree: {script}")
+        if path.suffix != ".py" or not path.is_file():
+            raise RuntimeError(f"PEP 723 script must be an existing Python file: {script}")
+        paths.append(str(path))
+    return paths
+
+
+def prepare_script_environment(repo: Path, python: str, scripts: list[str]) -> None:
+    paths = script_paths(repo, scripts)
+    with tempfile.TemporaryDirectory(prefix="inspection-pep723-") as temporary:
+        for index, path in enumerate(paths):
+            if Path(path).name == "setup.py":
+                script_input = Path(temporary) / f"pep723-{index}.py"
+                script_input.write_bytes(Path(path).read_bytes())
+                paths[index] = str(script_input)
+        resolved = Path(temporary) / "requirements.txt"
+        result = subprocess.run(
+            ["uv", "pip", "compile", "--python-version", python, "--no-header",
+             "--output-file", str(resolved), *paths],
+            cwd=repo, capture_output=True, text=True,
+        )
+        if result.returncode:
+            raise RuntimeError(
+                f"PEP 723 inspection dependencies could not be resolved ({', '.join(scripts)}). "
+                "The inspection SDK was not changed. uv diagnostic:\n" + result.stderr
+            )
+        validate_existing_venv(repo / ".venv", python)
+        if not (repo / ".venv").exists():
+            subprocess.run(["uv", "venv", "--python", python, ".venv"], cwd=repo, check=True)
+        subprocess.run(
+            ["uv", "pip", "sync", "--python", str(repo / ".venv/bin/python"),
+             "--allow-empty-requirements", str(resolved)], cwd=repo, check=True,
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prepare a worktree-local PyCharm project model.")
     parser.add_argument("--repo", default=".")
@@ -159,6 +197,8 @@ def main() -> int:
     parser.add_argument("--test-root", action="append", default=[])
     parser.add_argument("--sync", action="store_true")
     parser.add_argument("--extra", action="append", default=[])
+    parser.add_argument("--pep723-script", action="append", default=[],
+                        help="Read inspection dependencies from this worktree-relative script (repeatable).")
     parser.add_argument("--sdk-table", type=Path, help="Read SDK names from the selected IDE's options/jdk.table.xml.")
     args = parser.parse_args()
 
@@ -167,7 +207,6 @@ def main() -> int:
         ["git", "-C", str(repo), "rev-parse", "--git-dir"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        check=False,
     )
     if git_check.returncode != 0:
         parser.error(f"not a Git worktree: {repo}")
@@ -175,17 +214,21 @@ def main() -> int:
         if not (repo / test_root).is_dir():
             parser.error(f"test root does not exist: {test_root}")
 
+    if args.pep723_script and args.sync:
+        parser.error("--pep723-script and --sync are separate dependency sources")
+    if args.extra and not args.sync:
+        parser.error("--extra requires --sync")
+    if args.sync and not (repo / "pyproject.toml").is_file():
+        parser.error("--sync requires pyproject.toml in the repository root")
     sdk_name = registered_sdk_name(repo / ".venv", args.sdk_table)
     project_files = render_project_files(repo, args.module_name, args.test_root, sdk_name)
     ensure_ignored_outputs(repo, [repo / ".venv", *project_files])
     validate_existing_venv(repo / ".venv", args.python)
-    if not (repo / ".venv").exists():
+    if args.pep723_script:
+        prepare_script_environment(repo, args.python, args.pep723_script)
+    elif not (repo / ".venv").exists():
         subprocess.run(["uv", "venv", "--python", args.python, ".venv"], cwd=repo, check=True)
-    if args.extra and not args.sync:
-        parser.error("--extra requires --sync")
     if args.sync:
-        if not (repo / "pyproject.toml").is_file():
-            parser.error("--sync requires pyproject.toml in the repository root")
         subprocess.run(build_sync_command(args.python, args.extra), cwd=repo, check=True)
     for path, content in project_files.items():
         atomic_write(path, content)
