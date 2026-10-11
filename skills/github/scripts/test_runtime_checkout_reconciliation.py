@@ -698,6 +698,10 @@ def session_fixture(tmp_path: Path) -> RuntimeFixture:
     )
 
 
+# The session's own catch-up budget is too short for a fixture under a loaded parallel gate.
+CATCHUP_BUDGET_ENV = {"DIRECTION_RUNTIME_CATCHUP_TIMEOUT": "60"}
+
+
 def start_session(
     fixture: RuntimeFixture, *args: str, catalog: Path | None = None,
     extra_env: dict[str, str] | None = None,
@@ -706,11 +710,12 @@ def start_session(
     env = {**os.environ, "HOME": str(fixture.code_home.parent / "host-home"),
            "CODE_HOME": str(fixture.code_home), "CODEX_HOME": str(fixture.code_home.parent / "unused"),
            "CLAUDE_CONFIG_DIR": str(fixture.code_home.parent / "unused-claude"),
-           "DIRECTION_MARKER": str(fixture.code_home.parent / "missing-marker.json"), **(extra_env or {})}
+           "DIRECTION_MARKER": str(fixture.code_home.parent / "missing-marker.json"),
+           **CATCHUP_BUDGET_ENV, **(extra_env or {})}
     return subprocess.run(
         [sys.executable, str((catalog or fixture.runtime) / "hooks/direction_check_hook.py"),
          *(["--runtime-catchup"] if runtime_catchup else []), *args],
-        cwd=fixture.code_home, env=env, capture_output=True, text=True, timeout=15,
+        cwd=fixture.code_home, env=env, capture_output=True, text=True, timeout=90,
     )
 
 
@@ -793,12 +798,29 @@ def test_upgraded_codex_hook_command_catches_up_the_bound_runtime(tmp_path: Path
     handler = json.loads(config.read_text())["hooks"]["SessionStart"][0]["hooks"][0]
     env = {**os.environ, "HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home),
            "CODEX_HOME": str(fixture.code_home), "CLAUDE_CONFIG_DIR": str(fixture.code_home.parent / "unused-claude"),
-           "DIRECTION_MARKER": str(fixture.code_home.parent / "missing-marker.json")}
+           "DIRECTION_MARKER": str(fixture.code_home.parent / "missing-marker.json"), **CATCHUP_BUDGET_ENV}
     result = subprocess.run(["sh", "-c", handler["command"]], cwd=fixture.code_home, env=env,
                             text=True, capture_output=True, timeout=handler["timeout"])
     assert result.returncode == 0, result.stderr
     assert "Catalog catch-up synchronized" in result.stdout
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
+
+
+def test_session_start_reports_a_catchup_budget_spent_finding_the_runtime(tmp_path: Path) -> None:
+    fixture = session_fixture(tmp_path)
+    hook = runpy.run_path(str(fixture.runtime / "hooks/direction_check_hook.py"))
+    actual_run = subprocess.run
+    def slow_root(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        if "--show-toplevel" in argv:
+            return actual_run([sys.executable, "-c", "import time; time.sleep(10)"], **kwargs)
+        return actual_run(argv, **kwargs)
+    env = {"HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home),
+           "CODEX_HOME": str(fixture.code_home.parent / "unused"), "CLAUDE_CONFIG_DIR": str(fixture.code_home.parent / "unused-claude"),
+           "DIRECTION_RUNTIME_CATCHUP_TIMEOUT": "1"}
+    with mock.patch.dict(os.environ, env), mock.patch("subprocess.run", side_effect=slow_root):
+        line = hook["catch_up_runtime"](fixture.runtime)
+    assert "runtime_catchup_timeout" in line
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
 def test_session_start_reports_changed_helper_without_moving_runtime(tmp_path: Path) -> None:

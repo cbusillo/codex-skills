@@ -738,6 +738,24 @@ def _optional_public_identifier(value: object) -> str | None:
     return public_identifier(value)
 
 
+class _UnknownResponseField(LaunchplaneSafetyError):
+    """Keep a bounded field name without retaining its rejected value."""
+
+    def __init__(self, key: object) -> None:
+        super().__init__("unsafe_response_shape")
+        self.unrecognized_key = ""
+        if (
+            isinstance(key, str)
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", key)
+            and not is_denied_key(key)
+        ):
+            try:
+                assert_public_safe_shape(key)
+                self.unrecognized_key = key
+            except LaunchplaneSafetyError:
+                pass
+
+
 def _project_records(records: object, allowed_keys: set[str]) -> dict[str, object]:
     if records is None:
         return {}
@@ -746,7 +764,7 @@ def _project_records(records: object, allowed_keys: set[str]) -> dict[str, objec
     for key, value in source.items():
         key = str(key)
         if key not in allowed_keys or is_denied_key(key):
-            raise LaunchplaneSafetyError("unsafe_response_shape")
+            raise _UnknownResponseField(key)
         projected[key] = public_identifier(value)
     return projected
 
@@ -1489,8 +1507,9 @@ def _project_merge_train_block_result(value: object) -> dict[str, object]:
 
 def _project_merge_train_result(result: object) -> dict[str, object]:
     source = _require_dict(result)
-    if any(str(key) not in MERGE_TRAIN_RESULT_FIELDS for key in source):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    for key in source:
+        if str(key) not in MERGE_TRAIN_RESULT_FIELDS:
+            raise _UnknownResponseField(key)
     assert_public_safe_shape(source)
     projected: dict[str, object] = {}
     for key in (
@@ -2557,7 +2576,6 @@ def _project_product_profile(value: object) -> dict[str, object]:
         raise LaunchplaneSafetyError("invalid_response")
     production_use = source.get("production_use") or "unknown"
     if production_use not in PRODUCT_PRODUCTION_USES:
-        # Only prelaunch skips Owner review; an unknown class must not read as either.
         raise LaunchplaneSafetyError("invalid_response")
     release_on_acceptance = source.get("release_on_acceptance", "held")
     if (
@@ -4857,7 +4875,7 @@ def _summarize_product_read(
     provider_payload: dict[str, Any],
     result_key: str,
     project: Any,
-    recommendation: str,
+    recommendation: str | None = None,
 ) -> dict[str, object]:
     if any(str(key) not in {"status", "trace_id", result_key} for key in provider_payload):
         raise LaunchplaneSafetyError("unsafe_response_shape")
@@ -4867,8 +4885,9 @@ def _summarize_product_read(
     payload["summary"] = {
         "launchplane_status": status,
         "trace_id": public_trace_id(provider_payload.get("trace_id")),
-        "recommendation": recommendation,
     }
+    if recommendation is not None:
+        payload["summary"]["recommendation"] = recommendation
     assert_public_safe_shape(payload["summary"])
     return payload
 
@@ -4972,10 +4991,6 @@ def summarize_product_profile_read(
         provider_payload=provider_payload,
         result_key="profile",
         project=_project_product_profile,
-        recommendation=(
-            "production_use prelaunch skips Owner release review; live and unknown "
-            "both require it."
-        ),
     )
 
 
@@ -6531,7 +6546,7 @@ def execute_post(
                     provider_payload=provider_payload,
                 )
             )
-        except LaunchplaneSafetyError:
+        except LaunchplaneSafetyError as exc:
             if operation == "privileged-policy-propose":
                 payload = unavailable_payload(operation=operation, request=request, status="accepted_unverified", code="proposal_response_unverified", message="The proposal response could not be verified; the plan may have been saved.")
                 try:
@@ -6544,10 +6559,13 @@ def execute_post(
             if operation == "merge-train-controller-run-once":
                 payload = unavailable_payload(
                     operation=operation, request=request, status="invalid",
-                    code="invalid_response", message="Launchplane returned an invalid response.",
+                    code=exc.code, message="Launchplane returned an invalid response.",
                 )
                 summary = cast(dict[str, object], payload["summary"])
                 summary.update(_controller_error_diagnostics(provider_payload))
+                summary["projection_error_code"] = exc.code
+                if isinstance(exc, _UnknownResponseField) and exc.unrecognized_key:
+                    summary["unrecognized_key"] = exc.unrecognized_key
                 summary["recommendation"] = (
                     "The controller response could not be verified. Read the PR and controller "
                     "state before any retry; a mutating pass may have completed."

@@ -164,6 +164,12 @@ worktrees:
 }
 ```
 
+For standalone PEP 723 scripts, use `pep723Scripts` with a compatible list of
+script paths instead of `sync`. Preparation reads dependencies from those
+scripts and refuses conflicting requirements before changing the SDK. Read
+[inspection configuration](references/inspection-config.md) for this mode and
+receipt invalidation.
+
 The helper resolves its bundled `prepare-python-project.py`, creates an ignored
 worktree-local SDK/project model, and optionally runs `uv sync`. String commands
 remain supported for repository-specific preparation. Structured preparation

@@ -303,7 +303,16 @@ exit 127;
 '''
 
 
-def owned_hook(handler, script):
+ENROLLMENT_MARKER = "codex-skills-account-move"
+CATALOG_SCRIPT = ("skills", "supervisor", "scripts", "claude_account.py")
+
+
+def hook_command(python, script):
+    return shlex.join([python, "-I", script, "hook", "--enrollment", ENROLLMENT_MARKER])
+
+
+def owned_hook(handler):
+    """Recognize this helper's hooks by enrollment marker, not script basename."""
     command = handler.get("command") if isinstance(handler, dict) and handler.get("type") == "command" else None
     if not isinstance(command, str):
         return False
@@ -311,8 +320,12 @@ def owned_hook(handler, script):
         parts = shlex.split(command)
     except ValueError:
         return False
-    return (len(parts) == 4 and parts[1] == "-I" and parts[3] == "hook"
-            and Path(parts[2]).name == Path(script).name)
+    if len(parts) < 4 or parts[1] != "-I" or parts[3] != "hook" or Path(parts[2]).name != CATALOG_SCRIPT[-1]:
+        return False
+    if parts[4:] == ["--enrollment", ENROLLMENT_MARKER]:
+        return True
+    # Enrollments written before the marker are recognized only at this catalog's layout.
+    return len(parts) == 4 and Path(parts[2]).parts[-len(CATALOG_SCRIPT):] == CATALOG_SCRIPT
 
 
 def managed_shim(env):
@@ -364,22 +377,23 @@ def install(settings, directory, write=False, refresh=False):
     groups = data.setdefault("hooks", {})
     if not isinstance(groups, dict):
         raise ValueError("hooks must be an object")
-    command = shlex.join([python, "-I", wrapper_path, "hook"])
+    command = hook_command(python, wrapper_path)
+    unmarked_command = shlex.join([python, "-I", wrapper_path, "hook"])
     for event, matcher in (("StopFailure", "rate_limit"), ("SessionStart", "resume")):
         entries = groups.setdefault(event, [])
         if not isinstance(entries, list):
             raise ValueError("hook entries must be lists")
         entry = {"matcher": matcher, "hooks": [{"type": "command", "command": command, "timeout": 3}]}
-        if refresh:
-            managed_groups = []
-            for existing in entries:
-                if isinstance(existing, dict) and isinstance(existing.get("hooks"), list):
-                    before = len(existing["hooks"])
-                    existing["hooks"] = [handler for handler in existing["hooks"] if not (
-                        owned_hook(handler, wrapper_path))]
-                    if before and not existing["hooks"]:
-                        managed_groups.append(existing)
-            entries[:] = [existing for existing in entries if existing not in managed_groups]
+        managed_groups = []
+        for existing in entries:
+            if isinstance(existing, dict) and isinstance(existing.get("hooks"), list):
+                before = len(existing["hooks"])
+                # Refresh replaces every owned hook; a repeat install replaces only its own unmarked command.
+                existing["hooks"] = [handler for handler in existing["hooks"] if not (
+                    owned_hook(handler) if refresh else isinstance(handler, dict) and handler.get("command") == unmarked_command)]
+                if before and not existing["hooks"]:
+                    managed_groups.append(existing)
+        entries[:] = [existing for existing in entries if existing not in managed_groups]
         if entry not in entries:
             entries.append(entry)
     if write:
@@ -398,7 +412,6 @@ def uninstall(settings, write=False):
     data = json.loads(previous)
     if not isinstance(data, dict) or not isinstance(data.get("env", {}), dict) or not isinstance(data.get("hooks", {}), dict):
         raise ValueError("invalid enrollment settings; preserved")
-    script = str(Path(__file__).resolve())
     env = data.get("env", {})
     shim = managed_shim(env)
     if shim is None and env.get("CLAUDE_CODE_PROCESS_WRAPPER") is not None:
@@ -417,7 +430,7 @@ def uninstall(settings, write=False):
                 retained.append(entry)
                 continue
             handlers = entry.get("hooks", [])
-            remaining = [handler for handler in handlers if not owned_hook(handler, script)]
+            remaining = [handler for handler in handlers if not owned_hook(handler)]
             if len(remaining) == len(handlers):
                 retained.append(entry)
             elif remaining:
@@ -435,7 +448,8 @@ def main():
         return wrapper(sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("hook")
+    hook_parser = sub.add_parser("hook")
+    hook_parser.add_argument("--enrollment", choices=[ENROLLMENT_MARKER])
     sub.add_parser("status")
     cancel = sub.add_parser("cancel")
     cancel.add_argument("--session-id", required=True)

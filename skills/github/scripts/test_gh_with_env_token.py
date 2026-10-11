@@ -948,6 +948,12 @@ def test_pr_create_validation_refusal_preserves_unknown_write_controls() -> None
         "Head ref must be a branch (createPullRequest)"
     )
     cases = [
+        ("could not add label: 'owner-review' not found", "", "validation_error", "not_started"),
+        ("could not add label: 'timeout' not found", "", "validation_error", "not_started"),
+        ("could not add label: 'owner-review' not found\nconnection reset by peer", "", "network_provider_failure", "unknown"),
+        ("could not add label: 'owner-review' not found", "https://github.com/director/catalog/pull/9\n", "network_provider_failure", "unknown"),
+        ("pull request create failed: could not add label: 'owner-review' not found", "", "network_provider_failure", "unknown"),
+        ("could not add label: 'owner-review' not found\ncontext deadline exceeded", "", "deadline_exceeded", "unknown"),
         (refusal, "", "validation_error", "rejected"),
         (refusal.replace("work/fixture", "fix/retry-after-header"), "", "validation_error", "rejected"),
         (refusal.replace("work/fixture", "fix/rate_limited"), "", "validation_error", "rejected"),
@@ -1010,7 +1016,7 @@ def test_pr_create_validation_refusal_preserves_unknown_write_controls() -> None
             payload = json.loads(result.stdout)
             assert payload["failure"]["cause"] == cause, payload
             assert payload["write_outcome"] == outcome, payload
-            assert payload["outcome_certainty"] == ("confirmed_not_applied" if outcome == "rejected" else "unknown"), payload
+            assert payload["outcome_certainty"] == ("confirmed_not_applied" if outcome in {"rejected", "not_started"} else "unknown"), payload
             assert payload["fallback_eligible"] is False, payload
             assert payload["retry_eligible"] is False, payload
             assert payload["retryable"] is False, payload
@@ -1018,6 +1024,11 @@ def test_pr_create_validation_refusal_preserves_unknown_write_controls() -> None
             assert payload["actor"] == "catalog-app[bot]", payload
             if outcome == "unknown":
                 assert payload["recommended_next_action"] == "follow_operation_reconciliation_strategy", payload
+            if outcome == "not_started":
+                message = payload["failure"]["message"]
+                assert "existing authorization" in message, payload
+                assert "read back the label and all-state PRs" in message, payload
+                assert "do not replay automatically" in message, payload
             assert len(calls.read_text(encoding="utf-8").splitlines()) == 1
 
 

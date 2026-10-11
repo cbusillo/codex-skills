@@ -84,9 +84,18 @@ def unavailable_payload(request: dict[str, object], *, status: str, code: str) -
 
 def normalized_request(args: argparse.Namespace) -> dict[str, object]:
     def public_selector(value: str) -> str:
-        if PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute() or value.startswith("~/"):
+        value = public_summary_string(value)
+        posix_path = PurePosixPath(value)
+        windows_path = PureWindowsPath(value)
+        if (
+            posix_path.is_absolute()
+            or windows_path.is_absolute()
+            or value.startswith("~")
+            or urllib.parse.urlsplit(value).scheme.lower() == "file"
+            or ".." in windows_path.parts
+        ):
             raise LaunchplaneSafetyError("invalid_request")
-        return public_summary_string(value)
+        return value
 
     request: dict[str, object] = {"repository": public_selector(args.repo)}
     if args.branch:

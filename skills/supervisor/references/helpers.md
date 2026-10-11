@@ -183,9 +183,16 @@ policy revision. Repository metadata is never consulted for those facts.
 The loop defaults to a 30-minute wall-clock bound and five-minute cadence;
 `--once`, `--interval`, and `--deadline-seconds` configure it. Re-arm through the
 harness's scheduler, or choose a longer explicit deadline for continuous use.
-One failed repository/train read or uncertain write stops the run for reconciliation,
-preserving already queued work. Reads use the shared GitHub cache, quota reserve
-and retry deadline. No separate retry loop or human-auth fallback is added.
+Before any enqueue write starts in a pass, a transient network read failure
+(including retryable `GitHubReadError` with EOF, connection-establishment or
+non-JSON provider evidence even without an HTTP status)
+emits `pass_failed` and ends only that pass. The watcher waits its normal interval
+and reads fresh state again within its deadline; `--once` reports the failed pass
+and exits nonzero. Other failures, or any failure during or after an enqueue write
+in that pass, stop the run for Supervisor reconciliation, preserving already
+queued work. Reads retain the shared GitHub cache, quota reserve and request retry
+deadline; no human-auth fallback is added. The deadline `stop` event reports
+completed and failed pass counts so an outage throughout the watch is visible.
 
 A ready handoff starts with the standalone `Ready for the merge train` line and
 includes one `Head: <full SHA>` field matching the PR's current head. The latest
@@ -210,17 +217,35 @@ that repository's batch. Each write rechecks policy, pauses, train state, curren
 head and readiness. A behind-base single-member queue awaiting the train's
 branch update can still accumulate this watcher's group before any stored
 candidate exists; the watcher never updates that branch itself.
-If a candidate starts during the group, remaining PRs wait
-for another pass. Repeated passes never extend an already queued group.
+If the scheduler starts a candidate containing only this pass's confirmed
+labels, the watcher finishes its already selected group. Complete controller
+membership must prove that ownership; unchanged controller-proven blocking
+labels on already held PRs remain in place. A hold without a blocking label
+stops continuation. Another actor's new or changed queued label,
+landing, reconciliation, failed candidate or unavailable evidence stops it.
+Candidate observations can omit the queue: unchanged policy, selected head and
+PR labels retain the scan's author admission while every write still reads
+current readiness. A later pass preserves that candidate and admits no arrivals.
+The watcher never adds arrivals to an already queued group;
+clearing a previously labeled PR's hold can still change the train's membership.
 
 The helper emits JSONL `batch`, `held`, `busy`, `skipped`, `enqueued`, and
 `driver_handoff` events. Busy diagnostics include queue dispositions and labeled
-PR numbers when available. A blocked labeled PR deliberately holds the
-repository until the Supervisor reconciles it; busy alone never means a healthy
+PR numbers when available. Once the controller proves there is no active
+candidate, reconciliation, landing or eligible queue, labeled PRs it reports
+as ineligible do not hold the repository busy. Their labels stay in place;
+the train still owns their holds. Dispositions cover all enrolled bases in
+the repository. Labeled PRs absent from that inventory, or still reported as
+missing their enqueue label or lacking label-author evidence, preserve the
+batch until their state is known. Labeled stack children absent from the
+inventory remain on the Supervisor's coordinated stack path.
+Clearing a hold rejoins the current queue and may rebuild an active candidate.
+Busy alone never means a healthy
 candidate is progressing. Skipped events identify PRs whose head readiness or
 file inventory was not proved. The handoff contains the maintained driver's argv and labeled member
 numbers. Run that driver using the Supervisor's normal background monitoring,
-one driver per train; verify every intended member's eventual landing. The
+one driver per train. Stop an earlier driver for that train before
+starting the new handoff; verify every intended member's eventual landing. The
 watcher does not merge, update branches, deploy or send Client invitations.
 
 The local lock serializes this watcher's labels and pause updates. It does not
@@ -378,6 +403,14 @@ never changes a
 login, including the desktop app's.
 
 ## Finished-session shutdown stages
+
+A final unfenced exit verdict may follow completed backtick or tilde fenced
+blocks. A verdict inside an open block does not qualify. Shorter, mismatched,
+trailing-text or over-indented closing fences do not close it; list-item
+fences close relative to the list's content column. Recognition still supplies
+only a candidate; the shutdown procedure owns every verification before terminal input or closure.
+A final verdict indented four columns, including a nested verdict bullet, stays
+unrecognized. Use a standalone unindented final `Safe to exit: yes` instead.
 
 `finished_map.py` offers candidates only. Its conservative last-line parser
 rejects quoted, negated, conditional and aborted verdicts. The shared parser used

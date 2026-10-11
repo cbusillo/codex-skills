@@ -118,6 +118,7 @@ MAX_REPOSITORY_PREPARATION_OUTPUT_LENGTH = 16_384
 MAX_REPOSITORY_PREPARATION_GENERATED_STATE_PATHS = 25
 MAX_REPOSITORY_PREPARATION_TEST_ROOTS = 10
 MAX_REPOSITORY_PREPARATION_EXTRAS = 10
+MAX_REPOSITORY_PREPARATION_PEP723_SCRIPTS = 25
 MAX_REPOSITORY_PREPARATION_TIMEOUT_MS = 900_000
 REPOSITORY_PREPARATION_RECEIPT_SCHEMA_VERSION = 1
 REPOSITORY_PREPARATION_RECEIPT_DIRNAME = "repository-preparation"
@@ -1017,6 +1018,7 @@ def parse_structured_repository_preparation(
         "testRoots",
         "sync",
         "extras",
+        "pep723Scripts",
         "requiredGeneratedState",
     }
     unknown_keys = sorted(set(python) - allowed_keys)
@@ -1052,6 +1054,15 @@ def parse_structured_repository_preparation(
         raise repository_preparation_config_error(
             "qualityGate.inspection.prepare.python.sync must be a boolean."
         )
+    scripts = normalize_repository_preparation_paths(
+        python.get("pep723Scripts", []),
+        field_name="qualityGate.inspection.prepare.python.pep723Scripts",
+        maximum=MAX_REPOSITORY_PREPARATION_PEP723_SCRIPTS,
+    )
+    if scripts and sync:
+        raise repository_preparation_config_error(
+            "qualityGate.inspection.prepare.python.pep723Scripts and sync are separate dependency sources."
+        )
     extras = python.get("extras", [])
     if not isinstance(extras, list) or len(extras) > MAX_REPOSITORY_PREPARATION_EXTRAS:
         raise repository_preparation_config_error(
@@ -1086,6 +1097,9 @@ def parse_structured_repository_preparation(
         argv.append("--sync")
     for extra in normalized_extras:
         argv.extend(("--extra", extra))
+    for script_path in scripts:
+        argv.extend(("--pep723-script", script_path))
+    validate_script_preparation_command(argv)
     generated_state = list(dict.fromkeys([
         *generated_state, ".venv", f".idea/{module_name}.iml", ".idea/modules.xml", ".idea/misc.xml",
     ]))
@@ -1098,6 +1112,20 @@ def parse_structured_repository_preparation(
         "required_generated_state": generated_state,
         "_argv": argv,
     }
+
+
+def validate_script_preparation_command(argv: list[str]) -> None:
+    if "--pep723-script" in argv and len(shlex.join(argv)) > MAX_REPOSITORY_PREPARATION_COMMAND_LENGTH:
+        error = repository_preparation_config_error(
+            "The PEP 723 preparation command exceeds the command reporting limit. "
+            "Choose fewer representative scripts covering the inspected dependencies, or shorten their paths, "
+            "so the complete manual rerun command, including the selected IDE SDK-table path, can be reported."
+        )
+        error.payload["next_action"] = (
+            "Reduce the representative script set or shorten its paths; the selected IDE SDK-table path "
+            "also counts toward the command reporting bound."
+        )
+        raise error
 
 
 def normalize_repository_preparation_paths(
@@ -1179,14 +1207,24 @@ def repository_preparation_sdk_table(context: dict[str, Any]) -> Path | None:
     return Path(config_dir) / "options" / "jdk.table.xml" if config_dir else None
 
 
-def repository_preparation_command_hash(argv: list[str]) -> str:
+def repository_preparation_command_hash(argv: list[str], target: Path | None = None) -> str:
     helper_sha256 = None
     sdk_table_sha256 = None
+    script_hashes = {}
     if len(argv) >= 3 and Path(argv[2]).name == "prepare-python-project.py":
         try:
             helper_sha256 = hashlib.sha256(Path(argv[2]).read_bytes()).hexdigest()
         except OSError:
             helper_sha256 = "unavailable"
+        for index, argument in enumerate(argv[:-1]):
+            if argument == "--pep723-script":
+                script_path = argv[index + 1]
+                try:
+                    script_hashes[script_path] = hashlib.sha256(
+                        ((target or Path.cwd()) / script_path).read_bytes()
+                    ).hexdigest()
+                except OSError:
+                    script_hashes[script_path] = "unavailable"
         if "--sdk-table" in argv:
             try:
                 sdk_table = Path(argv[argv.index("--sdk-table") + 1])
@@ -1195,7 +1233,8 @@ def repository_preparation_command_hash(argv: list[str]) -> str:
                 sdk_table_sha256 = "unavailable"
     return stable_value_hash(
         json.dumps(
-            {"argv": argv, "helper_sha256": helper_sha256, "sdk_table_sha256": sdk_table_sha256},
+            {"argv": argv, "helper_sha256": helper_sha256, "sdk_table_sha256": sdk_table_sha256,
+             "pep723_script_sha256": script_hashes},
             sort_keys=True,
             separators=(",", ":"),
         )
@@ -1358,7 +1397,7 @@ def repository_preparation_receipt_matches(
     target = repository_preparation_target(context)
     return (
         receipt.get("schema_version") == REPOSITORY_PREPARATION_RECEIPT_SCHEMA_VERSION
-        and receipt.get("command_sha256") == repository_preparation_command_hash(argv)
+        and receipt.get("command_sha256") == repository_preparation_command_hash(argv, target)
         and receipt.get("config_sha256") == repository_preparation_config_hash(context)
         and receipt.get("worktree_identity_hash") == stable_value_hash(str(target))
         and receipt.get("post_git_snapshot_sha256") == canonical_json_sha256(status_snapshot)
@@ -1416,7 +1455,7 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
         if sdk_table is not None:
             argv = [*argv, "--sdk-table", str(sdk_table)]
             preparation["command"] = shlex.join(argv)
-    preparation["command_sha256"] = repository_preparation_command_hash(argv)
+    preparation["command_sha256"] = repository_preparation_command_hash(argv, target)
     preparation["config_sha256"] = repository_preparation_config_hash(context)
     preparation["worktree_identity_hash"] = stable_value_hash(str(target))
     preparation["required_generated_state"] = repository_preparation_generated_state(context)
@@ -1439,6 +1478,7 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
 
     trusted, trusted_roots = repository_preparation_is_trusted(context)
     if not trusted:
+        validate_script_preparation_command(argv)
         preparation["execution_state"] = "blocked"
         preparation["failure_reason"] = "repository_preparation_untrusted"
         preparation["trusted_root_count"] = len(trusted_roots)
@@ -1473,6 +1513,8 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
         preparation["receipt_path"] = str(repository_preparation_receipt_path(context))
         preparation["generated_state_snapshot"] = generated_before
         return preparation
+
+    validate_script_preparation_command(argv)
 
     if state.get("kind") == "python" and (
         shutil.which(str(argv[0])) is None or len(argv) < 3 or not Path(argv[2]).is_file()
@@ -6226,7 +6268,8 @@ def active_ide_churn(payload: dict[str, Any]) -> bool:
 
 def ide_churn_present(payload: dict[str, Any]) -> bool:
     status = str(payload.get("status") or payload.get("completion_reason") or "").lower()
-    proof_failures = payload.get("proof_failures") if isinstance(payload.get("proof_failures"), list) else []
+    proof_failures_value = payload.get("proof_failures")
+    proof_failures = proof_failures_value if isinstance(proof_failures_value, list) else []
     return (
         payload.get("indexing") is True
         or payload.get("is_scanning") is True
@@ -7971,7 +8014,8 @@ def logged_attempt_summary(source: dict[str, Any], attempt_index: int, terminal:
 
 def ordered_internal_attempts(payload: dict[str, Any]) -> list[dict[str, Any]]:
     attempts: list[dict[str, Any]] = []
-    retries = payload.get("internal_retries") if isinstance(payload.get("internal_retries"), list) else []
+    retries_value = payload.get("internal_retries")
+    retries = retries_value if isinstance(retries_value, list) else []
     next_index = 0
     for retry in retries:
         if not isinstance(retry, dict):
@@ -7985,7 +8029,8 @@ def ordered_internal_attempts(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def compact_inspection_attempt_diagnostics(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    retries = payload.get("internal_retries") if isinstance(payload.get("internal_retries"), list) else []
+    retries_value = payload.get("internal_retries")
+    retries = retries_value if isinstance(retries_value, list) else []
     if not retries:
         return []
     diagnostics: list[dict[str, Any]] = []
