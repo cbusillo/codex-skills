@@ -234,6 +234,10 @@ records that run.
    [ready handoff contract](../github/references/cli-reference.md#ready-handoffs);
    a renewed wait follows that contract's withdrawal route, and a push needs
    a fresh `ready` call.
+   Pass each launch's prompt through `iterm_tab.py new --brief-file`; keep the
+   command file to the agent invocation and settings. The launcher validates
+   every brief before launch side effects; read the launching procedure in
+   [helpers](references/helpers.md#launching-and-nudging).
    Anchor each brief, sweeps and checks included, on an issue in the same
    repository. Tell read-only checks not to claim it, so two of them on one
    issue do not clash.

@@ -48,6 +48,23 @@ def event(kind, **extra):
 
 
 class TranscriptTests(unittest.TestCase):
+    def test_status_recognizes_standalone_bold_final_verdict(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for harness, records in (
+                ("claude", [{"sessionId": "fixture", **claude("Done.\n**Safe to exit: yes.**")}]),
+                ("codex", [{"type": "session_meta", "payload": {"id": "fixture"}},
+                           event("agent_message", message="Done.\n**Safe to exit: yes.**"),
+                           event("task_complete")]),
+            ):
+                transcript = root / f"{harness}.jsonl"
+                transcript.write_text("\n".join(json.dumps(record) for record in records))
+                ledger = root / "ledger.json"
+                ledger.write_text(json.dumps([{"harness": harness, "session_id": "fixture",
+                                               "transcript": str(transcript)}]))
+                with self.subTest(harness=harness):
+                    self.assertTrue(status.snapshot(ledger)[0]["safe_verdict"])
+
     def test_claude_cached_context_and_latest_response(self):
         records = [
             claude("old"),
@@ -972,9 +989,17 @@ class AccountChoiceTests(unittest.TestCase):
             self.assertEqual(list((Path(folder) / "Launch Receipts").iterdir()), [])
 
 
+def fixture_briefs(command_files):
+    files = command_files if isinstance(command_files, list) else [command_files]
+    briefs = [path.with_suffix(".brief") for path in files]
+    for path in briefs:
+        path.write_text("brief")
+    return briefs
+
+
 def account_launch_args(command_file):
     return argparse.Namespace(
-        command="new", window_id="chosen", command_file=command_file,
+        command="new", window_id="chosen", command_file=command_file, brief_file=fixture_briefs(command_file),
         account_provider="anthropic", account=None, account_config=None,
     )
 
@@ -1106,6 +1131,126 @@ class TabCloseTests(unittest.TestCase):
 
 
 class TerminalTests(unittest.TestCase):
+    def test_brief_cannot_be_discarded_by_a_comment_or_shell_wrapper(self):
+        for command in ("codex --remote unix:// # launch", "bash -c 'codex'",
+                        "codex --remote unix://;", "codex --remote unix:// &&",
+                        "codex --remote unix:// && exit", "dash -c 'codex'",
+                        "/bin/ksh -c 'codex'"):
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                iterm_tab.append_brief(command, "task")
+
+    def test_settings_paths_do_not_count_as_shell_wrappers(self):
+        command = iterm_tab.append_brief("cd /work/sh && exec codex --add-dir /work/zsh", "task")
+        self.assertEqual(shlex.split(command)[-1], "task")
+
+    def test_quoted_settings_keep_shell_punctuation_as_data(self):
+        for settings in ('claude --allowedTools="Bash(git status)"', "codex -c key='a;b'",
+                         "codex -c key='a #b'", "cd '/work/space dir' && exec codex"):
+            with self.subTest(settings=settings):
+                command = iterm_tab.append_brief(settings, "task")
+                self.assertEqual(shlex.split(command)[-1], "task")
+
+    def test_google_brief_uses_native_interactive_prompt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            child = root / "agy"
+            child.write_text(f'#!{sys.executable}\nimport argparse\n'
+                             'parser = argparse.ArgumentParser()\n'
+                             'parser.add_argument("-i", "--prompt-interactive", required=True)\n'
+                             'print(parser.parse_args().prompt_interactive, end="")\n')
+            child.chmod(0o700)
+            brief = "--Start here\n\tKeep these details literal."
+            command = iterm_tab.append_brief(shlex.quote(str(child)), brief)
+            result = subprocess.run(["/bin/sh", "-c", command], capture_output=True,
+                                    text=True, check=True)
+            self.assertEqual(result.stdout, brief)
+
+    def test_brief_reaches_agent_as_one_literal_argument(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            child = root / "claude"
+            child.write_text('#!/bin/sh\n[ "$1" = "--" ] && shift\nprintf "%s\\n" "$#" "$1"\n')
+            child.chmod(0o700)
+            launch = root / "launch.txt"
+            launch.write_text("cd / && exec " + shlex.quote(str(child)))
+            brief = root / "brief.txt"
+            content = "--Don't substitute $(touch injected) or `touch injected`\n\tFollow the issue."
+            brief.write_text(content)
+            args = account_launch_args(launch)
+            args.brief_file = [brief]
+            terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(
+                return_value=SimpleNamespace(tab_id="tab", current_session=terminal)))
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            with (
+                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
+                patch.object(account_choice, "select", return_value={"provider": "anthropic", "env": {}}),
+                patch.object(account_choice, "prepare_launch"),
+                patch.object(account_choice, "record_launch"),
+            ):
+                asyncio.run(iterm_tab.operate(app, args))
+            sent = terminal.async_send_text.await_args_list[0].args[0]
+            command = sent.removeprefix("\x1b[200~").removesuffix("\x1b[201~")
+            result = subprocess.run(["/bin/sh", "-c", command], cwd=root,
+                                    capture_output=True, text=True, check=True)
+            self.assertEqual(result.stdout, "1\n" + content + "\n")
+            self.assertFalse((root / "injected").exists())
+
+    def test_invalid_batch_brief_refuses_every_launch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            files = [root / "first.txt", root / "second.txt"]
+            for path in files:
+                path.write_text("codex --remote unix://")
+            args = account_launch_args(files)
+            args.brief_file[1].write_text("")
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            with (
+                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
+                patch.object(account_choice, "select_batch") as select,
+                patch.object(account_choice, "record_launch") as receipt,
+            ):
+                for briefs in (args.brief_file, args.brief_file[:1], None):
+                    args.brief_file = briefs
+                    with self.subTest(briefs=briefs), self.assertRaises(ValueError):
+                        asyncio.run(iterm_tab.operate(app, args))
+                    select.assert_not_called()
+                    receipt.assert_not_called()
+                    window.async_create_tab.assert_not_awaited()
+
+    def test_missing_or_empty_brief_refuses_before_launch_side_effects(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            launch = root / "launch.txt"
+            launch.write_text("codex --remote unix://")
+            brief = root / "brief.txt"
+            terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(
+                return_value=SimpleNamespace(tab_id="tab", current_session=terminal)))
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=[launch],
+                                      brief_file=[brief], account_provider="openai",
+                                      account=None, account_config=None)
+            with (
+                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
+                patch.object(account_choice, "select", return_value={"provider": "openai", "env": {}}) as select,
+                patch.object(account_choice, "prepare_launch") as prepare,
+                patch.object(account_choice, "record_launch") as receipt,
+                patch.object(iterm_tab, "check_codex_daemon") as daemon,
+            ):
+                for content in (None, "", "   \n"):
+                    if content is not None:
+                        brief.write_text(content)
+                    with self.subTest(content=content), self.assertRaises((ValueError, OSError)):
+                        asyncio.run(iterm_tab.operate(app, args))
+                    select.assert_not_called()
+                    prepare.assert_not_called()
+                    receipt.assert_not_called()
+                    daemon.assert_not_called()
+                    window.async_create_tab.assert_not_awaited()
+                    terminal.async_send_text.assert_not_awaited()
+
     def test_codex_daemon_preflight_checks_selected_home_before_tabs_and_receipts(self):
         # Short disposable paths fit macOS's Unix socket path limit.
         with tempfile.TemporaryDirectory(dir="/tmp") as folder:
@@ -1121,7 +1266,7 @@ class TerminalTests(unittest.TestCase):
             tab = SimpleNamespace(tab_id="tab", current_session=terminal)
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(return_value=tab))
             app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
-            args = argparse.Namespace(command="new", window_id="chosen", command_file=launch,
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=launch, brief_file=fixture_briefs(launch),
                                       account_provider="openai", account=None, account_config=None)
             with (
                 patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
@@ -1175,7 +1320,7 @@ class TerminalTests(unittest.TestCase):
                 path.write_text("codex --remote unix://")
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
             app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
-            args = argparse.Namespace(command="new", window_id="chosen", command_file=files,
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=files, brief_file=fixture_briefs(files),
                                       account_provider="openai", account=None, account_config=None)
             with (
                 socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as daemon,
@@ -1242,7 +1387,7 @@ class TerminalTests(unittest.TestCase):
             choice = {"provider": "openai", "env": {"CODEX_HOME": str(Path(folder) / "selected")}}
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
             app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
-            args = argparse.Namespace(command="new", window_id="chosen", command_file=launch,
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=launch, brief_file=fixture_briefs(launch),
                                       account_provider="openai", account=None, account_config=None)
             for failure, reason in failures:
                 probe = Mock()
@@ -1344,18 +1489,17 @@ class TerminalTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as folder:
             command = Path(folder) / "launch.txt"
-            command.write_text("run-authorized-brief\n")
+            command.write_text("codex --remote unix://\n")
             args = argparse.Namespace(
-                command="new", window_id="chosen", command_file=command
+                command="new", window_id="chosen", command_file=command, brief_file=fixture_briefs(command)
             )
             with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}):
                 result = asyncio.run(iterm_tab.operate(app, args))
         self.assertEqual(result["session_id"], "new")
         window.async_create_tab.assert_awaited_once_with(select=False)
         previous.async_select.assert_not_awaited()
-        self.assertEqual(
-            terminal.async_send_text.await_args_list[0].args, ("run-authorized-brief",)
-        )
+        self.assertEqual(terminal.async_send_text.await_count, 2)
+        self.assertEqual(terminal.async_send_text.await_args_list[-1].args, ("\r",))
 
     def test_late_session_launches_only_in_refreshed_created_tab(self):
         terminal = SimpleNamespace(session_id="late", async_send_text=AsyncMock())
@@ -1374,8 +1518,8 @@ class TerminalTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as folder:
             command = Path(folder) / "launch.txt"
-            command.write_text("run-authorized-brief\n")
-            args = argparse.Namespace(command="new", window_id="chosen", command_file=command)
+            command.write_text("codex --remote unix://\n")
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=command, brief_file=fixture_briefs(command))
             with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}):
                 result = asyncio.run(iterm_tab.operate(app, args))
         self.assertEqual(result["session_id"], "late")
@@ -1384,10 +1528,8 @@ class TerminalTests(unittest.TestCase):
         window.async_create_tab.assert_awaited_once_with(select=False)
         previous.async_select.assert_not_awaited()
         previous.async_send_text.assert_not_awaited()
-        self.assertEqual(
-            [call.args for call in terminal.async_send_text.await_args_list],
-            [("run-authorized-brief",), ("\r",)],
-        )
+        self.assertEqual(terminal.async_send_text.await_count, 2)
+        self.assertEqual(terminal.async_send_text.await_args_list[-1].args, ("\r",))
 
     def test_session_wait_timeout_covers_stalled_refresh(self):
         async def stalled_refresh():
@@ -1420,8 +1562,8 @@ class TerminalTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             command = Path(folder) / "launch.txt"
-            command.write_text("run-authorized-brief\n")
-            args = argparse.Namespace(command="new", window_id="chosen", command_file=command)
+            command.write_text("codex --remote unix://\n")
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=command, brief_file=fixture_briefs(command))
             with (
                 patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                 patch.object(iterm_tab, "wait_for_session", side_effect=short_wait),
@@ -1479,9 +1621,9 @@ class TerminalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             command = Path(folder) / "launch.txt"
             child = Path(folder) / "claude"
-            child.write_text('#!/bin/sh\nprintf "%s\\n" "$CLAUDE_CONFIG_DIR" "$CLAUDE_ACCOUNT_MOVE_ENABLED" "$1"\n')
+            child.write_text('#!/bin/sh\n[ "$1" = "--" ] && shift\nprintf "%s\\n" "$CLAUDE_CONFIG_DIR" "$CLAUDE_ACCOUNT_MOVE_ENABLED" "$1"\n')
             child.chmod(0o700)
-            command.write_text("cd / && " + shlex.quote(str(child)) + " 'brief'\n")
+            command.write_text("cd / && " + shlex.quote(str(child)) + "\n")
             args = account_launch_args(command)
             with (
                 patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
@@ -1531,7 +1673,7 @@ class TerminalTests(unittest.TestCase):
 
     def test_new_cli_requires_provider_before_connecting_to_iterm(self):
         fake = SimpleNamespace(run_until_complete=Mock())
-        with patch.dict("sys.modules", {"iterm2": fake}), patch.object(sys, "argv", ["iterm_tab.py", "new", "--window-id", "window", "--command-file", "launch.txt"]):
+        with patch.dict("sys.modules", {"iterm2": fake}), patch.object(sys, "argv", ["iterm_tab.py", "new", "--window-id", "window", "--command-file", "launch.txt", "--brief-file", "brief.txt"]):
             with self.assertRaises(SystemExit) as failed:
                 iterm_tab.main()
         self.assertEqual(failed.exception.code, 2)
@@ -1594,7 +1736,7 @@ class TerminalTests(unittest.TestCase):
             path = Path(folder) / "launch.txt"
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
             app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
-            args = argparse.Namespace(command="new", window_id="chosen", command_file=path,
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=path, brief_file=fixture_briefs(path),
                                       account_provider=None, account=None, account_config=None)
             for command in ("env CODEX_HOME=/manual codex brief", "export CLAUDE_CONFIG_DIR=/manual && claude brief"):
                 path.write_text(command)
@@ -1721,15 +1863,17 @@ class TerminalTests(unittest.TestCase):
         app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "launch.txt"
-            path.write_text("bad\tcommand")
             args = argparse.Namespace(
-                command="new", window_id="chosen", command_file=path
+                command="new", window_id="chosen", command_file=path, brief_file=fixture_briefs(path)
             )
-            with (
-                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
-                self.assertRaises(ValueError),
-            ):
-                asyncio.run(iterm_tab.operate(app, args))
+            for control in ("\x1b", "\t"):
+                path.write_text("codex --remote unix://" + control)
+                with (
+                    self.subTest(control=control),
+                    patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
+                    self.assertRaises(ValueError),
+                ):
+                    asyncio.run(iterm_tab.operate(app, args))
         window.async_create_tab.assert_not_awaited()
 
     def test_unverified_send_refuses_without_keys(self):
