@@ -13,6 +13,7 @@ import json
 import fcntl
 import os
 from pathlib import Path
+from typing import Any
 import re
 import shlex
 import subprocess
@@ -725,10 +726,11 @@ def main():
                 validate_closure(entry, args.supervisor_session)
                 verified.append(entry)
             except (ValueError, KeyError, TypeError, OSError) as error:
+                inventory_rows: list[dict[str, Any]] = entry.get("_inventory_claims", [])
                 reports.append({"session_id": entry["session_id"], "error": str(error), "released": False,
                                 "inventory_claims": [{"repository": r["repo"], "issue": r["issue"],
                                     "claim_comment": r["claim_comment_id"], "status": "preserved"}
-                                    for r in entry.get("_inventory_claims", [])]})
+                                    for r in inventory_rows]})
         entries = verified
         reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + args.deadline_seconds)
         if not entries:
