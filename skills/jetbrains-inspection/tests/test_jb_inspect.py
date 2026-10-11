@@ -16,6 +16,7 @@ import tempfile
 import time
 import unittest
 import urllib.parse
+import urllib.request
 from argparse import Namespace
 from contextlib import chdir, redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -10203,7 +10204,7 @@ class AttributionContractTest(unittest.TestCase):
                     io.BytesIO(b"<html>transport failure</html>"),
                 )
                 with (
-                    patch.object(jb_inspect.urllib.request, "urlopen", side_effect=response) as request,
+                    patch.object(urllib.request, "urlopen", side_effect=response) as request,
                     self.assertRaises(jb_inspect.InspectError) as raised,
                 ):
                     jb_inspect.http_get(63342, "trigger", {"scope": "files", "files": ",".join(files)})
