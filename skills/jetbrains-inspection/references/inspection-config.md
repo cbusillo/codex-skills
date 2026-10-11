@@ -126,7 +126,12 @@ PEP 723 metadata through uv's native script support. Select scripts whose
 dependencies cover the inspected files; update the set when that scope adds
 dependencies. The generator resolves their
 `dependencies` arrays together with `uv pip compile`
-for the selected Python version before changing the worktree SDK. Resolution
+for the selected Python version. The complete generated command, including
+the selected SDK-table path, must fit the helper's existing command reporting
+bound; oversized sets fail before execution rather than supplying a partial
+manual rerun. Choose fewer representative scripts covering the inspected
+dependencies, or shorter paths, when that diagnostic appears. Resolution runs
+before changing the worktree SDK. Resolution
 failure, including conflicting pins, stops preparation with a diagnostic naming
 the script set. `uv pip sync` installs the resolved set into `.venv`, removing
 dependencies from previous sets. Use a compatible set for the inspection;

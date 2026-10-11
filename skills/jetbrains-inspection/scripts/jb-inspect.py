@@ -118,6 +118,7 @@ MAX_REPOSITORY_PREPARATION_OUTPUT_LENGTH = 16_384
 MAX_REPOSITORY_PREPARATION_GENERATED_STATE_PATHS = 25
 MAX_REPOSITORY_PREPARATION_TEST_ROOTS = 10
 MAX_REPOSITORY_PREPARATION_EXTRAS = 10
+MAX_REPOSITORY_PREPARATION_PEP723_SCRIPTS = 25
 MAX_REPOSITORY_PREPARATION_TIMEOUT_MS = 900_000
 REPOSITORY_PREPARATION_RECEIPT_SCHEMA_VERSION = 1
 REPOSITORY_PREPARATION_RECEIPT_DIRNAME = "repository-preparation"
@@ -1056,7 +1057,7 @@ def parse_structured_repository_preparation(
     scripts = normalize_repository_preparation_paths(
         python.get("pep723Scripts", []),
         field_name="qualityGate.inspection.prepare.python.pep723Scripts",
-        maximum=25,
+        maximum=MAX_REPOSITORY_PREPARATION_PEP723_SCRIPTS,
     )
     if scripts and sync:
         raise repository_preparation_config_error(
@@ -1098,6 +1099,7 @@ def parse_structured_repository_preparation(
         argv.extend(("--extra", extra))
     for script_path in scripts:
         argv.extend(("--pep723-script", script_path))
+    validate_script_preparation_command(argv)
     generated_state = list(dict.fromkeys([
         *generated_state, ".venv", f".idea/{module_name}.iml", ".idea/modules.xml", ".idea/misc.xml",
     ]))
@@ -1110,6 +1112,15 @@ def parse_structured_repository_preparation(
         "required_generated_state": generated_state,
         "_argv": argv,
     }
+
+
+def validate_script_preparation_command(argv: list[str]) -> None:
+    if "--pep723-script" in argv and len(shlex.join(argv)) > MAX_REPOSITORY_PREPARATION_COMMAND_LENGTH:
+        raise repository_preparation_config_error(
+            "The PEP 723 preparation command exceeds the command reporting limit. "
+            "Choose fewer representative scripts covering the inspected dependencies, or shorten their paths, "
+            "so the complete manual rerun command can be reported."
+        )
 
 
 def normalize_repository_preparation_paths(
@@ -1439,6 +1450,7 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
         if sdk_table is not None:
             argv = [*argv, "--sdk-table", str(sdk_table)]
             preparation["command"] = shlex.join(argv)
+        validate_script_preparation_command(argv)
     preparation["command_sha256"] = repository_preparation_command_hash(argv, target)
     preparation["config_sha256"] = repository_preparation_config_hash(context)
     preparation["worktree_identity_hash"] = stable_value_hash(str(target))
