@@ -16,6 +16,7 @@ import re
 import shutil
 import stat
 import sys
+import tempfile
 from pathlib import Path
 
 import aiohttp
@@ -269,8 +270,6 @@ def project_claude(store: ActivityStore, account: str, rows: object) -> None:
         elif status == "waiting":
             attention = {"permission prompt": "approval", "sandbox request": "approval",
                          "input needed": "input"}.get(row.get("waitingFor"))
-            if not attention:
-                continue  # Generic dialogs do not prove approval or input.
             state = "attention"
         elif status == "idle":
             state = {"done": "completed", "failed": "failed", "stopped": "cancelled"}.get(row.get("state"), "quiet")
@@ -284,14 +283,14 @@ def project_claude(store: ActivityStore, account: str, rows: object) -> None:
                    attention=attention, renew_only=status in ("busy", "waiting"))
 
 
-async def claude_poll(store: ActivityStore, account: dict, *, once: bool = False) -> None:
+async def claude_poll(store: ActivityStore, account: dict, *, once: bool = False, executable: str = "claude") -> None:
     child_env = dict(os.environ)
     child_env.pop("CLAUDE_CONFIG_DIR", None)
     child_env.update(account["env"])
     while True:
         process = None
         try:
-            process = await asyncio.create_subprocess_exec("claude", "agents", "--json", env=child_env,
+            process = await asyncio.create_subprocess_exec(executable, "agents", "--json", env=child_env,
                                                            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                                                            limit=1024 * 1024)
             async with asyncio.timeout(10):
@@ -322,7 +321,7 @@ async def claude_poll(store: ActivityStore, account: dict, *, once: bool = False
 
 
 async def observe(config: Path | None, *, once: bool = False, storage: Path | None = None,
-                  state_root: Path | None = None) -> None:
+                  state_root: Path | None = None, claude_cli: Path | None = None) -> None:
     configured, root = accounts(config)
     if storage is not None and state_root is None:
         raise ValueError("qualification storage requires isolated --state-root")
@@ -345,27 +344,46 @@ async def observe(config: Path | None, *, once: bool = False, storage: Path | No
             home = Path(account["env"]["CODEX_HOME"]).expanduser()
             jobs.append(CodexObserver(store, account["accountID"], home).run(once=once))
         else:
-            jobs.append(claude_poll(store, account, once=once))
+            jobs.append(claude_poll(store, account, once=once, executable=str(claude_cli) if claude_cli else "claude"))
     results = await asyncio.gather(*jobs, return_exceptions=once)
     if any(isinstance(result, BaseException) for result in results):
         raise ValueError("one or more activity sources unavailable")
 
 
-def install(config: Path | None, *, write: bool = False) -> dict:
+def durable_cli(name: str, override: Path | None = None) -> str:
+    selected = str(override) if override else shutil.which(name)
+    if not selected or not Path(selected).is_absolute():
+        raise ValueError(f"{name} needs an absolute installed CLI path")
+    path = Path(selected).resolve(strict=True)
+    temporary = Path(tempfile.gettempdir()).resolve()
+    entry = Path(selected)
+    if (path.is_relative_to(temporary) or entry.is_relative_to(temporary) or
+            any((p / "pyvenv.cfg").is_file() for p in (*entry.parents, *path.parents))):
+        raise ValueError(f"{name} is in temporary storage or a virtual environment; select a durable CLI")
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise ValueError(f"{name} is not an executable file")
+    return selected
+
+
+def install(config: Path | None, *, write: bool = False, claude_cli: Path | None = None) -> dict:
     if sys.platform != "darwin":
         raise ValueError("launchd installation requires macOS")
     # Durable jobs must not depend on a linked checkout slated for retirement.
     if (ROOT / ".git").is_file():
         raise ValueError("install from the reconciled runtime checkout, not a task worktree")
-    uv = shutil.which("uv")
-    if not uv:
-        raise ValueError("uv is unavailable")
+    uv = durable_cli("uv")
+    claude = durable_cli("claude", claude_cli)
     private = Path(os.environ.get("CODE_HOME") or Path.home() / ".code").expanduser()
-    command = [uv, "run", "--no-python-downloads", str(Path(__file__).resolve()), "run"]
+    command = [uv, "run", "--no-python-downloads", str(Path(__file__).resolve()), "run", "--claude-cli", claude]
     if config:
         command.extend(["--config", str(config.resolve())])
+    # A node-based Claude wrapper needs its installed node, not a shell snapshot.
+    bins = [str(Path(uv).parent), str(Path(claude).parent)]
+    if shutil.which("node"):
+        bins.append(str(Path(durable_cli("node")).parent))
+    bins.extend(["/usr/bin", "/bin", "/usr/sbin", "/sbin"])
     job = {"Label": LABEL, "ProgramArguments": command, "RunAtLoad": True, "KeepAlive": True,
-           "ThrottleInterval": 30, "EnvironmentVariables": {"CODE_HOME": str(private), "PATH": os.environ.get("PATH", "")}}
+           "ThrottleInterval": 30, "EnvironmentVariables": {"CODE_HOME": str(private), "PATH": ":".join(dict.fromkeys(bins))}}
     destination = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
     if write:
         directory(destination.parent)
@@ -384,13 +402,15 @@ def main() -> int:
     parser.add_argument("--config", type=Path)
     parser.add_argument("--storage-root", type=Path, help="explicit qualification/test store")
     parser.add_argument("--state-root", type=Path, help="isolated private state for qualification/tests")
+    parser.add_argument("--claude-cli", type=Path, help="absolute durable Claude CLI, including for LaunchAgent installation")
     parser.add_argument("--write", action="store_true", help="write the previewed LaunchAgent; does not load it")
     args = parser.parse_args()
     try:
         if args.mode == "install":
-            print(json.dumps(install(args.config, write=args.write)))
+            print(json.dumps(install(args.config, write=args.write, claude_cli=args.claude_cli)))
         else:
-            asyncio.run(observe(args.config, once=args.mode == "once", storage=args.storage_root, state_root=args.state_root))
+            asyncio.run(observe(args.config, once=args.mode == "once", storage=args.storage_root,
+                                state_root=args.state_root, claude_cli=args.claude_cli))
         return 0
     except (OSError, ValueError, TimeoutError):
         print("Agent activity unavailable; check account mappings and supported local sources.", file=sys.stderr)

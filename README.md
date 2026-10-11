@@ -592,7 +592,7 @@ are prompts for a supervisor to check session state, not completion records:
 a Stop hook can run again when another hook continues the turn. The hook never
 returns a continuation, approval, or blocking decision.
 
-Each invocation appends one JSON line to `$CODE_HOME/session-events.jsonl`,
+Each advisory Stop/Interrupt invocation appends one JSON line to `$CODE_HOME/session-events.jsonl`,
 falling back to `~/.code/session-events.jsonl` on either harness. Set `CODE_HOME`
 to the same shared directory for both harnesses when using an override.
 Records contain `schema_version`, `harness`, `session_id`, optional `turn_id`

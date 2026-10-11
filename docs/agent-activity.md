@@ -31,6 +31,10 @@ isolated state is refused.
 On macOS, `install` previews a LaunchAgent. `install --write` writes that exact
 job, preserving an existing different job. Installation from a linked task
 checkout is refused. It does not load or restart the job.
+The job pins the installed Claude executable and uses only the selected CLI
+directories plus system paths. Temporary or virtual-environment executables
+are refused; `install --claude-cli /durable/path/to/claude` selects the supported
+replacement. Run from a shell with durable uv and node installations on PATH.
 Use the printed `launchAgent` path with the native launcher:
 
 ```sh

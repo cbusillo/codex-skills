@@ -203,7 +203,7 @@ def hook_activity(payload: object, env: dict) -> None:
     if harness not in ("codex", "claude"):
         return
     event = payload.get("hook_event_name")
-    events = {"UserPromptSubmit": "working", "Stop": "completed", "StopFailure": "failed",
+    events = {"UserPromptSubmit": "working", "Stop": "quiet", "StopFailure": "failed",
               "Interrupt": "cancelled", "Notification": "attention", "PermissionRequest": "attention",
               "SubagentStart": "working", "SubagentStop": "completed", "SessionEnd": "quiet"}
     if event not in events:
@@ -243,7 +243,6 @@ def hook_activity(payload: object, env: dict) -> None:
     store = ActivityStore(Path(binding["storageRoot"]), private)
     # Stop can be continued by another hook. Even later idle cannot distinguish
     # completion from an interrupted continuation; native background done can.
-    state = "quiet" if event == "Stop" else events[event]
-    store.emit(binding["accountID"], harness, session, state, "claude-hook",
+    store.emit(binding["accountID"], harness, session, events[event], "claude-hook",
                parent=parent, agent=agent, attention=attention,
                start=event in ("UserPromptSubmit", "SubagentStart"))

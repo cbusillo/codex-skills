@@ -20,7 +20,7 @@ from unittest.mock import patch
 from aiohttp import web, WSMsgType
 
 from agent_activity import ActivityStore, atomic_json, home_key, hook_activity, uuid7
-from observe_agent_activity import CodexObserver, project_claude, claude_poll
+from observe_agent_activity import CodexObserver, project_claude, claude_poll, durable_cli
 
 SESSION = str(uuid.uuid4())
 RUN = str(uuid.uuid4())
@@ -114,6 +114,28 @@ class ActivityTests(unittest.TestCase):
         hook_activity({'hook_event_name': 'UserPromptSubmit', 'session_id': SESSION},
                       {**self.env, 'AGENT_ACTIVITY_DISABLED': '1'})
         self.assertEqual(self.events(), [])
+
+    def test_generic_dialog_renews_attention_without_guessing_its_kind(self):
+        self.hook('UserPromptSubmit')
+        before = self.events()[0]
+        project_claude(self.store, ACCOUNT, [{'sessionId': SESSION, 'status': 'waiting', 'waitingFor': 'dialog open'}])
+        waiting = next(r for r in self.events() if r['state'] == 'attention')
+        self.assertEqual(waiting['runID'], before['runID'])
+        self.assertGreaterEqual(waiting['leaseExpiresAt'], before['leaseExpiresAt'])
+        self.assertIsNone(waiting['attentionKind'])
+
+    def test_temporary_cli_can_be_replaced_by_an_explicit_durable_executable(self):
+        ephemeral = self.root / 'venv'
+        ephemeral.mkdir()
+        (ephemeral / 'pyvenv.cfg').write_text('home = fixture')
+        binary = ephemeral / 'claude'
+        binary.write_text('fixture')
+        binary.chmod(0o700)
+        with patch('observe_agent_activity.shutil.which', return_value=str(binary)):
+            with self.assertRaises(ValueError):
+                durable_cli('claude')
+            durable = Path(sys.executable).resolve()
+            self.assertEqual(durable_cli('claude', durable), str(durable))
 
     def test_stop_and_interrupt_need_native_done_before_success(self):
         self.hook('UserPromptSubmit')
@@ -241,7 +263,7 @@ class ObserverTests(unittest.IsolatedAsyncioTestCase):
             async def fake_cli(*_args, **kwargs):
                 return await original(sys.executable, '-c', script, **kwargs)
 
-            with patch('observe_agent_activity.asyncio.create_subprocess_exec', fake_cli):
+            with patch.object(asyncio, 'create_subprocess_exec', fake_cli):
                 await claude_poll(store, {'accountID': ACCOUNT, 'env': {}}, once=True)
             records = [json.loads(p.read_text()) for p in store.events.glob('*.json')]
             self.assertEqual([r['state'] for r in records], ['working'])
