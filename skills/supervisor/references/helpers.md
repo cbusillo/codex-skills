@@ -429,6 +429,163 @@ to verify the entire input is empty. Send `/exit` or `/quit` with `send --text`
 only after that check, then wait a bounded time for the matched process to end.
 Update the ledger's handoff URL from the actual issue record.
 
+Before closing the verified-finished tab, discover and release its remaining
+claims. Read [Planning: Claim](../../github/references/cli-reference.md#planning-claim)
+and its Abandoned automation claims section first. The current Supervisor must
+verify the transcript handoff and actual process exit, including hosts/peers
+the helpers cannot inventory. The helper rechecks the exact native transcript,
+unqualified safe verdict and native activity before every release; normal
+finish and full closure ledgers also recheck their recorded PID/TTY. It also
+checks exact-ID resumed harness processes and matching native transcripts in
+all account homes from the existing Supervisor account configuration. Newer
+native records, including a resumed session's metadata, invalidate closure.
+No credentials or account logins are read or changed. `--account-config` selects
+that existing mapping; without a mapping, repeat `--transcript-root` for every
+known source-harness transcript directory on this host (Codex sessions and
+archived_sessions; Claude projects). Unknown hosts/peers remain the caller's
+verified-closure responsibility, never an inference from missing inventory.
+Check current native task status as well: ID-less resume/picker commands and an
+idle desktop thread may not expose an ID in process arguments or write a new
+transcript yet. `--confirm-session-ended` attests that the source is still ended
+now, including those cases, not merely that the historical log once said so.
+It does not
+send exit commands or change issue status, waits, blockers, branches or worktrees.
+
+```sh
+uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <private-ledger.json> --closed-log <private-closed.json> --session-id <finished-native-id> --supervisor-session <current-native-id> --owner OWNER --checkout-root <existing-checkout-directory> --confirm-session-ended --verified-handoff
+```
+
+Default is a read-only inventory preview of claim IDs, retained PRs and attestation bodies.
+It does not assert release preflight success: that check needs a posted
+attestation, and apply previews the maintained release helper before releasing.
+Repeat with `--apply` after inspecting it. Apply records the newly observed exit
+time in a private JSON log, posts/readbacks the required `Closed session` /
+`Ended at:` / `Safe to exit: yes` attestation on each canonical issue, then runs
+the maintained `release-claim` preview and apply. The original observed exit
+time survives retries. The log has the ledger's array schema plus `ended_at`
+(timezone-qualified ISO timestamp) and `process_exit_verified: true`; retain
+the native transcript path, PID/TTY and exact issue-comment `handoff_url`.
+Repeat finish previews use the existing log's original closure time. If a
+session truly resumes and closes again, verify its new PID/TTY, transcript and
+handoff, then use a fresh `--closed-log` file for that newly observed closure;
+preserve the prior log unchanged. A corrected handoff can likewise use a fresh
+verified log rather than silently rewriting earlier evidence.
+No transcript text or process arguments are posted. Checkouts must already
+exist as `<checkout-root>/<repository-name>` with the matching origin; the
+release command runs there for that repository's ownership inventory and never
+edits the checkout. A missing or mismatched checkout leaves claims untouched.
+
+Discovery pages the automation installation's Director repositories and their
+issue comments and issue bodies since the earliest timestamp in the source transcripts,
+including closed issues. It reads each matching canonical discussion, honors
+existing valid authored releases through the shared ownership classifier, and
+names source-branch or handoff-retained PRs. Partial inventory is an error, not
+an empty result. Unstructured source claims need an authored exact-ID release;
+structured claims and their related ownership follow-ups use `release-claim`.
+Hand-written and status-only ownership are explicitly reported instead of
+silently dropped. Planning refusals are isolated by issue and session, so
+verified independent claims still proceed; `issue_refusals` prevents an all-clear.
+Automatic follow-up selection requires an exact native `Session:` field and
+ordering after the structured source; a reused worker token alone is not evidence.
+The shared bot login alone never identifies a session. Native session coverage
+remains explicit in the release receipts; missing peer APIs are covered only
+by the Supervisor's actual transcript/closure verification.
+
+For the one-time STALE-CLAIMS backfill, supply either the closed-session ledger
+above or the Supervisor's verified inventory directly as `--closed-log`.
+Inventory rows name `repo`, `issue`, `claim_comment_id`, `session_id`, original
+`ended_at`, `safe_exit_yes: true`, `still_running: false`, and optional
+`handoff_url` / `retained_pr_url`. Repeated native sessions are grouped; a bad
+row or conflicting end time preserves that session's entire group. Exact
+source claim IDs bound the inventory scope, and already-valid releases are
+reported. The existing canonical route also includes that source's verified
+same-author, exact-session ownership follow-ups; preview lists those related
+IDs explicitly. Unlisted structured sources are never added. An active
+follow-up without a selected structured source is reported for reconciliation.
+The input file is never rewritten. Use the default read-only preview first.
+
+Historical inventory records lack original PID/TTY data. This is an explicit
+Supervisor closure attestation, not invented process metadata: the caller must
+verify actual inactivity, including ID-less GUI/picker sessions and unknown
+hosts, before using `--confirm-session-ended`. The helper locates native
+transcripts in configured account homes and archives, verifies exact native
+identity and the current safe verdict, and rechecks resume arguments and all
+transcript activity against the original end time. Normal finish still requires
+the matched PID/TTY and Supervisor-owned ledger entry.
+
+Missing handoffs are discovered from the native final response or recorded
+comment-write receipts, then verified against live comment author and dates.
+A fallback source-issue or summary comment must name the exact native ID;
+shared-bot recency alone never qualifies. The summary thread defaults to
+`OWNER/codex-skills#884`; override it with `--handoff-thread OWNER/REPO#NUMBER`.
+An interrupted session with no public closeout can use the inventory's original
+structured ownership comment as recovery context only when its exact native ID,
+author and original timestamp still match. The attestation labels it as an
+ownership record with closeout verified separately; it never invents a source
+summary or publishes the private transcript. Missing/changed source records
+remain reported for reconciliation. Retained PRs in
+the inventory are named alongside source-branch and exact handoff PRs. Preview
+checks the target checkout remote, native peers, ownership activity, retained
+PR identity/links and head dates using the shared canonical guards. It posts
+no attestation/release and cannot prove the later write readback; apply must
+still run canonical `release-claim` preview/apply from each target checkout.
+
+Use the original actual closure timestamps; neither conversion time nor
+attestation posting time substitutes for them. Backfill still requires the
+recorded PID to be absent and the transcript unchanged; another job on a reused
+historical TTY does not identify the source session. Normal finish checks all
+jobs on the matched current TTY. Backfill refuses a harness on that TTY unless
+its resume arguments identify a different session; an unidentified harness
+needs native-identity verification through the documented manual release route.
+Invalid closure records are reported per session while
+independent verified sessions proceed. If a record lacks a matched
+transcript, unqualified safe verdict, original closure proof or handoff URL,
+report it for reconciliation instead of inventing evidence.
+Malformed ledger schema or duplicate native IDs refuse the whole log; correct
+its format against original evidence before retrying.
+
+```sh
+uv run skills/supervisor/scripts/release_session_claims.py backfill --closed-log <private-closed.json> --supervisor-session <current-native-id> --owner OWNER --checkout-root <existing-checkout-directory> --confirm-session-ended --verified-handoff
+```
+
+The discovery read deadline defaults to ten minutes; `--deadline-seconds` sets a bounded
+longer window for a larger historical inventory. Each repository's open PR list
+is reused within a session; exact handoff URLs also identify merged retained PRs.
+Per-issue read windows restart after discovery, so release subprocess time does
+not consume another session's read budget. PR conversation comments are filtered
+out; deleted or inaccessible attestations invalidate their historical releases.
+Superseded unmerged or foreign handoff PRs are not retained candidates, while
+source-branch PRs still undergo the maintained release safety checks.
+Possible PID reuse remains a conservative refusal. Verify the current native
+identity, then use the documented evidence-backed `release-claim` route for that
+record; never invent a replacement PID or change the original closure timestamp.
+The command uses the currently configured automation identity only; claims by
+another App or a human are reported and preserved, with no identity fallback.
+Use `--session-id` to reconcile one logged session; inspect the default preview,
+then add `--apply`. For disposable live trials only, repeat `--repo OWNER/REPO`
+to scope discovery; that result reports explicit scope rather than all-repository
+coverage. Test only self-created throwaway issues/claims, never real stale claims.
+On a refusal or uncertain write, preserve posted attestations/releases and
+their returned diagnostics. Only a confirmed issue-scoped dry-run refusal may
+continue to independent claims after fresh closure verification. Source-session
+uncertainty and uncertain writes stop that session's remaining release steps.
+Visible peers in source or retained worktrees also stop the session's releases,
+even with a different native ID: a continuation may have acquired a new ID.
+The shared release helper owns this classification; it is not inferred from
+error wording.
+Inspect their readback before recovery. Already valid releases are skipped;
+unchanged attestations and releases use the shared transport's body deduplication.
+Keep unfinished reconciliation in the ledger. `retained_status_claims` explicitly names Current Status markers that still
+need reconciliation or the supported `--resume-from` handoff route. The helper
+does not rewrite those fields.
+`needs_reconciliation` distinguishes successful ownership releases from a
+completely reconciled planning record. Empty repository scope refuses. Output
+also explicitly excludes other `--owner` values and automation App identities;
+use those repositories' configured evidence-backed release route under existing
+posting authority, without changing identity settings or using a personal fallback.
+Then perform the guarded tab-close
+step below (the verified exact-tab route from #1627/#1629 applies once landed).
+
 ```sh
 uv run skills/supervisor/scripts/close_ttys.py --ledger <private-ledger.json> --session-id <native-id> --verified-handoff --verified-input
 uv run skills/supervisor/scripts/close_ttys.py --ledger <private-ledger.json> --session-id <native-id> --verified-handoff --verified-input --apply

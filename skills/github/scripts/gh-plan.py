@@ -1947,9 +1947,9 @@ def cmd_show(args: argparse.Namespace) -> None:
     emit({"ok": True, "actor": actor, "issue": result})
 
 
-def claim_snapshot(ref: str, repo: str) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:
+def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:
     _, issue = get_issue(ref, repo)
-    if issue.get("state") != "open" or "pull_request" in issue:
+    if issue.get("state") not in ({"open", "closed"} if allow_closed else {"open"}) or "pull_request" in issue:
         raise PlanError("Claim requires an open issue")
     sections, provenance = read_plan_sections(issue)
     _, comments = collect_paged_rest_items(
@@ -2009,7 +2009,7 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
     # Fresh-read before writing and again after posting. Native peer coverage
     # stays explicit; the caller attests closure for hosts without peer APIs.
     def preflight():
-        issue, _status, comments, _can_update = claim_snapshot(args.issue, repo)
+        issue, _status, comments, _can_update = claim_snapshot(args.issue, repo, allow_closed=True)
         source = next((c for c in comments if c.get("id") == args.claim_comment), None)
         if source is None:
             raise PlanError("Source claim is missing from the canonical issue")
@@ -2024,6 +2024,14 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                 raise PlanError("Related ownership comment is missing or repeats the structured source")
             related.append(related_comment)
         source_branch = github_plan_release.source_record(source)["branch"]
+        # Check source identity, closure and native peers before a retained-PR
+        # refusal can be classified as independent issue work.
+        if expected_actor is None:
+            raise PlanError("Release requires the configured source automation identity")
+        issue_refusal = None
+        github_plan_release.prepare_release(source, evidence, comments, inventory,
+            actor=expected_actor, role=args.role, releaser_session=args.session,
+            evidence_url=args.evidence_comment, retained_prs=args.retained_pr, related=related)
         _, open_pulls = collect_paged_rest_items(f"/repos/{issue['repo']}/pulls", query={"state": "open"},
             bucket="rest_core", step_prefix="release_source_branch_prs")
         branch_prs = [f"https://github.com/{issue['repo']}/pull/{p['number']}" for p in open_pulls
@@ -2035,19 +2043,16 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             if not match or match.group(1).casefold() != issue["repo"].casefold():
                 raise PlanError("Retained PR must be an exact same-repository PR URL")
             _, pull = api_json("GET", f"/repos/{issue['repo']}/pulls/{match.group(2)}", bucket="rest_core", failed_step="release_retained_pr")
-            if ((pull.get("user") or {}).get("login") != expected_actor
-                    or pull.get("state") != "open" and not pull.get("merged_at")
-                    or any(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != issue["repo"].casefold() for side in ("head", "base"))
-                    or not github_plan_claim.pr_issue_reference(pull, issue["number"], repo=issue["repo"], attestation=True)):
-                raise PlanError("Retained PR must independently link the canonical issue and belong to the source automation identity")
             retained_branches.add(pull["head"]["ref"])
             ended = re.findall(r"(?m)^Ended at: (\S+)$", evidence.get("body") or "")
             if len(ended) != 1:
                 raise PlanError("Closed-session attestation must record Ended at")
             _, head_commit = api_json("GET", f"/repos/{issue['repo']}/commits/{pull['head']['sha']}", bucket="rest_core", failed_step="release_retained_head")
-            commit_at = github_plan_release.stamp(head_commit["commit"]["committer"]["date"])
-            if commit_at >= github_plan_release.stamp(ended[0]):
-                raise PlanError("Retained PR has commit activity after the cited session-ended evidence")
+            try:
+                github_plan_release.check_retained_pr(pull, head_commit, repo=issue["repo"],
+                    number=issue["number"], actor=expected_actor, ended=ended[0])
+            except github_plan_release.IssueReleaseRefusal as retained_error:
+                issue_refusal = retained_error
         release_actor = expected_actor
         if release_actor is None:
             raise PlanError("Release requires the configured source automation identity")
@@ -2055,6 +2060,8 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             actor=release_actor, role=args.role, releaser_session=args.session,
             evidence_url=args.evidence_comment, retained_prs=args.retained_pr, related=related,
             checked_prs=checked_prs, retained_branches=retained_branches)
+        if issue_refusal is not None:
+            raise issue_refusal
         return issue, comments, inventory, body, related
     try:
         issue, comments, inventory, body, related = preflight()
@@ -2087,7 +2094,8 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         raise PlanError(str(exc), failure=exc.failure, api_result=exc.api_result,
             payload={**exc.payload, "completed_steps": completed, "release_comment": result.get("comment", {})}) from exc
     except (ValueError, KeyError, TypeError) as exc:
-        raise PlanError(str(exc), payload={"completed_steps": completed, "release_comment": result.get("comment", {})}) from exc
+        raise PlanError(str(exc), payload={"completed_steps": completed, "release_comment": result.get("comment", {}),
+            "release_refusal_scope": github_plan_release.ISSUE_REFUSAL_SCOPE if isinstance(exc, github_plan_release.IssueReleaseRefusal) else "session_or_unknown"}) from exc
 
 
 def cmd_claim(args: argparse.Namespace) -> None:

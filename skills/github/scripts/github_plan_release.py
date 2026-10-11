@@ -14,6 +14,11 @@ from typing import Any
 import github_plan_claim as claim
 
 RELEASE_MARKER = "github-plan:abandoned-release "
+ISSUE_REFUSAL_SCOPE = "issue"
+
+
+class IssueReleaseRefusal(ValueError):
+    """This issue's retained work conflicts; closure of the source is still checked separately."""
 
 
 def related_sessions_match(text: str, session: str) -> bool:
@@ -73,6 +78,17 @@ def check_activity(comments: list[dict[str, Any]], source: dict[str, Any], cutof
             raise ValueError("Source session shows ownership activity after the cited evidence")
 
 
+def check_retained_pr(pull, head_commit, *, repo, number, actor, ended):
+    """One retained-work guard shared by write preflight and read-only planning."""
+    if stamp(head_commit["commit"]["committer"]["date"]) >= stamp(ended):
+        raise ValueError("Retained PR has commit activity after the cited session-ended evidence")
+    if ((pull.get("user") or {}).get("login") != actor
+            or pull.get("state") != "open" and not pull.get("merged_at")
+            or any(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != repo.casefold() for side in ("head", "base"))
+            or not claim.pr_issue_reference(pull, number, repo=repo, attestation=True)):
+        raise IssueReleaseRefusal("Retained PR must independently link the canonical issue and belong to the source automation identity")
+
+
 def prepare_release(
     source: dict[str, Any], evidence: dict[str, Any], comments: list[dict[str, Any]],
     inventory: dict[str, Any], *, actor: str, role: str, releaser_session: str,
@@ -99,8 +115,10 @@ def prepare_release(
     if any(s.get("sessionId") == record["session"] for s in inventory["sessions"]):
         raise ValueError("Source session is still visible in the active native session inventory")
     retained_paths = {pathlib.Path(t["path"]).resolve() for t in inventory["worktrees"] if t["branch"] in {record["branch"], *(retained_branches or set())}}
-    if any(cwd == root or root in cwd.parents for s in inventory["sessions"]
-           for cwd in [pathlib.Path(s.get("cwd") or "/").resolve()] for root in retained_paths):
+    peers = [s for s in inventory["sessions"]
+             if any(cwd == root or root in cwd.parents
+                    for cwd in [pathlib.Path(s.get("cwd") or "/").resolve()] for root in retained_paths)]
+    if peers:
         raise ValueError("A live peer is using the source claim's retained worktree")
     for comment in related:
         if ((comment.get("user") or {}).get("login") != actor or claim.records(comment.get("body") or "")

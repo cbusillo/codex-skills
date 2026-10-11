@@ -106,6 +106,32 @@ class ReleaseTests(unittest.TestCase):
         self.run_release()
         self.successor()
 
+    def test_release_closed_issue_without_reopening_or_enabling_new_claim(self):
+        self.f.issue["state"] = "closed"
+        self.run_release()
+        self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
+        self.assertEqual(self.f.issue["state"], "closed")
+        with self.assertRaisesRegex(PLAN.PlanError, "open issue"):
+            self.f.run_claim()
+
+    def test_retained_peer_and_live_source_refusals_stop_the_session(self):
+        self.f.inventory["worktrees"] = [{"branch": fixtures.OTHER["branch"], "path": "/source"}]
+        self.f.inventory["sessions"] = [{"sessionId": "different-session", "cwd": "/source"}]
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_release()
+        self.assertNotEqual(caught.exception.payload["release_refusal_scope"], release.ISSUE_REFUSAL_SCOPE)
+        self.f.assert_no_writes()
+        self.f.inventory["sessions"] = [{"sessionId": fixtures.OTHER["session"], "cwd": "/source"}]
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_release()
+        self.assertNotEqual(caught.exception.payload["release_refusal_scope"], release.ISSUE_REFUSAL_SCOPE)
+        self.f.assert_no_writes()
+        self.f.inventory["sessions"] = [{"cwd": "/source"}]
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_release()
+        self.assertNotEqual(caught.exception.payload["release_refusal_scope"], release.ISSUE_REFUSAL_SCOPE)
+        self.f.assert_no_writes()
+
     def test_related_followup_session_must_match_source_closure(self):
         for field in ("Session: {}", "**Session:** `{}`", "> Session: {}", "Session: {}.", "Session: {} (capacity work)", "Session ID: {}", "Native session ID: {}", "session={}", "session_id: {}", "sessionId: {}", "Session-ID: {}", "Thread ID: {}", "Session — {}", "| Session | {} |", "Session: {}; PR #99", "(Session: {})"):
             for session in ("session-b", "different-native-session"):
@@ -247,7 +273,34 @@ class ReleaseTests(unittest.TestCase):
         self.f.pulls[0]["head"]["ref"] = CLAIM.records(self.f.comments[0]["body"])[0]["branch"]
         self.args.retained_pr = []
         self.commit_date = "2026-10-02T01:00:00Z"
-        with self.assertRaisesRegex(PLAN.PlanError, "commit activity after"): self.run_release()
+        with self.assertRaisesRegex(PLAN.PlanError, "commit activity after") as caught:
+            self.run_release()
+        self.assertNotEqual(caught.exception.payload.get("release_refusal_scope"), release.ISSUE_REFUSAL_SCOPE)
+        self.f.assert_no_writes()
+
+    def test_issue_refusal_cannot_mask_post_closure_commit_activity(self):
+        for peer in (False, True):
+            self.refresh_setup()
+            self.f.pulls[0]["head"]["ref"] = fixtures.OTHER["branch"]
+            self.f.pulls[0]["body"] = "See #42"
+            self.commit_date = "2026-10-02T01:00:00Z"
+            if peer:
+                self.f.inventory["worktrees"] = [{"branch": fixtures.OTHER["branch"], "path": "/source"}]
+                self.f.inventory["sessions"] = [{"sessionId": "different-session", "cwd": "/source"}]
+            with self.assertRaisesRegex(PLAN.PlanError, "commit activity after") as caught:
+                self.run_release()
+            self.assertNotEqual(caught.exception.payload.get("release_refusal_scope"), release.ISSUE_REFUSAL_SCOPE)
+            self.f.assert_no_writes()
+
+    def test_issue_refusal_cannot_mask_live_peer_on_a_retained_branch(self):
+        self.refresh_setup()
+        retained = self.f.pulls[0]
+        retained["body"] = "Part of #42"
+        self.f.inventory["worktrees"] = [{"branch": retained["head"]["ref"], "path": "/retained"}]
+        self.f.inventory["sessions"] = [{"sessionId": "different-session", "cwd": "/retained/subdir"}]
+        with self.assertRaisesRegex(PLAN.PlanError, "live peer") as caught:
+            self.run_release()
+        self.assertNotEqual(caught.exception.payload.get("release_refusal_scope"), release.ISSUE_REFUSAL_SCOPE)
         self.f.assert_no_writes()
 
     def test_untrusted_or_example_receipt_does_not_poison_claims(self):
