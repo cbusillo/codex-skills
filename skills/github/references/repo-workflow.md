@@ -295,27 +295,65 @@ Default to PR-backed implementation work.
 - Do not create a separate issue for the same focused implementation by
   default. Create or update an issue when work is not ready for code, needs
   product/design/ops discussion, was discovered out of scope, or spans multiple
-  PRs.
+  PRs, or needs splitting under
+  [issue closing and post-merge proof](#issue-closing-and-post-merge-proof).
 - Search existing open and recently closed issues before creating a new issue.
 - When picking up an existing issue, read its comments before acting on the
   title or body. Comments are often the newest source of scope, constraints,
   decisions, or direction changes.
-- Link PRs with `Refs #123` by default when an external reporter, QA, customer,
-  or shared environment validation is involved. Use `Closes #123` or
-  `Fixes #123` only when auto-close is clearly intended and local/CI evidence
-  can conclusively close the issue.
-- `Refs #123` is deliberately non-closing. It keeps the relationship visible
-  while preserving a required post-merge decision about whether the issue is
-  truly done.
-- Do not close externally reported issues just because a fix PR merged. Leave a
-  validation comment and close only after the reporter/current user confirms or
-  explicitly asks.
+- Size an implementation issue for one PR-sized deliverable and follow
+  [issue closing and post-merge proof](#issue-closing-and-post-merge-proof).
 - When PR work shifts from one-shot diagnosis into repeated CI, review,
   mergeability, or merged/closed follow-through, route that loop to
   `babysit-pr`. This includes after branch updates, rebases, check reruns,
   review-fix pushes, and closeout questions such as whether the PR merged or it
   is safe to exit. Use `babysit-pr --once` for already merged/closed evidence and
   `--watch` while an open PR still needs active follow-through.
+
+### Issue Closing And Post-Merge Proof
+
+Use `Closes #123` by default when the PR's merge completes the issue's
+deliverable. Use `Refs #123` when the PR delivers only part of a multi-PR issue.
+Qualify either keyword as `OWNER/repo#N` when its issue is in another repository.
+Superseded or competing PRs also retain non-closing references under the
+[canonical implementation procedure](#superseded-or-competing-prs).
+
+Put post-merge steps such as deploy proof, Client acceptance, and observation
+on the parent issue or milestone. Record the next action, who takes it, and
+the evidence there; completing an implementation issue does not complete that
+parent or authorize a release. If later proof has no parent or milestone,
+retain the existing issue as the parent and split out the PR-sized
+implementation deliverable before opening its closing PR. When a milestone
+holds the proof, keep its next action, actor, questions and evidence on its
+existing parent or `Track:` issue, linked from the milestone description.
+Preserve the agreed exit criteria and verify the proof before closing it under the
+[milestone contract](../../github-plan/references/milestones.md).
+Open a new issue for a post-merge check only
+when that check fails, after searching for an existing issue for the failure.
+Split old oversized issues into PR-sized deliverables when working them;
+preserve their original requests under the
+[issue ownership rules](issue-templates.md), rather than rewriting them.
+
+For a Client's or outside reporter's issue, do not close on merge alone. Leave
+a validation comment and close only after the reporter/current user confirms
+the result or explicitly asks. Keep closing keywords off that issue until
+this condition is met; a separate implementation issue may close on merge.
+Without a separate implementation issue, use `Refs` for the reporter's issue;
+the exception does not require a split.
+
+The session responsible for landing owns the issue readback: the Supervisor
+after an assigned handoff, otherwise the executing session. After a merge-train
+batch lands, that session reads back the referenced issues and links the
+landing evidence, including the parents holding later proof. Link a
+deliverable's parent from the PR with `Refs #parent` (or `Refs OWNER/repo#N`
+for a parent in another repository) so that handoff retains
+the remaining work and its next actor. If `Closes` did not fire, follow github-plan's
+[Close Or Hand Off](../../github-plan/SKILL.md#close-or-hand-off) to reconcile
+the completed issue. Comment with the remaining action when its finish line
+is not met; never force closure or bypass the reporter exception.
+Reconcile durable plan metadata under the same Close Or Hand Off procedure
+even when GitHub already auto-closed the issue; auto-close does not settle its
+Current Status, planning labels or Project Status.
 
 ### Superseded Or Competing PRs
 

@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT.parent))
 sys.path.insert(0, str(ROOT / "github/scripts"))
 from skills.github.scripts import github_api
+from skills.github.scripts.github_identity import automation_login
 from skills.github.scripts.ready_handoff import latest_ready, requires_client_acceptance
 from skills.github.scripts.github_read import (
     GitHubReader,
@@ -819,7 +820,7 @@ def main(argv=None):
     parser.add_argument("--owner", required=True)
     parser.add_argument("--repo", action="append", default=[])
     parser.add_argument("--hold-file", required=True, type=Path)
-    parser.add_argument("--handoff-login", action="append", default=[])
+    parser.add_argument("--handoff-login", action="append", default=[automation_login() or "shiny-code-app[bot]"])
     parser.add_argument("--max-batch-size", type=int, default=4)
     parser.add_argument("--interval", type=float, default=300)
     parser.add_argument("--deadline-seconds", type=float, default=1800)
