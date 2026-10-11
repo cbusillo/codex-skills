@@ -159,7 +159,10 @@ def resumed_status(status: str, comments: list[dict[str, Any]], source_id: int |
         # markers and unstructured ownership still go through the normal scan.
         status = "\n".join(line for line in status.splitlines()
                            if records(line) != [record])
-        status = re.sub(rf"(?im)^\s*State:\s*Active;\s*owned by {re.escape(record['worker'])}\.?\s*$", "State: Active", status)
+        # The released holder may be followed by more State prose; only the
+        # holder clause goes, and later sentences are still classified.
+        status = re.sub(rf"(?im)^(\s*State:\s*Active);\s*owned by {re.escape(record['worker'])}(?=\.(?:\s|$)|\s*$)",
+                        r"\1", status)
         for field, key in (("Worker", "worker"), ("Session", "session")):
             status = re.sub(rf"(?im)^\s*{field}:\s*{re.escape(record[key])}\.?\s*$", "", status)
         return status
@@ -346,15 +349,39 @@ def exact_released_sources(comments: list[dict[str, Any]]) -> list[tuple[int, di
 
 def released_status_lines(status: str, comments: list[dict[str, Any]]) -> dict[str, str]:
     """Share the exact historical-field match with live-session checks."""
-    return {
-        line: record["session"]
-        for _, record, _ in exact_released_sources(comments)
-        for line in status.splitlines()
-        if line.rstrip(" \t") == (
-            f"Session: {record['worker']} / {record['session']}; "
-            "executing claim released in the closeout comment."
-        )
-    }
+    found = {}
+    all_records = [record for comment in comments for record in records(comment.get("body") or "")]
+    for _, record, _ in exact_released_sources(comments):
+        # A worker alias reused by another session cannot attribute the field.
+        alias_unique = all(r["session"] == record["session"] for r in all_records if r["worker"] == record["worker"])
+        for line in status.splitlines():
+            if line.rstrip(" \t") == (
+                f"Session: {record['worker']} / {record['session']}; "
+                "executing claim released in the closeout comment."
+            ):
+                found[line] = record["session"]
+                continue
+            # An explicitly historical field naming only the released session
+            # (and, optionally, its own worker) is history, e.g. odoo-docker#113.
+            field = re.fullmatch(r"\s*(?:[-*]\s+)?(?:Completed|Released|Previous|Prior|Former|Ended) session:"
+                                 r"[ \t]*(.+?)[ \t]*", line, re.IGNORECASE)
+            if not field or not re.search(rf"(?<![\w.-]){re.escape(record['session'])}(?![\w-])", field.group(1)):
+                continue
+            rest = re.sub(rf"(?<![\w.-]){re.escape(record['session'])}(?![\w-])", "", field.group(1))
+            if re.search(rf"(?<![\w.-]){re.escape(record['worker'])}(?![\w-])", rest):
+                if not alias_unique:
+                    continue
+                rest = re.sub(rf"(?<![\w.-]){re.escape(record['worker'])}(?![\w-])", "", rest)
+            if not rest.strip(" \t()/,;."):
+                found[line] = record["session"]
+    return found
+
+
+def issue_identity(reference: str, repo: str) -> tuple[str, int] | None:
+    match = re.fullmatch(r"(?:https://github\.com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)([1-9]\d*)", reference)
+    if not match:
+        return None
+    return (match.group(1) or match.group(2) or repo).casefold(), int(match.group(3))
 
 
 def current_ownership_text(
@@ -386,7 +413,57 @@ def current_ownership_text(
         r"(?m)^Blocked by: https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+) "
         r"\((actively owned by [\w.-]+)\)(?=\.(?:\s|$)|\s*$)", other_issue, status,
     )
-    return status
+    # A clause whose subject is another issue names that issue's holder, e.g.
+    # launchplane#3318: "#3314 Q151 ... is owned by LP-3314-D1; ...". Only a
+    # single holder ending the clause qualifies; this issue's own identity,
+    # "this issue/task" or a second keyword keeps the clause conservative.
+    reference = r"(?:https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*|(?:[\w.-]+/[\w.-]+)?#[1-9]\d*)"
+    holder = r"[\w-]+(?:\.[\w-]+)*"
+    clause = re.compile(
+        rf"(?P<lead>(?:^|(?<=[;!?] )|(?<=\. ))(?:[-*] )?(?:[A-Z][\w ]*: )?(?:[Ii]ssue )?)"
+        rf"(?P<ref>{reference})(?![\w/#])(?P<body>(?:[^;!?.\n]|\.(?!\s))*?) owned by {holder}(?=[;!?]|\.(?:\s|$)|\s*$)",
+        re.MULTILINE,
+    )
+
+    def other_clause(match: re.Match[str]) -> str:
+        identity = issue_identity(match.group("ref"), repo)
+        body = match.group("body")
+        if (identity is None or identity in identities
+                or re.search(r"\b(?:owned|claimed) by\b|\bthis (?:issue|task)\b|\bhere\b|\b(?:are|were|both|also|too)\b",
+                             body, re.IGNORECASE)
+                or any(issue_identity(ref, repo) in identities for ref in re.findall(reference, body))):
+            return match.group()
+        return match.group("lead") + match.group("ref") + body
+    return clause.sub(other_clause, status)
+
+
+def released_successor_route(
+    conflicts: list[dict[str, Any]], comments: list[dict[str, Any]], *, issue_repo: str,
+) -> tuple[int, int] | None:
+    """Name the one released claim whose authored release retains every conflict.
+
+    The route is only a candidate: the caller reruns the full ordinary-successor
+    checks, which verify the retained PRs, their waits and live sessions.
+    """
+    from github_plan_release import effective_comments
+    comments = effective_comments(comments)
+    candidates = set()
+    for source_index, record, release_index in exact_released_sources(comments):
+        source, release = comments[source_index], comments[release_index]
+        body = release.get("body") or ""
+        if released_claim_id(body.splitlines()[0]) != source["id"]:
+            continue
+        named = handoff_pr_numbers(body, issue_repo=issue_repo, target_repo=issue_repo)
+        tied = [c for c in conflicts if c.get("source") == "open_pr" and c.get("number") in named
+                or c.get("source") == "current_status" and c.get("record") == record]
+        # Unstructured status text and branch artifacts are rechecked by the
+        # successor route; any other holder keeps the original refusal.
+        untied = [c for c in conflicts if c not in tied and not (
+            c.get("source") == "current_status" and "text" in c
+            or c.get("source") in {"local_branches", "remote_branches", "worktree"})]
+        if named and tied and not untied:
+            candidates.add((source["id"], release["id"]))
+    return next(iter(candidates)) if len(candidates) == 1 else None
 
 
 def released_explanatory_note(
