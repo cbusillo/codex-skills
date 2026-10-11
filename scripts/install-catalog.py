@@ -184,8 +184,8 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         target = path.resolve()
         if target not in preserved_targets or target.is_relative_to(ROOT.resolve()):
             continue
-        text = safe_file(path, instruction=True)
         inspected = target.read_bytes()
+        text = inspected.decode().replace("\r\n", "\n").replace("\r", "\n")
         digest = hashlib.sha256(inspected).hexdigest()
         recognized = text in known_outputs or (text.startswith(sync.HEADER) and generated_hashes.get(str(path)) == digest)
         if not recognized and text.startswith(sync.HEADER):
