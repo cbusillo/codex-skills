@@ -307,7 +307,7 @@ text in the brief file. The supported form is a direct `codex`, `claude` or
 `agy` invocation, optionally preceded by `cd PATH &&` and simple command or
 environment prefixes. `agy` uses its native `--prompt-interactive` option;
 Codex and Claude take one positional prompt after `--`. Keep prompt options
-out of the command file. Shell wrappers, extra commands, trailing operators
+out of the command file. Shell wrappers, extra commands, trailing shell punctuation
 and shell comments refuse because they may discard the prompt.
 Empty, whitespace-only, missing or unreadable briefs
 refuse before account selection, daemon startup, tabs or launch receipts.
