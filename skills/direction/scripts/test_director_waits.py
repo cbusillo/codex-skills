@@ -61,6 +61,7 @@ class WaitTests(unittest.TestCase):
         self.assertTrue(result["complete"])
         self.assertEqual(len(result["waits"]), 2)
         self.assertEqual(reader.request.call_count, 1)
+        self.assertEqual(reader.request.call_args.kwargs["bucket"], "search")
         query = parse_qs(urlsplit(reader.request.call_args.args[1]).query)["q"][0]
         self.assertIn("user:owner", query)
         self.assertNotIn("label:", query)

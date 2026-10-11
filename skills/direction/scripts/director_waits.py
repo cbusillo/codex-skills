@@ -100,7 +100,7 @@ def collect(reader, owner, terms, now, issue_limit=1000):
         try:
             response = reader.request("GET", path_with_query("/search/issues", {
                 "q": query, "per_page": min(bound, 100), "page": page,
-                "sort": "created", "order": "asc"}), step=f"director_wait_search_page_{page}")
+                "sort": "created", "order": "asc"}), step=f"director_wait_search_page_{page}", bucket="search")
             payload = response.body
             if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
                 raise GitHubReadShapeError("search response omitted items")

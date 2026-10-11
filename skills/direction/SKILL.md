@@ -167,7 +167,7 @@ or `plan:waiting` label and waits that already have a posted question:
 uv run <skill-dir>/scripts/director_waits.py --owner OWNER
 ```
 
-It uses one owner-wide GitHub issue search for open issue bodies containing
+It uses one Director-wide GitHub issue search for open issue bodies containing
 `Waiting for`, then applies the shared human-attention classifier locally with
 the optional people index for the Director's names. This reads wait records
 across repositories; it does not audit their direction files or milestones.

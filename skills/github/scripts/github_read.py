@@ -371,14 +371,14 @@ class GitHubReader:
         else:
             self.completed_steps.append(step)
 
-    def request(self, method: str, path: str, *, step: str) -> github_api_core.ApiResult:
-        cache = ConditionalResponseCache.from_reader(self) if method.upper() == "GET" and self._identity_error is None else None
+    def request(self, method: str, path: str, *, step: str, bucket: str = "rest_core") -> github_api_core.ApiResult:
+        cache = ConditionalResponseCache.from_reader(self) if bucket == "rest_core" and method.upper() == "GET" and self._identity_error is None else None
         try:
-            result = cache.request(self, method, path, step=step) if cache else self._transport_request(method, path, step=step)
+            result = cache.request(self, method, path, step=step) if cache else self._transport_request(method, path, step=step, bucket=bucket)
         except OSError:
             # Caching is an optional read optimization. Preserve transport,
             # actor checks and shared cooldowns when cache storage is unusable.
-            result = self._transport_request(method, path, step=step)
+            result = self._transport_request(method, path, step=step, bucket=bucket)
             result.headers["x-codex-cache"] = "unavailable"
         self._record_result(result, method=method, path=path, step=step)
         if not result.ok:
