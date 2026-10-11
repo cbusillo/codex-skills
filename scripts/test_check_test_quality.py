@@ -30,11 +30,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def test_release():
     with (REPO_ROOT / "pyproject.toml").open("rb") as handle:
         pyproject = tomllib.load(handle)
-    self.assertEqual(pyproject["tool"]["uv"]["required-version"], ">=0.11.31")
+    ASSERTION
     app = pyproject["tool"]["release"]
-    self.assertEqual(app["bundle_identifier"], "com.example.app")
 '''
-        self.assertIn("pinned-config", self.rules(source, paths={"pyproject.toml"}))
+        for assertion in (
+            'self.assertEqual(pyproject["tool"]["uv"]["required-version"], ">=0.11.31")',
+            'self.assertEqual(pyproject["tool"]["release"]["bundle_identifier"], "com.example.app")',
+        ):
+            with self.subTest(assertion=assertion):
+                self.assertIn("pinned-config", self.rules(source.replace("ASSERTION", assertion), paths={"pyproject.toml"}))
 
     def test_workflow_loader_alias_and_action_pin(self) -> None:
         source = '''
@@ -58,9 +62,9 @@ def test_rollback():
     required_tokens = ("execute_stable_apply", "StableApplyRequest")
     for token in required_tokens:
         self.assertIn(token, rollback_source)
-    self.assertNotIn("direct_provider_mutation", inspect.getsource(rollback))
 '''
         self.assertIn("source-text", self.rules(source, paths={"control_plane/rollback.py"}))
+        self.assertIn("source-text", self.rules('self.assertNotIn("direct_provider_mutation", inspect.getsource(rollback))'))
 
     def test_homekit_version_only_when_duplicated(self) -> None:
         source = 'self.assertEqual("2026.8.3", plan["compatibility"]["source_tag"])'
@@ -74,15 +78,19 @@ def test_rollback():
         self.assertEqual(self.rules(source, paths=paths), set())
 
     def test_swift_team_id_and_plist_literal(self) -> None:
-        source = '''
+        entitlements = '''
 let entitlements = try loadEntitlements("Config/App.entitlements")
 let groups = try #require(entitlements["keychain-access-groups"] as? [String])
 #expect(groups == ["EXAMPLETEAM.com.example.provider-credentials"])
+'''
+        plist = '''
 let plist = try loadInfoPlist("Config/App-Info.plist")
 #expect(plist["CFBundleURLTypes"] == ["example"])
 '''
-        self.assertIn("pinned-config", self.rules(source, suffix=".swift",
-                      paths={"Config/App.entitlements", "Config/App-Info.plist"}))
+        for source in (entitlements, plist):
+            with self.subTest(source=source):
+                self.assertIn("pinned-config", self.rules(source, suffix=".swift",
+                              paths={"Config/App.entitlements", "Config/App-Info.plist"}))
 
     def test_javascript_workflow_and_duplicated_action(self) -> None:
         source = 'const workflow = readFileSync(".github/workflows/ci.yml", "utf8");\nexpect(workflow).toEqual("docker/login-action@v4");'

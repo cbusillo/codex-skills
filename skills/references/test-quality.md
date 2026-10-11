@@ -50,6 +50,11 @@ hide a workflow warning; execution through a helper or later class method can
 produce a false positive. Foreign alias detection is file-wide and conservative.
 Coincidental version matches in dependency locks or documentation need triage;
 token duplication alone does not prove ownership.
+Rule 1 covers equality/value pins; raw config membership checks outside workflow
+loads are not classified by it. Regex assertions, pytest fixture return values,
+class constants and more complex paths/data flow need later tuning. Very deep
+alias/expression chains and foreign-language regex literals are also outside
+the bounded parser's reliable coverage. Keep this trial nonblocking.
 Comments and Python string fixtures are ignored. Source-of-truth agreement,
 temporary fixtures and real artifact/immutable-evidence checks remain valid;
 triage candidates using the repository's test rubric. Symlinked files and
