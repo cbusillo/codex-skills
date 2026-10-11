@@ -10180,6 +10180,43 @@ class AttributionContractTest(unittest.TestCase):
         self.assertEqual(payload["response_code"], "invalid_api_response")
         self.assertEqual(payload["client_run_id"], "ffffffff-ffff-4fff-8fff-ffffffffffff")
 
+    def test_broad_non_json_http_failure_survives_compact_lane_report(self):
+        files = [f"/repo/src/module_{index}.py" for index in range(160)]
+        selected = [{"file": path.removeprefix("/repo/"), "absolute_path": path} for path in files]
+        lane = jb_inspect.InspectionLane("python", "PyCharm", True, ("**/*.py",), (), None)
+        context = {"worktree_root": "/repo", "scope": "files"}
+        for status in (414, 500):
+            with self.subTest(http_status=status):
+                response = jb_inspect.urllib.error.HTTPError(
+                    "http://localhost/api/inspection/trigger", status, "HTTP failure", None,
+                    io.BytesIO(b"<html>transport failure</html>"),
+                )
+                with (
+                    patch.object(jb_inspect.urllib.request, "urlopen", side_effect=response) as request,
+                    self.assertRaises(jb_inspect.InspectError) as raised,
+                ):
+                    jb_inspect.http_get(63342, "trigger", {"scope": "files", "files": ",".join(files)})
+                sent = request.call_args.args[0]
+                self.assertEqual(urllib.parse.parse_qs(urllib.parse.urlsplit(sent.full_url).query)["files"], [",".join(files)])
+                result = jb_inspect.inspection_endpoint_failure_result(
+                    raised.exception, context, {}, {}, None,
+                )
+                result["cleanup"] = {"status": "closed"}
+                compact_lane = jb_inspect.compact_inspection_lane_result(lane, 0, context, selected, result)
+                compact = jb_inspect.compact_agent_result_payload({
+                    "lane_results": [compact_lane],
+                    "lane_selection": {"scope": "whole_project"},
+                }, 1)
+                diagnostic = compact["lanes"][0]["diagnostic"]
+                self.assertEqual(diagnostic["endpoint"], "trigger")
+                self.assertEqual(diagnostic["http_status"], status)
+                self.assertEqual(diagnostic["response_code"], "invalid_api_response")
+                self.assertEqual(compact["agent_result"]["verdict"], "UNKNOWN")
+                self.assertFalse(compact["agent_result"]["retry_policy"]["retry"])
+                self.assertEqual(compact["lanes"][0]["file_count"], len(files))
+                self.assertEqual(compact["lanes"][0]["cleanup"]["status"], "closed")
+                self.assertNotIn("<html>", json.dumps(compact))
+
     def test_unattributed_unknown_is_mechanically_a_tool_failure(self):
         payload = {"status": "mystery", "command": "get-status"}
 
