@@ -54,6 +54,9 @@ def test_recorded_graph_selection_and_request_savings():
     rows = graph.planning_graph(reader, "owner/repo", limit=20, page_size=20)
     assert len(rows) == 20
     plan = load_plan()
+    rest_record = json.loads(
+        FIXTURE.with_name("planning_rest_relationships.json").read_text()
+    )
     rest_calls = []
 
     def collect(path, **_kwargs):
@@ -61,7 +64,7 @@ def test_recorded_graph_selection_and_request_savings():
         number = int(path.split("/issues/")[1].split("/")[0])
         row = next(row for row in rows if row["number"] == number)
         key = "sub_issues" if path.endswith("/sub_issues") else path.rsplit("/", 1)[-1]
-        return "fixture-reader", row["_graph_relationships"][key]
+        return "fixture-reader", rest_record[str(number)][key]
 
     config = plan.load_config("owner/repo")
     for plan_row in rows:
@@ -75,6 +78,10 @@ def test_recorded_graph_selection_and_request_savings():
             "owner/repo", plan_row["number"], plan_row
         )
         assert (graph_rel, graph_truncated) == (rest_rel, rest_truncated)
+        assert graph_rel == {
+            key: [plan.compact_relationship_issue(item, key) for item in items]
+            for key, items in rest_record[str(plan_row["number"])].items()
+        }
         assert plan.evaluate_next_plan(
             plan_row, config=config, focus=None, relationships=graph_rel
         ) == plan.evaluate_next_plan(
