@@ -61,7 +61,6 @@ STATUS_FIELD = r"(?:State|Next action|Blocked by|Waiting for|Parked until|Waitin
 
 # The overall direction owns classification; repositories can contain mixed work.
 RANKS = ("milestone", "tooling", "own")
-OWN_SHARE_FLOOR = 0.20
 # GitHub's revert button titles the pull request `Revert "..."` and writes
 # `Reverts OWNER/REPO#N`; `git revert` writes `This reverts commit <sha>`.
 REVERT_TITLE = re.compile(r"^\s*revert\b", re.I)
@@ -277,9 +276,6 @@ def audit(
             findings.append({"kind": "gate_phrase", "number": number, "title": issue.get("title"), "phrases": phrases})
 
     findings.extend(wait_findings.values())
-    if capacity is not None:
-        if capacity["own_share_floor"] == "below":
-            findings.append({"kind": "own_share_below_floor", "own_share": capacity["own_share"], "floor": OWN_SHARE_FLOOR})
 
     order = {
         "coverage_incomplete": -1,
@@ -297,7 +293,6 @@ def audit(
         "gate_phrase": 9,
         "waiting_blocks_other_repository": 8,
         "milestone_wait_invalid": 8,
-        "own_share_below_floor": 10,
     }
     findings.sort(key=lambda item: (order.get(item["kind"], 99), str(item.get("number") or item.get("milestone") or item.get("title") or "")))
     result = {
@@ -1110,13 +1105,31 @@ def enrich_milestone_waits(
     return incomplete
 
 
-def own_project_patterns(text: str) -> list[str]:
-    """Read repository names/patterns from the own-project item in merged Order."""
+def own_project_order(text: str) -> str:
+    """The Director's own-project declaration, without interpreting its share."""
     order = github_direction_next.section_map(text).get("Order", "")
     match = re.search(r"(?ms)^\d+\.\s+(Own projects\b.*?)(?=^\d+\.\s|\Z)", order)
-    if not match or ":" not in match[1]:
+    return match[1].strip() if match else ""
+
+
+def own_project_patterns(text: str, *, own_label: str = "own-project") -> list[str]:
+    """Read repository patterns, a label-only declaration, or explicit none."""
+    declaration = own_project_order(text)
+    if not declaration:
         raise AuditError("Order own-project list is missing")
-    listing = match[1].split(":", 1)[1].split("This list", 1)[0]
+    label_only = bool(re.search(rf"(?i)\b{re.escape(own_label)}\b", declaration) and
+                      re.search(r"(?i)\blabel(?:s|led|ed)?\b", declaration))
+    no_projects = bool(re.match(r"(?i)^Own projects\s*(?::|are)\s*none\b", declaration))
+    if ":" not in declaration:
+        if label_only or no_projects:
+            return []
+        raise AuditError("Order own-project list is missing")
+    listing = declaration.split(":", 1)[1].split("This list", 1)[0]
+    if label_only:
+        # The label is not a repository, even when it is in backticks.
+        listing = re.sub(rf"`?\b{re.escape(own_label)}\b`?", "", listing, flags=re.I)
+    if no_projects:
+        return []
     names = re.findall(r"`([\w.*-]+)`", listing)
     # Parentheses carry explicit identifiers and explanatory prose. Only single
     # repository identifiers in the surrounding comma/and-separated list count.
@@ -1127,7 +1140,7 @@ def own_project_patterns(text: str) -> list[str]:
         name = part.strip().rstrip(".")
         if re.fullmatch(r"[\w.-]+", name):
             names.append(name)
-    if not names:
+    if not names and not label_only:
         raise AuditError("Order own-project list contains no repository identifiers")
     return sorted({name.casefold() for name in names})
 
@@ -1469,6 +1482,7 @@ def capacity_summary(
     pulls: dict[str, list[dict[str, Any]]], milestones: dict[str, list[dict[str, Any]]],
     events: dict[str, list[dict[str, Any]]], since: dt.datetime, until: dt.datetime,
     incomplete: bool = False, own_label: str = "own-project", own_issues: frozenset[tuple[str, int]] | set[tuple[str, int]] = frozenset(),
+    direction_text: str = "",
 ) -> dict[str, Any]:
     """The overall direction's weekly numbers from per-repository listings.
 
@@ -1503,15 +1517,8 @@ def capacity_summary(
     total = sum(merged_by_rank.values())
     own = merged_by_rank["own"]
     own_share = round(own / total, 3) if total else None
-    if incomplete:
-        # A repository that could not be read could move the share either way.
-        floor = "unknown"
-    elif not total:
-        floor = "no_merges"
-    elif own / total >= OWN_SHARE_FLOOR:
-        floor = "met"
-    else:
-        floor = "below"
+    # Partial counts remain visible, but cannot establish a settled share.
+    share_status = "unknown" if incomplete else "complete" if total else "no_merges"
     closed = [
         {"repo": repo, "number": item.get("number"), "title": item.get("title"), "closed_at": item.get("closed_at")}
         for repo in sorted(milestones) for item in milestones[repo]
@@ -1536,7 +1543,12 @@ def capacity_summary(
         "merged_total": total,
         "merged_by_rank": merged_by_rank,
         "own_share": own_share,
-        "own_share_floor": floor,
+        "own_share_basis": "merged_pull_requests",
+        "own_share_status": share_status,
+        "own_share_direction": {
+            "order": own_project_order(direction_text),
+            "capacity": github_direction_next.section_map(direction_text).get("Capacity", "").strip(),
+        },
         "by_repository": by_repository,
         "milestones_closed": closed,
         "issues_reopened": sorted(reopened.values(), key=lambda item: (item["repo"], str(item["number"]))),
@@ -1636,8 +1648,9 @@ def fetch_capacity(
     owner = direction_repo.split("/")[0].casefold()
     truncated: list[str] = []
     text = merged_direction(direction_repo, fetch=fetch)
+    own_label = own_project_label(direction_repo)
     try:
-        own_projects = own_project_patterns(text or "")
+        own_projects = own_project_patterns(text or "", own_label=own_label)
     except AuditError:
         own_projects = []
         truncated.append("capacity_own_projects")
@@ -1652,7 +1665,6 @@ def fetch_capacity(
     pulls: dict[str, list[dict[str, Any]]] = {}
     milestones: dict[str, list[dict[str, Any]]] = {}
     events: dict[str, list[dict[str, Any]]] = {}
-    own_label = own_project_label(direction_repo)
     own_issues: set[tuple[str, int]] = set()
     linked_labels: dict[tuple[str, int], set[str] | None] = {}
 
@@ -1710,6 +1722,7 @@ def fetch_capacity(
         own_projects=own_projects, tracked_issues=tracked_issues, direction_source=source, pulls=pulls,
         milestones=milestones, events=events, since=since, until=until,
         incomplete=bool(truncated), own_label=own_label, own_issues=own_issues,
+        direction_text=text or "",
     )
     return summary, truncated
 

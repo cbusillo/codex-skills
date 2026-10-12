@@ -447,31 +447,39 @@ reference reads; any limit or unread evidence keeps `complete` false.
 
 The audit of `OWNER/direction` also returns `capacity`, the overall
 direction's weekly numbers for the window since the prior audit: merged pull
-requests per rank, the own-projects share against the 20% floor, milestones
+requests per rank, the own-projects PR share, milestones
 closed, issues reopened, and merged pull requests that mark a revert. Each
 merged PR counts as milestone work when a closing keyword, `Refs`, or native
 PR issue link reaches a milestone's `Track:` graph (listed milestones and
 those closed since the window began, including removed lines; native
 blockers and sub-issues, including completed work). Otherwise it counts as own
-when its repository is named by the merged overall `DIRECTION.md` Order item 4,
+when its repository is named by the merged overall `DIRECTION.md`
+own-projects Order item,
 when it links an issue in such a repository, or when it or an issue it links
 carries the `own-project` label (`capacity.own_project_label`), and tooling
-otherwise. Read that list; do not copy it into catalog guidance or a separate
-map. A repository can contain more than one kind of work: in a mixed
+otherwise. The own-projects Order item may name repository patterns, declare
+label-only work (for example, `Own projects: by the own-project label only.`),
+or explicitly say `Own projects: none.` An empty repository list from either
+explicit declaration is complete; label attribution still applies. Read the
+merged declaration; do not copy it into catalog guidance or a separate map.
+A repository can contain more than one kind of work: in a mixed
 repository, such as lab and house work in an infrastructure repository, the
 label is how that work counts as own. Reopened issues come from issues updated
 in the window, so busy label and claim traffic cannot truncate them.
 The audit reads each repository of that account the reader can see, never the
 search API, so it takes a few minutes. Reopened and reverted work is the quality
 signal the throughput numbers do not carry; report it with the share. Provider
-capacity left unused stays manual until an account reader exists
-([codex-skills#974](https://github.com/cbusillo/codex-skills/issues/974)).
+capacity left unused stays manual until an account reader exists.
 
-`own_share_below_floor` means own projects took under 20% of merged pull
-requests. It is an alarm, not a quota; tell the Director with the counts.
-Incomplete graph, native link, repository or Order-list reads keep the floor
-`unknown` and the audit window open for a rerun; partial counts are not a
-settled share.
+The weekly share is a report, not an alarm or a quota. The report labels its
+basis as merged pull requests (`capacity.own_share_basis`) and includes the
+Director's own-projects Order item and Capacity section verbatim in
+`capacity.own_share_direction`, alongside the measured `capacity.own_share`.
+Any stated size, minimum or maximum belongs to that merged overall direction;
+the audit does not impose a threshold. Incomplete graph, native link,
+repository or declaration reads keep `capacity.own_share_status` `unknown`
+and the audit window open for a rerun; partial counts are not a settled share.
+A complete window without merges has status `no_merges` and no share.
 
 The audit of `OWNER/direction` also returns `capacity.milestone_outcomes`: for
 each listed milestone, what moved in its `Track:` graph during the window,
