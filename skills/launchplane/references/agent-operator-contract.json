@@ -9,7 +9,8 @@
         "authorization_admission_and_landing_are_independent": true,
         "engineering_review_advisory": true,
         "github_projection_role": "routing_and_status_only",
-        "owner_acceptance_authoritative": true
+        "owner_acceptance_authoritative": true,
+        "temporary_hotfix_start": "director_human_session_only"
       },
       "product_lifecycle": {
         "active_automation_states": [
@@ -45,194 +46,38 @@
     },
     "operations": [
       {
-        "idempotency": "body",
+        "idempotency": "apply",
         "identity_dependencies": [
-          "read_ordinary_agent_proof"
+          "read_operator_mutation_identity"
         ],
         "method": "POST",
         "modes": [
-          "finite-admission"
+          "dry-run",
+          "apply",
+          "reconcile"
         ],
-        "operation_id": "admit_ordinary_agent_job",
-        "path": "/v1/agent/ordinary-agent-jobs",
-        "purpose": "Admit one finite qualification or guarded-delivery job from authenticated caller intent.",
+        "operation_id": "restart_lane_service",
+        "path": "/v1/drivers/odoo/service-restart",
+        "purpose": "Inspect or restart one existing lane service on its current accepted artifact, or reconcile its original receipt without another restart.",
         "response_statuses": [
           "200",
-          "409",
-          "503"
-        ],
-        "reviewed_evidence": [
-          "purpose_specific_readiness",
-          "idempotent_replay"
-        ],
-        "schema_fingerprint_sha256": "16e155d93c63fe1f4b71011132b4cd2d371ace2fc7ad26bd906da0b6974e32a7",
-        "supported_surfaces": [
-          "ordinary_agent_client"
-        ]
-      },
-      {
-        "idempotency": "none",
-        "identity_dependencies": [
-          "read_ordinary_agent_proof"
-        ],
-        "method": "GET",
-        "modes": [
-          "read"
-        ],
-        "operation_id": "read_ordinary_agent_job",
-        "path": "/v1/agent/ordinary-agent-jobs/{request_id}",
-        "purpose": "Read this ordinary principal's finite job state.",
-        "response_statuses": [
-          "200",
-          "409",
-          "503"
-        ],
-        "reviewed_evidence": [],
-        "schema_fingerprint_sha256": "75eafec75f46cb1517923d1765f49e98f4fa88e5643e5cbf9ecc7cb309fdad03",
-        "supported_surfaces": [
-          "ordinary_agent_client"
-        ]
-      },
-      {
-        "idempotency": "none",
-        "identity_dependencies": [
-          "read_ordinary_agent_proof"
-        ],
-        "method": "POST",
-        "modes": [
-          "cancel"
-        ],
-        "operation_id": "cancel_ordinary_agent_session",
-        "path": "/v1/agent/ordinary-agent-session-proposals/{operation_id}/cancel",
-        "purpose": "Cancel this ordinary principal's issued session.",
-        "response_statuses": [
-          "200",
-          "409",
-          "503"
-        ],
-        "reviewed_evidence": [],
-        "schema_fingerprint_sha256": "ba26a97805990fd1b143b022a57b0b600b3da091387e3fc889d4d47e371672ee",
-        "supported_surfaces": [
-          "ordinary_agent_client"
-        ]
-      },
-      {
-        "idempotency": "none",
-        "identity_dependencies": [
-          "read_terminal_enrollment_requester"
-        ],
-        "method": "POST",
-        "modes": [
-          "plan"
-        ],
-        "operation_id": "propose_ordinary_agent_enrollment",
-        "path": "/v1/agent/ordinary-agent-enrollments",
-        "purpose": "Propose an exact agent connection for signed administrator review.",
-        "response_statuses": [
-          "200",
-          "409",
-          "503"
-        ],
-        "reviewed_evidence": [],
-        "schema_fingerprint_sha256": "7979ba91b02ba78216fb44d07ad8acc1573325e38ee248bf340a21ffe8ca4161",
-        "supported_surfaces": [
-          "terminal_agent_client"
-        ]
-      },
-      {
-        "idempotency": "none",
-        "identity_dependencies": [
-          "read_terminal_enrollment_requester"
-        ],
-        "method": "GET",
-        "modes": [
-          "read"
-        ],
-        "operation_id": "read_proposed_ordinary_agent_enrollment",
-        "path": "/v1/agent/ordinary-agent-enrollments/{principal_id}/{operation_id}",
-        "purpose": "Read the authenticated terminal client's connection request.",
-        "response_statuses": [
-          "200",
-          "409",
-          "503"
-        ],
-        "reviewed_evidence": [],
-        "schema_fingerprint_sha256": "8502e37a221d8c3de47b2f8611fa15052d108faa107784df28d94633159a5588",
-        "supported_surfaces": [
-          "terminal_agent_client"
-        ]
-      },
-      {
-        "idempotency": "none",
-        "identity_dependencies": [
-          "read_ordinary_agent_proof"
-        ],
-        "method": "POST",
-        "modes": [
-          "plan"
-        ],
-        "operation_id": "propose_ordinary_agent_session",
-        "path": "/v1/agent/ordinary-agent-session-proposals",
-        "purpose": "Propose a bounded session using the current ordinary credential.",
-        "response_statuses": [
-          "200",
-          "409",
-          "503"
-        ],
-        "reviewed_evidence": [],
-        "schema_fingerprint_sha256": "a13842726146311c5872eba494714e3ded3c6b1b105a0445198801977a1113ce",
-        "supported_surfaces": [
-          "ordinary_agent_client"
-        ]
-      },
-      {
-        "idempotency": "none",
-        "identity_dependencies": [
-          "read_ordinary_agent_proof"
-        ],
-        "method": "GET",
-        "modes": [
-          "read"
-        ],
-        "operation_id": "read_ordinary_agent_session_operation",
-        "path": "/v1/agent/ordinary-agent-session-proposals/{operation_id}",
-        "purpose": "Read this ordinary principal's session request.",
-        "response_statuses": [
-          "200",
-          "409",
-          "503"
-        ],
-        "reviewed_evidence": [],
-        "schema_fingerprint_sha256": "ba26a97805990fd1b143b022a57b0b600b3da091387e3fc889d4d47e371672ee",
-        "supported_surfaces": [
-          "ordinary_agent_client"
-        ]
-      },
-      {
-        "idempotency": "none",
-        "identity_dependencies": [
-          "read_ordinary_agent_receiver_claim"
-        ],
-        "method": "POST",
-        "modes": [
-          "claim"
-        ],
-        "operation_id": "claim_ordinary_agent_credential",
-        "path": "/v1/agent/ordinary-agent-enrollments/{operation_id}/claim",
-        "purpose": "Recover a receiver-bound credential directly into private client custody.",
-        "response_statuses": [
-          "200",
+          "400",
           "401",
+          "403",
+          "404",
           "409",
           "503"
         ],
         "reviewed_evidence": [
-          "receiver_bound_delivery",
-          "private_response_custody"
+          "reviewed_plan_digest",
+          "current_artifact_identity",
+          "release_lane_exclusion"
         ],
-        "schema_fingerprint_sha256": "d752b1ea42fb3432eccdc727fe94966195fa179971d18d460ae1cfa4fbc45c91",
+        "schema_fingerprint_sha256": "d21c23fe8c2561b4c30efa827a0f68125838085eb653c92adb12666151f2b0d7",
         "supported_surfaces": [
-          "private_agent_client"
+          "bounded_admin_helper",
+          "operator_ui",
+          "service_api"
         ]
       },
       {
@@ -626,8 +471,8 @@
   },
   "normalization_version": 1,
   "provenance": {
-    "source_commit_sha": "ede632460946a5b980227f079923703fff64003c"
+    "source_commit_sha": "f51d9ba2287043ef64bcf229d43738b8edd9dc8c"
   },
   "schema_version": 1,
-  "semantic_digest_sha256": "2926ccf90b6afeb66331da6af80017ae74cc15d746cb8656c22725c8f59bbd0b"
+  "semantic_digest_sha256": "3cbd193ab592bb10031c8f4d4e115e3b78b2db50c055c4a737ca28bbce7adf0a"
 }

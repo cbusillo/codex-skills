@@ -19,15 +19,6 @@ resources:
   - path: scripts/check-agent-operator-contract-freshness.py
     kind: script
     description: Compare the vendored contract with the current public upstream artifact and report semantic drift.
-  - path: scripts/launchplane_ordinary_agent_client.py
-    kind: script
-    description: Use a private ordinary-agent credential with durable proof and handle custody.
-  - path: scripts/launchplane-ordinary-agent.py
-    kind: script
-    description: Thin CLI for resuming the private ordinary-agent lifecycle.
-  - path: references/ordinary-agent-client.md
-    kind: reference
-    description: Private client custody, connection, session, retry, and cancellation behavior.
   - path: references/agent-operator-contract.json
     kind: reference
     description: Vendored public Launchplane agent/admin contract artifact.
@@ -95,19 +86,6 @@ commands:
     example_argv:
       ["uv", "run", "scripts/check-agent-operator-contract-freshness.py", "compare"]
     purpose: Emits advisory current, known-stale, or unknown semantic-freshness evidence.
-  - name: launchplane-ordinary-agent
-    source: skill
-    resource_path: scripts/launchplane-ordinary-agent.py
-    example_argv:
-      [
-        "uv",
-        "run",
-        "scripts/launchplane-ordinary-agent.py",
-        "--url",
-        "<service-url>",
-        "session-status",
-      ]
-    purpose: Resume one private ordinary-agent enrollment, session, or finite job alias with redacted output.
   - name: launchplane-merge-train-policy-read
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -738,19 +716,7 @@ supports this route and the grant is installed. Source delivery grants no access
 Creation is pending and inert. Return the review path to the Director; approval
 stays in the signed-in UI and the proposer can never approve or apply. Reuse the
 private envelope's stable source event when a response is uncertain. This path
-uses private `local_operator` config, independent of terminal-agent and ordinary-agent
-credentials, enrollment, sessions, or leases.
-
-### Private Ordinary-Agent Client
-
-For an ordinary agent connection, session, finite job, or cancellation, read
-[the private client contract](references/ordinary-agent-client.md) and use
-`scripts/launchplane-ordinary-agent.py`. Keep credential claims inside that
-adapter; its public output must never contain the claim response or receiver
-proof. Present the service's review link for a pending administrator decision.
-Resume saved requests after interruption, and reuse issued session and lease
-handles without asking the user to locate or type them. A proposal does not
-approve itself, and client installation does not activate a worker.
+uses private `local_operator` config, independent of terminal-agent credentials.
 
 ### Contract-Backed Lifecycle And Repair Routing
 

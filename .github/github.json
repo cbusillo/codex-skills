@@ -16,7 +16,6 @@
     "launchplaneMergeTrain": "skills/launchplane/references/merge-train.md",
     "launchplaneAgentOperatorContract": "skills/launchplane/references/agent-operator-contract.json",
     "launchplaneAgentOperatorContractGuide": "skills/launchplane/references/agent-operator-contract.md",
-    "launchplaneOrdinaryAgentClient": "skills/launchplane/references/ordinary-agent-client.md",
     "launchplaneContextContract": "skills/launchplane/references/context-helper-contract.md",
     "launchplaneOperatorContract": "skills/launchplane/references/operator-contract.md",
     "launchplaneOperatorConfigExample": "skills/launchplane/references/launchplane-operator.local.example.json",

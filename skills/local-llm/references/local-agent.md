@@ -1,7 +1,7 @@
 # Local Codex Agent Execution
 
 Read this reference when a task needs a local model to perform tool-assisted
-work through Codex or Codex Lab. For a direct model reply, use the ordinary
+work through Codex. For a direct model reply, use the ordinary
 `lm_studio_chat.py` route instead.
 
 ## Select the host and model
@@ -28,9 +28,9 @@ uv run local-llm/scripts/local_codex_agent.py \
   'Read the supplied fixture and report the requested result.'
 ```
 
-Use `--host codex-lab` for that host. `--config` selects private endpoint/role
+`--config` selects private endpoint/role
 configuration; `--endpoint` selects an endpoint within it. The wrapper owns
-`--max-seconds`; it does not pass the retired flag to either CLI. Use an output
+`--max-seconds`; it does not pass the retired flag to the CLI. Use an output
 path only when the task needs a retained artifact, following repository and
 host artifact rules.
 
