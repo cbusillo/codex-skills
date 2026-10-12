@@ -67,7 +67,7 @@ def source_record(source: dict[str, Any], *, legacy: bool = False,
             raise ValueError("Legacy release requires a bare unstructured Claimed by worker comment")
         if not legacy_branch or re.search(r"\s|[<>]", legacy_branch):
             raise ValueError("Legacy release requires the verified original source branch")
-        if not legacy_reason or not legacy_reason.strip() or any(c in legacy_reason for c in "\n\r"):
+        if not isinstance(legacy_reason, str) or not legacy_reason.strip() or any(c in legacy_reason for c in "\n\r"):
             raise ValueError("Legacy release requires why no native session ID exists")
         return {"worker": header[1], "session": f"legacy-claim-{source['id']}",
                 "branch": legacy_branch, "claimed_at": source["created_at"],
@@ -139,8 +139,8 @@ def prepare_release(
     legacy: bool = False, legacy_branch: str | None = None, legacy_reason: str | None = None,
 ) -> str:
     record = source_record(source, legacy=legacy, legacy_branch=legacy_branch, legacy_reason=legacy_reason)
-    if legacy and related:
-        raise ValueError("Release each legacy claim separately with its own exact-ID evidence")
+    if legacy and (related or retained_prs):
+        raise ValueError("Legacy releases do not support related releases or structured retained-PR handoffs")
     if not actor or (source.get("user") or {}).get("login") != actor:
         raise ValueError("Release must use the source claim's configured automation identity")
     if role not in {"supervisor", "direction"} or not releaser_session or releaser_session == record["session"]:
@@ -212,6 +212,10 @@ def receipt_for(comment: dict[str, Any]) -> dict[str, Any] | None:
                 or not isinstance(receipt["evidence_url"], str)
                 or not isinstance(receipt["checked_prs"], list)
                 or not all(isinstance(url, str) for url in receipt["checked_prs"])):
+            return None
+        if "legacy_reason" in receipt["source"] and (
+                not isinstance(receipt["source"]["legacy_reason"], str)
+                or not receipt["source"]["legacy_reason"].strip()):
             return None
         stamp(receipt["evidence_at"])
         stamp(receipt["evidence_updated_at"])

@@ -2084,8 +2084,17 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         github_plan_release.prepare_release(source, evidence, source_comments, source_inventory,
             actor=expected_actor, role=args.role, releaser_session=args.session,
             evidence_url=args.evidence_comment, retained_prs=args.retained_pr, related=related_comments, **legacy_options)
-        _, open_pulls = collect_paged_rest_items(f"/repos/{source_issue['repo']}/pulls", query={"state": "open"},
+        branch_query = ({"state": "all", "head": f"{source_issue['repo'].split('/')[0]}:{source_branch}"}
+                        if legacy_options["legacy"] else {"state": "open"})
+        _, open_pulls = collect_paged_rest_items(f"/repos/{source_issue['repo']}/pulls", query=branch_query,
             bucket="rest_core", step_prefix="release_source_branch_prs")
+        if legacy_options["legacy"] and not any(
+                (p.get("head") or {}).get("ref") == source_branch
+                and (p.get("user") or {}).get("login") == expected_actor
+                and github_plan_claim.pr_issue_reference(p, source_issue["number"], repo=source_issue["repo"],
+                    attestation=True, record_kind="pr" if "pull_request" in source_issue else "issue")
+                for p in open_pulls):
+            raise PlanError("Legacy source branch requires an automation-authored PR linking this canonical record")
         branch_prs = [f"https://github.com/{source_issue['repo']}/pull/{p['number']}" for p in open_pulls
             if (p.get("head") or {}).get("ref") == source_branch]
         subject_pr = "pull_request" in source_issue
