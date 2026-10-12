@@ -212,11 +212,13 @@ records that run.
 
 1. **One brief per session and repository.** Before launch, group items that
    share a subsystem and kind of work into one session and one PR, so they
-   share context and avoid conflicting edits. Link the items as native
-   sub-issues of a parent issue under `github-plan`; the executing session
-   claims that parent with `gh-plan.py claim` before creating its worktree.
+   share context and avoid conflicting edits. Under `github-plan`, link the
+   items as native sub-issues of a parent. Reuse a suitable shared parent, or
+   nest the grouping parent under the existing parent before relinking items,
+   preserving the Track path. The executing session claims the parent and
+   each included item with `gh-plan.py claim` before creating its worktree.
    Keep sessions separate for different repositories, different risk or
-   approval levels (production data, credentials, recovery), and truly
+   approval levels (such as production data, credentials, recovery), and truly
    independent work where parallel wall-clock time matters.
    The brief says what the session may do, where it stops, and where it asks.
    Never widen a brief after launch. Write it from the decision record,
