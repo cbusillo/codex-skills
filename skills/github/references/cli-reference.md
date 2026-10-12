@@ -670,7 +670,7 @@ Claim the exact branch that the worktree helper will create. For
 Verify holds and recorded waits under Choose Work before invoking claim.
 Claim preflight reads waits and holds only from native `blocked-by` links,
 status labels and the machine-readable `github-plan:wait` record. Current
-Status and ordinary comment prose are recovery evidence, never wait or owner
+Status and ordinary comment prose are recovery evidence, never wait or executing-worker
 authority. Structured claim/release records and independent branch, PR,
 worktree and live-session checks still refuse competing work. Historical
 `Claimed by` directives remain legacy claim records under the existing guarded
