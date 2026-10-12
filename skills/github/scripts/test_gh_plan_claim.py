@@ -840,9 +840,11 @@ class ClaimTests(unittest.TestCase):
                     self.assertIn(PLAN.DEFAULT_CONFIG["labels"]["waiting"], PLAN.normalize_labels(self.issue["labels"]))
                     self.assertEqual(PLAN.next_plan_status(self.issue, PLAN.DEFAULT_CONFIG), "waiting")
                 else:
-                    self.assertIn(f"PR #{place}:\n", self.comments[-1]["body"])
-                    self.assertIn("> Waiting for: Approved prerequisite readback.", self.comments[-1]["body"])
-                    self.assertIn("> Waiting for: Approved prerequisite readback.", self.issue["body"])
+                    self.assertIn(f"https://github.com/owner/repo/pull/{place}", self.comments[-1]["body"])
+                    retained_status = PLAN.section_map(target["body"])["Current Status"]
+                    self.assertIn(retained_status, self.issue["body"])
+                    self.assertTrue(PLAN.github_direction_next.waiting_records(
+                        PLAN.compact_issue(self.issue), PLAN.section_map(self.issue["body"])["Current Status"]))
 
     def test_ordinary_recovery_records_newly_verified_pr_wait_in_current_status(self):
         self.ordinary_handoff_fixture()
@@ -1949,7 +1951,8 @@ class ClaimTests(unittest.TestCase):
         self.assert_no_writes()
         self.args.wait_resolved = "Existing source authorization preserves the acceptance hold."
         self.run_claim()
-        self.assertIn("Owner acceptance", self.comments[-1]["body"])
+        self.assertTrue(PLAN.github_direction_next.waiting_records(
+            PLAN.compact_issue(self.issue), PLAN.section_map(self.issue["body"])["Current Status"]))
 
     def test_cross_repository_planning_claim_branch_remains_competing(self):
         self.cross_repository_fixture()
@@ -3007,10 +3010,11 @@ class ClaimTests(unittest.TestCase):
 
     def test_claim_preserves_owner_wait_and_returns_original_status(self):
         self.issue["body"] += "Waiting for: owner choice between A and B\n"
+        previous = PLAN.section_map(self.issue["body"])["Current Status"]
         self.args.wait_resolved = "Owner selected A in the recorded decision"
         self.run_claim()
-        self.assertIn("Waiting for: owner choice between A and B", self.comments[-1]["body"])
-        self.assertIn("owner choice", self.emitted.call_args.args[0]["previous_current_status"])
+        self.assertEqual(self.emitted.call_args.args[0]["previous_current_status"], previous)
+        self.assertEqual(CLAIM.records(self.comments[-1]["body"])[0]["session"], self.args.session)
 
     def test_reused_worker_token_release_does_not_release_another_session(self):
         self.comments = [{"id": 1, "body": CLAIM.marker(OTHER)}, {"id": 2, "body": "Released by trial-b"},

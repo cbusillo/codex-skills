@@ -192,12 +192,9 @@ def prepare_release(
                "releaser_session": releaser_session, "retained_prs": retained_prs,
                "checked_prs": checked_prs or [],
                "related_ids": [c["id"] for c in related]}
-    identity = (f"legacy claim {source['id']}; native session unavailable: {record['legacy_reason']}"
-                if legacy else f"native session {record['session']}")
     return (f"Released claim {source['id']}\n\n"
-            f"Closed-session release by {role}; source worker {record['worker']}, {identity}.\n"
-            f"Session-ended evidence: {evidence_url}\n"
-            "The caller verified the session ended; available native sessions and subsequent ownership activity were checked.\n"
+            f"The {role} takes the next action on the work record; nothing needed from you.\n"
+            f"[Session-ended evidence]({evidence_url})\n"
             + ("Retained PR handoff: " + ", ".join(retained_prs) + "\n" if retained_prs else "")
             + "\n<!-- " + RELEASE_MARKER + json.dumps(receipt, sort_keys=True).replace(">", "\\u003e") + " -->")
 

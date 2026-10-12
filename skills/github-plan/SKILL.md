@@ -454,8 +454,9 @@ needs no artifact.
 If scope changes, reconcile the canonical issue, sub-issues, blockers, and labels
 before pivoting. Classify discoveries as current scope,
 sub-issue, blocker, related context, or later work. Record Director decisions so a
-future session does not ask again. Keep detailed implementation evidence in
-the PR and recovery-critical state in the issue.
+future session does not ask again. Keep recovery-critical state in the issue;
+link implementation evidence where it already lives under
+[Agent Comments](../references/talking-with-the-director.md#agent-comments).
 
 While another workflow waits on CI, deployment, or review, use independent
 read-only work or isolated preparation within authorization; return to the

@@ -130,7 +130,10 @@ inspection, browser, CI, deployment, or security gates.
 
 When `work-closeout` will run after this skill, make the readiness answer easy
 to consume instead of asking closeout to rediscover gate state. Include these
-fields in chat, a PR comment, or the owning issue when durable state is needed:
+fields in chat or the owning readiness record when durable state is needed.
+Comments link that record under
+[Agent Comments](../references/talking-with-the-director.md#agent-comments)
+instead of repeating its fields:
 
 - Status: ready, not ready, partially ready, or blocked.
 - Required gates: the checks inferred from `.github/github.json`, repo docs, CI,
@@ -160,8 +163,8 @@ must be verified; closeout uses the same fields to decide what final evidence,
 metadata updates, and cleanup remain.
 
 Use `../references/talking-with-the-director.md` for readiness reports and durable
-readiness comments: lead with status, cite concrete evidence, and keep skipped
-or pending checks explicit without copying large logs. Use
+readiness comments, including its Agent Comments shape. Link gate and review
+records and write out only otherwise unrecorded gaps. Use
 `../references/background-review-reporting.md` for Background Review state.
 
 ## Gate Selection

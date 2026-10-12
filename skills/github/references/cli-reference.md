@@ -675,7 +675,8 @@ plain explanations, such as `No native issue blocker recorded for this source
 task` or `None; an executing agent acts next`. Explanations containing wait or
 hold words still require resolution evidence. Without that evidence the command refuses
 before writing. It records the resolution and previous Current Status in the
-claim comment and returns the previous status for recovery. Claim and this
+claim comment and returns the previous status for recovery without copying it
+into the comment. Claim and this
 argument grant no Director decision or permission to lift a repository hold.
 
 When the overall direction's Order admits the work, name the rule with
