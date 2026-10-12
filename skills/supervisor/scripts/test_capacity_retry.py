@@ -41,11 +41,15 @@ class CapacityTests(unittest.TestCase):
         self.ledger.write_text(json.dumps([self.entry]))
         self.state_path = self.root / "capacity.json"
         self.now = datetime.fromisoformat(self.records[-1]["timestamp"]).timestamp()
-        endpoint = self.home / "app-server-control" / "app-server-control.sock"
+        endpoint = capacity_retry.codex_daemon_endpoint(self.home)
         endpoint.parent.mkdir()
         self.socket = socket.socket(socket.AF_UNIX)
         self.socket.bind(str(endpoint))
+        self.socket.listen(128)
         self.addCleanup(self.socket.close)
+        executable = patch.object(capacity_retry.shutil, "which", return_value="fixture-codex")
+        executable.start()
+        self.addCleanup(executable.stop)
 
     def append(self, kind, **fields):
         record = {"type": "event_msg", "timestamp": datetime.fromtimestamp(
@@ -188,7 +192,7 @@ class CapacityTests(unittest.TestCase):
             result = capacity_retry.resume(changed, session_record.session_status(self.entry),
                                            state, self.state_path, self.now + 100000)
             self.assertEqual(result["state"], "target_changed")
-            (self.home / "app-server-control" / "app-server-control.sock").unlink()
+            capacity_retry.codex_daemon_endpoint(self.home).unlink()
             self.now += 100000
             result = capacity_retry.resume(self.entry, session_record.session_status(self.entry),
                                            {}, self.state_path, self.now)
@@ -197,6 +201,42 @@ class CapacityTests(unittest.TestCase):
                              "blocked")
         queue.assert_not_called()
         self.assertFalse(self.state_path.exists())
+
+    def test_stale_socket_missing_cli_and_overdue_retry_are_visible(self):
+        summary = session_record.session_status(self.entry)
+        with patch.object(capacity_retry.time, "time", return_value=self.now + 100000):
+            due = capacity_retry.retry_status(self.entry, summary, {})
+        self.assertEqual(due["state"], "retry_due")
+        self.assertGreater(due["retry_at"], self.now)
+        with patch.object(capacity_retry.shutil, "which", return_value=None):
+            self.assertEqual(capacity_retry.retry_status(self.entry, summary, {})["state"], "blocked")
+        self.socket.close()
+        self.assertEqual(capacity_retry.retry_status(self.entry, summary, {})["state"], "blocked")
+
+    def test_failed_post_send_save_stops_this_watcher_too(self):
+        state = {}
+        original_save = capacity_retry.save_state
+        writes = 0
+
+        def save(path, data):
+            nonlocal writes
+            writes += 1
+            if writes == 2:
+                raise OSError("fixture disk failure")
+            original_save(path, data)
+
+        with patch.object(capacity_retry, "save_state", side_effect=save), \
+             patch.object(capacity_retry, "queue_continue", side_effect=self.continue_sent):
+            with self.assertRaises(OSError):
+                capacity_retry.resume(self.entry, session_record.session_status(self.entry),
+                                      state, self.state_path, self.now + 100000)
+        self.assertEqual(state[self.native_id]["phase"], "uncertain")
+        self.assertEqual(capacity_retry.load_state(self.state_path)[self.native_id]["phase"], "pending")
+        with patch.object(capacity_retry, "queue_continue") as queue:
+            result = capacity_retry.resume(self.entry, session_record.session_status(self.entry),
+                                           state, self.state_path, self.now + 200000)
+        queue.assert_not_called()
+        self.assertEqual(result["state"], "reconciliation_required")
 
     def test_queue_uses_verified_native_target_and_home(self):
         expected = session_record.session_status(self.entry)

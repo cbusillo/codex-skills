@@ -9,6 +9,8 @@ import fcntl
 import json
 import math
 import os
+import shutil
+import socket
 import stat
 import subprocess
 import tempfile
@@ -19,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from session_record import session_status
+from iterm_tab import codex_daemon_endpoint
 
 BACKOFF_SECONDS = (60, 180, 600)
 
@@ -94,11 +97,20 @@ def retry_status(entry: dict, status: dict, state: dict) -> dict:
         except (OSError, ValueError, TypeError):
             return {"attempts": attempts, "state": "blocked",
                     "reason": "Supervisor ownership, native UUID, home or daemon socket is unavailable"}
-    return {"attempts": attempts, "state": (
+    summary = {"attempts": attempts, "state": (
         "reconciliation_required" if phase in {"pending", "uncertain"} else
         "exhausted" if attempts == len(BACKOFF_SECONDS) and status["capacity_stop"] else
         "backoff" if status["capacity_stop"] else "inactive"
     )}
+    if summary["state"] == "backoff":
+        stop_time = datetime.fromisoformat(status["capacity_stop"]["timestamp"])
+        if stop_time.tzinfo is None:
+            raise ValueError("capacity timestamp requires a timezone")
+        summary["retry_at"] = max(stop_time.timestamp(), row["last_attempt"] if row else 0
+                                  ) + BACKOFF_SECONDS[attempts]
+        if time.time() >= summary["retry_at"]:
+            summary["state"] = "retry_due"
+    return summary
 
 
 def target_coordinates(entry: dict) -> tuple[Path, Path]:
@@ -113,9 +125,14 @@ def target_coordinates(entry: dict) -> tuple[Path, Path]:
     transcript, home = Path(transcript_name), Path(home_name)
     if not transcript.is_relative_to(home / "sessions"):
         raise ValueError("transcript is outside the configured home's live sessions")
-    endpoint = home / "app-server-control" / "app-server-control.sock"
+    endpoint = codex_daemon_endpoint(home)
     if not stat.S_ISSOCK(endpoint.stat().st_mode):
         raise ValueError("configured home's daemon socket is unavailable")
+    if shutil.which("codex") is None:
+        raise ValueError("codex executable is unavailable")
+    with socket.socket(socket.AF_UNIX) as probe:
+        probe.settimeout(1)
+        probe.connect(str(endpoint))
     return home, endpoint
 
 
@@ -147,7 +164,7 @@ def readback_continue(entry: dict, before_size: int, timeout: float = 10) -> boo
             session_status(entry)
             with Path(entry["transcript"]).open("rb") as stream:
                 stream.seek(before_size)
-                suffix = stream.read().decode("utf-8")
+                suffix = stream.read().decode()
             records = [json.loads(line) for line in suffix.splitlines() if line.strip()]
             if any(record.get("type") == "event_msg"
                    and record.get("payload", {}).get("type") == "user_message"
@@ -162,17 +179,10 @@ def readback_continue(entry: dict, before_size: int, timeout: float = 10) -> boo
 
 def resume(entry: dict, status: dict, state: dict, path: Path, now: float) -> dict:
     summary = retry_status(entry, status, state)
-    if summary["state"] != "backoff" or entry.get("supervisor_owned") is not True:
+    if summary["state"] not in {"backoff", "retry_due"} or entry.get("supervisor_owned") is not True:
         return summary
-    stop_time = datetime.fromisoformat(status["capacity_stop"]["timestamp"])
-    if stop_time.tzinfo is None:
-        raise ValueError("capacity timestamp requires a timezone")
     native_id = entry["session_id"]
-    row = state.get(native_id)
-    base = max(stop_time.timestamp(), row["last_attempt"] if row else 0)
-    due = base + BACKOFF_SECONDS[summary["attempts"]]
-    summary["retry_at"] = due
-    if now < due:
+    if now < summary["retry_at"]:
         return summary
     home, endpoint = verified_target(entry, status)
     row = {"attempts": summary["attempts"] + 1, "last_attempt": now,
@@ -184,7 +194,11 @@ def resume(entry: dict, status: dict, state: dict, path: Path, now: float) -> di
         row["phase"] = "confirmed" if readback_continue(entry, status["size"]) else "uncertain"
     except (OSError, ValueError, TypeError, subprocess.SubprocessError):
         row["phase"] = "uncertain"
-    save_state(path, state)
+    try:
+        save_state(path, state)
+    except OSError:
+        row["phase"] = "uncertain"
+        raise
     return {"attempts": row["attempts"], "state": (
         "continue_confirmed" if row["phase"] == "confirmed" else "reconciliation_required"
     )}

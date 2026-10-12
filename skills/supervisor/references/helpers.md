@@ -105,12 +105,20 @@ reports `capacity_retry.state: reconciliation_required` and permits no more
 automatic sends. Inspect the exact thread and queued messages before any
 manual intervention; never replay an uncertain send. A changed home or
 transcript reports `target_changed` and also stops automatic sends.
+After the Supervisor verifies queued messages and the current native thread,
+manual nudges use the existing [exact-thread queue procedure](#launching-and-nudging).
+Keep automatic retries halted for an uncertain native session and retain its
+budget; retire the session from the active ledger through normal closeout when
+its work finishes. There is no automatic clearing of uncertain-send evidence.
 Checks and the morning digest use the state-aware status command above and
 include every `provider_capacity` session, even without automatic retries,
 and every `exhausted`, `blocked`, `reconciliation_required` or `target_changed`
 retry record. `blocked` names unavailable ownership/identity/home/socket
 verification, so a missing ledger field or daemon cannot look like ordinary
-backoff forever. `exhausted` means the session remains at capacity after using its
+backoff forever. Eligible sessions expose `retry_at`; `retry_due` means that
+time has arrived. If it persists, verify the bounded watcher is still running
+and re-arm it with the same state file under the existing check procedure.
+`exhausted` means the session remains at capacity after using its
 three attempts; it needs Supervisor attention. These states establish no
 completion or safe-to-exit verdict.
 

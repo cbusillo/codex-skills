@@ -194,6 +194,10 @@ def account_settings(command_text, keys, depth=0):
     return found.intersection(keys)
 
 
+def codex_daemon_endpoint(home):
+    return home / "app-server-control" / "app-server-control.sock"
+
+
 def check_codex_daemon(choice):
     """Start the selected home's daemon natively, then verify its Unix socket."""
     if choice["provider"] != "openai":
@@ -217,7 +221,7 @@ def check_codex_daemon(choice):
             f"Codex daemon start failed for CODEX_HOME={home} (exit {started.returncode}): "
             f"{diagnostic or 'no command diagnostic'}; run {command} to diagnose, then retry the launch"
         )
-    endpoint = home / "app-server-control" / "app-server-control.sock"
+    endpoint = codex_daemon_endpoint(home)
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
             probe.settimeout(1.0)
