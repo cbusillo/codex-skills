@@ -23,7 +23,7 @@ CONTEXTS = """__typename
  ... on StatusContext { id context state description targetUrl createdAt }"""
 CONNECTIONS = {
     "labels": "name",
-    "reviews": "databaseId body state submittedAt author { __typename login } authorAssociation commit { oid }",
+    "reviews": "databaseId body state submittedAt url author { __typename login } authorAssociation commit { oid }",
     "comments": "databaseId body createdAt updatedAt url author { __typename login } authorAssociation",
 }
 
@@ -168,7 +168,11 @@ def rest_author(author):
 
 
 def batch_pull_requests(
-    reader: github_read.GitHubReader, repo: str, numbers: list[int]
+    reader: github_read.GitHubReader,
+    repo: str,
+    numbers: list[int],
+    *,
+    include_discussion: bool = True,
 ) -> dict[int, dict[str, Any]]:
     """Fetch complete bounded documents and install only one-pass REST-shaped reads."""
     if (
@@ -180,9 +184,8 @@ def batch_pull_requests(
         raise ValueError("PR batch requires 1..20 distinct positive PR numbers")
     reader.batch_diagnostic = {"used": False, "cost": 0}
     owner, name = repo.split("/", 1)
-    selections = " ".join(
-        connection(field, text) for field, text in CONNECTIONS.items()
-    )
+    fields = CONNECTIONS if include_discussion else {"labels": CONNECTIONS["labels"]}
+    selections = " ".join(connection(field, text) for field, text in fields.items())
     selections += (
         " commits(last:1) { nodes { commit { oid statusCheckRollup { "
         + connection("contexts", CONTEXTS)
@@ -206,7 +209,7 @@ def batch_pull_requests(
             raise github_read.GitHubReadShapeError("PR unavailable or mismatched")
         connections = {
             field: complete(reader, repo, node, field)
-            for field in [*CONNECTIONS, "contexts"]
+            for field in [*fields, "contexts"]
         }
         sha = node["headRefOid"]
         if not isinstance(sha, str) or len(sha) != 40:
@@ -246,30 +249,32 @@ def batch_pull_requests(
         }
         pulls[number] = pull
         responses[f"/repos/{repo}/pulls/{number}"] = pull
-        responses[f"/repos/{repo}/issues/{number}/comments"] = [
-            {
-                "id": n["databaseId"],
-                "body": n["body"],
-                "created_at": n["createdAt"],
-                "updated_at": n["updatedAt"],
-                "html_url": n["url"],
-                "user": rest_author(n["author"]),
-                "author_association": n["authorAssociation"],
-            }
-            for n in connections["comments"]
-        ]
-        responses[f"/repos/{repo}/pulls/{number}/reviews"] = [
-            {
-                "id": n["databaseId"],
-                "body": n["body"],
-                "state": n["state"],
-                "submitted_at": n["submittedAt"],
-                "user": rest_author(n["author"]),
-                "author_association": n["authorAssociation"],
-                "commit_id": (n["commit"] or {}).get("oid"),
-            }
-            for n in connections["reviews"]
-        ]
+        if include_discussion:
+            responses[f"/repos/{repo}/issues/{number}/comments"] = [
+                {
+                    "id": n["databaseId"],
+                    "body": n["body"],
+                    "created_at": n["createdAt"],
+                    "updated_at": n["updatedAt"],
+                    "html_url": n["url"],
+                    "user": rest_author(n["author"]),
+                    "author_association": n["authorAssociation"],
+                }
+                for n in connections["comments"]
+            ]
+            responses[f"/repos/{repo}/pulls/{number}/reviews"] = [
+                {
+                    "id": n["databaseId"],
+                    "body": n["body"],
+                    "state": n["state"],
+                    "submitted_at": n["submittedAt"],
+                    "html_url": n["url"],
+                    "user": rest_author(n["author"]),
+                    "author_association": n["authorAssociation"],
+                    "commit_id": (n["commit"] or {}).get("oid"),
+                }
+                for n in connections["reviews"]
+            ]
         checks = []
         statuses = []
         for context in connections["contexts"]:
@@ -301,7 +306,9 @@ def batch_pull_requests(
                     {
                         "id": context["id"],
                         "context": context["context"],
-                        "state": context["state"].lower(),
+                        "state": "pending"
+                        if context["state"] == "EXPECTED"
+                        else context["state"].lower(),
                         "description": context["description"],
                         "target_url": context["targetUrl"],
                         "created_at": context["createdAt"],
@@ -321,11 +328,13 @@ def batch_pull_requests(
     return pulls
 
 
-def try_batch(reader, repo, numbers):
+def try_batch(reader, repo, numbers, *, include_discussion=True):
     reader.batch_responses = {}
     reader.batch_diagnostic = {"used": False}
     try:
-        pulls = batch_pull_requests(reader, repo, numbers)
+        pulls = batch_pull_requests(
+            reader, repo, numbers, include_discussion=include_discussion
+        )
         reader.batch_diagnostic["used"] = True
         return pulls
     except (

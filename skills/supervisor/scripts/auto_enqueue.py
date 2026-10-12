@@ -276,6 +276,9 @@ class Live:
     def batch(self, repo, numbers):
         if numbers:
             github_pr_batch.try_batch(self.reader, repo, numbers[:20])
+        else:
+            self.reader.batch_responses.clear()
+            self.reader.batch_diagnostic={"used":False,"cost":0,"reason":"no author-allowed PRs"}
         return self.reader.batch_diagnostic
 
     def get(self, path):
@@ -836,6 +839,8 @@ def main(argv=None):
     parser.add_argument("--batch-read", action="store_true", help="Explicit cold/changed PR observer batch; default REST preserves idle 304 savings")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
+    if args.batch_read and not args.once:
+        parser.error("--batch-read requires --once; continuous observations retain conditional REST")
     if not args.owner or any(
         not REPO.fullmatch(repo)
         or repo.split("/")[0].casefold() != args.owner.casefold()

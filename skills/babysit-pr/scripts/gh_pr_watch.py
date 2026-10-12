@@ -41,8 +41,7 @@ if str(IDENTITY_SCRIPT_DIR) not in sys.path:
 import github_api
 import github_identity
 import github_read
-sys.path.insert(0, str(SCRIPT_DIR.parents[2]))
-from skills.github.scripts import github_pr_batch
+import github_pr_batch
 
 FAILED_RUN_CONCLUSIONS = {
     "failure",
@@ -1513,10 +1512,10 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
 
     reader = watcher_reader()
     if getattr(args, "batch_read", False) and (fresh_state or state.get("last_seen_head_sha") != pr["head_sha"]):
-        batch = github_pr_batch.try_batch(reader,pr["repo"],[pr["number"]])
+        batch = github_pr_batch.try_batch(reader, pr["repo"], [pr["number"]], include_discussion=False)
         if batch is not None and batch[pr["number"]]["head"]["sha"] != pr["head_sha"]:
             reader.batch_responses.clear()
-            reader.batch_diagnostic={"used":False,"fallback_reason":"head changed after orientation"}
+            reader.batch_diagnostic.update({"used": False, "fallback_reason": "head changed after orientation"})
     authenticated_login = get_authenticated_login(reader)
     new_review_items = fetch_new_review_items(
         pr,

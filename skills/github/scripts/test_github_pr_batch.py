@@ -83,10 +83,12 @@ def test_recorded_six_pr_checks_and_request_drop():
         assert transport.call_count == 1
         baseline_reader = reader()
 
-        def baseline_response(_method, path, **_kwargs):
-            path = path.split("?")[0]
+        def baseline_response(_method, endpoint, **_kwargs):
+            endpoint = endpoint.split("?")[0]
             return response(
-                rest[path] if path in rest else {"number": int(path.rsplit("/", 1)[-1])}
+                rest[endpoint]
+                if endpoint in rest
+                else {"number": int(endpoint.rsplit("/", 1)[-1])}
             )
 
         with patch.object(
@@ -399,6 +401,36 @@ def test_context_pagination_and_statuses_remain_complete():
         observed.batch_diagnostic["cost"]
         == fixture["data"]["rateLimit"]["cost"] + more["data"]["rateLimit"]["cost"]
     )
+
+
+def test_watcher_discussion_keeps_verified_publisher_fields_on_rest():
+    fixture = json.loads(FIXTURE.read_text())
+    node = next(iter(fixture["data"]["repository"].values()))
+    observed = reader()
+    with patch.object(observed, "_transport_request", return_value=response(fixture)):
+        assert (
+            batch.try_batch(
+                observed, "owner/repo", [node["number"]], include_discussion=False
+            )
+            is not None
+        )
+    comment = {
+        "id": 1,
+        "user": {"login": "publisher[bot]", "id": 123},
+        "performed_via_github_app": {"id": 456},
+        "body": "Owner decision",
+    }
+    with patch.object(observed, "request", return_value=response([comment])) as rest:
+        comments = observed.paged_json(
+            f"/repos/owner/repo/issues/{node['number']}/comments",
+            step_prefix="client_feedback",
+            params={"per_page": 100},
+        )
+    assert comments[0]["user"]["id"] == comment["user"]["id"]
+    assert (
+        comments[0]["performed_via_github_app"] == comment["performed_via_github_app"]
+    )
+    assert rest.call_count == 1
 
 
 if __name__ == "__main__":

@@ -1761,7 +1761,9 @@ REST-shaped metadata, reviews, comments, check runs and latest status contexts.
 The Supervisor auto-enqueue observer and PR watcher support `--batch-read` for
 explicitly cold or changing passes. The watcher batches only its first
 snapshot or a new head, then uses REST while that head remains unchanged.
-The Supervisor flag is intended for `--once` cold/changed passes. The flag defaults off: unchanged polling
+The Supervisor flag requires `--once` for a cold/changed pass; its continuous
+mode uses conditional REST. The watcher keeps discussion/Client feedback reads
+on REST so publisher IDs and App provenance retain their verification path. The flag defaults off: unchanged polling
 keeps its authenticated conditional REST savings. There is no persisted GraphQL
 body cache or credential/actor change.
 

@@ -265,22 +265,27 @@ class EnqueueTests(unittest.TestCase):
         document = {"data": {"repository": {"p1": node}, "rateLimit": {"cost": 1}}}
 
         class BatchedFake(Fake):
-            def batch(inner, repo, numbers):
-                inner.reader = github_read.GitHubReader(
+            def __init__(self, count=1):
+                super().__init__(count=count)
+                self.reader = None
+                self.final_rest_recheck = False
+
+            def batch(self, repo, numbers):
+                self.reader = github_read.GitHubReader(
                     gh_cmd="fake-gh",
                     actor="fixture-reader",
                     expected_actor="fixture-reader",
                     operation="github.pr.view",
                 )
                 reply = watch.github_api.ApiResult(ok=True, status=200, body=document)
-                with patch.object(inner.reader, "graphql_json", return_value=reply):
-                    github_pr_batch.batch_pull_requests(inner.reader, repo, numbers)
-                return inner.reader.batch_diagnostic
+                with patch.object(self.reader, "graphql_json", return_value=reply):
+                    github_pr_batch.batch_pull_requests(self.reader, repo, numbers)
+                return self.reader.batch_diagnostic
 
-            def get(inner, path):
-                if path in inner.reader.batch_responses:
-                    return inner.reader.get_json(path, step="batch_metadata")
-                inner.final_rest_recheck = True
+            def get(self, path):
+                if self.reader is not None and path in self.reader.batch_responses:
+                    return self.reader.get_json(path, step="batch_metadata")
+                self.final_rest_recheck = True
                 return super().get(path)
 
         fake = BatchedFake(count=1)
