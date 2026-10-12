@@ -107,6 +107,12 @@ the Reminders database.
 
 A single existing incomplete match is reported with its ID and left untouched.
 Pass `--update-id <id>` only when changing that existing reminder is authorized.
+For an authorized cleanup of existing Notes and URL, also pass `--preserve-existing`.
+It requires `--update-id` and the unchanged title, changes only Notes and URL, and
+reads back the same ID with unchanged list, title, due/start dates, timezone,
+priority, completion, alarms and recurrence. The required dry-run schedule fields
+are validated but are not applied in this mode. Ordinary updates keep their
+explicit schedule behavior.
 Missing update targets, duplicate matches, completed matches and colliding titles
 are refused. No completed item is reactivated. A `saved` receipt confirms list,
 title, schedule, alarm, recurrence, short notes and the exact visible URL. A `partial`

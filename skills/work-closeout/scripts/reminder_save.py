@@ -88,11 +88,15 @@ def main() -> int:
     parser.add_argument("--title")
     parser.add_argument("--repeat-days", type=int)
     parser.add_argument("--apply", action="store_true", help="Save only under existing reminder-write authority")
+    parser.add_argument("--preserve-existing", action="store_true",
+                        help="With --update-id, change only Notes and URL; preserve scheduling and other fields")
     mutation = parser.add_mutually_exclusive_group()
     mutation.add_argument("--update-id", help="Explicitly authorized existing reminder ID; otherwise never edit existing items")
     mutation.add_argument("--delete-id", help="Remove only this exact incomplete session reminder under removal authority")
     args = parser.parse_args()
     try:
+        if args.preserve_existing and not args.update_id:
+            raise ValueError("--preserve-existing requires an explicit --update-id")
         name = target_list(args.repo or args.directory, args.list_name, dict(os.environ), Path.home())
         fields = plan(args.harness, args.directory, args.session_id, args.prompt,
                       name, args.due, args.timezone, args.link, args.title, args.repeat_days)
@@ -101,9 +105,12 @@ def main() -> int:
             request = {k: v for k, v in fields.items() if k != "fallback"}
             request["update_id"] = args.update_id
             request["delete_id"] = args.delete_id
+            request["preserve_existing"] = args.preserve_existing
             print(json.dumps(native(request), ensure_ascii=False))
         else:
-            print(json.dumps({"status": "dry_run", **fields}, ensure_ascii=False))
+            print(json.dumps({"status": "dry_run", **fields,
+                              "update_id": args.update_id,
+                              "preserve_existing": args.preserve_existing}, ensure_ascii=False))
         return 0
     except (ValueError, OSError, subprocess.TimeoutExpired, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
