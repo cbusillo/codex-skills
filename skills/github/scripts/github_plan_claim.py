@@ -434,7 +434,6 @@ def released_explanatory_note(
 
 def discussion_evidence(
     status: str, comments: list[dict[str, Any]], claim: dict[str, str], *, resume_from: int | None = None,
-    repo: str | None = None, number: int | None = None, issue_url: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     """Old claims remain ambiguous until explicitly released; age is never a lease."""
     from github_plan_release import effective_comments

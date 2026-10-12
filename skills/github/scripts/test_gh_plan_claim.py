@@ -22,7 +22,10 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 import github_plan_claim as CLAIM
-import github_plan_wait as WAIT
+import github_plan_wait as wait_record
+import github_identity
+import github_comment
+import github_issue
 
 TEST_BOT = "fixture-bot[bot]"
 
@@ -93,7 +96,7 @@ class ClaimTests(unittest.TestCase):
         self.after_status = lambda: None
         self.during_inventory = lambda: None
         self.emitted = Mock()
-        self.wait = WAIT.reviewed(evidence="Fixture's full history and ownership reviewed; no person/event hold")
+        self.wait = wait_record.reviewed(evidence="Fixture's full history and ownership reviewed; no person/event hold")
 
     def get_issue(self, ref, repo):
         self.events.append("read_issue")
@@ -119,7 +122,7 @@ class ClaimTests(unittest.TestCase):
         self.events.append("read_comments" if path.endswith("comments") else "read_pulls")
         items = self.target_comments.get(path, self.comments) if path.endswith("comments") else self.blockers if path.endswith("blocked_by") else self.pulls
         if path.endswith("comments") and self.wait is not None:
-            items = [{"id": -1, "user": {"login": TEST_BOT}, "body": WAIT.marker(self.wait)}, *items]
+            items = [{"id": -1, "user": {"login": TEST_BOT}, "body": wait_record.marker(self.wait)}, *items]
         if path == "/repos/other/plans/pulls": items = []
         return "bot", copy.deepcopy(items)
 
@@ -151,9 +154,9 @@ class ClaimTests(unittest.TestCase):
                             comment_route=route or (lambda: ("bot", "bot-gh", TEST_BOT)),
                             load_config=lambda repo, **_: copy.deepcopy(self.configs.get(repo, PLAN.DEFAULT_CONFIG)), emit=self.emitted, api_json=self.read_api), \
                 patch.object(CLAIM, "local_inventory", side_effect=self.inventory_for), \
-                patch.object(PLAN.github_identity, "configured_bot_logins", return_value=[]), \
-                patch.object(PLAN.github_comment_core, "comment", side_effect=self.post), \
-                patch.object(PLAN.github_issue_core, "edit_issue", side_effect=self.labels):
+                patch.object(github_identity, "configured_bot_logins", return_value=[]), \
+                patch.object(github_comment, "comment", side_effect=self.post), \
+                patch.object(github_issue, "edit_issue", side_effect=self.labels):
             (command or PLAN.cmd_claim)(self.args)
 
     def pr_fixture(self, author=TEST_BOT):
@@ -260,7 +263,7 @@ class ClaimTests(unittest.TestCase):
                 self.setUp()
                 self.pr_fixture()
                 if mode == "wait":
-                    self.wait = WAIT.reviewed(evidence="Recorded test request", waiting_for="Chris's test", ends_when="Acceptance recorded")
+                    self.wait = wait_record.reviewed(evidence="Recorded test request", waiting_for="Chris's test", ends_when="Acceptance recorded")
                 else:
                     self.pulls[0]["head"]["repo"]["full_name"] = "stranger/repo"
                 with self.assertRaises(PLAN.PlanError):
@@ -672,7 +675,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_refresh_preserves_target_recorded_wait(self):
         self.refresh_fixture()
-        self.target_comments["/repos/owner/repo/issues/99/comments"].append({"id": 88, "user": {"login": TEST_BOT}, "body": WAIT.marker(WAIT.reviewed(evidence="Client asked to hold", waiting_for="Client test", ends_when="Accepted head"))})
+        self.target_comments["/repos/owner/repo/issues/99/comments"].append({"id": 88, "user": {"login": TEST_BOT}, "body": wait_record.marker(wait_record.reviewed(evidence="Client asked to hold", waiting_for="Client test", ends_when="Accepted head"))})
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
         self.assertEqual(caught.exception.code, "claim_wait_unresolved")
         self.assert_no_writes()
@@ -828,12 +831,12 @@ class ClaimTests(unittest.TestCase):
             with self.subTest(place=place):
                 self.setUp()
                 self.ordinary_handoff_fixture()
-                wait = WAIT.reviewed(evidence="Director requested prerequisite readback", waiting_for="Approved prerequisite readback", ends_when="Director accepts proof")
+                wait = wait_record.reviewed(evidence="Director requested prerequisite readback", waiting_for="Approved prerequisite readback", ends_when="Director accepts proof")
                 if place == "issue":
                     self.wait = wait
                     self.issue["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
                 else:
-                    self.target_comments[f"/repos/owner/repo/issues/{place}/comments"].append({"id": 88, "user": {"login": TEST_BOT}, "body": WAIT.marker(wait)})
+                    self.target_comments[f"/repos/owner/repo/issues/{place}/comments"].append({"id": 88, "user": {"login": TEST_BOT}, "body": wait_record.marker(wait)})
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
                 self.assertEqual(caught.exception.code, "claim_wait_unresolved")
@@ -843,7 +846,7 @@ class ClaimTests(unittest.TestCase):
                 self.assertTrue(self.pulls[0]["draft"])
                 if place == "issue":
                     status, _ = PLAN.read_plan_sections(self.issue)
-                    self.assertEqual(WAIT.records(status["Current Status"]), [wait])
+                    self.assertEqual(wait_record.records(status["Current Status"]), [wait])
                     self.assertIn(PLAN.DEFAULT_CONFIG["labels"]["waiting"], PLAN.normalize_labels(self.issue["labels"]))
                     self.assertEqual(PLAN.next_plan_status(self.issue, PLAN.DEFAULT_CONFIG), "waiting")
                 else:
@@ -917,11 +920,11 @@ class ClaimTests(unittest.TestCase):
         source = CLAIM.records(self.comments[0]["body"])[0]
         self.issue["body"] = (self.issue["body"].split("## Current Status", 1)[0]
                               + "## Current Status\n\nWaiting for: Owner review.\n" + CLAIM.marker(source))
-        self.wait = WAIT.reviewed(evidence="Director review requested", waiting_for="Owner review", ends_when="Current head accepted")
+        self.wait = wait_record.reviewed(evidence="Director review requested", waiting_for="Owner review", ends_when="Current head accepted")
         self.args.wait_resolved = "Prerequisite authorized; retain the review hold."
         self.run_claim()
         self.assertEqual(CLAIM.records(self.issue["body"]), [self.emitted.call_args.args[0]["claim"]])
-        self.assertEqual(WAIT.records(self.issue["body"]), [self.wait])
+        self.assertEqual(wait_record.records(self.issue["body"]), [self.wait])
 
     def test_ordinary_handoff_refuses_changed_holds_on_each_readback(self):
         for phase in ("after_post", "after_status"):
@@ -931,7 +934,7 @@ class ClaimTests(unittest.TestCase):
                     self.ordinary_handoff_fixture()
                     self.args.wait_resolved = "Prior prerequisite approval; no authority for a new hold."
                     def race():
-                        record = {"id": 900, "user": {"login": TEST_BOT}, "body": WAIT.marker(WAIT.reviewed(evidence="New Director request", waiting_for="New product prerequisite", ends_when="Director accepts"))}
+                        record = {"id": 900, "user": {"login": TEST_BOT}, "body": wait_record.marker(wait_record.reviewed(evidence="New Director request", waiting_for="New product prerequisite", ends_when="Director accepts"))}
                         if place == "issue":
                             self.comments.append(record)
                         else:
@@ -1688,7 +1691,7 @@ class ClaimTests(unittest.TestCase):
         self.ordinary_handoff_fixture()
         self.pulls[0]["body"] = "Planning issue: https://github.com/owner/repo/issues/42"
         self.targets["99"]["body"] = self.pulls[0]["body"]
-        self.target_comments["/repos/owner/repo/issues/99/comments"].append({"id": 88, "user": {"login": TEST_BOT}, "body": WAIT.marker(WAIT.reviewed(evidence="Owner requested acceptance", waiting_for="Owner acceptance", ends_when="Current preview accepted"))})
+        self.target_comments["/repos/owner/repo/issues/99/comments"].append({"id": 88, "user": {"login": TEST_BOT}, "body": wait_record.marker(wait_record.reviewed(evidence="Owner requested acceptance", waiting_for="Owner acceptance", ends_when="Current preview accepted"))})
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
         self.assertEqual(caught.exception.code, "claim_wait_unresolved")
@@ -2063,7 +2066,7 @@ class ClaimTests(unittest.TestCase):
         self.assertIn("refused", route)
         self.setUp()
         self.retained_pr_fixture()
-        self.target_comments["/repos/owner/repo/issues/99/comments"].append({"id": 88, "user": {"login": TEST_BOT}, "body": WAIT.marker(WAIT.reviewed(evidence="Client review requested", waiting_for="Client acceptance of the preview", ends_when="Current head accepted"))})
+        self.target_comments["/repos/owner/repo/issues/99/comments"].append({"id": 88, "user": {"login": TEST_BOT}, "body": wait_record.marker(wait_record.reviewed(evidence="Client review requested", waiting_for="Client acceptance of the preview", ends_when="Current head accepted"))})
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
         self.assertEqual(caught.exception.code, "claim_wait_unresolved")
         self.assertEqual(caught.exception.payload["successor_route"], {"resume_from": 1, "handoff_comment": 2})
@@ -2529,7 +2532,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_embedded_release_does_not_resolve_recorded_owner_wait(self):
         self.released_status_fixture("Finished session handoff.\n\nReleased claim 1")
-        self.wait = WAIT.reviewed(evidence="Director asked to test first", waiting_for="Owner approval of the live-host check", ends_when="Director records acceptance")
+        self.wait = wait_record.reviewed(evidence="Director asked to test first", waiting_for="Owner approval of the live-host check", ends_when="Director records acceptance")
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
         self.assertEqual(caught.exception.code, "claim_wait_unresolved")
         self.assert_no_writes()
@@ -2680,9 +2683,9 @@ class ClaimTests(unittest.TestCase):
         self.assertIn("State: Open, not started.", caught.exception.payload["previous_current_status"])
 
     def record_wait(self, waiting_for="Director's device test", *, target=None):
-        wait = WAIT.reviewed(evidence="Director explicitly requested this hold", waiting_for=waiting_for,
+        wait = wait_record.reviewed(evidence="Director explicitly requested this hold", waiting_for=waiting_for,
                              ends_when="Director records acceptance on this issue")
-        comment = {"id": 900, "user": {"login": TEST_BOT}, "body": WAIT.marker(wait)}
+        comment = {"id": 900, "user": {"login": TEST_BOT}, "body": wait_record.marker(wait)}
         if target is None:
             self.comments.append(comment)
         else:
@@ -2804,7 +2807,7 @@ class ClaimTests(unittest.TestCase):
             operation="github.plan.wait", payload=caught.exception.payload)
         self.assertEqual(terminal["completed_steps"], caught.exception.payload["completed_steps"])
         self.assertIsNone(terminal["write_outcome"])
-        self.assertEqual(WAIT.records(self.comments[-1]["body"])[0]["state"], "waiting")
+        self.assertEqual(wait_record.records(self.comments[-1]["body"])[0]["state"], "waiting")
 
     def test_new_issue_creation_records_all_waits_or_reviewed_absence(self):
         for flags in (("--wait-clear",), ("--waiting-for", "Director test", "--ends-when", "Test accepted",
@@ -2819,9 +2822,9 @@ class ClaimTests(unittest.TestCase):
                         find_existing_plan_issues=lambda *a, **k: ("bot", []),
                         ensure_labels=lambda *a, **k: ("bot", []),
                         comment_route=lambda: ("bot", "bot-gh", TEST_BOT), emit=Mock()), \
-                        patch.object(PLAN.github_issue_core, "create_issue", create):
+                        patch.object(github_issue, "create_issue", create):
                     PLAN.cmd_create(args)
-                wait = WAIT.records(create.call_args.args[1])[0]
+                wait = wait_record.records(create.call_args.args[1])[0]
                 self.assertEqual(len(wait["waits"]), len(args.waiting_for or []))
                 self.assertEqual(wait["evidence"], args.wait_evidence)
 
@@ -2831,13 +2834,13 @@ class ClaimTests(unittest.TestCase):
         self.args.clear = False
         self.args.waiting_for = self.args.ends_when = self.args.evidence = None
         pending = {**self.issue, "number": 43, "body": "Waiting for: Human test", "html_url": "https://github.com/owner/repo/issues/43"}
-        reviewed = {**self.issue, "body": WAIT.marker(self.wait)}
-        foreign = {**self.issue, "number": 44, "user": {"login": "someone"}, "body": WAIT.marker(self.wait)}
+        reviewed = {**self.issue, "body": wait_record.marker(self.wait)}
+        foreign = {**self.issue, "number": 44, "user": {"login": "someone"}, "body": wait_record.marker(self.wait)}
         closed_pr = {**self.issue, "number": 45, "pull_request": {}}
-        def pages(path, **kwargs):
+        def pages(path, **_kwargs):
             return "bot", [pending, reviewed, foreign, closed_pr] if path == "/repos/owner/repo/issues" else []
         with patch.multiple(PLAN, default_repo=lambda repo: repo, collect_paged_rest_items=pages, emit=self.emitted), \
-                patch.object(PLAN.github_identity, "configured_bot_logins", return_value=[TEST_BOT]):
+                patch.object(github_identity, "configured_bot_logins", return_value=[TEST_BOT]):
             PLAN.cmd_wait(self.args)
         result = self.emitted.call_args.args[0]
         self.assertEqual({row["number"] for row in result["review_required"]}, {43, 44})

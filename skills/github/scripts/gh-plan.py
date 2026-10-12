@@ -2294,7 +2294,7 @@ def claim_once(args: argparse.Namespace) -> None:
                          "review_required": wait["state"] == "review"})
         return has_wait
 
-    def check_issue_holds(checked_issue: dict[str, Any], checked_status: str) -> None:
+    def check_issue_holds(checked_issue: dict[str, Any]) -> None:
         expected = previous_wait
         observed_holds = github_plan_wait.marker(checked_issue["claim_wait"])
         wait_labels = set(normalize_labels(checked_issue.get("labels"))) & {config["labels"][key] for key in ("waiting", "blocked")}
@@ -2434,7 +2434,7 @@ def claim_once(args: argparse.Namespace) -> None:
             payload={"competing_evidence": competing_claims, "claim_recovery": claim_recovery()},
         )
 
-    def check_status_peers(status_to_check: str, status_comments: list[dict[str, Any]]) -> None:
+    def check_status_peers(status_comments: list[dict[str, Any]]) -> None:
         sessions = {record["session"] for _, record, _ in github_plan_claim.exact_released_sources(status_comments)}
         if not sessions:
             return
@@ -2566,7 +2566,7 @@ def claim_once(args: argparse.Namespace) -> None:
         previous_wait = github_plan_wait.marker(issue["claim_wait"])
         previous_wait_labels = set(normalize_labels(issue.get("labels"))) & {config["labels"][key] for key in ("waiting", "blocked")}
         check_agent(issue)
-        conflicts, owned = github_plan_claim.discussion_evidence(status, comments, claim, resume_from=args.resume_from, repo=issue_repo, number=number, issue_url=issue.get("html_url"))
+        conflicts, owned = github_plan_claim.discussion_evidence(status, comments, claim, resume_from=args.resume_from)
         if conflicts:
             refuse_or_route(conflicts, comments)
         check_wait(issue, status)
@@ -2624,13 +2624,13 @@ def claim_once(args: argparse.Namespace) -> None:
         # Check the discussion again before touching status or labels.
         issue, status, comments, can_update = claim_snapshot(args.issue, repo)
         check_agent(issue)
-        conflicts, observed = github_plan_claim.discussion_evidence(status, comments, claim, resume_from=args.resume_from, repo=issue_repo, number=number, issue_url=issue.get("html_url"))
+        conflicts, observed = github_plan_claim.discussion_evidence(status, comments, claim, resume_from=args.resume_from)
         if conflicts:
             refuse(conflicts)
-        check_status_peers(status, comments)
+        check_status_peers(comments)
         check_pr_artifacts(status, comments)
         check_wait(issue, status)
-        check_issue_holds(issue, status)
+        check_issue_holds(issue)
         check_native_blockers()
         handoff_preflight(comments, status)
         if not any(github_plan_claim.same_owner(record, claim) for record in observed):
@@ -2667,13 +2667,13 @@ def claim_once(args: argparse.Namespace) -> None:
             actor = label_result.get("actor") or actor
         final, final_status, final_comments, _ = claim_snapshot(args.issue, repo)
         check_agent(final)
-        conflicts, observed = github_plan_claim.discussion_evidence(final_status, final_comments, claim, resume_from=args.resume_from, repo=issue_repo, number=number, issue_url=final.get("html_url"))
+        conflicts, observed = github_plan_claim.discussion_evidence(final_status, final_comments, claim, resume_from=args.resume_from)
         if conflicts:
             refuse(conflicts)
-        check_status_peers(final_status, final_comments)
+        check_status_peers(final_comments)
         check_pr_artifacts(final_status, final_comments)
         check_wait(final, final_status)
-        check_issue_holds(final, final_status)
+        check_issue_holds(final)
         check_native_blockers()
         handoff_preflight(final_comments, final_status)
         if not observed or (record_kind == "issue" and label_map["active"] not in normalize_labels(final.get("labels"))):
