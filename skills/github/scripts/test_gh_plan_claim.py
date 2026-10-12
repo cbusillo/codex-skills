@@ -2525,6 +2525,9 @@ class ClaimTests(unittest.TestCase):
                 if change == "conditional": self.issue["body"] = self.issue["body"].replace("is released", "is released if approved")
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
                 self.assertEqual(caught.exception.code, "claim_conflict")
+                if change not in ("live_session", "later_claim"):
+                    self.assertTrue(any(e["source"] == "current_status"
+                                        for e in caught.exception.payload["competing_evidence"]))
                 self.assert_no_writes()
 
     def test_completed_session_field_preserves_unproved_or_live_holders(self):
