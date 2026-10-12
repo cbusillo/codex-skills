@@ -1217,16 +1217,18 @@ def test_label_only_and_explicit_none_are_complete_declarations() -> None:
         assert result["own_share_basis"] == "merged_pull_requests"
     custom = DIRECTION + "\n## Order\n4. Own projects: by the `personal-work` label only."
     assert module.own_project_patterns(custom, own_label="personal-work") == []
-    for name in ("own-project-tools", "work-tools"):
+    for name in ("own-project-tools", "work-tools", "work", "by"):
         mixed = DIRECTION + f"\n## Order\n4. Own projects: `{name}` and `fun`; mixed work uses the `own-project` label."
-        assert module.own_project_patterns(mixed) == ["fun", name]
+        assert module.own_project_patterns(mixed) == sorted(["fun", name])
         plain = mixed.replace(f"`{name}`", name).replace("`fun`", "fun")
-        assert module.own_project_patterns(plain) == ["fun", name]
+        assert module.own_project_patterns(plain) == sorted(["fun", name])
     described = DIRECTION + "\n## Order\n4. Own projects: `fun` (personal app), `companion*`; mixed work uses the `own-project` label."
     assert module.own_project_patterns(described) == ["companion*", "fun"]
     lab = DIRECTION + "\n## Order\n4. Own projects: the lab and the house (`house-tools`), `fun`; mixed work uses the `own-project` label."
     assert module.own_project_patterns(lab) == ["fun", "house-tools"]
     assert module.own_project_patterns(lab.replace("label.", "label only.")) == ["fun", "house-tools"]
+    sentences = DIRECTION + "\n## Order\n4. Own projects: `fun` and `companion*`. Mixed work uses the `own-project` label only."
+    assert module.own_project_patterns(sentences) == ["companion*", "fun"]
 
 
 def test_direction_share_wording_is_reported_without_interpreting_a_threshold() -> None:
