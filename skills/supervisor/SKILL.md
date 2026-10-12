@@ -210,18 +210,18 @@ records that run.
 
 ## The Pattern
 
-1. **One brief per session and repository.** Before launch, group items that
+1. **One brief per session and repository.** Before launch, choose items that
    share a subsystem and kind of work into one session and one PR, so they
-   share context and avoid conflicting edits. Under `github-plan`, link the
-   items as native sub-issues of a parent in that repository scoped to the
-   group. Reuse that parent, or nest a new one under the existing parent to
-   preserve the Track path.
+   share context and avoid conflicting edits. Under `github-plan`, prepare a
+   parent in that repository scoped to the group. Reuse that parent, or nest
+   a new one under the existing parent to preserve the Track path.
    The executing session claims the parent and each included item with
    `gh-plan.py claim` on the same branch before moving items or creating its
-   worktree. On a refusal, stop and release only the claims just made for that
-   group. After successful claims, use `unlink` and `link` for already parented
-   items; read back the graph with `deps` and resolve failed links before
-   creating the worktree.
+   worktree. On a refusal, stop, reconcile the owned status records and release
+   only the claims just made for that group. After successful claims, link the
+   items as native sub-issues. Move already parented items one at a time with
+   `unlink` and `link`; after readback of a failed move, restore any missing
+   original link. Verify both parents with `deps` before creating the worktree.
    Keep sessions separate for different repositories, different risk or
    approval levels (such as production data, credentials, recovery or Client
    acceptance), and truly independent work where parallel wall-clock time
