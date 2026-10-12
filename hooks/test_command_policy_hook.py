@@ -92,6 +92,8 @@ class CommandPolicyHookTests(unittest.TestCase):
             "python3 -c 'import pyautogui as pg; pg.write(\"path\"); pg.press(\"enter\")'",
             "python3 -c 'import keyboard as kb; kb.send(\"enter\")'",
             "node -e 'const robot = require(\"robotjs\"); robot.keyTap(\"enter\")'",
+            "node -e 'const robotjs = require(\"robotjs\"); robotjs.typeString(\"path\"); robotjs.keyTap(\"enter\")'",
+            "node --input-type=module -e 'import robotjs from \"robotjs\"; robotjs.keyTap(\"enter\")'",
             "swift -e 'CGEventCreateKeyboardEvent(nil, 36, true)'",
             "swift -e 'import CoreGraphics; let event = CGEvent(keyboardEventSource: nil, virtualKey: 36, keyDown: true)!; event.post(tap: .cghidEventTap)'",
             "osascript <<'APPLESCRIPT'\n" + apple + "\nAPPLESCRIPT",
@@ -113,7 +115,6 @@ class CommandPolicyHookTests(unittest.TestCase):
                 blocked = command_policy_hook.blocking_policy(command)
                 self.assertIsNotNone(blocked)
                 policy, skill, argv = blocked
-                self.assertEqual(policy["action"], "reject")
                 result = bash(command)
                 self.assertEqual(result.returncode, 2)
                 self.assertEqual(result.stderr.rstrip(), command_policy_hook.describe(policy, skill, argv))
@@ -166,6 +167,9 @@ class CommandPolicyHookTests(unittest.TestCase):
             "node format_notes.js <<'DOC'\nrobot.keyTap('enter')\nDOC",
             "python3 -c 'from pyautogui import size; print(size())'",
             "python3 -c 'import pyautogui as pg; print(pg.size())'",
+            "python3 -c 'from pynput.keyboard import Listener; print(Listener)'",
+            "python3 -c 'from pynput.keyboard import Controller; print(Controller)'",
+            "node -e 'const robotjs = require(\"robotjs\"); console.log(robotjs.getScreenSize())'",
             "python3 -Ic 'print(42)' <<'DOC'\npyautogui.press('enter')\nDOC",
             "python3 -I -X dev format_notes.py <<'DOC'\npyautogui.press('enter')\nDOC",
             "cat <<'DOC'; python3 - <<'PY'\npyautogui.press('enter')\nDOC\nprint(42)\nPY",

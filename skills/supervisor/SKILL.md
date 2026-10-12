@@ -141,9 +141,8 @@ policy:
         shell_regex: >-
           (?ix)(?:\S*/)?(?:(?:python[\d.]*|node|osascript|swift)\b[\s\S]*(?:
           \bpyautogui\s*\.\s*(?:write|typewrite|press|hotkey|keyDown|keyUp)\b
-          |\bpynput\s*\.\s*keyboard\b
-          |\bfrom\s+pynput\s+import\s+keyboard\b[\s\S]*\bController\b[\s\S]*\.(?:type|press|release)\b
-          |\b(?:CGEventCreateKeyboardEvent|CGEvent\s*\(\s*keyboardEventSource\s*:|robot\s*\.\s*(?:typeString|keyTap|keyToggle)\b))
+          |\b(?:pynput\s*\.\s*keyboard|from\s+pynput\s+import\s+keyboard)\b[\s\S]*\bController\b[\s\S]*\.(?:type|press|release)\b
+          |\b(?:CGEventCreateKeyboardEvent|CGEvent\s*\(\s*keyboardEventSource\s*:))
           |python[\d.]*\b[\s\S]*\bimport\s+keyboard\b[\s\S]*(?<![\w.])keyboard\s*\.\s*(?:write|press|send)\b)
       action: reject
       message: *keyboard_refusal
@@ -162,6 +161,14 @@ policy:
         shell_regex: >-
           (?ix)(?:\S*/)?python[\d.]*\b[\s\S]*\bimport\s+(?:pyautogui|keyboard)\s+as\s+(?P<keymodule>\w+)\b
           [\s\S]*\b(?P=keymodule)\s*\.\s*(?:write|typewrite|press|release|send|hotkey|keyDown|keyUp)\b
+      action: reject
+      message: *keyboard_refusal
+      preferred: *keyboard_alternatives
+    - id: reject-robotjs-keyboard-synthesis
+      match:
+        shell_regex: >-
+          (?ix)(?:\S*/)?node\b[\s\S]*\b(?:require\s*\(\s*["']+robotjs["']+\s*\)|from\s*["']+robotjs["']+)
+          [\s\S]*\b(?:typeString|keyTap|keyToggle)\s*\(
       action: reject
       message: *keyboard_refusal
       preferred: *keyboard_alternatives
