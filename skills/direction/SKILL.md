@@ -221,7 +221,8 @@ helper, using the merged `DIRECTION.md` the audit fetched rather than the
 local file. The audit of `OWNER/direction` also covers active repositories
 without a file; see `active_unadopted` below. The adopted repositories are the
 ones in the marker's `audits` map plus any the Director names; a repository enters the map only when an
-audit reads its merged `DIRECTION.md`. An unadopted audit still reports
+audit reads its merged `DIRECTION.md` and confirms that it is not archived. An explicitly named archived repository
+can be read as history but is not stamped back into the weekly map. An unadopted audit still reports
 `direction_missing` and leaves the marker untouched. Nobody opens a session
 per repository; the
 per-repository reminder line only fires when a session happens to open inside
@@ -255,11 +256,13 @@ on. Weekly audits are not marked by hand. The audit script stamps its own
 completion for the repository it audited, so an audit stamp means a real
 read-only audit ran; it never updates the daily turn or its coverage.
 
-To clean older markers that included unadopted repositories, preview with
+To clean older markers that included archived or unadopted repositories, preview with
 `uv run <skill-dir>/scripts/direction_audit.py --prune-unadopted`, then repeat
 with `--apply-prune` to recheck and apply the authorized cleanup, reporting
 the entries removed by that run. The helper confirms
-repository visibility before treating a missing direction file as unadopted,
+repository visibility and archive state, removes archived entries even when
+their direction file remains readable, and reports each removal reason. For
+active repositories it checks for a missing direction file before pruning,
 preserves unreadable entries and unrelated marker state, and creates a private
 backup beside the marker before removing confirmed entries. Unknown entries
 remain for a later audit with the required read access; they are not evidence
@@ -273,6 +276,10 @@ removing a named repository whose repository read returns HTTP 404, add
 each approved name. A 404 alone, including under `--gh gh`, never establishes
 that a repository is gone. Exit 3 reports unknown entries even when confirmed removals were
 applied; check `applied` and `backup` rather than treating it as no change.
+When archive metadata is unavailable, an audit leaves the existing stamp unchanged.
+The session-start hook checks archive state only when a weekly reminder is due:
+confirmed archived repositories get no weekly reminder, while unknown reads retain
+the reminder. The daily-turn reminder still applies.
 The documented reader on the Director's own login also works here with
 `--gh gh` for private repositories. To undo cleanup, restore the backup only if no later turn or audit
 ran; otherwise reinsert just the removed audit entries, retaining newer stamps.

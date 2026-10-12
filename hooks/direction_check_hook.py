@@ -372,6 +372,25 @@ def with_shared_turn(marker: dict[str, object], now: dt.datetime, repo: str | No
     return result
 
 
+def weekly_audit_repo(marker: dict[str, object], now: dt.datetime, repo: str | None) -> str | None:
+    """Suppress a due weekly reminder only for a confirmed archived repository."""
+    if not repo:
+        return None
+    audits = marker.get("audits")
+    stamp = audits.get(repo) if isinstance(audits, dict) else None
+    if isinstance(stamp, dt.datetime) and now - stamp <= AUDIT_STALE:
+        return repo
+    try:
+        result = run_reader("api", f"repos/{repo}", "--method", "GET")
+        metadata = json.loads(result.stdout) if result.returncode == 0 else None
+        if (isinstance(metadata, dict) and metadata.get("archived") is True
+                and str(metadata.get("full_name", "")).casefold() == repo.casefold()):
+            return None
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        pass
+    return repo
+
+
 def reminder(marker: dict[str, object], now: dt.datetime, repo: str | None, path: Path) -> str:
     """One line when something is overdue, empty when the checks are current."""
     overdue: list[str] = []
@@ -470,7 +489,7 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
                 print(overall, flush=True)
         now = dt.datetime.now(dt.timezone.utc)
         marker = with_shared_turn(marker, now, origin_repo(root or checkout_root(Path.cwd())))
-        reminder_text = reminder(marker, now, origin_repo(root), path)
+        reminder_text = reminder(marker, now, weekly_audit_repo(marker, now, origin_repo(root)), path)
         if reminder_text:
             print(reminder_text, flush=True)
         if runtime_catchup:
