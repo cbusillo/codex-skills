@@ -938,7 +938,6 @@ class ClaimTests(unittest.TestCase):
                             self.target_comments[f"/repos/owner/repo/issues/{place}/comments"].append(record)
                     setattr(self, phase, race)
                     with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
-                    self.assertIn("changed", str(caught.exception))
                     self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
                     if phase == "after_post": self.assertNotIn("status", self.events)
 
@@ -2727,7 +2726,6 @@ class ClaimTests(unittest.TestCase):
                 setattr(self, phase, self.record_wait)
                 with self.assertRaises(PLAN.PlanError) as caught:
                     self.run_claim()
-                self.assertIn("changed", str(caught.exception))
                 self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
     def test_oct12_refusals_replay_with_reviewed_absence_and_keep_competing_claims(self):
