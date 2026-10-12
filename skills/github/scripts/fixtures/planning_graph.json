@@ -14,7 +14,8 @@
             "updatedAt": "2026-10-07T21:52:04Z",
             "url": "https://github.com/owner/repo/issues/896",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "COLLABORATOR",
             "repository": {
@@ -137,7 +138,8 @@
             "updatedAt": "2026-10-09T21:10:14Z",
             "url": "https://github.com/owner/repo/issues/1313",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "COLLABORATOR",
             "repository": {
@@ -147,7 +149,9 @@
               "number": 10,
               "title": "Milestone",
               "state": "OPEN",
-              "createdAt": "2026-09-23T08:17:49Z"
+              "createdAt": "2026-09-23T08:17:49Z",
+              "dueOn": null,
+              "url": "https://github.com/owner/repo/milestone/1"
             },
             "issueDependenciesSummary": {
               "blockedBy": 0,
@@ -210,7 +214,8 @@
             "updatedAt": "2026-10-06T14:57:43Z",
             "url": "https://github.com/owner/repo/issues/1838",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "COLLABORATOR",
             "repository": {
@@ -288,7 +293,8 @@
             "updatedAt": "2026-10-06T14:57:36Z",
             "url": "https://github.com/owner/repo/issues/1840",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "COLLABORATOR",
             "repository": {
@@ -366,7 +372,8 @@
             "updatedAt": "2026-10-06T14:57:30Z",
             "url": "https://github.com/owner/repo/issues/1842",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "COLLABORATOR",
             "repository": {
@@ -481,7 +488,8 @@
             "updatedAt": "2026-10-06T14:57:25Z",
             "url": "https://github.com/owner/repo/issues/1902",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "COLLABORATOR",
             "repository": {
@@ -549,7 +557,8 @@
             "updatedAt": "2026-10-06T14:56:25Z",
             "url": "https://github.com/owner/repo/issues/1907",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "COLLABORATOR",
             "repository": {
@@ -617,7 +626,8 @@
             "updatedAt": "2026-10-03T22:44:32Z",
             "url": "https://github.com/owner/repo/issues/2069",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "COLLABORATOR",
             "repository": {
@@ -627,7 +637,9 @@
               "number": 8,
               "title": "Milestone",
               "state": "OPEN",
-              "createdAt": "2026-09-23T08:17:46Z"
+              "createdAt": "2026-09-23T08:17:46Z",
+              "dueOn": null,
+              "url": "https://github.com/owner/repo/milestone/1"
             },
             "issueDependenciesSummary": {
               "blockedBy": 0,
@@ -690,7 +702,8 @@
             "updatedAt": "2026-10-06T14:56:31Z",
             "url": "https://github.com/owner/repo/issues/2105",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "COLLABORATOR",
             "repository": {
@@ -758,7 +771,8 @@
             "updatedAt": "2026-10-06T14:57:19Z",
             "url": "https://github.com/owner/repo/issues/2107",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "COLLABORATOR",
             "repository": {
@@ -826,7 +840,8 @@
             "updatedAt": "2026-10-06T14:57:14Z",
             "url": "https://github.com/owner/repo/issues/2112",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "COLLABORATOR",
             "repository": {
@@ -949,7 +964,8 @@
             "updatedAt": "2026-10-12T04:00:38Z",
             "url": "https://github.com/owner/repo/issues/2152",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "COLLABORATOR",
             "repository": {
@@ -959,7 +975,9 @@
               "number": 10,
               "title": "Milestone",
               "state": "OPEN",
-              "createdAt": "2026-09-23T08:17:49Z"
+              "createdAt": "2026-09-23T08:17:49Z",
+              "dueOn": null,
+              "url": "https://github.com/owner/repo/milestone/1"
             },
             "issueDependenciesSummary": {
               "blockedBy": 1,
@@ -1032,7 +1050,8 @@
             "updatedAt": "2026-10-06T14:57:08Z",
             "url": "https://github.com/owner/repo/issues/2153",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "COLLABORATOR",
             "repository": {
@@ -1100,7 +1119,8 @@
             "updatedAt": "2026-10-06T14:57:02Z",
             "url": "https://github.com/owner/repo/issues/2155",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "COLLABORATOR",
             "repository": {
@@ -1168,7 +1188,8 @@
             "updatedAt": "2026-10-06T14:56:56Z",
             "url": "https://github.com/owner/repo/issues/2283",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "COLLABORATOR",
             "repository": {
@@ -1236,7 +1257,8 @@
             "updatedAt": "2026-10-09T19:14:49Z",
             "url": "https://github.com/owner/repo/issues/2305",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "COLLABORATOR",
             "repository": {
@@ -1246,7 +1268,9 @@
               "number": 9,
               "title": "Milestone",
               "state": "OPEN",
-              "createdAt": "2026-09-23T08:17:48Z"
+              "createdAt": "2026-09-23T08:17:48Z",
+              "dueOn": null,
+              "url": "https://github.com/owner/repo/milestone/1"
             },
             "issueDependenciesSummary": {
               "blockedBy": 0,
@@ -1346,7 +1370,8 @@
             "updatedAt": "2026-10-12T07:36:33Z",
             "url": "https://github.com/owner/repo/issues/2309",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "COLLABORATOR",
             "repository": {
@@ -1356,7 +1381,9 @@
               "number": 9,
               "title": "Milestone",
               "state": "OPEN",
-              "createdAt": "2026-09-23T08:17:48Z"
+              "createdAt": "2026-09-23T08:17:48Z",
+              "dueOn": null,
+              "url": "https://github.com/owner/repo/milestone/1"
             },
             "issueDependenciesSummary": {
               "blockedBy": 0,
@@ -1466,7 +1493,8 @@
             "updatedAt": "2026-10-06T14:56:51Z",
             "url": "https://github.com/owner/repo/issues/2404",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "COLLABORATOR",
             "repository": {
@@ -1534,7 +1562,8 @@
             "updatedAt": "2026-10-11T22:21:03Z",
             "url": "https://github.com/owner/repo/issues/2432",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "OWNER",
             "repository": {
@@ -1544,7 +1573,9 @@
               "number": 8,
               "title": "Milestone",
               "state": "OPEN",
-              "createdAt": "2026-09-23T08:17:46Z"
+              "createdAt": "2026-09-23T08:17:46Z",
+              "dueOn": null,
+              "url": "https://github.com/owner/repo/milestone/1"
             },
             "issueDependenciesSummary": {
               "blockedBy": 0,
@@ -1635,7 +1666,8 @@
             "updatedAt": "2026-10-11T22:47:16Z",
             "url": "https://github.com/owner/repo/issues/2435",
             "author": {
-              "login": "fixture-bot"
+              "login": "fixture-bot",
+              "__typename": "Bot"
             },
             "authorAssociation": "OWNER",
             "repository": {
@@ -1645,7 +1677,9 @@
               "number": 8,
               "title": "Milestone",
               "state": "OPEN",
-              "createdAt": "2026-09-23T08:17:46Z"
+              "createdAt": "2026-09-23T08:17:46Z",
+              "dueOn": null,
+              "url": "https://github.com/owner/repo/milestone/1"
             },
             "issueDependenciesSummary": {
               "blockedBy": 0,

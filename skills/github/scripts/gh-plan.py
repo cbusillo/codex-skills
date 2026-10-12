@@ -1913,9 +1913,11 @@ BATCH_READ_CONTEXT: dict[str, Any] = {}
 def read_planning_graph(repo: str, **kwargs: Any) -> list[dict[str, Any]] | None:
     BATCH_READ_CONTEXT.clear()
     BATCH_READ_CONTEXT.update({"used": False, "fallback_reason": "explicit_identity_route"})
+    if not EXPECTED_ACTOR or not BOT_GH.exists():
+        return None
     if os.environ.get("GH_PLAN_SKIP_BOT") == "1" or os.environ.get("GH_PLAN_ALLOW_ACTIVE_FIRST") == "1" or github_identity.active_auth_fallback_allowed() or github_identity.own_user_opted_in():
         return None
-    reader = github_read.GitHubReader(operation=CURRENT_OPERATION, strict_actor=True,
+    reader = github_read.GitHubReader(gh_cmd=str(BOT_GH), expected_actor=EXPECTED_ACTOR, actor=EXPECTED_ACTOR, operation=CURRENT_OPERATION, strict_actor=True,
         cache_enabled=True, cache_revalidate=True,
         deadline_at=time.time() + github_api_core.remaining_retry_timeout_seconds())
     try:
