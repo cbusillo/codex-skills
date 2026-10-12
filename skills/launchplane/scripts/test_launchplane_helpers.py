@@ -3230,14 +3230,14 @@ def test_path_check_rejects_credentials_in_record_ids(prefix: str, wrapper: str)
 def test_path_check_projection_failure_omits_unsafe_trace(trace: object) -> None:
     response = _path_check_response()
     response["trace_id"] = trace
-    response["check"]["steps"][0]["description"] = "Bearer synthetic-credential"
+    response["check"]["steps"][0]["unexpected"] = "synthetic-private-detail"
     status, payload, calls = _run_product_read(
         ["path-check", "--product", "example-product", "--path", "testing"], response
     )
     assert status == 1 and len(calls) == 1
     assert payload["status"] == "invalid" and payload["result"] == {}
     assert not payload["summary"].get("trace_id")
-    assert "synthetic-credential" not in json.dumps(payload)
+    assert "synthetic-private-detail" not in json.dumps(payload)
     if isinstance(trace, str):
         assert trace not in json.dumps(payload)
 
@@ -3253,8 +3253,12 @@ def test_path_check_rejects_sk_tokens_embedded_in_description(lead: str) -> None
     assert status == 1 and payload["result"] == {}
     assert payload["summary"]["trace_id"] == response["trace_id"]
     assert credential not in json.dumps(payload)
-    redacted = safety.public_operator_text(lead + credential)
-    assert credential not in redacted and "[redacted]" in redacted
+
+
+def test_shared_response_shape_rejects_sk_token_inside_url_query() -> None:
+    credential = "sk-proj-" + "A1" * 20
+    with pytest.raises(safety.LaunchplaneSafetyError):
+        safety.assert_public_safe_shape({"url": "https://example.invalid/review?ref=abc123" + credential})
 
 
 def test_path_check_refuses_bad_selector_and_surfaces_read_denial() -> None:

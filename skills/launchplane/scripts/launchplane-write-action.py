@@ -4908,7 +4908,8 @@ def _project_path_check(value: object) -> dict[str, object]:
     fixes = ("none", "code", "grant", "owner_approval", "client_acceptance", "by_hand", "wait")
     if set(source) != fields:
         raise LaunchplaneSafetyError("unsafe_response_shape")
-    assert_public_safe_shape(source)
+    # Identifier fields have their own validator; keep all other fields strict.
+    assert_public_safe_shape({key: item for key, item in source.items() if key not in {"product", "steps"}})
     if source["path"] not in ("testing", "promote") or source["state"] not in states:
         raise LaunchplaneSafetyError("invalid_response")
     steps = source["steps"]
@@ -4919,6 +4920,7 @@ def _project_path_check(value: object) -> dict[str, object]:
         step = _require_dict(value)
         if set(step) != step_fields:
             raise LaunchplaneSafetyError("unsafe_response_shape")
+        assert_public_safe_shape({key: item for key, item in step.items() if key not in {"step_id", "record_ids"}})
         if step["state"] not in states or step["fix"] not in fixes:
             raise LaunchplaneSafetyError("invalid_response")
         if not isinstance(step["code"], str):
