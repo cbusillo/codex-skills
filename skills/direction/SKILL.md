@@ -221,7 +221,8 @@ helper, using the merged `DIRECTION.md` the audit fetched rather than the
 local file. The audit of `OWNER/direction` also covers active repositories
 without a file; see `active_unadopted` below. The adopted repositories are the
 ones in the marker's `audits` map plus any the Director names; a repository enters the map only when an
-audit reads its merged `DIRECTION.md`. An unadopted audit still reports
+audit reads its merged `DIRECTION.md`. An explicitly named archived repository
+can be read as history but is not stamped back into the weekly map. An unadopted audit still reports
 `direction_missing` and leaves the marker untouched. Nobody opens a session
 per repository; the
 per-repository reminder line only fires when a session happens to open inside

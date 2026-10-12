@@ -440,6 +440,29 @@ def test_unadopted_audit_leaves_marker_untouched() -> None:
                 assert marker.read_text() == original
 
 
+def test_archived_audit_with_direction_does_not_reenter_weekly_marker() -> None:
+    module = load()
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        original = b'{"turn":"earlier","audits":{"o/active":"earlier"}}\n'
+        marker.write_bytes(original)
+        for archived in (True, False):
+            def fetch(args: list[str], **_kwargs: Any) -> Any:
+                return {"archived": archived} if args[1] == "repos/o/r" else []
+
+            output = StringIO()
+            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+                  patch.dict(vars(module), {"merged_direction": lambda *_args, **_kwargs: DIRECTION,
+                                            "gh_json": fetch}), redirect_stdout(output)):
+                module.main(["--repo", "o/r", "--automation", "bot", "--gh", "fixture-gh"])
+            result = json.loads(output.getvalue())
+            if archived:
+                assert result["marked"] is None and marker.read_bytes() == original
+            else:
+                assert result["marked"] == str(marker)
+                assert "o/r" in json.loads(marker.read_text())["audits"]
+
+
 def test_prune_removes_archived_repository_with_direction_and_preserves_unknown_archive_state() -> None:
     module = load()
     original = {"turn": "earlier", "audits": {
@@ -470,7 +493,7 @@ def test_prune_removes_archived_repository_with_direction_and_preserves_unknown_
         assert set(preview["unknown"]) == {"o/unknown", "o/malformed"}
         assert not preview["ok"] and not preview["applied"]
         assert preview["backup"] is None and marker.read_bytes() == before
-        assert "repos/o/archived/contents/DIRECTION.md" not in calls
+        assert not any(call.startswith("repos/o/archived/") and "contents" in call for call in calls)
         applied = module.prune_unadopted(marker, fetch=fetch, apply=True)
         assert Path(applied["backup"]).read_bytes() == before
         assert Path(applied["backup"]).stat().st_mode & 0o777 == 0o600
