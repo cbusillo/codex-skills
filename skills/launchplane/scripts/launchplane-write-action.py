@@ -4433,7 +4433,8 @@ def emit_safety_error_payload(
         except LaunchplaneSafetyError:
             trace_id = ""
         if trace_id:
-            payload["summary"]["trace_id"] = trace_id
+            summary = cast(dict[str, object], payload["summary"])
+            summary["trace_id"] = trace_id
     emit(payload)
 
 
