@@ -284,7 +284,7 @@ def simple_commands(shell: str) -> list[list[str]]:
         # Language payloads are arguments to their interpreter, not shell
         # commands. Preserve them for regex policies (also for a cat pipeline).
         script_readers = [
-            argv for command in shell_commands(header) for argv in unwrap(command)
+            argv for argv in nested_commands([header])
             if SCRIPT_INTERPRETERS.fullmatch(argv[0])
         ]
         unwrapped.extend([*argv, body] for argv in script_readers)
