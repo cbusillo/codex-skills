@@ -56,6 +56,7 @@ parser result or any shutdown verification.
 ## Checks and morning digest
 
 ```sh
+uv run skills/supervisor/scripts/fleet_counts.py --owner OWNER
 uv run skills/supervisor/scripts/status.py --ledger <private-ledger.json>
 uv run skills/supervisor/scripts/codex_idle_watch.py --ledger <private-ledger.json> --deadline-seconds 1800
 uv run skills/supervisor/scripts/oq.py OWNER/REPO#123 --owner <Director-login> --decision-author <recording-automation-login>
@@ -80,6 +81,20 @@ for this run. A later reply
 must link a question's URL or comment id to mark it answered; unlinked plain
 answers remain `needs_review` for the Supervisor to reconcile from the exact
 decision record. A script's match does not itself establish what was decided.
+For throughput counts and the morning digest, use `fleet_counts.py --owner OWNER`
+once per snapshot, reusing its per-repository rows and fleet totals. Do not run
+per-repository REST/search count loops. The helper uses one GraphQL request per
+repository page (100 by default), under the shared automation identity, retries,
+quota admission and diagnostics. The existing helper layer retains its cache
+behavior; GraphQL counts are fresh reads, without conditional REST caching.
+Only repositories visible to the selected bulk reader identity (or its supported
+main automation fallback) are counted, including forks and
+repositories with zero work, excluding archived repositories. Open issues and
+open PRs are separate counts. `sampled_at` records the snapshot start; pages are
+not an atomic fleet snapshot. An error exits nonzero with no totals: retain the
+last successful throughput entry as historical and report current counts as
+unavailable in the digest. Never interpret a failed read as zero work.
+
 For the digest, also use `github-work-rollup` for human comments, `github` for
 Dependabot/security signals and `infra-ops` for authorized live-site checks.
 Include the run's privately recorded capacity deadlines. Post the Director's
@@ -328,7 +343,7 @@ credential sources. A configuration has this shape, with all four entries:
       "restart_seconds": 60
     },
     "throughput": {
-      "argv": ["/absolute/path/to/uv", "run", "/private/existing-throughput-snapshot.py"],
+      "argv": ["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/fleet_counts.py", "--owner", "OWNER", "--service-snapshot"],
       "cwd": "/runtime/catalog",
       "restart_seconds": 300
     }
@@ -340,9 +355,13 @@ Replace the example paths and scope with the current Supervisor handoff's
 commands. The drive entry runs the existing bounded loop calling the maintained
 train driver, one driver per repository. It does not replace Launchplane's
 controller or take over another driver. [launchplane#3419](https://github.com/cbusillo/launchplane/issues/3419)
-owns moving that scheduling into Launchplane. The throughput entry runs the
-existing count snapshot; its stdout accumulates in the throughput log. Keep
-those commands at durable private paths. Preview enqueue first under the
+owns moving that scheduling into Launchplane. The throughput entry runs `fleet_counts.py`; its JSON stdout accumulates in the
+throughput log. Use only successful entries (`ok: true`) as count snapshots.
+`--service-snapshot` keeps this read-only service sampling after failed reads by
+returning zero with `ok: false` and no totals; the ordinary CLI exits nonzero.
+Shared transport still owns retries and cooldowns. Check `diagnostics.actor`
+and installation scope before interpreting these visible totals as the full fleet.
+Keep the drive command at a durable private path. Preview enqueue first under the
 existing authority described above before configuring its `--apply` command.
 
 Before first startup, verify the previous deadline loops and their children
