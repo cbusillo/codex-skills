@@ -849,6 +849,7 @@ def add_common(command: argparse.ArgumentParser, include_scope: bool) -> None:
     command.add_argument("--project", help="Project name selector. Prefer project-key/path when possible.")
     command.add_argument("--session-id", help="Expected IDE session id for drift detection.")
     command.add_argument("--open", action="store_true", help="Open the repo in the preferred IDE if no route is available, then retry briefly.")
+    command.add_argument("--no-ide-launch", action="store_true", help="Require a running IDE; never fall back to launching an application when opening a project.")
     command.add_argument("--no-worktree-check", action="store_true", help="Allow routes outside the current worktree.")
     if include_scope:
         command.add_argument("--scope", help="Inspection scope. Defaults from repo config or changed_files.")
@@ -5434,6 +5435,12 @@ def open_project_for_lifecycle(
     open_attempt = open_via_running_ide(args, context, attempts, "running_ide", lease)
     if open_attempt is not None:
         return open_method_for_outcome("running_ide", open_attempt), attempts, bool(open_attempt.get("ownership_registered"))
+    if getattr(args, "no_ide_launch", False):
+        raise InspectError(
+            "The running IDE did not accept the lifecycle open; application launch is disabled.",
+            3,
+            {"error_reason": "ide_launch_disabled", "open_attempts": attempts},
+        )
     bootstrap_attempt = bootstrap_ide_app(context, background=getattr(args, "background_open", False))
     attempts.append(bootstrap_attempt)
     timeout_ms = getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS)

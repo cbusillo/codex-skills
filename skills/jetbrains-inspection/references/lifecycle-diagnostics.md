@@ -53,6 +53,15 @@ changing the caller's cwd or environment or relative app-path resolution.
 An already-running IDE keeps its cwd; retain any checkout it holds for supported
 retirement once the hold ends. Use `--foreground-open` only when debugging
 IDE launch behavior.
+For disposable-instance measurements, pass `--port <private-port>` and
+`--no-ide-launch`. The latter preserves the running-instance lifecycle open
+but fails with `ide_launch_disabled` if it cannot proceed, retaining its open
+attempts instead of launching the selected app. Normal callers keep the
+existing bootstrap behavior. This option does not isolate discovery or
+configuration: launch the disposable IDE with a private registry and a port
+outside the helper's default discovery range, and set
+`JETBRAINS_INSPECTION_IDE_CONFIG_DIR` to its private config when invoking the
+helper.
 If an inspection wait times out while a helper-started run is still active, the
 helper asks the plugin to cancel that exact `inspection_run_id` and waits briefly
 for cancellation to settle. A compatible run adopted from a concurrent 409 is

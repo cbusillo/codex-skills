@@ -7703,7 +7703,7 @@ class LifecycleTest(unittest.TestCase):
         jb_inspect.bootstrap_ide_app = lambda *args, **kwargs: calls.append("bootstrap")
         jb_inspect.wait_for_matching_ide_identity = lambda *args, **kwargs: calls.append("wait")
         try:
-            result = jb_inspect.open_project_for_lifecycle(Namespace(port=None, background_open=True), {"ide": "IntelliJ IDEA"})
+            result = jb_inspect.open_project_for_lifecycle(Namespace(port=None, background_open=True, no_ide_launch=True), {"ide": "IntelliJ IDEA"})
         finally:
             jb_inspect.open_via_running_ide = original_running
             jb_inspect.bootstrap_ide_app = original_bootstrap
@@ -7713,6 +7713,30 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(result[1], [{"method": "running_ide", "accepted": True, "ownership_registered": True}])
         self.assertTrue(result[2])
         self.assertEqual(calls, [("running", "running_ide")])
+
+    def test_no_ide_launch_stops_after_failed_running_open_and_preserves_attempt(self):
+        args = jb_inspect.build_parser().parse_args([
+            "inspect-closeout", "--port", "63486", "--no-ide-launch",
+        ])
+        attempt = {"method": "running_ide", "accepted": False, "reason": "unavailable"}
+
+        def running(args, context, attempts, method, lease):
+            attempts.append(attempt)
+            return None
+
+        with (
+            patch.object(jb_inspect, "open_via_running_ide", side_effect=running),
+            patch.object(jb_inspect, "bootstrap_ide_app") as bootstrap,
+            patch.object(jb_inspect, "wait_for_matching_ide_identity") as wait,
+            patch.object(jb_inspect, "wait_for_lifecycle_open", return_value=None),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.open_project_for_lifecycle(args, {"ide": "PyCharm"})
+
+        self.assertEqual(raised.exception.payload["error_reason"], "ide_launch_disabled")
+        self.assertEqual(raised.exception.payload["open_attempts"], [attempt])
+        bootstrap.assert_not_called()
+        wait.assert_not_called()
 
     def test_open_project_for_lifecycle_treats_already_open_as_preexisting(self):
         attempt = {
