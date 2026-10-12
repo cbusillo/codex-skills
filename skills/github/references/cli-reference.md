@@ -859,6 +859,37 @@ issue; it cannot release another structured claim. Partial writes preserve the
 posted records and completed steps: read them before any recovery, never switch
 identity or replay an unknown write.
 
+For a legacy source containing only `Claimed by WORKER` (plus an optional
+operation marker), use `--legacy --legacy-branch <verified-original-branch>
+--legacy-reason "<why no native session ID exists>"`. A source with structured
+identity, session fields, or additional ownership prose cannot use this route.
+Verify its original branch from the handoff; never invent a native session ID.
+Post a separate exact-ID attestation for each legacy claim:
+
+```text
+Closed legacy claim <original-comment-id>
+Worker: <exact-source-worker>
+Source branch: <verified-original-branch>
+Native session unavailable: <exact-legacy-reason>
+Ended at: <verified-timezone-qualified-closure-timestamp>
+Safe to exit: yes
+<closure verification and handoff evidence>
+```
+
+The closure timestamp must be verified, not inferred from age, merge time,
+posting time or an absent process. An older attestation with `Ended at: unknown`
+is insufficient; replace it with verified closure evidence. The same automation
+identity, direction/Supervisor role, confirmation, fresh source/activity checks,
+source-branch commit checks, retained-PR checks and live-worktree peer checks
+apply. Missing peer coverage remains explicit and the caller verifies closure
+on hosts the helper cannot inspect. Each release affects only its exact source
+comment; other legacy claims require separate attestations and calls. Related
+follow-up release and structured retained-handoff resume are unavailable for
+legacy sources. Normal successor claims still check waits and retained artifacts.
+Edited or unavailable evidence and renewed source ownership invalidate the
+legacy receipt just as they do a structured release. Inspect `--dry-run` before
+applying. These flags cannot release or reinterpret a structured source.
+
 For retained PRs, pass each verified same-repository PR URL with repeatable
 `--retained-pr`. Each PR must independently link the canonical issue and belong
 to the source automation identity. The release comment is the new handoff for

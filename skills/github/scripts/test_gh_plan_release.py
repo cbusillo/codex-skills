@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import copy
+import json
+from pathlib import Path
 from argparse import Namespace
 from unittest.mock import patch
 import unittest
@@ -20,7 +22,7 @@ import github_plan_claim
 PLAN, CLAIM, BOT = fixtures.PLAN, fixtures.CLAIM, fixtures.TEST_BOT
 
 
-class ReleaseTests(unittest.TestCase):
+class ReleaseHarness(unittest.TestCase):
     def setUp(self):
         self.f = fixtures.ClaimTests()
         self.f.setUp()
@@ -82,6 +84,9 @@ class ReleaseTests(unittest.TestCase):
             patch.object(github_comment, "comment", autospec=True, side_effect=self.post):
             PLAN.cmd_release_claim(self.args)
 
+
+
+class ReleaseTests(ReleaseHarness):
     def pr_setup(self):
         self.f.pr_fixture("dependabot[bot]")
         self.f.pulls[0]["head"]["sha"] = "a" * 40
@@ -507,6 +512,116 @@ class ReleaseTests(unittest.TestCase):
                 else:
                     with self.assertRaises(PLAN.PlanError): self.run_release()
                     self.f.assert_no_writes()
+
+
+class LegacyReleaseTests(ReleaseHarness):
+    def legacy_setup(self, index=0):
+        self.setUp()
+        historical = json.loads(Path(__file__).with_name("fixtures").joinpath(
+            "codex-skills-828-legacy-claims.json").read_text())
+        source = historical[index]
+        self.f.comments = [self.comment(source["id"], source["body"], source["created_at"])]
+        self.args.claim_comment = source["id"]
+        self.args.legacy = True
+        self.args.legacy_branch = "work/go828-install-d0"
+        self.args.legacy_reason = "The original bare claim recorded no native session ID"
+        worker = source["body"].splitlines()[0].removeprefix("Claimed by ")
+        self.evidence["body"] = (
+            f"Closed legacy claim {source['id']}\nWorker: {worker}\n"
+            f"Source branch: {self.args.legacy_branch}\n"
+            f"Native session unavailable: {self.args.legacy_reason}\n"
+            "Ended at: 2026-10-02T00:00:00Z\nSafe to exit: yes\n"
+            "Supervisor verified closure from the handoff and checked all reachable hosts."
+        )
+        return historical, worker
+
+    def test_both_historical_claims_require_explicit_flag_and_release_only_exact_id(self):
+        for index in (0, 1):
+            with self.subTest(index=index):
+                historical, _ = self.legacy_setup(index)
+                self.args.legacy = False
+                with self.assertRaises(PLAN.PlanError): self.run_release()
+                self.f.assert_no_writes()
+                self.args.legacy = True
+                other = historical[1-index]
+                self.f.comments.append(self.comment(other['id'], other['body'], other['created_at']))
+                self.run_release()
+                effective = release.effective_comments(self.f.comments)
+                conflicts, _ = CLAIM.discussion_evidence("", effective, fixtures.OWNER)
+                self.assertEqual([c['id'] for c in conflicts], [other['id']])
+                receipt = release.receipt_for(self.f.comments[-1])
+                self.assertEqual(receipt['source']['legacy_reason'], self.args.legacy_reason)
+                # An ordinary successor needs no fabricated resume session.
+                self.f.comments.pop(-2)
+                with patch.object(self.f, "read_api", side_effect=self.api): self.f.run_claim()
+                self.assertTrue(self.f.emitted.call_args.args[0]['ok'])
+
+    def test_original_unknown_end_attestation_is_not_closure_proof(self):
+        historical, _ = self.legacy_setup()
+        self.evidence['body'] = historical[2]['body']
+        with self.assertRaises(PLAN.PlanError): self.run_release()
+        self.f.assert_no_writes()
+
+    def test_legacy_cannot_reinterpret_structured_or_session_bearing_claim(self):
+        for body in (CLAIM.marker(fixtures.OTHER), "Claimed by trial-b\nSession: session-b",
+                     "Claimed by trial-b\n<!-- github-plan:claim broken -->", "> Claimed by trial-b"):
+            self.legacy_setup()
+            self.f.comments[0]['body'] = body
+            with self.assertRaises(PLAN.PlanError): self.run_release()
+            self.f.assert_no_writes()
+
+    def test_legacy_guards_refuse_before_writes(self):
+        for mode in ('branch', 'reason', 'worker', 'evidence_author', 'source_author', 'future',
+                     'unknown_end', 'unconfirmed', 'source_edit', 'renewed', 'structured_renewed',
+                     'live_peer', 'worker_visible', 'branch_activity', 'related'):
+            with self.subTest(mode=mode):
+                _, worker = self.legacy_setup()
+                if mode == 'branch': self.args.legacy_branch = None
+                if mode == 'reason': self.args.legacy_reason = ''
+                if mode == 'worker': self.evidence['body'] = self.evidence['body'].replace(worker, 'another-worker')
+                if mode == 'evidence_author': self.evidence['user']['login'] = 'stranger'
+                if mode == 'source_author': self.f.comments[0]['user']['login'] = 'stranger'
+                if mode == 'future': self.evidence['body'] = self.evidence['body'].replace('2026-10-02T00:00:00Z', '2026-10-03T00:00:00Z')
+                if mode == 'unknown_end': self.evidence['body'] = self.evidence['body'].replace('2026-10-02T00:00:00Z', 'unknown')
+                if mode == 'unconfirmed': self.args.confirm_session_ended = False
+                if mode == 'source_edit': self.f.comments[0]['updated_at'] = '2026-10-04T00:00:00Z'
+                if mode == 'renewed': self.f.comments.append(self.comment(2, f'**Claimed by {worker}**', '2026-10-04T00:00:00Z'))
+                if mode == 'structured_renewed': self.f.comments.append(self.comment(2, CLAIM.marker({**fixtures.OTHER, 'worker': worker}), '2026-10-04T00:00:00Z'))
+                if mode == 'live_peer':
+                    self.f.inventory['worktrees'] = [{'branch': self.args.legacy_branch, 'path': '/legacy'}]
+                    self.f.inventory['sessions'] = [{'sessionId': 'peer', 'cwd': '/legacy/nested'}]
+                if mode == 'worker_visible': self.f.inventory['sessions'] = [{'sessionId': 'native-peer', 'name': worker, 'cwd': '/other'}]
+                if mode == 'branch_activity': self.source_branch_date = '2026-10-04T00:00:00Z'
+                if mode == 'related': self.args.related_claim_comment = [self.args.claim_comment]
+                with self.assertRaises(PLAN.PlanError): self.run_release()
+                self.f.assert_no_writes()
+
+    def test_legacy_receipt_invalidates_on_changed_source_or_evidence(self):
+        for mode in ('source', 'evidence', 'missing', 'renewed'):
+            self.legacy_setup()
+            self.run_release()
+            if mode == 'source': self.f.comments[0]['updated_at'] = '2026-10-04T00:00:00Z'
+            if mode == 'evidence': self.evidence['updated_at'] = '2026-10-04T00:00:00Z'
+            if mode == 'missing': self.evidence_failure = 404
+            if mode == 'renewed':
+                worker = self.f.comments[0]['body'].splitlines()[0].removeprefix('Claimed by ')
+                self.f.comments.append(self.comment(2, f'Claimed by {worker}', '2026-10-04T00:00:00Z'))
+            with self.assertRaisesRegex(PLAN.PlanError, 'ownership evidence'):
+                with patch.object(self.f, 'read_api', side_effect=self.api): self.f.run_claim()
+
+    def test_legacy_post_write_race_preserves_receipt_and_reports_failure(self):
+        _, worker = self.legacy_setup()
+        self.race = lambda: self.f.comments.append(self.comment(2, f'Claimed by {worker}', '2026-10-04T00:00:00Z'))
+        with self.assertRaises(PLAN.PlanError) as caught: self.run_release()
+        self.assertIn('post_release', caught.exception.payload['completed_steps'])
+        self.assertEqual(self.f.events.count('post'), 1)
+
+    def test_legacy_dry_run_does_not_write(self):
+        self.legacy_setup()
+        self.args.dry_run = True
+        self.run_release()
+        self.f.assert_no_writes()
+        self.assertEqual(CLAIM.released_claim_id(self.f.emitted.call_args.args[0]['release_body']), self.args.claim_comment)
 
 
 if __name__ == "__main__":
