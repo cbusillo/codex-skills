@@ -64,6 +64,7 @@ TRANSPARENT = {"command", "exec", "time", "nohup"}
 SHELL_KEYWORDS = {"{", "!", "if", "then", "elif", "else", "do", "while", "until"}
 SHELLS = {"sh", "bash", "zsh"}
 SCRIPT_INTERPRETERS = re.compile(r"^(?:osascript|python[\d.]*|node|swift)$")
+SCRIPT_WRAPPERS = {"sudo", "timeout", "xargs"}
 SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
 GH_WRAPPER_FLAGS = {"--print-auth-account", "--require-automation-auth"}
 ENV_VALUE_FLAGS = {"-u", "--unset", "-C", "--chdir"}
@@ -284,8 +285,10 @@ def simple_commands(shell: str) -> list[list[str]]:
         # Language payloads are arguments to their interpreter, not shell
         # commands. Preserve them for regex policies (also for a cat pipeline).
         script_readers = [
-            argv for argv in nested_commands([header])
-            if SCRIPT_INTERPRETERS.fullmatch(argv[0])
+            argv[index:] for argv in nested_commands([header])
+            for index, token in enumerate(argv)
+            if (index == 0 or argv[0] in SCRIPT_WRAPPERS)
+            and SCRIPT_INTERPRETERS.fullmatch(Path(token).name)
         ]
         unwrapped.extend([*argv, body] for argv in script_readers)
         if shell_reads_bodies:

@@ -139,10 +139,11 @@ policy:
     - id: reject-keyboard-synthesis-apis
       match:
         shell_regex: >-
-          (?ix)(?:\S*/)?(?:python[\d.]*|node|osascript|swift)\b[\s\S]*(?:
+          (?ix)(?:\S*/)?(?:(?:python[\d.]*|node|osascript|swift)\b[\s\S]*(?:
           \bpyautogui\s*\.\s*(?:write|typewrite|press|hotkey|keyDown|keyUp)\b
           |\bpynput\s*\.\s*keyboard\b
-          |\b(?:CGEventCreateKeyboardEvent|keyboard\s*\.\s*(?:write|press|send)|robot\s*\.\s*(?:typeString|keyTap|keyToggle))\b)
+          |\b(?:CGEventCreateKeyboardEvent|robot\s*\.\s*(?:typeString|keyTap|keyToggle))\b)
+          |python[\d.]*\b[\s\S]*(?<![\w.])keyboard\s*\.\s*(?:write|press|send)\b)
       action: reject
       message: *keyboard_refusal
       preferred: *keyboard_alternatives

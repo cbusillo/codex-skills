@@ -89,6 +89,8 @@ class CommandPolicyHookTests(unittest.TestCase):
             "swift -e 'CGEventCreateKeyboardEvent(nil, 36, true)'",
             "osascript <<'APPLESCRIPT'\n" + apple + "\nAPPLESCRIPT",
             "cat <<'APPLESCRIPT' | osascript\n" + apple + "\nAPPLESCRIPT",
+            "sudo /usr/bin/osascript <<'APPLESCRIPT'\n" + apple + "\nAPPLESCRIPT",
+            "timeout 10 python3 - <<'PY'\nimport pyautogui\npyautogui.press('enter')\nPY",
             "python3 - <<'PY'\nimport pyautogui\npyautogui.press('enter')\nPY",
             "node <<'JS'\nconst robot = require('robotjs'); robot.typeString('path');\nJS",
         )
@@ -124,6 +126,9 @@ class CommandPolicyHookTests(unittest.TestCase):
             "uv run skills/supervisor/scripts/iterm_tab.py send --session-id exact --text path --verified-target",
             "node -e 'await page.locator(\"input[type=file]\").setInputFiles(\"/path/proposal.json\")'",
             "node -e 'await tab.send(\"DOM.setFileInputFiles\", {files: [\"/path/proposal.json\"], nodeId: 42})'",
+            "node -e 'await page.keyboard.press(\"Enter\")'",
+            "node -e 'const keyboard = page.keyboard; await keyboard.press(\"Enter\")'",
+            "python3 -c 'page.keyboard.press(\"Enter\")'",
             "osascript -e 'tell application \"Google Chrome\" to get URL of active tab of front window'",
             "osascript -e 'tell application \"Google Chrome\" to execute active tab of front window javascript \"document.title\"'",
             "osascript <<'APPLESCRIPT'\ntell application \"Finder\" to get name of startup disk\nAPPLESCRIPT",
