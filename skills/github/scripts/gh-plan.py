@@ -2133,7 +2133,8 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             try:
                 github_plan_release.check_retained_pr(pull, head_commit, repo=source_issue["repo"],
                     number=source_issue["number"], actor=expected_actor, ended=ended[0],
-                    subject_pr=source_issue["number"] if subject_pr else None, source_branch=source_branch)
+                    subject_pr=source_issue["number"] if subject_pr else None, source_branch=source_branch,
+                    allow_closed_unmerged=legacy_options["legacy"])
             except github_plan_release.IssueReleaseRefusal as retained_error:
                 issue_refusal = retained_error
         release_actor = expected_actor

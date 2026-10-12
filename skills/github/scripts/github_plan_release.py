@@ -113,7 +113,7 @@ def check_activity(comments: list[dict[str, Any]], source: dict[str, Any], cutof
             raise ValueError("Source session shows ownership activity after the cited evidence")
 
 
-def check_retained_pr(pull, head_commit, *, repo, number, actor, ended, subject_pr=None, source_branch=None):
+def check_retained_pr(pull, head_commit, *, repo, number, actor, ended, subject_pr=None, source_branch=None, allow_closed_unmerged=False):
     """One retained-work guard shared by write preflight and read-only planning."""
     subject = subject_pr is not None and pull.get("number") == subject_pr
     if (not subject or (pull.get("head") or {}).get("ref") == source_branch) and stamp(head_commit["commit"]["committer"]["date"]) >= stamp(ended):
@@ -125,7 +125,7 @@ def check_retained_pr(pull, head_commit, *, repo, number, actor, ended, subject_
             raise IssueReleaseRefusal("PR claim's work record must remain a same-repository open or closed PR")
         return
     if ((pull.get("user") or {}).get("login") != actor
-            or pull.get("state") != "open" and not pull.get("merged_at")
+            or pull.get("state") != "open" and not pull.get("merged_at") and not (allow_closed_unmerged and pull.get("state") == "closed")
             or any(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != repo.casefold() for side in ("head", "base"))
             or not claim.pr_issue_reference(pull, number, repo=repo, attestation=True, record_kind="pr" if subject_pr is not None else "issue")):
         raise IssueReleaseRefusal("Retained PR must independently link the canonical issue and belong to the source automation identity")
@@ -192,7 +192,7 @@ def prepare_release(
             f"Session-ended evidence: {evidence_url}\n"
             "The caller verified the session ended; available native sessions and subsequent ownership activity were checked.\n"
             + ("Retained PR handoff: " + ", ".join(retained_prs) + "\n" if retained_prs else "")
-            + "\n<!-- " + RELEASE_MARKER + json.dumps(receipt, sort_keys=True) + " -->")
+            + "\n<!-- " + RELEASE_MARKER + json.dumps(receipt, sort_keys=True).replace(">", "\\u003e") + " -->")
 
 
 def receipt_for(comment: dict[str, Any]) -> dict[str, Any] | None:

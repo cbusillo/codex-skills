@@ -625,6 +625,41 @@ class LegacyReleaseTests(ReleaseHarness):
                 with self.assertRaises(PLAN.PlanError): self.run_release()
                 self.f.assert_no_writes()
 
+    def test_reused_legacy_worker_refuses_successor_before_posting(self):
+        _, worker = self.legacy_setup()
+        self.run_release()
+        posted = self.f.events.count('post')
+        self.f.args.worker = worker
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            with patch.object(self.f, 'read_api', side_effect=self.api): self.f.run_claim()
+        self.assertEqual(caught.exception.code, 'claim_conflict')
+        self.assertEqual(self.f.events.count('post'), posted)
+        self.assertTrue(CLAIM.released_claim_id(release.effective_comments(self.f.comments)[-1]['body']))
+
+    def test_closed_unmerged_source_pr_still_checks_activity(self):
+        for renewed in (False, True):
+            with self.subTest(renewed=renewed):
+                self.legacy_setup()
+                self.f.pulls[0]['merged_at'] = None
+                if renewed: self.commit_date = '2026-10-04T00:00:00Z'
+                if renewed:
+                    with self.assertRaises(PLAN.PlanError): self.run_release()
+                    self.f.assert_no_writes()
+                else:
+                    self.run_release()
+                    self.assertTrue(self.f.emitted.call_args.args[0]['ok'])
+
+    def test_reason_with_arrow_remains_inside_parseable_receipt(self):
+        self.legacy_setup()
+        previous_reason = self.args.legacy_reason
+        self.args.legacy_reason += ' --> metadata absent'
+        self.evidence['body'] = self.evidence['body'].replace(previous_reason, self.args.legacy_reason)
+        self.run_release()
+        body = self.f.comments[-1]['body']
+        receipt_line = next(line for line in body.splitlines() if line.startswith('<!-- ' + release.RELEASE_MARKER))
+        self.assertEqual(receipt_line.count('-->'), 1)
+        self.assertEqual(release.receipt_for(self.f.comments[-1])['source']['legacy_reason'], self.args.legacy_reason)
+
     def test_legacy_branch_proof_and_retained_activity_are_required(self):
         for mode in ('missing_pr', 'foreign_pr', 'unlinked_pr', 'new_commit'):
             with self.subTest(mode=mode):
@@ -666,7 +701,6 @@ class LegacyReleaseTests(ReleaseHarness):
                 receipt['source']['legacy_reason'] = reason
                 forged = self.comment(100, 'Released claim ' + str(self.args.claim_comment) + '\n\n<!-- '
                     + release.RELEASE_MARKER + json.dumps(receipt) + ' -->', '2026-10-03T00:00:00Z')
-                forged['user']['login'] = 'stranger'
                 self.assertIsNone(release.receipt_for(forged))
                 effective = release.effective_comments([self.f.comments[0], forged])
                 conflicts, _ = CLAIM.discussion_evidence('', effective, fixtures.OWNER)

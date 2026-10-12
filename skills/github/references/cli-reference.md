@@ -863,10 +863,11 @@ For a legacy source containing only `Claimed by WORKER` (plus an optional
 operation marker), use `--legacy --legacy-branch <verified-original-branch>
 --legacy-reason "<why no native session ID exists>"`. A source with structured
 identity, session fields, or additional ownership prose cannot use this route.
-Verify its original branch from the handoff; the helper also requires an
+The caller verifies which branch the source worker used from the handoff.
+The helper corroborates the supplied branch by requiring an
 automation-authored PR on that branch independently linking the canonical
 issue/PR (including a merged PR when its source branch was deleted). Never
-invent a native session ID.
+invent a native session ID; the PR link alone does not tie a branch to a worker.
 Post a separate exact-ID attestation for each legacy claim:
 
 ```text
@@ -890,7 +891,8 @@ comment; other legacy claims require separate attestations and calls. Related
 follow-up release, `--retained-pr`, and structured retained-handoff resume are
 unavailable for legacy sources; existing open work retains its independent
 ownership conflict. Successors must use a fresh worker token: reusing a legacy
-worker cannot distinguish the successor from renewed source activity. Normal successor claims still check waits and retained artifacts.
+worker cannot distinguish the successor from renewed source activity. The
+claim preflight refuses reuse before writing. Normal successor claims still check waits and retained artifacts.
 Edited or unavailable evidence and renewed source ownership invalidate the
 legacy receipt just as they do a structured release. Inspect `--dry-run` before
 applying. These flags cannot release or reinterpret a structured source.
