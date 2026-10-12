@@ -476,11 +476,12 @@ def test_prune_removes_archived_repository_with_direction_and_preserves_unknown_
         "repos/o/unknown": {"full_name": "o/unknown"},
         "repos/o/malformed": {"full_name": "o/malformed", "archived": "false"},
     }
-    calls: list[str] = []
+    contents_available = True
 
     def fetch(args: list[str]) -> dict[str, Any]:
-        calls.append(args[1])
         if args[1].endswith("/contents/DIRECTION.md"):
+            if args[1].startswith("repos/o/archived/") and not contents_available:
+                raise module.AuditError("HTTP 403")
             return {"type": "file", "content": "direction"}
         return responses[args[1]]
 
@@ -495,7 +496,7 @@ def test_prune_removes_archived_repository_with_direction_and_preserves_unknown_
         assert set(preview["unknown"]) == {"o/unknown", "o/malformed"}
         assert not preview["ok"] and not preview["applied"]
         assert preview["backup"] is None and marker.read_bytes() == before
-        assert not any(call.startswith("repos/o/archived/") and "contents" in call for call in calls)
+        contents_available = False
         applied = module.prune_unadopted(marker, fetch=fetch, apply=True)
         assert Path(applied["backup"]).read_bytes() == before
         assert Path(applied["backup"]).stat().st_mode & 0o777 == 0o600
@@ -1512,7 +1513,7 @@ def test_weekly_direction_audit_covers_active_repositories_without_a_direction_f
             return [waiting, gated, {"number": 6, "title": "both reviewers approve", "pull_request": {}}]
         if path.startswith("repos/o/site/milestones"):
             return [{"number": 2, "title": "Launch", "description": "Closes when all findings are resolved."}]
-        if path in {"repos/o/site", "repos/o/direction"}:
+        if path == "repos/o/site":
             return {"archived": False, "default_branch": "main"}
         if path == "repos/o/site/issues/5":
             return {"number": 5, "state": "closed", "pull_request": {}}
@@ -1539,7 +1540,7 @@ def test_weekly_direction_audit_covers_active_repositories_without_a_direction_f
         with (patch.dict("os.environ", {"DIRECTION_MARKER": str(marker)}),
               patch.dict(vars(module), {
                   "merged_direction": lambda *_args, **_kwargs: DIRECTION,
-                  "gh_json": lambda *_args, **_kwargs: [],
+                  "gh_json": lambda args, **_kwargs: {"archived": False} if args[1] == "repos/o/direction" else [],
                   "fetch_capacity": lambda *_args, **_kwargs: (summary(module), []),
                   "active_unadopted_report": lambda *_args, **_kwargs: report,
               }),
