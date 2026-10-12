@@ -440,6 +440,45 @@ def test_unadopted_audit_leaves_marker_untouched() -> None:
                 assert marker.read_text() == original
 
 
+def test_prune_removes_archived_repository_with_direction_and_preserves_unknown_archive_state() -> None:
+    module = load()
+    original = {"turn": "earlier", "audits": {
+        "o/archived": "a", "o/active": "b", "o/unknown": "c", "o/malformed": "d",
+    }, "other": True}
+    responses = {
+        "repos/o/archived": {"full_name": "o/archived", "archived": True},
+        "repos/o/active": {"full_name": "o/active", "archived": False},
+        "repos/o/unknown": {"full_name": "o/unknown"},
+        "repos/o/malformed": {"full_name": "o/malformed", "archived": "false"},
+    }
+    calls: list[str] = []
+
+    def fetch(args: list[str]) -> dict[str, Any]:
+        calls.append(args[1])
+        if args[1].endswith("/contents/DIRECTION.md"):
+            return {"type": "file", "content": "direction"}
+        return responses[args[1]]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        marker.write_text(json.dumps(original))
+        before = marker.read_bytes()
+        preview = module.prune_unadopted(marker, fetch=fetch)
+        assert preview["removed"] == ["o/archived"]
+        assert preview["removed_reasons"] == {"o/archived": "archived"}
+        assert preview["retained"] == ["o/active"]
+        assert set(preview["unknown"]) == {"o/unknown", "o/malformed"}
+        assert not preview["ok"] and not preview["applied"]
+        assert preview["backup"] is None and marker.read_bytes() == before
+        assert "repos/o/archived/contents/DIRECTION.md" not in calls
+        applied = module.prune_unadopted(marker, fetch=fetch, apply=True)
+        assert Path(applied["backup"]).read_bytes() == before
+        assert Path(applied["backup"]).stat().st_mode & 0o777 == 0o600
+        assert json.loads(marker.read_text()) == {
+            **original, "audits": {repo: stamp for repo, stamp in original["audits"].items() if repo != "o/archived"},
+        }
+
+
 def test_prune_preserves_adopted_unknown_and_other_marker_state() -> None:
     module = load()
     original = {"turn": "earlier", "audits": {"o/adopted": "a", "o/missing": "b", "o/private": "c"}, "other": True}
@@ -451,7 +490,7 @@ def test_prune_preserves_adopted_unknown_and_other_marker_state() -> None:
             if "/missing/" in endpoint:
                 raise module.AuditError("HTTP 404")
             return {"type": "file", "content": "direction"}
-        return {"full_name": endpoint.removeprefix("repos/")}
+        return {"full_name": endpoint.removeprefix("repos/"), "archived": False}
     with tempfile.TemporaryDirectory() as tmp:
         marker = Path(tmp) / "marker.json"
         marker.write_text(json.dumps(original))
@@ -489,7 +528,7 @@ def test_prune_rejects_malformed_input_and_concurrent_marker_edits() -> None:
             if args[1].endswith("/contents/DIRECTION.md"):
                 marker.write_text(changed)
                 raise module.AuditError("HTTP 404")
-            return {"full_name": "o/missing"}
+            return {"full_name": "o/missing", "archived": False}
         try:
             module.prune_unadopted(marker, fetch=fetch, apply=True)
         except module.AuditError:
@@ -542,7 +581,7 @@ def test_prune_preserves_writer_started_after_final_read() -> None:
             def fetch(args: list[str]) -> dict[str, Any]:
                 if args[1].endswith("/contents/DIRECTION.md"):
                     raise module.AuditError("HTTP 404")
-                return {"full_name": "o/missing"}
+                return {"full_name": "o/missing", "archived": False}
 
             try:
                 with patch.object(Path, "read_bytes", read):
@@ -593,7 +632,7 @@ def test_prune_does_not_confuse_repository_digits_with_http_status() -> None:
     def fetch(args: list[str]) -> dict[str, Any]:
         if args[1].endswith("/contents/DIRECTION.md"):
             raise module.AuditError(f"wrapper/go404 {args[1]} failed: HTTP 502")
-        return {"full_name": "o/app404"}
+        return {"full_name": "o/app404", "archived": False}
     with tempfile.TemporaryDirectory() as tmp:
         marker = Path(tmp) / "marker.json"
         marker.write_text('{"audits":{"o/app404":"a"}}')
@@ -620,7 +659,7 @@ def test_prune_owner_approved_missing_repos_are_exact_and_recoverable() -> None:
             raise module.AuditError("HTTP 404")
         if args[1].endswith("/contents/DIRECTION.md"):
             return {"type": "file", "content": "direction"}
-        return {"full_name": "o/adopted"}
+        return {"full_name": "o/adopted", "archived": False}
 
     with tempfile.TemporaryDirectory() as tmp:
         marker = Path(tmp) / "marker.json"

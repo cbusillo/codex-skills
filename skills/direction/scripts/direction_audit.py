@@ -503,12 +503,13 @@ def prune_unadopted(
     path: pathlib.Path, *, fetch: Callable[[list[str]], Any], apply: bool = False,
     remove_missing_repos: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    """Preview confirmed missing direction files; preserve unreadable repositories."""
+    """Preview archived or unadopted entries; preserve unreadable repositories."""
     original = path.read_bytes()
     current = json.loads(original)
     if not isinstance(current, dict) or not isinstance(current.get("audits"), dict):
         raise AuditError("marker must contain an audits object; no changes made")
     removed: list[str] = []
+    removed_reasons: dict[str, str] = {}
     retained: list[str] = []
     unknown: dict[str, str] = {}
     for repo in current["audits"]:
@@ -524,16 +525,24 @@ def prune_unadopted(
                 # Only an exact, independently owner-approved name may override it.
                 if repo in remove_missing_repos and re.search(r"\bHTTP 404\b", str(exc)):
                     removed.append(repo)
+                    removed_reasons[repo] = "owner_approved_missing_repository"
                     continue
                 raise
             if not isinstance(visible, dict) or str(visible.get("full_name", "")).casefold() != repo.casefold():
                 raise AuditError("repository visibility could not be confirmed")
+            if not isinstance(visible.get("archived"), bool):
+                raise AuditError("repository archive state could not be confirmed")
+            if visible["archived"]:
+                removed.append(repo)
+                removed_reasons[repo] = "archived"
+                continue
             try:
                 body = fetch(["api", f"repos/{repo}/contents/DIRECTION.md", "--method", "GET"])
             except AuditError as exc:
                 if not re.search(r"\bHTTP 404\b", str(exc)):
                     raise
                 removed.append(repo)
+                removed_reasons[repo] = "missing_direction_file"
             else:
                 if not isinstance(body, dict) or body.get("type") != "file" or not isinstance(body.get("content"), str):
                     raise AuditError("direction response is not a readable file")
@@ -557,6 +566,7 @@ def prune_unadopted(
                 del current["audits"][repo]
             direction_mark.save(path, current)
     return {"ok": not unknown, "applied": apply and bool(removed), "removed": removed,
+            "removed_reasons": removed_reasons,
             "retained": retained, "unknown": unknown, "backup": backup}
 
 
@@ -1712,7 +1722,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--automation", help="automation login allowed to create milestones; defaults to the wrapper's account")
     parser.add_argument("--gh", default=str(WRAPPER), help="gh-compatible command used for reads")
     parser.add_argument("--stale-waits-only", action="store_true", help="read parked waits without running or stamping a direction audit")
-    parser.add_argument("--prune-unadopted", action="store_true", help="preview removal of unadopted repositories from the local marker")
+    parser.add_argument("--prune-unadopted", action="store_true", help="preview removal of archived or unadopted repositories from the local marker")
     parser.add_argument("--apply-prune", action="store_true", help="apply the pruning preview with a recoverable backup")
     parser.add_argument("--remove-missing-repo", action="append", default=[], metavar="OWNER/REPO",
                         help="owner-approved marker removal when this exact repository returns HTTP 404; repeat per repository")

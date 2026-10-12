@@ -255,11 +255,13 @@ on. Weekly audits are not marked by hand. The audit script stamps its own
 completion for the repository it audited, so an audit stamp means a real
 read-only audit ran; it never updates the daily turn or its coverage.
 
-To clean older markers that included unadopted repositories, preview with
+To clean older markers that included archived or unadopted repositories, preview with
 `uv run <skill-dir>/scripts/direction_audit.py --prune-unadopted`, then repeat
 with `--apply-prune` to recheck and apply the authorized cleanup, reporting
 the entries removed by that run. The helper confirms
-repository visibility before treating a missing direction file as unadopted,
+repository visibility and archive state, removes archived entries even when
+their direction file remains readable, and reports each removal reason. For
+active repositories it checks for a missing direction file before pruning,
 preserves unreadable entries and unrelated marker state, and creates a private
 backup beside the marker before removing confirmed entries. Unknown entries
 remain for a later audit with the required read access; they are not evidence
