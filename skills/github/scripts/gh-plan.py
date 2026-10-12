@@ -1997,6 +1997,13 @@ def wait_authors(repo: str) -> set[str]:
     return set(github_identity.configured_bot_logins()) | ({EXPECTED_ACTOR} if EXPECTED_ACTOR else set()) | {repo.split('/')[0]}
 
 
+def current_wait(issue: dict[str, Any], comments: list[dict[str, Any]], repo: str) -> dict[str, Any]:
+    # Original contributor text is immutable history, like claim history.
+    managed = contributor_plan_body(issue)
+    source = {**issue, "body": managed} if managed is not None else issue
+    return github_plan_wait.current(source, comments, wait_authors(repo))
+
+
 def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:
     _, issue = get_issue(ref, repo)
     if issue.get("state") not in ({"open", "closed"} if allow_closed else {"open"}):
@@ -2030,7 +2037,7 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[
         comment_status = next((section_map(c.get("body") or "").get("Current Status", "")
                                for c in reversed(comments) if "Current Status" in section_map(c.get("body") or "")), "")
         status = "\n\n".join(part for part in (status, comment_status) if part)
-    issue["claim_wait"] = github_plan_wait.current(issue, comments, wait_authors(issue["repo"]))
+    issue["claim_wait"] = current_wait(issue, comments, issue["repo"])
     return issue, status, comments, can_update
 
 
@@ -2359,7 +2366,7 @@ def claim_once(args: argparse.Namespace) -> None:
                                              github_plan_claim.exact_released_sources(target_comments))
             if not refresh_pr or pull["number"] == target_number:
                 target_status = sections.get("Current Status", "")
-                target_wait = github_plan_wait.current(target, target_comments, wait_authors(target_repo))
+                target_wait = current_wait(target, target_comments, target_repo)
                 target["claim_wait"] = target_wait
                 if check_wait(target, target_status, target=True):
                     wait_labels = sorted(set(normalize_labels(target.get("labels"))) &
@@ -2656,7 +2663,14 @@ def claim_once(args: argparse.Namespace) -> None:
                     raise PlanError("Issue body changed before retained-handoff status write; preserve the new hold and verify before recovery")
             # Creation may place its record after later sections. The authored
             # claim record replaces it; examples remain unchanged.
-            status_issue = {**issue, "body": github_plan_wait.without_records(issue.get("body") or "")}
+            record_body = issue.get("body") or ""
+            managed_block = marked_block(record_body, PLAN_MANAGED_START, PLAN_MANAGED_END)
+            if managed_block is not None:
+                start, end, managed_text = managed_block
+                record_body = record_body[:start] + github_plan_wait.without_records(managed_text) + record_body[end:]
+            else:
+                record_body = github_plan_wait.without_records(record_body)
+            status_issue = {**issue, "body": record_body}
             body = replace_issue_plan_section(status_issue, "Current Status", status_text)
             rest_edit_issue(issue_repo, number, body=body)
             completed.append("update_current_status")
@@ -2744,7 +2758,6 @@ def wait_once(args: argparse.Namespace) -> None:
                                             bucket="rest_core", step_prefix="wait_inventory")
         review = []
         checked = 0
-        trusted = wait_authors(repo)
         for issue in issues:
             if "pull_request" in issue:
                 continue
@@ -2752,9 +2765,9 @@ def wait_once(args: argparse.Namespace) -> None:
                                                   query={}, bucket="rest_core", step_prefix="wait_inventory_comments")
             checked += 1
             try:
-                wait = github_plan_wait.current(issue, comments, trusted)
+                wait = current_wait(issue, comments, repo)
                 reason = "No reviewed structured record" if wait["state"] == "review" else None
-            except ValueError as exc:
+            except (ValueError, PlanError) as exc:
                 reason = str(exc)
             if reason:
                 review.append({"repo": repo, "number": issue["number"], "url": issue.get("html_url"),

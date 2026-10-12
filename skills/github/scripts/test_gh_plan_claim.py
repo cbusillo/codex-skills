@@ -2716,6 +2716,20 @@ class ClaimTests(unittest.TestCase):
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
         self.assertEqual(len(wait_record.records(self.issue["body"])), 1)
 
+    def test_record_move_preserves_original_contributor_marker_examples(self):
+        self.wait = None
+        self.issue["user"]["login"] = "owner"
+        original = "Original report contains a historical record:\n" + wait_record.marker(
+            wait_record.reviewed(evidence="Historical example", waiting_for="Earlier test", ends_when="Recorded earlier result"))
+        self.issue["body"] = original
+        self.issue["body"] = PLAN.replace_issue_plan_section(self.issue, "Current Status",
+            "State: Active\n" + wait_record.marker(wait_record.reviewed(evidence="Full original report reviewed; resolved")))
+        self.run_claim()
+        preserved = PLAN.marked_block(self.issue["body"], PLAN.PLAN_ORIGINAL_START, PLAN.PLAN_ORIGINAL_END)
+        self.assertEqual(preserved[2], original)
+        current = PLAN.contributor_plan_body(self.issue)
+        self.assertEqual(len(wait_record.records(current)), 1)
+
     def test_reviewed_status_and_comment_prose_cannot_create_a_wait_or_an_owner(self):
         self.issue["body"] += "\nOwned by historical-worker\nWaiting for: None; Chris decides the scope"
         self.comments.append({"id": 31, "user": {"login": TEST_BOT},
