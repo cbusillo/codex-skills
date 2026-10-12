@@ -721,6 +721,8 @@ def ide_selection_advice(reason: str, context: Any) -> str | None:
 
 
 def hint_for_error_reason(reason: str, context: Any = None) -> str | None:
+    if reason == "ide_launch_disabled":
+        return "Make the intended IDE available on the selected port, then run a fresh assessment; application launch is disabled."
     lane_advice = ide_selection_advice(reason, context)
     if lane_advice:
         return lane_advice
@@ -849,6 +851,7 @@ def add_common(command: argparse.ArgumentParser, include_scope: bool) -> None:
     command.add_argument("--project", help="Project name selector. Prefer project-key/path when possible.")
     command.add_argument("--session-id", help="Expected IDE session id for drift detection.")
     command.add_argument("--open", action="store_true", help="Open the repo in the preferred IDE if no route is available, then retry briefly.")
+    command.add_argument("--no-ide-launch", action="store_true", help="Require a running IDE; never fall back to launching an application when opening a project.")
     command.add_argument("--no-worktree-check", action="store_true", help="Allow routes outside the current worktree.")
     if include_scope:
         command.add_argument("--scope", help="Inspection scope. Defaults from repo config or changed_files.")
@@ -5434,6 +5437,16 @@ def open_project_for_lifecycle(
     open_attempt = open_via_running_ide(args, context, attempts, "running_ide", lease)
     if open_attempt is not None:
         return open_method_for_outcome("running_ide", open_attempt), attempts, bool(open_attempt.get("ownership_registered"))
+    if getattr(args, "no_ide_launch", False):
+        if lease is not None and project_open_was_not_requested(attempts):
+            lease["open_not_attempted"] = True
+            lease["open_request_may_have_been_accepted"] = False
+            lease["open_attempts"] = attempts
+        raise InspectError(
+            "The running IDE did not accept the lifecycle open; application launch is disabled.",
+            3,
+            {"error_reason": "ide_launch_disabled", "open_attempts": attempts},
+        )
     bootstrap_attempt = bootstrap_ide_app(context, background=getattr(args, "background_open", False))
     attempts.append(bootstrap_attempt)
     timeout_ms = getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS)
@@ -7213,6 +7226,7 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "implicit_eap_selection",
         "ide_not_ready_timeout",
         "ide_open_failed",
+        "ide_launch_disabled",
         "project_open_blocked",
         "already_opening_stuck",
         PROJECT_OPEN_BLOCKED_REASON,
@@ -7637,6 +7651,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
     if normalized in {
         "inspection_api_unavailable",
         "ide_open_failed",
+        "ide_launch_disabled",
         "untrusted_auto_open_root",
         "project_open_blocked",
         "ide_not_ready_timeout",
