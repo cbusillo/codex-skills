@@ -63,7 +63,7 @@ jobs:
 
       - name: Build native Swift helper for extraction
         if: ${{ matrix.scan && matrix.language == 'swift' }}
-        run: swift build --product reminder-list
+        run: swift build
 
       - name: Analyze and upload
         if: ${{ matrix.scan }}

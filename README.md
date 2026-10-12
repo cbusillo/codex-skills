@@ -737,10 +737,10 @@ files instead of committing it.
 
 ### Native helper build and CodeQL
 
-The root `Package.swift` gives CodeQL's Swift extractor a build target for
-`skills/work-closeout/scripts/reminder_list.swift`. On macOS 14 or newer,
-`swift build --product reminder-list` compiles that existing helper without
-running it or accessing Reminders. Build output stays in ignored `.build/`.
+The root `Package.swift` gives CodeQL's Swift extractor build targets for the
+native list lookup and session-reminder writer in `skills/work-closeout/scripts`.
+On macOS 14 or newer, `swift build` compiles both helpers without
+running them or accessing Reminders. Build output stays in ignored `.build/`.
 The normal script invocation remains supported; the package is also the build
 entry point used for Swift extraction.
 
@@ -751,7 +751,7 @@ uses the complete base-to-head Git diff, including removed and renamed paths.
 Only affected languages analyze; every language job still reports success when
 unchanged, and an unavailable diff runs all languages. Workflow/selector changes
 also run all languages. An unchanged Swift lane uses a lightweight Linux job;
-an affected Swift lane builds `reminder-list` on macOS between CodeQL initialization
+an affected Swift lane builds both native helpers on macOS between CodeQL initialization
 and analysis, then uploads results under the existing language category. The
 helper is compiled without running it or accessing Reminders.
 
